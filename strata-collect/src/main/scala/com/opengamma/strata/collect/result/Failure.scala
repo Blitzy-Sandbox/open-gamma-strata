@@ -9,6 +9,13 @@ import scala.collection.immutable.SortedMap
 
 import cats.Hash
 import cats.Show
+import cats.data.NonEmptyChain
+import cats.data.NonEmptyList
+
+import io.circe.Decoder
+import io.circe.Encoder
+import io.circe.generic.semiauto.deriveDecoder
+import io.circe.generic.semiauto.deriveEncoder
 
 /**
  * A single failure, describing why an operation did not produce a value.
@@ -20,6 +27,15 @@ import cats.Show
  * original modelled the same information as a bean that could be wrapped in an exception,
  * this port keeps the failure on the left of an `Either` and leaves the decision of what to
  * do about it to the caller.
+ *
+ * That is the convention of this package, carried over from the package it is ported from:
+ * code here is written in a functional style, and an operation that cannot produce a result
+ * returns a failure describing why instead of abandoning the call stack. A failure is
+ * therefore constructed, returned, matched on, combined and serialized like any other
+ * value, and building one never fails - it is the type in which every other failure of the
+ * library is expressed, so it has no validation of its own to fail. A message is expected
+ * to be non-empty by the code that reads it, as it was in the type being ported, but that
+ * expectation is a convention of the caller and is not enforced here.
  *
  * ===The closed set of failures===
  *
@@ -41,6 +57,27 @@ import cats.Show
  * {{{
  * Failure.Invalid("Schedule is invalid").withAttribute("definition", "P3M from 2024-01-15")
  * }}}
+ *
+ * The attribute names are ordinary strings, chosen by the code that reports the failure;
+ * there is no enumeration of permitted names to consult or extend.
+ *
+ * ===Choosing a member===
+ *
+ * The member is chosen by what went wrong, and the port keeps to one convention so that a
+ * caller can act on a failure it did not itself report. A definition that does not describe
+ * a consistent schedule is `Invalid`, carrying the definition it rejected under the
+ * `definition` attribute; a holiday calendar that the reference data cannot resolve is
+ * `MissingData`; a conversion for which no rate between the two currencies is available is
+ * `CurrencyConversion`; and text that names no value of the type expected - a name, a
+ * currency code, a tenor - is `Parsing`. `Error` and `Other` are the general-purpose
+ * members and are appropriate only where none of the specific ones is.
+ *
+ * ===Combining failures===
+ *
+ * An operation that can fail in more than one way reports a chain of failures and leaves
+ * each one intact, so multiplicity lives in the chain rather than in this type. `collapse`
+ * is there for the places that have to present such a chain as a single failure, and it is
+ * the only thing that produces `Multiple`.
  *
  * @see [[FailureReason]] for the ten reasons a failure can carry
  */
@@ -76,59 +113,81 @@ sealed trait Failure {
   def attributes: SortedMap[String, String]
 
   /**
+   * Returns a copy of this failure carrying the specified message and attributes.
+   *
+   * This is the one point at which a failure is rebuilt. Every member implements it as a
+   * copy of itself, so a rebuilt failure always has the class - and therefore the reason -
+   * of the failure it came from. The three combinators below are written once in terms of
+   * it rather than once per member, which is what makes it impossible to add a member that
+   * they do not apply to.
+   *
+   * @param newMessage  the message the copy carries
+   * @param newAttributes  the attributes the copy carries
+   * @return a copy of this failure, of the same class as this one
+   */
+  protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure
+
+  /**
    * Returns a copy of this failure with an additional attribute.
    *
-   * The class and the reason of the failure are preserved. An attribute already present
-   * under the same key is replaced.
+   * The class, the reason and the message of the failure are preserved. A value already
+   * held under the same key is replaced, so the last value given for a key is the one that
+   * survives:
+   *
+   * {{{
+   * Failure.MissingData("No calendar")
+   *   .withAttribute("id", "GBLO")
+   *   .withAttribute("id", "USNY")   // attributes are ("id" -> "USNY")
+   * }}}
    *
    * @param key  the attribute name
    * @param value  the attribute value
    * @return a copy of this failure carrying the additional attribute
    */
   final def withAttribute(key: String, value: String): Failure =
-    withAttributes(attributes.updated(key, value))
+    rebuild(message, attributes.updated(key, value))
 
   /**
-   * Returns a copy of this failure with its attributes replaced.
+   * Returns a copy of this failure with the specified attributes added.
    *
-   * The class and the reason of the failure are preserved.
+   * The class, the reason and the message of the failure are preserved. The attributes are
+   * merged into those already held rather than replacing them, and where a key appears on
+   * both sides the value supplied here wins. Adding an empty map therefore changes nothing.
    *
-   * @param newAttributes  the attributes the copy carries
-   * @return a copy of this failure carrying the specified attributes
+   * @param newAttributes  the attributes to add
+   * @return a copy of this failure carrying the merged attributes
    */
-  final def withAttributes(newAttributes: SortedMap[String, String]): Failure =
-    this match {
-      case failure: Failure.Multiple => Failure.Multiple(failure.message, newAttributes)
-      case failure: Failure.Error => Failure.Error(failure.message, newAttributes)
-      case failure: Failure.Invalid => Failure.Invalid(failure.message, newAttributes)
-      case failure: Failure.Parsing => Failure.Parsing(failure.message, newAttributes)
-      case failure: Failure.NotApplicable => Failure.NotApplicable(failure.message, newAttributes)
-      case failure: Failure.Unsupported => Failure.Unsupported(failure.message, newAttributes)
-      case failure: Failure.MissingData => Failure.MissingData(failure.message, newAttributes)
-      case failure: Failure.CurrencyConversion => Failure.CurrencyConversion(failure.message, newAttributes)
-      case failure: Failure.CalculationFailed => Failure.CalculationFailed(failure.message, newAttributes)
-      case failure: Failure.Other => Failure.Other(failure.message, newAttributes)
+  final def withAttributes(newAttributes: Map[String, String]): Failure = {
+    val merged = newAttributes.foldLeft(attributes) { case (acc, (key, value)) =>
+      acc.updated(key, value)
     }
+    rebuild(message, merged)
+  }
 
   /**
-   * Returns the rendering of this failure as text.
+   * Returns a copy of this failure with its message transformed.
    *
-   * The form is the reason, then the message, then the attributes when there are any, which
-   * keeps the classification visible in a log line that may hold failures of several kinds.
+   * The class, the reason and the attributes of the failure are preserved. This is how a
+   * caller supplies the context that the code reporting the failure did not have, usually
+   * by wrapping the message it was given:
    *
-   * @return the rendering of this failure
+   * {{{
+   * failure.mapMessage(message => s"Unable to resolve the schedule: $message")
+   * }}}
+   *
+   * @param f  the transformation to apply to the message
+   * @return a copy of this failure carrying the transformed message
    */
-  override def toString: String =
-    if (attributes.isEmpty) {
-      s"${reason.name}: $message"
-    } else {
-      val rendered = attributes.iterator.map { case (key, value) => s"$key=$value" }.mkString(", ")
-      s"${reason.name}: $message [$rendered]"
-    }
+  final def mapMessage(f: String => String): Failure = rebuild(f(message), attributes)
 }
 
 /**
- * Provides the ten kinds of failure, one per failure reason, and the instances for them.
+ * Provides the ten kinds of failure, one per failure reason, together with the two ways of
+ * obtaining one from data rather than by naming a member, and the instances for the type.
+ *
+ * The members are declared in the order of the reasons in [[FailureReason]], so the two
+ * files read against one another. `of` maps a reason that is only known at run time onto
+ * its member, and `collapse` reduces a chain of failures to one.
  */
 object Failure {
 
@@ -138,12 +197,19 @@ object Failure {
   /**
    * Several failures occurred that did not agree on a reason.
    *
+   * This member describes a group of failures rather than a single thing that went wrong,
+   * and `collapse` is what produces it: a failure reported on its own always carries the
+   * reason of that failure, and several failures that agree on a reason keep it.
+   *
    * @param message  the message describing the failure
    * @param attributes  the attributes of the failure
    */
   final case class Multiple(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.MULTIPLE
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
@@ -155,6 +221,9 @@ object Failure {
   final case class Error(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.ERROR
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
@@ -166,6 +235,9 @@ object Failure {
   final case class Invalid(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.INVALID
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
@@ -177,6 +249,9 @@ object Failure {
   final case class Parsing(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.PARSING
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
@@ -188,6 +263,9 @@ object Failure {
   final case class NotApplicable(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.NOT_APPLICABLE
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
@@ -199,6 +277,9 @@ object Failure {
   final case class Unsupported(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.UNSUPPORTED
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
@@ -210,6 +291,9 @@ object Failure {
   final case class MissingData(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.MISSING_DATA
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
@@ -221,6 +305,9 @@ object Failure {
   final case class CurrencyConversion(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.CURRENCY_CONVERSION
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
@@ -232,6 +319,9 @@ object Failure {
   final case class CalculationFailed(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.CALCULATION_FAILED
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
@@ -243,40 +333,97 @@ object Failure {
   final case class Other(message: String, attributes: SortedMap[String, String] = NoAttributes)
       extends Failure {
     override def reason: FailureReason = FailureReason.OTHER
+
+    override protected def rebuild(newMessage: String, newAttributes: SortedMap[String, String]): Failure =
+      copy(newMessage, newAttributes)
   }
 
   /**
-   * Obtains a failure from a reason and a message.
+   * Obtains a failure from a reason, a message and attributes.
    *
    * This is the route to take when the reason is a value in hand rather than a choice made
-   * while writing the code; where the reason is known statically, naming the member of this
-   * companion directly is clearer. The member returned is the one whose `reason` is the
-   * reason supplied, so `of(reason, message).reason == reason` for every reason.
+   * while writing the code, which is the position generic code is in - a validating helper,
+   * a name lookup or a decoder receives the reason and cannot name a member. Where the
+   * reason is known statically, naming the member of this companion directly is clearer.
+   *
+   * The member returned is the one whose `reason` is the reason supplied, so
+   * `of(reason, message).reason == reason` holds for each of the ten reasons, and the match
+   * below is exhaustive over the closed family of reasons rather than falling back on a
+   * default member.
    *
    * @param reason  the reason classifying the failure
    * @param message  the message describing the failure
-   * @return the failure with that reason and message
+   * @param attributes  the attributes of the failure, none by default
+   * @return the failure with that reason, message and attributes
    */
-  def of(reason: FailureReason, message: String): Failure =
+  def of(
+      reason: FailureReason,
+      message: String,
+      attributes: SortedMap[String, String] = NoAttributes): Failure =
     reason match {
-      case FailureReason.MULTIPLE => Multiple(message)
-      case FailureReason.ERROR => Error(message)
-      case FailureReason.INVALID => Invalid(message)
-      case FailureReason.PARSING => Parsing(message)
-      case FailureReason.NOT_APPLICABLE => NotApplicable(message)
-      case FailureReason.UNSUPPORTED => Unsupported(message)
-      case FailureReason.MISSING_DATA => MissingData(message)
-      case FailureReason.CURRENCY_CONVERSION => CurrencyConversion(message)
-      case FailureReason.CALCULATION_FAILED => CalculationFailed(message)
-      case FailureReason.OTHER => Other(message)
+      case FailureReason.MULTIPLE => Multiple(message, attributes)
+      case FailureReason.ERROR => Error(message, attributes)
+      case FailureReason.INVALID => Invalid(message, attributes)
+      case FailureReason.PARSING => Parsing(message, attributes)
+      case FailureReason.NOT_APPLICABLE => NotApplicable(message, attributes)
+      case FailureReason.UNSUPPORTED => Unsupported(message, attributes)
+      case FailureReason.MISSING_DATA => MissingData(message, attributes)
+      case FailureReason.CURRENCY_CONVERSION => CurrencyConversion(message, attributes)
+      case FailureReason.CALCULATION_FAILED => CalculationFailed(message, attributes)
+      case FailureReason.OTHER => Other(message, attributes)
     }
+
+  /**
+   * Combines several failures into the single failure that describes them together.
+   *
+   * Multiplicity is not a property of a failure in this port: where an operation can report
+   * more than one, it reports a chain of them and each keeps its own reason, message and
+   * attributes. This method is for the narrower case of having to present such a chain as
+   * one failure - a single error channel, a rendered line, a decoder's complaint - and it
+   * summarises the chain as follows.
+   *
+   *  - Failures that are equal to one another are folded together first, so a cause
+   *    reported twice is described once. De-duplication is observable only when identical
+   *    failures are combined; failures that differ in any part are all kept.
+   *  - The messages of the remaining failures are joined with `", "`, in the order the
+   *    chain holds them.
+   *  - The reason is the common reason when every remaining failure agrees on one, and
+   *    `MULTIPLE` when they do not. This is the only place `Multiple` is produced from
+   *    other failures, and it is why a `Multiple` never appears where a single failure was
+   *    reported.
+   *  - The attributes are merged left to right, so where two failures use the same key the
+   *    value of the later one survives, which is the rule `withAttributes` follows.
+   *
+   * @param failures  the failures to combine, at least one
+   * @return the single failure describing all of them
+   */
+  def collapse(failures: NonEmptyChain[Failure]): Failure = {
+    val all: NonEmptyList[Failure] = failures.toNonEmptyList
+    // `distinct` on the tail plus the removal of anything equal to the head is the
+    // first-occurrence-wins de-duplication of the whole chain, kept non-empty throughout so
+    // that the reduction below needs no case for an empty input.
+    val unique: NonEmptyList[Failure] =
+      NonEmptyList(all.head, all.tail.distinct.filterNot(_ == all.head))
+    val message = unique.toList.iterator.map(_.message).mkString(", ")
+    val reason = unique
+      .map(_.reason)
+      .reduceLeft((left, right) => if (left == right) left else FailureReason.MULTIPLE)
+    val attributes = unique.foldLeft(NoAttributes) { (merged, failure) =>
+      failure.attributes.foldLeft(merged) { case (acc, (key, value)) => acc.updated(key, value) }
+    }
+    of(reason, message, attributes)
+  }
 
   /**
    * The hashing and equality of failures.
    *
    * This is the only equality-bearing instance of the type, and it is the equality of the
    * values themselves: two failures are equal when they are of the same class and carry the
-   * same message and attributes.
+   * same message and attributes. Structural equality is the right notion here because no
+   * part of a failure is a floating-point number or an array, so there is no field whose
+   * own equality needs special care. An `Eq` is available by subtyping, and there is
+   * deliberately no `Order`: the ten members form a set of kinds, not a scale, and nothing
+   * in the port sorts failures.
    *
    * @return the hashing of failures
    */
@@ -285,9 +432,69 @@ object Failure {
   /**
    * The rendering of failures as text.
    *
-   * A failure renders as `toString` does, so the two agree.
+   * A failure renders as its reason, then its message - the form the type being ported
+   * rendered, less the trace that this port does not hold - followed by its attributes when
+   * it has any, so that a log line holding failures of several kinds stays readable:
+   *
+   * {{{
+   * MISSING_DATA: No holiday calendar
+   * INVALID: Schedule is invalid [definition=P3M from 2024-01-15]
+   * }}}
+   *
+   * The rendering is a function of the value alone, and the attributes are held in key
+   * order, so the same failure always renders the same way. This instance carries the
+   * rendering rather than `toString`, which each member keeps in its generated form so that
+   * a failure inspected while debugging still shows its class and fields.
    *
    * @return the rendering of a failure
    */
-  implicit val show: Show[Failure] = Show.show(_.toString)
+  implicit val show: Show[Failure] = Show.show { failure =>
+    val rendered = s"${failure.reason.name}: ${failure.message}"
+    if (failure.attributes.isEmpty) {
+      rendered
+    } else {
+      val attributes = failure.attributes.iterator.map { case (key, value) => s"$key=$value" }
+      s"$rendered [${attributes.mkString(", ")}]"
+    }
+  }
+
+  /**
+   * The JSON encoding of failures.
+   *
+   * The encoding is derived when this file is compiled, so no part of it inspects a class
+   * while the program runs. A failure encodes as the single-key object that names its
+   * member, holding the two fields of that member:
+   *
+   * {{{
+   * {"MissingData":{"message":"No holiday calendar","attributes":{}}}
+   * {"Invalid":{"message":"Schedule is invalid","attributes":{"definition":"P3M"}}}
+   * }}}
+   *
+   * The reason is not written, because the member name already determines it; writing both
+   * would allow an encoded failure to disagree with itself. The attribute object is written
+   * in key order, which is what makes the encoding of a failure depend on its value alone
+   * and not on the order its attributes were added in. No field of any member is optional,
+   * so there is no absent value to drop from the output and the encoding needs no
+   * post-processing.
+   *
+   * @return the JSON encoding of a failure
+   */
+  implicit val encoder: Encoder.AsObject[Failure] = deriveEncoder[Failure]
+
+  /**
+   * The JSON decoding of failures.
+   *
+   * This is the inverse of the encoding above and is likewise derived at compile time.
+   * Decoding accepts the single-key object that names a member and rejects anything else,
+   * so the ten members are the only failures that can be decoded - the closed set of the
+   * type is enforced on the way in as well as on the way out.
+   *
+   * A derived decoding reads the fields a member declares and does not consult the default
+   * value declared for `attributes`, so the `attributes` field has to be present. The
+   * encoding always writes it, as an empty object when there are no attributes, so every
+   * encoded failure decodes back to an equal failure.
+   *
+   * @return the JSON decoding of a failure
+   */
+  implicit val decoder: Decoder[Failure] = deriveDecoder[Failure]
 }
