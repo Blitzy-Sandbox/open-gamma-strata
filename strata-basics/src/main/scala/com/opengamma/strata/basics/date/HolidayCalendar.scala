@@ -25,7 +25,6 @@ import io.circe.HCursor
 import io.circe.Json
 
 import com.opengamma.strata.basics.ReferenceData
-import com.opengamma.strata.basics.ReferenceDataId
 import com.opengamma.strata.collect.ArgCheck
 import com.opengamma.strata.collect.Named
 import com.opengamma.strata.collect.json.Codecs
@@ -1537,9 +1536,6 @@ object HolidayCalendars {
   /** The separator that combines two calendar names. */
   private val CombineSeparator: String = "+"
 
-  /** The two days that a calendar defaulted by [[defaultingReferenceData]] treats as its weekend. */
-  private val DefaultWeekendDays: Set[DayOfWeek] = Set(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
-
   /** The calendar for which every day is a business day. */
   val NO_HOLIDAYS: HolidayCalendar = NoHolidays
 
@@ -1604,7 +1600,7 @@ object HolidayCalendars {
    * @return reference data that answers for every holiday calendar identifier
    */
   def defaultingReferenceData(underlying: ReferenceData): ReferenceData =
-    new DefaultingReferenceData(underlying)
+    HolidaySafeReferenceData(underlying)
 
   //-------------------------------------------------------------------------
   /**
@@ -1642,44 +1638,6 @@ object HolidayCalendars {
     }
 
     loop(0, Nil)
-  }
-
-  /**
-   * Reference data that answers for every holiday calendar identifier.
-   *
-   * The implementation of [[defaultingReferenceData]], kept private because the decoration is
-   * what a caller wants rather than the type of it.
-   *
-   * @param underlying  the reference data being decorated
-   */
-  private final class DefaultingReferenceData(underlying: ReferenceData) extends ReferenceData {
-
-    override def findValue[T](id: ReferenceDataId[T]): Option[T] =
-      underlying.findValue(id).orElse(defaultValue(id))
-
-    override def containsValue(id: ReferenceDataId[_]): Boolean =
-      underlying.containsValue(id) || id.isInstanceOf[HolidayCalendarId]
-
-    override def combinedWith(other: ReferenceData): ReferenceData =
-      new DefaultingReferenceData(underlying.combinedWith(other))
-
-    /**
-     * Returns the calendar supplied for an identifier the underlying data does not hold.
-     *
-     * The cast is safe and is confined to this method: the value is produced only for a
-     * [[HolidayCalendarId]], whose type parameter is [[HolidayCalendar]], so the value produced
-     * is of the type the identifier asks for. A composite identifier yields nothing, which is
-     * what sends its resolution to its parts.
-     *
-     * @tparam T  the type of data the identifier refers to
-     * @param id  the identifier that was not found
-     * @return the defaulted calendar, or empty where the identifier names something else
-     */
-    private def defaultValue[T](id: ReferenceDataId[T]): Option[T] = id match {
-      case calendarId: HolidayCalendarId if !calendarId.isComposite =>
-        Some(ImmutableHolidayCalendar.of(calendarId, Nil, DefaultWeekendDays).asInstanceOf[T])
-      case _ => None
-    }
   }
 }
 
