@@ -4947,9 +4947,13 @@ Jn buildCurrencyPairManifest() {
   int count = 0;
   for (String section : ini.sections()) {
     PropertySet properties = ini.section(section);
+    // The SECTION name is the pair ("EUR/AUD"); the only key inside it is
+    // "rateDigits". Reading the pair from the key would label all 92 rows
+    // "rateDigits" while still counting 92, so the count check alone would not
+    // catch it.
     for (String key : properties.keys()) {
       rows.add(new JObject()
-          .set("pair", jStr(key))
+          .set("pair", jStr(section))
           .set("rateDigits", jInt(Integer.parseInt(properties.value(key).trim()))));
       count++;
     }
