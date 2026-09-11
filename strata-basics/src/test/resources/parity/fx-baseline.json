@@ -1,0 +1,2786 @@
+[
+  {
+    "id": "cross-rate-triangulating-matrix",
+    "source": "FxMatrixTest.matrixCalculatesCrossRates",
+    "matrix": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      },
+      {
+        "pair": "EUR/USD",
+        "rate": 1.4
+      },
+      {
+        "pair": "EUR/CHF",
+        "rate": 1.2
+      }
+    ],
+    "matrixState": {
+      "currencies": ["GBP", "USD", "EUR", "CHF"],
+      "rates": [
+        [1.0, 1.6, 1.142857142857143, 1.3714285714285717],
+        [0.625, 1.0, 0.7142857142857143, 0.8571428571428571],
+        [0.8749999999999999, 1.4, 1.0, 1.2],
+        [0.7291666666666665, 1.1666666666666667, 0.8333333333333334, 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 1.6
+      },
+      {
+        "base": "USD",
+        "counter": "GBP",
+        "fxRate": 0.625
+      },
+      {
+        "base": "EUR",
+        "counter": "USD",
+        "fxRate": 1.4
+      },
+      {
+        "base": "USD",
+        "counter": "EUR",
+        "fxRate": 0.7142857142857143
+      },
+      {
+        "base": "EUR",
+        "counter": "GBP",
+        "fxRate": 0.8749999999999999
+      },
+      {
+        "base": "GBP",
+        "counter": "EUR",
+        "fxRate": 1.142857142857143
+      },
+      {
+        "base": "EUR",
+        "counter": "CHF",
+        "fxRate": 1.2
+      },
+      {
+        "base": "CHF",
+        "counter": "GBP",
+        "fxRate": 0.7291666666666665
+      },
+      {
+        "base": "USD",
+        "counter": "CHF",
+        "fxRate": 0.8571428571428571
+      },
+      {
+        "base": "USD",
+        "counter": "USD",
+        "fxRate": 1.0
+      }
+    ],
+    "conversions": [],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "convert-multi-currency-amount",
+    "source": "FxMatrixTest.convertMultipleCurrencyAmount",
+    "matrix": [
+      {
+        "pair": "GBP/EUR",
+        "rate": 1.4
+      },
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      }
+    ],
+    "matrixState": {
+      "currencies": ["GBP", "EUR", "USD"],
+      "rates": [
+        [1.0, 1.4, 1.6],
+        [0.7142857142857143, 1.0, 1.142857142857143],
+        [0.625, 0.8749999999999999, 1.0]
+      ]
+    },
+    "queries": [],
+    "conversions": [
+      {
+        "currency": "GBP",
+        "amount": 1600.0,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 2560.0
+        }
+      },
+      {
+        "currency": "EUR",
+        "amount": 1200.0,
+        "target": "GBP",
+        "converted": {
+          "currency": "GBP",
+          "amount": 857.1428571428571
+        }
+      },
+      {
+        "currency": "USD",
+        "amount": 1500.0,
+        "target": "EUR",
+        "converted": {
+          "currency": "EUR",
+          "amount": 1312.4999999999998
+        }
+      }
+    ],
+    "multi": [
+      {
+        "amounts": [
+          {
+            "currency": "GBP",
+            "amount": 1600.0
+          }
+        ],
+        "target": "GBP",
+        "multiConverted": {
+          "currency": "GBP",
+          "amount": 1600.0
+        }
+      },
+      {
+        "amounts": [
+          {
+            "currency": "GBP",
+            "amount": 1600.0
+          }
+        ],
+        "target": "USD",
+        "multiConverted": {
+          "currency": "USD",
+          "amount": 2560.0
+        }
+      },
+      {
+        "amounts": [
+          {
+            "currency": "GBP",
+            "amount": 1600.0
+          }
+        ],
+        "target": "EUR",
+        "multiConverted": {
+          "currency": "EUR",
+          "amount": 2240.0
+        }
+      },
+      {
+        "amounts": [
+          {
+            "currency": "EUR",
+            "amount": 1200.0
+          },
+          {
+            "currency": "GBP",
+            "amount": 1600.0
+          },
+          {
+            "currency": "USD",
+            "amount": 1500.0
+          }
+        ],
+        "target": "GBP",
+        "multiConverted": {
+          "currency": "GBP",
+          "amount": 3394.642857142857
+        }
+      },
+      {
+        "amounts": [
+          {
+            "currency": "EUR",
+            "amount": 1200.0
+          },
+          {
+            "currency": "GBP",
+            "amount": 1600.0
+          },
+          {
+            "currency": "USD",
+            "amount": 1500.0
+          }
+        ],
+        "target": "USD",
+        "multiConverted": {
+          "currency": "USD",
+          "amount": 5431.428571428572
+        }
+      },
+      {
+        "amounts": [
+          {
+            "currency": "EUR",
+            "amount": 1200.0
+          },
+          {
+            "currency": "GBP",
+            "amount": 1600.0
+          },
+          {
+            "currency": "USD",
+            "amount": 1500.0
+          }
+        ],
+        "target": "EUR",
+        "multiConverted": {
+          "currency": "EUR",
+          "amount": 4752.5
+        }
+      }
+    ],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "zero-rate-connected-matrix",
+    "source": "FxMatrixTest.streamEntriesToMatrix",
+    "matrix": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      },
+      {
+        "pair": "EUR/USD",
+        "rate": 1.4
+      },
+      {
+        "pair": "CHF/AUD",
+        "rate": 1.2
+      },
+      {
+        "pair": "SEK/AUD",
+        "rate": 0.1
+      },
+      {
+        "pair": "JPY/CAD",
+        "rate": 0.0
+      },
+      {
+        "pair": "EUR/CHF",
+        "rate": 1.2
+      },
+      {
+        "pair": "JPY/USD",
+        "rate": 0.008
+      }
+    ],
+    "matrixState": {
+      "currencies": ["GBP", "USD", "EUR", "CHF", "AUD", "SEK", "JPY", "CAD"],
+      "rates": [
+        [1.0, 1.6, 1.142857142857143, 1.3714285714285717, 1.645714285714286, 16.45714285714286, 200.0, 0.0],
+        [0.625, 1.0, 0.7142857142857143, 0.8571428571428571, 1.0285714285714285, 10.285714285714285, 125.0, 0.0],
+        [0.8749999999999999, 1.4, 1.0, 1.2, 1.44, 14.399999999999999, 175.0, 0.0],
+        [0.7291666666666665, 1.1666666666666667, 0.8333333333333334, 1.0, 1.2, 12.0, 145.83333333333334, 0.0],
+        [0.6076388888888888, 0.9722222222222223, 0.6944444444444444, 0.8333333333333334, 1.0, 10.0, 121.52777777777779, 0.0],
+        [0.06076388888888888, 0.09722222222222224, 0.06944444444444445, 0.08333333333333333, 0.1, 1.0, 12.15277777777778, 0.0],
+        [0.005, 0.008, 0.005714285714285714, 0.006857142857142857, 0.008228571428571429, 0.08228571428571427, 1.0, 0.0],
+        ["Infinity", "Infinity", "Infinity", "Infinity", "Infinity", "Infinity", "Infinity", 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 1.6
+      },
+      {
+        "base": "EUR",
+        "counter": "USD",
+        "fxRate": 1.4
+      },
+      {
+        "base": "JPY",
+        "counter": "CAD",
+        "fxRate": 0.0
+      },
+      {
+        "base": "CAD",
+        "counter": "JPY",
+        "fxRate": "Infinity"
+      },
+      {
+        "base": "CAD",
+        "counter": "USD",
+        "fxRate": "Infinity"
+      },
+      {
+        "base": "SEK",
+        "counter": "CHF",
+        "fxRate": 0.08333333333333333
+      }
+    ],
+    "conversions": [
+      {
+        "currency": "JPY",
+        "amount": 1000.0,
+        "target": "CAD",
+        "converted": {
+          "currency": "CAD",
+          "amount": 0.0
+        }
+      },
+      {
+        "currency": "CAD",
+        "amount": 1000.0,
+        "target": "JPY",
+        "converted": {
+          "currency": "JPY",
+          "amount": "Infinity"
+        }
+      }
+    ],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "shifted-zero-rate-connected-matrix",
+    "source": "FxMatrixTest.streamPairsToMatrix",
+    "matrix": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.616
+      },
+      {
+        "pair": "EUR/USD",
+        "rate": 1.414
+      },
+      {
+        "pair": "CHF/AUD",
+        "rate": 1.212
+      },
+      {
+        "pair": "SEK/AUD",
+        "rate": 0.101
+      },
+      {
+        "pair": "JPY/CAD",
+        "rate": 0.0
+      },
+      {
+        "pair": "EUR/CHF",
+        "rate": 1.212
+      },
+      {
+        "pair": "JPY/USD",
+        "rate": 0.00808
+      }
+    ],
+    "matrixState": {
+      "currencies": ["GBP", "USD", "EUR", "CHF", "AUD", "SEK", "JPY", "CAD"],
+      "rates": [
+        [1.0, 1.616, 1.142857142857143, 1.3851428571428572, 1.678793142857143, 16.621714285714287, 200.0, 0.0],
+        [0.6188118811881188, 1.0, 0.7072135785007072, 0.8571428571428571, 1.0388571428571427, 10.285714285714285, 123.76237623762376, 0.0],
+        [0.8749999999999999, 1.414, 1.0, 1.212, 1.468944, 14.544, 174.99999999999997, 0.0],
+        [0.7219471947194719, 1.1666666666666667, 0.8250825082508251, 1.0, 1.212, 12.0, 144.3894389438944, 0.0],
+        [0.5956660022437887, 0.9625962596259627, 0.6807611454214728, 0.8250825082508251, 1.0, 9.900990099009901, 119.13320044875776, 0.0],
+        [0.06016226622662266, 0.09722222222222224, 0.06875687568756876, 0.08333333333333333, 0.101, 1.0, 12.032453245324534, 0.0],
+        [0.005, 0.00808, 0.005714285714285715, 0.006925714285714286, 0.008393965714285714, 0.08310857142857142, 1.0, 0.0],
+        ["Infinity", "Infinity", "Infinity", "Infinity", "Infinity", "Infinity", "Infinity", 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 1.616
+      },
+      {
+        "base": "EUR",
+        "counter": "USD",
+        "fxRate": 1.414
+      },
+      {
+        "base": "JPY",
+        "counter": "CAD",
+        "fxRate": 0.0
+      },
+      {
+        "base": "CAD",
+        "counter": "JPY",
+        "fxRate": "Infinity"
+      },
+      {
+        "base": "SEK",
+        "counter": "CHF",
+        "fxRate": 0.08333333333333333
+      },
+      {
+        "base": "CHF",
+        "counter": "AUD",
+        "fxRate": 1.212
+      }
+    ],
+    "conversions": [],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "resize-nine-currency-matrix",
+    "source": "FxMatrixTest.addMultipleRatesSingle",
+    "matrix": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      },
+      {
+        "pair": "EUR/USD",
+        "rate": 1.4
+      },
+      {
+        "pair": "EUR/CHF",
+        "rate": 1.2
+      },
+      {
+        "pair": "EUR/CHF",
+        "rate": 1.2
+      },
+      {
+        "pair": "CHF/AUD",
+        "rate": 1.2
+      },
+      {
+        "pair": "SEK/AUD",
+        "rate": 0.16
+      },
+      {
+        "pair": "JPY/USD",
+        "rate": 0.0084
+      },
+      {
+        "pair": "JPY/CAD",
+        "rate": 0.01
+      },
+      {
+        "pair": "USD/NZD",
+        "rate": 1.3
+      }
+    ],
+    "matrixState": {
+      "currencies": ["GBP", "USD", "EUR", "CHF", "AUD", "SEK", "JPY", "CAD", "NZD"],
+      "rates": [
+        [1.0, 1.6, 1.142857142857143, 1.3714285714285717, 1.645714285714286, 10.285714285714286, 190.47619047619048, 1.9047619047619049, 2.08],
+        [0.625, 1.0, 0.7142857142857143, 0.8571428571428571, 1.0285714285714285, 6.428571428571428, 119.04761904761905, 1.1904761904761905, 1.3],
+        [0.8749999999999999, 1.4, 1.0, 1.2, 1.44, 9.0, 166.66666666666666, 1.6666666666666665, 1.8199999999999998],
+        [0.7291666666666665, 1.1666666666666667, 0.8333333333333334, 1.0, 1.2, 7.5, 138.8888888888889, 1.388888888888889, 1.5166666666666668],
+        [0.6076388888888888, 0.9722222222222223, 0.6944444444444444, 0.8333333333333334, 1.0, 6.25, 115.74074074074076, 1.1574074074074077, 1.263888888888889],
+        [0.09722222222222221, 0.15555555555555556, 0.1111111111111111, 0.13333333333333333, 0.16, 1.0, 18.51851851851852, 0.1851851851851852, 0.20222222222222222],
+        [0.0052499999999999995, 0.0084, 0.006, 0.007199999999999999, 0.008639999999999998, 0.054, 1.0, 0.01, 0.01092],
+        [0.525, 0.84, 0.6000000000000001, 0.7199999999999999, 0.8639999999999998, 5.3999999999999995, 100.0, 1.0, 1.092],
+        [0.4807692307692307, 0.7692307692307692, 0.5494505494505495, 0.6593406593406592, 0.7912087912087911, 4.945054945054945, 91.57509157509158, 0.9157509157509157, 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 1.6
+      },
+      {
+        "base": "USD",
+        "counter": "GBP",
+        "fxRate": 0.625
+      },
+      {
+        "base": "EUR",
+        "counter": "USD",
+        "fxRate": 1.4
+      },
+      {
+        "base": "USD",
+        "counter": "EUR",
+        "fxRate": 0.7142857142857143
+      },
+      {
+        "base": "EUR",
+        "counter": "GBP",
+        "fxRate": 0.8749999999999999
+      },
+      {
+        "base": "GBP",
+        "counter": "EUR",
+        "fxRate": 1.142857142857143
+      },
+      {
+        "base": "EUR",
+        "counter": "CHF",
+        "fxRate": 1.2
+      },
+      {
+        "base": "NZD",
+        "counter": "SEK",
+        "fxRate": 4.945054945054945
+      },
+      {
+        "base": "CAD",
+        "counter": "NZD",
+        "fxRate": 1.092
+      },
+      {
+        "base": "JPY",
+        "counter": "NZD",
+        "fxRate": 0.01092
+      },
+      {
+        "base": "NZD",
+        "counter": "NZD",
+        "fxRate": 1.0
+      }
+    ],
+    "conversions": [
+      {
+        "currency": "NZD",
+        "amount": 1000.0,
+        "target": "SEK",
+        "converted": {
+          "currency": "SEK",
+          "amount": 4945.054945054945
+        }
+      },
+      {
+        "currency": "SEK",
+        "amount": 1000.0,
+        "target": "NZD",
+        "converted": {
+          "currency": "NZD",
+          "amount": 202.22222222222223
+        }
+      }
+    ],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "empty-matrix",
+    "source": "FxMatrixTest.emptyMatrix",
+    "matrix": [],
+    "matrixState": {
+      "currencies": [],
+      "rates": []
+    },
+    "queries": [
+      {
+        "base": "USD",
+        "counter": "USD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "USD",
+        "counter": "EUR",
+        "error": "IllegalArgumentException: No FX rate found for USD/EUR, matrix only contains rates for []"
+      }
+    ],
+    "conversions": [],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "single-pair-matrix",
+    "source": "FxMatrixTest.singlePairMatrix",
+    "matrix": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      }
+    ],
+    "matrixState": {
+      "currencies": ["GBP", "USD"],
+      "rates": [
+        [1.0, 1.6],
+        [0.625, 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 1.6
+      },
+      {
+        "base": "USD",
+        "counter": "GBP",
+        "fxRate": 0.625
+      },
+      {
+        "base": "USD",
+        "counter": "EUR",
+        "error": "IllegalArgumentException: No FX rate found for USD/EUR, matrix only contains rates for [GBP, USD]"
+      }
+    ],
+    "conversions": [],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "identity-and-single-rate-conversion",
+    "source": "FxRateTest.test_fxRate_forPair",
+    "matrix": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.25
+      }
+    ],
+    "matrixState": {
+      "currencies": ["GBP", "USD"],
+      "rates": [
+        [1.0, 1.25],
+        [0.8, 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 1.25
+      },
+      {
+        "base": "USD",
+        "counter": "GBP",
+        "fxRate": 0.8
+      },
+      {
+        "base": "GBP",
+        "counter": "GBP",
+        "fxRate": 1.0
+      },
+      {
+        "base": "USD",
+        "counter": "USD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "AUD",
+        "counter": "AUD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "AUD",
+        "counter": "GBP",
+        "error": "IllegalArgumentException: No FX rate found for AUD/GBP, matrix only contains rates for [GBP, USD]"
+      },
+      {
+        "base": "GBP",
+        "counter": "AUD",
+        "error": "IllegalArgumentException: No FX rate found for GBP/AUD, matrix only contains rates for [GBP, USD]"
+      },
+      {
+        "base": "AUD",
+        "counter": "USD",
+        "error": "IllegalArgumentException: No FX rate found for AUD/USD, matrix only contains rates for [GBP, USD]"
+      },
+      {
+        "base": "USD",
+        "counter": "AUD",
+        "error": "IllegalArgumentException: No FX rate found for USD/AUD, matrix only contains rates for [GBP, USD]"
+      },
+      {
+        "base": "EUR",
+        "counter": "AUD",
+        "error": "IllegalArgumentException: No FX rate found for EUR/AUD, matrix only contains rates for [GBP, USD]"
+      }
+    ],
+    "conversions": [
+      {
+        "currency": "GBP",
+        "amount": 100.0,
+        "target": "GBP",
+        "converted": {
+          "currency": "GBP",
+          "amount": 100.0
+        }
+      },
+      {
+        "currency": "GBP",
+        "amount": 100.0,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 125.0
+        }
+      },
+      {
+        "currency": "USD",
+        "amount": 100.0,
+        "target": "GBP",
+        "converted": {
+          "currency": "GBP",
+          "amount": 80.0
+        }
+      }
+    ],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "merge-cases",
+    "source": "FxMatrixTest.merge",
+    "matrix": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      },
+      {
+        "pair": "EUR/USD",
+        "rate": 1.4
+      }
+    ],
+    "matrixState": {
+      "currencies": ["GBP", "USD", "EUR"],
+      "rates": [
+        [1.0, 1.6, 1.142857142857143],
+        [0.625, 1.0, 0.7142857142857143],
+        [0.8749999999999999, 1.4, 1.0]
+      ]
+    },
+    "queries": [],
+    "conversions": [],
+    "multi": [],
+    "crosses": [],
+    "merges": [
+      {
+        "other": [
+          {
+            "pair": "CHF/AUD",
+            "rate": 1.2
+          },
+          {
+            "pair": "SEK/AUD",
+            "rate": 0.16
+          }
+        ],
+        "error": "IllegalArgumentException: There are no currencies in common between [GBP, USD, EUR] and [CHF, AUD, SEK]"
+      },
+      {
+        "other": [
+          {
+            "pair": "GBP/USD",
+            "rate": 1.7
+          },
+          {
+            "pair": "EUR/USD",
+            "rate": 1.5
+          },
+          {
+            "pair": "EUR/CHF",
+            "rate": 1.3
+          }
+        ],
+        "merged": {
+          "currencies": ["GBP", "USD", "EUR", "CHF"],
+          "rates": [
+            [1.0, 1.6, 1.142857142857143, 1.4733333333333334],
+            [0.625, 1.0, 0.7142857142857143, 0.9208333333333334],
+            [0.8749999999999999, 1.4, 1.0, 1.2891666666666666],
+            [0.6787330316742082, 1.085972850678733, 0.7756948933419522, 1.0]
+          ]
+        }
+      },
+      {
+        "other": [
+          {
+            "pair": "EUR/CHF",
+            "rate": 1.2
+          },
+          {
+            "pair": "CHF/AUD",
+            "rate": 1.2
+          }
+        ],
+        "merged": {
+          "currencies": ["GBP", "USD", "EUR", "CHF", "AUD"],
+          "rates": [
+            [1.0, 1.6, 1.142857142857143, 1.3714285714285717, 1.645714285714286],
+            [0.625, 1.0, 0.7142857142857143, 0.8571428571428571, 1.0285714285714285],
+            [0.8749999999999999, 1.4, 1.0, 1.2, 1.44],
+            [0.7291666666666665, 1.1666666666666667, 0.8333333333333334, 1.0, 1.2],
+            [0.6076388888888888, 0.9722222222222223, 0.6944444444444444, 0.8333333333333334, 1.0]
+          ]
+        }
+      },
+      {
+        "other": [],
+        "error": "IllegalArgumentException: There are no currencies in common between [GBP, USD, EUR] and []"
+      }
+    ]
+  },
+  {
+    "id": "random-scenario-0",
+    "source": "random.seed20240117.scenario0",
+    "matrix": [
+      {
+        "pair": "USD/EUR",
+        "rate": 0.14578222000000002
+      },
+      {
+        "pair": "USD/GBP",
+        "rate": 1.27658301
+      },
+      {
+        "pair": "USD/JPY",
+        "rate": 1.25292305
+      },
+      {
+        "pair": "USD/CHF",
+        "rate": 1.63951203
+      },
+      {
+        "pair": "USD/AUD",
+        "rate": 0.82061884
+      },
+      {
+        "pair": "USD/CAD",
+        "rate": 1.43963738
+      },
+      {
+        "pair": "USD/NZD",
+        "rate": 0.23931585
+      }
+    ],
+    "matrixState": {
+      "currencies": ["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"],
+      "rates": [
+        [1.0, 0.14578222000000002, 1.27658301, 1.25292305, 1.63951203, 0.82061884, 1.43963738, 0.23931585],
+        [6.8595470695946315, 1.0, 8.756781245339793, 8.594484636055068, 11.246309940951646, 5.629073559176145, 9.875260371257893, 1.6415983375750482],
+        [0.7833411475529508, 0.11419721150761676, 1.0, 0.9814661797825431, 1.2842972350070678, 0.6428245038291713, 1.1277271973093235, 0.18746595256660983],
+        [0.7981336124353368, 0.116353689877443, 1.0188838093448755, 1.0, 1.308549659135092, 0.6549634792016956, 1.1490229826963436, 0.1910060238735332],
+        [0.6099375800249541, 0.08891805447746548, 0.7786359518203718, 0.7642048530744847, 1.0, 0.500526269392485, 0.8780889396706653, 0.14596773041061492],
+        [1.2185925441341319, 0.17764912635932173, 1.5556345379543077, 1.5268026871037959, 1.997897135776215, 1.0, 1.754331377524796, 0.2916285105031223],
+        [0.6946193631065624, 0.10126315280866076, 0.8867392773588582, 0.8703046110125314, 1.138836802084147, 0.5700177359940459, 1.0, 0.16623342330830562],
+        [4.178578226222793, 0.6091624102624211, 5.334301969551954, 5.235436975862651, 6.85082927018833, 3.429020016852206, 6.0156374097244285, 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "USD",
+        "counter": "USD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "USD",
+        "counter": "EUR",
+        "fxRate": 0.14578222000000002
+      },
+      {
+        "base": "USD",
+        "counter": "GBP",
+        "fxRate": 1.27658301
+      },
+      {
+        "base": "USD",
+        "counter": "JPY",
+        "fxRate": 1.25292305
+      },
+      {
+        "base": "USD",
+        "counter": "CHF",
+        "fxRate": 1.63951203
+      },
+      {
+        "base": "USD",
+        "counter": "AUD",
+        "fxRate": 0.82061884
+      },
+      {
+        "base": "USD",
+        "counter": "CAD",
+        "fxRate": 1.43963738
+      },
+      {
+        "base": "USD",
+        "counter": "NZD",
+        "fxRate": 0.23931585
+      },
+      {
+        "base": "EUR",
+        "counter": "USD",
+        "fxRate": 6.8595470695946315
+      },
+      {
+        "base": "EUR",
+        "counter": "EUR",
+        "fxRate": 1.0
+      },
+      {
+        "base": "EUR",
+        "counter": "GBP",
+        "fxRate": 8.756781245339793
+      },
+      {
+        "base": "EUR",
+        "counter": "JPY",
+        "fxRate": 8.594484636055068
+      },
+      {
+        "base": "EUR",
+        "counter": "CHF",
+        "fxRate": 11.246309940951646
+      },
+      {
+        "base": "EUR",
+        "counter": "AUD",
+        "fxRate": 5.629073559176145
+      },
+      {
+        "base": "EUR",
+        "counter": "CAD",
+        "fxRate": 9.875260371257893
+      },
+      {
+        "base": "EUR",
+        "counter": "NZD",
+        "fxRate": 1.6415983375750482
+      },
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 0.7833411475529508
+      },
+      {
+        "base": "GBP",
+        "counter": "EUR",
+        "fxRate": 0.11419721150761676
+      },
+      {
+        "base": "GBP",
+        "counter": "GBP",
+        "fxRate": 1.0
+      },
+      {
+        "base": "GBP",
+        "counter": "JPY",
+        "fxRate": 0.9814661797825431
+      },
+      {
+        "base": "GBP",
+        "counter": "CHF",
+        "fxRate": 1.2842972350070678
+      },
+      {
+        "base": "GBP",
+        "counter": "AUD",
+        "fxRate": 0.6428245038291713
+      },
+      {
+        "base": "GBP",
+        "counter": "CAD",
+        "fxRate": 1.1277271973093235
+      },
+      {
+        "base": "GBP",
+        "counter": "NZD",
+        "fxRate": 0.18746595256660983
+      },
+      {
+        "base": "JPY",
+        "counter": "USD",
+        "fxRate": 0.7981336124353368
+      },
+      {
+        "base": "JPY",
+        "counter": "EUR",
+        "fxRate": 0.116353689877443
+      },
+      {
+        "base": "JPY",
+        "counter": "GBP",
+        "fxRate": 1.0188838093448755
+      },
+      {
+        "base": "JPY",
+        "counter": "JPY",
+        "fxRate": 1.0
+      },
+      {
+        "base": "JPY",
+        "counter": "CHF",
+        "fxRate": 1.308549659135092
+      },
+      {
+        "base": "JPY",
+        "counter": "AUD",
+        "fxRate": 0.6549634792016956
+      },
+      {
+        "base": "JPY",
+        "counter": "CAD",
+        "fxRate": 1.1490229826963436
+      },
+      {
+        "base": "JPY",
+        "counter": "NZD",
+        "fxRate": 0.1910060238735332
+      },
+      {
+        "base": "CHF",
+        "counter": "USD",
+        "fxRate": 0.6099375800249541
+      },
+      {
+        "base": "CHF",
+        "counter": "EUR",
+        "fxRate": 0.08891805447746548
+      },
+      {
+        "base": "CHF",
+        "counter": "GBP",
+        "fxRate": 0.7786359518203718
+      },
+      {
+        "base": "CHF",
+        "counter": "JPY",
+        "fxRate": 0.7642048530744847
+      },
+      {
+        "base": "CHF",
+        "counter": "CHF",
+        "fxRate": 1.0
+      },
+      {
+        "base": "CHF",
+        "counter": "AUD",
+        "fxRate": 0.500526269392485
+      },
+      {
+        "base": "CHF",
+        "counter": "CAD",
+        "fxRate": 0.8780889396706653
+      },
+      {
+        "base": "CHF",
+        "counter": "NZD",
+        "fxRate": 0.14596773041061492
+      },
+      {
+        "base": "AUD",
+        "counter": "USD",
+        "fxRate": 1.2185925441341319
+      },
+      {
+        "base": "AUD",
+        "counter": "EUR",
+        "fxRate": 0.17764912635932173
+      },
+      {
+        "base": "AUD",
+        "counter": "GBP",
+        "fxRate": 1.5556345379543077
+      },
+      {
+        "base": "AUD",
+        "counter": "JPY",
+        "fxRate": 1.5268026871037959
+      },
+      {
+        "base": "AUD",
+        "counter": "CHF",
+        "fxRate": 1.997897135776215
+      },
+      {
+        "base": "AUD",
+        "counter": "AUD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "AUD",
+        "counter": "CAD",
+        "fxRate": 1.754331377524796
+      },
+      {
+        "base": "AUD",
+        "counter": "NZD",
+        "fxRate": 0.2916285105031223
+      },
+      {
+        "base": "CAD",
+        "counter": "USD",
+        "fxRate": 0.6946193631065624
+      },
+      {
+        "base": "CAD",
+        "counter": "EUR",
+        "fxRate": 0.10126315280866076
+      },
+      {
+        "base": "CAD",
+        "counter": "GBP",
+        "fxRate": 0.8867392773588582
+      },
+      {
+        "base": "CAD",
+        "counter": "JPY",
+        "fxRate": 0.8703046110125314
+      },
+      {
+        "base": "CAD",
+        "counter": "CHF",
+        "fxRate": 1.138836802084147
+      },
+      {
+        "base": "CAD",
+        "counter": "AUD",
+        "fxRate": 0.5700177359940459
+      },
+      {
+        "base": "CAD",
+        "counter": "CAD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "CAD",
+        "counter": "NZD",
+        "fxRate": 0.16623342330830562
+      },
+      {
+        "base": "NZD",
+        "counter": "USD",
+        "fxRate": 4.178578226222793
+      },
+      {
+        "base": "NZD",
+        "counter": "EUR",
+        "fxRate": 0.6091624102624211
+      },
+      {
+        "base": "NZD",
+        "counter": "GBP",
+        "fxRate": 5.334301969551954
+      },
+      {
+        "base": "NZD",
+        "counter": "JPY",
+        "fxRate": 5.235436975862651
+      },
+      {
+        "base": "NZD",
+        "counter": "CHF",
+        "fxRate": 6.85082927018833
+      },
+      {
+        "base": "NZD",
+        "counter": "AUD",
+        "fxRate": 3.429020016852206
+      },
+      {
+        "base": "NZD",
+        "counter": "CAD",
+        "fxRate": 6.0156374097244285
+      },
+      {
+        "base": "NZD",
+        "counter": "NZD",
+        "fxRate": 1.0
+      }
+    ],
+    "conversions": [
+      {
+        "currency": "USD",
+        "amount": 4.769482656E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 4.769482656E7
+        }
+      },
+      {
+        "currency": "EUR",
+        "amount": -3.256739185E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -2.233975573290076E8
+        }
+      },
+      {
+        "currency": "GBP",
+        "amount": -1.257556789E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -9850959.782082641
+        }
+      },
+      {
+        "currency": "JPY",
+        "amount": 4.836157363E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 3.859899746436942E7
+        }
+      },
+      {
+        "currency": "CHF",
+        "amount": 1.825503307E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 1.1134430693991309E7
+        }
+      },
+      {
+        "currency": "AUD",
+        "amount": 9.395491839E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 1.1449276303478484E8
+        }
+      },
+      {
+        "currency": "CAD",
+        "amount": -7.379570311E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -5.125992429426916E7
+        }
+      },
+      {
+        "currency": "NZD",
+        "amount": -5.731878461E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -2.3951102532490015E8
+        }
+      }
+    ],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "random-scenario-1",
+    "source": "random.seed20240117.scenario1",
+    "matrix": [
+      {
+        "pair": "USD/EUR",
+        "rate": 1.3509056099999999
+      },
+      {
+        "pair": "USD/GBP",
+        "rate": 0.68683435
+      },
+      {
+        "pair": "USD/JPY",
+        "rate": 1.7706308599999998
+      },
+      {
+        "pair": "USD/CHF",
+        "rate": 1.41245793
+      },
+      {
+        "pair": "USD/AUD",
+        "rate": 1.82526832
+      },
+      {
+        "pair": "USD/CAD",
+        "rate": 1.4445069099999999
+      },
+      {
+        "pair": "USD/NZD",
+        "rate": 0.90373576
+      }
+    ],
+    "matrixState": {
+      "currencies": ["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"],
+      "rates": [
+        [1.0, 1.3509056099999999, 0.68683435, 1.7706308599999998, 1.41245793, 1.82526832, 1.4445069099999999, 0.90373576],
+        [0.7402441685026389, 1.0, 0.5084251223148004, 1.3106991686858123, 1.0455637459378084, 1.3511442298326084, 1.069287816489266, 0.6689851262073004],
+        [1.4559551367807972, 1.9668579621854962, 1.0, 2.5779590959596, 2.056475378670272, 2.6575087865072557, 2.1031372557298567, 1.3157987220644978],
+        [0.5647704570110114, 0.762951578738439, 0.387903749740361, 1.0, 0.797714510634927, 1.030857623254121, 0.8158148277162638, 0.5104032581923936],
+        [0.7079856884657797, 0.956421838348134, 0.4862688901466963, 1.2535813084358556, 1.0, 1.292263848169977, 1.0226902191699259, 0.6398319842347446],
+        [0.5478646558660483, 0.740113437130164, 0.376292264799731, 0.970066066779705, 0.7738357777447208, 1.0, 0.7913942811432787, 0.4951248811462416],
+        [0.6922777544899388, 0.9352019022186608, 0.4754801415245567, 1.225768355791389, 0.9778132040919072, 1.263592653911223, 1.0, 0.6256361625850583],
+        [1.1065181264930803, 1.4948015446461913, 0.7599946581730925, 1.9592351419180314, 1.5629103024538942, 2.0196924817935717, 1.5983730797595082, 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "USD",
+        "counter": "USD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "USD",
+        "counter": "EUR",
+        "fxRate": 1.3509056099999999
+      },
+      {
+        "base": "USD",
+        "counter": "GBP",
+        "fxRate": 0.68683435
+      },
+      {
+        "base": "USD",
+        "counter": "JPY",
+        "fxRate": 1.7706308599999998
+      },
+      {
+        "base": "USD",
+        "counter": "CHF",
+        "fxRate": 1.41245793
+      },
+      {
+        "base": "USD",
+        "counter": "AUD",
+        "fxRate": 1.82526832
+      },
+      {
+        "base": "USD",
+        "counter": "CAD",
+        "fxRate": 1.4445069099999999
+      },
+      {
+        "base": "USD",
+        "counter": "NZD",
+        "fxRate": 0.90373576
+      },
+      {
+        "base": "EUR",
+        "counter": "USD",
+        "fxRate": 0.7402441685026389
+      },
+      {
+        "base": "EUR",
+        "counter": "EUR",
+        "fxRate": 1.0
+      },
+      {
+        "base": "EUR",
+        "counter": "GBP",
+        "fxRate": 0.5084251223148004
+      },
+      {
+        "base": "EUR",
+        "counter": "JPY",
+        "fxRate": 1.3106991686858123
+      },
+      {
+        "base": "EUR",
+        "counter": "CHF",
+        "fxRate": 1.0455637459378084
+      },
+      {
+        "base": "EUR",
+        "counter": "AUD",
+        "fxRate": 1.3511442298326084
+      },
+      {
+        "base": "EUR",
+        "counter": "CAD",
+        "fxRate": 1.069287816489266
+      },
+      {
+        "base": "EUR",
+        "counter": "NZD",
+        "fxRate": 0.6689851262073004
+      },
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 1.4559551367807972
+      },
+      {
+        "base": "GBP",
+        "counter": "EUR",
+        "fxRate": 1.9668579621854962
+      },
+      {
+        "base": "GBP",
+        "counter": "GBP",
+        "fxRate": 1.0
+      },
+      {
+        "base": "GBP",
+        "counter": "JPY",
+        "fxRate": 2.5779590959596
+      },
+      {
+        "base": "GBP",
+        "counter": "CHF",
+        "fxRate": 2.056475378670272
+      },
+      {
+        "base": "GBP",
+        "counter": "AUD",
+        "fxRate": 2.6575087865072557
+      },
+      {
+        "base": "GBP",
+        "counter": "CAD",
+        "fxRate": 2.1031372557298567
+      },
+      {
+        "base": "GBP",
+        "counter": "NZD",
+        "fxRate": 1.3157987220644978
+      },
+      {
+        "base": "JPY",
+        "counter": "USD",
+        "fxRate": 0.5647704570110114
+      },
+      {
+        "base": "JPY",
+        "counter": "EUR",
+        "fxRate": 0.762951578738439
+      },
+      {
+        "base": "JPY",
+        "counter": "GBP",
+        "fxRate": 0.387903749740361
+      },
+      {
+        "base": "JPY",
+        "counter": "JPY",
+        "fxRate": 1.0
+      },
+      {
+        "base": "JPY",
+        "counter": "CHF",
+        "fxRate": 0.797714510634927
+      },
+      {
+        "base": "JPY",
+        "counter": "AUD",
+        "fxRate": 1.030857623254121
+      },
+      {
+        "base": "JPY",
+        "counter": "CAD",
+        "fxRate": 0.8158148277162638
+      },
+      {
+        "base": "JPY",
+        "counter": "NZD",
+        "fxRate": 0.5104032581923936
+      },
+      {
+        "base": "CHF",
+        "counter": "USD",
+        "fxRate": 0.7079856884657797
+      },
+      {
+        "base": "CHF",
+        "counter": "EUR",
+        "fxRate": 0.956421838348134
+      },
+      {
+        "base": "CHF",
+        "counter": "GBP",
+        "fxRate": 0.4862688901466963
+      },
+      {
+        "base": "CHF",
+        "counter": "JPY",
+        "fxRate": 1.2535813084358556
+      },
+      {
+        "base": "CHF",
+        "counter": "CHF",
+        "fxRate": 1.0
+      },
+      {
+        "base": "CHF",
+        "counter": "AUD",
+        "fxRate": 1.292263848169977
+      },
+      {
+        "base": "CHF",
+        "counter": "CAD",
+        "fxRate": 1.0226902191699259
+      },
+      {
+        "base": "CHF",
+        "counter": "NZD",
+        "fxRate": 0.6398319842347446
+      },
+      {
+        "base": "AUD",
+        "counter": "USD",
+        "fxRate": 0.5478646558660483
+      },
+      {
+        "base": "AUD",
+        "counter": "EUR",
+        "fxRate": 0.740113437130164
+      },
+      {
+        "base": "AUD",
+        "counter": "GBP",
+        "fxRate": 0.376292264799731
+      },
+      {
+        "base": "AUD",
+        "counter": "JPY",
+        "fxRate": 0.970066066779705
+      },
+      {
+        "base": "AUD",
+        "counter": "CHF",
+        "fxRate": 0.7738357777447208
+      },
+      {
+        "base": "AUD",
+        "counter": "AUD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "AUD",
+        "counter": "CAD",
+        "fxRate": 0.7913942811432787
+      },
+      {
+        "base": "AUD",
+        "counter": "NZD",
+        "fxRate": 0.4951248811462416
+      },
+      {
+        "base": "CAD",
+        "counter": "USD",
+        "fxRate": 0.6922777544899388
+      },
+      {
+        "base": "CAD",
+        "counter": "EUR",
+        "fxRate": 0.9352019022186608
+      },
+      {
+        "base": "CAD",
+        "counter": "GBP",
+        "fxRate": 0.4754801415245567
+      },
+      {
+        "base": "CAD",
+        "counter": "JPY",
+        "fxRate": 1.225768355791389
+      },
+      {
+        "base": "CAD",
+        "counter": "CHF",
+        "fxRate": 0.9778132040919072
+      },
+      {
+        "base": "CAD",
+        "counter": "AUD",
+        "fxRate": 1.263592653911223
+      },
+      {
+        "base": "CAD",
+        "counter": "CAD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "CAD",
+        "counter": "NZD",
+        "fxRate": 0.6256361625850583
+      },
+      {
+        "base": "NZD",
+        "counter": "USD",
+        "fxRate": 1.1065181264930803
+      },
+      {
+        "base": "NZD",
+        "counter": "EUR",
+        "fxRate": 1.4948015446461913
+      },
+      {
+        "base": "NZD",
+        "counter": "GBP",
+        "fxRate": 0.7599946581730925
+      },
+      {
+        "base": "NZD",
+        "counter": "JPY",
+        "fxRate": 1.9592351419180314
+      },
+      {
+        "base": "NZD",
+        "counter": "CHF",
+        "fxRate": 1.5629103024538942
+      },
+      {
+        "base": "NZD",
+        "counter": "AUD",
+        "fxRate": 2.0196924817935717
+      },
+      {
+        "base": "NZD",
+        "counter": "CAD",
+        "fxRate": 1.5983730797595082
+      },
+      {
+        "base": "NZD",
+        "counter": "NZD",
+        "fxRate": 1.0
+      }
+    ],
+    "conversions": [
+      {
+        "currency": "USD",
+        "amount": 2.6468684E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 2.6468684E7
+        }
+      },
+      {
+        "currency": "EUR",
+        "amount": -6.654108734E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -4.9256651869259775E7
+        }
+      },
+      {
+        "currency": "GBP",
+        "amount": -5.214722867E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -7.592402545096937E7
+        }
+      },
+      {
+        "currency": "JPY",
+        "amount": 9.138468779E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 5.161137188696689E7
+        }
+      },
+      {
+        "currency": "CHF",
+        "amount": 5.707666225E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 4.040946001839503E7
+        }
+      },
+      {
+        "currency": "AUD",
+        "amount": 4.471028709E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 2.4495186050235074E7
+        }
+      },
+      {
+        "currency": "CAD",
+        "amount": 9.777896607E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 6.76902030672875E7
+        }
+      },
+      {
+        "currency": "NZD",
+        "amount": 4.920055877E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 5.44413101125931E7
+        }
+      }
+    ],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "random-scenario-2",
+    "source": "random.seed20240117.scenario2",
+    "matrix": [
+      {
+        "pair": "USD/EUR",
+        "rate": 0.8029064
+      },
+      {
+        "pair": "USD/GBP",
+        "rate": 0.96724298
+      },
+      {
+        "pair": "USD/JPY",
+        "rate": 1.9869557999999998
+      },
+      {
+        "pair": "USD/CHF",
+        "rate": 0.93672049
+      },
+      {
+        "pair": "USD/AUD",
+        "rate": 0.65692866
+      },
+      {
+        "pair": "USD/CAD",
+        "rate": 1.04616954
+      },
+      {
+        "pair": "USD/NZD",
+        "rate": 0.83808233
+      }
+    ],
+    "matrixState": {
+      "currencies": ["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"],
+      "rates": [
+        [1.0, 0.8029064, 0.96724298, 1.9869557999999998, 0.93672049, 0.65692866, 1.04616954, 0.83808233],
+        [1.245475188639672, 1.0, 1.2046771329758985, 2.4747041498236904, 1.166662128985396, 0.818188346736307, 1.3029782051805787, 1.0438107480523258],
+        [1.0338663817441198, 0.8300979346471969, 1.0, 2.054246803631493, 0.968443823701879, 0.6791764567782131, 1.0815995170107102, 0.8664651461207814],
+        [0.5032824585227311, 0.40408870695563537, 0.4867964249632528, 1.0, 0.4714349911558174, 0.33062067107884335, 0.5265187781227947, 0.42179213548685884],
+        [1.0675543138807606, 0.8571461909624717, 1.0325844158698823, 2.121183235780398, 1.0, 0.7013070248949075, 1.116842805477651, 0.8946984067787391],
+        [1.522235306342092, 1.222212469768026, 1.4723714139675377, 3.0246142709011963, 1.4259090020520646, 1.0, 1.5925162102076653, 1.2757585123474442],
+        [0.9558680135152855, 0.7674725456067093, 0.924556625879205, 1.8992674934886749, 0.895381153995365, 0.6279370932554584, 1.0, 0.8010960919393619],
+        [1.1932001954986928, 0.9580280734471518, 1.1541145128307382, 2.3708360490072615, 1.1176950717956315, 0.7838474055406943, 1.2482896996527775, 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "USD",
+        "counter": "USD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "USD",
+        "counter": "EUR",
+        "fxRate": 0.8029064
+      },
+      {
+        "base": "USD",
+        "counter": "GBP",
+        "fxRate": 0.96724298
+      },
+      {
+        "base": "USD",
+        "counter": "JPY",
+        "fxRate": 1.9869557999999998
+      },
+      {
+        "base": "USD",
+        "counter": "CHF",
+        "fxRate": 0.93672049
+      },
+      {
+        "base": "USD",
+        "counter": "AUD",
+        "fxRate": 0.65692866
+      },
+      {
+        "base": "USD",
+        "counter": "CAD",
+        "fxRate": 1.04616954
+      },
+      {
+        "base": "USD",
+        "counter": "NZD",
+        "fxRate": 0.83808233
+      },
+      {
+        "base": "EUR",
+        "counter": "USD",
+        "fxRate": 1.245475188639672
+      },
+      {
+        "base": "EUR",
+        "counter": "EUR",
+        "fxRate": 1.0
+      },
+      {
+        "base": "EUR",
+        "counter": "GBP",
+        "fxRate": 1.2046771329758985
+      },
+      {
+        "base": "EUR",
+        "counter": "JPY",
+        "fxRate": 2.4747041498236904
+      },
+      {
+        "base": "EUR",
+        "counter": "CHF",
+        "fxRate": 1.166662128985396
+      },
+      {
+        "base": "EUR",
+        "counter": "AUD",
+        "fxRate": 0.818188346736307
+      },
+      {
+        "base": "EUR",
+        "counter": "CAD",
+        "fxRate": 1.3029782051805787
+      },
+      {
+        "base": "EUR",
+        "counter": "NZD",
+        "fxRate": 1.0438107480523258
+      },
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 1.0338663817441198
+      },
+      {
+        "base": "GBP",
+        "counter": "EUR",
+        "fxRate": 0.8300979346471969
+      },
+      {
+        "base": "GBP",
+        "counter": "GBP",
+        "fxRate": 1.0
+      },
+      {
+        "base": "GBP",
+        "counter": "JPY",
+        "fxRate": 2.054246803631493
+      },
+      {
+        "base": "GBP",
+        "counter": "CHF",
+        "fxRate": 0.968443823701879
+      },
+      {
+        "base": "GBP",
+        "counter": "AUD",
+        "fxRate": 0.6791764567782131
+      },
+      {
+        "base": "GBP",
+        "counter": "CAD",
+        "fxRate": 1.0815995170107102
+      },
+      {
+        "base": "GBP",
+        "counter": "NZD",
+        "fxRate": 0.8664651461207814
+      },
+      {
+        "base": "JPY",
+        "counter": "USD",
+        "fxRate": 0.5032824585227311
+      },
+      {
+        "base": "JPY",
+        "counter": "EUR",
+        "fxRate": 0.40408870695563537
+      },
+      {
+        "base": "JPY",
+        "counter": "GBP",
+        "fxRate": 0.4867964249632528
+      },
+      {
+        "base": "JPY",
+        "counter": "JPY",
+        "fxRate": 1.0
+      },
+      {
+        "base": "JPY",
+        "counter": "CHF",
+        "fxRate": 0.4714349911558174
+      },
+      {
+        "base": "JPY",
+        "counter": "AUD",
+        "fxRate": 0.33062067107884335
+      },
+      {
+        "base": "JPY",
+        "counter": "CAD",
+        "fxRate": 0.5265187781227947
+      },
+      {
+        "base": "JPY",
+        "counter": "NZD",
+        "fxRate": 0.42179213548685884
+      },
+      {
+        "base": "CHF",
+        "counter": "USD",
+        "fxRate": 1.0675543138807606
+      },
+      {
+        "base": "CHF",
+        "counter": "EUR",
+        "fxRate": 0.8571461909624717
+      },
+      {
+        "base": "CHF",
+        "counter": "GBP",
+        "fxRate": 1.0325844158698823
+      },
+      {
+        "base": "CHF",
+        "counter": "JPY",
+        "fxRate": 2.121183235780398
+      },
+      {
+        "base": "CHF",
+        "counter": "CHF",
+        "fxRate": 1.0
+      },
+      {
+        "base": "CHF",
+        "counter": "AUD",
+        "fxRate": 0.7013070248949075
+      },
+      {
+        "base": "CHF",
+        "counter": "CAD",
+        "fxRate": 1.116842805477651
+      },
+      {
+        "base": "CHF",
+        "counter": "NZD",
+        "fxRate": 0.8946984067787391
+      },
+      {
+        "base": "AUD",
+        "counter": "USD",
+        "fxRate": 1.522235306342092
+      },
+      {
+        "base": "AUD",
+        "counter": "EUR",
+        "fxRate": 1.222212469768026
+      },
+      {
+        "base": "AUD",
+        "counter": "GBP",
+        "fxRate": 1.4723714139675377
+      },
+      {
+        "base": "AUD",
+        "counter": "JPY",
+        "fxRate": 3.0246142709011963
+      },
+      {
+        "base": "AUD",
+        "counter": "CHF",
+        "fxRate": 1.4259090020520646
+      },
+      {
+        "base": "AUD",
+        "counter": "AUD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "AUD",
+        "counter": "CAD",
+        "fxRate": 1.5925162102076653
+      },
+      {
+        "base": "AUD",
+        "counter": "NZD",
+        "fxRate": 1.2757585123474442
+      },
+      {
+        "base": "CAD",
+        "counter": "USD",
+        "fxRate": 0.9558680135152855
+      },
+      {
+        "base": "CAD",
+        "counter": "EUR",
+        "fxRate": 0.7674725456067093
+      },
+      {
+        "base": "CAD",
+        "counter": "GBP",
+        "fxRate": 0.924556625879205
+      },
+      {
+        "base": "CAD",
+        "counter": "JPY",
+        "fxRate": 1.8992674934886749
+      },
+      {
+        "base": "CAD",
+        "counter": "CHF",
+        "fxRate": 0.895381153995365
+      },
+      {
+        "base": "CAD",
+        "counter": "AUD",
+        "fxRate": 0.6279370932554584
+      },
+      {
+        "base": "CAD",
+        "counter": "CAD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "CAD",
+        "counter": "NZD",
+        "fxRate": 0.8010960919393619
+      },
+      {
+        "base": "NZD",
+        "counter": "USD",
+        "fxRate": 1.1932001954986928
+      },
+      {
+        "base": "NZD",
+        "counter": "EUR",
+        "fxRate": 0.9580280734471518
+      },
+      {
+        "base": "NZD",
+        "counter": "GBP",
+        "fxRate": 1.1541145128307382
+      },
+      {
+        "base": "NZD",
+        "counter": "JPY",
+        "fxRate": 2.3708360490072615
+      },
+      {
+        "base": "NZD",
+        "counter": "CHF",
+        "fxRate": 1.1176950717956315
+      },
+      {
+        "base": "NZD",
+        "counter": "AUD",
+        "fxRate": 0.7838474055406943
+      },
+      {
+        "base": "NZD",
+        "counter": "CAD",
+        "fxRate": 1.2482896996527775
+      },
+      {
+        "base": "NZD",
+        "counter": "NZD",
+        "fxRate": 1.0
+      }
+    ],
+    "conversions": [
+      {
+        "currency": "USD",
+        "amount": -7.012621866E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -7.012621866E7
+        }
+      },
+      {
+        "currency": "EUR",
+        "amount": -9.141942464E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -1.1386062514883427E8
+        }
+      },
+      {
+        "currency": "GBP",
+        "amount": -8.477886237E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -8.765001568685462E7
+        }
+      },
+      {
+        "currency": "JPY",
+        "amount": 9.739089774E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 4.9015130452323094E7
+        }
+      },
+      {
+        "currency": "CHF",
+        "amount": 7066424.99,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 7543792.48178931
+        }
+      },
+      {
+        "currency": "AUD",
+        "amount": -9.060469884E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -1.379216714947404E8
+        }
+      },
+      {
+        "currency": "CAD",
+        "amount": 7.360393045E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 7.035564278615874E7
+        }
+      },
+      {
+        "currency": "NZD",
+        "amount": 5.098417306E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 6.083432526253119E7
+        }
+      }
+    ],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "random-scenario-3",
+    "source": "random.seed20240117.scenario3",
+    "matrix": [
+      {
+        "pair": "USD/EUR",
+        "rate": 0.7002036
+      },
+      {
+        "pair": "USD/GBP",
+        "rate": 0.29355885
+      },
+      {
+        "pair": "USD/JPY",
+        "rate": 0.00640324
+      },
+      {
+        "pair": "USD/CHF",
+        "rate": 0.72829139
+      },
+      {
+        "pair": "USD/AUD",
+        "rate": 1.18303611
+      },
+      {
+        "pair": "USD/CAD",
+        "rate": 0.47712561
+      },
+      {
+        "pair": "USD/NZD",
+        "rate": 0.6257813
+      }
+    ],
+    "matrixState": {
+      "currencies": ["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD"],
+      "rates": [
+        [1.0, 0.7002036, 0.29355885, 0.00640324, 0.72829139, 1.18303611, 0.47712561, 0.6257813],
+        [1.4281560391863166, 1.0, 0.41924784448409, 0.00914482587635939, 1.040113746915897, 1.6895601650719876, 0.6814098213719552, 0.8937133428048641],
+        [3.406471990198899, 2.385223950836434, 1.0, 0.0218124577065212, 2.4809042207380227, 4.029979372108864, 1.6253150262715637, 2.131706470440254],
+        [156.1709384624034, 109.35145332675333, 45.84536109844391, 1.0, 113.73794985038823, 184.7558595336111, 74.51315427814669, 97.7288528932228],
+        [1.3730767845546, 0.9614333076215552, 0.403078841835546, 0.008792140189931396, 1.0, 1.624399417930782, 0.6551300984074521, 0.8592457752383974],
+        [0.8452827361288237, 0.5918700148552524, 0.24814022794283092, 0.005412548227289529, 0.6156121388382642, 1.0, 0.403306041097934, 0.5289621294822522],
+        [2.0958841425426735, 1.4675456217912932, 0.6152653386180632, 0.013420449176894948, 1.5264143754513615, 2.47950662300437, 1.0, 1.3115651033697395],
+        [1.5980023691983125, 1.1189270117211876, 0.46910773779913206, 0.010232392690545404, 1.1638113666867322, 1.8904945066271557, 0.7624478551851901, 1.0]
+      ]
+    },
+    "queries": [
+      {
+        "base": "USD",
+        "counter": "USD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "USD",
+        "counter": "EUR",
+        "fxRate": 0.7002036
+      },
+      {
+        "base": "USD",
+        "counter": "GBP",
+        "fxRate": 0.29355885
+      },
+      {
+        "base": "USD",
+        "counter": "JPY",
+        "fxRate": 0.00640324
+      },
+      {
+        "base": "USD",
+        "counter": "CHF",
+        "fxRate": 0.72829139
+      },
+      {
+        "base": "USD",
+        "counter": "AUD",
+        "fxRate": 1.18303611
+      },
+      {
+        "base": "USD",
+        "counter": "CAD",
+        "fxRate": 0.47712561
+      },
+      {
+        "base": "USD",
+        "counter": "NZD",
+        "fxRate": 0.6257813
+      },
+      {
+        "base": "EUR",
+        "counter": "USD",
+        "fxRate": 1.4281560391863166
+      },
+      {
+        "base": "EUR",
+        "counter": "EUR",
+        "fxRate": 1.0
+      },
+      {
+        "base": "EUR",
+        "counter": "GBP",
+        "fxRate": 0.41924784448409
+      },
+      {
+        "base": "EUR",
+        "counter": "JPY",
+        "fxRate": 0.00914482587635939
+      },
+      {
+        "base": "EUR",
+        "counter": "CHF",
+        "fxRate": 1.040113746915897
+      },
+      {
+        "base": "EUR",
+        "counter": "AUD",
+        "fxRate": 1.6895601650719876
+      },
+      {
+        "base": "EUR",
+        "counter": "CAD",
+        "fxRate": 0.6814098213719552
+      },
+      {
+        "base": "EUR",
+        "counter": "NZD",
+        "fxRate": 0.8937133428048641
+      },
+      {
+        "base": "GBP",
+        "counter": "USD",
+        "fxRate": 3.406471990198899
+      },
+      {
+        "base": "GBP",
+        "counter": "EUR",
+        "fxRate": 2.385223950836434
+      },
+      {
+        "base": "GBP",
+        "counter": "GBP",
+        "fxRate": 1.0
+      },
+      {
+        "base": "GBP",
+        "counter": "JPY",
+        "fxRate": 0.0218124577065212
+      },
+      {
+        "base": "GBP",
+        "counter": "CHF",
+        "fxRate": 2.4809042207380227
+      },
+      {
+        "base": "GBP",
+        "counter": "AUD",
+        "fxRate": 4.029979372108864
+      },
+      {
+        "base": "GBP",
+        "counter": "CAD",
+        "fxRate": 1.6253150262715637
+      },
+      {
+        "base": "GBP",
+        "counter": "NZD",
+        "fxRate": 2.131706470440254
+      },
+      {
+        "base": "JPY",
+        "counter": "USD",
+        "fxRate": 156.1709384624034
+      },
+      {
+        "base": "JPY",
+        "counter": "EUR",
+        "fxRate": 109.35145332675333
+      },
+      {
+        "base": "JPY",
+        "counter": "GBP",
+        "fxRate": 45.84536109844391
+      },
+      {
+        "base": "JPY",
+        "counter": "JPY",
+        "fxRate": 1.0
+      },
+      {
+        "base": "JPY",
+        "counter": "CHF",
+        "fxRate": 113.73794985038823
+      },
+      {
+        "base": "JPY",
+        "counter": "AUD",
+        "fxRate": 184.7558595336111
+      },
+      {
+        "base": "JPY",
+        "counter": "CAD",
+        "fxRate": 74.51315427814669
+      },
+      {
+        "base": "JPY",
+        "counter": "NZD",
+        "fxRate": 97.7288528932228
+      },
+      {
+        "base": "CHF",
+        "counter": "USD",
+        "fxRate": 1.3730767845546
+      },
+      {
+        "base": "CHF",
+        "counter": "EUR",
+        "fxRate": 0.9614333076215552
+      },
+      {
+        "base": "CHF",
+        "counter": "GBP",
+        "fxRate": 0.403078841835546
+      },
+      {
+        "base": "CHF",
+        "counter": "JPY",
+        "fxRate": 0.008792140189931396
+      },
+      {
+        "base": "CHF",
+        "counter": "CHF",
+        "fxRate": 1.0
+      },
+      {
+        "base": "CHF",
+        "counter": "AUD",
+        "fxRate": 1.624399417930782
+      },
+      {
+        "base": "CHF",
+        "counter": "CAD",
+        "fxRate": 0.6551300984074521
+      },
+      {
+        "base": "CHF",
+        "counter": "NZD",
+        "fxRate": 0.8592457752383974
+      },
+      {
+        "base": "AUD",
+        "counter": "USD",
+        "fxRate": 0.8452827361288237
+      },
+      {
+        "base": "AUD",
+        "counter": "EUR",
+        "fxRate": 0.5918700148552524
+      },
+      {
+        "base": "AUD",
+        "counter": "GBP",
+        "fxRate": 0.24814022794283092
+      },
+      {
+        "base": "AUD",
+        "counter": "JPY",
+        "fxRate": 0.005412548227289529
+      },
+      {
+        "base": "AUD",
+        "counter": "CHF",
+        "fxRate": 0.6156121388382642
+      },
+      {
+        "base": "AUD",
+        "counter": "AUD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "AUD",
+        "counter": "CAD",
+        "fxRate": 0.403306041097934
+      },
+      {
+        "base": "AUD",
+        "counter": "NZD",
+        "fxRate": 0.5289621294822522
+      },
+      {
+        "base": "CAD",
+        "counter": "USD",
+        "fxRate": 2.0958841425426735
+      },
+      {
+        "base": "CAD",
+        "counter": "EUR",
+        "fxRate": 1.4675456217912932
+      },
+      {
+        "base": "CAD",
+        "counter": "GBP",
+        "fxRate": 0.6152653386180632
+      },
+      {
+        "base": "CAD",
+        "counter": "JPY",
+        "fxRate": 0.013420449176894948
+      },
+      {
+        "base": "CAD",
+        "counter": "CHF",
+        "fxRate": 1.5264143754513615
+      },
+      {
+        "base": "CAD",
+        "counter": "AUD",
+        "fxRate": 2.47950662300437
+      },
+      {
+        "base": "CAD",
+        "counter": "CAD",
+        "fxRate": 1.0
+      },
+      {
+        "base": "CAD",
+        "counter": "NZD",
+        "fxRate": 1.3115651033697395
+      },
+      {
+        "base": "NZD",
+        "counter": "USD",
+        "fxRate": 1.5980023691983125
+      },
+      {
+        "base": "NZD",
+        "counter": "EUR",
+        "fxRate": 1.1189270117211876
+      },
+      {
+        "base": "NZD",
+        "counter": "GBP",
+        "fxRate": 0.46910773779913206
+      },
+      {
+        "base": "NZD",
+        "counter": "JPY",
+        "fxRate": 0.010232392690545404
+      },
+      {
+        "base": "NZD",
+        "counter": "CHF",
+        "fxRate": 1.1638113666867322
+      },
+      {
+        "base": "NZD",
+        "counter": "AUD",
+        "fxRate": 1.8904945066271557
+      },
+      {
+        "base": "NZD",
+        "counter": "CAD",
+        "fxRate": 0.7624478551851901
+      },
+      {
+        "base": "NZD",
+        "counter": "NZD",
+        "fxRate": 1.0
+      }
+    ],
+    "conversions": [
+      {
+        "currency": "USD",
+        "amount": -1.468259182E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -1.468259182E7
+        }
+      },
+      {
+        "currency": "EUR",
+        "amount": -6.738673072E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -9.623876643879008E7
+        }
+      },
+      {
+        "currency": "GBP",
+        "amount": -5421690.11,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -1.846883549925339E7
+        }
+      },
+      {
+        "currency": "JPY",
+        "amount": -7.386957082E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -1.1536280198774368E10
+        }
+      },
+      {
+        "currency": "CHF",
+        "amount": 8.840187655E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 1.2138256440186669E8
+        }
+      },
+      {
+        "currency": "AUD",
+        "amount": -4.054356648E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -3.427077680663525E7
+        }
+      },
+      {
+        "currency": "CAD",
+        "amount": -8.691709048E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": -1.8216815165297878E8
+        }
+      },
+      {
+        "currency": "NZD",
+        "amount": 8.648353919E7,
+        "target": "USD",
+        "converted": {
+          "currency": "USD",
+          "amount": 1.3820090052227512E8
+        }
+      }
+    ],
+    "multi": [],
+    "crosses": [],
+    "merges": []
+  },
+  {
+    "id": "fx-rate-cross-rates",
+    "source": "FxRateTest.test_crossRate",
+    "matrix": [],
+    "matrixState": {
+      "currencies": [],
+      "rates": []
+    },
+    "queries": [],
+    "conversions": [],
+    "multi": [],
+    "crosses": [
+      {
+        "rate1": {
+          "pair": "EUR/USD",
+          "rate": 1.1428571428571428
+        },
+        "rate2": {
+          "pair": "USD/GBP",
+          "rate": 0.8
+        },
+        "crossRate": {
+          "pair": "EUR/GBP",
+          "rate": 0.9142857142857143
+        }
+      },
+      {
+        "rate1": {
+          "pair": "EUR/USD",
+          "rate": 1.1428571428571428
+        },
+        "rate2": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "crossRate": {
+          "pair": "EUR/GBP",
+          "rate": 0.9142857142857143
+        }
+      },
+      {
+        "rate1": {
+          "pair": "USD/EUR",
+          "rate": 0.875
+        },
+        "rate2": {
+          "pair": "USD/GBP",
+          "rate": 0.8
+        },
+        "crossRate": {
+          "pair": "EUR/GBP",
+          "rate": 0.9142857142857143
+        }
+      },
+      {
+        "rate1": {
+          "pair": "USD/EUR",
+          "rate": 0.875
+        },
+        "rate2": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "crossRate": {
+          "pair": "EUR/GBP",
+          "rate": 0.9142857142857143
+        }
+      },
+      {
+        "rate1": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "rate2": {
+          "pair": "USD/EUR",
+          "rate": 0.875
+        },
+        "crossRate": {
+          "pair": "EUR/GBP",
+          "rate": 0.9142857142857143
+        }
+      },
+      {
+        "rate1": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "rate2": {
+          "pair": "EUR/USD",
+          "rate": 1.1428571428571428
+        },
+        "crossRate": {
+          "pair": "EUR/GBP",
+          "rate": 0.9142857142857143
+        }
+      },
+      {
+        "rate1": {
+          "pair": "USD/GBP",
+          "rate": 0.8
+        },
+        "rate2": {
+          "pair": "USD/EUR",
+          "rate": 0.875
+        },
+        "crossRate": {
+          "pair": "EUR/GBP",
+          "rate": 0.9142857142857143
+        }
+      },
+      {
+        "rate1": {
+          "pair": "USD/GBP",
+          "rate": 0.8
+        },
+        "rate2": {
+          "pair": "EUR/USD",
+          "rate": 1.1428571428571428
+        },
+        "crossRate": {
+          "pair": "EUR/GBP",
+          "rate": 0.9142857142857143
+        }
+      },
+      {
+        "rate1": {
+          "pair": "GBP/GBP",
+          "rate": 1.0
+        },
+        "rate2": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "error": "IllegalArgumentException: Unable to cross when no unique common currency: GBP/GBP and GBP/USD"
+      },
+      {
+        "rate1": {
+          "pair": "USD/USD",
+          "rate": 1.0
+        },
+        "rate2": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "error": "IllegalArgumentException: Unable to cross when no unique common currency: USD/USD and GBP/USD"
+      },
+      {
+        "rate1": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "rate2": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "error": "IllegalArgumentException: Unable to cross when no unique common currency: GBP/USD and GBP/USD"
+      },
+      {
+        "rate1": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "rate2": {
+          "pair": "USD/GBP",
+          "rate": 0.8
+        },
+        "error": "IllegalArgumentException: Unable to cross when no unique common currency: GBP/USD and USD/GBP"
+      },
+      {
+        "rate1": {
+          "pair": "GBP/USD",
+          "rate": 1.25
+        },
+        "rate2": {
+          "pair": "EUR/CAD",
+          "rate": 2.4
+        },
+        "error": "IllegalArgumentException: Unable to cross when no unique common currency: GBP/USD and EUR/CAD"
+      }
+    ],
+    "merges": []
+  }
+]

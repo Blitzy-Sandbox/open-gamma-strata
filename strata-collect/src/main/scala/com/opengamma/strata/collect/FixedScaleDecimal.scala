@@ -17,7 +17,6 @@ import _root_.io.circe.Decoder
 import _root_.io.circe.Encoder
 
 import com.opengamma.strata.collect.json.Codecs
-import com.opengamma.strata.collect.result.Failure
 
 /**
  * A [[Decimal]] paired with the scale at which it is to be seen.
@@ -128,8 +127,11 @@ object FixedScaleDecimal {
    * shows every digit the decimal holds; round the decimal first where its scale is not
    * known to be small enough. It must also be 18 or less, the largest scale a decimal has.
    *
+   * Both causes of rejection are reported together rather than the first of them alone, so a
+   * caller correcting a scale sees everything wrong with it at once:
+   *
    * {{{
-   * Decimal.parse("12.3").flatMap(d => FixedScaleDecimal.of(d, 2).left.map(Failure.collapse))
+   * result.toNec(Decimal.parse("12.3")).flatMap(FixedScaleDecimal.of(_, 2))
    * // Right, showing 12.30; the same with "12.345" is Left, since that scale drops a digit
    * }}}
    *
@@ -156,19 +158,19 @@ object FixedScaleDecimal {
    * FixedScaleDecimal.parse("12")     // 12 presented at no decimal places
    * }}}
    *
-   * The failures of the value and of the implied scale are presented as one, because text is
-   * a single thing to correct: several causes are joined into one message and no cause is
-   * dropped.
+   * Text is rejected either because its digits name no decimal or because the scale they
+   * imply is one no decimal can hold, and the outcome carries whichever of those applies in
+   * the same chain of failures [[FixedScaleDecimal.of]] produces. A caller therefore handles
+   * one shape of outcome whichever of the two factories it reached the value through, and no
+   * cause is dropped on the way.
    *
    * @param str  the text to parse
-   * @return the fixed-scale decimal, or the failure describing why the text names none
+   * @return the fixed-scale decimal, or the failures describing why the text names none
    */
-  def parse(str: String): FailureOr[FixedScaleDecimal] = {
+  def parse(str: String): ResultNec[FixedScaleDecimal] = {
     val pointPosition = str.lastIndexOf('.')
     val impliedScale = if (pointPosition < 0) 0 else str.length - pointPosition - 1
-    Decimal
-      .parse(str)
-      .flatMap(decimal => of(decimal, impliedScale).left.map(failures => Failure.collapse(failures)))
+    result.toNec(Decimal.parse(str)).flatMap(decimal => of(decimal, impliedScale))
   }
 
   //-------------------------------------------------------------------------
@@ -227,8 +229,12 @@ object FixedScaleDecimal {
    * [[FixedScaleDecimal.parse]], so the scale travels with the value in the digits written
    * after the point. Writing it as a JSON number would lose exactly that, since `12.30` and
    * `12.3` are one number.
+   *
+   * Rejected text is reported by the shared codec support rather than by anything written
+   * here, so a document naming an impossible value fails in the one shape every text-valued
+   * type of this library fails in.
    */
-  private val jsonCodec: Codec[FixedScaleDecimal] = Codecs.parsedStringCodec(parse, _.toString)
+  private val jsonCodec: Codec[FixedScaleDecimal] = Codecs.parsedStringCodecNec(parse, _.toString)
 
   /**
    * The JSON encoder of a fixed-scale decimal.
