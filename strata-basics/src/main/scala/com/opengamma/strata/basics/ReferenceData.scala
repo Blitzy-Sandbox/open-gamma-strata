@@ -264,6 +264,13 @@ object ReferenceData {
    * they were supplied in, so the message is the same for the same set of entries however
    * they were arranged.
    *
+   * Layering the caller's entries over the minimal set is precisely what
+   * [[ReferenceData.combinedWith]] means - the side asked first wins a clash - so that is how
+   * it is expressed below, with the caller's store on the preferred side. The merge of two
+   * materialised stores is therefore written once, in
+   * [[ImmutableReferenceData.combinedWith]], and this method cannot disagree with it about
+   * which side wins.
+   *
    * @param entries  the reference data entries
    * @return the reference data holding the entries over the minimal set, or the failure
    *   describing the duplicated identifiers
@@ -271,7 +278,7 @@ object ReferenceData {
   def of(entries: Entry[_]*): Either[Failure, ReferenceData] =
     ImmutableReferenceData
       .of(entries: _*)
-      .map(caller => ImmutableReferenceData.fromMap(minimal.values ++ caller.values))
+      .map(caller => caller.combinedWith(minimal))
 
   /**
    * Obtains an instance containing no reference data.
@@ -306,7 +313,7 @@ object ReferenceData {
    * @return standard reference data, holding every built-in holiday calendar
    */
   lazy val standard: ImmutableReferenceData =
-    ImmutableReferenceData.fromMap(storeOf(StandardHolidayCalendars.all))
+    ImmutableReferenceData.ofMap(StandardHolidayCalendars.all)
 
   /**
    * Obtains the minimal set of reference data.
@@ -322,28 +329,7 @@ object ReferenceData {
    * @return minimal reference data, holding the four weekend and no-holiday calendars
    */
   lazy val minimal: ImmutableReferenceData =
-    ImmutableReferenceData.fromMap(storeOf(StandardHolidayCalendars.minimal))
-
-  /**
-   * Converts a set of identifier-to-value pairs into a reference data store.
-   *
-   * The parameter is an iterable of pairs rather than a map, which is what lets a
-   * `Map[HolidayCalendarId, HolidayCalendar]` be passed straight in. A map of that type is
-   * not a `Map[ReferenceDataId[_], Any]`, because a map is invariant in its key type, but it
-   * is an iterable of its pairs and both `Iterable` and a pair are covariant, so the
-   * conversion is ordinary subtyping and needs neither a cast nor a rebuild at the call
-   * site. Two things follow, and both are the reason for writing it this way. This file
-   * needs no knowledge of the holiday calendar types, which matters because the `date`
-   * package depends on this one and not the other way about; and the erased key and value
-   * types are declared here rather than inferred at each call site, so no call can widen a
-   * type to `Any` by accident - something the build, which compiles warnings as errors,
-   * would reject.
-   *
-   * @param values  the identifier-to-value pairs
-   * @return the reference data store holding the pairs
-   */
-  private def storeOf(values: Iterable[(ReferenceDataId[_], Any)]): Map[ReferenceDataId[_], Any] =
-    values.toMap
+    ImmutableReferenceData.ofMap(StandardHolidayCalendars.minimal)
 
   /**
    * Returns the failure reported when an identifier is not found.
@@ -369,40 +355,77 @@ object ReferenceData {
  * and the reference data assembled by an application from its own securities and calendars
  * are all values of this type.
  *
- * ===Construction is closed===
+ * ===The store is closed, and that is what makes a lookup sound===
  *
- * The store can only be built through the factories of the companion, which is why the
- * primary constructor is private and neither `apply` nor `copy` exists - `values` cannot be
- * replaced on an existing instance, and a map cannot be handed in from outside the module.
- * The reason is the one thing this type has to guarantee: that every value in the map has
- * the type its identifier promises. A caller supplies entries as
- * [[ReferenceData.Entry]] values, which can pair an identifier only with a value of its own
- * type, and the guarantee then holds by construction rather than by a check.
+ * [[findValue]] answers with a value of the type its identifier promises, and it does so
+ * with a cast. It has to: one store holds values of many types at once, so it is keyed by a
+ * type-erased identifier and its values are erased along with them. That cast is sound only
+ * while every value in the map sits under an identifier of its own type, and this type
+ * guarantees it by closing every route a value could take into the map rather than by
+ * testing values on the way out.
  *
- * Pattern matching still works, so the store can be taken apart where that is useful -
- * [[combinedWith]] does exactly that - and equality is the structural equality of the case
- * class, comparing the two maps entry by entry regardless of the order they were built in.
+ * So the map is not handed in, and it is not handed out. Reference data is supplied as
+ * [[ReferenceData.Entry]] values - which pair an identifier only with a value of its own
+ * type - or through [[ImmutableReferenceData.ofMap]] as a map whose key type is required to
+ * be an identifier '''of''' its value type, and the store is then derived here, each entry
+ * being filed under the identifier the entry itself carries. Nothing accepts a map of erased
+ * identifiers to values: not the constructor, which is private and takes entries, and not
+ * any factory, in this package or another. Nothing returns one either, the map being a
+ * private field of a final class with no accessor, no `unapply` and no `copy`. So a value
+ * cannot be filed under an identifier of another type by any route, in any language, and
+ * that closure is the whole of the argument for the cast in [[findValue]]: it is not a
+ * convention this file asks its callers to respect, because no caller is given the means to
+ * break it.
+ *
+ * Combining two stores is the one operation that needs the entries of a store other than
+ * itself, and it stays inside the type for that reason: [[combinedWith]] merges the two maps
+ * and feeds the merged '''entries''' back through the same constructor, so even the internal
+ * path builds a store the way a caller does.
+ *
+ * Equality, hashing and rendering are written out rather than synthesised, this no longer
+ * being a case class. Two stores are equal when they hold equal maps - the same entries,
+ * whatever order they were built in - equal stores hash alike, and the rendering lists the
+ * entries ordered by identifier, so the same store reads the same way however it was
+ * assembled.
  *
  * ===Divergences from the type being ported===
  *
  * The Java original was a Joda bean: it validated each entry by asking the identifier for
- * the `Class` of the data it referred to and testing the value against it, and it was
- * serializable in both the Joda-Beans and the Java-serialization senses. None of that is
- * ported. The type check is unnecessary for the reason given above, and this type has no
- * JSON codec because its store is heterogeneous: the value type of an entry is known only
- * through its identifier, so no encoder for an arbitrary store can exist. The one kind of
- * reference data this library does serialize - a holiday calendar - carries its own codec,
- * so a store can be rebuilt from serialized calendars by a caller that knows which
- * identifiers it expects.
+ * the `Class` of the data it referred to and testing the value against it, it published the
+ * store through a `getValues()` property, and it was serializable in both the Joda-Beans
+ * and the Java-serialization senses. None of that is ported. The type check is unnecessary
+ * for the reason given above; the property has no counterpart, because a store of erased
+ * values is exactly what must not be handed out if the absence of that check is to mean
+ * anything, and a caller reads a store through [[findValue]] and
+ * [[ReferenceData.containsValue]] instead; and this type has no JSON codec because its
+ * store is heterogeneous, the value type of an entry being known only through its
+ * identifier, so no encoder for an arbitrary store can exist. The one kind of reference data
+ * this library does serialize - a holiday calendar - carries its own codec, so a store can
+ * be rebuilt from serialized calendars by a caller that knows which identifiers it expects.
  *
  * No typeclass instances are declared for this type. It is a container of reference data
- * rather than a value of the domain, and the structural `equals` of the case class is what
- * compares two stores.
+ * rather than a value of the domain, and the `equals` below is what compares two stores.
  *
- * @param values  the reference data values, keyed by the identifier each is held under
+ * @param entries  the reference data entries, each filed under the identifier it carries
  */
-sealed abstract case class ImmutableReferenceData private (values: Map[ReferenceDataId[_], Any])
+final class ImmutableReferenceData private (entries: Iterable[ReferenceData.Entry[_]])
     extends ReferenceData {
+
+  /**
+   * The entries of this store, keyed by the identifier each one carries.
+   *
+   * Derived here rather than supplied, which is what makes the key of every mapping the
+   * identifier of the value filed under it: the constructor is given entries and reads each
+   * one's own identifier, so a key that disagrees with its value is not something a caller
+   * could pass, correctly or otherwise. The whole entry is kept rather than its value alone
+   * so that combining two stores can hand the merged entries back to the constructor, which
+   * is why no operation of this type needs a map of erased identifiers to values.
+   *
+   * The field is private and has no accessor, and the class is final, so the map does not
+   * leave this type.
+   */
+  private val store: Map[ReferenceDataId[_], ReferenceData.Entry[_]] =
+    entries.iterator.map(entry => (entry.id: ReferenceDataId[_]) -> (entry: ReferenceData.Entry[_])).toMap
 
   /**
    * Finds the reference data value associated with the specified identifier.
@@ -413,15 +436,18 @@ sealed abstract case class ImmutableReferenceData private (values: Map[Reference
    */
   override def findValue[T](id: ReferenceDataId[T]): Option[T] =
     // This is the one cast in this module, and it is sound rather than merely convenient.
-    // The store is keyed by a type-erased identifier because it holds values of many
-    // types at once, but a value can only have entered it through a
-    // `ReferenceData.Entry[T]` - or through `of(id, value)`, which has the same shape - and
-    // both bind the type of the value to the type parameter of the identifier it is filed
-    // under. So the value found under an identifier of type `ReferenceDataId[T]` is a `T`,
-    // which is what the Java original established at construction time by testing the
-    // value against a `Class` obtained from the identifier. Removing that reflective check
-    // is the point of the `Entry` type; see the port's construction policy.
-    values.get(id).map(_.asInstanceOf[T])
+    // The store is keyed by a type-erased identifier because it holds values of many types
+    // at once, but every value in it arrived inside a `ReferenceData.Entry[T]` - from the
+    // entry-based factories, from `of(id, value)`, from `ofMap`, whose key type is bounded
+    // by `ReferenceDataId` of its value type, or from a merge of two stores built that way -
+    // and an entry binds the type of its value to the type parameter of its identifier. The
+    // key it is filed under is that same identifier, read from the entry here rather than
+    // supplied alongside it. So the value found under an identifier of type
+    // `ReferenceDataId[T]` is a `T`, which is what the Java original established at
+    // construction time by testing the value against a `Class` obtained from the identifier.
+    // Removing that reflective check is the point of the `Entry` type and of the closed
+    // construction path; see the port's construction policy.
+    store.get(id).map(_.value.asInstanceOf[T])
 
   /**
    * Combines this reference data with another.
@@ -444,9 +470,74 @@ sealed abstract case class ImmutableReferenceData private (values: Map[Reference
    */
   override def combinedWith(other: ReferenceData): ReferenceData =
     other match {
-      case ImmutableReferenceData(otherValues) => ImmutableReferenceData.fromMap(otherValues ++ values)
+      case lower: ImmutableReferenceData => layeredOver(lower)
       case _ => super.combinedWith(other)
     }
+
+  /**
+   * Returns a single store holding this store's entries over another's.
+   *
+   * The other store's entries are written first and this store's over them, so an identifier
+   * both hold answers with the value held here. The merged '''entries''' are then handed to
+   * the constructor, which files each under its own identifier exactly as it does for a
+   * caller's entries - so this operation needs no privileged way of building a store, and the
+   * type keeps its property that nothing anywhere accepts a map of erased identifiers to
+   * values.
+   *
+   * It reads the other store's map directly, which is why it is a method of this class: the
+   * map is private to the type, and no caller could perform this merge even if it wanted to.
+   *
+   * @param lower  the store whose entries this store's entries are laid over
+   * @return the merged store
+   */
+  private def layeredOver(lower: ImmutableReferenceData): ImmutableReferenceData =
+    new ImmutableReferenceData((lower.store ++ store).values)
+
+  /**
+   * Checks if this store holds the same reference data as another object.
+   *
+   * Two stores are equal when they hold equal entries, which is the structural equality the
+   * case class this type used to be provided, and the equality `CombinedReferenceData` and
+   * every other container of reference data inherits by holding stores as fields. The order
+   * entries were supplied in is not part of the value, a `Map` being unordered, so two
+   * stores built from the same entries in different orders are one value.
+   *
+   * @param obj  the other object
+   * @return true if the other object is a store holding equal entries
+   */
+  override def equals(obj: Any): Boolean =
+    obj match {
+      case other: ImmutableReferenceData => store == other.store
+      case _ => false
+    }
+
+  /**
+   * Returns a hash code consistent with [[equals]].
+   *
+   * It is the hash of the entries, so equal stores hash alike and a store can be used as a
+   * key or held in a set - the contract the synthesised hash of the case class satisfied.
+   *
+   * @return the hash code
+   */
+  override def hashCode: Int = store.hashCode
+
+  /**
+   * Renders this store as its entries, ordered by identifier.
+   *
+   * The entries are rendered and then sorted, so the text is determined by what the store
+   * holds and not by the iteration order of the underlying map: the same store reads the same
+   * way however it was assembled, which is what makes this usable in a failure message and in
+   * the rendering of anything that holds a store. The shape follows the Java original's bean
+   * rendering, which named the property and listed the entries.
+   *
+   * @return the rendering, such as `ImmutableReferenceData{values={GBLO=HolidayCalendar[GBLO]}}`
+   */
+  override def toString: String =
+    store.valuesIterator
+      .map(entry => s"${entry.id}=${entry.value}")
+      .toList
+      .sorted
+      .mkString("ImmutableReferenceData{values={", ", ", "}}")
 }
 
 /**
@@ -461,7 +552,7 @@ sealed abstract case class ImmutableReferenceData private (values: Map[Reference
 object ImmutableReferenceData {
 
   /** The empty store, holding no reference data at all, shared by every caller that asks. */
-  val empty: ImmutableReferenceData = fromMap(Map.empty)
+  val empty: ImmutableReferenceData = new ImmutableReferenceData(Nil)
 
   /**
    * Obtains an instance from a set of reference data entries.
@@ -479,15 +570,13 @@ object ImmutableReferenceData {
    *   duplicated identifiers
    */
   def of(entries: ReferenceData.Entry[_]*): Either[Failure, ImmutableReferenceData] = {
-    val pairs: Seq[(ReferenceDataId[_], Any)] =
-      entries.map(entry => (entry.id: ReferenceDataId[_]) -> (entry.value: Any))
-    val duplicates: List[String] = pairs
-      .groupBy { case (id, _) => id }
+    val duplicates: List[String] = entries
+      .groupBy(entry => entry.id: ReferenceDataId[_])
       .collect { case (id, group) if group.sizeIs > 1 => id.toString }
       .toList
       .sorted
     if (duplicates.isEmpty) {
-      Right(fromMap(pairs.toMap))
+      Right(new ImmutableReferenceData(entries))
     } else {
       val rendered = duplicates.mkString(", ")
       Left(
@@ -516,25 +605,39 @@ object ImmutableReferenceData {
    * @return the reference data holding exactly this entry
    */
   def of[T](id: ReferenceDataId[T], value: T): ImmutableReferenceData =
-    fromMap(Map((id: ReferenceDataId[_]) -> (value: Any)))
+    new ImmutableReferenceData(List(ReferenceData.Entry(id, value)))
 
   /**
-   * Obtains an instance directly from a store of values by identifier.
+   * Obtains an instance from a map of values whose identifiers refer to that type of value.
    *
-   * This is the one place an instance is created, and it is deliberately not public: the
-   * type-safety of the store rests on values having entered it through
-   * [[ReferenceData.Entry]], and a caller able to hand in a raw map of type-erased
-   * identifiers to values could file a value under an identifier of another type. It is
-   * visible within this module because the module's own store-building - the built-in
-   * calendar sets, the seeding performed by `ReferenceData.of`, and the merge performed by
-   * [[ImmutableReferenceData.combinedWith]] - assembles maps whose entries have already been
-   * paired correctly at the point they were created.
+   * This is the factory for a homogeneous table of reference data - every entry of one type,
+   * keyed by an identifier of that type - which is what the built-in holiday calendar sets
+   * are, and it is how `ReferenceData.standard` and `ReferenceData.minimal` are built. The
+   * two type parameters are the whole point of it: the key type is required to be a
+   * `ReferenceDataId` '''of the value type''', so a map that pairs an identifier with a value
+   * of some other type is not a legal argument and no call can file an entry this store could
+   * not answer correctly. Each mapping becomes an entry, so this is the entry-based
+   * construction above expressed for data that is already a map, and turning it into entries
+   * at the call site would be noise.
    *
+   * A `Map[HolidayCalendarId, HolidayCalendar]` is passed straight in: `HolidayCalendarId` is
+   * a `ReferenceDataId[HolidayCalendar]`, so the bound is satisfied and the two parameters are
+   * inferred without a cast at the call site. A map cannot repeat a key, so there is no
+   * duplicate identifier to report and this cannot fail.
+   *
+   * It is visible within this package rather than published, because `ReferenceData.standard`
+   * and `ReferenceData.minimal` are the intended way to obtain the built-in sets and a caller
+   * assembling its own reference data has the entry-based factories, which report the one
+   * failure mode a caller can cause.
+   *
+   * @tparam I  the type of the identifiers, which must refer to the type of the values
+   * @tparam V  the type of the values
    * @param values  the reference data values, keyed by the identifier each is held under
    * @return the reference data holding the values
    */
-  private[basics] def fromMap(values: Map[ReferenceDataId[_], Any]): ImmutableReferenceData =
-    new ImmutableReferenceData(values) {}
+  private[basics] def ofMap[I <: ReferenceDataId[V], V](values: Map[I, V]): ImmutableReferenceData =
+    new ImmutableReferenceData(
+      values.iterator.map { case (id, value) => ReferenceData.Entry(id, value): ReferenceData.Entry[_] }.toList)
 }
 
 /**

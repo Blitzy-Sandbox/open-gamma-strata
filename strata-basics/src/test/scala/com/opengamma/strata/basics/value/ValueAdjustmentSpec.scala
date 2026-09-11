@@ -108,7 +108,7 @@ final class ValueAdjustmentSpec extends AnyFunSuite with Matchers {
   test("test_NONE") {
     val test = ValueAdjustment.NONE
     test.modifyingValue shouldBe 0.0d
-    test.`type` shouldBe ValueAdjustmentType.DELTA_AMOUNT
+    test.`type` shouldBe ValueAdjustmentType.DeltaAmount
 
     // Adding zero hands the base value back unchanged, so the constant adjusts nothing -
     // which is the whole of its purpose.
@@ -122,7 +122,7 @@ final class ValueAdjustmentSpec extends AnyFunSuite with Matchers {
   test("test_ofReplace") {
     val test = ValueAdjustment.ofReplace(200.0d)
     test.modifyingValue shouldBe 200.0d
-    test.`type` shouldBe ValueAdjustmentType.REPLACE
+    test.`type` shouldBe ValueAdjustmentType.Replace
 
     // The base value is ignored: the result is the modifying value itself, exactly, so no
     // tolerance is involved here.
@@ -134,7 +134,7 @@ final class ValueAdjustmentSpec extends AnyFunSuite with Matchers {
   test("test_ofDeltaAmount") {
     val test = ValueAdjustment.ofDeltaAmount(20.0d)
     test.modifyingValue shouldBe 20.0d
-    test.`type` shouldBe ValueAdjustmentType.DELTA_AMOUNT
+    test.`type` shouldBe ValueAdjustmentType.DeltaAmount
 
     // (100 + 20) is exact in binary floating point, so this is asserted exactly, as the Java
     // test asserted it.
@@ -146,7 +146,7 @@ final class ValueAdjustmentSpec extends AnyFunSuite with Matchers {
   test("test_ofDeltaMultiplier") {
     val test = ValueAdjustment.ofDeltaMultiplier(0.1d)
     test.modifyingValue shouldBe 0.1d
-    test.`type` shouldBe ValueAdjustmentType.DELTA_MULTIPLIER
+    test.`type` shouldBe ValueAdjustmentType.DeltaMultiplier
 
     // (100 + 100 * 0.1) is not exact - 0.1 has no finite binary expansion - so the result is
     // asserted within the tolerance the Java test chose for precisely this reason. The shape
@@ -160,7 +160,7 @@ final class ValueAdjustmentSpec extends AnyFunSuite with Matchers {
   test("test_ofMultiplier") {
     val test = ValueAdjustment.ofMultiplier(1.1d)
     test.modifyingValue shouldBe 1.1d
-    test.`type` shouldBe ValueAdjustmentType.MULTIPLIER
+    test.`type` shouldBe ValueAdjustmentType.Multiplier
 
     // (100 * 1.1) is inexact for the same reason, and is asserted on the same terms.
     test.adjust(BaseValue) shouldBe (110.0d +- Tolerance)
@@ -206,7 +206,7 @@ final class ValueAdjustmentSpec extends AnyFunSuite with Matchers {
     // own `equals`. It is asserted by calling that method rather than by writing a comparison
     // between the two types, which the compiler would reject as one that can only ever be
     // false - true, and precisely the branch under test here.
-    a1.equals(ValueAdjustmentType.REPLACE) shouldBe false
+    a1.equals(ValueAdjustmentType.Replace) shouldBe false
 
     // Equality is reflexive, for the instance and through the typeclass alike.
     (a1 == a1) shouldBe true
@@ -223,9 +223,9 @@ final class ValueAdjustmentSpec extends AnyFunSuite with Matchers {
     // Each accessor hands back the part the instance was built from. This is what the
     // reflective property walk of the Java sweep was establishing, stated directly.
     a1.modifyingValue shouldBe 200.0d
-    a1.`type` shouldBe ValueAdjustmentType.REPLACE
+    a1.`type` shouldBe ValueAdjustmentType.Replace
     b.modifyingValue shouldBe 0.1d
-    b.`type` shouldBe ValueAdjustmentType.DELTA_MULTIPLIER
+    b.`type` shouldBe ValueAdjustmentType.DeltaMultiplier
 
     // Instances rebuilt from equal parts are equal and hash equally, and the two distinct
     // instances are equal to neither each other nor a rebuild of the other.
@@ -249,13 +249,13 @@ final class ValueAdjustmentSpec extends AnyFunSuite with Matchers {
     // Nothing about a modifying value paired with a type can be rejected, so this is a total
     // type: the case-class constructor and `copy` are both public and both reachable here,
     // alongside the four factories that the ported call sites read through.
-    ValueAdjustment(20.0d, ValueAdjustmentType.DELTA_AMOUNT) shouldBe
+    ValueAdjustment(20.0d, ValueAdjustmentType.DeltaAmount) shouldBe
       ValueAdjustment.ofDeltaAmount(20.0d)
-    ValueAdjustment(200.0d, ValueAdjustmentType.REPLACE) shouldBe a1
+    ValueAdjustment(200.0d, ValueAdjustmentType.Replace) shouldBe a1
     a1.copy(modifyingValue = 300.0d).modifyingValue shouldBe 300.0d
-    a1.copy(modifyingValue = 300.0d).`type` shouldBe ValueAdjustmentType.REPLACE
-    a1.copy(`type` = ValueAdjustmentType.MULTIPLIER).`type` shouldBe ValueAdjustmentType.MULTIPLIER
-    a1.copy(`type` = ValueAdjustmentType.MULTIPLIER).modifyingValue shouldBe 200.0d
+    a1.copy(modifyingValue = 300.0d).`type` shouldBe ValueAdjustmentType.Replace
+    a1.copy(`type` = ValueAdjustmentType.Multiplier).`type` shouldBe ValueAdjustmentType.Multiplier
+    a1.copy(`type` = ValueAdjustmentType.Multiplier).modifyingValue shouldBe 200.0d
 
     // Equality compares the modifying value by its bit pattern - the comparison Joda-Beans
     // used and that every double-bearing type of this port preserves - so a not-a-number

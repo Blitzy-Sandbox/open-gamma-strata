@@ -5,11 +5,18 @@
  */
 package com.opengamma.strata.collect.io
 
+import java.io.ByteArrayInputStream
+import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path}
+import java.nio.file.{Files, Path, Paths}
+import java.util.concurrent.atomic.AtomicInteger
+
+import scala.util.Try
 
 import cats.effect.IO
+import cats.effect.Outcome
 import cats.effect.testing.scalatest.AsyncIOSpec
 
 import io.circe.parser.parse
@@ -68,6 +75,15 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
   /** The content of the fixture file the original read, byte for byte. */
   private val HelloWorld = "HelloWorld\n"
+
+  /** The file name of the classpath fixture, used by the descriptor-reclamation case. */
+  private val FixtureFileName = "double-array-baseline.json"
+
+  /** Where this platform exposes the open descriptors of the running process, if it does. */
+  private val ProcessDescriptors: Path = Paths.get("/proc/self/fd")
+
+  /** Bytes that are not valid UTF-8: a continuation byte with nothing to continue. */
+  private val MalformedUtf8: Array[Byte] = Array[Byte](0x41.toByte, 0xc3.toByte, 0x28.toByte)
 
   //-------------------------------------------------------------------------
   // readClasspathText
@@ -214,6 +230,10 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     // being denied, so each of them fails to compile for exactly one reason. Were any of
     // them to compile, this file would not compile either, and the object would have grown
     // a surface its documented contract rules out.
+    //
+    // The reading surface is these two methods. The one other public member is the
+    // documented byte ceiling `MaxBytes`, a constant rather than an operation, which the
+    // ceiling cases below assert the value of.
     IO {
       // No charset parameter: the character set is fixed at UTF-8 and never negotiated.
       assertDoesNotCompile(
@@ -231,6 +251,198 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.ofUrl("file:/x")""")
       // No caller-sensitive lookup: the calling class plays no part in resolution.
       assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.readClasspathText(classOf[String], "x")""")
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  // The byte ceiling
+  //
+  // Both readers hand the shared read a limit, and that limit is what stops the size of a
+  // source from deciding the memory of this process. The cases below drive the production
+  // read - the same method the two public readers call, with the production acquisition of
+  // a real file and a real classpath resource - and vary only the limit, because a case
+  // that varied the source instead would have to build one of sixty-four megabytes to
+  // observe the same decision. The value of the limit the public readers actually pass is
+  // asserted separately, immediately below.
+  //-------------------------------------------------------------------------
+  test("the bounded read refuses a source that is one byte beyond its limit") {
+    withTempFile("abcde") { path =>
+      Resources
+        .readManaged(s"file '$path'", Resources.openFileStream(path.toString), 4)
+        .attempt
+        .map {
+          case Left(failure) =>
+            failure shouldBe an[IOException]
+            // The message has to name both the source and the limit, or a run that hits the
+            // ceiling cannot be told apart from a run that hit a corrupt file.
+            failure.getMessage should include(path.toString)
+            failure.getMessage should include("4 byte limit")
+          case Right(text) =>
+            fail(s"expected the ceiling to refuse the source, got ${text.length} characters")
+        }
+    }
+  }
+
+  test("the bounded read accepts a source of exactly its limit") {
+    // The boundary itself is inclusive: a source of precisely the limit is read whole, so
+    // the ceiling rejects only what is genuinely beyond it.
+    withTempFile("abcd") { path =>
+      Resources
+        .readManaged(s"file '$path'", Resources.openFileStream(path.toString), 4)
+        .map(text => text shouldBe "abcd")
+    }
+  }
+
+  test("the bounded read applies the same ceiling to a classpath resource") {
+    // The classpath acquisition goes through the same read, so the ceiling cannot hold for
+    // one source and not the other.
+    Resources
+      .readManaged(s"classpath resource '$FixturePath'", Resources.openClasspathStream(FixturePath), 16)
+      .attempt
+      .map {
+        case Left(failure) =>
+          failure shouldBe an[IOException]
+          failure.getMessage should include(FixturePath)
+          failure.getMessage should include("16 byte limit")
+        case Right(text) =>
+          fail(s"expected the ceiling to refuse the resource, got ${text.length} characters")
+      }
+  }
+
+  test("MaxBytes is the documented ceiling and is far above the data this module reads") {
+    Resources.readClasspathText(FixturePath).map { text =>
+      Resources.MaxBytes shouldBe 64 * 1024 * 1024
+      // The largest text read anywhere in this repository is the day-count parity baseline
+      // of the dependent module, at roughly 12.7 MiB. The ceiling must stay clear of it, or
+      // enforcing it would start refusing legitimate data.
+      Resources.MaxBytes should be > 16 * 1024 * 1024
+      // ... and this module's own fixture is nowhere near it, so the ceiling never affects
+      // an ordinary read.
+      text.length should be < Resources.MaxBytes / 4
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  // The decode is strict
+  //-------------------------------------------------------------------------
+  test("readFileText fails the IO for content that is not valid UTF-8") {
+    // Deliberately not a lenient substitution. The reader ingests captured baselines whose
+    // numbers are the thing being measured, and a substitution character inside one is an
+    // expectation nobody captured - so malformed input ends the read instead.
+    withTempBytes(MalformedUtf8) { path =>
+      Resources.readFileText(path.toString).attempt.map {
+        case Left(failure) =>
+          failure shouldBe an[IOException]
+          failure.getMessage should include(path.toString)
+          failure.getMessage should include("UTF-8")
+        case Right(text) =>
+          fail(s"expected malformed input to be refused, got '$text'")
+      }
+    }
+  }
+
+  test("the bounded read refuses malformed UTF-8 from a classpath resource too") {
+    // The same decode serves both sources, driven here through the production read with a
+    // stream of this spec's own, because every committed classpath resource is valid UTF-8.
+    val stream = new CountingStream(MalformedUtf8)
+    Resources.readManaged("classpath resource 'malformed'", IO.pure(stream), Resources.MaxBytes).attempt.map {
+      case Left(failure) =>
+        failure shouldBe an[IOException]
+        failure.getMessage should include("UTF-8")
+        stream.closeCount shouldBe 1
+      case Right(text) =>
+        fail(s"expected malformed input to be refused, got '$text'")
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  // Resource lifetime
+  //
+  // The one property of these readers that no caller can observe through their public
+  // surface: a classpath read chooses its own class loader, so nothing outside this object
+  // can hand it a stream whose closes it counts. Without the cases below, deleting the
+  // release finalizer would leave every other case in this file green while every read
+  // leaked its handle. They therefore drive the production read and the production managed
+  // stream with a counting stream, and assert that release ran exactly once - not merely at
+  // least once - on each outcome a read can have.
+  //-------------------------------------------------------------------------
+  test("the managed read closes the stream exactly once when the read succeeds") {
+    val stream = new CountingStream(HelloWorld.getBytes(StandardCharsets.UTF_8))
+    Resources.readManaged("counting stream", IO.pure(stream), Resources.MaxBytes).map { text =>
+      text shouldBe HelloWorld
+      stream.closeCount shouldBe 1
+    }
+  }
+
+  test("the managed read closes the stream exactly once when the read fails") {
+    val stream = new CountingStream(HelloWorld.getBytes(StandardCharsets.UTF_8), failOnRead = true)
+    Resources.readManaged("counting stream", IO.pure(stream), Resources.MaxBytes).attempt.map { outcome =>
+      outcome.isLeft shouldBe true
+      stream.closeCount shouldBe 1
+    }
+  }
+
+  test("the managed read closes the stream exactly once when the ceiling refuses the source") {
+    // The refusal happens after the bytes have been read, so it is a failure of the body of
+    // the managed read rather than of its acquisition, and the handle still has to come back.
+    val stream = new CountingStream("abcde".getBytes(StandardCharsets.UTF_8))
+    Resources.readManaged("counting stream", IO.pure(stream), 4).attempt.map { outcome =>
+      outcome.isLeft shouldBe true
+      stream.closeCount shouldBe 1
+    }
+  }
+
+  test("the managed stream closes the stream exactly once when the use is cancelled") {
+    // Cancellation is the outcome a bare `try`/`finally` around a read would not cover, and
+    // it is observed deterministically here: the body cancels itself, so no timing is
+    // involved, and the fiber is joined to prove the cancellation was the outcome.
+    val stream = new CountingStream(HelloWorld.getBytes(StandardCharsets.UTF_8))
+    Resources
+      .managedStream(IO.pure(stream))
+      .use(_ => IO.canceled)
+      .start
+      .flatMap(_.join)
+      .map {
+        case Outcome.Canceled() => stream.closeCount shouldBe 1
+        case other => fail(s"expected the use to be cancelled, got $other")
+      }
+  }
+
+  test("the managed read releases nothing when the stream cannot be acquired") {
+    // An acquisition that fails has nothing to release, so the failure must surface as it is
+    // rather than being replaced by one from a finalizer with no handle to close.
+    val expected = new IOException("acquisition refused")
+    Resources.readManaged("counting stream", IO.raiseError[InputStream](expected), Resources.MaxBytes).attempt.map {
+      case Left(failure) => failure shouldBe expected
+      case Right(text) => fail(s"expected the acquisition to fail, got ${text.length} characters")
+    }
+  }
+
+  test("both public readers leave no open descriptor behind") {
+    // The end-to-end counterpart of the cases above, over the public API: after a read of a
+    // classpath resource and a read of a file, no descriptor of this process still refers to
+    // either of them. This is the handle-reclamation property itself rather than a proxy for
+    // it, and it holds only because both readers close what they open.
+    IO.blocking(Files.isDirectory(ProcessDescriptors)).flatMap { exposed =>
+      if (!exposed) {
+        IO(
+          cancel(
+            "this platform does not expose the descriptors of the running process, so " +
+              "reclamation cannot be observed directly here; the counting-stream cases above " +
+              "cover release on every outcome"))
+      } else {
+        IO.blocking(Option(getClass.getClassLoader.getResource(FixturePath))).flatMap { located =>
+          located.map(_.getProtocol) match {
+            case Some("file") => descriptorReclamationCase
+            case other =>
+              IO(
+                cancel(
+                  s"the classpath fixture resolves to $other rather than a file, so a " +
+                    "descriptor that refers to it cannot be distinguished from one that refers " +
+                    "to the archive holding it"))
+          }
+        }
+      }
     }
   }
 
@@ -269,6 +481,92 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     IO(Files.createTempDirectory("resources-spec-dir-")).flatMap { directory =>
       use(directory).guarantee(IO(Files.deleteIfExists(directory)).void)
     }
+
+  /**
+   * Creates a file holding the given bytes verbatim, hands its path to the case, and deletes
+   * it afterwards.
+   *
+   * The byte-level counterpart of `withTempFile`, for content that is deliberately not text:
+   * writing it as a string would encode it and so destroy the very property under test.
+   *
+   * @param contents  the bytes to write
+   * @param use  the case, given the absolute path of the file
+   * @return the effect of the case, with creation and deletion around it
+   */
+  private def withTempBytes(contents: Array[Byte])(use: Path => IO[Assertion]): IO[Assertion] =
+    IO(Files.createTempFile("resources-spec-bytes-", ".bin")).flatMap { path =>
+      IO(Files.write(path, contents))
+        .void
+        .flatMap(_ => use(path))
+        .guarantee(IO(Files.deleteIfExists(path)).void)
+    }
+
+  /**
+   * Reads a classpath resource and a file through the public API, then asserts that no
+   * descriptor of this process refers to either of them.
+   *
+   * The descriptor table is compared by the target each entry points at rather than by how
+   * many entries there are, because loading a class or touching an archive opens descriptors
+   * of its own and a count would drift with them. The absolute path of the temporary file and
+   * the file name of the fixture are both specific enough to identify a leaked handle.
+   */
+  private def descriptorReclamationCase: IO[Assertion] =
+    withTempFile(HelloWorld) { path =>
+      for {
+        _ <- Resources.readClasspathText(FixturePath)
+        _ <- Resources.readFileText(path.toString)
+        open <- descriptorTargets
+      } yield withClue(s"open descriptor targets after both reads: ${open.mkString(", ")}: ") {
+        open.count(target => target == path.toString) shouldBe 0
+        open.count(target => target.endsWith(FixtureFileName)) shouldBe 0
+      }
+    }
+
+  /** The targets of the descriptors this process currently has open. */
+  private def descriptorTargets: IO[Vector[String]] =
+    IO.blocking {
+      Option(new File(ProcessDescriptors.toString).listFiles())
+        .map(_.toVector)
+        .getOrElse(Vector.empty[File])
+        .flatMap(entry => Try(Files.readSymbolicLink(entry.toPath).toString).toOption)
+    }
+}
+
+/**
+ * A stream that counts how often it was closed, and can fail a read on demand.
+ *
+ * This is the seam the closure cases need. A classpath read selects its own class loader, so
+ * no caller can give one a stream to observe; handing this stream to the shared read instead
+ * exercises the production acquisition-and-release pairing over a stream whose closes are
+ * countable. `AtomicInteger` rather than a plain counter because release may run on a
+ * different thread from the read.
+ *
+ * @param bytes  the content the stream yields
+ * @param failOnRead  whether a read fails instead of yielding content
+ */
+private final class CountingStream(bytes: Array[Byte], failOnRead: Boolean = false) extends InputStream {
+
+  private val delegate: ByteArrayInputStream = new ByteArrayInputStream(bytes)
+
+  private val closes: AtomicInteger = new AtomicInteger(0)
+
+  /** How often this stream has been closed. */
+  def closeCount: Int = closes.get()
+
+  override def read(): Int =
+    if (failOnRead) throw new IOException("the stream refused to be read") else delegate.read()
+
+  override def read(buffer: Array[Byte], offset: Int, length: Int): Int =
+    if (failOnRead) {
+      throw new IOException("the stream refused to be read")
+    } else {
+      delegate.read(buffer, offset, length)
+    }
+
+  override def close(): Unit = {
+    val _ = closes.incrementAndGet()
+    delegate.close()
+  }
 }
 
 // ---------------------------------------------------------------------------

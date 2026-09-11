@@ -275,22 +275,28 @@ class SequenceDateSpec extends AnyFunSuite with Matchers with EitherValues {
     test.hashCode shouldBe same.hashCode
     test should not be test2
     // The equals contract against a value of an unrelated type, in method form because the
-    // compiler rightly rejects comparing the two with `==`.
-    test.equals("SequenceDate{minimumPeriod=P2M, sequenceNumber=3}") shouldBe false
+    // compiler rightly rejects comparing the two with `==`. The unrelated value is the
+    // instruction's own rendering, so nothing here has to restate a rendering literal.
+    test.equals(test.toString) shouldBe false
 
     // The single equality-bearing instance agrees with the equality of the values themselves.
     Hash[SequenceDate].eqv(test, same) shouldBe true
     Hash[SequenceDate].eqv(test, test2) shouldBe false
     Hash[SequenceDate].hash(test) shouldBe test.hashCode
 
-    // The rendering names the fields the instruction carries and omits the absent one.
-    val rendered = Show[SequenceDate].show(test)
-    rendered should not be empty
-    rendered should include("minimumPeriod=P2M")
-    rendered should include("sequenceNumber=3")
-    rendered should include("fullSequence=true")
-    rendered should not include "yearMonth"
-    Show[SequenceDate].show(test2) should include("yearMonth=2020-02")
+    // The rendering names all four fields, always, in the declaration order of the type, with
+    // an absent optional field carrying the marker the Java bean printed for one. Both strings
+    // are transcribed from that bean's own output, so they are the parity assertion and not a
+    // restatement of what the code does.
+    test.toString shouldBe
+      "SequenceDate{yearMonth=null, minimumPeriod=P2M, sequenceNumber=3, fullSequence=true}"
+    test2.toString shouldBe
+      "SequenceDate{yearMonth=2020-02, minimumPeriod=null, sequenceNumber=2, fullSequence=false}"
+
+    // The `Show` instance is that rendering rather than a second one, so a future change to
+    // either that left the other behind fails here.
+    Show[SequenceDate].show(test) shouldBe test.toString
+    Show[SequenceDate].show(test2) shouldBe test2.toString
 
     // The two rejections the Java test left uncovered, both of them properties of the data and
     // both validated by the factory every other case here goes through. They are asserted in
@@ -329,6 +335,11 @@ class SequenceDateSpec extends AnyFunSuite with Matchers with EitherValues {
     fields should contain theSameElementsAs List("minimumPeriod", "sequenceNumber", "fullSequence")
     json.noSpaces should not include "null"
 
+    // The whole document, character for character, because the encoder is derived from the
+    // product: this pins the field set and the field order the derivation produces, so a field
+    // gained, lost or reordered by a change to the product fails here rather than downstream.
+    json.noSpaces shouldBe """{"minimumPeriod":"P2M","sequenceNumber":3,"fullSequence":true}"""
+
     // The other half of that: a document with the optional field missing decodes to nothing
     // held, which is what makes the round trip above exact.
     val withoutYearMonth = Json.obj(
@@ -343,6 +354,8 @@ class SequenceDateSpec extends AnyFunSuite with Matchers with EitherValues {
     val withYearMonth = instruction(SequenceDate.base(YM_2020_02, 2))
     Decoder[SequenceDate].decodeJson(withYearMonth.asJson) shouldBe Right(withYearMonth)
     withYearMonth.asJson.asObject.map(_.keys.toList).getOrElse(Nil) should contain("yearMonth")
+    withYearMonth.asJson.noSpaces shouldBe
+      """{"yearMonth":"2020-02","sequenceNumber":2,"fullSequence":false}"""
 
     // The decoder validates through the same factory a caller's inputs go through, so a
     // document describing no instruction is a decoding failure rather than an invalid value.

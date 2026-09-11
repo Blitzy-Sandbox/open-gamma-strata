@@ -14,9 +14,13 @@ import cats.data.Ior
 import cats.data.NonEmptyChain
 import cats.syntax.all._
 
+import org.scalacheck.Gen
+import org.scalacheck.rng.Seed
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
+import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 
+import com.opengamma.strata.collect.Arbitraries._
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
@@ -98,6 +102,21 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * so there is nothing to sweep; the behaviour such a sweep was there to check - equality,
  * hashing and rendering - is asserted directly instead.
  *
+ * ===Fixed outcomes and generated outcomes===
+ *
+ * The members of this type are asserted against chosen outcomes, because a member applied to
+ * a chosen input is what a case about a member is. The structure of an outcome - what equality
+ * and hashing make of it, and what a decomposition and a rebuild do to it - is asserted
+ * instead over outcomes drawn from
+ * [[com.opengamma.strata.collect.Arbitraries.genValueWithFailures]], which reaches all three
+ * shapes of the underlying `Ior` at equal frequency and puts one to four failures on the
+ * failure side of the two that have one. Three fixed outcomes cannot state what those cases
+ * state: the value is arbitrary rather than the one string this file writes, the chain is of
+ * an arbitrary length rather than of two, its failures carry arbitrary reasons, messages and
+ * attributes, and the shape is drawn rather than chosen. The last of the cases below asserts
+ * the distribution itself, so a later change to that generator which stopped producing one of
+ * the three shapes is caught here rather than quietly weakening every case above it.
+ *
  * ===Traceability===
  *
  * Every test method of the class being ported has a named case here, and the mapping from
@@ -111,7 +130,19 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * @see [[FailureReason]] for the reasons a failure can carry
  * @see [[com.opengamma.strata.collect.testkit.ResultMatchers]] for the matchers used here
  */
-final class ValueWithFailuresSpec extends AnyFunSuite with Matchers {
+final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
+
+  /**
+   * The number of outcomes each generated property of the structural section is checked against.
+   *
+   * The default of the framework is a handful, and a handful is too few for a generator that
+   * spreads its draws over three shapes and then over the length of a failure chain within two
+   * of them: the combination that matters most here - a value together with several failures -
+   * would be seen a couple of times a run. A hundred draws reaches each shape some thirty
+   * times while keeping this file inside the second it runs in.
+   */
+  implicit override val generatorDrivenConfig: PropertyCheckConfiguration =
+    PropertyCheckConfiguration(minSuccessful = 100)
 
   // ---------------------------------------------------------------------------
   // Fixtures.
@@ -799,6 +830,169 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers {
     failuresOf(rebuild(onlyFailures)) shouldBe List(FAILURE1, FAILURE2)
   }
 
+  // ---------------------------------------------------------------------------
+  // Structure, over generated outcomes.
+  //
+  // The two cases above fix three outcomes - one of each shape, one value, one
+  // pair of failures - and that is what the two Java methods they replace did
+  // with the bean they built. What those methods were reaching for, though, is a
+  // property of the type rather than of the three values: an outcome built from
+  // the parts of another is equal to it, equal outcomes hash alike, and the
+  // failures an outcome reports are part of its value, in the order it reports
+  // them. Each of those holds of every outcome or of none, so the cases below
+  // draw theirs from the generator of this module: an arbitrary value, a chain
+  // of arbitrary length whose failures carry arbitrary reasons, messages and
+  // attributes, and a shape drawn from all three rather than chosen here.
+  //
+  // The failure values are asserted whole rather than counted. A rebuild that
+  // kept the number of failures and the order of their messages while dropping
+  // their attributes would satisfy a count and lose data the reporting side of
+  // this library depends on, so every assertion below compares the failures
+  // themselves and then their three parts one by one.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Chains of two to four failures that are distinct from one another by construction.
+   *
+   * Order-sensitivity can only be asserted of a chain whose reversal is a different sequence,
+   * and a chain drawn straight from the generator may hold one failure or hold the same
+   * failure twice, in which case reversing it changes nothing. Tagging each drawn failure with
+   * its position makes the failures pairwise distinct - they disagree on an attribute, whatever
+   * else they agree on - so the reversal of every chain this generates is a different sequence
+   * of failures, and no draw has to be discarded to get one.
+   */
+  private val genDistinctFailureChain: Gen[NonEmptyChain[Failure]] =
+    for {
+      head <- genFailure
+      count <- Gen.choose(1, 3)
+      tail <- Gen.listOfN(count, genFailure)
+    } yield {
+      val tagged: List[Failure] = (head :: tail).zipWithIndex.map {
+        case (failure, index) => failure.withAttribute("position", index.toString)
+      }
+      NonEmptyChain.of(tagged.head, tagged.tail: _*)
+    }
+
+  test("rebuilding an arbitrary outcome from its parts returns the outcome it was given") {
+    forAll(genValueWithFailures(genNonEmptyText)) { (outcome: ValueWithFailures[String]) =>
+      // The helper takes the outcome apart into its failures and its value and builds a new
+      // outcome from them, through `of` where there is a value and through the chain alone
+      // where there is not. That it is the identity is the property the removed serialization
+      // case was reaching for, and it holds for the third shape as well as for the two the
+      // class being ported could express.
+      rebuild(outcome) shouldBe outcome
+      (rebuild(outcome) === outcome) shouldBe true
+      ValueWithFailures.hasFailures(rebuild(outcome)) shouldBe ValueWithFailures.hasFailures(outcome)
+    }
+  }
+
+  test("the value and the whole of every failure survive a rebuild in the order they were reported") {
+    forAll(genValueWithFailures(genNonEmptyText)) { (outcome: ValueWithFailures[String]) =>
+      val rebuilt: ValueWithFailures[String] = rebuild(outcome)
+
+      // The value survives exactly - the same string, or the absence of one for the shape
+      // that carries no value - and so does each failure, with its reason, its message and
+      // its attributes, in the position the outcome reported it in.
+      valueOf(rebuilt) shouldBe valueOf(outcome)
+      failuresOf(rebuilt) shouldBe failuresOf(outcome)
+      reasonsOf(rebuilt) shouldBe reasonsOf(outcome)
+      messagesOf(rebuilt) shouldBe messagesOf(outcome)
+      failuresOf(rebuilt).map(failure => failure.attributes) shouldBe
+        failuresOf(outcome).map(failure => failure.attributes)
+    }
+  }
+
+  test("equal outcomes hash alike, and the three shapes over one value are three distinct outcomes") {
+    forAll(genNonEmptyText, genFailures) { (value: String, failures: NonEmptyChain[Failure]) =>
+      val reported: ValueWithFailures[String] =
+        ValueWithFailures.of(value, failures.toNonEmptyList.toList)
+      val sameReported: ValueWithFailures[String] =
+        ValueWithFailures.of(value, failures.toNonEmptyList.toList)
+      val plain: ValueWithFailures[String] = ValueWithFailures.of(value)
+      val onlyFailures: ValueWithFailures[String] = Ior.left(failures)
+
+      // Two outcomes built the same way from the same parts are equal and hash alike, which
+      // is what makes one usable as a key and what the reflective sweep being replaced
+      // checked for the one bean it built.
+      reported shouldBe sameReported
+      reported.hashCode shouldBe sameReported.hashCode
+      (reported === sameReported) shouldBe true
+
+      // The three shapes over one value and one chain are three different outcomes: reporting
+      // failures is not the same as not reporting them, and carrying a value is not the same
+      // as carrying none. Holding all three in a set is the compact statement that equality
+      // and hashing agree about that.
+      (reported == plain) shouldBe false
+      (reported == onlyFailures) shouldBe false
+      (plain == onlyFailures) shouldBe false
+      Set(plain, reported, onlyFailures) should have size 3
+    }
+  }
+
+  test("the order of the failures an outcome reports is part of the outcome") {
+    forAll(genNonEmptyText, genDistinctFailureChain) { (value: String, failures: NonEmptyChain[Failure]) =>
+      val ordered: List[Failure] = failures.toNonEmptyList.toList
+      val forward: ValueWithFailures[String] = ValueWithFailures.of(value, ordered)
+      val reversed: ValueWithFailures[String] = ValueWithFailures.of(value, ordered.reverse)
+
+      failuresOf(forward) shouldBe ordered
+      failuresOf(reversed) shouldBe ordered.reverse
+      failuresOf(reversed) should contain theSameElementsAs failuresOf(forward)
+      valueOf(reversed) shouldBe valueOf(forward)
+
+      // The two report the same failures about the same value and differ only in the order
+      // they report them in, so this is exactly the difference the ordered chain records and
+      // an equality that treated the failures as a bag would lose. The comparison is written
+      // against the sequence rather than against the length of the chain, so it stays a true
+      // statement about any chain at all: were this property ever to fail, the minimised
+      // chain the framework reports back - which it derives without knowing the generator
+      // above keeps its failures distinct - is still a chain this assertion holds of.
+      if (ordered == ordered.reverse) {
+        reversed shouldBe forward
+      } else {
+        (reversed == forward) shouldBe false
+        (reversed === forward) shouldBe false
+      }
+
+      // The shape that carries no value orders its failures the same way, the ordering having
+      // nothing to do with the value: the chain alone, and the chain alone reversed, are two
+      // different outcomes of that shape.
+      val failuresOnly: ValueWithFailures[String] = Ior.left(failures)
+      val reversedFailuresOnly: ValueWithFailures[String] = Ior.left(failures.reverse)
+      failuresOf(failuresOnly) shouldBe ordered
+      failuresOf(reversedFailuresOnly) shouldBe ordered.reverse
+      (reversedFailuresOnly == failuresOnly) shouldBe (ordered == ordered.reverse)
+    }
+  }
+
+  test("every one of the three shapes arises from the generator of partial successes") {
+    // The cases above are only as strong as the spread of the generator they draw from: were
+    // it to stop producing the shape that carries failures and no value, or the shape that
+    // carries both, every one of them would still pass while asserting less than it reads as
+    // asserting. This case pins the spread itself. The sample is drawn from a fixed seed, so
+    // the case is a function of the generator and of nothing else, and it fails if a shape
+    // goes missing rather than failing once in a while.
+    val samples: List[ValueWithFailures[String]] =
+      Gen
+        .listOfN(256, genValueWithFailures(genNonEmptyText))
+        .pureApply(Gen.Parameters.default, Seed(20160517L))
+
+    samples should have size 256
+    samples.count(outcome => outcome.isLeft) should be > 0
+    samples.count(outcome => outcome.isRight) should be > 0
+    samples.count(outcome => outcome.isBoth) should be > 0
+    // The three counts account for the whole sample, an `Ior` having no fourth case, and
+    // every drawn outcome is well formed: it reports failures exactly when it is not a plain
+    // success, and it carries a value exactly when it is not the failures-only shape.
+    samples.count(outcome => outcome.isLeft) + samples.count(outcome => outcome.isRight) +
+      samples.count(outcome => outcome.isBoth) shouldBe 256
+    samples.foreach { outcome =>
+      ValueWithFailures.hasFailures(outcome) shouldBe !outcome.isRight
+      valueOf(outcome).isDefined shouldBe !outcome.isLeft
+      failuresOf(outcome).isEmpty shouldBe outcome.isRight
+    }
+  }
+
 }
 
 /*
@@ -921,15 +1115,29 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers {
  *       package are excluded from the closed inventory of covered serialized forms, so the
  *       structural round trip is what replaces it
  *
- * Two cases here have no counterpart in the class being ported, because they assert
- * behaviour that class could not have:
+ * Seven cases here have no counterpart in the class being ported, because they assert
+ * behaviour that class could not have or facts it never stated:
  *
  *   - "an outcome can report failures and carry no value at all" - the third shape of an
  *     `Ior`, which the mandatory value of the original ruled out.
  *   - "withAdditionalFailures with nothing to add returns the outcome it was given" - the
  *     documented identity of adding nothing, asserted as identity rather than equality.
+ *   - "rebuilding an arbitrary outcome from its parts returns the outcome it was given" -
+ *     rows 26 and 27 above state this of three outcomes written out here; this states it of
+ *     every outcome the generator of this module can draw, of all three shapes.
+ *   - "the value and the whole of every failure survive a rebuild in the order they were
+ *     reported" - the same round trip, asserted part by part, so a rebuild that kept the
+ *     count and the order of the failures while losing their attributes would be caught.
+ *   - "equal outcomes hash alike, and the three shapes over one value are three distinct
+ *     outcomes" - the equality and hashing of row 26, over an arbitrary value and an
+ *     arbitrary chain rather than over one string and one pair of failures.
+ *   - "the order of the failures an outcome reports is part of the outcome" - asserted over
+ *     chains of two to four failures that are distinct by construction, which is what makes
+ *     a reversal observable; row 3 states it of one pair.
+ *   - "every one of the three shapes arises from the generator of partial successes" - the
+ *     spread of the generator the four cases above draw from, pinned so that a later change
+ *     to it which dropped a shape fails here instead of quietly weakening them.
  *
- * That makes 29 cases in this file, all of which count towards the test total this module
+ * That makes 34 cases in this file, all of which count towards the test total this module
  * is required to reach.
  */
-

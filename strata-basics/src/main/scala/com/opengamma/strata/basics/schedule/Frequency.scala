@@ -36,9 +36,20 @@ import com.opengamma.strata.collect.result.Failure
  * years, which allows addition and subtraction to work, producing a date after the end of the
  * term.
  *
- * Each frequency is based on a `java.time.Period`. The months and years of that period are '''not'''
- * normalised, so a frequency of 12 months and a frequency of 1 year are two different values
- * that behave identically under date addition. [[normalized]] applies the normalisation.
+ * Each frequency is based on a `java.time.Period`, held in the canonical form of its length.
+ * Construction redistributes the months of that period into years and months, so a frequency of
+ * 12 months and a frequency of 1 year are '''one''' value rather than two, and 30 months is two
+ * years and six months. Days are left alone, being canonical already, beyond the days-to-weeks
+ * naming described below. Canonicalisation is what makes this a normalising type: two
+ * frequencies of the same length are the same value, so equality, hashing, ordering, the name
+ * and the JSON form of a frequency follow from its length and not from the arithmetic the
+ * caller happened to write.
+ *
+ * The one length whose canonical form is not the one `java.time.Period.normalized` produces is
+ * a year: it is held as 12 months and named `P12M`. That is the form the library being ported
+ * uses for the annual frequency - it publishes a `P12M` constant and no `P1Y` one, and its
+ * `Tenor` normalises a year to `12M` for the same reason - and it is the form every captured
+ * Java baseline of the migration carries.
  *
  * The frequency is often expressed as a number of events per year; [[eventsPerYear]] returns
  * that count for the frequencies for which it is an exact integer, and
@@ -49,11 +60,12 @@ import com.opengamma.strata.collect.result.Failure
  * This is a normalising type in the sense of the port's construction policy. It is a
  * `sealed abstract case class` with a private constructor, so it has no public `apply` and no
  * `copy`, and the only way to obtain a value is through the companion: one of the fourteen
- * constants, or one of the factories, each of which canonicalises its input (a whole number of
- * days becomes weeks) and rejects a period that is zero, negative or longer than the maximum.
- * A factory therefore hands back `EitherNec[Failure, Frequency]` rather than throwing, and
- * every value of this type is valid by construction. Pattern matching still works, since
- * `unapply` is generated as usual:
+ * constants, or one of the factories, each of which canonicalises its input - a whole number of
+ * days is named in weeks and the months of a period are redistributed into years and months -
+ * and rejects a period that is zero, negative or longer than the maximum. A factory therefore
+ * hands back `EitherNec[Failure, Frequency]` rather than throwing, and every value of this type
+ * is valid '''and canonical''' by construction, which is why [[normalized]] has nothing left to
+ * do. Pattern matching still works, since `unapply` is generated as usual:
  *
  * {{{
  * frequency match {
@@ -68,14 +80,27 @@ import com.opengamma.strata.collect.result.Failure
  * being ported: there, `equals` and `hashCode` read the period alone even though the name was
  * held in a second field. This port holds the period as its only field and derives the name
  * from it, so the structural equality the case class generates '''is''' that equality, and a
- * name that contradicts a period cannot be constructed. The derivation is total and injective:
- * `Term` names the 10,000-year period, `P2W` names an exact number of weeks, and every other
- * frequency is named by its ISO-8601 period text, which never contains `W` and never spells
- * `Term`. [[name]], `toString` and the `Show` instance all agree, and the JSON form is that
- * same text.
+ * name that contradicts a period cannot be constructed. Because every period is canonical, that
+ * equality is equality of length - which is where this port is stricter than the one being
+ * ported, whose 12-month and 1-year frequencies were unequal.
+ *
+ * The derivation of the name is total and injective: `Term` names the 10,000-year period, `P2W`
+ * names an exact number of weeks, and every other frequency is named by its ISO-8601 period
+ * text, which never contains `W` and never spells `Term`. [[name]], `toString` and the `Show`
+ * instance all agree, and the JSON form is that same text.
  *
  * ===Divergences from the Java original, for `SCALA_MIGRATION.md`===
  *
+ *  - '''Construction canonicalises the period.''' The Java factories keep the period they are
+ *    handed, so a frequency of 12 months and a frequency of 1 year are distinct values there and
+ *    `normalized()` converts between them. This port canonicalises in the one place a frequency
+ *    is created, as the construction policy of a normalising type requires, with three visible
+ *    consequences: the two are one value, so `ofMonths(12)`, `ofYears(1)`, `of(Period.ofYears(1))`
+ *    and `parse("P1Y")` all yield [[Frequency.P12M]]; a month count above twelve is named in
+ *    years and months, so `ofMonths(30)` is `P2Y6M` where Java named it `P30M`; and
+ *    [[normalized]] is the identity. The canonical form of a year is `P12M` rather than `P1Y`,
+ *    for the reasons given above, so `normalized` on the annual frequency returns it unchanged
+ *    where the Java method returned a value named `P1Y`.
  *  - '''`TemporalAmount` is not implemented.''' The Java `Frequency` implements
  *    `java.time.temporal.TemporalAmount`, whose `getUnits` hands back a mutable-collection type
  *    from the JDK, which the public API of this port does not admit anywhere, so implementing
@@ -172,8 +197,9 @@ sealed abstract case class Frequency private (period: Period) {
   /**
    * Checks whether this frequency is annual.
    *
-   * An annual frequency consists of 12 months, however they are expressed, and has no day or
-   * week element. Both `P12M` and a frequency of one year are annual.
+   * An annual frequency consists of 12 months, however they were expressed to the factory that
+   * built it, and has no day or week element. A frequency built from one year and one built from
+   * twelve months are the same value - [[Frequency.P12M]] - and it is the annual one.
    *
    * @return true if this frequency is annual
    */
@@ -181,26 +207,24 @@ sealed abstract case class Frequency private (period: Period) {
 
   //-------------------------------------------------------------------------
   /**
-   * Normalises the months and years of this frequency.
+   * Returns this frequency, which is already in canonical form.
    *
-   * This returns a frequency of an equivalent length, with any number of months greater than
-   * twelve expressed as a combination of years and months. A frequency of 12 months normalises
-   * to one of 1 year, and one of 30 months to one of 2 years and 6 months; a day-based or
-   * week-based frequency is returned unchanged.
+   * The type being ported held whatever period it was handed and offered this method to
+   * redistribute months beyond twelve into years and months. This port performs that
+   * redistribution in the one place a frequency is created, so no caller can hold a frequency
+   * that is not canonical and there is nothing left for this method to do. It is therefore the
+   * identity - which is also the idempotence the construction policy asks of a normalising
+   * type - and it is kept because the ported API published it, so a call site that asks for a
+   * normalised frequency still reads and behaves correctly.
    *
-   * The result cannot fail to be a frequency, so this is total, as it was in Java.
-   * Normalisation only redistributes the months of the period into years and months, leaving
-   * the total number of months and the number of days as they were, so it can neither make the
-   * period zero or negative nor push it past the maximum length - the three things a factory
-   * rejects. The normalised period is therefore built directly rather than run through a
-   * factory whose failure case is unreachable.
+   * One value differs from what the ported `normalized()` produced: the canonical form of a
+   * year here is 12 months, so the annual frequency is returned unchanged as
+   * [[Frequency.P12M]] where the Java method handed back a frequency named `P1Y`. The reason is
+   * in the divergence list of this type.
    *
-   * @return the normalised frequency
+   * @return this frequency, the canonical value of its length
    */
-  def normalized: Frequency = {
-    val norm = period.normalized
-    if (norm == period) this else Frequency.create(norm)
-  }
+  def normalized: Frequency = this
 
   //-------------------------------------------------------------------------
   /**
@@ -209,7 +233,8 @@ sealed abstract case class Frequency private (period: Period) {
    * The number of events per year is the number of times the period occurs in a year. Not
    * every frequency has an integral number, and the ones that do are exactly the following.
    * Month-based and year-based frequencies divide 12 by the number of months, so `P1M`, `P2M`,
-   * `P3M`, `P4M`, `P6M` and `P12M` (or `P1Y`) return a value. Day-based and week-based
+   * `P3M`, `P4M`, `P6M` and `P12M` - the annual frequency, whichever unit the caller spelled
+   * that length in - return a value. Day-based and week-based
    * frequencies divide 364 by the number of days, so `P1D`, `P2D`, `P4D`, `P7D`, `P13D`,
    * `P26D`, `P28D`, `P52D`, `P91D`, `P182D` and `P364D` return a value, which covers `P1W`,
    * `P2W`, `P4W`, `P13W`, `P26W` and `P52W`. Every constant of this type therefore returns a
@@ -302,18 +327,25 @@ sealed abstract case class Frequency private (period: Period) {
  * Provides the constants, factories and instances for periodic frequencies.
  *
  * The fourteen constants are the frequencies that occur throughout finance, and they are the
- * values the factories hand back for the corresponding inputs, so `Frequency.ofMonths(3)`
- * yields the very same value as [[P3M]]. Each factory canonicalises what it is given and
- * rejects what cannot be a frequency, reporting the rejection as a `Failure` rather than
- * throwing; [[parse]] additionally reads the text form back.
+ * values the factories hand back for the corresponding inputs - the very same instances, not
+ * merely equal ones, because a factory looks the canonical period up among them before building
+ * anything. So `Frequency.ofMonths(3)`, `Frequency.of(Period.ofMonths(3))` and
+ * `Frequency.parse("P3M")` all yield [[P3M]] itself, and `Frequency.ofYears(1)` yields
+ * [[P12M]]. Each factory canonicalises what it is given and rejects what cannot be a frequency,
+ * reporting the rejection as a `Failure` rather than throwing; [[parse]] additionally reads the
+ * text form back.
  *
  * ===Declaration order matters here===
  *
- * The fourteen constants are built while this object initialises, and building one derives its
- * name and its events-per-year count, which reads the private constants below. Those constants
- * are therefore declared first: moving them after the values would leave [[TERM]] reading an
- * uninitialised period and naming itself `P10000Y`. The ad-hoc and unit tests assert
- * `TERM.name == "Term"`, which is what pins this ordering.
+ * The fourteen constants are built while this object initialises, and building one canonicalises
+ * its period and derives its name and its events-per-year count, which reads the private
+ * constants below. Those constants are therefore declared first: moving them after the values
+ * would leave [[TERM]] reading an uninitialised period and naming itself `P10000Y`. The ad-hoc
+ * and unit tests assert `TERM.name == "Term"`, which is what pins this ordering.
+ *
+ * The lookup table [[byCanonicalPeriod]] runs the other way: it reads the fourteen values, so it
+ * is declared after them. It is consulted only by a factory, which cannot run until this object
+ * has finished initialising, so nothing reads it while it is still empty.
  */
 object Frequency {
 
@@ -356,6 +388,21 @@ object Frequency {
 
   /** The number of months per year used to count month-based events, as in Java. */
   private val MonthsPerYear: Int = 12
+
+  /**
+   * The canonical period of the annual frequency, which is twelve months rather than one year.
+   *
+   * A length of exactly twelve months with no days is the one length whose canonical form is not
+   * the form `java.time.Period.normalized` produces. Months are chosen because that is the form
+   * the ported library uses for the annual frequency - it publishes a `P12M` constant and no
+   * `P1Y` one, its `Tenor.normalized` maps a year to `12M`, and its captured baselines spell the
+   * annual frequency `P12M` - so holding that length as months keeps the name, the text form and
+   * the JSON of the most-used frequency of the library identical to the original.
+   *
+   * This is read while the fourteen values below are built, so it is declared before them and
+   * after [[MonthsPerYear]], which it reads in turn.
+   */
+  private val AnnualPeriod: Period = Period.ofMonths(MonthsPerYear)
 
   /** The message reported when a period is longer than the maximum, worded as in Java. */
   private val MaxPeriodMessage: String = "Period must not exceed 1000 years"
@@ -460,11 +507,13 @@ object Frequency {
   /**
    * A periodic frequency of 12 months (1 year), also known as annual.
    *
-   * There is 1 event per year with this frequency. Note that this is not the same value as a
-   * frequency of one year: the months of a period are not normalised, so `P12M` and `P1Y`
-   * are distinct frequencies of equal length. [[Frequency.normalized]] converts between them.
+   * There is 1 event per year with this frequency. This is '''the''' frequency of that length:
+   * twelve months is the canonical form of a year here, so [[ofYears]] of one year, [[of]] of a
+   * one-year period and [[parse]] of `P1Y` all yield this value, and it names itself `P12M`.
+   * The library being ported kept a frequency of one year apart from this one; the divergence is
+   * recorded on the type.
    */
-  val P12M: Frequency = create(Period.ofMonths(12))
+  val P12M: Frequency = create(AnnualPeriod)
 
   /**
    * A periodic frequency matching the term, also known as zero-coupon.
@@ -480,13 +529,16 @@ object Frequency {
    * Obtains an instance from a `Period`.
    *
    * The period normally consists of either days and weeks, or months and years. An exact
-   * number of days is converted to weeks, so a period of 7 days yields [[P1W]]; months are not
-   * normalised into years, so a period of 12 months yields [[P12M]] rather than a frequency of
-   * one year.
+   * number of days is converted to weeks, so a period of 7 days yields [[P1W]]; the months of
+   * the period are redistributed into years and months, so a period of 12 months and a period
+   * of one year both yield [[P12M]] and a period of 30 months yields the frequency named
+   * `P2Y6M`. Two periods of the same length therefore yield the same value.
    *
    * The period must be positive and non-zero, and a period expressed in months or years must
    * not exceed 1,000 years; each of those is a failure of this factory rather than an
-   * exception. A period expressed in days is not bounded, as in the Java original.
+   * exception. A period expressed in days is not bounded, as in the Java original. The bound is
+   * applied to the period as it is given, which the redistribution cannot change: it leaves
+   * both the total number of months and the number of days exactly as they were.
    *
    * @param period  the period to convert to a periodic frequency
    * @return the frequency, or the failures describing why the period is not one
@@ -550,9 +602,11 @@ object Frequency {
   /**
    * Obtains an instance backed by a period of months.
    *
-   * Months are not normalised into years, so 24 months yields the frequency `P24M` and not one
-   * of two years. The six month-based constants are returned for their own numbers of months,
-   * and more than 12,000 months is a failure.
+   * Months beyond twelve are redistributed into years and months, so 24 months yields the
+   * two-year frequency named `P2Y` and 30 months yields `P2Y6M`; twelve months is the annual
+   * frequency [[P12M]], whose canonical form is months and which is therefore named in months.
+   * The six month-based constants are returned for their own numbers of months, and more than
+   * 12,000 months is a failure.
    *
    * @param months  the number of months
    * @return the frequency, or the failures describing why that number of months is not one
@@ -571,9 +625,9 @@ object Frequency {
   /**
    * Obtains an instance backed by a period of years.
    *
-   * The frequency holds the years it is given, so a frequency of one year is not the same value
-   * as [[P12M]] even though the two behave identically under date arithmetic. More than 1,000
-   * years is a failure.
+   * One year is the annual frequency [[P12M]], the canonical form of that length being months;
+   * any other number of years is held as years, so two years is the frequency named `P2Y`. More
+   * than 1,000 years is a failure.
    *
    * @param years  the number of years
    * @return the frequency, or the failures describing why that number of years is not one
@@ -588,8 +642,10 @@ object Frequency {
    * The text is ISO-8601, such as `P3M`, and the `P` may be left off, so `2W` and `P2W` both
    * name the same frequency. The term frequency is named `Term`, `T`, `0T` or `1T`, in any
    * mixture of cases. The text is read as a period and then passed through [[of]], so the
-   * canonicalisation and the bounds of that factory apply: `P7D` parses to [[P1W]], and `-2D`
-   * and `PTerm` are failures.
+   * canonicalisation and the bounds of that factory apply: `P7D` parses to [[P1W]], `P1Y` and
+   * `P12M` both parse to [[P12M]], `P30M` parses to the frequency named `P2Y6M`, and `-2D` and
+   * `PTerm` are failures. Text naming a length therefore names one frequency, however it spells
+   * that length.
    *
    * Text that names no period at all is reported as a parsing failure, and text that names a
    * period that is not a frequency reports what [[of]] reported; the accumulated failures of
@@ -614,17 +670,19 @@ object Frequency {
 
   //-------------------------------------------------------------------------
   /**
-   * Creates a frequency from a period already known to be one.
+   * Creates a frequency from a period already known to be one, in canonical form.
    *
-   * This is the only place a frequency is instantiated. The private constructor of a
-   * `sealed abstract case class` can only be reached through an anonymous subclass, which is
-   * what suppresses the public `apply` and `copy` the compiler would otherwise generate, and
-   * confines construction to this object.
+   * This is the only place a frequency is instantiated, and it canonicalises the period it is
+   * given, so no value of this type can hold a non-canonical period however it was built - the
+   * invariant that makes [[Frequency.normalized]] the identity and makes equality equality of
+   * length. The private constructor of a `sealed abstract case class` can only be reached
+   * through an anonymous subclass, which is what suppresses the public `apply` and `copy` the
+   * compiler would otherwise generate, and confines construction to this object.
    *
    * @param period  the period, which must be positive, non-zero and within the maximum length
-   * @return the frequency holding that period
+   * @return the frequency holding the canonical form of that period
    */
-  private def create(period: Period): Frequency = new Frequency(period) {}
+  private def create(period: Period): Frequency = new Frequency(canonicalPeriodOf(period)) {}
 
   /**
    * Creates a frequency from a period, checking that the period can be one.
@@ -632,6 +690,11 @@ object Frequency {
    * The two checks are those of the Java constructor, and they accumulate: the outcome names
    * every reason the period was rejected rather than only the first. They are the only checks
    * needed at this point, because each factory has already applied whatever bound it carries.
+   *
+   * The checks run '''before''' the period is canonicalised, which is what keeps
+   * canonicalisation safe: it is only ever applied to a positive period whose total number of
+   * months a factory has already bounded, so the arithmetic of
+   * `java.time.Period.normalized` cannot overflow (see [[canonicalPeriodOf]]).
    *
    * @param period  the period to check
    * @return the frequency, or the failures describing why the period is not one
@@ -641,7 +704,70 @@ object Frequency {
       (
         Validate.isFalse(period.isZero, "Frequency period must not be zero"),
         Validate.isFalse(period.isNegative, "Frequency period must not be negative")
-      ).mapN((_, _) => create(period)))
+      ).mapN((_, _) => canonical(period)))
+
+  /**
+   * Returns the frequency of the length of the specified period, reusing a constant if there is
+   * one.
+   *
+   * Canonicalising first and then looking the result up means a factory hands back the very
+   * instance a caller would have named: `of(Period.ofMonths(3))` is [[P3M]] and
+   * `ofYears(1)` is [[P12M]], not merely values equal to them. Reuse is an optimisation of
+   * identity, not of semantics - equality of this type is structural, so a freshly built value
+   * of the same length would compare equal either way.
+   *
+   * [[create]] canonicalises the period again, which costs nothing - the reduction is idempotent
+   * and hands back the very period it is given once that period is canonical - and keeps the
+   * invariant stated in one place, the place a frequency is built.
+   *
+   * @param period  the period, already known to be positive, non-zero and within the maximum length
+   * @return the constant of that length, or a new frequency holding its canonical period
+   */
+  private def canonical(period: Period): Frequency = {
+    val canonicalPeriod = canonicalPeriodOf(period)
+    byCanonicalPeriod.getOrElse(canonicalPeriod, create(canonicalPeriod))
+  }
+
+  /**
+   * Reduces a period to the canonical form of its length.
+   *
+   * Two periods of the same length - the same total number of months and the same number of
+   * days - reduce to the same period here, which is what makes a frequency a value of its
+   * length rather than of the arithmetic that produced it. The reduction is
+   * `java.time.Period.normalized`, which carries months beyond twelve into years and leaves the
+   * days untouched, with the single exception of a length of exactly twelve months and no days:
+   * that is held as [[AnnualPeriod]], twelve months, for the reasons recorded there. A period
+   * already in canonical form is returned as it is.
+   *
+   * `Period.normalized` reports an arithmetic overflow for a period of more than roughly 2.1
+   * billion years, and no such period reaches this method. Every factory bounds the period at
+   * 1,000 years, or leaves the total number of months at zero, before anything is created, and
+   * the zero and negative checks of [[validated]] short-circuit ahead of it; the only other
+   * caller is [[TERM]], whose ten thousand years are already canonical.
+   *
+   * @param period  the period to reduce
+   * @return the canonical period of the same length
+   */
+  private def canonicalPeriodOf(period: Period): Period =
+    if (period.getDays == 0 && period.toTotalMonths == MonthsPerYear.toLong) {
+      AnnualPeriod
+    } else {
+      period.normalized
+    }
+
+  /**
+   * The fourteen constants indexed by their canonical periods.
+   *
+   * This is what [[canonical]] consults, so that a factory returns a constant rather than an
+   * equal copy of one. It reads the values above and is therefore declared after them; being a
+   * lookup from a canonical period, it can only ever be queried with one. The [[TERM]] entry is
+   * unreachable through the factories, whose bounds its ten thousand years exceed, and is listed
+   * because this is the table of the constants of this type rather than of the reachable ones.
+   */
+  private val byCanonicalPeriod: Map[Period, Frequency] =
+    List(P1D, P1W, P2W, P4W, P13W, P26W, P52W, P1M, P2M, P3M, P4M, P6M, P12M, TERM)
+      .map(frequency => frequency.period -> frequency)
+      .toMap
 
   /** Lifts a single failure into the accumulating form the factories return. */
   private def rejected(failure: Failure): EitherNec[Failure, Frequency] = Left(NonEmptyChain.one(failure))
@@ -653,7 +779,11 @@ object Frequency {
    * they built: the term period is named `Term`, an exact and non-zero number of days is named
    * in weeks, and anything else is named by the text of the period itself.
    *
-   * @param period  the period of the frequency
+   * The period it is given is canonical, so the name is the name of a length: `P12M` for a
+   * year, `P2Y6M` for thirty months. Where the Java factories could name two periods of one
+   * length differently - `P12M` and `P1Y` - there is only one name to choose here.
+   *
+   * @param period  the canonical period of the frequency
    * @return the name of that frequency
    */
   private def nameOf(period: Period): String =
@@ -768,11 +898,14 @@ object Frequency {
    * remaining tie.
    *
    * The tie-break is what makes `compare` return zero exactly when the values are equal, which
-   * the law suites require: `P12M` and a frequency of one year are of equal length but are not
-   * equal values, and they are separated by their names. Since the name is derived from the
-   * period and distinct periods have distinct names, no pair of unequal frequencies compares
-   * equal. The Java class publishes no comparison at all, so this ordering is an addition of
-   * the port rather than a port of anything.
+   * the law suites require. It is in fact unreachable: the canonical period of a frequency is a
+   * function of its total number of months and its number of days, so two frequencies that
+   * agree on both are the same value, and the two comparisons ahead of the tie-break have
+   * already separated any pair that is not. The name is compared last so that the ordering is
+   * total by construction rather than by that argument - and since the name is derived from the
+   * period and distinct periods have distinct names, the tie-break agrees with equality even if
+   * it were reached. The Java class publishes no comparison at all, so this ordering is an
+   * addition of the port rather than a port of anything.
    *
    * @return the ordering of frequencies
    */

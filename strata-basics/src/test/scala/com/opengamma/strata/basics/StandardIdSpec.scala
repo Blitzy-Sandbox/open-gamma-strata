@@ -43,6 +43,11 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *   - `"12\u00003"` embeds a NUL, which is rejected because it falls below the space at the
  *     bottom of the permitted range.
  *
+ * A fifth table sits inside `test_encodeScheme` rather than alongside these four, because it
+ * transcribes no provider: it holds the four inputs that make the encoder's guarantee worth
+ * asserting, being three characters a scheme may not hold and the percent that every escape
+ * begins with.
+ *
  * ===How the shape of the port changes the assertions===
  *
  * Three differences from the original are structural rather than a matter of taste, and each
@@ -230,6 +235,18 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
       test.value shouldBe value
       test.toString shouldBe s"$scheme~$value"
     }
+
+    // The language a value is accepted in is `[!-z][ -z]*` and not `[!-z][ -z]+`: one
+    // character is enough, here as in the Java original, and such a value round trips
+    // through the text form like any other. The `+` the failure messages quote is the
+    // original's message text, which this port reproduces word for word, so only an
+    // assertion can settle which of the two the factory actually applies. The boundary is
+    // real rather than absent: the one single-character value that is rejected is a space,
+    // because a value may not begin with one.
+    val single = identifier("A", "1")
+    single.value shouldBe "1"
+    single.toString shouldBe "A~1"
+    StandardId.of("A", " ") should beFailure
   }
 
   test("test_factory_String_String_invalid") {
@@ -255,9 +272,35 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
 
     testScheme shouldBe expectedScheme
     // Test use of the encoded scheme. This is the half of the Java test that gives the first
-    // half its point: percent is itself a permitted scheme character, so whatever the input
-    // held, what the encoder produces is accepted by the factory unchanged.
+    // half its point: percent is itself a permitted scheme character, so text holding at
+    // least one character is encoded into a scheme the factory accepts unchanged.
     identifier(testScheme, "value").scheme shouldBe expectedScheme
+
+    // The rows are the inputs that make that qualified guarantee worth stating: the space
+    // and the tilde, which a scheme may not hold at all - the tilde being the separator of
+    // the text form - a character outside ASCII, which becomes one escape group per byte of
+    // its UTF-8 form, and the percent, which a scheme may hold but which the encoder escapes
+    // regardless, since it is the character every escape begins with. The encoded text is
+    // asserted as well as its acceptance, so that a change of escaping is a failure here
+    // rather than a silently different scheme.
+    val encodings: TableFor2[String, String] = Table(
+      ("text", "encoded"),
+      (" ", "%20"),
+      ("%", "%25"),
+      ("~", "%7E"),
+      ("\u00e9", "%C3%A9"))
+
+    forAll(encodings) { (text: String, encoded: String) =>
+      StandardId.encodeScheme(text) shouldBe encoded
+      identifier(encoded, "value").scheme shouldBe encoded
+    }
+
+    // Empty text is the one input the guarantee does not cover, and it is a legal argument:
+    // there is nothing to escape, so the encoded form is empty too, and a scheme may not be
+    // empty. The encoder stays text to text - as the escaper it replaces is - so ruling this
+    // case out belongs to the caller, which is what the method's documentation states.
+    StandardId.encodeScheme("") shouldBe ""
+    StandardId.of("", "value") should beFailure
   }
 
   //-------------------------------------------------------------------------

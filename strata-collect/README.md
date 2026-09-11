@@ -1,11 +1,11 @@
 Strata-Collect
 --------------
-This directory contains the `strata-collect` module, ported to Scala.
-
-This is the Scala port of the subset of the Java `strata-collect` that `strata-basics` uses, and one
-of exactly two Scala modules in the sbt build; the other, `strata-basics`, depends on it. The package
-is unchanged, `com.opengamma.strata.collect`, so ported code keeps its imports. The sources are
-Scala 2.13.18 targeting JDK 21, built by the root `build.sbt` with sbt 1.13.0.
+This directory contains the `strata-collect` module: the Scala port of the subset of the Java
+`strata-collect` that `strata-basics` uses. The two are the sbt build's only modules, and
+`strata-basics` depends on this one. The package root is retained, `com.opengamma.strata.collect`,
+so imports migrate symbol by symbol, not package by package: `collect.named.Named` is now
+`collect.Named` and `ArgChecker` is `ArgCheck` or `Validate`. Sources are Scala 2.13.18 on JDK 21,
+built by the root `build.sbt` with sbt 1.13.0.
 
 ### Overview
 
@@ -33,28 +33,31 @@ This module provides the data structures, the error model and the codec helpers 
   decoders, null-dropping encoders, the tagged non-finite `Double` codec and the `DayOfWeek` and
   array codecs; products derive at compile time with `io.circe.generic.semiauto`, so nothing on the
   codec path uses reflection
-* io - a minimal `cats-effect` reader for classpath and file text, which is the module's only
-  effectful code, everything else being pure
+* io - a minimal `cats-effect` reader for classpath and file text, the module's only main-source use
+  of `cats-effect`; the calculations are pure, bar `ArgCheck`'s fail-fast throws and the `forEach`
+  callbacks of `DoubleArray` and `DoubleMatrix`, which run a caller-supplied action
 
 
 ### Ported subset
 
-The port follows actual use: the Java `strata-basics` main sources reference 29 distinct
-`com.opengamma.strata.collect` targets and its tests three more - `TestHelper`,
-`CollectProjectAssertions` and `Unchecked` - and only those are ported. Deliberately absent:
+The port follows actual use and nothing beyond it: the Java `strata-basics` main sources reference
+29 distinct `com.opengamma.strata.collect` targets and its tests three more - `TestHelper`,
+`CollectProjectAssertions` and `Unchecked` - which are ported or replaced, not reproduced:
+`TestHelper` becomes `testkit.TestHelper`, `CollectProjectAssertions` the `testkit.ResultMatchers`
+matchers, and `Unchecked` gives way to `scala.util.Try`/`Using`. Deliberately absent:
 
 * the function, timeseries and concurrent packages, and `IntArray`, `LongArray`, `BasisPoints`,
   `Percentage`, `NumberFormatter`, `CharMatchers` and `Version` - unused by `strata-basics`
 * tuple - Scala tuples are used instead
 * `Messages` - string interpolation is used instead
-* the io INI, CSV and `ResourceConfig` readers - the reference data they loaded is now Scala data in
-  `strata-basics`
+* every Java `io/*` API bar the text reader `Resources.readClasspathText`/`readFileText` - the INI,
+  CSV and `ResourceConfig` readers, whose data is now Scala data in `strata-basics`, the
+  `ResourceLocator` type, the byte and char sources with their URL, archive and BOM handling, and
+  the CSV, XML and ASCII-table output helpers
 * `FailureException`, `FailureItemException`, `IllegalArgFailureException` and
   `ParseFailureException` - failures are values, not exceptions
 
 The classpath carries no Guava, no Joda-Beans, no Joda-Convert and no Java `strata-collect` artifact.
-[SCALA_MIGRATION.md](../SCALA_MIGRATION.md) holds the member-level symbol table and every deliberate
-divergence.
 
 
 ### Forward path
@@ -66,11 +69,10 @@ imports port symbol by symbol, and its public API stays free of anything `strata
 `externalNames` is retained for the second reason - the FpML and SWIFT alias groups belong to the
 collect contract rather than to `strata-basics`.
 
-The module is usable and testable on its own, `sbt "strata-collect/test"` running it alone, and its
-test-scope helpers `testkit.TestHelper`, `testkit.ResultMatchers` and `Arbitraries` are shared with
-the `strata-basics` tests through the sbt `test->test` dependency that replaces the former Maven
-test-jar. See the [root README](../README.md) for the full command set and
-[verify-gates.sh](../scripts/verify-gates.sh) for the acceptance gates.
+The module is usable and testable on its own, `sbt "strata-collect/test"` running it alone, while a
+root `sbt test` runs both projects through the aggregation in `build.sbt`. Its test-scope helpers
+`testkit.TestHelper`, `testkit.ResultMatchers` and `Arbitraries` are shared with the `strata-basics`
+tests through the sbt `test->test` dependency that replaces the former Maven test-jar.
 
 
 ### Source code

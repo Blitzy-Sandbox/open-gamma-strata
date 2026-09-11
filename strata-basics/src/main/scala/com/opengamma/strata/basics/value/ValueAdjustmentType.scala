@@ -66,11 +66,14 @@ import com.opengamma.strata.collect.named.NamedEnum
  * constant identifier and which this port states directly. That is the string `name`
  * returns, the string `toString` renders, the string `Show` produces and the string the JSON
  * codec writes, so a stored or transmitted adjustment type always takes that one form. The
- * identifiers of the members are equally unchanged, so `ValueAdjustmentType.DELTA_AMOUNT`
- * still names the same thing in code.
+ * Scala identifier of each member is that same canonical name, so
+ * `ValueAdjustmentType.DeltaAmount` is both how the member is written in code and how it
+ * renders. The constant identifiers of the Java enum - `DELTA_AMOUNT` and its fellows - remain
+ * accepted spellings of the name lookup, so text written against the original still resolves
+ * even though no member is spelled that way in code.
  *
  * Parsing is described on `valueOf` and `parse`. In short, every spelling the original
- * accepted is accepted here: the canonical mixed case form, the constant identifier, the
+ * accepted is accepted here: the canonical mixed case form, the Java constant identifier, the
  * run-together form, and the upper and lower case variants of each.
  *
  * ===Equality, ordering and rendering===
@@ -105,7 +108,9 @@ sealed abstract class ValueAdjustmentType private[value] (val name: String) exte
    *
    * This is the same string as `name`, which reproduces the rendering of the type being
    * ported, so an adjustment type interpolated into a message reads as its mixed case name
-   * rather than as its identifier.
+   * rather than as the SCREAMING_SNAKE spelling the Java enum constant would have rendered.
+   * It is stated here rather than left to the rendering a `case object` derives, so the
+   * rendering stays a statement about `name` and not about how the members are spelled.
    *
    * @return the formatted string representing this type
    */
@@ -126,7 +131,7 @@ object ValueAdjustmentType {
    *
    * The result is `modifyingValue`.
    */
-  case object REPLACE extends ValueAdjustmentType("Replace") {
+  case object Replace extends ValueAdjustmentType("Replace") {
     override def adjust(baseValue: Double, modifyingValue: Double): Double = modifyingValue
   }
 
@@ -138,7 +143,7 @@ object ValueAdjustmentType {
    *
    * This adjustment type can be referred to as an ''absolute shift''.
    */
-  case object DELTA_AMOUNT extends ValueAdjustmentType("DeltaAmount") {
+  case object DeltaAmount extends ValueAdjustmentType("DeltaAmount") {
     override def adjust(baseValue: Double, modifyingValue: Double): Double =
       (baseValue + modifyingValue)
   }
@@ -151,7 +156,7 @@ object ValueAdjustmentType {
    *
    * This adjustment type can be referred to as a ''relative shift''.
    */
-  case object DELTA_MULTIPLIER extends ValueAdjustmentType("DeltaMultiplier") {
+  case object DeltaMultiplier extends ValueAdjustmentType("DeltaMultiplier") {
     override def adjust(baseValue: Double, modifyingValue: Double): Double =
       (baseValue + baseValue * modifyingValue)
   }
@@ -162,7 +167,7 @@ object ValueAdjustmentType {
    *
    * The result is `(baseValue * modifyingValue)`.
    */
-  case object MULTIPLIER extends ValueAdjustmentType("Multiplier") {
+  case object Multiplier extends ValueAdjustmentType("Multiplier") {
     override def adjust(baseValue: Double, modifyingValue: Double): Double =
       (baseValue * modifyingValue)
   }
@@ -180,29 +185,35 @@ object ValueAdjustmentType {
    */
   val values: NonEmptyList[ValueAdjustmentType] =
     NonEmptyList.of(
-      REPLACE,
-      DELTA_AMOUNT,
-      DELTA_MULTIPLIER,
-      MULTIPLIER
+      Replace,
+      DeltaAmount,
+      DeltaMultiplier,
+      Multiplier
     )
 
   /**
    * The alternate spellings of the family, each mapped to a canonical name.
    *
-   * The name helper of the original registered six lookup keys for every constant: the
-   * identifier, the identifier in upper and in lower case, the canonical mixed case form, and
-   * that form in upper and in lower case. A named family registers two of those on its own -
-   * the canonical name and the canonical name folded to upper case - so this table supplies
-   * the rest, and only the rest: the identifier, the identifier in lower case, and the
-   * canonical form run together in lower case. Nothing here is a spelling the original did not
-   * accept, and nothing the family already registers is repeated, which keeps the set of
-   * resolvable names identical to the original's rather than merely a superset of it.
+   * Every key here is text, never a Scala identifier: the SCREAMING_SNAKE forms are the
+   * identifiers of the constants of the Java enum being ported, which no member of this family
+   * is named after any more, and they are carried as lookup keys so that text written against
+   * the original still resolves.
    *
-   * The two members whose identifier is a single word need only one row each. For `Replace`
-   * and `Multiplier` the identifier and the run-together form are both the canonical name
-   * folded to upper case, which the family already registers, so only the lower case form
-   * remains. The two compound members need three rows each, which is how eight rows cover
-   * four members.
+   * The name helper of the original registered six lookup keys for every constant: the Java
+   * constant identifier, that identifier in upper and in lower case, the canonical mixed case
+   * form, and that form in upper and in lower case. A named family registers two of those on
+   * its own - the canonical name and the canonical name folded to upper case - so this table
+   * supplies the rest, and only the rest: the Java constant identifier, that identifier in
+   * lower case, and the canonical form run together in lower case. Nothing here is a spelling
+   * the original did not accept, and nothing the family already registers is repeated, which
+   * keeps the set of resolvable names identical to the original's rather than merely a superset
+   * of it.
+   *
+   * The two members whose Java constant identifier is a single word need only one row each. For
+   * `Replace` and `Multiplier` that identifier and the run-together form are both the canonical
+   * name folded to upper case, which the family already registers, so only the lower case form
+   * remains. The two compound members need three rows each, which is how eight rows cover four
+   * members.
    */
   private val Alternates: Map[String, String] =
     Map(
@@ -240,11 +251,11 @@ object ValueAdjustmentType {
    * spelling the type being ported accepted resolves here, and nothing else does:
    *
    * {{{
-   * valueOf("DeltaAmount")   // Some(DELTA_AMOUNT) - the canonical name
-   * valueOf("DELTAAMOUNT")   // Some(DELTA_AMOUNT) - the canonical name in upper case
-   * valueOf("deltaamount")   // Some(DELTA_AMOUNT) - the canonical name in lower case
-   * valueOf("DELTA_AMOUNT")  // Some(DELTA_AMOUNT) - the constant identifier
-   * valueOf("delta_amount")  // Some(DELTA_AMOUNT) - the identifier in lower case
+   * valueOf("DeltaAmount")   // Some(DeltaAmount) - the canonical name
+   * valueOf("DELTAAMOUNT")   // Some(DeltaAmount) - the canonical name in upper case
+   * valueOf("deltaamount")   // Some(DeltaAmount) - the canonical name in lower case
+   * valueOf("DELTA_AMOUNT")  // Some(DeltaAmount) - the Java constant identifier
+   * valueOf("delta_amount")  // Some(DeltaAmount) - that identifier in lower case
    * valueOf("Delta Amount")  // None - never a name of this family
    * }}}
    *
@@ -271,8 +282,8 @@ object ValueAdjustmentType {
    * resolved. No input raises.
    *
    * {{{
-   * parse("DeltaAmount")  // Right(DELTA_AMOUNT)
-   * parse("delta_amount") // Right(DELTA_AMOUNT)
+   * parse("DeltaAmount")  // Right(DeltaAmount)
+   * parse("delta_amount") // Right(DeltaAmount)
    * parse("Rubbish")      // Left - no type of this family has that name
    * }}}
    *

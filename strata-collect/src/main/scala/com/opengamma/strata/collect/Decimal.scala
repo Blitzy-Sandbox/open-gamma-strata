@@ -140,7 +140,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
     } else if (other.unscaled == 0L) {
       this
     } else {
-      Decimal.orFail(Decimal.sum(unscaled, scale, other.unscaled, other.scale))
+      Decimal.sumOrFail(unscaled, scale, other.unscaled, other.scale)
     }
 
   /**
@@ -155,14 +155,18 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
       this
     } else if (other < -Decimal.MAX_UNSCALED || other > Decimal.MAX_UNSCALED) {
       // a value this large has no decimal of its own, so the whole part is added in Long
-      // arithmetic and the fractional part of this decimal is necessarily lost
-      Decimal.orFail(
-        Decimal
-          .addExact(longValue, other)
-          .toRight(Decimal.arithmeticFailure(unscaled, "+", other))
-          .flatMap(total => Decimal.of(total)))
+      // arithmetic and the fractional part of this decimal is necessarily lost; the sum is
+      // formed first and then tested, and the failure it is tested for is described only in
+      // the branch that reports it, so the addition that succeeds allocates nothing
+      val whole = longValue
+      val total = whole + other
+      if (Decimal.isExactSum(whole, other, total)) {
+        Decimal.wholeOrFail(total)
+      } else {
+        Decimal.raise(Decimal.arithmeticFailure(unscaled, "+", other))
+      }
     } else {
-      Decimal.orFail(Decimal.sum(unscaled, scale, other, 0))
+      Decimal.sumOrFail(unscaled, scale, other, 0)
     }
 
   /**
@@ -180,7 +184,9 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
     if (other == 0.0) {
       this
     } else {
-      Decimal.orFail(Decimal.of(other).map(value => plus(value)))
+      // the conversion is the only part that can reject the value, so it alone goes through
+      // the outcome of a factory; the addition that follows answers a decimal directly
+      plus(Decimal.orFail(Decimal.of(other)))
     }
 
   //-------------------------------------------------------------------------
@@ -213,14 +219,17 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
       this
     } else if (other < -Decimal.MAX_UNSCALED || other > Decimal.MAX_UNSCALED) {
       // as for addition of a value beyond the precision of a decimal: the whole part is
-      // subtracted in Long arithmetic, which also covers the value that cannot be negated
-      Decimal.orFail(
-        Decimal
-          .subtractExact(longValue, other)
-          .toRight(Decimal.arithmeticFailure(unscaled, "-", other))
-          .flatMap(total => Decimal.of(total)))
+      // subtracted in Long arithmetic, which also covers the value that cannot be negated,
+      // and the difference is formed first so that the check on it allocates nothing
+      val whole = longValue
+      val difference = whole - other
+      if (Decimal.isExactDifference(whole, other, difference)) {
+        Decimal.wholeOrFail(difference)
+      } else {
+        Decimal.raise(Decimal.arithmeticFailure(unscaled, "-", other))
+      }
     } else {
-      Decimal.orFail(Decimal.sum(unscaled, scale, -other, 0))
+      Decimal.sumOrFail(unscaled, scale, -other, 0)
     }
 
   /**
@@ -237,7 +246,8 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
     if (other == 0.0) {
       this
     } else {
-      Decimal.orFail(Decimal.of(other).map(value => minus(value)))
+      // as for addition of a `Double`: only the conversion answers an outcome
+      minus(Decimal.orFail(Decimal.of(other)))
     }
 
   //-------------------------------------------------------------------------
@@ -270,13 +280,15 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
     if (other == 0L) {
       Decimal.ZERO
     } else {
-      Decimal.orFail(
-        Decimal.multiplyExact(unscaled, other) match {
-          case Some(product) => Decimal.ofScaled(product, scale)
-          // the exact product overflows a Long, so it is formed in BigDecimal and then
-          // truncated to the precision of a decimal
-          case None => Decimal.of(toBigDecimal.multiply(BigDecimal.valueOf(other)))
-        })
+      // the branch above establishes the non-zero multiplier the exactness test needs
+      val product = unscaled * other
+      if (Decimal.isExactProduct(unscaled, other, product)) {
+        Decimal.scaledOrFail(product, scale)
+      } else {
+        // the exact product overflows a Long, so it is formed in BigDecimal and then
+        // truncated to the precision of a decimal
+        Decimal.orFail(Decimal.of(toBigDecimal.multiply(BigDecimal.valueOf(other))))
+      }
     }
 
   /**
@@ -293,7 +305,8 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
     if (other == 0.0) {
       Decimal.ZERO
     } else {
-      Decimal.orFail(Decimal.of(other).map(value => multipliedBy(value)))
+      // as for addition of a `Double`: only the conversion answers an outcome
+      multipliedBy(Decimal.orFail(Decimal.of(other)))
     }
 
   //-------------------------------------------------------------------------
@@ -327,7 +340,9 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
       if (moved > Int.MaxValue.toLong || moved < Int.MinValue.toLong) {
         Decimal.ZERO
       } else {
-        Decimal.orFail(Decimal.ofScaledAdjusted(unscaled, moved.toInt))
+        // the movement is an adjustment of the scale, so it answers through the adjustment
+        // itself rather than through a factory whose outcome would be unwrapped at once
+        Decimal.scaledAdjustedOrFail(unscaled, moved.toInt)
       }
     }
 
@@ -396,7 +411,9 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *   than 18 digits at scale zero
    */
   def dividedBy(other: Double): Decimal =
-    Decimal.orFail(Decimal.of(other).map(value => dividedBy(value)))
+    // as for the other operations on a `Double`: only the conversion answers an outcome, and
+    // a divisor naming zero reaches the division and raises from there
+    dividedBy(Decimal.orFail(Decimal.of(other)))
 
   /**
    * Returns the remainder of dividing this decimal by the specified decimal.
@@ -468,7 +485,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
   private def roundDownToScale(adjustedScale: Int): Decimal = {
     val scaleDiff = scale - adjustedScale
     if (scaleDiff <= Decimal.MAX_SCALE) {
-      Decimal.orFail(Decimal.ofScaled(unscaled / Decimal.POWERS(scaleDiff), adjustedScale))
+      Decimal.scaledOrFail(unscaled / Decimal.POWERS(scaleDiff), adjustedScale)
     } else {
       // every digit of the value lies below the requested scale
       Decimal.ZERO
@@ -483,7 +500,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
       val rescaled = rescaledPlusNext / 10L
       val nextDigit = rescaledPlusNext % 10L
       val bump = if (nextDigit >= 5L) 1L else if (nextDigit <= -5L) -1L else 0L
-      Decimal.orFail(Decimal.ofScaled(rescaled + bump, adjustedScale))
+      Decimal.scaledOrFail(rescaled + bump, adjustedScale)
     } else {
       Decimal.orFail(Decimal.of(toBigDecimal.setScale(adjustedScale, RoundingMode.HALF_DOWN)))
     }
@@ -497,7 +514,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
       if (unscaled == rescaled) {
         this
       } else {
-        Decimal.orFail(Decimal.ofScaled(rescaled + math.signum(unscaled), adjustedScale))
+        Decimal.scaledOrFail(rescaled + math.signum(unscaled), adjustedScale)
       }
     } else {
       Decimal.orFail(Decimal.of(toBigDecimal.setScale(adjustedScale, RoundingMode.UP)))
@@ -910,10 +927,10 @@ object Decimal {
     if (unscaled == 0L) {
       // zero is held at scale zero whatever scale it arrives with, including one out of range
       Right(ZERO)
-    } else if (scale < 0 || scale > MAX_SCALE || unscaled > MAX_UNSCALED || unscaled < -MAX_UNSCALED) {
-      ofScaledAdjusted(unscaled, scale)
-    } else {
+    } else if (isSupported(unscaled, scale)) {
       Right(create(unscaled, scale))
+    } else {
+      ofScaledAdjusted(unscaled, scale)
     }
 
   /**
@@ -940,37 +957,80 @@ object Decimal {
     }
   }
 
-  // brings a scale or a magnitude outside the supported range into it, or reports why it cannot
-  @tailrec
+  // true when an unscaled value and a scale are held as they stand, so that the pair needs no
+  // adjustment and cannot be rejected; shared by the factory and by the arithmetic, which
+  // answer the same three cases in two different shapes
+  private def isSupported(unscaled: Long, scale: Int): Boolean =
+    scale >= 0 && scale <= MAX_SCALE && unscaled <= MAX_UNSCALED && unscaled >= -MAX_UNSCALED
+
+  // brings a scale or a magnitude outside the supported range into it, or reports why it
+  // cannot, answering an outcome for the factories that answer one
   private def ofScaledAdjusted(unscaled: Long, scale: Int): Either[Failure, Decimal] =
+    adjusted(unscaled, scale, heldAsOutcome, rejectedAsOutcome)
+
+  // the same adjustment answering the decimal itself, for the arithmetic, which is total in
+  // its signature and reports a value it cannot hold through the check that raises
+  private def scaledAdjustedOrFail(unscaled: Long, scale: Int): Decimal =
+    adjusted(unscaled, scale, heldAsDecimal, rejectedAsRaise)
+
+  // the adjustment itself, written once for the two shapes above.
+  //
+  // The algorithm reaches one of two endings - a decimal it could hold, or a failure saying
+  // why it could not - and the two callers differ only in what they do with each ending: a
+  // factory wraps them in an outcome, the arithmetic answers the decimal and raises the
+  // failure. Passing the endings in keeps one copy of an algorithm whose every branch is
+  // load-bearing, and costs no allocation, because each ending is one of the four values
+  // below rather than a closure built per call.
+  //
+  // @param unscaled  the unscaled value to bring into range
+  // @param scale  the scale to bring into range
+  // @param held  what to do with a decimal the type can hold
+  // @param rejected  what to do with a value it cannot
+  @tailrec
+  private def adjusted[A](
+      unscaled: Long,
+      scale: Int,
+      held: Decimal => A,
+      rejected: Failure => A): A =
+
     if (scale >= 2 * MAX_SCALE) {
       // truncation at the maximum scale leaves nothing of a value this small
-      Right(ZERO)
+      held(ZERO)
     } else if (scale <= -MAX_SCALE) {
-      Left(precisionAtScaleZeroFailure(exponentText(unscaled, scale)))
+      rejected(precisionAtScaleZeroFailure(exponentText(unscaled, scale)))
     } else if (unscaled > MAX_UNSCALED || unscaled < -MAX_UNSCALED) {
       if (scale == 0) {
-        Left(precisionAtScaleZeroFailure(exponentText(unscaled, scale)))
+        rejected(precisionAtScaleZeroFailure(exponentText(unscaled, scale)))
       } else {
         // a Long holds 19 digits, so dropping one digit always reaches the supported precision
-        ofScaledAdjusted(unscaled / 10L, scale - 1)
+        adjusted(unscaled / 10L, scale - 1, held, rejected)
       }
     } else if (scale < 0) {
       val power = POWERS(-scale)
       if (math.abs(unscaled) > Long.MaxValue / power) {
         // the magnitude checked above keeps this division exact, so it decides the overflow of
         // the multiplication below without performing it
-        Left(precisionFailure(exponentText(unscaled, scale)))
+        rejected(precisionFailure(exponentText(unscaled, scale)))
       } else {
         // recurse so that the product is checked against the precision supported at scale zero
-        ofScaledAdjusted(unscaled * power, 0)
+        adjusted(unscaled * power, 0, held, rejected)
       }
     } else if (scale > MAX_SCALE) {
       val truncated = unscaled / POWERS(scale - MAX_SCALE)
-      if (truncated == 0L) Right(ZERO) else Right(create(truncated, MAX_SCALE))
+      if (truncated == 0L) held(ZERO) else held(create(truncated, MAX_SCALE))
     } else {
-      Right(create(unscaled, scale))
+      held(create(unscaled, scale))
     }
+
+  // the four endings of the adjustment, each held as one value so that neither caller
+  // allocates to say what its ending is
+  private val heldAsOutcome: Decimal => Either[Failure, Decimal] = value => Right(value)
+
+  private val rejectedAsOutcome: Failure => Either[Failure, Decimal] = failure => Left(failure)
+
+  private val heldAsDecimal: Decimal => Decimal = value => value
+
+  private val rejectedAsRaise: Failure => Decimal = failure => raise(failure)
 
   // creates an instance, removing any trailing zero of the fractional part
   @tailrec
@@ -987,64 +1047,95 @@ object Decimal {
   //-------------------------------------------------------------------------
   // the arithmetic edge: a result too large is a broken precondition rather than a value, so
   // the failure is reported through the one object of this module that raises
+  //
+  // Every path that raises ends here, and no path that succeeds passes through it: the checks
+  // of the arithmetic test their condition first and call this only in the branch where the
+  // condition does not hold, so a successful operation builds neither an outcome to unwrap nor
+  // a message it will not use.
+  private def raise(failure: Failure): Decimal = {
+    ArgCheck.isTrue(false, failure.message)
+    // the check above never returns when its condition is false; this value exists only
+    // because the check is typed as Unit rather than as Nothing
+    ZERO
+  }
+
+  // takes the value of an outcome, reporting a failure as the broken precondition it is; used
+  // where the value was produced by a factory that answers an outcome, which is every path
+  // computed in BigDecimal
   private def orFail(result: Either[Failure, Decimal]): Decimal =
     result match {
       case Right(value) => value
-      case Left(failure) =>
-        ArgCheck.isTrue(false, failure.message)
-        // the check above never returns when its condition is false; this value exists only
-        // because the check is typed as Unit rather than as Nothing
-        ZERO
+      case Left(failure) => raise(failure)
     }
 
-  // adds two decimals given their parts
-  private def sum(unscaled1: Long, scale1: Int, unscaled2: Long, scale2: Int): Either[Failure, Decimal] =
+  // as of(Long), answering the decimal itself: the whole-number arithmetic of the two
+  // large-operand branches finishes here, and a total beyond the supported precision is
+  // reported with the message that factory reports
+  private def wholeOrFail(value: Long): Decimal =
+    if (value <= MAX_UNSCALED && value >= -MAX_UNSCALED) {
+      newDecimal(value, 0)
+    } else {
+      raise(precisionAtScaleZeroFailure(value.toString))
+    }
+
+  // as ofScaled, answering the decimal itself: the arithmetic of the type is total in its
+  // signature, so every case answers a decimal directly and a result too large is reported
+  // through the check above rather than returned
+  private def scaledOrFail(unscaled: Long, scale: Int): Decimal =
+    if (unscaled == 0L) {
+      ZERO
+    } else if (isSupported(unscaled, scale)) {
+      create(unscaled, scale)
+    } else {
+      scaledAdjustedOrFail(unscaled, scale)
+    }
+
+  // adds two decimals given their parts, answering the sum or reporting that it is too large
+  private def sumOrFail(unscaled1: Long, scale1: Int, unscaled2: Long, scale2: Int): Decimal =
     if (scale1 == scale2) {
       // two values of at most 18 digits sum within a Long, so this addition cannot overflow
-      ofScaled(unscaled1 + unscaled2, scale1)
+      scaledOrFail(unscaled1 + unscaled2, scale1)
     } else if (scale1 > scale2) {
-      sumSorted(unscaled1, scale1, unscaled2, scale2)
+      sumSortedOrFail(unscaled1, scale1, unscaled2, scale2)
     } else {
-      sumSorted(unscaled2, scale2, unscaled1, scale1)
+      sumSortedOrFail(unscaled2, scale2, unscaled1, scale1)
     }
 
   // adds two decimals given their parts, where the first scale is the greater of the two
-  private def sumSorted(
-      unscaled1: Long,
-      scale1: Int,
-      unscaled2: Long,
-      scale2: Int): Either[Failure, Decimal] = {
-
+  private def sumSortedOrFail(unscaled1: Long, scale1: Int, unscaled2: Long, scale2: Int): Decimal = {
     val scaleDiff = scale1 - scale2
     if (scaleDiff < MAX_SCALE && math.abs(unscaled2) < POWERS(MAX_SCALE - scaleDiff - 1)) {
       // the second value rescales inside 18 digits, so the sum also stays inside a Long
-      ofScaled(unscaled1 + (unscaled2 * POWERS(scaleDiff)), scale1)
+      scaledOrFail(unscaled1 + (unscaled2 * POWERS(scaleDiff)), scale1)
     } else {
       // the scales are too far apart to bring together in a Long
-      of(BigDecimal.valueOf(unscaled1, scale1).add(BigDecimal.valueOf(unscaled2, scale2)))
+      orFail(of(BigDecimal.valueOf(unscaled1, scale1).add(BigDecimal.valueOf(unscaled2, scale2))))
     }
   }
 
-  // adds two values, answering no value when the exact sum does not fit in a Long
-  private def addExact(a: Long, b: Long): Option[Long] = {
-    val total = a + b
+  // true when a sum already computed in Long arithmetic is the exact sum of its operands
+  private def isExactSum(a: Long, b: Long, total: Long): Boolean =
     // the sum overflowed exactly when it differs in sign from both operands
-    if ((((a ^ total) & (b ^ total)) < 0L)) None else Some(total)
-  }
+    ((a ^ total) & (b ^ total)) >= 0L
 
-  // subtracts two values, answering no value when the exact difference does not fit in a Long
-  private def subtractExact(a: Long, b: Long): Option[Long] = {
-    val difference = a - b
+  // true when a difference already computed in Long arithmetic is the exact difference
+  private def isExactDifference(a: Long, b: Long, difference: Long): Boolean =
     // the difference overflowed exactly when the operands differ in sign and the result differs
     // in sign from the first of them
-    if (((a ^ b) & (a ^ difference)) < 0L) None else Some(difference)
-  }
+    ((a ^ b) & (a ^ difference)) >= 0L
 
-  // multiplies two values, answering no value when the exact product does not fit in a Long
-  private def multiplyExact(a: Long, b: Long): Option[Long] = {
-    val product = a * b
-    if (b != 0L && ((product / b) != a || (a == Long.MinValue && b == -1L))) None else Some(product)
-  }
+  // true when a product already computed in Long arithmetic is the exact product
+  //
+  // Dividing the product back by the second operand recovers the first exactly when nothing
+  // was lost, so the caller must have established that the second operand is not zero -
+  // `multipliedBy(Long)` does so in the branch that reaches this. The one product that
+  // divides back cleanly and is still wrong is Long.MinValue times minus one, whose division
+  // overflows to Long.MinValue again; the second clause turns that case away. No decimal
+  // holds Long.MinValue as its unscaled part - the precision of the type stops a digit short
+  // of it - so the clause cannot fire from the arithmetic of this file, and it is kept
+  // because it is part of the check being ported rather than because a value reaches it.
+  private def isExactProduct(a: Long, b: Long, product: Long): Boolean =
+    (product / b) == a && !(a == Long.MinValue && b == -1L)
 
   // the exponent of a value that is a power of ten within the supported scale, -1 for any other
   private def powerOfTenIndex(value: Long): Int = powerOfTenIndexFrom(value, 0)

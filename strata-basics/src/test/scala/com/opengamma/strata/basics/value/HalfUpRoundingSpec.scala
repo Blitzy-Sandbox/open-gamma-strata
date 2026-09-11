@@ -496,5 +496,14 @@ final class HalfUpRoundingSpec extends AnyFunSuite with Matchers with TableDrive
     val rejectedFraction = decode[Rounding]("""{"HalfUp":{"decimalPlaces":4,"fraction":257}}""")
     rejectedFraction.isLeft shouldBe true
     rejectedFraction.swap.toOption.fold("")(error => error.getMessage) should include("fraction")
+
+    // The payload of the member is read as this member's own fields rather than ignored, so a
+    // payload that is not an object at all names no fields to validate and is rejected on those
+    // grounds. That is the statement for this member of the shape the family fixes - a member
+    // key over that member's fields - and it is the counterpart of the empty-object payload the
+    // other member requires.
+    val rejectedShape = decode[Rounding]("""{"HalfUp":4}""")
+    rejectedShape.isLeft shouldBe true
+    rejectedShape.swap.toOption.fold("")(error => error.getMessage) should include("decimalPlaces")
   }
 }

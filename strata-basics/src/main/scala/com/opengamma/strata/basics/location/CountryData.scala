@@ -46,8 +46,17 @@ object CountryData {
    *
    * Held privately as a sequence of literal pairs so that the public maps and sets below are all
    * derived from one transcription. Callers use the named members instead.
+   *
+   * This is a temporary container rather than a retained value: it is a method, evaluated exactly
+   * once by [[alpha3ToAlpha2]], so the Vector and its 251 tuples become unreachable as soon as
+   * that map is built and are reclaimed with the rest of the initialisation garbage. Nothing after
+   * that point needs them - [[alpha2ToAlpha3]], [[alpha3Codes]] and [[alpha2Codes]] are all
+   * derived from the map, not from these rows - and holding them in a value would keep them alive
+   * for the lifetime of the class loader for no reader.
+   *
+   * @return the alpha-3 to alpha-2 pairs of the original data, in its own order
    */
-  private val rows: Vector[(String, String)] = Vector(
+  private def rows: Vector[(String, String)] = Vector(
     "AND" -> "AD",
     "ARE" -> "AE",
     "AFG" -> "AF",

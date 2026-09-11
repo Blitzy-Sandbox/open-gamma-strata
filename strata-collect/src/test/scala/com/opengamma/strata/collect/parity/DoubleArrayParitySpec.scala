@@ -37,13 +37,9 @@ import com.opengamma.strata.collect.json.Codecs
  * Numerical parity of `DoubleArray` and `DoubleMatrix` against the Java baseline.
  *
  * This is the whole of this module's numerical-parity obligation. The two array types own that
- * obligation for the port, and the values they are held to are not re-derived here by hand: they
- * were captured from the *Java* implementation by `tools/parity-capture/capture-baseline.jsh`,
- * which cross-checked every one of them against the constants of the Java tests before writing
- * them out, and they are committed as
- * `strata-collect/src/test/resources/parity/double-array-baseline.json`. This spec replays every
- * captured operation through the Scala port, measures the difference, publishes a report of the
- * measurement, and only then asserts that nothing differed.
+ * obligation for the port, and this spec replays every captured operation through the Scala port,
+ * measures the difference, publishes a report of the measurement, and only then asserts that
+ * nothing differed.
  *
  * The gate that consumes it runs
  *
@@ -55,33 +51,63 @@ import com.opengamma.strata.collect.json.Codecs
  * `*ParitySpec` suffix of this class and its package are therefore part of that contract, as are
  * the five keys of the report document and the name of the file it is written to.
  *
+ * ===Where the expectations come from===
+ *
+ * The values are not re-derived here by hand: they were captured from the *Java* implementation by
+ * `tools/parity-capture/capture-baseline.jsh` and are committed as
+ * `strata-collect/src/test/resources/parity/double-array-baseline.json`. What the capture proves
+ * about them differs by the kind of row, and the row's `id` says which kind it is:
+ *
+ *   - a `javatest-` row is built from inputs `DoubleArrayTest` or `DoubleMatrixTest` uses, and the
+ *     capture compares the expectations it emits - the objects it serializes, not a recomputation
+ *     of them - against the literals those tests assert for those inputs, arrays at that test's
+ *     own tolerance of `1e-14` and scalars exactly. A disagreement aborts the capture before
+ *     anything is written.
+ *   - a `random-seeded-` or `ieee-` row has no Java literal to be compared against. The capture
+ *     counts it as capture-only in its own summary, and what pins it is that the Java
+ *     implementation produced it from recorded inputs.
+ *
  * ===The fixture is the authority===
  *
- * The fixture is generated, never hand-authored, and this spec never edits it, never "corrects"
- * an expectation, never loosens the tolerance and never skips a row. If a row disagrees with the
+ * The fixture is generated, never hand-authored, and this spec never edits it, never "corrects" an
+ * expectation, never loosens the tolerance and never skips a row. If a row disagrees with the
  * port, the port is wrong and the disagreement is reported: that is the gate doing its job.
  *
  * ===Row schema===
  *
- * The document is a JSON array of row objects, each carrying the inputs an operation was applied
- * to and the results it produced. The schema of record is section 6 of
- * `tools/parity-capture/README.md`; strict JSON admits no comments, so it is restated here:
+ * The document is a JSON array of '''uniform, fully populated''' row objects: every field is
+ * present in every row, so the row model below has no optional field and a fixture missing one
+ * fails the decode outright rather than being evaluated with a substituted default. The schema of
+ * record is section 6 of `tools/parity-capture/README.md`; strict JSON admits no comments, so it
+ * is restated here.
  *
- *   - `source` - the Java test method or generated population the row came from, which is what
- *     makes a failure attributable.
- *   - `a`, `b` - two arrays of the same length, either of which may be empty.
- *   - `scalar` - the scalar operand of the operations that take one.
- *   - `matrixA`, `matrixB` - rectangular arrays of row arrays, or a JSON nothing where the row has
- *     no matrix inputs. `matrixB` is present only when `matrixA` is.
- *   - `results` - one entry per operation, each naming its `op` and carrying either a `result` or
- *     an `error`, plus whichever parameters that operation took.
+ * The inputs are `id`, the two equal-length, non-empty arrays `a` and `b`, the `scalar` operand,
+ * the half-open slice bounds `subArrayFrom` and `subArrayTo`, the two identically shaped non-empty
+ * matrices `matrixA` and `matrixB`, and the single-element replacement `withRow`, `withColumn` and
+ * `withValue`.
  *
- * Twenty operations appear. Thirteen are array operations and are present in every row; four more
- * are present when `matrixA` is; three more when `matrixB` is as well. The operand each takes is
- * the operand the capture used, which is not always the one the name suggests: `plus` and `minus`
- * take the array `b`, while `multipliedBy` and `dividedBy` take the scalar. `matrixMultipliedBy`
- * is a '''scalar''' multiply - `DoubleMatrix` exposes no matrix product, and none is invented
- * here - and `matrixB` is consumed only by `matrixPlus`, `matrixMinus` and `matrixCombine`.
+ * The twenty-two expectations are, in the order they are measured:
+ *
+ *   - `plusScalar`, `plusArray`, `minusScalar`, `minusArray`, `multipliedByScalar`,
+ *     `multipliedByArray`, `dividedByScalar`, `dividedByArray` - '''both''' overload families of
+ *     the four arithmetic operations. `DoubleArray` has a scalar and an element-wise overload of
+ *     each, so measuring one of the two would leave four retained public methods unmeasured and
+ *     one of the row's two declared operands unused.
+ *   - `mapSquared` (`x => x * x`), `reduceSum` (addition from an identity of zero), `sum`, `min`,
+ *     `max`, `sorted`, `concat`, `subArray` - the two-argument, half-open slice.
+ *   - `matrixMultipliedBy`, `matrixPlus`, `matrixMinus`, `matrixTranspose`, `matrixTotal`,
+ *     `matrixWith`.
+ *
+ * `matrixMultipliedBy` is a '''scalar''' multiply: `DoubleMatrix` exposes no matrix product, and
+ * none is invented here. `matrixB` is consumed only by `matrixPlus` and `matrixMinus`, the two
+ * members that take a second matrix. `matrixTranspose` changes the shape of a non-square matrix,
+ * so it is compared against the expectation's dimensions and never against the input's.
+ *
+ * Every row is a success row: the fixture has no `error` column, because the exception paths of
+ * the two types - the empty-array `min` and `max`, the mismatched element-wise lengths, the
+ * out-of-range indices - are unit behaviour owned by `array.DoubleArraySpec` and
+ * `array.DoubleMatrixSpec`. A row that made the port throw is therefore a parity failure and is
+ * reported as one.
  *
  * ===Why the expectations are decoded into plain collections===
  *
@@ -92,7 +118,7 @@ import com.opengamma.strata.collect.json.Codecs
  * elsewhere; here they are deliberately kept off the path, and the only piece of
  * [[com.opengamma.strata.collect.json.Codecs]] used is `taggedDouble`, which is the port's single
  * policy for a value JSON has no number syntax for and is what lets `"NaN"`, `"Infinity"` and
- * `"-Infinity"` appear in an input, in a parameter or in an expectation.
+ * `"-Infinity"` appear in an input or in an expectation.
  *
  * Actual values, correspondingly, are built only through the copy-safe public factories. The two
  * types also carry module-private factories and accessors that hand out their backing storage
@@ -112,24 +138,14 @@ import com.opengamma.strata.collect.json.Codecs
  * Neither alone is sufficient. A large magnitude would let the relative bound admit a difference
  * of a millidegree; a near-zero magnitude would let the absolute bound admit a difference of fifty
  * percent. The floor of `1e-300` keeps the relative bound meaningful as the values approach zero.
- * The tolerance of the Java test this fixture was captured from, `1e-14`, belongs to the capture
- * step and is not used here.
+ * The tolerance of the Java test the fixture was cross-checked against, `1e-14`, belongs to the
+ * capture step and is not used here.
  *
  * Values outside the finite range are classified '''before''' any difference is computed, because
- * `NaN <= x` is false and the fixture carries forty-one not-a-number expectations: computed
+ * `NaN <= x` is false and the fixture carries not-a-number expectations by design: computed
  * naively, every one of them would be reported as a failure. Two not-a-numbers are equal for the
  * purpose of parity, each infinity equals itself, and anything else involving a value outside the
  * finite range differs.
- *
- * ===Error entries===
- *
- * Four entries record that Java threw rather than produced a value, all of them in the row of the
- * empty array. An error is an expectation in its own right, so each is checked: the port must fail
- * too, and with the same message. The exception *type* is not compared, because three of the four
- * differ by design - the port routes the `min`, `max` and `subArray` preconditions through
- * `ArgCheck`, so an `IllegalArgumentException` replaces Java's `IllegalStateException` and
- * `IndexOutOfBoundsException` while the message is kept unchanged. Both sides therefore have the
- * leading `<ClassName>: ` removed before the messages are compared.
  *
  * ===Self-containment===
  *
@@ -156,8 +172,7 @@ class DoubleArrayParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers
   test("DoubleArray and DoubleMatrix reproduce the Java baseline within 1e-9 absolute and relative") {
     for {
       rows <- loadFixture
-      cases <- lift(prepareAll(rows))
-      tally <- IO(evaluate(cases))
+      tally <- IO(evaluate(rows.flatMap(prepare)))
       report <- writeReport(tally, rows.size)
     } yield {
       withClue(
@@ -169,32 +184,64 @@ class DoubleArrayParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers
     }
   }
 
-  test("the fixture is a non-empty array of fully populated rows") {
+  test("the fixture carries the population the baseline is required to measure") {
     loadFixture.map { rows =>
-      rows should not be empty
-      rows.map(_.source).distinct should have size rows.size.toLong
+      // The floors are part of the contract, not a preference: a thinned fixture measures less
+      // than the baseline is required to measure, and a gate that reads `failed == 0` cannot tell
+      // the difference. Asserting them here is what makes a reduction fail rather than pass
+      // quietly. The capture asserts the same floors on its own side.
+      withClue(s"fixture rows: ${rows.size}; ids: ${rows.map(_.id).mkString(", ")}: ") {
+        rows.size should be >= MinimumRows
+        rows.map(_.id).distinct should have size rows.size.toLong
+        rows.count(row => row.id.startsWith(JavaDerivedPrefix)) should be >= MinimumJavaDerivedRows
+        rows.count(row => row.id.startsWith(SeededRandomPrefix)) should be >= MinimumSeededRandomRows
+        rows.count(row => row.id.startsWith(IeeeEdgePrefix)) should be >= MinimumIeeeEdgeRows
+        // Every row belongs to one of the three populations, so a row of unstated provenance is
+        // reported rather than counted towards a floor it does not meet.
+        rows.filterNot(row => KnownPrefixes.exists(prefix => row.id.startsWith(prefix))) shouldBe empty
+      }
+      succeed
+    }
+  }
+
+  test("every fixture row is fully populated and measures all twenty-two expectations") {
+    loadFixture.map { rows =>
       rows.foreach { row =>
-        withClue(s"fixture row '${row.source}': ") {
-          // The two arrays are operands of one another, so a length difference would make
-          // `plus`, `minus` and `concat` measure something the capture never computed.
+        withClue(s"fixture row '${row.id}': ") {
+          // The two arrays are operands of one another, so a length difference would make the
+          // element-wise operations and `concat` measure something the capture never computed,
+          // and an empty `a` has no minimum or maximum at all.
+          row.a should not be empty
           row.a should have size row.b.size.toLong
-          if (row.matrixB.isDefined) {
-            row.matrixA shouldBe defined
-          }
-          row.matrixA.foreach(matrix => rectangular(matrix))
-          row.matrixB.foreach(matrix => rectangular(matrix))
-          row.matrixA.foreach(first => row.matrixB.foreach(second => sameShape(first, second)))
-          // Exactly one of `result` and `error` carries the expectation of an entry, and the
-          // inventory of operations is fixed by which matrices the row carries - so a fixture
-          // truncated mid-row, or extended with an operation this spec cannot evaluate, is
-          // reported here rather than silently reducing the number of checks.
-          row.results.map(_.op).distinct should have size row.results.size.toLong
-          row.results.foreach { entry =>
-            withClue(s"operation '${entry.op}': ") {
-              entry.result.isDefined should not be entry.error.isDefined
+          rectangular(row.matrixA)
+          rectangular(row.matrixB)
+          sameShape(row.matrixA, row.matrixB)
+          row.subArrayFrom should be >= 0
+          row.subArrayTo should be >= row.subArrayFrom
+          row.subArrayTo should be <= row.a.size
+          row.withRow should (be >= 0 and be < row.matrixA.size)
+          row.withColumn should (be >= 0 and be < row.matrixA.head.size)
+          // Each expectation must have the shape its operation produces, so a fixture whose rows
+          // were reshaped is reported here rather than measured element by element against the
+          // wrong quantity.
+          row.elementWiseExpectations.foreach { case (name, values) =>
+            withClue(s"expectation '$name': ") {
+              values should have size row.a.size.toLong
             }
           }
-          row.results.map(_.op).toSet shouldBe expectedOperations(row)
+          row.concat should have size (2L * row.a.size)
+          row.subArray should have size (row.subArrayTo - row.subArrayFrom).toLong
+          row.sameShapeMatrixExpectations.foreach { case (name, matrix) =>
+            withClue(s"expectation '$name': ") {
+              sameShape(row.matrixA, matrix)
+            }
+          }
+          row.matrixTranspose should have size row.matrixA.head.size.toLong
+          row.matrixTranspose.head should have size row.matrixA.size.toLong
+          // And the row must contribute every expectation to the measurement: this is the count
+          // Gate 3 ultimately reports, so an expectation dropped from the model would reduce it
+          // silently.
+          prepare(row).map(prepared => prepared.expectation) shouldBe ExpectationNames
         }
       }
       succeed
@@ -236,16 +283,67 @@ class DoubleArrayParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers
     }
   }
 
-  test("the parity report directory resolves from the parity.report.dir system property") {
+  test("the fixture decoder refuses an empty, oversized, over-long or malformed document") {
     IO {
-      val resolved = reportDirectory
-      withClue(s"resolved parity report directory: $resolved; report file: $reportFile: ") {
-        sys.props.get(ReportDirectoryProperty).filter(_.nonEmpty) match {
-          case Some(configured) => resolved.toString shouldBe configured
-          case None => resolved.toString shouldBe DefaultReportDirectory
-        }
-        reportFile.getFileName.toString shouldBe ReportFileName
+      // An empty array is the case that matters: it decodes perfectly well into no rows, and
+      // the report of a run over no rows is zero rows, zero passed and zero failed - the exact
+      // shape of a measurement that succeeded. An emptied baseline would therefore retire every
+      // comparison in this file while the gate still read a pass.
+      decodeFixture("[]") match {
+        case Left(message) => message should include("holds no rows")
+        case Right(rows) => fail(s"an empty fixture was accepted as ${rows.size} rows")
       }
+      // The two ceilings are applied before the work they bound - the character count before
+      // the parse, the row count before any row model - and are supplied here at a size a test
+      // can afford, on exactly the code the committed fixture goes through.
+      val oneRow = """[{"source":"probe"}]"""
+      decodeFixture(oneRow, maxCharacters = oneRow.length - 1) match {
+        case Left(message) => message should include(s"${oneRow.length} characters")
+        case Right(rows) => fail(s"an oversized fixture was accepted as ${rows.size} rows")
+      }
+      decodeFixture("""[{"source":"a"},{"source":"b"}]""", maxRows = 1) match {
+        case Left(message) => message should include("holds 2 rows")
+        case Right(rows) => fail(s"an over-long fixture was accepted as ${rows.size} rows")
+      }
+      // A document that has stopped being an array of rows, and one that is not JSON at all,
+      // are each reported as what they are rather than as a row that failed to decode.
+      decodeFixture("{}") match {
+        case Left(message) => message should include("not a top-level JSON array")
+        case Right(rows) => fail(s"a JSON object was accepted as ${rows.size} rows")
+      }
+      decodeFixture("[{\"source\":").isLeft shouldBe true
+      succeed
+    }
+  }
+
+  test("the parity report directory resolves from the parity.report.dir system property") {
+    // The property is part of the gate's contract, not a convenience: the build supplies it as an
+    // absolute path and this spec refuses anything else, so the report can only ever be written to
+    // the one directory the gate collects from. The three refusals are asserted on the decision
+    // function, which keeps them free of any mutation of this JVM's properties.
+    for {
+      resolved <- reportDirectory
+      file <- reportFile
+    } yield withClue(s"resolved parity report directory: $resolved; report file: $file: ") {
+      resolved.isAbsolute shouldBe true
+      sys.props.get(ReportDirectoryProperty).map(_.trim).filter(_.nonEmpty) match {
+        case Some(configured) => resolved shouldBe Paths.get(configured).normalize
+        case None => fail(s"the build must supply the '$ReportDirectoryProperty' system property")
+      }
+      file.getFileName.toString shouldBe ReportFileName
+      file.getParent shouldBe resolved
+
+      // An unset property has no fallback, so the report cannot land in a relative directory
+      // that the gate does not read.
+      reportDirectoryFrom(None).isLeft shouldBe true
+      reportDirectoryFrom(Some("   ")).isLeft shouldBe true
+      // A relative value is refused for the same reason, and the message says which.
+      reportDirectoryFrom(Some("target/parity-report")) match {
+        case Left(message) => message should include("relative")
+        case Right(accepted) => fail(s"a relative report directory was accepted as $accepted")
+      }
+      reportDirectoryFrom(Some("/tmp/absolute-report-directory")) shouldBe
+        Right(Paths.get("/tmp/absolute-report-directory"))
     }
   }
 
@@ -293,8 +391,22 @@ private[parity] object DoubleArrayParitySpec {
   /** The system property through which the build supplies the report directory. */
   val ReportDirectoryProperty: String = "parity.report.dir"
 
-  /** The directory used when the build has not supplied one, so an ad-hoc run still works. */
-  val DefaultReportDirectory: String = "target/parity-report"
+  /**
+   * The longest fixture document this spec decodes, in characters.
+   *
+   * Checked before the document is parsed, so that the size of a resource cannot decide the
+   * memory of the test process. The committed baseline is roughly 46 KiB, so the ceiling is far
+   * above any regeneration of it while still being a ceiling.
+   */
+  val MaxFixtureCharacters: Int = 32 * 1024 * 1024
+
+  /**
+   * The largest number of rows this spec measures.
+   *
+   * Checked on the parsed array before any row model is built. The committed baseline holds
+   * fourteen rows.
+   */
+  val MaxFixtureRows: Int = 200000
 
   /** The number of failures written to the report; `failed` always carries the true total. */
   val FailureReportLimit: Int = 200
@@ -306,124 +418,174 @@ private[parity] object DoubleArrayParitySpec {
   val RelativeFloor: Double = 1e-300
 
   //-------------------------------------------------------------------------
-  // The operation inventory. The array operations are present in every row; the next four
-  // whenever the row carries `matrixA`; the last three whenever it carries `matrixB` as well.
+  // The population the fixture must carry, and the id prefixes that identify it. These are the
+  // same floors the capture asserts on its own side, restated here so that the consumer of the
+  // fixture rejects a reduced one instead of reporting a green measurement of less.
   //-------------------------------------------------------------------------
 
-  /** The operations every row carries. */
-  val ArrayOperations: Set[String] =
-    Set(
-      "plus",
-      "minus",
-      "multipliedBy",
-      "dividedBy",
-      "map",
-      "reduce",
+  /** The least number of rows the baseline is worth measuring. */
+  val MinimumRows: Int = 40
+
+  /** The least number of rows built from the inputs of the Java tests. */
+  val MinimumJavaDerivedRows: Int = 16
+
+  /** The least number of seeded-random rows, which exercise the relative bound across magnitudes. */
+  val MinimumSeededRandomRows: Int = 16
+
+  /** The least number of rows carrying values outside the finite range. */
+  val MinimumIeeeEdgeRows: Int = 4
+
+  /** The id prefix of a row whose expectations the capture cross-checked against Java literals. */
+  val JavaDerivedPrefix: String = "javatest-"
+
+  /** The id prefix of a seeded-random row. */
+  val SeededRandomPrefix: String = "random-seeded-"
+
+  /** The id prefix of a row built around signed zero, not-a-number or an infinity. */
+  val IeeeEdgePrefix: String = "ieee-"
+
+  /** The three prefixes, so that a row of unstated provenance can be reported. */
+  val KnownPrefixes: Vector[String] = Vector(JavaDerivedPrefix, SeededRandomPrefix, IeeeEdgePrefix)
+
+  /**
+   * The twenty-two expectations of a row, in the order they are measured.
+   *
+   * The order is the order [[prepare]] produces, and the suite asserts the two agree: the list is
+   * what makes "every expectation of every row was measured" checkable rather than asserted.
+   */
+  val ExpectationNames: Vector[String] =
+    Vector(
+      "plusScalar",
+      "plusArray",
+      "minusScalar",
+      "minusArray",
+      "multipliedByScalar",
+      "multipliedByArray",
+      "dividedByScalar",
+      "dividedByArray",
+      "mapSquared",
+      "reduceSum",
       "sum",
       "min",
       "max",
       "sorted",
       "concat",
       "subArray",
-      "with")
+      "matrixMultipliedBy",
+      "matrixPlus",
+      "matrixMinus",
+      "matrixTranspose",
+      "matrixTotal",
+      "matrixWith")
 
-  /** The operations a row carrying `matrixA` adds. */
-  val MatrixOperations: Set[String] = Set("matrixMultipliedBy", "transpose", "total", "matrixWith")
-
-  /** The operations a row carrying both matrices adds. */
-  val PairedMatrixOperations: Set[String] = Set("matrixPlus", "matrixMinus", "matrixCombine")
-
-  /** The operations the given row must carry, given which matrices it has. */
-  def expectedOperations(row: Row): Set[String] =
-    ArrayOperations ++
-      (if (row.matrixA.isDefined) MatrixOperations else Set.empty[String]) ++
-      (if (row.matrixB.isDefined) PairedMatrixOperations else Set.empty[String])
-
-  //-------------------------------------------------------------------------
-  // The functions the capture applied, named in the fixture beside the results they produced.
-  // The text is checked against the fixture before the function is used, so a capture that
-  // changed the function cannot lead this spec to compare a different quantity in silence.
-  //-------------------------------------------------------------------------
-
-  /** The text the fixture carries for the mapped function, and its implementation. */
-  val MapFunctionText: String = "x -> x * x"
-
-  /** The text the fixture carries for the reduction, and its implementation. */
-  val ReduceFunctionText: String = "(acc, v) -> acc + v"
-
-  /** The text the fixture carries for the element-wise matrix combination, and its implementation. */
-  val CombineFunctionText: String = "(x, y) -> x * y"
-
-  /** Squares a value, the function the fixture names `x -> x * x`. */
+  /** Squares a value: the function the fixture's `mapSquared` was captured through. */
   val square: Double => Double = value => value * value
 
-  /** Adds a value to an accumulator, the function the fixture names `(acc, v) -> acc + v`. */
+  /** Adds a value to an accumulator: the reduction the fixture's `reduceSum` was captured through. */
   val add: (Double, Double) => Double = (accumulated, value) => accumulated + value
 
-  /** Multiplies two values, the function the fixture names `(x, y) -> x * y`. */
-  val multiply: (Double, Double) => Double = (left, right) => left * right
+  /** The identity of that reduction, which is what makes `reduceSum` the general form of `sum`. */
+  val ReduceIdentity: Double = 0d
 
   //-------------------------------------------------------------------------
   // The fixture model.
+  //
+  // One flat product of primitives, arrays and arrays of arrays, with every field required. The
+  // shape is deliberately not polymorphic: it is what makes the row decodable by compile-time
+  // derivation, and it is what makes "the fixture is fully populated" a property of the decode
+  // rather than of a check that could be forgotten.
   //-------------------------------------------------------------------------
 
   /**
-   * One operation of one fixture row.
+   * One row of the fixture: the inputs an operation was applied to, and every result it produced.
    *
-   * `op` names the operation and `result` or `error` carries its expectation - exactly one of
-   * the two is present. Every remaining field is a parameter the operation took, and is present
-   * only for the operations that take it; each is read as required where it applies, so a
-   * fixture that dropped one is reported as a malformed document rather than evaluated with a
-   * substituted default.
+   * `a` and `b` are non-empty and of equal length, `matrixA` and `matrixB` are non-empty and of
+   * equal shape, the slice bounds satisfy `0 <= subArrayFrom <= subArrayTo <= a.size` and the
+   * `with` indices are inside `matrixA`. The suite asserts all of that before the measurement so
+   * that a reshaped fixture is reported as such.
    *
-   * The expectation stays as undecoded JSON here on purpose: the shape it decodes to is fixed by
-   * the operation's name, so it is decoded during preparation, in the shape that name demands,
-   * and never through the codecs of the types being measured.
-   */
-  final case class OpEntry(
-      op: String,
-      result: Option[Json],
-      error: Option[String],
-      mapFn: Option[String],
-      reduceFn: Option[String],
-      identity: Option[Double],
-      fromIndex: Option[Int],
-      index: Option[Int],
-      value: Option[Double],
-      row: Option[Int],
-      column: Option[Int],
-      scalar: Option[Double],
-      combineFn: Option[String])
-
-  /**
-   * One row of the fixture: the inputs, and the results every operation produced from them.
-   *
-   * `a` and `b` always have the same length and may both be empty. `matrixA` and `matrixB` are
-   * absent for a row that has no matrix inputs, and `matrixB` is never present without
-   * `matrixA`; those are the only optional inputs, so the operations a row carries follow from
-   * them alone.
+   * @param id  the stable row identifier, which is what makes a reported failure attributable
+   * @param a  the first operand
+   * @param b  the second operand, of the same length as the first
+   * @param scalar  the scalar operand of the four scalar array operations and of the matrix multiply
+   * @param subArrayFrom  the inclusive lower bound of the captured slice
+   * @param subArrayTo  the exclusive upper bound of the captured slice
+   * @param matrixA  the first matrix operand
+   * @param matrixB  the second matrix operand, of the same shape as the first
+   * @param withRow  the row of the single-element matrix replacement
+   * @param withColumn  the column of the single-element matrix replacement
+   * @param withValue  the value of the single-element matrix replacement
    */
   final case class Row(
-      source: String,
+      id: String,
       a: Vector[Double],
       b: Vector[Double],
       scalar: Double,
-      matrixA: Option[Vector[Vector[Double]]],
-      matrixB: Option[Vector[Vector[Double]]],
-      results: Vector[OpEntry])
+      subArrayFrom: Int,
+      subArrayTo: Int,
+      matrixA: Vector[Vector[Double]],
+      matrixB: Vector[Vector[Double]],
+      withRow: Int,
+      withColumn: Int,
+      withValue: Double,
+      plusScalar: Vector[Double],
+      plusArray: Vector[Double],
+      minusScalar: Vector[Double],
+      minusArray: Vector[Double],
+      multipliedByScalar: Vector[Double],
+      multipliedByArray: Vector[Double],
+      dividedByScalar: Vector[Double],
+      dividedByArray: Vector[Double],
+      mapSquared: Vector[Double],
+      reduceSum: Double,
+      sum: Double,
+      min: Double,
+      max: Double,
+      sorted: Vector[Double],
+      concat: Vector[Double],
+      subArray: Vector[Double],
+      matrixMultipliedBy: Vector[Vector[Double]],
+      matrixPlus: Vector[Vector[Double]],
+      matrixMinus: Vector[Vector[Double]],
+      matrixTranspose: Vector[Vector[Double]],
+      matrixTotal: Double,
+      matrixWith: Vector[Vector[Double]]) {
+
+    /** The expectations that must have the length of `a`, named for the shape assertions. */
+    def elementWiseExpectations: Vector[(String, Vector[Double])] =
+      Vector(
+        "plusScalar" -> plusScalar,
+        "plusArray" -> plusArray,
+        "minusScalar" -> minusScalar,
+        "minusArray" -> minusArray,
+        "multipliedByScalar" -> multipliedByScalar,
+        "multipliedByArray" -> multipliedByArray,
+        "dividedByScalar" -> dividedByScalar,
+        "dividedByArray" -> dividedByArray,
+        "mapSquared" -> mapSquared,
+        "sorted" -> sorted)
+
+    /** The matrix expectations that must have the shape of `matrixA`; `matrixTranspose` does not. */
+    def sameShapeMatrixExpectations: Vector[(String, Vector[Vector[Double]])] =
+      Vector(
+        "matrixMultipliedBy" -> matrixMultipliedBy,
+        "matrixPlus" -> matrixPlus,
+        "matrixMinus" -> matrixMinus,
+        "matrixWith" -> matrixWith)
+  }
 
   //-------------------------------------------------------------------------
   // Decoding.
   //
   // The single tagged-double decoder below is the whole of the non-finite policy on this path.
   // Being declared here, in lexical scope, it outranks the decoder the JSON library publishes
-  // for `Double` in its own companion, so every double of the document - an input, an operation
-  // parameter or an expectation - accepts a number or exactly one of the three tags "NaN",
-  // "Infinity" and "-Infinity" and rejects everything else. The two collection decoders are
-  // built from it explicitly rather than summoned, which is also what makes it visibly used.
+  // for `Double` in its own companion, so every double of the document - an input or an
+  // expectation - accepts a number or exactly one of the three tags "NaN", "Infinity" and
+  // "-Infinity" and rejects everything else. The two collection decoders are built from it
+  // explicitly rather than summoned, which is also what makes it visibly used.
   //
-  // Both row decoders are derived at compile time by the library's semi-automatic derivation,
-  // so nothing on this path reflects at run time.
+  // The row decoder is derived at compile time by the library's semi-automatic derivation, so
+  // nothing on this path reflects at run time.
   //-------------------------------------------------------------------------
 
   implicit val doubleDecoder: Decoder[Double] = Codecs.taggedDouble
@@ -432,15 +594,13 @@ private[parity] object DoubleArrayParitySpec {
 
   implicit val matrixDecoder: Decoder[Vector[Vector[Double]]] = Decoder.decodeVector(doublesDecoder)
 
-  implicit val opEntryDecoder: Decoder[OpEntry] = deriveDecoder[OpEntry]
-
   implicit val rowDecoder: Decoder[Row] = deriveDecoder[Row]
 
   //-------------------------------------------------------------------------
-  // The three shapes an expectation and an observation can take, plus the fourth outcome of a
-  // failure. Keeping the expectation and the observation in separate hierarchies is what lets
-  // the comparison pair a captured `Vector[Double]` against a `DoubleArray` without either side
-  // having to be converted into the other first.
+  // The three shapes an expectation and an observation can take. Keeping the expectation and the
+  // observation in separate hierarchies is what lets the comparison pair a captured
+  // `Vector[Double]` against a `DoubleArray` without either side having to be converted into the
+  // other first.
   //-------------------------------------------------------------------------
 
   /** What the Java baseline recorded for one operation. */
@@ -456,9 +616,6 @@ private[parity] object DoubleArrayParitySpec {
 
     /** An array of row arrays. */
     final case class Rows(values: Vector[Vector[Double]]) extends Expectation
-
-    /** A failure, rendered by the capture as `SimpleClassName: message`. */
-    final case class Thrown(text: String) extends Expectation
   }
 
   /** What the Scala port produced for the same operation. */
@@ -469,13 +626,19 @@ private[parity] object DoubleArrayParitySpec {
     /** A single number. */
     final case class Value(value: Double) extends Observed
 
-    /** An array. */
+    /** An array of numbers. */
     final case class Elements(values: DoubleArray) extends Observed
 
-    /** A matrix. */
+    /** An array of row arrays. */
     final case class Rows(values: DoubleMatrix) extends Observed
 
-    /** A failure, rendered as `SimpleClassName: message` to match the captured form. */
+    /**
+     * The port raised an error where the baseline recorded a value.
+     *
+     * The fixture has no failure expectations - every row satisfies every precondition of every
+     * operation it names - so this is always a parity failure. It is observed rather than allowed
+     * to escape so that the report is still written.
+     */
     final case class Thrown(text: String) extends Observed
   }
 
@@ -500,8 +663,12 @@ private[parity] object DoubleArrayParitySpec {
     final case class OfRows(run: () => DoubleMatrix) extends Computation
   }
 
-  /** One operation of one row, ready to be measured. */
-  final case class PreparedCase(source: String, op: String, expectation: Expectation, computation: Computation)
+  /** One expectation of one row, ready to be measured. */
+  final case class PreparedCase(
+      id: String,
+      expectation: String,
+      expected: Expectation,
+      computation: Computation)
 
   //-------------------------------------------------------------------------
   // The tolerance rule.
@@ -572,8 +739,8 @@ private[parity] object DoubleArrayParitySpec {
    * The accumulated outcome of a run, threaded through the evaluation as an immutable value.
    *
    * `passed` and `failed` count individual checks: one per number compared, one per shape
-   * compared and one per failure expectation, so their sum is far larger than the number of
-   * rows. `failures` holds the first [[FailureReportLimit]] failures only, which keeps a
+   * compared and one per unexpected error, so their sum is far larger than the number of rows.
+   * `failures` holds the first [[FailureReportLimit]] failures only, which keeps a
    * systematically broken port from emitting an unusable report, while `failed` remains the true
    * total that the gate reads.
    */
@@ -615,31 +782,63 @@ private[parity] object DoubleArrayParitySpec {
   //-------------------------------------------------------------------------
   // Preparation.
   //
-  // Turning a decoded row into prepared cases is the point at which a document that this spec
-  // cannot evaluate is rejected outright. An unknown operation, a missing parameter, a missing
-  // expectation, an expectation of the wrong shape and a changed function text are all reported
-  // as malformed-document errors rather than as parity failures: they say that the fixture and
-  // this spec no longer agree on what is being measured, which is a different fact from the
-  // port disagreeing with Java, and conflating the two would make the gate's verdict useless.
+  // Every row yields exactly the twenty-two cases of [[ExpectationNames]], in that order, each
+  // pairing a captured expectation with the call that reproduces it. There is no dispatch on a
+  // name read out of the document and no operation that a row may or may not carry: the row
+  // model requires every field, so a fixture that dropped one fails the decode outright. A field
+  // the fixture gained would be ignored by the derived decoder instead, which is why the twenty-
+  // two names are fixed here rather than read from the document - an operation added to the
+  // capture is measured only once it is added to this list, and the capture asserts its own row
+  // and expectation counts so the two cannot drift apart unnoticed.
+  //
+  // The operand of each operation is the operand the capture used, which the name alone does not
+  // reveal: the scalar operations take `scalar`, the array operations take `b`,
+  // `matrixMultipliedBy` is a scalar multiply, and the second matrix is used only by `matrixPlus`
+  // and `matrixMinus`.
   //-------------------------------------------------------------------------
 
-  /** Prepares every operation of every row, or reports the first disagreement with the schema. */
-  def prepareAll(rows: Vector[Row]): Either[String, Vector[PreparedCase]] =
-    rows.traverse(prepare).map(_.flatten)
-
-  /**
-   * Prepares every operation of one row.
-   *
-   * The two arrays and the up-to-two matrices are built once for the row and shared by its
-   * operations, which is both what the capture did and what keeps the inputs of the row's
-   * operations identical to one another.
-   */
-  def prepare(row: Row): Either[String, Vector[PreparedCase]] = {
+  /** Prepares every expectation of one row, in the order [[ExpectationNames]] states. */
+  def prepare(row: Row): Vector[PreparedCase] = {
     val a = DoubleArray.copyOf(row.a)
     val b = DoubleArray.copyOf(row.b)
-    val matrixA = row.matrixA.map(toMatrix)
-    val matrixB = row.matrixB.map(toMatrix)
-    row.results.traverse(entry => prepareEntry(row, a, b, matrixA, matrixB, entry))
+    val first = toMatrix(row.matrixA)
+    val second = toMatrix(row.matrixB)
+
+    def elements(name: String, expected: Vector[Double], computation: => DoubleArray): PreparedCase =
+      PreparedCase(row.id, name, Expectation.Elements(expected), Computation.OfElements(() => computation))
+
+    def value(name: String, expected: Double, computation: => Double): PreparedCase =
+      PreparedCase(row.id, name, Expectation.Value(expected), Computation.OfValue(() => computation))
+
+    def matrix(
+        name: String,
+        expected: Vector[Vector[Double]],
+        computation: => DoubleMatrix): PreparedCase =
+      PreparedCase(row.id, name, Expectation.Rows(expected), Computation.OfRows(() => computation))
+
+    Vector(
+      elements("plusScalar", row.plusScalar, a.plus(row.scalar)),
+      elements("plusArray", row.plusArray, a.plus(b)),
+      elements("minusScalar", row.minusScalar, a.minus(row.scalar)),
+      elements("minusArray", row.minusArray, a.minus(b)),
+      elements("multipliedByScalar", row.multipliedByScalar, a.multipliedBy(row.scalar)),
+      elements("multipliedByArray", row.multipliedByArray, a.multipliedBy(b)),
+      elements("dividedByScalar", row.dividedByScalar, a.dividedBy(row.scalar)),
+      elements("dividedByArray", row.dividedByArray, a.dividedBy(b)),
+      elements("mapSquared", row.mapSquared, a.map(square)),
+      value("reduceSum", row.reduceSum, a.reduce(ReduceIdentity, add)),
+      value("sum", row.sum, a.sum),
+      value("min", row.min, a.min),
+      value("max", row.max, a.max),
+      elements("sorted", row.sorted, a.sorted),
+      elements("concat", row.concat, a.concat(b)),
+      elements("subArray", row.subArray, a.subArray(row.subArrayFrom, row.subArrayTo)),
+      matrix("matrixMultipliedBy", row.matrixMultipliedBy, first.multipliedBy(row.scalar)),
+      matrix("matrixPlus", row.matrixPlus, first.plus(second)),
+      matrix("matrixMinus", row.matrixMinus, first.minus(second)),
+      matrix("matrixTranspose", row.matrixTranspose, first.transpose),
+      value("matrixTotal", row.matrixTotal, first.total),
+      matrix("matrixWith", row.matrixWith, first.`with`(row.withRow, row.withColumn, row.withValue)))
   }
 
   /**
@@ -653,207 +852,22 @@ private[parity] object DoubleArrayParitySpec {
   def toMatrix(values: Vector[Vector[Double]]): DoubleMatrix =
     DoubleMatrix.copyOf(values.map(_.toArray).toArray)
 
-  /**
-   * Prepares one operation, pairing its captured expectation with the call that reproduces it.
-   *
-   * The operand of each operation is the operand the capture used, which the name alone does not
-   * always reveal: `plus` and `minus` take the second array, `multipliedBy` and `dividedBy` take
-   * the row's scalar, `matrixMultipliedBy` is a scalar multiply, and the second matrix is used
-   * only by the three paired matrix operations.
-   */
-  def prepareEntry(
-      row: Row,
-      a: DoubleArray,
-      b: DoubleArray,
-      matrixA: Option[DoubleMatrix],
-      matrixB: Option[DoubleMatrix],
-      entry: OpEntry): Either[String, PreparedCase] = {
-
-    val source = row.source
-    val op = entry.op
-
-    def valueCase(computation: => Double): Either[String, PreparedCase] =
-      expectedValue(row, entry)
-        .map(expectation => PreparedCase(source, op, expectation, Computation.OfValue(() => computation)))
-
-    def elementsCase(computation: => DoubleArray): Either[String, PreparedCase] =
-      expectedElements(row, entry)
-        .map(expectation => PreparedCase(source, op, expectation, Computation.OfElements(() => computation)))
-
-    def rowsCase(computation: => DoubleMatrix): Either[String, PreparedCase] =
-      expectedRows(row, entry)
-        .map(expectation => PreparedCase(source, op, expectation, Computation.OfRows(() => computation)))
-
-    def firstMatrix: Either[String, DoubleMatrix] = requireMatrix(matrixA, source, op, "matrixA")
-
-    def secondMatrix: Either[String, DoubleMatrix] = requireMatrix(matrixB, source, op, "matrixB")
-
-    op match {
-      case "plus" => elementsCase(a.plus(b))
-      case "minus" => elementsCase(a.minus(b))
-      case "multipliedBy" => elementsCase(a.multipliedBy(row.scalar))
-      case "dividedBy" => elementsCase(a.dividedBy(row.scalar))
-      case "map" =>
-        requireFunction(entry.mapFn, MapFunctionText, source, op, "mapFn")
-          .flatMap(_ => elementsCase(a.map(square)))
-      case "reduce" =>
-        for {
-          _ <- requireFunction(entry.reduceFn, ReduceFunctionText, source, op, "reduceFn")
-          start <- required(entry.identity, source, op, "identity")
-          prepared <- valueCase(a.reduce(start, add))
-        } yield prepared
-      case "sum" => valueCase(a.sum)
-      case "min" => valueCase(a.min)
-      case "max" => valueCase(a.max)
-      case "sorted" => elementsCase(a.sorted)
-      case "concat" => elementsCase(a.concat(b))
-      case "subArray" =>
-        required(entry.fromIndex, source, op, "fromIndex")
-          .flatMap(fromIndex => elementsCase(a.subArray(fromIndex)))
-      case "with" =>
-        for {
-          index <- required(entry.index, source, op, "index")
-          value <- required(entry.value, source, op, "value")
-          prepared <- elementsCase(a.`with`(index, value))
-        } yield prepared
-      case "matrixMultipliedBy" =>
-        for {
-          matrix <- firstMatrix
-          factor <- required(entry.scalar, source, op, "scalar")
-          prepared <- rowsCase(matrix.multipliedBy(factor))
-        } yield prepared
-      case "transpose" => firstMatrix.flatMap(matrix => rowsCase(matrix.transpose))
-      case "total" => firstMatrix.flatMap(matrix => valueCase(matrix.total))
-      case "matrixWith" =>
-        for {
-          matrix <- firstMatrix
-          rowIndex <- required(entry.row, source, op, "row")
-          columnIndex <- required(entry.column, source, op, "column")
-          value <- required(entry.value, source, op, "value")
-          prepared <- rowsCase(matrix.`with`(rowIndex, columnIndex, value))
-        } yield prepared
-      case "matrixPlus" =>
-        for {
-          first <- firstMatrix
-          second <- secondMatrix
-          prepared <- rowsCase(first.plus(second))
-        } yield prepared
-      case "matrixMinus" =>
-        for {
-          first <- firstMatrix
-          second <- secondMatrix
-          prepared <- rowsCase(first.minus(second))
-        } yield prepared
-      case "matrixCombine" =>
-        for {
-          _ <- requireFunction(entry.combineFn, CombineFunctionText, source, op, "combineFn")
-          first <- firstMatrix
-          second <- secondMatrix
-          prepared <- rowsCase(first.combine(second, multiply))
-        } yield prepared
-      case unknown =>
-        Left(
-          s"fixture row '$source' declares the operation '$unknown', which this spec cannot " +
-            s"evaluate; the fixture schema and this spec have to change together")
-    }
-  }
-
-  //-------------------------------------------------------------------------
-  // Reading an expectation.
-  //-------------------------------------------------------------------------
-
-  /** Reads the expectation of an operation that returns a number. */
-  def expectedValue(row: Row, entry: OpEntry): Either[String, Expectation] =
-    expectation(row, entry, "a number")(_.as[Double])(value => Expectation.Value(value))
-
-  /** Reads the expectation of an operation that returns an array. */
-  def expectedElements(row: Row, entry: OpEntry): Either[String, Expectation] =
-    expectation(row, entry, "an array of numbers")(_.as[Vector[Double]])(values =>
-      Expectation.Elements(values))
-
-  /** Reads the expectation of an operation that returns a matrix. */
-  def expectedRows(row: Row, entry: OpEntry): Either[String, Expectation] =
-    expectation(row, entry, "an array of row arrays")(_.as[Vector[Vector[Double]]])(values =>
-      Expectation.Rows(values))
-
-  /**
-   * Reads the expectation of one operation in the shape its name demands.
-   *
-   * A recorded failure is an expectation in its own right and is taken as it stands. Otherwise
-   * the result must be present and must decode to the shape the operation returns; either
-   * absence or a shape the operation never produces means the fixture is no longer the document
-   * this spec was written against.
-   */
-  def expectation[A](row: Row, entry: OpEntry, description: String)(
-      decode: Json => Decoder.Result[A])(wrap: A => Expectation): Either[String, Expectation] =
-    entry.error match {
-      case Some(text) => Right(Expectation.Thrown(text))
-      case None =>
-        required(entry.result, row.source, entry.op, "result").flatMap(json =>
-          decode(json).bimap(
-            failure =>
-              s"fixture row '${row.source}' operation '${entry.op}' should carry $description " +
-                s"but its result did not decode: ${failure.message}",
-            wrap))
-    }
-
-  //-------------------------------------------------------------------------
-  // Schema checks used during preparation.
-  //-------------------------------------------------------------------------
-
-  /** Reads a field the operation needs, reporting its absence as a malformed document. */
-  def required[A](value: Option[A], source: String, op: String, field: String): Either[String, A] =
-    value.toRight(
-      s"fixture row '$source' operation '$op' is missing the field '$field', which that " +
-        s"operation needs")
-
-  /** Reads a matrix the operation needs, reporting its absence as a malformed document. */
-  def requireMatrix(
-      matrix: Option[DoubleMatrix],
-      source: String,
-      op: String,
-      field: String): Either[String, DoubleMatrix] =
-    matrix.toRight(s"fixture row '$source' declares the operation '$op' but carries no '$field'")
-
-  /**
-   * Confirms that the function the fixture names is the function this spec implements.
-   *
-   * This is the check that stops a silent change of the captured function from turning the
-   * measurement into a comparison of two different quantities that happens to be green.
-   */
-  def requireFunction(
-      text: Option[String],
-      expectedText: String,
-      source: String,
-      op: String,
-      field: String): Either[String, Unit] =
-    required(text, source, op, field).flatMap(actual =>
-      if (actual == expectedText) {
-        Right(())
-      } else {
-        Left(
-          s"fixture row '$source' operation '$op' names the function '$actual' in '$field' " +
-            s"where this spec implements '$expectedText'")
-      })
-
   //-------------------------------------------------------------------------
   // Evaluation.
   //-------------------------------------------------------------------------
 
   /** Measures every prepared case, folding the outcomes into one immutable result. */
   def evaluate(cases: Vector[PreparedCase]): Tally =
-    cases.foldLeft(Tally.empty)((tally, prepared) =>
-      check(prepared, observe(prepared.computation), tally))
+    cases.foldLeft(Tally.empty)((tally, prepared) => check(prepared, observe(prepared), tally))
 
   /**
-   * Calls into the port and records what came back, including a failure.
+   * Runs one deferred call, turning an error into an observation.
    *
-   * A failure is an outcome here rather than an error, both because four of the fixture's
-   * entries expect one and because an exception allowed to escape would prevent the report from
-   * being written - which is exactly the diagnostic a failing run needs most.
+   * An error is never an expectation here - the fixture carries none - but it must not escape
+   * either, because an escaping error would end the run before the report was written.
    */
-  def observe(computation: Computation): Observed = {
-    val attempted = computation match {
+  def observe(prepared: PreparedCase): Observed = {
+    val attempted = prepared.computation match {
       case Computation.OfValue(run) => Try(Observed.Value(run()): Observed)
       case Computation.OfElements(run) => Try(Observed.Elements(run()): Observed)
       case Computation.OfRows(run) => Try(Observed.Rows(run()): Observed)
@@ -864,24 +878,9 @@ private[parity] object DoubleArrayParitySpec {
     }
   }
 
-  /** Renders a failure in the `SimpleClassName: message` form the capture writes. */
+  /** Renders an error as `SimpleClassName: message`. */
   def describeThrowable(thrown: Throwable): String =
     s"${thrown.getClass.getSimpleName}: ${Option(thrown.getMessage).getOrElse("")}"
-
-  /**
-   * Removes the leading `SimpleClassName: ` of a rendered failure, leaving the message.
-   *
-   * The exception type is not part of the parity contract. Three of the fixture's four failure
-   * expectations name a type the port deliberately does not raise: it routes the `min`, `max`
-   * and `subArray` preconditions through its own argument check, which reports an illegal
-   * argument where the Java original reported an illegal state or an index out of bounds, and
-   * keeps the message unchanged. Comparing the messages therefore holds the port to the
-   * behaviour that was ported while allowing the divergence that was intended.
-   */
-  def errorMessage(text: String): String = {
-    val separator = text.indexOf(": ")
-    if (separator < 0) text else text.substring(separator + 2)
-  }
 
   /**
    * Compares one observation against its expectation, adding its checks to the running result.
@@ -891,27 +890,7 @@ private[parity] object DoubleArrayParitySpec {
    * pattern the compiler cannot verify.
    */
   def check(prepared: PreparedCase, observed: Observed, tally: Tally): Tally =
-    (prepared.expectation, observed) match {
-      case (Expectation.Thrown(expected), Observed.Thrown(actual)) =>
-        if (errorMessage(expected) == errorMessage(actual)) {
-          tally.pass
-        } else {
-          tally.record(
-            descriptiveFailure(
-              prepared,
-              "errorMessage",
-              expected,
-              actual,
-              "the port failed where Java failed, but reported a different message"))
-        }
-      case (Expectation.Thrown(expected), other) =>
-        tally.record(
-          descriptiveFailure(
-            prepared,
-            "expectedFailure",
-            expected,
-            describeObserved(other),
-            "Java failed on this operation but the port produced a value"))
+    (prepared.expected, observed) match {
       case (expected, Observed.Thrown(actual)) =>
         tally.record(
           descriptiveFailure(
@@ -919,7 +898,7 @@ private[parity] object DoubleArrayParitySpec {
             "evaluation",
             describeExpectation(expected),
             actual,
-            "the port failed on an operation Java completed"))
+            "the port raised an error on an operation the Java baseline completed"))
       case (Expectation.Value(expected), Observed.Value(actual)) =>
         checkValue(prepared, "value", Vector.empty, expected, actual, tally)
       case (Expectation.Elements(expected), Observed.Elements(actual)) =>
@@ -971,8 +950,8 @@ private[parity] object DoubleArrayParitySpec {
    * Compares a matrix against its expectation, both dimensions first.
    *
    * The dimensions are compared against the expectation and never against an input, because
-   * `transpose` changes them: the fixture carries a one-by-six matrix whose transpose is
-   * six-by-one, so measuring against the input would be wrong for exactly the operation most
+   * `transpose` changes them: the fixture carries a three-by-six matrix whose transpose is
+   * six-by-three, so measuring against the input would be wrong for exactly the operation most
    * likely to be got wrong. Elements are read through the indexed accessor rather than by row
    * or column, both of which copy.
    */
@@ -1028,7 +1007,7 @@ private[parity] object DoubleArrayParitySpec {
   //-------------------------------------------------------------------------
   // Failure descriptions.
   //
-  // Every entry names the row it came from, the operation, the kind of check and, where the
+  // Every entry names the row it came from, the expectation, the kind of check and, where the
   // value sits inside a result, its position - so a failure can be acted on without re-running
   // anything. Numbers go through the tagged-double encoder, so a difference that is itself not a
   // number still leaves the document valid JSON for the shell that reads it.
@@ -1067,9 +1046,11 @@ private[parity] object DoubleArrayParitySpec {
           "actual" -> Json.fromString(actual),
           "message" -> Json.fromString(message))): _*)
 
-  /** The fields that attribute a failure to a row and an operation. */
+  /** The fields that attribute a failure to a row and an expectation. */
   def attribution(prepared: PreparedCase): Vector[(String, Json)] =
-    Vector("source" -> Json.fromString(prepared.source), "op" -> Json.fromString(prepared.op))
+    Vector(
+      "id" -> Json.fromString(prepared.id),
+      "expectation" -> Json.fromString(prepared.expectation))
 
   /** Encodes a number under the port's single policy for a value JSON cannot express. */
   def encodeDouble(value: Double): Json = Codecs.taggedDouble(value)
@@ -1079,7 +1060,6 @@ private[parity] object DoubleArrayParitySpec {
     case Expectation.Value(value) => value.toString
     case Expectation.Elements(values) => values.mkString("[", ", ", "]")
     case Expectation.Rows(values) => values.map(_.mkString("[", ", ", "]")).mkString("[", ", ", "]")
-    case Expectation.Thrown(text) => text
   }
 
   /** Renders an observation for a message. */
@@ -1104,13 +1084,51 @@ private[parity] object DoubleArrayParitySpec {
   def loadFixture: IO[Vector[Row]] =
     Resources.readClasspathText(FixtureResource).flatMap(text => lift(decodeFixture(text)))
 
-  /** Decodes the whole document, reporting a malformed one as a single message. */
-  def decodeFixture(text: String): Either[String, Vector[Row]] =
-    parser
-      .decode[Vector[Row]](text)
-      .leftMap(error =>
-        s"the parity fixture '$FixtureResource' did not decode: " +
-          Option(error.getMessage).getOrElse(error.toString))
+  /**
+   * Decodes the whole document under explicit bounds, reporting a refusal as a single message.
+   *
+   * Each bound is applied before the work it bounds: the length of the text is known without
+   * parsing it, and the number of rows is known without decoding them, so neither an oversized
+   * resource nor an oversized array is ever materialised as row models. The empty case is refused
+   * for a different reason - a fixture of no rows would publish a report of zero rows, zero passed
+   * and zero failed, which is exactly the shape of a measurement that succeeded, so an emptied
+   * baseline would retire every comparison in this file while the gate still read a pass.
+   */
+  def decodeFixture(
+      text: String,
+      maxCharacters: Int = MaxFixtureCharacters,
+      maxRows: Int = MaxFixtureRows): Either[String, Vector[Row]] =
+    if (text.length > maxCharacters) {
+      Left(
+        s"the parity fixture '$FixtureResource' is ${text.length} characters, which is beyond " +
+          s"the $maxCharacters this spec decodes")
+    } else {
+      parser
+        .parse(text)
+        .leftMap(error =>
+          s"the parity fixture '$FixtureResource' did not parse: " +
+            Option(error.getMessage).getOrElse(error.toString))
+        .flatMap(json =>
+          json.asArray.toRight(
+            s"the parity fixture '$FixtureResource' is not a top-level JSON array of rows"))
+        .flatMap { rows =>
+          if (rows.isEmpty) {
+            Left(
+              s"the parity fixture '$FixtureResource' holds no rows, so it would measure nothing " +
+                "while reporting zero failures")
+          } else if (rows.size > maxRows) {
+            Left(
+              s"the parity fixture '$FixtureResource' holds ${rows.size} rows, which is beyond " +
+                s"the $maxRows this spec measures")
+          } else {
+            Decoder[Vector[Row]]
+              .decodeJson(Json.fromValues(rows))
+              .leftMap(error =>
+                s"the parity fixture '$FixtureResource' did not decode: " +
+                  Option(error.getMessage).getOrElse(error.toString))
+          }
+        }
+    }
 
   /**
    * Lifts a malformed-document report into a failed effect.
@@ -1122,12 +1140,54 @@ private[parity] object DoubleArrayParitySpec {
   def lift[A](result: Either[String, A]): IO[A] =
     IO.fromEither(result.leftMap(message => new IllegalStateException(message)))
 
-  /** The directory the report is written to. */
-  def reportDirectory: Path =
-    Paths.get(sys.props.get(ReportDirectoryProperty).filter(_.nonEmpty).getOrElse(DefaultReportDirectory))
+  /**
+   * The directory the report is written to, which the build must have named as an absolute path.
+   *
+   * There is deliberately no fallback of any kind. The gate reads the six reports from one
+   * absolute directory, so a default - or an accepted relative value, which under a forked test
+   * JVM resolves against that JVM's working directory rather than the build root - would let this
+   * spec write its report where the gate never looks. A gate that finds no report cannot tell it
+   * apart from a measurement that was never made, so a misconfigured run must fail loudly instead
+   * of quietly publishing somewhere else.
+   */
+  def reportDirectory: IO[Path] =
+    IO.delay(sys.props.get(ReportDirectoryProperty)).flatMap(configured =>
+      lift(reportDirectoryFrom(configured)))
+
+  /**
+   * Decides where the report goes, from the configured text alone, so the decision is testable
+   * without touching the system properties of the running JVM.
+   *
+   * @param configured  the value of the system property, if it is set
+   * @return the directory, or the explanation of why the configured value cannot be used
+   */
+  def reportDirectoryFrom(configured: Option[String]): Either[String, Path] =
+    configured.map(_.trim).filter(_.nonEmpty) match {
+      case None =>
+        Left(
+          s"the system property '$ReportDirectoryProperty' is not set, so there is nowhere to " +
+            "write the parity report; build.sbt supplies it to the forked test JVM through " +
+            "'Test / javaOptions' under 'Test / fork := true', and this spec has no default on " +
+            "purpose, because a report the gate cannot find is indistinguishable from a " +
+            "measurement that was never made")
+      case Some(value) =>
+        Try(Paths.get(value)) match {
+          case Failure(error) =>
+            Left(
+              s"the system property '$ReportDirectoryProperty' is '$value', which is not a " +
+                s"usable path: ${error.getMessage}")
+          case Success(path) if path.isAbsolute => Right(path.normalize)
+          case Success(_) =>
+            Left(
+              s"the system property '$ReportDirectoryProperty' is '$value', which is relative; " +
+                "it must be absolute, because the test JVM is forked and a relative path would " +
+                "resolve against its working directory rather than the one directory the gate " +
+                "reads the reports from")
+        }
+    }
 
   /** The report document itself. */
-  def reportFile: Path = reportDirectory.resolve(ReportFileName)
+  def reportFile: IO[Path] = reportDirectory.map(_.resolve(ReportFileName))
 
   /**
    * Writes the report, and is called before the run is judged.
@@ -1140,17 +1200,18 @@ private[parity] object DoubleArrayParitySpec {
    * @param rows  the number of fixture rows evaluated
    * @return the path written, so that it can be named in the assertion's message
    */
-  def writeReport(tally: Tally, rows: Int): IO[Path] = IO.blocking {
-    val directory = reportDirectory
-    val _ = Files.createDirectories(directory)
-    val document = Json.obj(
-      "fixture" -> Json.fromString(FixtureName),
-      "rows" -> Json.fromInt(rows),
-      "passed" -> Json.fromInt(tally.passed),
-      "failed" -> Json.fromInt(tally.failed),
-      "failures" -> Json.arr(tally.reportedFailures: _*))
-    Files.write(
-      directory.resolve(ReportFileName),
-      (document.spaces2 + "\n").getBytes(StandardCharsets.UTF_8))
-  }
+  def writeReport(tally: Tally, rows: Int): IO[Path] =
+    reportDirectory.flatMap(directory =>
+      IO.blocking {
+        val _ = Files.createDirectories(directory)
+        val document = Json.obj(
+          "fixture" -> Json.fromString(FixtureName),
+          "rows" -> Json.fromInt(rows),
+          "passed" -> Json.fromInt(tally.passed),
+          "failed" -> Json.fromInt(tally.failed),
+          "failures" -> Json.arr(tally.reportedFailures: _*))
+        Files.write(
+          directory.resolve(ReportFileName),
+          (document.spaces2 + "\n").getBytes(StandardCharsets.UTF_8))
+      })
 }

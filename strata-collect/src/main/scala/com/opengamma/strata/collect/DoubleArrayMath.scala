@@ -53,39 +53,35 @@ import scala.annotation.tailrec
  * calls the scalar forms directly - a conversion rate is compared with one, and an amount
  * chooses between an integral and a fractional text form with the other.
  *
- * The semantics of the replaced helper are reproduced exactly, including its edges, which
- * were measured against it before this port was written rather than inferred from its
- * documentation:
+ * The comparison is defined over three disjoint cases, taken in this order, and every edge
+ * of it follows from them:
  *
- *   - two values no further apart than the tolerance are equal, which is the ordinary
- *     case;
- *   - a value is equal to itself, so each infinity is equal to itself and to nothing else,
- *     and no tolerance makes an infinity equal to a finite value;
- *   - negative zero and positive zero are equal, at any tolerance;
- *   - a not-a-number value is equal to another not-a-number value and to no other value,
- *     however large the tolerance. This is the one edge where the summary in the migration
- *     plan ("never fuzzy-equal") had to be reconciled with the behaviour of the replaced
- *     helper, whose final clause compared the two values as boxed numbers, under which a
- *     not-a-number value equals itself. The reading implemented here - unequal to any
- *     ''different'' value, equal to another not-a-number value - is the one that agrees
- *     with the helper, and therefore with the recorded baselines against which the numeric
- *     parity of this module is measured.
+ *   - a not-a-number value is equal to nothing, itself included, at every tolerance. It
+ *     has no distance from any value, so no tolerance can bring it to one;
+ *   - where either value is infinite the two are equal only when they are the same
+ *     infinity, at every tolerance ''including'' an infinite one. So positive infinity is
+ *     not equal to negative infinity, and no infinity is equal to any finite value, at any
+ *     tolerance;
+ *   - two finite values are equal when they are no further apart than the tolerance, which
+ *     is the ordinary case. Negative zero and positive zero are no distance apart and are
+ *     therefore equal at every tolerance, and two finite values any distance apart are
+ *     equal at an infinite tolerance.
  *
  * ===The tolerance precondition===
  *
- * A negative tolerance is a caller error rather than a comparison that answers `false`,
- * and the replaced helper rejected one. Each of the three comparison members checks the
- * tolerance through `ArgCheck` before comparing anything. Two differences follow from
- * checking it once, up front, rather than once per element as the delegating original did:
+ * A tolerance that is negative, or that is not a number, is a caller error rather than a
+ * comparison that answers `false`, and the replaced helper rejected both. Each of the three
+ * comparison members checks the tolerance through `ArgCheck` before comparing anything,
+ * rejecting a not-a-number tolerance first and a negative one second, so each is reported
+ * in its own words. Negative zero is not a negative tolerance and is accepted; under it
+ * two finite values are compared exactly. One difference follows from checking the
+ * tolerance once, up front, rather than once per element as the delegating original did:
  *
  *   - an empty array, and a pair of arrays of different lengths, report a bad tolerance as
  *     well, where the original returned its answer without ever reaching the per-element
- *     check;
- *   - the check rejects a negative tolerance only. A not-a-number tolerance, which the
- *     replaced helper also rejected, passes it, after which no comparison can succeed on
- *     distance and the result reduces to exact value equality.
+ *     check.
  *
- * Both are recorded in the migration note. Every other failure is that of the Java
+ * It is recorded in the migration note. Every other failure is that of the Java
  * original, message included: arrays of different lengths can neither be combined nor
  * sorted, and a reordering position has to index the array being reordered. All of them
  * state a caller contract rather than a property of the data, so each is reported by a
@@ -142,7 +138,21 @@ object DoubleArrayMath {
     if (array.length == 0) {
       EMPTY_DOUBLE_OBJECT_ARRAY
     } else {
-      Array.tabulate(array.length)(index => java.lang.Double.valueOf(array(index)))
+      val result = new Array[java.lang.Double](array.length)
+      boxInto(result, array, 0)
+      result
+    }
+
+  // boxes the elements from the index upwards into the result, in index order
+  //
+  // Boxing each value is the whole point of the conversion and is the only thing this does: the
+  // index stays a primitive integer, where tabulating the result through a function of the index
+  // would box that as well.
+  @tailrec
+  private def boxInto(result: Array[java.lang.Double], array: Array[Double], index: Int): Unit =
+    if (index < array.length) {
+      result(index) = java.lang.Double.valueOf(array(index))
+      boxInto(result, array, index + 1)
     }
 
   /**
@@ -161,7 +171,22 @@ object DoubleArrayMath {
     if (array.length == 0) {
       EMPTY_DOUBLE_ARRAY
     } else {
-      Array.tabulate(array.length)(index => array(index).doubleValue())
+      val result = new Array[Double](array.length)
+      unboxInto(result, array, 0)
+      result
+    }
+
+  // unboxes the elements from the index upwards into the result, in index order
+  //
+  // Reading each value out of its box is the whole point of the conversion and is the only
+  // thing this does: the index stays a primitive integer and the value is written straight into
+  // the primitive result, where tabulating the result through a function of the index would box
+  // the index, box the value the function returned and read it out of that box again.
+  @tailrec
+  private def unboxInto(result: Array[Double], array: Array[java.lang.Double], index: Int): Unit =
+    if (index < array.length) {
+      result(index) = array(index).doubleValue()
+      unboxInto(result, array, index + 1)
     }
 
   //-------------------------------------------------------------------------
@@ -433,10 +458,11 @@ object DoubleArrayMath {
   /**
    * Compares two values within a tolerance.
    *
-   * Two values are equal when they are no further apart than the tolerance, and also when
-   * they are the same value, which is what makes each infinity equal to itself; a
-   * not-a-number value is equal to another not-a-number value and to nothing else. The
-   * class-level documentation sets out the full edge behaviour and why it is what it is.
+   * Two finite values are equal when they are no further apart than the tolerance, which
+   * makes both zeroes equal. An infinity is equal only to the same infinity, at every
+   * tolerance including an infinite one, and a not-a-number value is equal to nothing at
+   * all, itself included. The class-level documentation sets out the full edge behaviour
+   * and why it is what it is.
    *
    * This member, together with `isMathematicalInteger`, replaces the scalar comparison
    * that the Java original delegated to an external numeric helper.
@@ -445,9 +471,10 @@ object DoubleArrayMath {
    * @param b  the second value
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if the two values are effectively equal
-   * @throws IllegalArgumentException if the tolerance is negative
+   * @throws IllegalArgumentException if the tolerance is negative or is not a number
    */
   def fuzzyEquals(a: Double, b: Double, tolerance: Double): Boolean = {
+    ArgCheck.notNaN(tolerance, "tolerance")
     ArgCheck.notNegative(tolerance, "tolerance")
     fuzzyEqualsUnchecked(a, b, tolerance)
   }
@@ -478,9 +505,10 @@ object DoubleArrayMath {
    * @param array  the array to check
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if the array is effectively equal to zero
-   * @throws IllegalArgumentException if the tolerance is negative
+   * @throws IllegalArgumentException if the tolerance is negative or is not a number
    */
   def fuzzyEqualsZero(array: Array[Double], tolerance: Double): Boolean = {
+    ArgCheck.notNaN(tolerance, "tolerance")
     ArgCheck.notNegative(tolerance, "tolerance")
     allFuzzyEqualsZero(array, tolerance, 0)
   }
@@ -500,16 +528,28 @@ object DoubleArrayMath {
    * @param array2  the second array to check
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if the arrays are effectively equal
-   * @throws IllegalArgumentException if the tolerance is negative
+   * @throws IllegalArgumentException if the tolerance is negative or is not a number
    */
   def fuzzyEquals(array1: Array[Double], array2: Array[Double], tolerance: Double): Boolean = {
+    ArgCheck.notNaN(tolerance, "tolerance")
     ArgCheck.notNegative(tolerance, "tolerance")
     array1.length == array2.length && allFuzzyEquals(array1, array2, tolerance, 0)
   }
 
-  // the comparison itself, with the tolerance already checked by the caller
+  // The comparison itself, with the tolerance already checked by the caller. The three
+  // cases are disjoint and are taken in this order: a not-a-number value has no distance
+  // from anything and is equal to nothing, itself included; an infinity is equal only to
+  // the same infinity, whatever the tolerance, which an unguarded distance would get wrong
+  // at an infinite one; and two finite values are equal within the tolerance, which covers
+  // the two zeroes because their distance is zero.
   private def fuzzyEqualsUnchecked(a: Double, b: Double, tolerance: Double): Boolean =
-    math.abs(a - b) <= tolerance || a == b || (java.lang.Double.isNaN(a) && java.lang.Double.isNaN(b))
+    if (java.lang.Double.isNaN(a) || java.lang.Double.isNaN(b)) {
+      false
+    } else if (java.lang.Double.isInfinite(a) || java.lang.Double.isInfinite(b)) {
+      a == b
+    } else {
+      math.abs(a - b) <= tolerance
+    }
 
   @tailrec
   private def allFuzzyEqualsZero(array: Array[Double], tolerance: Double, index: Int): Boolean =
@@ -651,10 +691,108 @@ object DoubleArrayMath {
   }
 
   // the indices of the keys in ascending order of key, checking that the pair match in length
+  //
+  // The permutation is sorted rather than the keys themselves, which is what lets every value
+  // type follow its key and what makes the sort stable. It is sorted here by a bottom-up merge
+  // sort written over the primitive index array directly: the indices are integers and the
+  // comparison is between two doubles, so sorting them through a general-purpose ordering would
+  // box each index at every comparison, allocate the ordering and the mapping function, and copy
+  // the permutation more than once. This form allocates the permutation and one merge buffer of
+  // the same length, and nothing else, whatever the length of the input.
+  //
+  // A merge sort is what a stable result asks for - runs are merged rather than elements
+  // exchanged, and a tie is resolved by taking from the earlier run - and it is the same
+  // O(n log n) as the quicksort of the Java original.
   private def sortedOrder(keys: Array[Double], valuesLength: Int): Array[Int] = {
     ArgCheck.isTrue(keys.length == valuesLength, "Arrays cannot be sorted as they differ in length")
-    Array.range(0, keys.length).sortBy(index => keys(index))(Ordering.Double.TotalOrdering)
+    val order = new Array[Int](keys.length)
+    identityInto(order, 0)
+    if (order.length > 1) {
+      mergePasses(order, new Array[Int](order.length), keys, 1L)
+    }
+    order
   }
+
+  // fills the order with the identity permutation, so that index zero holds zero and so on
+  @tailrec
+  private def identityInto(order: Array[Int], index: Int): Unit =
+    if (index < order.length) {
+      order(index) = index
+      identityInto(order, index + 1)
+    }
+
+  // merges every adjacent pair of runs of the given width into the buffer, copies the result
+  // back over the order and repeats with the runs twice as wide, until one run spans the whole
+  // order and it is therefore sorted
+  //
+  // The width is carried as a `Long` because doubling an `Int` width overflows into a negative
+  // number once it passes half of the integer range, which would leave the doubling unable to
+  // reach the length of an array that large and the merging unable to terminate. Every
+  // comparison and conversion between the two widths is written out for that reason.
+  @tailrec
+  private def mergePasses(order: Array[Int], buffer: Array[Int], keys: Array[Double], width: Long): Unit =
+    if (width < order.length.toLong) {
+      mergeRunsFrom(order, buffer, keys, width, 0)
+      System.arraycopy(buffer, 0, order, 0, order.length)
+      mergePasses(order, buffer, keys, width * 2L)
+    }
+
+  // merges the pair of runs starting at the given position into the buffer and moves on to the
+  // next pair, up to the end of the order
+  //
+  // A final run without a partner is merged with an empty one, which copies it into the buffer
+  // unchanged and keeps the buffer a permutation of the order at the end of every pass.
+  @tailrec
+  private def mergeRunsFrom(
+      order: Array[Int],
+      buffer: Array[Int],
+      keys: Array[Double],
+      width: Long,
+      start: Int): Unit =
+
+    if (start < order.length) {
+      val middle = boundedIndex(order.length, start.toLong + width)
+      val end = boundedIndex(order.length, start.toLong + width + width)
+      mergeRunInto(order, buffer, keys, start, start, middle, middle, end)
+      mergeRunsFrom(order, buffer, keys, width, end)
+    }
+
+  // the given run boundary, or the length of the array where the boundary is beyond its end
+  private def boundedIndex(length: Int, boundary: Long): Int =
+    if (boundary < length.toLong) boundary.toInt else length
+
+  // merges the run from the left position to the middle and the run from the right position to
+  // the end into the buffer, starting at the target position
+  //
+  // The index whose key compares no greater is taken at each step, and where the two keys
+  // compare equal it is the one from the left run - the run that came first - which is what
+  // makes the sort stable. The comparison is `java.lang.Double.compare`, the total ordering of
+  // doubles, under which a not-a-number key is greater than every other and negative zero is
+  // less than positive zero; it reads the two keys through the primitive array directly, so no
+  // key and no index is boxed.
+  @tailrec
+  private def mergeRunInto(
+      order: Array[Int],
+      buffer: Array[Int],
+      keys: Array[Double],
+      target: Int,
+      left: Int,
+      middle: Int,
+      right: Int,
+      end: Int): Unit =
+
+    if (target < end) {
+      val takeLeft =
+        left < middle &&
+          (right >= end || java.lang.Double.compare(keys(order(left)), keys(order(right))) <= 0)
+      if (takeLeft) {
+        buffer(target) = order(left)
+        mergeRunInto(order, buffer, keys, target + 1, left + 1, middle, right, end)
+      } else {
+        buffer(target) = order(right)
+        mergeRunInto(order, buffer, keys, target + 1, left, middle, right + 1, end)
+      }
+    }
 
   private def selectDoubles(source: Array[Double], order: Array[Int]): Array[Double] = {
     val result = new Array[Double](order.length)

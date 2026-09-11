@@ -73,16 +73,28 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     part-by-part resolution. The four composite tests below therefore assert both halves of
  *     that: what the store answers, and what resolving the identifier against it produces.
  *
- * ===Why the calendars stored in the fixtures are built here===
+ * ===The calendars the fixtures store are the ones this library publishes===
  *
- * [[storedCalendar]] prefers the calendar this library defines for an identifier and falls
- * back to one it builds. Either satisfies what this spec needs of a stored calendar - that it
- * be filed under the identifier and observe the date the assertions discriminate on - and the
- * fallback is what keeps this spec's verdict a statement about the decoration: which holidays
- * London and the European TARGET system observe is asserted by `GlobalHolidayCalendarsSpec`
- * and `HolidayCalendarsSpec`, and a fixture read unconditionally from the built-in set would
- * report a fault there as a fault here. [[MINIMAL_DATA]] is the same decision applied to
- * `ReferenceData.minimal`, whose contents `ReferenceDataSpec` owns.
+ * [[storedCalendar]] reads a fixture calendar through `HolidayCalendars.of`, which is the
+ * lookup an application makes of the built-in set, and it fails the fixture rather than
+ * substituting anything of its own where that lookup does not answer or answers a calendar
+ * that does not observe the date the assertions below discriminate on. Nothing is synthesized
+ * because nothing else in this module would notice if the publication broke:
+ * `HolidayCalendarsSpec` says outright that it never calls `HolidayCalendars.of` and never
+ * reads `ReferenceData.standard`, and `GlobalHolidayCalendarsSpec` asserts what the calendar
+ * generators produce rather than that the built-in set publishes what they produced. So the
+ * fixtures that make the assertions about the decoration meaningful are also this module's
+ * only guard on that publication path, and `test_singleCalendar_inReferenceData` asserts it
+ * outright rather than leaving it implied.
+ *
+ * What this spec owns of those two calendars is narrow, and deliberately so. It does not
+ * re-assert which holidays London or the European TARGET system observe - the generated set is
+ * asserted year by year by `GlobalHolidayCalendarsSpec` - it asserts that both calendars are
+ * found under the names they are published as, and that each of them observes one of
+ * [[GBLO_HOLIDAY]] and [[EUTA_HOLIDAY]] and is open on the other, which is exactly what the
+ * assertions here read them for. `ReferenceData.minimal` is used as it is published too: the
+ * store `test_singleCalendar_inReferenceData` decorates is that constant itself, so the
+ * calendars it is specified to hold are asserted of it rather than laid over it.
  *
  * ===What is asserted elsewhere===
  *
@@ -210,35 +222,41 @@ class HolidaySafeReferenceDataSpec extends AnyFunSuite with Matchers {
    */
   private val A_SATURDAY: LocalDate = LocalDate.of(2015, 8, 29)
 
-  /**
-   * The weekend and no-holiday calendars, the set `ReferenceData.minimal` is specified to hold,
-   * supplied alongside that constant.
-   *
-   * A combination consults its first operand first, so where the constant holds these four
-   * calendars - as it is specified to - this is exactly `ReferenceData.minimal`, and where it
-   * does not, the four are still present. Either way the store holds the four weekend and
-   * no-holiday calendars and holds no national calendar, which is all this spec requires of it:
-   * what that constant contains is asserted by `ReferenceDataSpec`, and a fixture that depended
-   * on it would report a fault there as a fault in the decoration.
-   */
-  private val MINIMAL_DATA: ReferenceData =
-    ReferenceData.minimal.combinedWith(
-      store(
-        ReferenceData.Entry(NO_HOL_ID, NO_HOL_CAL),
-        ReferenceData.Entry(SAT_SUN_ID, SAT_SUN_CAL),
-        ReferenceData.Entry(HolidayCalendarIds.FRI_SAT, HolidayCalendars.FRI_SAT),
-        ReferenceData.Entry(HolidayCalendarIds.THU_FRI, HolidayCalendars.THU_FRI)))
-
   //-------------------------------------------------------------------------
   test("test_singleCalendar_inReferenceData") {
     // Rule 1, from the side on which nothing is defaulted: a calendar the underlying data
-    // holds is the calendar returned, unchanged.
-    val test = HolidaySafeReferenceData(MINIMAL_DATA)
+    // holds is the calendar returned, unchanged. The underlying data is `ReferenceData.minimal`
+    // as this library publishes it, so what the two assertions below read back is what that
+    // constant holds.
+    val test = HolidaySafeReferenceData(ReferenceData.minimal)
 
     // The two dates this spec discriminates on, asserted here so that a mistake in either is
     // reported as a mistake in the fixture rather than as a fault in the subject.
     GBLO_HOLIDAY.getDayOfWeek shouldBe DayOfWeek.MONDAY
     A_SATURDAY.getDayOfWeek shouldBe SATURDAY
+
+    // The publication of the two national calendars the fixtures store, asserted here because
+    // this is the module's only test of it: `HolidayCalendarsSpec` never calls
+    // `HolidayCalendars.of` and `GlobalHolidayCalendarsSpec` asserts the generators rather than
+    // the built-in set they are published through. The assertions are behavioural rather than by
+    // equality, since a calendar compares on its identifier alone and any calendar named `GBLO`
+    // would satisfy a comparison: what is stated is that the lookup answers and that the
+    // calendar it answers with is closed on the date this spec reads it for. A lookup that
+    // stopped answering at all is reported one step earlier still, by [[storedCalendar]] as it
+    // builds the fixture.
+    HolidayCalendars.of(GBLO_ID.name).map(calendar => calendar.isHoliday(GBLO_HOLIDAY)) shouldBe
+      Right(true)
+    HolidayCalendars.of(EUTA_ID.name).map(calendar => calendar.isHoliday(EUTA_HOLIDAY)) shouldBe
+      Right(true)
+
+    // And the property of those two published calendars that every assertion in this spec reads
+    // them for: each observes one of the two dates and is open on the other, so a date says
+    // which of them a value came from where equality cannot.
+    // `GBLO_CAL.isHoliday(GBLO_HOLIDAY)`, the fourth of the four facts, is asserted below at the
+    // point where the stored London calendar is set against the defaulted one.
+    GBLO_CAL.isBusinessDay(EUTA_HOLIDAY) shouldBe true
+    EUTA_CAL.isHoliday(EUTA_HOLIDAY) shouldBe true
+    EUTA_CAL.isBusinessDay(GBLO_HOLIDAY) shouldBe true
 
     // The Java original read these through the low-level query that has no counterpart here;
     // the primitive of this port is `findValue`, and absence is `None`.
@@ -614,25 +632,32 @@ class HolidaySafeReferenceDataSpec extends AnyFunSuite with Matchers {
     ImmutableHolidayCalendar.of(id, Nil, WEEKEND_DAYS)
 
   /**
-   * Builds a calendar to be stored in a fixture under the given identifier.
+   * Reads the calendar this library publishes for the given identifier, to be stored in a
+   * fixture.
    *
-   * The calendar this library defines for the identifier is preferred, so that the fixtures are
-   * the real London and TARGET calendars wherever the library defines them; it is used only if
-   * it observes the date the assertions discriminate on, since a fixture that did not would
-   * make those assertions silently vacuous. Otherwise a calendar of that identifier observing
-   * exactly that date is built, which satisfies the same requirement without reading data this
-   * spec does not assert. See the note on the class.
+   * The calendar is read through `HolidayCalendars.of`, the lookup by which an application
+   * reaches the built-in set, so that a fixture is the real London or TARGET calendar rather
+   * than one this spec assembled. The contract is strict in both directions, and a breach of
+   * either is a failed fixture naming its cause, exactly as an unbuildable [[store]] is: a
+   * lookup that does not answer fails, and so does a calendar that answers but does not observe
+   * the date the assertions discriminate on, because such a fixture would make every assertion
+   * that reads it vacuous. Nothing is substituted for a missing or wrong built-in - a
+   * substitute would satisfy every assertion below by construction and would leave the
+   * publication of these two calendars unguarded, which no other spec in this module covers.
+   * See the note on the class.
    *
-   * @param id  the identifier the calendar carries
-   * @param holiday  the date the calendar is required to observe as a holiday
-   * @return a calendar of that identifier that is closed on that date
+   * @param id  the identifier of the published calendar to read
+   * @param holiday  the date the published calendar is required to observe as a holiday
+   * @return the published calendar of that identifier, which is closed on that date
    */
   private def storedCalendar(id: HolidayCalendarId, holiday: LocalDate): HolidayCalendar =
-    HolidayCalendars
-      .of(id.name)
-      .toOption
-      .filter(calendar => calendar.isHoliday(holiday))
-      .getOrElse(ImmutableHolidayCalendar.of(id, List(holiday), WEEKEND_DAYS))
+    HolidayCalendars.of(id.name) match {
+      case Right(calendar) if calendar.isHoliday(holiday) => calendar
+      case Right(_) =>
+        fail(s"Fixture calendar ${id.name} is published but no longer observes $holiday as a holiday")
+      case Left(failure) =>
+        fail(s"Fixture calendar ${id.name} is not published by this library: ${failure.message}")
+    }
 
   /**
    * Builds reference data holding the given entries over the minimal set.

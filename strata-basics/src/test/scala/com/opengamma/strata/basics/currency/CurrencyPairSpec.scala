@@ -606,9 +606,14 @@ final class CurrencyPairSpec extends AnyFunSuite with Matchers with TableDrivenP
 
   //-------------------------------------------------------------------------
   // Mapping from the Java test class, for the record: all twenty-seven annotated methods are
-  // present above under their Java names, none dropped and none consolidated, and the two
-  // that were driven by a data provider are one test each holding their whole table. The
-  // ten exception assertions of the original are accounted for as follows: the seven that
-  // passed an absent reference become compile-time proofs, spread over the five tests whose
-  // names end in `_null`, and the remaining three become failure assertions.
+  // present above under their Java names and none is dropped, and the two that were driven
+  // by a data provider are one test each holding their whole table. One of the twenty-seven,
+  // `test_serialization`, is additionally recorded in the migration manifest as consolidated
+  // into `com.opengamma.strata.basics.json.JsonRoundTripSpec`, under the name
+  // `CurrencyPair_test_serialization`: the property-based round trip over every codec-bearing
+  // type of the module is owned there, and the test kept here is the per-type representation
+  // of the serialized form rather than a second copy of that sweep. The ten exception
+  // assertions of the original are accounted for as follows: the seven that passed an absent
+  // reference become compile-time proofs, spread over the five tests whose names end in
+  // `_null`, and the remaining three become failure assertions.
 }

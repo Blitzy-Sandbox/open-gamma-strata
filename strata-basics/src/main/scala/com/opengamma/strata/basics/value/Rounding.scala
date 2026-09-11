@@ -498,6 +498,10 @@ object Rounding {
   private val UnknownShapeMessage: String =
     s"Rounding must be an object holding exactly one of '$NoRoundingKey' or '$HalfUpKey'"
 
+  /** The rejection of a document whose no-rounding member carries anything but an empty object. */
+  private val NoRoundingPayloadMessage: String =
+    s"Rounding '$NoRoundingKey' must hold an empty object, as it has no fields"
+
   //-------------------------------------------------------------------------
   // The two members of the family are declared beside this object rather than inside it,
   // because Scala requires every direct subtype of a sealed type to be declared in the same
@@ -660,15 +664,35 @@ object Rounding {
    * This is the inverse of the encoding above. The document has to be an object holding exactly
    * one field, whose name selects the member; a document holding no field, several fields, or a
    * field naming no member of the family is rejected, as is one that is not an object at all.
-   * The fields of the half-up convention are validated by its own factory, so an out-of-range
-   * document is a decoding failure carrying every reason it was rejected for rather than a
-   * value the factory would never have built.
+   *
+   * The name of that one field selects the member, and the value of the field is then read as
+   * that member's own payload rather than ignored, so a document is accepted only when both
+   * halves of the shape match. The convention that makes no change has no fields, so its
+   * payload is the empty object the encoder writes and nothing else: `{"NoRounding":{}}`
+   * decodes, while a payload that is a number, a string, an array, the JSON literal denoting an
+   * absent value, or an object carrying any field at all - `{"NoRounding":123}`,
+   * `{"NoRounding":{"decimalPlaces":2}}` and their like - is rejected, the last of those because
+   * a field it carries would otherwise be silently dropped. The fields of the half-up
+   * convention are validated by its own factory, so an out-of-range document is a decoding
+   * failure carrying every reason it was rejected for rather than a value the factory would
+   * never have built, and a half-up payload that is not an object at all is rejected by that
+   * same decoder.
+   *
+   * The history of a rejection is that of the cursor the failure was found at - the member
+   * cursor for a payload that does not match its member, the document cursor for a shape that
+   * names no member - so the position reported in a nested document points at the field that
+   * was wrong.
    *
    * @return the JSON decoding of a rounding convention
    */
   implicit val decoder: Decoder[Rounding] = Decoder.instance { cursor =>
     cursor.keys.map(_.toList) match {
-      case Some(NoRoundingKey :: Nil) => Right(NoRounding)
+      case Some(NoRoundingKey :: Nil) =>
+        val member = cursor.downField(NoRoundingKey)
+        member.focus.flatMap(_.asObject) match {
+          case Some(fields) if fields.isEmpty => Right(NoRounding)
+          case _ => Left(DecodingFailure(NoRoundingPayloadMessage, member.history))
+        }
       case Some(HalfUpKey :: Nil) => cursor.downField(HalfUpKey).as[HalfUp](halfUpDecoder)
       case _ => Left(DecodingFailure(UnknownShapeMessage, cursor.history))
     }

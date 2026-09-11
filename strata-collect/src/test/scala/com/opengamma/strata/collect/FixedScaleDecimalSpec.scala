@@ -546,6 +546,40 @@ final class FixedScaleDecimalSpec extends AnyFunSuite with Matchers with ScalaCh
     }
   }
 
+  test("parse rejects oversized text by the bound of the decimal, before any scale is derived") {
+    // Text is read as a decimal before it is scanned for the point, so the bound the decimal
+    // applies to its own text is the single guard on length, and the scale a long fraction
+    // would imply is never reached. Three hundred digits after the point would imply a scale
+    // no decimal holds, yet the only failure reported is the one the decimal reports on the
+    // length of the text - the scale check of `of` contributes nothing to this outcome.
+    val oversized = "1." + "0" * 300
+    oversized.length shouldBe 302
+    val outcome = FixedScaleDecimal.parse(oversized)
+    outcome should beFailure
+    outcome should beFailureWith(FailureReason.PARSING)
+    messagesOf(outcome) shouldBe List("Decimal string must not exceed 256 characters")
+    messagesOf(outcome) should not contain aboveMaximumMessage(300)
+
+    // The boundary from the accepting side, so the case above cannot pass for the wrong
+    // reason: text of exactly the length a decimal accepts, naming a value of a scale the
+    // type holds, is read as it always was. Two hundred and thirty-seven leading zeroes keep
+    // the value within eighteen digits of precision while the fraction fills the scale.
+    val atBound = "0" * 237 + ".123456789012345678"
+    atBound.length shouldBe 256
+    val value = fixed(atBound)
+    value.decimal shouldBe decimalOf("0.123456789012345678")
+    value.fixedScale shouldBe 18
+    value.toString shouldBe "0.123456789012345678"
+
+    // One character more is one character too many, whatever it names.
+    val pastBound = "0" + atBound
+    pastBound.length shouldBe 257
+    val rejectedAtBound = FixedScaleDecimal.parse(pastBound)
+    rejectedAtBound should beFailure
+    rejectedAtBound should beFailureWith(FailureReason.PARSING)
+    messagesOf(rejectedAtBound) shouldBe List("Decimal string must not exceed 256 characters")
+  }
+
   test("parse rejects text whose implied scale is beyond the maximum a decimal holds") {
     // Nineteen digits after the point imply a scale no decimal holds. The decimal itself is
     // read - rounded to the precision a decimal supports - and it is the scale that is

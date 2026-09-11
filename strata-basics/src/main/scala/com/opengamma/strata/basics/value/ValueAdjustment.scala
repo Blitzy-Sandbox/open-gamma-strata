@@ -152,17 +152,17 @@ final case class ValueAdjustment(modifyingValue: Double, `type`: ValueAdjustment
    * @return the rendering of the calculation this adjustment performs
    */
   override def toString: String = `type` match {
-    case ValueAdjustmentType.DELTA_AMOUNT =>
+    case ValueAdjustmentType.DeltaAmount =>
       if (this == ValueAdjustment.NONE) {
         "ValueAdjustment[result = input]"
       } else {
         s"ValueAdjustment[result = input + $modifyingValue]"
       }
-    case ValueAdjustmentType.DELTA_MULTIPLIER =>
+    case ValueAdjustmentType.DeltaMultiplier =>
       s"ValueAdjustment[result = input + input * $modifyingValue]"
-    case ValueAdjustmentType.MULTIPLIER =>
+    case ValueAdjustmentType.Multiplier =>
       s"ValueAdjustment[result = input * $modifyingValue]"
-    case ValueAdjustmentType.REPLACE =>
+    case ValueAdjustmentType.Replace =>
       s"ValueAdjustment[result = $modifyingValue]"
   }
 }
@@ -215,7 +215,7 @@ object ValueAdjustment {
    * @return the adjustment, capturing the replacement value
    */
   def ofReplace(replacementValue: Double): ValueAdjustment =
-    ValueAdjustment(replacementValue, ValueAdjustmentType.REPLACE)
+    ValueAdjustment(replacementValue, ValueAdjustmentType.Replace)
 
   /**
    * Obtains an instance specifying an amount to add to the base value.
@@ -226,7 +226,7 @@ object ValueAdjustment {
    * @return the adjustment, capturing the delta amount
    */
   def ofDeltaAmount(deltaAmount: Double): ValueAdjustment =
-    ValueAdjustment(deltaAmount, ValueAdjustmentType.DELTA_AMOUNT)
+    ValueAdjustment(deltaAmount, ValueAdjustmentType.DeltaAmount)
 
   /**
    * Obtains an instance specifying a multiplication factor, adding it to the base value.
@@ -238,7 +238,7 @@ object ValueAdjustment {
    * @return the adjustment, capturing the delta multiplier
    */
   def ofDeltaMultiplier(deltaMultiplier: Double): ValueAdjustment =
-    ValueAdjustment(deltaMultiplier, ValueAdjustmentType.DELTA_MULTIPLIER)
+    ValueAdjustment(deltaMultiplier, ValueAdjustmentType.DeltaMultiplier)
 
   //-------------------------------------------------------------------------
   /**
@@ -250,7 +250,7 @@ object ValueAdjustment {
    * @return the adjustment
    */
   def ofMultiplier(multiplier: Double): ValueAdjustment =
-    ValueAdjustment(multiplier, ValueAdjustmentType.MULTIPLIER)
+    ValueAdjustment(multiplier, ValueAdjustmentType.Multiplier)
 
   //-------------------------------------------------------------------------
   /**

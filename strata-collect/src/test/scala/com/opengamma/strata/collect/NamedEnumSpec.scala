@@ -9,6 +9,7 @@ import java.util.Locale
 
 import scala.util.matching.Regex
 
+import cats.Eq
 import cats.Hash
 import cats.Order
 import cats.Show
@@ -377,6 +378,48 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
     sample.parse("a2") should haveValue(SampleNamed.MORE)
   }
 
+  test("the two rewrites that pin the lenient stage are spelled exactly as declared (ExtendedEnumTest.test_enum_lenient)") {
+    // Every rewrite of the sample family is spelled in upper case, which is why neither
+    // half of the lenient stage - the fold of the input, and the copy of each expression
+    // made insensitive to case - is observable through that family: fold or not, copy or
+    // not, an upper-case expression matches upper-case text. The two rewrites below are
+    // spelled so that each half is observable on its own, so their spelling is the whole of
+    // what makes the two tests after this one able to fail, and is asserted verbatim here.
+    // Folding either source to upper case re-opens the hole and fails this test.
+    caseFolding.lenientPatterns.map(sourceOf) shouldBe
+      List("Mix/Mix" -> "Other", "(?-i)sensitive/sensitive" -> "More")
+  }
+
+  test("a rewrite spelled in mixed case applies only because its copy ignores case (ExtendedEnumTest.test_enum_lenient)") {
+    // The source as the family supplied it cannot match the text a rewrite is handed, that
+    // text having been folded to upper case; the copy the family applies can.
+    MixedCaseSource.r.matches("MIX/MIX") shouldBe false
+    ("(?i)" + MixedCaseSource).r.matches("MIX/MIX") shouldBe true
+    // So this rule resolves at all only through that copy - and through it, it resolves
+    // whatever case the input arrives in, which is the tolerance the mixed-case rows of a
+    // real table depend on.
+    caseFolding.parse("Mix/Mix") should haveValue(SampleNamed.OTHER)
+    caseFolding.parse("MIX/MIX") should haveValue(SampleNamed.OTHER)
+    caseFolding.parse("mix/mix") should haveValue(SampleNamed.OTHER)
+    caseFolding.parse("mIx/MiX") should haveValue(SampleNamed.OTHER)
+  }
+
+  test("a rewrite that turns the inline flag off again applies to nothing, the input being folded first (ExtendedEnumTest.test_enum_lenient)") {
+    // The copy is made by prefixing an inline flag to the source, so a source that turns
+    // that flag off again is beyond its reach and can match only the lower-case text it
+    // spells. The fold has already turned the input to upper case by then, so no input
+    // whatever reaches this rule.
+    caseFolding.parse("sensitive/sensitive") should beFailure
+    caseFolding.parse("SENSITIVE/SENSITIVE") should beFailure
+    caseFolding.parse("Sensitive/Sensitive") should beFailure
+    // The rule is unreachable rather than merely broken, and its target is a member this
+    // family has: compiled the way the family compiles it, the expression does match the
+    // text it spells, so the fold of the input is the only thing keeping it from applying.
+    ("(?i)" + CaseSensitiveSource).r.matches("sensitive/sensitive") shouldBe true
+    ("(?i)" + CaseSensitiveSource).r.matches("SENSITIVE/SENSITIVE") shouldBe false
+    caseFolding.valueOf("More") shouldBe Some(SampleNamed.MORE)
+  }
+
   test("a family declaring no rewrite still folds the case of its input (ExtendedEnumTest.test_enum_lenient)") {
     SingleValueNamed.lookup.lenientPatterns shouldBe empty
     SingleValueNamed.lookup.valueOf("solo") shouldBe None
@@ -705,6 +748,67 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
     }
   }
 
+  test("a family with no order hashes by name, which is not the hashing of its values") {
+    // The hashing offered on its own, for a family whose members carry no meaningful order.
+    // The hash of a member is the hash of its name, so a hashing that answered a constant,
+    // or that fell back on the identity of the value, is visible here: the twin is a
+    // different value of the same name, and the two members are different names.
+    val hash = Hash[UnorderedNamed]
+    UnorderedNamed.values.toList.foreach { member =>
+      hash.hash(member) shouldBe member.name.hashCode
+    }
+    hash.hash(UnorderedNamed.FirstTwin) shouldBe "First".hashCode
+    hash.hash(UnorderedNamed.FirstTwin) shouldBe hash.hash(UnorderedNamed.FIRST)
+    hash.hash(UnorderedNamed.FIRST) should not be hash.hash(UnorderedNamed.SECOND)
+  }
+
+  test("a family with no order compares by name, which is not the equality of its values") {
+    val hash = Hash[UnorderedNamed]
+    // The twin is not the member, under the equality the language gives every value ...
+    (UnorderedNamed.FirstTwin == UnorderedNamed.FIRST) shouldBe false
+    // ... and is the member, under the equality the family publishes.
+    hash.eqv(UnorderedNamed.FIRST, UnorderedNamed.FirstTwin) shouldBe true
+    hash.eqv(UnorderedNamed.FirstTwin, UnorderedNamed.FIRST) shouldBe true
+    hash.eqv(UnorderedNamed.FIRST, UnorderedNamed.FIRST) shouldBe true
+    hash.eqv(UnorderedNamed.FIRST, UnorderedNamed.SECOND) shouldBe false
+  }
+
+  test("the equality of a family with no order arrives from the one instance it publishes") {
+    // Hashing extends equality, so the single instance is the whole of what the family has
+    // to declare for both to be available and to agree by construction: both summon to the
+    // one value the family published, rather than to two that could disagree.
+    Eq[UnorderedNamed] shouldBe UnorderedNamed.hash
+    Hash[UnorderedNamed] shouldBe UnorderedNamed.hash
+    Eq[UnorderedNamed].eqv(UnorderedNamed.FIRST, UnorderedNamed.FirstTwin) shouldBe true
+    Eq[UnorderedNamed].eqv(UnorderedNamed.FIRST, UnorderedNamed.SECOND) shouldBe false
+  }
+
+  test("hashing by name and ordering by name agree, which is why either may be published") {
+    // The two helpers are documented to agree on hashing and on equality, so that a family
+    // moving from one to the other keeps the semantics it had. Asserted over the twin as
+    // well as the members, since that is where a fallback on the value rather than the name
+    // would show.
+    val hashOnly = Hash[UnorderedNamed]
+    val ordered: Order[UnorderedNamed] with Hash[UnorderedNamed] = NamedEnum.orderByName
+    val everyValue = UnorderedNamed.FirstTwin :: UnorderedNamed.values.toList
+    everyValue.foreach { left =>
+      ordered.hash(left) shouldBe hashOnly.hash(left)
+      everyValue.foreach { right =>
+        ordered.eqv(left, right) shouldBe hashOnly.eqv(left, right)
+        (ordered.compare(left, right) == 0) shouldBe hashOnly.eqv(left, right)
+      }
+    }
+  }
+
+  test("a family with no order publishes no ordering and no rendering") {
+    // The helpers are plain methods, so a family gets exactly the instances it declares:
+    // this one declared the hashing alone, and neither of the other two can be summoned for
+    // it however the members of the family compare as text.
+    assertDoesNotCompile("""Order[UnorderedNamed]""")
+    assertDoesNotCompile("""Show[UnorderedNamed]""")
+    assertCompiles("""Hash[UnorderedNamed]""")
+  }
+
   test("the typeclass publishes no instance of its own, so a family must publish its lookup") {
     // The helpers that build the instances of a family are plain methods, and the typeclass
     // declares no implicit at all, so summoning a lookup finds exactly the one its family
@@ -765,13 +869,15 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
  * three lenient rewrites '''in the order the original declared them''', which is behaviour
  * rather than presentation and is asserted as such.
  *
- * Beside it sit the narrower families each remaining case needs, and six further lookups
+ * Beside it sit the narrower families each remaining case needs, and seven further lookups
  * over the same five members which vary one table at a time - a table whose alternate
  * spelling and whose rewrite both claim one text, a table whose alternate spelling points
  * at another alternate spelling, a table with no label, a group naming a member that does
- * not exist, a group naming a member through its alternate spelling, and the three rewrites
- * of the fixture in an order that breaks the chain they form. Varying one table at a time is
- * what lets each test name the single rule it covers.
+ * not exist, a group naming a member through its alternate spelling, the three rewrites of
+ * the fixture in an order that breaks the chain they form, and two rewrites spelled so that
+ * the fold of the input and the case-insensitive copy of a source are each observable on
+ * their own. Varying one table at a time is what lets each test name the single rule it
+ * covers.
  *
  * ===Why a lookup is published implicitly here and not there===
  *
@@ -781,6 +887,9 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
  * [[NamedEnumFixtures.CollidingNamed]] deliberately publish neither: they hold their lookup
  * as a plain value, which is what makes it possible to assert that the typeclass itself
  * offers no instance for a family that publishes none.
+ * [[NamedEnumFixtures.UnorderedNamed]] is the third arrangement a family can be in: it
+ * publishes one instance and no lookup, that instance being the hashing a family without a
+ * meaningful order declares in place of the combined ordering.
  */
 private[collect] object NamedEnumFixtures {
 
@@ -877,6 +986,46 @@ private[collect] object NamedEnumFixtures {
       Map("A1" -> "Another1"),
       SampleNamed.LenientPatterns,
       familyName = "AliasBeatsRewrite")
+
+  /**
+   * The source of a rewrite written in genuinely mixed case.
+   *
+   * The tables of the library carry sources spelled this way, and a source spelled this way
+   * can only ever be reached because the family applies a copy of it that ignores case: the
+   * text handed to the rewrites has been folded to upper case, which this source as written
+   * does not match. Held as a value so that the family below and the assertions over it
+   * cannot drift apart, and asserted verbatim so that folding it to upper case - which would
+   * make every case of it pass whether the copy ignores case or not - fails a test.
+   */
+  val MixedCaseSource: String = "Mix/Mix"
+
+  /**
+   * The source of a rewrite that re-enables sensitivity to case within itself.
+   *
+   * This is the control for the fold rather than for the copy. The copy is made by prefixing
+   * an inline flag to the source, and a source that turns that flag off again is beyond its
+   * reach, so the only text this rewrite can match is the lower-case text it spells - which
+   * the fold has already turned to upper case by the time any rewrite is applied. The
+   * rewrite is therefore well formed and unreachable, and it becomes reachable the moment
+   * the fold stops happening. It names text that the rewrite above cannot match, so the two
+   * controls stay independent of each other.
+   */
+  val CaseSensitiveSource: String = "(?-i)sensitive/sensitive"
+
+  /**
+   * A lookup whose two rewrites separate the fold of the input from the copy of the source.
+   *
+   * [[NamedEnumFixtures.MixedCaseSource]] resolves only while the copy ignores case, and
+   * [[NamedEnumFixtures.CaseSensitiveSource]] resolves nothing at all only while the input is
+   * folded. Between them the two rules pin both halves of the lenient stage, neither of which
+   * the rewrites of the sample family can distinguish: every one of those is spelled in upper
+   * case already.
+   */
+  val caseFolding: NamedEnum[SampleNamed] =
+    NamedEnum.of(
+      SampleNamed.values,
+      lenient = List(MixedCaseSource.r -> "Other", CaseSensitiveSource.r -> "More"),
+      familyName = "CaseFolding")
 
   /** A lookup whose alternate spelling points at another alternate spelling. */
   val chainedAlias: NamedEnum[SampleNamed] =
@@ -1048,6 +1197,52 @@ private[collect] object NamedEnumFixtures {
 
     /** The rendering of a member as its name, which is what the formatter produced. */
     implicit val show: Show[MockEnum] = NamedEnum.showByName
+  }
+
+  /**
+   * A family that carries no order, publishing the hashing of its names and nothing else.
+   *
+   * Every other family here publishes the combined ordering, so the hashing offered on its
+   * own - the instance a family whose members have no meaningful order declares - would
+   * otherwise be published by nobody and exercised by nothing. This family publishes exactly
+   * that one instance: no ordering, no rendering, and an equality that arrives only because
+   * hashing extends it.
+   *
+   * @param name  the canonical name of the member
+   */
+  sealed abstract class UnorderedNamed private (val name: String) extends Named
+
+  /** The members of the unordered family, and the single instance it publishes. */
+  object UnorderedNamed {
+
+    /** The first member, whose name a second value of the family also carries. */
+    case object FIRST extends UnorderedNamed("First")
+
+    /** The second member, which shares its name with nothing. */
+    case object SECOND extends UnorderedNamed("Second")
+
+    /**
+     * A second value carrying the name of [[UnorderedNamed.FIRST]].
+     *
+     * The name-derived instances of a family are indistinguishable from the universal
+     * equality and hashing of its members while every name belongs to exactly one value:
+     * two members are unequal and hash apart under either reading. This value exists so
+     * that they are distinguishable - it is not the first member, so universal equality
+     * separates the two and their identities hash apart, while their names are the same
+     * word, so a name-derived instance must hold them equal and hash them alike.
+     *
+     * It is a value of the family rather than a member of it, so it is deliberately absent
+     * from `values` and from any lookup: a family whose lookup held two values of one name
+     * would be the collision case that [[NamedEnumFixtures.CollidingNamed]] covers, which is
+     * a different subject.
+     */
+    val FirstTwin: UnorderedNamed = new UnorderedNamed("First") {}
+
+    /** The members of the family, in declaration order. */
+    val values: NonEmptyList[UnorderedNamed] = NonEmptyList.of(FIRST, SECOND)
+
+    /** The hashing of this family, and so its equality, derived from its names. */
+    implicit val hash: Hash[UnorderedNamed] = NamedEnum.hashByName
   }
 
   /**

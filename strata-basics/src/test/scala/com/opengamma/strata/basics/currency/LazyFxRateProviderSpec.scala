@@ -6,10 +6,12 @@
 package com.opengamma.strata.basics.currency
 
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
@@ -49,7 +51,8 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * generated proxy, so the compiler checks it.
  *
  * A counter of this shape is the reason this suite holds no mutable field and no mutable
- * collection: an `AtomicInteger` is neither.
+ * collection: an `AtomicInteger` is neither, and neither is the `AtomicReference` over an
+ * immutable `List` with which `testDelegation` records the pairs its target is asked about.
  *
  * ===Why each test asserts three lookups rather than one===
  *
@@ -60,6 +63,14 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * test and fail the third, so the `CurrencyPair` assertion is the one that pins the
  * indirection. The conversion is asserted for the same reason: it is a third route to the same
  * rate, and it has its own short-circuit.
+ *
+ * In `testDelegation` each of the three routes is also pinned to what it delegates. Its target
+ * holds one direction of `USD/EUR` at the expected rate, the reverse direction at another, and
+ * no other pair at all, and it records the ordered arguments it is asked about; the assertion
+ * that follows each lookup names the one pair that lookup delegated. A route that swapped base
+ * and counter, or delegated some other pair, therefore fails on what was recorded and on the
+ * rate it received. The amount converted is not one, so the conversion is also pinned to the
+ * product of amount and rate rather than to the rate alone.
  *
  * Both tests read their outcomes through the shared testkit matchers, because every lookup of
  * this API reports a missing rate as a failure on the left of an `Either` rather than by
@@ -98,12 +109,48 @@ final class LazyFxRateProviderSpec extends AnyFunSuite with Matchers {
 
   test("testDelegation") {
     val expectedRate = 3d
-    val supplier = new CountingSupplier(constantProvider(expectedRate))
+    // The ordered pairs the target has been asked about since they were last read, newest last.
+    // An AtomicReference over an immutable List records them without a mutable field or a
+    // mutable collection, as the call counter does.
+    val asked = new AtomicReference[List[(Currency, Currency)]](List.empty)
+    val target: FxRateProvider = FxRateProvider.fromFunction { (baseCurrency, counterCurrency) =>
+      val askedAbout: (Currency, Currency) = (baseCurrency, counterCurrency)
+      // Bound to a wildcard because the new sequence is of no interest here; the assertions
+      // below read it through takeAsked.
+      val _ = asked.updateAndGet(recorded => recorded :+ askedAbout)
+      askedAbout match {
+        // USD/EUR is the only direction the target holds at the expected rate, and the reverse
+        // direction carries another, so a delegation that swapped base and counter is wrong in
+        // its rate as well as in what it asked about
+        case (Currency.USD, Currency.EUR) => Right(expectedRate)
+        case (Currency.EUR, Currency.USD) => Right(0.25d)
+        // no other pair is held, so delegating one produces a failure rather than a rate
+        case (base, counter) =>
+          Left(Failure.CurrencyConversion(s"No rate held for $base/$counter"))
+      }
+    }
+    // Reads the pairs recorded since the previous call and leaves the recorder empty, so each
+    // assertion below is about the delegation of one lookup rather than about the total.
+    def takeAsked(): List[(Currency, Currency)] = asked.getAndSet(List.empty)
+
+    val supplier = new CountingSupplier(target)
     val provider = FxRateProvider.lazily(() => supplier.get())
 
-    provider.convert(1d, Currency.USD, Currency.EUR) should haveValue(expectedRate)
+    // A non-unit amount, because the conversion is the rate multiplied by the amount: 250 at a
+    // rate of three is 750, so an implementation returning the rate itself fails here, which
+    // an amount of one could not distinguish.
+    provider.convert(250d, Currency.USD, Currency.EUR) should haveValue(750d)
+    // The conversion delegated exactly one lookup and delegated it as (USD, EUR), the order it
+    // was given, rather than reversed or for some other pair.
+    takeAsked() shouldBe List((Currency.USD, Currency.EUR))
+
     provider.fxRate(Currency.USD, Currency.EUR) should haveValue(expectedRate)
+    takeAsked() shouldBe List((Currency.USD, Currency.EUR))
+
+    // The pair form is the load-bearing case for the indirection, as in `testLaziness`: the
+    // two-currency lookup above is defined as this one.
     provider.fxRate(CurrencyPair.of(Currency.USD, Currency.EUR)) should haveValue(expectedRate)
+    takeAsked() shouldBe List((Currency.USD, Currency.EUR))
 
     // The port of the original's exactly-one-invocation verification: the three lookups above
     // all depend on the underlying provider, and all three collapse to a single evaluation of
@@ -163,10 +210,12 @@ final class LazyFxRateProviderSpec extends AnyFunSuite with Matchers {
   /**
    * Returns a provider that answers every pair with the specified rate.
    *
-   * This is the target the stub hands out, and it plays the part of the function
-   * `(baseCurrency, counterCurrency) -> expectedRate` that the Java test stubbed its mock to
-   * return. A constant is enough for both tests: one of them never reaches the target at all,
-   * and the other only needs to recognise the rate that came back as having come from here.
+   * This is the target the stub hands out in `testLaziness`, and it plays the part of the
+   * function `(baseCurrency, counterCurrency) -> expectedRate` that the Java test stubbed its
+   * mock to return. A constant is enough there because that test asserts the target is never
+   * reached: a rate no assertion expects is what an identity lookup wrongly reaching it would
+   * return. `testDelegation`, which does reach its target, builds an argument-sensitive one of
+   * its own so that the pair each lookup delegates can be asserted.
    *
    * @param rate  the rate to return for every pair of currencies
    * @return a provider answering every pair with that rate

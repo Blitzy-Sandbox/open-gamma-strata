@@ -211,7 +211,8 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * @param toIndexExclusive  the end index of the array to copy to
    * @return an array holding the values between the two indices
    * @throws IllegalArgumentException if either index is beyond the end of this array, where the
-   *   Java original raised an index exception
+   *   Java original raised an index exception, or if the start index is after the end index,
+   *   which includes a negative end index
    * @throws IndexOutOfBoundsException if the start index is negative
    */
   def subArray(fromIndexInclusive: Int, toIndexExclusive: Int): DoubleArray =
@@ -646,12 +647,13 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * val dotProduct = base.combineReduce(other, (total, a, b) => total + a * b)
    * }}}
    *
-   * This is the one operation on this type whose elements are boxed as they pass through the
-   * function supplied. The language specialises functions of one and two arguments over the
-   * primitive types but not functions of three, so a ternary operator can only be called through
-   * references; every other operation here takes a function of at most two arguments and runs
-   * unboxed. The arithmetic is unaffected - boxing preserves the value exactly - so this costs
-   * allocation on a reduction, not accuracy.
+   * The operator is a [[DoubleArray.DoubleTernaryOperator]] rather than a three-argument
+   * function, and the lambda above is converted into one where it is written. That is what keeps
+   * this operation unboxed like every other operation here: the language specialises functions
+   * of one and two arguments over the primitive types but not functions of three, so a
+   * `(Double, Double, Double) => Double` would box its three arguments and unbox its result once
+   * per element, whereas the callback type declares those four values as primitive doubles and
+   * the reduction loop passes them as such.
    *
    * This instance is immutable and unaffected by this method.
    *
@@ -660,7 +662,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * @return the result of the reduction
    * @throws IllegalArgumentException if the arrays have different sizes
    */
-  def combineReduce(other: DoubleArray, operator: (Double, Double, Double) => Double): Double = {
+  def combineReduce(other: DoubleArray, operator: DoubleArray.DoubleTernaryOperator): Double = {
     ArgCheck.isTrue(array.length == other.array.length, DoubleArray.differentSizes)
     ternaryFoldFrom(other.array, operator, 0, 0d)
   }
@@ -669,14 +671,18 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
   @tailrec
   private def ternaryFoldFrom(
       other: Array[Double],
-      operator: (Double, Double, Double) => Double,
+      operator: DoubleArray.DoubleTernaryOperator,
       index: Int,
       total: Double): Double =
 
     if (index >= array.length) {
       total
     } else {
-      ternaryFoldFrom(other, operator, index + 1, operator(total, array(index), other(index)))
+      ternaryFoldFrom(
+        other,
+        operator,
+        index + 1,
+        operator.applyAsDouble(total, array(index), other(index)))
     }
 
   //-------------------------------------------------------------------------
@@ -686,22 +692,28 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * The result is as long as this array plus the number of values supplied. Concatenating
    * nothing answers with this instance.
    *
+   * The result is allocated once, at its final length, and each source is moved into it in one
+   * bulk copy: the stored elements into the front, the supplied values into the tail. Asking the
+   * sequence for an array of its own first would copy those values twice, once into that array
+   * and once out of it again.
+   *
    * This instance is immutable and unaffected by this method.
    *
    * @param values  the values to add to the end of this array
    * @return a copy of this array with the values added at the end
    */
-  def concat(values: Double*): DoubleArray = {
-    // the sequence copies itself into a fresh array, which is therefore safe to adopt below
-    val other = values.toArray
-    if (array.length == 0) {
-      DoubleArray.ofUnsafe(other)
-    } else if (other.length == 0) {
+  def concat(values: Double*): DoubleArray =
+    if (values.isEmpty) {
       this
     } else {
-      concatArray(other)
+      // the result is freshly allocated here and published nowhere else, which is what makes it
+      // safe to adopt rather than copy; `copyToArray` answers with the number of elements it
+      // moved, which is the length of the sequence and so tells us nothing we do not know
+      val result = new Array[Double](array.length + values.length)
+      System.arraycopy(array, 0, result, 0, array.length)
+      val _ = values.copyToArray(result, array.length)
+      DoubleArray.ofUnsafe(result)
     }
-  }
 
   /**
    * Returns an array that combines this array and the other array.
@@ -874,7 +886,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * @param other  the other array
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if the arrays are equal up to the tolerance
-   * @throws IllegalArgumentException if the tolerance is negative
+   * @throws IllegalArgumentException if the tolerance is negative or is not a number
    */
   def equalWithTolerance(other: DoubleArray, tolerance: Double): Boolean =
     DoubleArrayMath.fuzzyEquals(array, other.array, tolerance)
@@ -886,7 +898,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    *
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if every value is equal to zero up to the tolerance
-   * @throws IllegalArgumentException if the tolerance is negative
+   * @throws IllegalArgumentException if the tolerance is negative or is not a number
    */
   def equalZeroWithTolerance(tolerance: Double): Boolean =
     DoubleArrayMath.fuzzyEqualsZero(array, tolerance)
@@ -946,6 +958,45 @@ object DoubleArray {
   // keeps it identical at every site, and identical to the message of the Java original, which
   // reaches logs and test expectations.
   private val differentSizes: String = "Arrays have different sizes"
+
+  //-------------------------------------------------------------------------
+  /**
+   * An operator over three doubles, used by [[DoubleArray.combineReduce]].
+   *
+   * This is a callback type rather than a function type, and it exists for one reason: the
+   * language specialises functions of one and two arguments over the primitive types but not
+   * functions of three, so a `(Double, Double, Double) => Double` would box each of its three
+   * arguments and unbox its result on every call, which on a reduction means four allocations
+   * per element. A trait with one abstract method typed in `Double` compiles to the primitive
+   * descriptor `(DDD)D`, so the reduction loop passes its values in registers and allocates
+   * nothing:
+   *
+   * {{{
+   * val dotProduct = base.combineReduce(other, (total, a, b) => total + a * b)
+   * }}}
+   *
+   * Nothing is lost at the call site by using it. A trait with a single abstract method is a
+   * target for function-literal conversion, so a lambda written in the shape above is accepted
+   * where one of these is expected and reads exactly as a three-argument function would; the
+   * conversion is what turns it into an implementation of this trait. A caller that wants to
+   * retain and reuse an operator may also implement it explicitly.
+   *
+   * The Java original passed its own primitive functional interface here. That interface lives
+   * in the part of the Java module this port does not carry, so the type it named is declared
+   * where the one member that needs it lives.
+   */
+  trait DoubleTernaryOperator {
+
+    /**
+     * Applies the operator to the running total and a pair of values.
+     *
+     * @param total  the running total of the reduction
+     * @param first  the value from the array the reduction was invoked on
+     * @param second  the value from the other array
+     * @return the new running total
+     */
+    def applyAsDouble(total: Double, first: Double, second: Double): Double
+  }
 
   //-------------------------------------------------------------------------
   /**

@@ -88,8 +88,9 @@ package com.opengamma.strata.collect.array {
    * two escape hatches cannot be reached from outside this module
    * (`unsafe_members_are_inaccessible_outside_collect`), the bit-level equality cases (`ieee_*`),
    * the oracles for hashing and rendering (`hashCode_*`, `toString_*`), the shape invariants
-   * (`shape_*`), the inventory of failure types (`exception_types_*`) and the property section
-   * (`property_*`).
+   * (`shape_*`), the inventory of failure types (`exception_types_*`), the rejection of a negative
+   * dimension before any work is done (`negative_dimensions_*`), the two branches only the empty
+   * matrix reaches (`the_empty_matrix_*`) and the property section (`property_*`).
    *
    * ===Divergences from the Java original that this spec asserts===
    *
@@ -113,6 +114,17 @@ package com.opengamma.strata.collect.array {
    *  - values that do not fill the requested shape, and a function that returns a row of the wrong
    *    length, fail with `IllegalArgumentException` exactly as in the original, and the message of
    *    the original is preserved word for word, which this spec asserts rather than assumes;
+   *  - a negative row count, column count or size fails with `IllegalArgumentException` naming the
+   *    argument and its value, where the original let the allocation it had already begun raise a
+   *    negative-size error of the platform's. Every factory checks its dimensions before it
+   *    allocates anything, before it decides that a shape has no elements, and before it calls any
+   *    function it was given, so an invalid shape costs nothing and a negative count is never
+   *    mistaken for an empty one. This is the one failure of this type whose exception differs from
+   *    the original's, and it is asserted case by case rather than described only;
+   *  - the number of elements a shape needs is computed in wider arithmetic than the original's,
+   *    so a shape whose product overflows the integer range - `65536` by `65536`, for one - is
+   *    reported as the count violation it is instead of passing a count test against a wrapped
+   *    product and proceeding to allocate;
    *  - `ofUnsafe` and `toArrayUnsafe` are visible only inside this module, where the original
    *    exposed both to every caller. This spec is inside the module and exercises both positively;
    *    the prohibition outside it is proved from a probe object in a sibling package;
@@ -341,6 +353,31 @@ package com.opengamma.strata.collect.array {
       val failure = intercept[IllegalArgumentException](operation)
       failure.getMessage shouldBe
         s"Function returned array of incorrect length $actual, expected $expected"
+    }
+
+    /**
+     * Asserts that a factory given a negative dimension reports the caller and names the argument.
+     *
+     * A negative row count, column count or size is a broken caller rather than a shape with no
+     * elements, so it is raised rather than answered with the empty matrix, and it is raised
+     * before the factory allocates anything or calls anything. The message names the argument
+     * that was wrong, which is what distinguishes a negative row count from a negative column
+     * count at the point of failure, so the name and the value are both asserted rather than only
+     * the type. One helper keeps every case of this spec holding each factory to the same
+     * contract.
+     *
+     * @param operation  the operation to evaluate, which must fail
+     * @param argument  the name the factory gives the offending argument
+     * @param value  the negative value that was passed
+     * @return the assertion that it failed with the expected type and message
+     */
+    private def assertNegativeDimension(
+        operation: => Any,
+        argument: String,
+        value: Int): Assertion = {
+
+      val failure = intercept[IllegalArgumentException](operation)
+      failure.getMessage shouldBe s"Argument '$argument' must not be negative but has value $value"
     }
 
     /**
@@ -1159,6 +1196,260 @@ package com.opengamma.strata.collect.array {
           failure.getMessage shouldBe message
         }
       }
+
+      // A negative dimension is the third family, and every factory that takes one is held to it
+      // here: each reports the caller with an illegal argument naming the argument that was wrong
+      // and the value it was given, rather than letting the allocation it would have made raise a
+      // negative-size error of the platform's. The two guards of a two-dimensional factory run in
+      // declaration order, which the both-negative case pins by expecting the row count to be the
+      // one reported, and the values differ from case to case so that the message is shown to
+      // carry the argument it was given rather than a constant.
+      val dimensionFailures = Table[String, () => Any, String, Int](
+        ("member", "operation", "argument", "value"),
+        ("of, negative row count", () => DoubleMatrix.of(-1, 2), "rows", -1),
+        ("of, negative column count", () => DoubleMatrix.of(2, -1), "columns", -1),
+        ("of, both counts negative", () => DoubleMatrix.of(-2, -3), "rows", -2),
+        (
+          "tabulate, negative row count",
+          () => DoubleMatrix.tabulate(-1, 2)((_, _) => 0.0),
+          "rows",
+          -1),
+        (
+          "tabulate, negative column count",
+          () => DoubleMatrix.tabulate(2, -3)((_, _) => 0.0),
+          "columns",
+          -3),
+        (
+          "ofArrays, negative row count",
+          () => DoubleMatrix.ofArrays(-1, 2)(_ => Array(1.0, 2.0)),
+          "rows",
+          -1),
+        (
+          "ofArrays, negative column count",
+          () => DoubleMatrix.ofArrays(2, -1)(_ => Array(1.0, 2.0)),
+          "columns",
+          -1),
+        (
+          "ofArrayObjects, negative row count",
+          () => DoubleMatrix.ofArrayObjects(-3, 2)(_ => DoubleArray.of(1.0, 2.0)),
+          "rows",
+          -3),
+        (
+          "ofArrayObjects, negative column count",
+          () => DoubleMatrix.ofArrayObjects(2, -2)(_ => DoubleArray.of(1.0, 2.0)),
+          "columns",
+          -2),
+        ("filled, negative row count", () => DoubleMatrix.filled(-1, 2), "rows", -1),
+        ("filled, negative column count", () => DoubleMatrix.filled(2, -1), "columns", -1),
+        (
+          "filled with a value, negative row count",
+          () => DoubleMatrix.filled(-2, 2, 7.0),
+          "rows",
+          -2),
+        (
+          "filled with a value, negative column count",
+          () => DoubleMatrix.filled(2, -2, 7.0),
+          "columns",
+          -2),
+        ("identity, negative size", () => DoubleMatrix.identity(-1), "size", -1),
+        (
+          "identity, the most negative size",
+          () => DoubleMatrix.identity(Int.MinValue),
+          "size",
+          Int.MinValue))
+      forAll(dimensionFailures) {
+        (member: String, operation: () => Any, argument: String, value: Int) =>
+          withClue(s"$member, ") {
+            assertNegativeDimension(operation(), argument, value)
+          }
+      }
+    }
+
+    test("negative_dimensions_are_rejected_before_any_allocation_or_callback") {
+      // A dimension of zero and a negative dimension are different inputs and this type answers
+      // them differently: zero is a shape with no elements, which every factory canonicalises to
+      // the one empty instance, while a negative count is a broken caller. The two are asserted
+      // side by side here, factory by factory, because the difference is easy to lose - a check
+      // written as `rows <= 0` would answer a negative count with the empty matrix and no caller
+      // would ever learn of the mistake.
+      val contrasts = Table[String, () => DoubleMatrix, () => Any](
+        ("factory", "zero shape", "negative shape"),
+        ("of", () => DoubleMatrix.of(0, 2), () => DoubleMatrix.of(-1, 2)),
+        (
+          "tabulate",
+          () => DoubleMatrix.tabulate(0, 2)((_, _) => 0.0),
+          () => DoubleMatrix.tabulate(-1, 2)((_, _) => 0.0)),
+        (
+          "ofArrays",
+          () => DoubleMatrix.ofArrays(2, 0)(_ => Array.empty[Double]),
+          () => DoubleMatrix.ofArrays(2, -1)(_ => Array.empty[Double])),
+        (
+          "ofArrayObjects",
+          () => DoubleMatrix.ofArrayObjects(2, 0)(_ => DoubleArray.EMPTY),
+          () => DoubleMatrix.ofArrayObjects(2, -1)(_ => DoubleArray.EMPTY)),
+        ("filled", () => DoubleMatrix.filled(0, 2), () => DoubleMatrix.filled(0, -1)),
+        (
+          "filled with a value",
+          () => DoubleMatrix.filled(2, 0, 7.0),
+          () => DoubleMatrix.filled(2, -1, 7.0)),
+        ("identity", () => DoubleMatrix.identity(0), () => DoubleMatrix.identity(-1)))
+      forAll(contrasts) {
+        (factory: String, zeroShape: () => DoubleMatrix, negativeShape: () => Any) =>
+          withClue(s"$factory, ") {
+            zeroShape() should be theSameInstanceAs DoubleMatrix.EMPTY
+            a[IllegalArgumentException] should be thrownBy negativeShape()
+          }
+      }
+
+      // The two cases above that pair a zero count with a negative one - `filled(0, -1)` and
+      // `ofArrays(2, -1)` - are the reason the guards run before the short-circuit rather than
+      // after it: a factory that tested for an empty shape first would answer the first of them
+      // with the empty matrix, and the negative column count would never be reported at all.
+      assertNegativeDimension(DoubleMatrix.of(0, -1), "columns", -1)
+      assertNegativeDimension(DoubleMatrix.filled(0, -1), "columns", -1)
+      assertNegativeDimension(DoubleMatrix.filled(0, -1, 7.0), "columns", -1)
+      assertNegativeDimension(DoubleMatrix.tabulate(0, -1)((_, _) => 0.0), "columns", -1)
+
+      // The guards also run before the function a factory was given, so a negative dimension
+      // costs nothing: no row array is allocated and no row is produced. A function that fails
+      // the test if it is called is what shows it, and it is the same device the factory tests
+      // above use for a shape with no elements.
+      assertNegativeDimension(
+        DoubleMatrix.tabulate(2, -1)((_, _) => fail("the function must not be invoked")),
+        "columns",
+        -1)
+      assertNegativeDimension(
+        DoubleMatrix.ofArrays(2, -1)(_ => fail("the function must not be invoked")),
+        "columns",
+        -1)
+      assertNegativeDimension(
+        DoubleMatrix.ofArrayObjects(2, -1)(_ => fail("the function must not be invoked")),
+        "columns",
+        -1)
+      assertNegativeDimension(
+        DoubleMatrix.ofArrays(-1, 2)(_ => fail("the function must not be invoked")),
+        "rows",
+        -1)
+      assertNegativeDimension(
+        DoubleMatrix.ofArrayObjects(-1, 2)(_ => fail("the function must not be invoked")),
+        "rows",
+        -1)
+
+      // The count of elements a shape needs is computed without overflowing, which matters for
+      // exactly the shapes whose product is a multiple of the integer range: computed as an
+      // integer, `65536 * 65536` and `4 * 1073741824` are both zero, so a call supplying no
+      // elements at all would have satisfied a count test written that way and gone on to
+      // allocate a matrix of four thousand million elements. Both are reported as the count
+      // violation they are, and neither allocates anything to find that out.
+      val overflowed = Table[String, () => Any](
+        ("shape", "operation"),
+        ("two counts of 65536", () => DoubleMatrix.of(65536, 65536)),
+        ("four rows of 2^30", () => DoubleMatrix.of(4, 1073741824)),
+        ("2^30 rows of four", () => DoubleMatrix.of(1073741824, 4)))
+      forAll(overflowed) { (shape: String, operation: () => Any) =>
+        withClue(s"$shape, ") {
+          val failure = intercept[IllegalArgumentException](operation())
+          failure.getMessage shouldBe "Values array not of length rows * columns"
+        }
+      }
+
+      // and the shapes either side of the integer range are still accepted when the elements
+      // supplied do fill them, so the wider arithmetic rejects nothing it should not
+      assertMatrix(DoubleMatrix.of(1, 1, 1.0), 1.0)
+      assertMatrix(DoubleMatrix.of(2, 3, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0), 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+    }
+
+    test("elements_supplied_in_any_shape_fill_the_matrix_and_stay_the_caller's") {
+      // The elements of a flat construction can reach the factory in more than one shape: written
+      // out one by one, or expanded from a collection of the caller's with `: _*`. An array
+      // expanded that way arrives as a sequence backed by that very array, while a list or a
+      // vector arrives holding its elements individually, and the factory reads the two
+      // differently - the first in place, the second through its iterator - so both are asserted
+      // to fill the matrix identically rather than only the one the literal form takes.
+      val expected = DoubleMatrix.of(2, 3, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+      val elements = List(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+      val supplied = Table[String, DoubleMatrix](
+        ("supplied as", "matrix"),
+        ("an expanded list", DoubleMatrix.of(2, 3, elements: _*)),
+        ("an expanded vector", DoubleMatrix.of(2, 3, elements.toVector: _*)),
+        ("an expanded lazy list", DoubleMatrix.of(2, 3, LazyList.from(elements): _*)),
+        (
+          "an expanded wrapped array",
+          DoubleMatrix.of(
+            2,
+            3,
+            scala.collection.immutable.ArraySeq.unsafeWrapArray(elements.toArray): _*)))
+      forAll(supplied) { (shape: String, matrix: DoubleMatrix) =>
+        withClue(s"$shape, ") {
+          assertMatrix(matrix, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+          matrix shouldBe expected
+          matrix.hashCode shouldBe expected.hashCode
+        }
+      }
+
+      // And the values a caller expands are still the caller's: the elements reach no array but
+      // the rows of the result, so writing to the source afterwards changes nothing. The case
+      // worth holding on to is the last of the four above, where the sequence handed over is
+      // backed by an array the caller still holds - expanding the array itself would have the
+      // language copy it defensively first, so wrapping it is what puts the factory face to face
+      // with a caller-owned array and shows that it keeps none of it.
+      val owned = Array(1.0, 2.0, 3.0, 4.0)
+      val built = DoubleMatrix.of(2, 2, scala.collection.immutable.ArraySeq.unsafeWrapArray(owned): _*)
+      owned(0) = 99.0
+      owned(3) = 99.0
+      assertMatrix(built, 1.0, 2.0, 3.0, 4.0)
+
+      // the elements of an expanded sequence are read in row-major order, which is the order the
+      // written-out form is read in, so a sequence whose elements are all distinct lands the same
+      // way round either way
+      DoubleMatrix.of(3, 2, List(1.0, 2.0, 3.0, 4.0, 5.0, 6.0): _*) shouldBe matrix3x2
+      DoubleMatrix.of(1, 4, List(1.0, 2.0, 3.0, 4.0): _*).row(0) shouldBe
+        DoubleArray.of(1.0, 2.0, 3.0, 4.0)
+      DoubleMatrix.of(4, 1, List(1.0, 2.0, 3.0, 4.0): _*).column(0) shouldBe
+        DoubleArray.of(1.0, 2.0, 3.0, 4.0)
+
+      // a count that does not fill the shape is reported whichever way the elements arrive, and
+      // an expanded empty sequence is the empty matrix for a shape that needs no elements
+      val failure = intercept[IllegalArgumentException](
+        DoubleMatrix.of(2, 2, List(1.0, 2.0, 3.0): _*))
+      failure.getMessage shouldBe "Values array not of length rows * columns"
+      assertMatrix(DoubleMatrix.of(0, 2, List.empty[Double]: _*))
+    }
+
+    test("the_empty_matrix_answers_every_column_index_and_traverses_nothing") {
+      // The empty matrix has no row to read a column out of, so it answers every column index -
+      // including one that no matrix could hold - with an array of no elements rather than
+      // failing, which is the behaviour of the Java original and is surprising next to the
+      // failure a non-empty matrix produces for the same index. `test_column` pins it for the
+      // accessor that wraps the result; this pins it for the one that hands back the array, and
+      // for indices either side of the range as well as inside it.
+      val indices = Table[Int]("column", Int.MinValue, -2, -1, 0, 1, 4, Int.MaxValue)
+      forAll(indices) { (column: Int) =>
+        withClue(s"column $column, ") {
+          DoubleMatrix.EMPTY.columnArray(column).length shouldBe 0
+          DoubleMatrix.EMPTY.column(column) should be theSameInstanceAs DoubleArray.EMPTY
+        }
+      }
+
+      // Each call allocates the array it answers with, which is what makes the result the
+      // caller's to keep: the accessor documents a freshly allocated array of the row count, and
+      // two calls are therefore two arrays rather than one shared instance handed out twice.
+      val first = DoubleMatrix.EMPTY.columnArray(0)
+      val second = DoubleMatrix.EMPTY.columnArray(0)
+      (first eq second) shouldBe false
+      // the same holds of a matrix that has elements, where it is the property that keeps the
+      // stored rows unreachable rather than merely a fresh allocation
+      val test = matrix3x2
+      (test.columnArray(0) eq test.columnArray(0)) shouldBe false
+
+      // Nothing is traversed either: the action a traversal is given is never applied, because
+      // there is no element to apply it to. A matrix with elements applies it once per element,
+      // which `test_forEach` asserts, so the two together fix both ends of the loop.
+      DoubleMatrix.EMPTY.forEach((row, column, value) =>
+        fail(s"the action must not be invoked, but saw row $row, column $column, value $value"))
+      DoubleMatrix.EMPTY.total shouldBe 0.0
+      DoubleMatrix.EMPTY.reduce(2.0, (_, _) => fail("the operator must not be invoked")) shouldBe 2.0
+      DoubleMatrix.EMPTY.toString shouldBe ""
     }
 
     //-------------------------------------------------------------------------

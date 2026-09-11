@@ -114,9 +114,14 @@ trait Resolvable[T] {
    * available:
    *
    * {{{
+   * import cats.syntax.apply._
+   *
    * val both = (trade.toReader, otherTrade.toReader).tupled
    * val resolved = both.run(ReferenceData.standard)
    * }}}
+   *
+   * The import is part of the example: `tupled` is `cats` syntax on the pair of readers
+   * rather than a member of either, so the composition above does not compile without it.
    *
    * The default implementation delegates to `resolve`, so an implementation that overrides
    * `resolve` - which is every implementation, the method being abstract - has that override

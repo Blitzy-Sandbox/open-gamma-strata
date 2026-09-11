@@ -5,9 +5,12 @@
  */
 package com.opengamma.strata.basics.currency
 
+import java.util.concurrent.atomic.AtomicReference
+
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
@@ -128,16 +131,38 @@ final class FxRateProviderSpec extends AnyFunSuite with Matchers {
    * at the call site.
    *
    * What is under test is the trait's own definition of the pair form rather than anything the
-   * function does: the function is the only thing in the provider that can produce a rate, so
-   * a rate coming back from the pair lookup is proof that the default reached it, which is the
-   * wiring the original asserted here too. Which currency of the pair reaches which parameter
-   * is a question this test cannot answer, since the function ignores both - it is asserted
-   * where the two directions of a pair carry different rates, in the specs of the providers
-   * that hold rates.
+   * function does, so the function is the instrument: it records the ordered arguments it is
+   * asked about, holds `GBP/USD` at one rate and the reverse direction at another, and refuses
+   * every other pair. Three things are pinned by that. That the pair lookup reached the
+   * two-currency lookup at all, which is the wiring the original asserted here too, since the
+   * function is the only thing in the provider that can produce a rate. That it reached it
+   * once and as `(GBP, USD)` rather than reversed, which the recorded sequence states and which
+   * the rate would also disagree about, the two directions carrying different rates. And that
+   * no other pair was delegated, since any other pair comes back as a failure rather than a
+   * rate.
    */
   test("emptyMatrixCanHandleTrivialRate") {
-    val test: FxRateProvider = FxRateProvider.fromFunction((_, _) => Right(2.5d))
+    // The ordered pairs the function has been asked about, newest last. An AtomicReference over
+    // an immutable List keeps this suite free of mutable fields and of any mutable collection.
+    val asked = new AtomicReference[List[(Currency, Currency)]](List.empty)
+    val test: FxRateProvider = FxRateProvider.fromFunction { (baseCurrency, counterCurrency) =>
+      val askedAbout: (Currency, Currency) = (baseCurrency, counterCurrency)
+      // Bound to a wildcard because the new sequence is of no interest here; it is read below.
+      val _ = asked.updateAndGet(recorded => recorded :+ askedAbout)
+      askedAbout match {
+        // the rate held for GBP/USD, and a different one for the reverse direction, so that a
+        // pair form swapping base and counter is wrong in its rate as well as in what it asked
+        case (Currency.GBP, Currency.USD) => Right(2.5d)
+        case (Currency.USD, Currency.GBP) => Right(0.8d)
+        // no other pair is held, so delegating one produces a failure rather than a rate
+        case (base, counter) =>
+          Left(Failure.CurrencyConversion(s"No rate held for $base/$counter"))
+      }
+    }
     val rate: FailureOr[Double] = test.fxRate(CurrencyPair.of(Currency.GBP, Currency.USD))
+    // the pair reached the two-currency lookup exactly once, in that order, and nothing else
+    // was asked about
+    asked.get() shouldBe List((Currency.GBP, Currency.USD))
     rate should haveValue(2.5d)
   }
 }

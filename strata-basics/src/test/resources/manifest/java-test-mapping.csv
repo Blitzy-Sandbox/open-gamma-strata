@@ -659,7 +659,7 @@ com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_broadCheck,co
 com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_equals,com.opengamma.strata.basics.date.ImmutableHolidayCalendarSpec,test_equals,ported
 com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,coverage,com.opengamma.strata.basics.date.ImmutableHolidayCalendarSpec,coverage,ported
 com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,ImmutableHolidayCalendar_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
-com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_readOldJodaFormat,com.opengamma.strata.basics.date.ImmutableHolidayCalendarSpec,test_readOldJodaFormat,ported
+com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_readOldJodaFormat,,,dropped:legacy-joda-json-fixture-not-ported-no-joda-wire-compatibility
 com.opengamma.strata.basics.date.LocalDateUtilsTest,test_dayOfYear,com.opengamma.strata.basics.date.LocalDateUtilsSpec,test_dayOfYear,ported
 com.opengamma.strata.basics.date.LocalDateUtilsTest,test_plusDays0,com.opengamma.strata.basics.date.LocalDateUtilsSpec,test_plusDays0,ported
 com.opengamma.strata.basics.date.LocalDateUtilsTest,test_plusDays1,com.opengamma.strata.basics.date.LocalDateUtilsSpec,test_plusDays1,ported
@@ -1222,191 +1222,191 @@ com.opengamma.strata.basics.value.ValueStepTest,test_builder_invalid,com.opengam
 com.opengamma.strata.basics.value.ValueStepTest,equals,com.opengamma.strata.basics.value.ValueStepSpec,equals,ported
 com.opengamma.strata.basics.value.ValueStepTest,coverage,com.opengamma.strata.basics.value.ValueStepSpec,coverage,ported
 com.opengamma.strata.basics.value.ValueStepTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,ValueStep_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_simple_ok,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_simple_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_simple_false,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_simple_false,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_ok,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_false,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_false,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_ok_args,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_ok_args,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_false_args,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_false_args,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_ok_longArg,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_ok_longArg,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_false_longArg,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_false_longArg,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_ok_doubleArg,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_ok_doubleArg,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_false_doubleArg,com.opengamma.strata.collect.ArgCheckSpec,test_isTrue_false_doubleArg,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isFalse_ok,com.opengamma.strata.collect.ArgCheckSpec,test_isFalse_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isFalse_true,com.opengamma.strata.collect.ArgCheckSpec,test_isFalse_true,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isFalse_ok_args,com.opengamma.strata.collect.ArgCheckSpec,test_isFalse_ok_args,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_isFalse_ok_args_true,com.opengamma.strata.collect.ArgCheckSpec,test_isFalse_ok_args_true,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNull_ok,com.opengamma.strata.collect.ValidateSpec,test_notNull_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNull_null,com.opengamma.strata.collect.ValidateSpec,test_notNull_null,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNullItem_noText_ok,com.opengamma.strata.collect.ValidateSpec,test_notNullItem_noText_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNullItem_noText_null,com.opengamma.strata.collect.ValidateSpec,test_notNullItem_noText_null,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_ok,com.opengamma.strata.collect.ArgCheckSpec,test_matches_String_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_nullPattern,com.opengamma.strata.collect.ArgCheckSpec,test_matches_String_nullPattern,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_nullString,com.opengamma.strata.collect.ArgCheckSpec,test_matches_String_nullString,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_empty,com.opengamma.strata.collect.ArgCheckSpec,test_matches_String_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_noMatch,com.opengamma.strata.collect.ArgCheckSpec,test_matches_String_noMatch,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_ok,com.opengamma.strata.collect.ArgCheckSpec,test_matches_CharMatcher_String_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_tooShort,com.opengamma.strata.collect.ArgCheckSpec,test_matches_CharMatcher_String_tooShort,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_tooLong,com.opengamma.strata.collect.ArgCheckSpec,test_matches_CharMatcher_String_tooLong,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_nullMatcher,com.opengamma.strata.collect.ArgCheckSpec,test_matches_CharMatcher_String_nullMatcher,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_nullString,com.opengamma.strata.collect.ArgCheckSpec,test_matches_CharMatcher_String_nullString,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_noMatch,com.opengamma.strata.collect.ArgCheckSpec,test_matches_CharMatcher_String_noMatch,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notBlank_String_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_ok_notTrimmed,com.opengamma.strata.collect.ArgCheckSpec,test_notBlank_String_ok_notTrimmed,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_null,com.opengamma.strata.collect.ArgCheckSpec,test_notBlank_String_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notBlank_String_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_spaces,com.opengamma.strata.collect.ArgCheckSpec,test_notBlank_String_spaces,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_String_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_String_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_String_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_String_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_String_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_String_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Matrix_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Matrix_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Matrix_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Matrix_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Matrix_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Matrix_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Array_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Array_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Array_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Array_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Array_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Array_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_2DArray_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_2DArray_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_2DArray_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_2DArray_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_intArray_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_intArray_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_intArray_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_intArray_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_intArray_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_intArray_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_longArray_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_longArray_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_longArray_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_longArray_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_longArray_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_longArray_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_doubleArray_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_doubleArray_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_doubleArray_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_doubleArray_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_doubleArray_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_doubleArray_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Iterable_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Iterable_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Iterable_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Iterable_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Iterable_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Iterable_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Collection_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Collection_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Collection_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Collection_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Collection_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Collection_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Map_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Map_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Map_null,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Map_null,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Map_empty,com.opengamma.strata.collect.ArgCheckSpec,test_notEmpty_Map_empty,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Array_ok,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Array_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Array_ok_empty,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Array_ok_empty,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Array_null,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Array_null,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Array_nullElement,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Array_nullElement,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Iterable_ok,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Iterable_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Iterable_ok_empty,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Iterable_ok_empty,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Iterable_null,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Iterable_null,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Iterable_nullElement,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Iterable_nullElement,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_ok,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Map_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_ok_empty,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Map_ok_empty,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_null,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Map_null,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_nullKey,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Map_nullKey,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_nullValue,com.opengamma.strata.collect.ValidateSpec,test_noNulls_Map_nullValue,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_int_ok,com.opengamma.strata.collect.ValidateSpec,test_notPositive_int_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositve_int_positive,com.opengamma.strata.collect.ValidateSpec,test_notPositve_int_positive,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_long_ok,com.opengamma.strata.collect.ValidateSpec,test_notPositive_long_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_long_positive,com.opengamma.strata.collect.ValidateSpec,test_notPositive_long_positive,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_double_ok,com.opengamma.strata.collect.ValidateSpec,test_notPositive_double_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_double_positive,com.opengamma.strata.collect.ValidateSpec,test_notPositive_double_positive,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_Decimal_ok,com.opengamma.strata.collect.ValidateSpec,test_notPositive_Decimal_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_Decimal_positive,com.opengamma.strata.collect.ValidateSpec,test_notPositive_Decimal_positive,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositiveIfPresent_Decimal_ok,com.opengamma.strata.collect.ValidateSpec,test_notPositiveIfPresent_Decimal_ok,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notPositiveIfPresent_Decimal_positive,com.opengamma.strata.collect.ValidateSpec,test_notPositiveIfPresent_Decimal_positive,consolidated:com.opengamma.strata.collect.ValidateSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_int_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notNegative_int_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_int_negative,com.opengamma.strata.collect.ArgCheckSpec,test_notNegative_int_negative,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_long_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notNegative_long_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_long_negative,com.opengamma.strata.collect.ArgCheckSpec,test_notNegative_long_negative,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_double_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notNegative_double_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_double_negative,com.opengamma.strata.collect.ArgCheckSpec,test_notNegative_double_negative,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_Decimal,com.opengamma.strata.collect.ArgCheckSpec,test_notNegative_Decimal,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNaN_double_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notNaN_double_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNaN_double_NaN,com.opengamma.strata.collect.ArgCheckSpec,test_notNaN_double_NaN,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_int_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_int_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_int_zero,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_int_zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_int_negative,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_int_negative,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_long_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_long_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_long_zero,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_long_zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_long_negative,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_long_negative,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_double_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_zero,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_double_zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_negative,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_double_negative,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_eps_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_double_eps_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_eps_zero,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_double_eps_zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_eps_negative,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_double_eps_negative,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_Decimal,com.opengamma.strata.collect.ArgCheckSpec,test_notNegativeOrZero_Decimal,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notZero_double_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_zero,com.opengamma.strata.collect.ArgCheckSpec,test_notZero_double_zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_negative,com.opengamma.strata.collect.ArgCheckSpec,test_notZero_double_negative,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_tolerance_ok,com.opengamma.strata.collect.ArgCheckSpec,test_notZero_double_tolerance_ok,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_tolerance_zero,com.opengamma.strata.collect.ArgCheckSpec,test_notZero_double_tolerance_zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_tolerance_negative,com.opengamma.strata.collect.ArgCheckSpec,test_notZero_double_tolerance_negative,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_double_inRange,com.opengamma.strata.collect.ArgCheckSpec,test_double_inRange,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_double_inRange_outOfRange,com.opengamma.strata.collect.ArgCheckSpec,test_double_inRange_outOfRange,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_int_inRange,com.opengamma.strata.collect.ArgCheckSpec,test_int_inRange,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_int_inRange_outOfRange,com.opengamma.strata.collect.ArgCheckSpec,test_int_inRange_outOfRange,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_generic_inRange,com.opengamma.strata.collect.ArgCheckSpec,test_generic_inRange,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_generic_inRange_outOfRange,com.opengamma.strata.collect.ArgCheckSpec,test_generic_inRange_outOfRange,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,testNotEmptyLongArray,com.opengamma.strata.collect.ArgCheckSpec,testNotEmptyLongArray,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicates,com.opengamma.strata.collect.ArgCheckSpec,test_double_noDuplicates,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicates_NaN,com.opengamma.strata.collect.ArgCheckSpec,test_double_noDuplicates_NaN,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicates_hasDuplicates,com.opengamma.strata.collect.ArgCheckSpec,test_double_noDuplicates_hasDuplicates,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicatesSorted,com.opengamma.strata.collect.ArgCheckSpec,test_double_noDuplicatesSorted,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicatesSorted_Nan,com.opengamma.strata.collect.ArgCheckSpec,test_double_noDuplicatesSorted_Nan,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicatesSorted_hasDuplicates,com.opengamma.strata.collect.ArgCheckSpec,test_double_noDuplicatesSorted_hasDuplicates,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicatesSorted_notSorted,com.opengamma.strata.collect.ArgCheckSpec,test_double_noDuplicatesSorted_notSorted,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_inOrderNotEqual_true,com.opengamma.strata.collect.ArgCheckSpec,test_inOrderNotEqual_true,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_inOrderNotEqual_false_invalidOrder,com.opengamma.strata.collect.ArgCheckSpec,test_inOrderNotEqual_false_invalidOrder,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_inOrderNotEqual_false_equal,com.opengamma.strata.collect.ArgCheckSpec,test_inOrderNotEqual_false_equal,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_inOrderOrEqual_true,com.opengamma.strata.collect.ArgCheckSpec,test_inOrderOrEqual_true,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_inOrderOrEqual_false,com.opengamma.strata.collect.ArgCheckSpec,test_inOrderOrEqual_false,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.ArgCheckerTest,test_validUtilityClass,com.opengamma.strata.collect.ArgCheckSpec,test_validUtilityClass,consolidated:com.opengamma.strata.collect.ArgCheckSpec
-com.opengamma.strata.collect.DecimalTest,testValuesOfScaled,com.opengamma.strata.collect.DecimalSpec,testValuesOfScaled,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfBigDecimal,com.opengamma.strata.collect.DecimalSpec,testValuesOfBigDecimal_dataValues,ported
-com.opengamma.strata.collect.DecimalTest,testValuesToFixedScale,com.opengamma.strata.collect.DecimalSpec,testValuesToFixedScale,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfString,com.opengamma.strata.collect.DecimalSpec,testValuesOfString,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfStringPlusPrefix,com.opengamma.strata.collect.DecimalSpec,testValuesOfStringPlusPrefix,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfStringZeroPrefix,com.opengamma.strata.collect.DecimalSpec,testValuesOfStringZeroPrefix,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfLong,com.opengamma.strata.collect.DecimalSpec,testValuesOfLong,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfScaledTruncated,com.opengamma.strata.collect.DecimalSpec,testValuesOfScaledTruncated,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfScaledZeroAnyScale,com.opengamma.strata.collect.DecimalSpec,testValuesOfScaledZeroAnyScale,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfScaledTrailingZeroes,com.opengamma.strata.collect.DecimalSpec,testValuesOfScaledTrailingZeroes,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfScaledNegativeScale,com.opengamma.strata.collect.DecimalSpec,testValuesOfScaledNegativeScale,ported
-com.opengamma.strata.collect.DecimalTest,testValuesOfBigDecimal,com.opengamma.strata.collect.DecimalSpec,testValuesOfBigDecimal,ported
-com.opengamma.strata.collect.DecimalTest,testBad,com.opengamma.strata.collect.DecimalSpec,testBad,ported
-com.opengamma.strata.collect.DecimalTest,testZero,com.opengamma.strata.collect.DecimalSpec,testZero,ported
-com.opengamma.strata.collect.DecimalTest,testPlus,com.opengamma.strata.collect.DecimalSpec,testPlus,ported
-com.opengamma.strata.collect.DecimalTest,testPlusNegated,com.opengamma.strata.collect.DecimalSpec,testPlusNegated,ported
-com.opengamma.strata.collect.DecimalTest,testMinus,com.opengamma.strata.collect.DecimalSpec,testMinus,ported
-com.opengamma.strata.collect.DecimalTest,testPlusToZero,com.opengamma.strata.collect.DecimalSpec,testPlusToZero,ported
-com.opengamma.strata.collect.DecimalTest,testPlusOverflow,com.opengamma.strata.collect.DecimalSpec,testPlusOverflow,ported
-com.opengamma.strata.collect.DecimalTest,testPlusLong,com.opengamma.strata.collect.DecimalSpec,testPlusLong,ported
-com.opengamma.strata.collect.DecimalTest,testPlusDouble,com.opengamma.strata.collect.DecimalSpec,testPlusDouble,ported
-com.opengamma.strata.collect.DecimalTest,testMinusLong,com.opengamma.strata.collect.DecimalSpec,testMinusLong,ported
-com.opengamma.strata.collect.DecimalTest,testMinusDouble,com.opengamma.strata.collect.DecimalSpec,testMinusDouble,ported
-com.opengamma.strata.collect.DecimalTest,testMultipliedBy,com.opengamma.strata.collect.DecimalSpec,testMultipliedBy,ported
-com.opengamma.strata.collect.DecimalTest,testMultipliedByOverflow,com.opengamma.strata.collect.DecimalSpec,testMultipliedByOverflow,ported
-com.opengamma.strata.collect.DecimalTest,testMultipliedByDouble,com.opengamma.strata.collect.DecimalSpec,testMultipliedByDouble,ported
-com.opengamma.strata.collect.DecimalTest,testMovePoint,com.opengamma.strata.collect.DecimalSpec,testMovePoint,ported
-com.opengamma.strata.collect.DecimalTest,testDividedBy,com.opengamma.strata.collect.DecimalSpec,testDividedBy,ported
-com.opengamma.strata.collect.DecimalTest,testDividedByRounded,com.opengamma.strata.collect.DecimalSpec,testDividedByRounded,ported
-com.opengamma.strata.collect.DecimalTest,testDividedByOverflow,com.opengamma.strata.collect.DecimalSpec,testDividedByOverflow,ported
-com.opengamma.strata.collect.DecimalTest,testDividedByDouble,com.opengamma.strata.collect.DecimalSpec,testDividedByDouble,ported
-com.opengamma.strata.collect.DecimalTest,testRoundToScale,com.opengamma.strata.collect.DecimalSpec,testRoundToScale,ported
-com.opengamma.strata.collect.DecimalTest,testRoundToScaleNegative,com.opengamma.strata.collect.DecimalSpec,testRoundToScaleNegative,ported
-com.opengamma.strata.collect.DecimalTest,testRoundToScaleBad,com.opengamma.strata.collect.DecimalSpec,testRoundToScaleBad,ported
-com.opengamma.strata.collect.DecimalTest,testRoundToPrecision,com.opengamma.strata.collect.DecimalSpec,testRoundToPrecision,ported
-com.opengamma.strata.collect.DecimalTest,testIsZero,com.opengamma.strata.collect.DecimalSpec,testIsZero,ported
-com.opengamma.strata.collect.DecimalTest,testAbs,com.opengamma.strata.collect.DecimalSpec,testAbs,ported
-com.opengamma.strata.collect.DecimalTest,testNegated,com.opengamma.strata.collect.DecimalSpec,testNegated,ported
-com.opengamma.strata.collect.DecimalTest,testSignum,com.opengamma.strata.collect.DecimalSpec,testSignum,ported
-com.opengamma.strata.collect.DecimalTest,testComparison,com.opengamma.strata.collect.DecimalSpec,testComparison,ported
-com.opengamma.strata.collect.DecimalTest,testMapAsDouble,com.opengamma.strata.collect.DecimalSpec,testMapAsDouble,ported
-com.opengamma.strata.collect.DecimalTest,testMapAsBigDecimal,com.opengamma.strata.collect.DecimalSpec,testMapAsBigDecimal,ported
-com.opengamma.strata.collect.DecimalTest,testFormatExact,com.opengamma.strata.collect.DecimalSpec,testFormatExact,ported
-com.opengamma.strata.collect.DecimalTest,testFormatAtleast,com.opengamma.strata.collect.DecimalSpec,testFormatAtleast,ported
-com.opengamma.strata.collect.DecimalTest,testFormatBad,com.opengamma.strata.collect.DecimalSpec,testFormatBad,ported
-com.opengamma.strata.collect.DecimalTest,testCompareTo,com.opengamma.strata.collect.DecimalSpec,testCompareTo,ported
-com.opengamma.strata.collect.DecimalTest,testMega,com.opengamma.strata.collect.DecimalSpec,testMega,ported
-com.opengamma.strata.collect.DecimalTest,testPerformanceUnscaled,com.opengamma.strata.collect.DecimalSpec,testPerformanceUnscaled,ported
-com.opengamma.strata.collect.DecimalTest,testPerformanceString,com.opengamma.strata.collect.DecimalSpec,testPerformanceString,ported
-com.opengamma.strata.collect.DecimalTest,testPerformanceMultiply,com.opengamma.strata.collect.DecimalSpec,testPerformanceMultiply,ported
-com.opengamma.strata.collect.DecimalTest,testPerformanceRound,com.opengamma.strata.collect.DecimalSpec,testPerformanceRound,ported
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_simple_ok,com.opengamma.strata.collect.ArgCheckSpec,isTrue without a message returns quietly for a true expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_simple_false,com.opengamma.strata.collect.ArgCheckSpec,isTrue without a message reports a false expression with the standard wording,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_ok,com.opengamma.strata.collect.ArgCheckSpec,isTrue with a message returns quietly for a true expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_false,com.opengamma.strata.collect.ArgCheckSpec,isTrue with a message reports that message and nothing else,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_ok_args,com.opengamma.strata.collect.ArgCheckSpec,isTrue with an interpolated message returns quietly for a true expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_false_args,com.opengamma.strata.collect.ArgCheckSpec,isTrue reports a message interpolating three values of different types,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_ok_longArg,com.opengamma.strata.collect.ArgCheckSpec,isTrue with a message interpolating a long returns quietly for a true expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_false_longArg,com.opengamma.strata.collect.ArgCheckSpec,isTrue reports a message interpolating a long as that long,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_ok_doubleArg,com.opengamma.strata.collect.ArgCheckSpec,isTrue with a message interpolating a double returns quietly for a true expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_false_doubleArg,com.opengamma.strata.collect.ArgCheckSpec,isTrue reports a message interpolating a double as that double,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isFalse_ok,com.opengamma.strata.collect.ArgCheckSpec,isFalse returns quietly for a false expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isFalse_true,com.opengamma.strata.collect.ArgCheckSpec,isFalse reports its message and nothing else for a true expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isFalse_ok_args,com.opengamma.strata.collect.ArgCheckSpec,isFalse with an interpolated message returns quietly for a false expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_isFalse_ok_args_true,com.opengamma.strata.collect.ArgCheckSpec,isFalse reports a message interpolating three values of different types,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNull_ok,com.opengamma.strata.collect.ValidateSpec,"the check for a present reference has no target, because a reference is never absent",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNull_null,com.opengamma.strata.collect.ValidateSpec,"an absent value is an empty Option, and the check it guards never runs",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNullItem_noText_ok,com.opengamma.strata.collect.ValidateSpec,the item form of the present-reference check has no target either,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNullItem_noText_null,com.opengamma.strata.collect.ValidateSpec,an absent item is an empty Option and reaches no check,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_ok,com.opengamma.strata.collect.ArgCheckSpec,matches accepts an argument the pattern matches in full,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_nullPattern,com.opengamma.strata.collect.ArgCheckSpec,"an absent pattern is an empty Option, so only a present pattern is matched against",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_nullString,com.opengamma.strata.collect.ArgCheckSpec,"an absent argument is an empty Option, so only a present argument is matched",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_empty,com.opengamma.strata.collect.ArgCheckSpec,matches rejects empty text against a pattern that requires a character,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_String_noMatch,com.opengamma.strata.collect.ArgCheckSpec,"matches names the argument, its value and the pattern when the two disagree",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_ok,com.opengamma.strata.collect.ArgCheckSpec,the character form accepts an argument of allowed length that the predicate admits,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_tooShort,com.opengamma.strata.collect.ArgCheckSpec,the character form rejects an argument shorter than the minimum length,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_tooLong,com.opengamma.strata.collect.ArgCheckSpec,the character form rejects an argument longer than the maximum length,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_nullMatcher,com.opengamma.strata.collect.ArgCheckSpec,"an absent predicate is an empty Option, so only a present predicate is applied",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_nullString,com.opengamma.strata.collect.ArgCheckSpec,an absent argument reaches neither form of matches,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_matches_CharMatcher_String_noMatch,com.opengamma.strata.collect.ArgCheckSpec,the character form names the argument and its value when a character is rejected,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_ok,com.opengamma.strata.collect.ArgCheckSpec,notBlank accepts text holding a character that is not whitespace,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_ok_notTrimmed,com.opengamma.strata.collect.ArgCheckSpec,"notBlank accepts text that is not trimmed, and leaves it as it was",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_null,com.opengamma.strata.collect.ArgCheckSpec,absent text reaches no blankness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_empty,com.opengamma.strata.collect.ArgCheckSpec,notBlank rejects empty text,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notBlank_String_spaces,com.opengamma.strata.collect.ArgCheckSpec,notBlank rejects text that is nothing but spaces,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_String_ok,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty accepts text holding a character, whitespace included",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_String_null,com.opengamma.strata.collect.ArgCheckSpec,absent text reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_String_empty,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty rejects empty text, naming neither an array nor an iterable",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Matrix_ok,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty accepts a matrix holding an element, and leaves it as it was",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Matrix_null,com.opengamma.strata.collect.ArgCheckSpec,an absent matrix reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Matrix_empty,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty rejects a matrix holding no elements, with the array wording",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Array_ok,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty accepts an array of references holding an element, and leaves it as it was",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Array_null,com.opengamma.strata.collect.ArgCheckSpec,an absent array of references reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Array_empty,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty rejects an empty array of references, naming it an array",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_2DArray_null,com.opengamma.strata.collect.ArgCheckSpec,an absent array of arrays reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_2DArray_empty,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty rejects an empty array of arrays, the element type being of no interest",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_intArray_ok,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty accepts an array of ints holding an element, and leaves it as it was",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_intArray_null,com.opengamma.strata.collect.ArgCheckSpec,an absent array of ints reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_intArray_empty,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty rejects an empty array of ints, naming it an array",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_longArray_ok,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty accepts an array of longs holding an element, and leaves it as it was",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_longArray_null,com.opengamma.strata.collect.ArgCheckSpec,an absent array of longs reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_longArray_empty,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty rejects an empty array of longs, naming it an array",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_doubleArray_ok,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty accepts an array of doubles holding an element, and leaves it as it was",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_doubleArray_null,com.opengamma.strata.collect.ArgCheckSpec,an absent array of doubles reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_doubleArray_empty,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty rejects an empty array of doubles, naming it an array",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Iterable_ok,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty accepts an iterable holding an element, and leaves it as it was",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Iterable_null,com.opengamma.strata.collect.ArgCheckSpec,an absent iterable reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Iterable_empty,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty rejects an empty iterable, naming it an iterable",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Collection_ok,com.opengamma.strata.collect.ArgCheckSpec,notEmpty accepts a collection holding an element through the iterable overload,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Collection_null,com.opengamma.strata.collect.ArgCheckSpec,an absent collection reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Collection_empty,com.opengamma.strata.collect.ArgCheckSpec,"a collection reported as empty carries the iterable wording, the two checks having merged",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Map_ok,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty accepts a map holding a mapping, and leaves it as it was",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Map_null,com.opengamma.strata.collect.ArgCheckSpec,an absent map reaches no emptiness check,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notEmpty_Map_empty,com.opengamma.strata.collect.ArgCheckSpec,"notEmpty rejects an empty map, naming it a map rather than an iterable",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Array_ok,com.opengamma.strata.collect.ValidateSpec,an array of optional elements is narrowed to its present elements rather than checked,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Array_ok_empty,com.opengamma.strata.collect.ValidateSpec,an empty array of optional elements narrows to no elements and is then rejected as empty,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Array_null,com.opengamma.strata.collect.ValidateSpec,"an absent array is an empty Option, so only a present array is checked",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Array_nullElement,com.opengamma.strata.collect.ValidateSpec,the array form of the check for absent elements has no target,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Iterable_ok,com.opengamma.strata.collect.ValidateSpec,an iterable of optional elements is narrowed to its present elements rather than checked,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Iterable_ok_empty,com.opengamma.strata.collect.ValidateSpec,an empty iterable of optional elements narrows to no elements,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Iterable_null,com.opengamma.strata.collect.ValidateSpec,"an absent iterable is an empty Option, so only a present iterable is checked",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Iterable_nullElement,com.opengamma.strata.collect.ValidateSpec,the iterable form of the check for absent elements has no target,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_ok,com.opengamma.strata.collect.ValidateSpec,the map form of the check for absent entries has no target,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_ok_empty,com.opengamma.strata.collect.ValidateSpec,an empty map of optional values narrows to no entries,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_null,com.opengamma.strata.collect.ValidateSpec,the map form of the check for absent entries has no target,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_nullKey,com.opengamma.strata.collect.ValidateSpec,a map built from optional keys keeps only the entries whose key is present,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_noNulls_Map_nullValue,com.opengamma.strata.collect.ValidateSpec,a map built from optional values keeps only the entries whose value is present,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_int_ok,com.opengamma.strata.collect.ValidateSpec,"notPositive accepts an int that is zero or less, carrying that int through",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositve_int_positive,com.opengamma.strata.collect.ValidateSpec,"notPositive rejects a positive int, quoting the value it found",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_long_ok,com.opengamma.strata.collect.ValidateSpec,"notPositive accepts a long that is zero or less, carrying that long through",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_long_positive,com.opengamma.strata.collect.ValidateSpec,"notPositive rejects a positive long, quoting the value it found",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_double_ok,com.opengamma.strata.collect.ValidateSpec,"notPositive accepts a double that is zero or less, keeping the sign of a signed zero",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_double_positive,com.opengamma.strata.collect.ValidateSpec,"notPositive rejects a positive double however small, and an infinite one",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_Decimal_ok,com.opengamma.strata.collect.ValidateSpec,"notPositive accepts a decimal that is zero or less, carrying that decimal through",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositive_Decimal_positive,com.opengamma.strata.collect.ValidateSpec,"notPositive rejects a positive decimal, quoting it as the decimal renders",consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositiveIfPresent_Decimal_ok,com.opengamma.strata.collect.ValidateSpec,notPositiveIfPresent carries a present decimal back inside its Option,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notPositiveIfPresent_Decimal_positive,com.opengamma.strata.collect.ValidateSpec,notPositiveIfPresent rejects a present positive decimal with the wording of the check it wraps,consolidated:com.opengamma.strata.collect.ValidateSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_int_ok,com.opengamma.strata.collect.ArgCheckSpec,notNegative accepts an int that is zero or greater,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_int_negative,com.opengamma.strata.collect.ArgCheckSpec,notNegative reports a negative int with the value it found,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_long_ok,com.opengamma.strata.collect.ArgCheckSpec,notNegative accepts a long that is zero or greater,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_long_negative,com.opengamma.strata.collect.ArgCheckSpec,notNegative reports a negative long with the value it found,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_double_ok,com.opengamma.strata.collect.ArgCheckSpec,notNegative accepts a double that is zero or greater,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_double_negative,com.opengamma.strata.collect.ArgCheckSpec,notNegative reports a negative double with the value it found,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegative_Decimal,com.opengamma.strata.collect.ArgCheckSpec,"notNegative reads the sign of a decimal, whatever its scale",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNaN_double_ok,com.opengamma.strata.collect.ArgCheckSpec,notNaN accepts an actual number,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNaN_double_NaN,com.opengamma.strata.collect.ArgCheckSpec,notNaN reports the one value that is not a number,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_int_ok,com.opengamma.strata.collect.ArgCheckSpec,notNegativeOrZero accepts an int above zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_int_zero,com.opengamma.strata.collect.ArgCheckSpec,notNegativeOrZero reports an int of zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_int_negative,com.opengamma.strata.collect.ArgCheckSpec,notNegativeOrZero reports a negative int,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_long_ok,com.opengamma.strata.collect.ArgCheckSpec,notNegativeOrZero accepts a long above zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_long_zero,com.opengamma.strata.collect.ArgCheckSpec,notNegativeOrZero reports a long of zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_long_negative,com.opengamma.strata.collect.ArgCheckSpec,notNegativeOrZero reports a negative long,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_ok,com.opengamma.strata.collect.ArgCheckSpec,notNegativeOrZero accepts a double above zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_zero,com.opengamma.strata.collect.ArgCheckSpec,notNegativeOrZero reports a double of zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_negative,com.opengamma.strata.collect.ArgCheckSpec,notNegativeOrZero reports a negative double,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_eps_ok,com.opengamma.strata.collect.ArgCheckSpec,the tolerant form accepts a double that lies further than the tolerance above zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_eps_zero,com.opengamma.strata.collect.ArgCheckSpec,the tolerant form reports a double the tolerance counts as zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_double_eps_negative,com.opengamma.strata.collect.ArgCheckSpec,"the tolerant form reports a double clearly below zero as too small, not as zero",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notNegativeOrZero_Decimal,com.opengamma.strata.collect.ArgCheckSpec,"notNegativeOrZero reads the sign of a decimal, whatever its scale",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_ok,com.opengamma.strata.collect.ArgCheckSpec,notZero accepts a double above zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_zero,com.opengamma.strata.collect.ArgCheckSpec,notZero reports a double of zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_negative,com.opengamma.strata.collect.ArgCheckSpec,"notZero accepts a double below zero, having no interest in the sign",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_tolerance_ok,com.opengamma.strata.collect.ArgCheckSpec,the tolerant form of notZero accepts a double further than the tolerance from zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_tolerance_zero,com.opengamma.strata.collect.ArgCheckSpec,the tolerant form of notZero reports a double the tolerance counts as zero,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_notZero_double_tolerance_negative,com.opengamma.strata.collect.ArgCheckSpec,the tolerant form of notZero accepts a double below zero by more than the tolerance,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_double_inRange,com.opengamma.strata.collect.ArgCheckSpec,inRange over doubles accepts the low bound and every value below the high bound,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_double_inRange_outOfRange,com.opengamma.strata.collect.ArgCheckSpec,inRange over doubles rejects a value below the low bound and the high bound itself,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_int_inRange,com.opengamma.strata.collect.ArgCheckSpec,inRange over ints accepts the low bound and every value below the high bound,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_int_inRange_outOfRange,com.opengamma.strata.collect.ArgCheckSpec,inRange over ints rejects a value below the low bound and the high bound itself,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_generic_inRange,com.opengamma.strata.collect.ArgCheckSpec,inRangeComparable accepts the low bound and every value below the high bound,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_generic_inRange_outOfRange,com.opengamma.strata.collect.ArgCheckSpec,inRangeComparable rejects a value below the low bound and the high bound itself,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,testNotEmptyLongArray,com.opengamma.strata.collect.ArgCheckSpec,every array overload reports an empty array with the one array wording,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicates,com.opengamma.strata.collect.ArgCheckSpec,noDuplicates accepts an array of distinct values in any order,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicates_NaN,com.opengamma.strata.collect.ArgCheckSpec,noDuplicates accepts an array holding one not-a-number value,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicates_hasDuplicates,com.opengamma.strata.collect.ArgCheckSpec,noDuplicates reports an array that repeats a value,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicatesSorted,com.opengamma.strata.collect.ArgCheckSpec,noDuplicatesSorted accepts an array whose values increase strictly,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicatesSorted_Nan,com.opengamma.strata.collect.ArgCheckSpec,"noDuplicatesSorted passes over a not-a-number value, which orders against nothing",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicatesSorted_hasDuplicates,com.opengamma.strata.collect.ArgCheckSpec,noDuplicatesSorted reports an array that repeats a value,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_double_noDuplicatesSorted_notSorted,com.opengamma.strata.collect.ArgCheckSpec,noDuplicatesSorted reports an array that is out of order differently from one that repeats,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_inOrderNotEqual_true,com.opengamma.strata.collect.ArgCheckSpec,inOrderNotEqual accepts two values where the first orders strictly before the second,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_inOrderNotEqual_false_invalidOrder,com.opengamma.strata.collect.ArgCheckSpec,"inOrderNotEqual reports two values in the wrong order, naming both and their values",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_inOrderNotEqual_false_equal,com.opengamma.strata.collect.ArgCheckSpec,"inOrderNotEqual reports two equal values, which is what separates it from the other check",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_inOrderOrEqual_true,com.opengamma.strata.collect.ArgCheckSpec,inOrderOrEqual accepts two values in order and two that are equal,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_inOrderOrEqual_false,com.opengamma.strata.collect.ArgCheckSpec,inOrderOrEqual reports two values in the wrong order with its own wording,consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.ArgCheckerTest,test_validUtilityClass,com.opengamma.strata.collect.ArgCheckSpec,"ArgCheck is a singleton object, so there is neither a constructor nor a subclass of it",consolidated:com.opengamma.strata.collect.ArgCheckSpec
+com.opengamma.strata.collect.DecimalTest,testValuesOfScaled,com.opengamma.strata.collect.DecimalSpec,a decimal built from an unscaled value and a scale holds the parts of its row,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfBigDecimal(String;long;int),com.opengamma.strata.collect.DecimalSpec,a decimal built from a BigDecimal holds the parts of its row,ported
+com.opengamma.strata.collect.DecimalTest,testValuesToFixedScale,com.opengamma.strata.collect.DecimalSpec,a decimal rounded to two places is presented at that fixed scale,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfString,com.opengamma.strata.collect.DecimalSpec,a decimal built from text holds the parts of its row and parses the same way,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfStringPlusPrefix,com.opengamma.strata.collect.DecimalSpec,a leading plus sign does not change the decimal the text names,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfStringZeroPrefix,com.opengamma.strata.collect.DecimalSpec,a leading zero does not change the decimal the text names,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfLong,com.opengamma.strata.collect.DecimalSpec,a decimal built from a whole number keeps scale zero and converts back,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfScaledTruncated,com.opengamma.strata.collect.DecimalSpec,precision beyond eighteen digits is truncated towards zero,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfScaledZeroAnyScale,com.opengamma.strata.collect.DecimalSpec,zero is held at scale zero whatever scale it arrives with,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfScaledTrailingZeroes,com.opengamma.strata.collect.DecimalSpec,a trailing zero of the fraction is removed by normalisation,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfScaledNegativeScale,com.opengamma.strata.collect.DecimalSpec,a negative scale becomes digits of the whole part,ported
+com.opengamma.strata.collect.DecimalTest,testValuesOfBigDecimal(),com.opengamma.strata.collect.DecimalSpec,a BigDecimal is normalised as its own parts would be,ported
+com.opengamma.strata.collect.DecimalTest,testBad,com.opengamma.strata.collect.DecimalSpec,text that names no number is rejected as unparseable,ported
+com.opengamma.strata.collect.DecimalTest,testZero,com.opengamma.strata.collect.DecimalSpec,the published zero is the decimal of no value at scale zero,ported
+com.opengamma.strata.collect.DecimalTest,testPlus,com.opengamma.strata.collect.DecimalSpec,the sum of two decimals is exact and commutative,ported
+com.opengamma.strata.collect.DecimalTest,testPlusNegated,com.opengamma.strata.collect.DecimalSpec,negating both operands negates their sum,ported
+com.opengamma.strata.collect.DecimalTest,testMinus,com.opengamma.strata.collect.DecimalSpec,subtracting the negation of an operand gives the sum,ported
+com.opengamma.strata.collect.DecimalTest,testPlusToZero,com.opengamma.strata.collect.DecimalSpec,"a decimal subtracted from itself, or added to its negation, is zero",ported
+com.opengamma.strata.collect.DecimalTest,testPlusOverflow,com.opengamma.strata.collect.DecimalSpec,a sum needing more than eighteen digits raises rather than returning a value,ported
+com.opengamma.strata.collect.DecimalTest,testPlusLong,com.opengamma.strata.collect.DecimalSpec,adding a whole number covers the values no decimal of its own can hold,ported
+com.opengamma.strata.collect.DecimalTest,testPlusDouble,com.opengamma.strata.collect.DecimalSpec,adding a Double adds the decimal its shortest text names,ported
+com.opengamma.strata.collect.DecimalTest,testMinusLong,com.opengamma.strata.collect.DecimalSpec,subtracting a whole number covers the values no decimal of its own can hold,ported
+com.opengamma.strata.collect.DecimalTest,testMinusDouble,com.opengamma.strata.collect.DecimalSpec,subtracting a Double subtracts the decimal its shortest text names,ported
+com.opengamma.strata.collect.DecimalTest,testMultipliedBy,com.opengamma.strata.collect.DecimalSpec,"the product of two decimals is exact, commutative and sign-respecting",ported
+com.opengamma.strata.collect.DecimalTest,testMultipliedByOverflow,com.opengamma.strata.collect.DecimalSpec,a product needing more than eighteen digits raises rather than returning a value,ported
+com.opengamma.strata.collect.DecimalTest,testMultipliedByDouble,com.opengamma.strata.collect.DecimalSpec,multiplying by a Double multiplies by the decimal its shortest text names,ported
+com.opengamma.strata.collect.DecimalTest,testMovePoint,com.opengamma.strata.collect.DecimalSpec,moving the decimal point multiplies or divides by a power of ten,ported
+com.opengamma.strata.collect.DecimalTest,testDividedBy,com.opengamma.strata.collect.DecimalSpec,the quotient of two decimals is truncated towards zero,ported
+com.opengamma.strata.collect.DecimalTest,testDividedByRounded,com.opengamma.strata.collect.DecimalSpec,the quotient of two decimals rounds the eighteenth digit when asked to,ported
+com.opengamma.strata.collect.DecimalTest,testDividedByOverflow,com.opengamma.strata.collect.DecimalSpec,"dividing by zero, or to a quotient beyond eighteen digits, raises",ported
+com.opengamma.strata.collect.DecimalTest,testDividedByDouble,com.opengamma.strata.collect.DecimalSpec,dividing by a Double divides by the decimal its shortest text names,ported
+com.opengamma.strata.collect.DecimalTest,testRoundToScale,com.opengamma.strata.collect.DecimalSpec,rounding to a scale agrees with BigDecimal under every rounding mode,ported
+com.opengamma.strata.collect.DecimalTest,testRoundToScaleNegative,com.opengamma.strata.collect.DecimalSpec,rounding a negated value to a scale agrees with BigDecimal under every rounding mode,ported
+com.opengamma.strata.collect.DecimalTest,testRoundToScaleBad,com.opengamma.strata.collect.DecimalSpec,rounding to a scale of minus eighteen or beyond raises,ported
+com.opengamma.strata.collect.DecimalTest,testRoundToPrecision,com.opengamma.strata.collect.DecimalSpec,rounding to a number of significant digits keeps that many,ported
+com.opengamma.strata.collect.DecimalTest,testIsZero,com.opengamma.strata.collect.DecimalSpec,a decimal knows whether it is zero,ported
+com.opengamma.strata.collect.DecimalTest,testAbs,com.opengamma.strata.collect.DecimalSpec,the absolute value of a decimal drops its sign,ported
+com.opengamma.strata.collect.DecimalTest,testNegated,com.opengamma.strata.collect.DecimalSpec,negating a decimal flips its sign and keeps its scale,ported
+com.opengamma.strata.collect.DecimalTest,testSignum,com.opengamma.strata.collect.DecimalSpec,the sign of a decimal is read from its unscaled part,ported
+com.opengamma.strata.collect.DecimalTest,testComparison,com.opengamma.strata.collect.DecimalSpec,the four comparison queries agree with the ordering they are built on,ported
+com.opengamma.strata.collect.DecimalTest,testMapAsDouble,com.opengamma.strata.collect.DecimalSpec,mapping through a function on Double answers with an outcome,ported
+com.opengamma.strata.collect.DecimalTest,testMapAsBigDecimal,com.opengamma.strata.collect.DecimalSpec,mapping through a function on BigDecimal answers with an outcome,ported
+com.opengamma.strata.collect.DecimalTest,testFormatExact,com.opengamma.strata.collect.DecimalSpec,formatting to exactly a number of decimal places rounds and pads,ported
+com.opengamma.strata.collect.DecimalTest,testFormatAtleast,com.opengamma.strata.collect.DecimalSpec,formatting to at least a number of decimal places pads but never drops a digit,ported
+com.opengamma.strata.collect.DecimalTest,testFormatBad,com.opengamma.strata.collect.DecimalSpec,formatting outside zero to eighteen decimal places raises,ported
+com.opengamma.strata.collect.DecimalTest,testCompareTo,com.opengamma.strata.collect.DecimalSpec,comparison is numerical and consistent with equality,ported
+com.opengamma.strata.collect.DecimalTest,testMega,com.opengamma.strata.collect.DecimalSpec,arithmetic agrees with BigDecimal over ten thousand seeded random pairs,ported
+com.opengamma.strata.collect.DecimalTest,testPerformanceUnscaled,com.opengamma.strata.collect.DecimalSpec,a decimal built from an unscaled value converts as BigDecimal does,ported
+com.opengamma.strata.collect.DecimalTest,testPerformanceString,com.opengamma.strata.collect.DecimalSpec,a decimal read from text converts as BigDecimal does,ported
+com.opengamma.strata.collect.DecimalTest,testPerformanceMultiply,com.opengamma.strata.collect.DecimalSpec,a decimal multiplied by a whole number converts as BigDecimal does,ported
+com.opengamma.strata.collect.DecimalTest,testPerformanceRound,com.opengamma.strata.collect.DecimalSpec,a decimal rounded to one decimal place converts as BigDecimal does,ported
 com.opengamma.strata.collect.DoubleArrayMathTest,test_EMPTY_DOUBLE_ARRAY,com.opengamma.strata.collect.DoubleArrayMathSpec,test_EMPTY_DOUBLE_ARRAY,ported
 com.opengamma.strata.collect.DoubleArrayMathTest,test_EMPTY_DOUBLE_OBJECT_ARRAY,com.opengamma.strata.collect.DoubleArrayMathSpec,test_EMPTY_DOUBLE_OBJECT_ARRAY,ported
 com.opengamma.strata.collect.DoubleArrayMathTest,toPrimitive,com.opengamma.strata.collect.DoubleArrayMathSpec,toPrimitive,ported
@@ -1456,8 +1456,8 @@ com.opengamma.strata.collect.GuavateTest,test_combineMaps_mergeDifferentTypes,,,
 com.opengamma.strata.collect.GuavateTest,test_combineMapsOverwriting,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_combineMapsOverwriting_entries,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_combineListMultimaps,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.GuavateTest,test_tryCatchToOptional,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.GuavateTest,test_tryCatchToOptional_observed,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.GuavateTest,test_tryCatchToOptional,com.opengamma.strata.collect.CollectionsSpec,turning a thrown exception into an absent value is Try,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.GuavateTest,test_tryCatchToOptional_observed,com.opengamma.strata.collect.CollectionsSpec,turning a thrown exception into an absent value is Try,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.GuavateTest,test_firstNonEmpty_supplierMatch1,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_firstNonEmpty_supplierMatch2,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_firstNonEmpty_supplierMatchNone,,,partial:not-used-by-strata-basics
@@ -1466,14 +1466,14 @@ com.opengamma.strata.collect.GuavateTest,test_firstNonEmpty_optionalMatch2,,,par
 com.opengamma.strata.collect.GuavateTest,test_firstNonEmpty_optionalMatchNone,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_first,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_only,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.GuavateTest,test_list,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.GuavateTest,test_list,com.opengamma.strata.collect.CollectionsSpec,a list of known elements is the standard library list literal,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.GuavateTest,test_set,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_boxed,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.GuavateTest,test_stream_Iterable,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.GuavateTest,test_stream_Optional,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.GuavateTest,test_stream_Iterable,com.opengamma.strata.collect.CollectionsSpec,the collection and stream factories have no counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.GuavateTest,test_stream_Optional,com.opengamma.strata.collect.CollectionsSpec,the collection and stream factories have no counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.GuavateTest,test_in_Stream,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.GuavateTest,test_inOptional_present,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.GuavateTest,test_inOptional_empty,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.GuavateTest,test_inOptional_present,com.opengamma.strata.collect.CollectionsSpec,"mapping inside an optional is map, and dropping the absent values of many is flatten",consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.GuavateTest,test_inOptional_empty,com.opengamma.strata.collect.CollectionsSpec,"mapping inside an optional is map, and dropping the absent values of many is flatten",consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.GuavateTest,test_inNullable_present,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_inNullable_null,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_inTryCatchIgnore_present,,,partial:not-used-by-strata-basics
@@ -1490,14 +1490,14 @@ com.opengamma.strata.collect.GuavateTest,test_ensureOnlyOne,com.opengamma.strata
 com.opengamma.strata.collect.GuavateTest,test_ensureOnlyOne_withCustomMessage,com.opengamma.strata.collect.CollectionsSpec,Guavate_test_ensureOnlyOne_withCustomMessage,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.GuavateTest,test_casting,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_filtering,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.GuavateTest,test_filteringOptional,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.GuavateTest,test_filteringOptional,com.opengamma.strata.collect.CollectionsSpec,the optional adapters have no counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.GuavateTest,test_toOptional,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_toOnly,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.GuavateTest,test_toImmutableList,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.GuavateTest,test_toImmutableList,com.opengamma.strata.collect.CollectionsSpec,collecting to an immutable list is toList on any collection or iterator,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.GuavateTest,test_splittingBySize,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.GuavateTest,test_toImmutableSet,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.GuavateTest,test_toImmutableSortedSet,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.GuavateTest,test_toImmutableSortedSet_comparator,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.GuavateTest,test_toImmutableSet,com.opengamma.strata.collect.CollectionsSpec,"collecting to an immutable set is toSet, and to a sorted set is to(SortedSet)",consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.GuavateTest,test_toImmutableSortedSet,com.opengamma.strata.collect.CollectionsSpec,"collecting to an immutable set is toSet, and to a sorted set is to(SortedSet)",consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.GuavateTest,test_toImmutableSortedSet_comparator,com.opengamma.strata.collect.CollectionsSpec,"collecting to an immutable set is toSet, and to a sorted set is to(SortedSet)",consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.GuavateTest,test_toImmutableMultiset,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_toImmutableMap_key,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.GuavateTest,test_toImmutableMap_key_duplicateKeys,,,partial:not-used-by-strata-basics
@@ -1542,13 +1542,13 @@ com.opengamma.strata.collect.MapStreamTest,keys_fromStream,,,partial:not-used-by
 com.opengamma.strata.collect.MapStreamTest,values_fromStream,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,inverse,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,filter,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.MapStreamTest,filterKeys,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,filterKeys_byClass,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.MapStreamTest,filterKeys,com.opengamma.strata.collect.CollectionsSpec,the operations of the entry view are the operations of an immutable map,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,filterKeys_byClass,com.opengamma.strata.collect.CollectionsSpec,the operations of the entry view are the operations of an immutable map,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.MapStreamTest,filterValues,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,filterValues_byClass,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,mapKeysToKeys,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,mapKeysAndValuesToKeys,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.MapStreamTest,mapValuesToValues,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.MapStreamTest,mapValuesToValues,com.opengamma.strata.collect.CollectionsSpec,the operations of the entry view are the operations of an immutable map,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.MapStreamTest,mapKeysAndValuesToValues,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,mapBoth,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,flatMapBoth,,,partial:not-used-by-strata-basics
@@ -1574,11 +1574,11 @@ com.opengamma.strata.collect.MapStreamTest,anyMatch,,,partial:not-used-by-strata
 com.opengamma.strata.collect.MapStreamTest,allMatch,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,noneMatch,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,forEach,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.MapStreamTest,ofMultimap,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,ofCollection,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,ofCollection_2arg,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,ofStream,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,ofStream_2arg,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.MapStreamTest,ofMultimap,com.opengamma.strata.collect.CollectionsSpec,the entry view of a map has no counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,ofCollection,com.opengamma.strata.collect.CollectionsSpec,the entry view of a map has no counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,ofCollection_2arg,com.opengamma.strata.collect.CollectionsSpec,the entry view of a map has no counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,ofStream,com.opengamma.strata.collect.CollectionsSpec,the entry view of a map has no counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,ofStream_2arg,com.opengamma.strata.collect.CollectionsSpec,the entry view of a map has no counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.MapStreamTest,zip,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,zip_longerFirst,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,zip_longerSecond,,,partial:not-used-by-strata-basics
@@ -1586,23 +1586,23 @@ com.opengamma.strata.collect.MapStreamTest,zipWithIndex,,,partial:not-used-by-st
 com.opengamma.strata.collect.MapStreamTest,concat,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,concatGeneric,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,concatNumberValues,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.MapStreamTest,toMapDuplicateKeys,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,toMapWithMerge,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,toMapGrouping,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,groupingAndThen,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,toMapGroupingWithCollector,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
-com.opengamma.strata.collect.MapStreamTest,groupingAndThenWithCollector,,,partial:member-used-by-basics-but-replaced-by-scala-stdlib
+com.opengamma.strata.collect.MapStreamTest,toMapDuplicateKeys,com.opengamma.strata.collect.CollectionsSpec,toSortedMap keyed by a function fails where two elements produce the same key,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,toMapWithMerge,com.opengamma.strata.collect.CollectionsSpec,toSortedMap with a merge function combines the values of a repeated key,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,toMapGrouping,com.opengamma.strata.collect.CollectionsSpec,the grouping collectors of the original are the ordered grouping of Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,groupingAndThen,com.opengamma.strata.collect.CollectionsSpec,the grouping collectors of the original are the ordered grouping of Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,toMapGroupingWithCollector,com.opengamma.strata.collect.CollectionsSpec,no collector of any shape has a counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
+com.opengamma.strata.collect.MapStreamTest,groupingAndThenWithCollector,com.opengamma.strata.collect.CollectionsSpec,no collector of any shape has a counterpart on Collections,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.MapStreamTest,toMapGroupingRetainsOrder,com.opengamma.strata.collect.CollectionsSpec,MapStream_toMapGroupingRetainsOrder,consolidated:com.opengamma.strata.collect.CollectionsSpec
 com.opengamma.strata.collect.MapStreamTest,toListMultimap,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,toSetMultimap,,,partial:not-used-by-strata-basics
 com.opengamma.strata.collect.MapStreamTest,coverage,,,partial:not-used-by-strata-basics
-com.opengamma.strata.collect.TestHelperTest,test_assertEquals_objectObject,com.opengamma.strata.collect.TestHelperSpec,test_assertEquals_objectObject,ported
-com.opengamma.strata.collect.TestHelperTest,test_assertEquals_nullNull,com.opengamma.strata.collect.TestHelperSpec,test_assertEquals_nullNull,ported
-com.opengamma.strata.collect.TestHelperTest,test_assertEquals_notEqual,com.opengamma.strata.collect.TestHelperSpec,test_assertEquals_notEqual,ported
-com.opengamma.strata.collect.TestHelperTest,test_assertEquals_objectNull,com.opengamma.strata.collect.TestHelperSpec,test_assertEquals_objectNull,ported
-com.opengamma.strata.collect.TestHelperTest,test_assertEquals_nullObject,com.opengamma.strata.collect.TestHelperSpec,test_assertEquals_nullObject,ported
-com.opengamma.strata.collect.TestHelperTest,test_assertNotNull_notNull,com.opengamma.strata.collect.TestHelperSpec,test_assertNotNull_notNull,ported
-com.opengamma.strata.collect.TestHelperTest,test_assertNotNull_null,com.opengamma.strata.collect.TestHelperSpec,test_assertNotNull_null,ported
+com.opengamma.strata.collect.TestHelperTest,test_assertEquals_objectObject,com.opengamma.strata.collect.TestHelperSpec,"date builds the LocalDate named by its year, month and day-of-month",consolidated:com.opengamma.strata.collect.TestHelperSpec
+com.opengamma.strata.collect.TestHelperTest,test_assertEquals_nullNull,com.opengamma.strata.collect.TestHelperSpec,list with no arguments yields the empty immutable list,consolidated:com.opengamma.strata.collect.TestHelperSpec
+com.opengamma.strata.collect.TestHelperTest,test_assertEquals_notEqual,com.opengamma.strata.collect.TestHelperSpec,date rejects an out-of-range field exactly as the platform factory does,consolidated:com.opengamma.strata.collect.TestHelperSpec
+com.opengamma.strata.collect.TestHelperTest,test_assertEquals_objectNull,com.opengamma.strata.collect.TestHelperSpec,captureStdOut restores the output stream when the block throws,consolidated:com.opengamma.strata.collect.TestHelperSpec
+com.opengamma.strata.collect.TestHelperTest,test_assertEquals_nullObject,com.opengamma.strata.collect.TestHelperSpec,captureLog removes its handler and restores the logger configuration when the block throws,consolidated:com.opengamma.strata.collect.TestHelperSpec
+com.opengamma.strata.collect.TestHelperTest,test_assertNotNull_notNull,com.opengamma.strata.collect.TestHelperSpec,list returns a scala.collection.immutable.List,consolidated:com.opengamma.strata.collect.TestHelperSpec
+com.opengamma.strata.collect.TestHelperTest,test_assertNotNull_null,com.opengamma.strata.collect.TestHelperSpec,captureLog returns the empty list for a block that logs nothing,consolidated:com.opengamma.strata.collect.TestHelperSpec
 com.opengamma.strata.collect.TypedStringTest,test_of,com.opengamma.strata.collect.TypedStringSpec,test_of,ported
 com.opengamma.strata.collect.TypedStringTest,test_of_invalid,com.opengamma.strata.collect.TypedStringSpec,test_of_invalid,ported
 com.opengamma.strata.collect.TypedStringTest,test_of_validated,com.opengamma.strata.collect.TypedStringSpec,test_of_validated,ported
@@ -1690,188 +1690,188 @@ com.opengamma.strata.collect.array.DoubleMatrixTest,testTransposeMatrix,com.open
 com.opengamma.strata.collect.array.DoubleMatrixTest,test_equalsHashCode,com.opengamma.strata.collect.array.DoubleMatrixSpec,test_equalsHashCode,ported
 com.opengamma.strata.collect.array.DoubleMatrixTest,test_toString,com.opengamma.strata.collect.array.DoubleMatrixSpec,test_toString,ported
 com.opengamma.strata.collect.array.DoubleMatrixTest,coverage,com.opengamma.strata.collect.array.DoubleMatrixSpec,coverage,ported
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_of_filePrefixed,com.opengamma.strata.collect.io.ResourcesSpec,test_of_filePrefixed,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_of_fileNoPrefix,com.opengamma.strata.collect.io.ResourcesSpec,test_of_fileNoPrefix,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_of_classpath,com.opengamma.strata.collect.io.ResourcesSpec,test_of_classpath,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_of_invalid,com.opengamma.strata.collect.io.ResourcesSpec,test_of_invalid,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofFile,com.opengamma.strata.collect.io.ResourcesSpec,test_ofFile,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofPath,com.opengamma.strata.collect.io.ResourcesSpec,test_ofPath,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofPath_zipFile,com.opengamma.strata.collect.io.ResourcesSpec,test_ofPath_zipFile,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofPath_fileInZipFile,com.opengamma.strata.collect.io.ResourcesSpec,test_ofPath_fileInZipFile,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofUrl,com.opengamma.strata.collect.io.ResourcesSpec,test_ofUrl,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspath_absolute,com.opengamma.strata.collect.io.ResourcesSpec,test_ofClasspath_absolute,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspath_relativeConvertedToAbsolute,com.opengamma.strata.collect.io.ResourcesSpec,test_ofClasspath_relativeConvertedToAbsolute,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspath_withClass_absolute,com.opengamma.strata.collect.io.ResourcesSpec,test_ofClasspath_withClass_absolute,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspath_withClass_relative,com.opengamma.strata.collect.io.ResourcesSpec,test_ofClasspath_withClass_relative,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspathUrl,com.opengamma.strata.collect.io.ResourcesSpec,test_ofClasspathUrl,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.io.ResourceLocatorTest,test_equalsHashCode,com.opengamma.strata.collect.io.ResourcesSpec,test_equalsHashCode,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
-com.opengamma.strata.collect.named.CombinedExtendedEnumTest,test_lookup,com.opengamma.strata.collect.NamedEnumSpec,CombinedExtendedEnum_test_lookup,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.EnumNamesTest,test_format,com.opengamma.strata.collect.NamedEnumSpec,EnumNames_test_format,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.EnumNamesTest,test_parse_one,com.opengamma.strata.collect.NamedEnumSpec,EnumNames_test_parse_one,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.EnumNamesTest,test_parse_twentyOne,com.opengamma.strata.collect.NamedEnumSpec,EnumNames_test_parse_twentyOne,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.EnumNamesTest,test_parse_fooBarWithAlias,com.opengamma.strata.collect.NamedEnumSpec,EnumNames_test_parse_fooBarWithAlias,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.EnumNamesTest,test_parse_wooBarWaa,com.opengamma.strata.collect.NamedEnumSpec,EnumNames_test_parse_wooBarWaa,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.EnumNamesTest,test_parse_invalid,com.opengamma.strata.collect.NamedEnumSpec,EnumNames_test_parse_invalid,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_SampleNamed,com.opengamma.strata.collect.NamedEnumSpec,ExtendedEnum_test_enum_SampleNamed,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_SampleNamed_externals,com.opengamma.strata.collect.NamedEnumSpec,ExtendedEnum_test_enum_SampleNamed_externals,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_SampleOther,com.opengamma.strata.collect.NamedEnumSpec,ExtendedEnum_test_enum_SampleOther,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_lenient,com.opengamma.strata.collect.NamedEnumSpec,ExtendedEnum_test_enum_lenient,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_invalid,com.opengamma.strata.collect.NamedEnumSpec,ExtendedEnum_test_enum_invalid,consolidated:com.opengamma.strata.collect.NamedEnumSpec
-com.opengamma.strata.collect.named.NamedTest,test_of,com.opengamma.strata.collect.NamedEnumSpec,Named_test_of,consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_of_filePrefixed,com.opengamma.strata.collect.io.ResourcesSpec,readFileText reads a temporary UTF-8 file created with java.nio.file.Files,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_of_fileNoPrefix,com.opengamma.strata.collect.io.ResourcesSpec,readFileText reads a temporary UTF-8 file created with java.nio.file.Files,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_of_classpath,com.opengamma.strata.collect.io.ResourcesSpec,readClasspathText reads the committed parity fixture from the test classpath,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_of_invalid,com.opengamma.strata.collect.io.ResourcesSpec,readClasspathText fails the IO for a resource that is not on the classpath,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofFile,com.opengamma.strata.collect.io.ResourcesSpec,readFileText reads a temporary UTF-8 file created with java.nio.file.Files,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofPath,com.opengamma.strata.collect.io.ResourcesSpec,readFileText reads a temporary UTF-8 file created with java.nio.file.Files,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofPath_zipFile,com.opengamma.strata.collect.io.ResourcesSpec,readFileText reads a temporary UTF-8 file created with java.nio.file.Files,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofPath_fileInZipFile,com.opengamma.strata.collect.io.ResourcesSpec,readFileText fails the IO for a path that cannot be read as a file,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofUrl,com.opengamma.strata.collect.io.ResourcesSpec,readClasspathText reads the committed parity fixture from the test classpath,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspath_absolute,com.opengamma.strata.collect.io.ResourcesSpec,"readClasspathText accepts an absolute, slash-prefixed resource path",consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspath_relativeConvertedToAbsolute,com.opengamma.strata.collect.io.ResourcesSpec,readClasspathText reads the committed parity fixture from the test classpath,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspath_withClass_absolute,com.opengamma.strata.collect.io.ResourcesSpec,"readClasspathText accepts an absolute, slash-prefixed resource path",consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspath_withClass_relative,com.opengamma.strata.collect.io.ResourcesSpec,readClasspathText reads the committed parity fixture from the test classpath,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_ofClasspathUrl,com.opengamma.strata.collect.io.ResourcesSpec,readClasspathText reads the committed parity fixture from the test classpath,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.io.ResourceLocatorTest,test_equalsHashCode,com.opengamma.strata.collect.io.ResourcesSpec,readClasspathText is referentially transparent: the same path yields the same content on repeated evaluation,consolidated:com.opengamma.strata.collect.io.ResourcesSpec
+com.opengamma.strata.collect.named.CombinedExtendedEnumTest,test_lookup,com.opengamma.strata.collect.NamedEnumSpec,a union resolves a name from the family that has it (CombinedExtendedEnumTest.test_lookup),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.EnumNamesTest,test_format,com.opengamma.strata.collect.NamedEnumSpec,the canonical name of a member is the formatted name of the ported constant (EnumNamesTest.test_format),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.EnumNamesTest,test_parse_one,com.opengamma.strata.collect.NamedEnumSpec,parse accepts every spelling of the single-word member (EnumNamesTest.test_parse_one),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.EnumNamesTest,test_parse_twentyOne,com.opengamma.strata.collect.NamedEnumSpec,parse accepts every spelling of the two-word member (EnumNamesTest.test_parse_twentyOne),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.EnumNamesTest,test_parse_fooBarWithAlias,com.opengamma.strata.collect.NamedEnumSpec,"parse accepts every spelling of the mixed-case member, including its alias (EnumNamesTest.test_parse_fooBarWithAlias)",consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.EnumNamesTest,test_parse_wooBarWaa,com.opengamma.strata.collect.NamedEnumSpec,parse accepts every spelling of the three-word member (EnumNamesTest.test_parse_wooBarWaa),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.EnumNamesTest,test_parse_invalid,com.opengamma.strata.collect.NamedEnumSpec,parse reports an unknown name of a plain enumeration rather than raising (EnumNamesTest.test_parse_invalid),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_SampleNamed,com.opengamma.strata.collect.NamedEnumSpec,values holds the members of the family in declaration order (ExtendedEnumTest.test_enum_SampleNamed),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_SampleNamed_externals,com.opengamma.strata.collect.NamedEnumSpec,externalNameGroups names the groups the family publishes (ExtendedEnumTest.test_enum_SampleNamed_externals),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_SampleOther,com.opengamma.strata.collect.NamedEnumSpec,a family with one member and no tables resolves that member and nothing else (ExtendedEnumTest.test_enum_SampleOther),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_lenient,com.opengamma.strata.collect.NamedEnumSpec,parse resolves a canonical name without rewriting it (ExtendedEnumTest.test_enum_lenient),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.ExtendedEnumTest,test_enum_invalid,com.opengamma.strata.collect.NamedEnumSpec,a family that declares no members does not compile (ExtendedEnumTest.test_enum_invalid),consolidated:com.opengamma.strata.collect.NamedEnumSpec
+com.opengamma.strata.collect.named.NamedTest,test_of,com.opengamma.strata.collect.NamedEnumSpec,a name resolves through the lookup its family publishes (NamedTest.test_of),consolidated:com.opengamma.strata.collect.NamedEnumSpec
 com.opengamma.strata.collect.result.FailureExceptionTest,test_constructor_failure,,,dropped:collect-exception-types-not-ported
 com.opengamma.strata.collect.result.FailureItemExceptionTest,test_constructor_failureItem,,,dropped:collect-exception-types-not-ported
 com.opengamma.strata.collect.result.FailureItemExceptionTest,test_constructor_noCause,,,dropped:collect-exception-types-not-ported
 com.opengamma.strata.collect.result.FailureItemExceptionTest,test_constructor_cause,,,dropped:collect-exception-types-not-ported
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessage,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonMessage,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageShortStackTrace,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonMessageShortStackTrace,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_stackTraceErrorMessageWithNamedAttributes,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_stackTraceErrorMessageWithNamedAttributes,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_stackTraceErrorMessageWithUnnamedAttributes,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_stackTraceErrorMessageWithUnnamedAttributes,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_stackTraceErrorMessageWithoutAttributes,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_stackTraceErrorMessageWithoutAttributes,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonException,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonException,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonError,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonError,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageException,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonMessageException,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionNestedException,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonMessageExceptionNestedException,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionNestedExceptionWithAttributes,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonMessageExceptionNestedExceptionWithAttributes,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionWithAttributes,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonMessageExceptionWithAttributes,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionWithFailureItemException,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonMessageExceptionWithFailureItemException,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionWithFailureItemExceptionNoExMessageParam,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonMessageExceptionWithFailureItemExceptionNoExMessageParam,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionWithFailureItemExceptionDuplicateName,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_of_reasonMessageExceptionWithFailureItemExceptionDuplicateName,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_from_Throwable,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_from_Throwable,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_withAttribute,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_withAttribute,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_withAttributes,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_withAttributes,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemTest,test_map,com.opengamma.strata.collect.result.FailureSpec,FailureItem_test_map,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemsTest,test_EMPTY,com.opengamma.strata.collect.result.FailureSpec,FailureItems_test_EMPTY,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemsTest,test_of_array,com.opengamma.strata.collect.result.FailureSpec,FailureItems_test_of_array,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemsTest,test_of_list,com.opengamma.strata.collect.result.FailureSpec,FailureItems_test_of_list,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemsTest,test_builder_add,com.opengamma.strata.collect.result.FailureSpec,FailureItems_test_builder_add,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemsTest,test_builder_addAll,com.opengamma.strata.collect.result.FailureSpec,FailureItems_test_builder_addAll,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemsTest,test_combinedWith,com.opengamma.strata.collect.result.FailureSpec,FailureItems_test_combinedWith,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemsTest,coverage,com.opengamma.strata.collect.result.FailureSpec,FailureItems_coverage,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureItemsTest,test_serialization,com.opengamma.strata.collect.result.FailureSpec,FailureItems_test_serialization,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureReasonTest,test_toString,com.opengamma.strata.collect.result.FailureSpec,FailureReason_test_toString,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookup,com.opengamma.strata.collect.result.FailureSpec,FailureReason_test_of_lookup,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookupUpperCase,com.opengamma.strata.collect.result.FailureSpec,FailureReason_test_of_lookupUpperCase,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookupLowerCase,com.opengamma.strata.collect.result.FailureSpec,FailureReason_test_of_lookupLowerCase,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookup_notFound,com.opengamma.strata.collect.result.FailureSpec,FailureReason_test_of_lookup_notFound,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookup_null,com.opengamma.strata.collect.result.FailureSpec,FailureReason_test_of_lookup_null,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureReasonTest,coverage,com.opengamma.strata.collect.result.FailureSpec,FailureReason_coverage,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureReasonTest,test_serialization,com.opengamma.strata.collect.result.FailureSpec,FailureReason_test_serialization,consolidated:com.opengamma.strata.collect.result.FailureSpec
-com.opengamma.strata.collect.result.FailureReasonTest,test_jodaConvert,com.opengamma.strata.collect.result.FailureSpec,FailureReason_test_jodaConvert,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessage,com.opengamma.strata.collect.result.FailureSpec,"a failure carries the reason of its class, the message interpolated at the call site and no attributes",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageShortStackTrace,com.opengamma.strata.collect.result.FailureSpec,"a failure holds no stack trace, so there is none to shorten or to summarise",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_stackTraceErrorMessageWithNamedAttributes,com.opengamma.strata.collect.result.FailureSpec,data named by a message travels in attributes added at the construction site,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_stackTraceErrorMessageWithUnnamedAttributes,com.opengamma.strata.collect.result.FailureSpec,an interpolated message leaves no placeholder behind and populates no attribute,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_stackTraceErrorMessageWithoutAttributes,com.opengamma.strata.collect.result.FailureSpec,a message with nothing to interpolate is carried verbatim and adds no attribute,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonException,com.opengamma.strata.collect.result.FailureSpec,a failure reporting a rejected argument is built explicitly and retains no cause type,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonError,com.opengamma.strata.collect.result.FailureSpec,a failure reporting a fatal condition is built explicitly and retains no cause type,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageException,com.opengamma.strata.collect.result.FailureSpec,"a message supplied by the reporter stands on its own, without the text of a cause",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionNestedException,com.opengamma.strata.collect.result.FailureSpec,"nothing nested behind a failure is retained, only what its message and attributes say",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionNestedExceptionWithAttributes,com.opengamma.strata.collect.result.FailureSpec,"the attributes of a failure are the data its message names, and nothing is added for it",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionWithAttributes,com.opengamma.strata.collect.result.FailureSpec,the text of an underlying condition is carried as an ordinary attribute when it is wanted,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionWithFailureItemException,com.opengamma.strata.collect.result.FailureSpec,a failure keeps the reason chosen by the code that reported it,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionWithFailureItemExceptionNoExMessageParam,com.opengamma.strata.collect.result.FailureSpec,"a message is whatever the reporter interpolated, line breaks and all",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_of_reasonMessageExceptionWithFailureItemExceptionDuplicateName,com.opengamma.strata.collect.result.FailureSpec,"an attribute key given twice keeps the last value, so no key is ever renamed",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_from_Throwable,com.opengamma.strata.collect.result.FailureSpec,"a failure is never derived from a thrown condition, only constructed",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_withAttribute,com.opengamma.strata.collect.result.FailureSpec,"withAttribute adds one attribute and preserves the class, the reason and the message",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_withAttributes,com.opengamma.strata.collect.result.FailureSpec,"withAttributes merges the supplied attributes, letting them win, and holds the result in key order",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemTest,test_map,com.opengamma.strata.collect.result.FailureSpec,"mapMessage transforms the message and preserves the class, the reason and the attributes",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemsTest,test_EMPTY,com.opengamma.strata.collect.result.FailureSpec,a chain of failures cannot be empty,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemsTest,test_of_array,com.opengamma.strata.collect.result.FailureSpec,a chain built from failures given one at a time holds them in order,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemsTest,test_of_list,com.opengamma.strata.collect.result.FailureSpec,a chain built from a list of failures holds them in order,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemsTest,test_builder_add,com.opengamma.strata.collect.result.FailureSpec,failures are gathered by construction rather than through a builder,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemsTest,test_builder_addAll,com.opengamma.strata.collect.result.FailureSpec,a chain is extended with several failures at once by concatenation,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemsTest,test_combinedWith,com.opengamma.strata.collect.result.FailureSpec,"concatenating chains keeps every failure, duplicates included, in order",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemsTest,coverage,com.opengamma.strata.collect.result.FailureSpec,"the family holds exactly the ten reasons, in declaration order",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureItemsTest,test_serialization,com.opengamma.strata.collect.result.FailureSpec,every reason encodes as the bare string of its canonical name and decodes back,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureReasonTest,test_toString,com.opengamma.strata.collect.result.FailureSpec,every reason renders as its upper-underscore name,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookup,com.opengamma.strata.collect.result.FailureSpec,valueOf and parse both resolve the canonical name of every reason,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookupUpperCase,com.opengamma.strata.collect.result.FailureSpec,the upper-case form of a reason name is its canonical form and resolves,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookupLowerCase,com.opengamma.strata.collect.result.FailureSpec,valueOf rejects the lower-case form of a reason name that parse resolves,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookup_notFound,com.opengamma.strata.collect.result.FailureSpec,text that names no reason is rejected as a parsing failure,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureReasonTest,test_of_lookup_null,com.opengamma.strata.collect.result.FailureSpec,empty and blank text name no reason,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureReasonTest,coverage,com.opengamma.strata.collect.result.FailureSpec,"the family holds exactly the ten reasons, in declaration order",consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureReasonTest,test_serialization,com.opengamma.strata.collect.result.FailureSpec,every reason encodes as the bare string of its canonical name and decodes back,consolidated:com.opengamma.strata.collect.result.FailureSpec
+com.opengamma.strata.collect.result.FailureReasonTest,test_jodaConvert,com.opengamma.strata.collect.result.FailureSpec,"the JSON decoder reads any casing, and rejects text that names no reason",consolidated:com.opengamma.strata.collect.result.FailureSpec
 com.opengamma.strata.collect.result.IllegalArgFailureExceptionTest,test_constructor_failureItem,,,dropped:collect-exception-types-not-ported
 com.opengamma.strata.collect.result.IllegalArgFailureExceptionTest,test_constructor_noCause,,,dropped:collect-exception-types-not-ported
 com.opengamma.strata.collect.result.IllegalArgFailureExceptionTest,test_constructor_cause,,,dropped:collect-exception-types-not-ported
 com.opengamma.strata.collect.result.ParseFailureExceptionTest,test_constructor_failureItem,,,dropped:collect-exception-types-not-ported
 com.opengamma.strata.collect.result.ParseFailureExceptionTest,test_constructor_noCause,,,dropped:collect-exception-types-not-ported
 com.opengamma.strata.collect.result.ParseFailureExceptionTest,test_constructor_cause,,,dropped:collect-exception-types-not-ported
-com.opengamma.strata.collect.result.ResultTest,success,com.opengamma.strata.collect.result.ResultSpec,success,ported
-com.opengamma.strata.collect.result.ResultTest,ifSuccess,com.opengamma.strata.collect.result.ResultSpec,ifSuccess,ported
-com.opengamma.strata.collect.result.ResultTest,ifFailure,com.opengamma.strata.collect.result.ResultSpec,ifFailure,ported
-com.opengamma.strata.collect.result.ResultTest,success_getFailure,com.opengamma.strata.collect.result.ResultSpec,success_getFailure,ported
-com.opengamma.strata.collect.result.ResultTest,success_map,com.opengamma.strata.collect.result.ResultSpec,success_map,ported
-com.opengamma.strata.collect.result.ResultTest,success_mapFailure,com.opengamma.strata.collect.result.ResultSpec,success_mapFailure,ported
-com.opengamma.strata.collect.result.ResultTest,success_mapFailureItems,com.opengamma.strata.collect.result.ResultSpec,success_mapFailureItems,ported
-com.opengamma.strata.collect.result.ResultTest,success_flatMap,com.opengamma.strata.collect.result.ResultSpec,success_flatMap,ported
-com.opengamma.strata.collect.result.ResultTest,success_combineWith_success,com.opengamma.strata.collect.result.ResultSpec,success_combineWith_success,ported
-com.opengamma.strata.collect.result.ResultTest,success_combineWith_failure,com.opengamma.strata.collect.result.ResultSpec,success_combineWith_failure,ported
-com.opengamma.strata.collect.result.ResultTest,success_combineWith_success_throws,com.opengamma.strata.collect.result.ResultSpec,success_combineWith_success_throws,ported
-com.opengamma.strata.collect.result.ResultTest,success_stream,com.opengamma.strata.collect.result.ResultSpec,success_stream,ported
-com.opengamma.strata.collect.result.ResultTest,success_map_throwing,com.opengamma.strata.collect.result.ResultSpec,success_map_throwing,ported
-com.opengamma.strata.collect.result.ResultTest,success_flatMap_throwing,com.opengamma.strata.collect.result.ResultSpec,success_flatMap_throwing,ported
-com.opengamma.strata.collect.result.ResultTest,failure,com.opengamma.strata.collect.result.ResultSpec,failure,ported
-com.opengamma.strata.collect.result.ResultTest,failure_error,com.opengamma.strata.collect.result.ResultSpec,failure_error,ported
-com.opengamma.strata.collect.result.ResultTest,failure_mapFailure,com.opengamma.strata.collect.result.ResultSpec,failure_mapFailure,ported
-com.opengamma.strata.collect.result.ResultTest,failure_mapFailureItems,com.opengamma.strata.collect.result.ResultSpec,failure_mapFailureItems,ported
-com.opengamma.strata.collect.result.ResultTest,failure_map_flatMap_ifSuccess,com.opengamma.strata.collect.result.ResultSpec,failure_map_flatMap_ifSuccess,ported
-com.opengamma.strata.collect.result.ResultTest,failure_getValue,com.opengamma.strata.collect.result.ResultSpec,failure_getValue,ported
-com.opengamma.strata.collect.result.ResultTest,failure_combineWith_success,com.opengamma.strata.collect.result.ResultSpec,failure_combineWith_success,ported
-com.opengamma.strata.collect.result.ResultTest,failure_combineWith_failure,com.opengamma.strata.collect.result.ResultSpec,failure_combineWith_failure,ported
-com.opengamma.strata.collect.result.ResultTest,failure_stream,com.opengamma.strata.collect.result.ResultSpec,failure_stream,ported
-com.opengamma.strata.collect.result.ResultTest,failure_map_throwing,com.opengamma.strata.collect.result.ResultSpec,failure_map_throwing,ported
-com.opengamma.strata.collect.result.ResultTest,failure_flatMap_throwing,com.opengamma.strata.collect.result.ResultSpec,failure_flatMap_throwing,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersMatchArgs1,com.opengamma.strata.collect.result.ResultSpec,failure_fromStatusMessageArgs_placeholdersMatchArgs1,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersMatchArgs2,com.opengamma.strata.collect.result.ResultSpec,failure_fromStatusMessageArgs_placeholdersMatchArgs2,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersExceedArgs,com.opengamma.strata.collect.result.ResultSpec,failure_fromStatusMessageArgs_placeholdersExceedArgs,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersLessThanArgs1,com.opengamma.strata.collect.result.ResultSpec,failure_fromStatusMessageArgs_placeholdersLessThanArgs1,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersLessThanArgs2,com.opengamma.strata.collect.result.ResultSpec,failure_fromStatusMessageArgs_placeholdersLessThanArgs2,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersLessThanArgs3,com.opengamma.strata.collect.result.ResultSpec,failure_fromStatusMessageArgs_placeholdersLessThanArgs3,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromResult_failure,com.opengamma.strata.collect.result.ResultSpec,failure_fromResult_failure,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromResult_success,com.opengamma.strata.collect.result.ResultSpec,failure_fromResult_success,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromFailure,com.opengamma.strata.collect.result.ResultSpec,failure_fromFailure,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromFailureItem,com.opengamma.strata.collect.result.ResultSpec,failure_fromFailureItem,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromFailureItemException,com.opengamma.strata.collect.result.ResultSpec,failure_fromFailureItemException,ported
-com.opengamma.strata.collect.result.ResultTest,ofNullable_nonNull,com.opengamma.strata.collect.result.ResultSpec,ofNullable_nonNull,ported
-com.opengamma.strata.collect.result.ResultTest,ofNullable_null,com.opengamma.strata.collect.result.ResultSpec,ofNullable_null,ported
-com.opengamma.strata.collect.result.ResultTest,ofOptional_nonEmpty,com.opengamma.strata.collect.result.ResultSpec,ofOptional_nonEmpty,ported
-com.opengamma.strata.collect.result.ResultTest,ofOptional_empty,com.opengamma.strata.collect.result.ResultSpec,ofOptional_empty,ported
-com.opengamma.strata.collect.result.ResultTest,of_with_success,com.opengamma.strata.collect.result.ResultSpec,of_with_success,ported
-com.opengamma.strata.collect.result.ResultTest,of_with_exception,com.opengamma.strata.collect.result.ResultSpec,of_with_exception,ported
-com.opengamma.strata.collect.result.ResultTest,wrap_with_success,com.opengamma.strata.collect.result.ResultSpec,wrap_with_success,ported
-com.opengamma.strata.collect.result.ResultTest,wrap_with_failure,com.opengamma.strata.collect.result.ResultSpec,wrap_with_failure,ported
-com.opengamma.strata.collect.result.ResultTest,wrap_with_exception,com.opengamma.strata.collect.result.ResultSpec,wrap_with_exception,ported
-com.opengamma.strata.collect.result.ResultTest,anyFailures_varargs,com.opengamma.strata.collect.result.ResultSpec,anyFailures_varargs,ported
-com.opengamma.strata.collect.result.ResultTest,anyFailures_collection,com.opengamma.strata.collect.result.ResultSpec,anyFailures_collection,ported
-com.opengamma.strata.collect.result.ResultTest,countFailures_varargs,com.opengamma.strata.collect.result.ResultSpec,countFailures_varargs,ported
-com.opengamma.strata.collect.result.ResultTest,countFailures_collection,com.opengamma.strata.collect.result.ResultSpec,countFailures_collection,ported
-com.opengamma.strata.collect.result.ResultTest,allSuccess_varargs,com.opengamma.strata.collect.result.ResultSpec,allSuccess_varargs,ported
-com.opengamma.strata.collect.result.ResultTest,allSuccess_collection,com.opengamma.strata.collect.result.ResultSpec,allSuccess_collection,ported
-com.opengamma.strata.collect.result.ResultTest,combine_iterableWithFailures,com.opengamma.strata.collect.result.ResultSpec,combine_iterableWithFailures,ported
-com.opengamma.strata.collect.result.ResultTest,combine_iterableWithSuccesses,com.opengamma.strata.collect.result.ResultSpec,combine_iterableWithSuccesses,ported
-com.opengamma.strata.collect.result.ResultTest,combine_iterableWithSuccesses_throws,com.opengamma.strata.collect.result.ResultSpec,combine_iterableWithSuccesses_throws,ported
-com.opengamma.strata.collect.result.ResultTest,flatCombine_iterableWithFailures,com.opengamma.strata.collect.result.ResultSpec,flatCombine_iterableWithFailures,ported
-com.opengamma.strata.collect.result.ResultTest,flatCombine_iterableWithSuccesses_combineFails,com.opengamma.strata.collect.result.ResultSpec,flatCombine_iterableWithSuccesses_combineFails,ported
-com.opengamma.strata.collect.result.ResultTest,flatCombine_iterableWithSuccesses_combineSucceeds,com.opengamma.strata.collect.result.ResultSpec,flatCombine_iterableWithSuccesses_combineSucceeds,ported
-com.opengamma.strata.collect.result.ResultTest,flatCombine_iterableWithSuccesses_combineThrows,com.opengamma.strata.collect.result.ResultSpec,flatCombine_iterableWithSuccesses_combineThrows,ported
-com.opengamma.strata.collect.result.ResultTest,toCombinedResult_allSuccesses,com.opengamma.strata.collect.result.ResultSpec,toCombinedResult_allSuccesses,ported
-com.opengamma.strata.collect.result.ResultTest,toCombinedResult_withFailures,com.opengamma.strata.collect.result.ResultSpec,toCombinedResult_withFailures,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromResults_varargs1,com.opengamma.strata.collect.result.ResultSpec,failure_fromResults_varargs1,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromResults_varargs2,com.opengamma.strata.collect.result.ResultSpec,failure_fromResults_varargs2,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromResults_varargs_allSuccess,com.opengamma.strata.collect.result.ResultSpec,failure_fromResults_varargs_allSuccess,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromResults_collection,com.opengamma.strata.collect.result.ResultSpec,failure_fromResults_collection,ported
-com.opengamma.strata.collect.result.ResultTest,failure_fromResults_collection_allSuccess,com.opengamma.strata.collect.result.ResultSpec,failure_fromResults_collection_allSuccess,ported
-com.opengamma.strata.collect.result.ResultTest,generateFailureFromException,com.opengamma.strata.collect.result.ResultSpec,generateFailureFromException,ported
-com.opengamma.strata.collect.result.ResultTest,generateFailureFromExceptionWithMessage,com.opengamma.strata.collect.result.ResultSpec,generateFailureFromExceptionWithMessage,ported
-com.opengamma.strata.collect.result.ResultTest,generateFailureFromExceptionWithCustomStatus,com.opengamma.strata.collect.result.ResultSpec,generateFailureFromExceptionWithCustomStatus,ported
-com.opengamma.strata.collect.result.ResultTest,generateFailureFromExceptionWithCustomStatusAndMessage,com.opengamma.strata.collect.result.ResultSpec,generateFailureFromExceptionWithCustomStatusAndMessage,ported
-com.opengamma.strata.collect.result.ResultTest,failureDeduplicateFailure,com.opengamma.strata.collect.result.ResultSpec,failureDeduplicateFailure,ported
-com.opengamma.strata.collect.result.ResultTest,failureSameType,com.opengamma.strata.collect.result.ResultSpec,failureSameType,ported
-com.opengamma.strata.collect.result.ResultTest,failureDifferentTypes,com.opengamma.strata.collect.result.ResultSpec,failureDifferentTypes,ported
-com.opengamma.strata.collect.result.ResultTest,createByBuilder_neitherValueNorFailure,com.opengamma.strata.collect.result.ResultSpec,createByBuilder_neitherValueNorFailure,ported
-com.opengamma.strata.collect.result.ResultTest,createByBuilder_bothValueAndFailure,com.opengamma.strata.collect.result.ResultSpec,createByBuilder_bothValueAndFailure,ported
-com.opengamma.strata.collect.result.ResultTest,generatedStackTrace,com.opengamma.strata.collect.result.ResultSpec,generatedStackTrace,ported
-com.opengamma.strata.collect.result.ResultTest,generatedStackTrace_Failure,com.opengamma.strata.collect.result.ResultSpec,generatedStackTrace_Failure,ported
-com.opengamma.strata.collect.result.ResultTest,equalsHashCode,com.opengamma.strata.collect.result.ResultSpec,equalsHashCode,ported
-com.opengamma.strata.collect.result.ResultTest,assert_success,com.opengamma.strata.collect.result.ResultSpec,assert_success,ported
-com.opengamma.strata.collect.result.ResultTest,assert_success_getFailure,com.opengamma.strata.collect.result.ResultSpec,assert_success_getFailure,ported
-com.opengamma.strata.collect.result.ResultTest,assert_success_map,com.opengamma.strata.collect.result.ResultSpec,assert_success_map,ported
-com.opengamma.strata.collect.result.ResultTest,assert_success_flatMap,com.opengamma.strata.collect.result.ResultSpec,assert_success_flatMap,ported
-com.opengamma.strata.collect.result.ResultTest,assert_success_combineWith_success,com.opengamma.strata.collect.result.ResultSpec,assert_success_combineWith_success,ported
-com.opengamma.strata.collect.result.ResultTest,assert_success_combineWith_failure,com.opengamma.strata.collect.result.ResultSpec,assert_success_combineWith_failure,ported
-com.opengamma.strata.collect.result.ResultTest,assert_failure,com.opengamma.strata.collect.result.ResultSpec,assert_failure,ported
-com.opengamma.strata.collect.result.ResultTest,coverage,com.opengamma.strata.collect.result.ResultSpec,coverage,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_array_noFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_of_array_noFailures,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_array,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_of_array,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_list,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_of_list,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_set,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_of_set,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_supplier_success,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_of_supplier_success,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_supplier_failure,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_of_supplier_failure,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_map,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_map,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_mapFailureItems,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_mapFailureItems,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_mapFailureItems_noFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_mapFailureItems_noFailures,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_flatMap,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_flatMap,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combinedWith,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_combinedWith,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combinedWith_differentTypes,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_combinedWith_differentTypes,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combining,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_combining,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_withValue_value,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_withValue_value,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_withValue_valueFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_withValue_valueFailures,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_withValue_ValueWithFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_withValue_ValueWithFailures,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_withAdditionalFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_withAdditionalFailures,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toValueWithFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_toValueWithFailures,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedValuesAsList,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_toCombinedValuesAsList,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedValuesAsSet,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_toCombinedValuesAsSet,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedResultsAsList,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_toCombinedResultsAsList,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedResultAsMap,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_toCombinedResultAsMap,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedValuesAsMap,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_toCombinedValuesAsMap,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combineAsList,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_combineAsList,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combineAsSet,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_combineAsSet,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,coverage,com.opengamma.strata.collect.result.ValueWithFailuresSpec,coverage,ported
-com.opengamma.strata.collect.result.ValueWithFailuresTest,test_serialization,com.opengamma.strata.collect.result.ValueWithFailuresSpec,test_serialization,ported
+com.opengamma.strata.collect.result.ResultTest,success,com.opengamma.strata.collect.result.ResultSpec,a success holds its value and yields it from every total accessor,ported
+com.opengamma.strata.collect.result.ResultTest,ifSuccess,com.opengamma.strata.collect.result.ResultSpec,foreach runs on a success and sees its value,ported
+com.opengamma.strata.collect.result.ResultTest,ifFailure,com.opengamma.strata.collect.result.ResultSpec,the left projection runs on a failure and sees its reason and message,ported
+com.opengamma.strata.collect.result.ResultTest,success_getFailure,com.opengamma.strata.collect.result.ResultSpec,a success has no failure to read,ported
+com.opengamma.strata.collect.result.ResultTest,success_map,com.opengamma.strata.collect.result.ResultSpec,map applies the mapping function to the value of a success,ported
+com.opengamma.strata.collect.result.ResultTest,success_mapFailure,com.opengamma.strata.collect.result.ResultSpec,mapping the failure of a success leaves it untouched,ported
+com.opengamma.strata.collect.result.ResultTest,success_mapFailureItems,com.opengamma.strata.collect.result.ResultSpec,rebuilding the failure of a success is the identity however the rebuild is written,ported
+com.opengamma.strata.collect.result.ResultTest,success_flatMap,com.opengamma.strata.collect.result.ResultSpec,flatMap applies a result-returning function to the value of a success,ported
+com.opengamma.strata.collect.result.ResultTest,success_combineWith_success,com.opengamma.strata.collect.result.ResultSpec,two successes combine into the merged value,ported
+com.opengamma.strata.collect.result.ResultTest,success_combineWith_failure,com.opengamma.strata.collect.result.ResultSpec,combining a success with a failure yields that failure,ported
+com.opengamma.strata.collect.result.ResultTest,success_combineWith_success_throws,com.opengamma.strata.collect.result.ResultSpec,a combining step that can fail returns its failure on the value channel,ported
+com.opengamma.strata.collect.result.ResultTest,success_stream,com.opengamma.strata.collect.result.ResultSpec,a success iterates over its single value,ported
+com.opengamma.strata.collect.result.ResultTest,success_map_throwing,com.opengamma.strata.collect.result.ResultSpec,"map takes a total function, so a mapping step that can fail is written to return a result",ported
+com.opengamma.strata.collect.result.ResultTest,success_flatMap_throwing,com.opengamma.strata.collect.result.ResultSpec,a chained step that can fail reports its failure on the accumulating channel too,ported
+com.opengamma.strata.collect.result.ResultTest,failure,com.opengamma.strata.collect.result.ResultSpec,a failure carries the reason and message chosen at its construction site,ported
+com.opengamma.strata.collect.result.ResultTest,failure_error,com.opengamma.strata.collect.result.ResultSpec,a failure recovers a value through getOrElse and through fold,ported
+com.opengamma.strata.collect.result.ResultTest,failure_mapFailure,com.opengamma.strata.collect.result.ResultSpec,mapping the failure of a failure replaces it,ported
+com.opengamma.strata.collect.result.ResultTest,failure_mapFailureItems,com.opengamma.strata.collect.result.ResultSpec,rebuilding the failure of a failure preserves its class and therefore its reason,ported
+com.opengamma.strata.collect.result.ResultTest,failure_map_flatMap_ifSuccess,com.opengamma.strata.collect.result.ResultSpec,"map, flatMap and foreach are all skipped on a failure and the failure is preserved",ported
+com.opengamma.strata.collect.result.ResultTest,failure_getValue,com.opengamma.strata.collect.result.ResultSpec,a failure has no value to read,ported
+com.opengamma.strata.collect.result.ResultTest,failure_combineWith_success,com.opengamma.strata.collect.result.ResultSpec,combining a failure with a success yields the failure and never calls the combiner,ported
+com.opengamma.strata.collect.result.ResultTest,failure_combineWith_failure,com.opengamma.strata.collect.result.ResultSpec,combining two failures short-circuits on the value channel and accumulates on the chain channel,ported
+com.opengamma.strata.collect.result.ResultTest,failure_stream,com.opengamma.strata.collect.result.ResultSpec,a failure iterates over nothing,ported
+com.opengamma.strata.collect.result.ResultTest,failure_map_throwing,com.opengamma.strata.collect.result.ResultSpec,a mapping step is never reached once an outcome has failed,ported
+com.opengamma.strata.collect.result.ResultTest,failure_flatMap_throwing,com.opengamma.strata.collect.result.ResultSpec,a chained step is never reached once an outcome has failed,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersMatchArgs1,com.opengamma.strata.collect.result.ResultSpec,an interpolated message with one value reads as the original formatted message,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersMatchArgs2,com.opengamma.strata.collect.result.ResultSpec,an interpolated message with two values reads as the original formatted message,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersExceedArgs,com.opengamma.strata.collect.result.ResultSpec,an interpolated message never leaves a placeholder unfilled,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersLessThanArgs1,com.opengamma.strata.collect.result.ResultSpec,an interpolated message never appends one surplus argument,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersLessThanArgs2,com.opengamma.strata.collect.result.ResultSpec,an interpolated message never appends several surplus arguments,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromStatusMessageArgs_placeholdersLessThanArgs3,com.opengamma.strata.collect.result.ResultSpec,a message with no placeholders never gains an appended argument list,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromResult_failure,com.opengamma.strata.collect.result.ResultSpec,the failure of one outcome is carried into an outcome of another value type,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromResult_success,com.opengamma.strata.collect.result.ResultSpec,"a success has no failure to re-channel, and every bridge passes it through unchanged",ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromFailure,com.opengamma.strata.collect.result.ResultSpec,"a failure value builds a failed outcome, and toNec lifts it into a chain of one",ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromFailureItem,com.opengamma.strata.collect.result.ResultSpec,"a failure needs no item wrapper, and the accumulating bridges round-trip both ways",ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromFailureItemException,com.opengamma.strata.collect.result.ResultSpec,a failure travels on the value channel with no exception carrier,ported
+com.opengamma.strata.collect.result.ResultTest,ofNullable_nonNull,com.opengamma.strata.collect.result.ResultSpec,toRight keeps the value of a present option,ported
+com.opengamma.strata.collect.result.ResultTest,ofNullable_null,com.opengamma.strata.collect.result.ResultSpec,"the vocabulary of the absent-reference failure is retained, and the state it guarded is unrepresentable",ported
+com.opengamma.strata.collect.result.ResultTest,ofOptional_nonEmpty,com.opengamma.strata.collect.result.ResultSpec,toRight keeps the value of a non-empty option and composes with the bridge,ported
+com.opengamma.strata.collect.result.ResultTest,ofOptional_empty,com.opengamma.strata.collect.result.ResultSpec,toRight turns an empty option into a missing-data failure carrying the retained message,ported
+com.opengamma.strata.collect.result.ResultTest,of_with_success,com.opengamma.strata.collect.result.ResultSpec,a captured block that produces a value gives a success,ported
+com.opengamma.strata.collect.result.ResultTest,of_with_exception,com.opengamma.strata.collect.result.ResultSpec,a captured block that throws gives an error failure carrying its message,ported
+com.opengamma.strata.collect.result.ResultTest,wrap_with_success,com.opengamma.strata.collect.result.ResultSpec,a captured block producing an outcome flattens to that success,ported
+com.opengamma.strata.collect.result.ResultTest,wrap_with_failure,com.opengamma.strata.collect.result.ResultSpec,a captured block producing a failed outcome flattens to that failure,ported
+com.opengamma.strata.collect.result.ResultTest,wrap_with_exception,com.opengamma.strata.collect.result.ResultSpec,a captured block that throws where an outcome was expected flattens to an error failure,ported
+com.opengamma.strata.collect.result.ResultTest,anyFailures_varargs,com.opengamma.strata.collect.result.ResultSpec,anyFailures answers over outcomes listed at the call site,ported
+com.opengamma.strata.collect.result.ResultTest,anyFailures_collection,com.opengamma.strata.collect.result.ResultSpec,anyFailures answers over a collection of outcomes,ported
+com.opengamma.strata.collect.result.ResultTest,countFailures_varargs,com.opengamma.strata.collect.result.ResultSpec,countFailures counts the failures among outcomes listed at the call site,ported
+com.opengamma.strata.collect.result.ResultTest,countFailures_collection,com.opengamma.strata.collect.result.ResultSpec,countFailures counts the failures in a collection of outcomes,ported
+com.opengamma.strata.collect.result.ResultTest,allSuccess_varargs,com.opengamma.strata.collect.result.ResultSpec,allSuccessful holds only when every outcome listed at the call site succeeded,ported
+com.opengamma.strata.collect.result.ResultTest,allSuccess_collection,com.opengamma.strata.collect.result.ResultSpec,allSuccessful holds only when every outcome in a collection succeeded,ported
+com.opengamma.strata.collect.result.ResultTest,combine_iterableWithFailures,com.opengamma.strata.collect.result.ResultSpec,aggregating a mixed collection accumulates every failure and presents them as MULTIPLE,ported
+com.opengamma.strata.collect.result.ResultTest,combine_iterableWithSuccesses,com.opengamma.strata.collect.result.ResultSpec,combining a collection of successes applies the function to every value,ported
+com.opengamma.strata.collect.result.ResultTest,combine_iterableWithSuccesses_throws,com.opengamma.strata.collect.result.ResultSpec,"combine takes a total function, so a combiner that can fail is handed to flatCombine",ported
+com.opengamma.strata.collect.result.ResultTest,flatCombine_iterableWithFailures,com.opengamma.strata.collect.result.ResultSpec,flat-combining a mixed collection accumulates every failure and presents them as MULTIPLE,ported
+com.opengamma.strata.collect.result.ResultTest,flatCombine_iterableWithSuccesses_combineFails,com.opengamma.strata.collect.result.ResultSpec,a combiner that fails surfaces its own failure with its own reason,ported
+com.opengamma.strata.collect.result.ResultTest,flatCombine_iterableWithSuccesses_combineSucceeds,com.opengamma.strata.collect.result.ResultSpec,a combiner that succeeds produces its value,ported
+com.opengamma.strata.collect.result.ResultTest,flatCombine_iterableWithSuccesses_combineThrows,com.opengamma.strata.collect.result.ResultSpec,the failures of the inputs and the failure of the combiner never mix,ported
+com.opengamma.strata.collect.result.ResultTest,toCombinedResult_allSuccesses,com.opengamma.strata.collect.result.ResultSpec,sequence turns a collection of successes into a success holding the values in order,ported
+com.opengamma.strata.collect.result.ResultTest,toCombinedResult_withFailures,com.opengamma.strata.collect.result.ResultSpec,sequence over a mixed collection accumulates the failures and joins their messages,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromResults_varargs1,com.opengamma.strata.collect.result.ResultSpec,the failures of a mixed collection are extracted independently of their positions,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromResults_varargs2,com.opengamma.strata.collect.result.ResultSpec,a different interleaving of the same outcomes extracts the same failures,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromResults_varargs_allSuccess,com.opengamma.strata.collect.result.ResultSpec,extracting the failures of outcomes listed at the call site that all succeeded yields no chain,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromResults_collection,com.opengamma.strata.collect.result.ResultSpec,the failures of an explicit collection are extracted in the order they were given,ported
+com.opengamma.strata.collect.result.ResultTest,failure_fromResults_collection_allSuccess,com.opengamma.strata.collect.result.ResultSpec,extracting the failures of a collection that all succeeded yields no chain,ported
+com.opengamma.strata.collect.result.ResultTest,generateFailureFromException,com.opengamma.strata.collect.result.ResultSpec,a failure carries the message chosen where it is reported,ported
+com.opengamma.strata.collect.result.ResultTest,generateFailureFromExceptionWithMessage,com.opengamma.strata.collect.result.ResultSpec,the reporting site supplies its own message rather than inheriting one,ported
+com.opengamma.strata.collect.result.ResultTest,generateFailureFromExceptionWithCustomStatus,com.opengamma.strata.collect.result.ResultSpec,every one of the ten reasons is reachable through Failure.of,ported
+com.opengamma.strata.collect.result.ResultTest,generateFailureFromExceptionWithCustomStatusAndMessage,com.opengamma.strata.collect.result.ResultSpec,a reason and a message are chosen together at the reporting site,ported
+com.opengamma.strata.collect.result.ResultTest,failureDeduplicateFailure,com.opengamma.strata.collect.result.ResultSpec,collapsing the same failure reported twice describes it once,ported
+com.opengamma.strata.collect.result.ResultTest,failureSameType,com.opengamma.strata.collect.result.ResultSpec,collapsing failures that agree on a reason keeps that reason,ported
+com.opengamma.strata.collect.result.ResultTest,failureDifferentTypes,com.opengamma.strata.collect.result.ResultSpec,collapsing failures that disagree on a reason gives MULTIPLE,ported
+com.opengamma.strata.collect.result.ResultTest,createByBuilder_neitherValueNorFailure,com.opengamma.strata.collect.result.ResultSpec,an outcome with neither a value nor a failure cannot be built,ported
+com.opengamma.strata.collect.result.ResultTest,createByBuilder_bothValueAndFailure,com.opengamma.strata.collect.result.ResultSpec,an outcome holding both a value and a failure cannot be built,ported
+com.opengamma.strata.collect.result.ResultTest,generatedStackTrace,com.opengamma.strata.collect.result.ResultSpec,"a failure holds a reason, a message and attributes and nothing else",ported
+com.opengamma.strata.collect.result.ResultTest,generatedStackTrace_Failure,com.opengamma.strata.collect.result.ResultSpec,"a failure renders as its reason and message, with no trace",ported
+com.opengamma.strata.collect.result.ResultTest,equalsHashCode,com.opengamma.strata.collect.result.ResultSpec,equality and hashing of outcomes follow the value or the failure they hold,ported
+com.opengamma.strata.collect.result.ResultTest,assert_success,com.opengamma.strata.collect.result.ResultSpec,beSuccess and haveValue describe a success,ported
+com.opengamma.strata.collect.result.ResultTest,assert_success_getFailure,com.opengamma.strata.collect.result.ResultSpec,beFailure does not describe a success,ported
+com.opengamma.strata.collect.result.ResultTest,assert_success_map,com.opengamma.strata.collect.result.ResultSpec,the matchers describe the outcome of a mapping step,ported
+com.opengamma.strata.collect.result.ResultTest,assert_success_flatMap,com.opengamma.strata.collect.result.ResultSpec,the matchers describe the outcome of a chained step,ported
+com.opengamma.strata.collect.result.ResultTest,assert_success_combineWith_success,com.opengamma.strata.collect.result.ResultSpec,the matchers describe the outcome of a combining step,ported
+com.opengamma.strata.collect.result.ResultTest,assert_success_combineWith_failure,com.opengamma.strata.collect.result.ResultSpec,beFailureWith names the reason a combined outcome failed for,ported
+com.opengamma.strata.collect.result.ResultTest,assert_failure,com.opengamma.strata.collect.result.ResultSpec,beFailureWith and haveFailureMessageMatching describe a failure,ported
+com.opengamma.strata.collect.result.ResultTest,coverage,com.opengamma.strata.collect.result.ResultSpec,the aliases of the error channel describe the same outcome and convert between one another,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_array_noFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,of with a value alone is a plain success that reports no failures,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_array,com.opengamma.strata.collect.result.ValueWithFailuresSpec,of with failures is a partial success holding the value and the failures in order,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_list,com.opengamma.strata.collect.result.ValueWithFailuresSpec,of takes its failures from an ordered list and reports them in that order,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_set,com.opengamma.strata.collect.result.ValueWithFailuresSpec,of takes its failures from a set and reports every one of them,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_supplier_success,com.opengamma.strata.collect.result.ValueWithFailuresSpec,a computation that produces a value reports no failure and discards the fallback,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_of_supplier_failure,com.opengamma.strata.collect.result.ValueWithFailuresSpec,a computation that fails keeps the fallback value and reports one ERROR failure,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_map,com.opengamma.strata.collect.result.ValueWithFailuresSpec,map transforms the value and preserves the failures,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_mapFailureItems,com.opengamma.strata.collect.result.ValueWithFailuresSpec,leftMap rewrites the failures and preserves the value,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_mapFailureItems_noFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,leftMap on an outcome that reports nothing leaves it equal to the outcome it was given,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_flatMap,com.opengamma.strata.collect.result.ValueWithFailuresSpec,flatMap reports the failures already present before those the function adds,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combinedWith,com.opengamma.strata.collect.result.ValueWithFailuresSpec,two outcomes combine their values and accumulate their failures in order,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combinedWith_differentTypes,com.opengamma.strata.collect.result.ValueWithFailuresSpec,outcomes of different value types combine into one value carrying both failures,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combining,com.opengamma.strata.collect.result.ValueWithFailuresSpec,combiningValues is the binary operator that reduces many outcomes into one,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_withValue_value,com.opengamma.strata.collect.result.ValueWithFailuresSpec,withValue replaces the value and keeps the failures already reported,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_withValue_valueFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,withValue with further failures reports the existing ones before the supplied ones,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_withValue_ValueWithFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,withValue with another outcome takes its value and adds its failures last,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_withAdditionalFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,withAdditionalFailures appends the supplied failures after the existing ones,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toValueWithFailures,com.opengamma.strata.collect.result.ValueWithFailuresSpec,reducing outcomes with combiningValues multiplies the values and reports every failure,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedValuesAsList,com.opengamma.strata.collect.result.ValueWithFailuresSpec,combining outcomes as a list replaces the collector the original streamed into,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedValuesAsSet,com.opengamma.strata.collect.result.ValueWithFailuresSpec,combining outcomes as a set replaces the collector the original streamed into,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedResultsAsList,com.opengamma.strata.collect.result.ValueWithFailuresSpec,results bridge into outcomes so that only the values that succeeded survive,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedResultAsMap,com.opengamma.strata.collect.result.ValueWithFailuresSpec,a map of results keeps the entries that succeeded and reports the one that did not,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_toCombinedValuesAsMap,com.opengamma.strata.collect.result.ValueWithFailuresSpec,a map of outcomes keeps every entry and reports the failures of each,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combineAsList,com.opengamma.strata.collect.result.ValueWithFailuresSpec,combineValuesAsList holds the values as a list and reports every failure,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_combineAsSet,com.opengamma.strata.collect.result.ValueWithFailuresSpec,combineValuesAsSet holds the values as a set and reports every failure,ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,coverage,com.opengamma.strata.collect.result.ValueWithFailuresSpec,"equality, hashing and rendering distinguish the three shapes an outcome can take",ported
+com.opengamma.strata.collect.result.ValueWithFailuresTest,test_serialization,com.opengamma.strata.collect.result.ValueWithFailuresSpec,decomposing an outcome and rebuilding it from its parts yields an equal outcome,ported

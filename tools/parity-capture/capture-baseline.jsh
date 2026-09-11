@@ -32,31 +32,70 @@
  *  -------------------
  *  This script READS `modules/**` (through the classpath and the classpath
  *  resources inside the jars) and NEVER writes there. Writes are confined to
- *  the seven output paths listed in `OUTPUT_*` below, and `guardOutputPath`
- *  enforces that at run time rather than by convention.
+ *  the seven output paths listed in `OUTPUT_*` below, and that is enforced at
+ *  run time rather than by convention: `outputRoot` canonicalises
+ *  `parity.out.dir`, refuses a symbolic link at ANY component of it and
+ *  refuses a root that sits inside a checkout without being its root (so
+ *  `-Dparity.out.dir=modules` is rejected, not obeyed), and
+ *  `guardedOutputTarget` then requires each path to be one of the seven
+ *  declared literals, to stay under the canonical root, and to have no
+ *  symbolic link at any component.
  *
  *  HOW TO RUN
  *  ----------
- *  1. Build the Java modules once (writes only into git-ignored `target/`):
+ *  Two complete routes, both verified from the repository root on JDK 21, both
+ *  producing byte-identical output. Take route A from a clean checkout - it
+ *  needs nothing of Strata in the local Maven repository; take route B when
+ *  the two Strata jars are already installed there and you want no Maven run
+ *  at all.
+ *
+ *  ROUTE A - build from source, then capture. ONE Maven session does both the
+ *  build and the classpath, and that is the whole point of the route:
  *
  *       mvn -B -pl modules/collect,modules/basics -am -DskipTests \
- *           -Dcheckstyle.skip=true -Dmaven.javadoc.skip=true package
- *
- *     `package` is preferred over `install`; `install` writes the shared local
- *     repository under coordinates other builds read, and is redundant here.
- *
- *  2. Capture, from the repository root:
- *
- *       mvn -q -pl modules/basics dependency:build-classpath \
- *           -Dmdep.outputFile=/tmp/basics-cp.txt
+ *           -Dcheckstyle.skip=true -Dmaven.javadoc.skip=true \
+ *           package dependency:build-classpath \
+ *           -Dmdep.outputFile="$PWD/target/parity-capture-classpath.txt"
  *       jshell --class-path \
- *         "$(cat /tmp/basics-cp.txt):modules/basics/target/strata-basics-2.12.74-SNAPSHOT.jar" \
+ *         "$PWD/modules/basics/target/strata-basics-2.12.74-SNAPSHOT.jar:$(cat "$PWD/target/parity-capture-classpath.txt")" \
  *         -R-Xmx900m tools/parity-capture/capture-baseline.jsh
  *
- *     If the jars are already installed in the local Maven repository, the
- *     equivalent zero-rebuild classpath is the six entries
- *     strata-basics, strata-collect, guava, failureaccess, joda-beans and
- *     joda-convert. Either classpath produces byte-identical output.
+ *     WHY ONE SESSION. `package` installs nothing, so a SEPARATE
+ *     `dependency:build-classpath` run over `modules/basics` has to resolve
+ *     `strata-collect` from the local Maven repository: on a clean repository
+ *     that fails, and on a populated one it silently answers with the
+ *     INSTALLED jar, which may be older than the source you just built - the
+ *     capture would then measure the wrong bytes and say nothing. Running both
+ *     goals in one reactor session (with `-am`, which puts `modules/collect`
+ *     in it) makes the plugin resolve the sibling from the reactor, so the
+ *     written classpath names `modules/collect/target/strata-collect-2.12.74-SNAPSHOT.jar`
+ *     itself. Verified offline against a local repository pruned of every
+ *     `com.opengamma.strata` module artifact: BUILD SUCCESS, and the capture
+ *     reproduced all six committed fixtures byte-for-byte.
+ *
+ *     Only the BASICS jar is appended by hand, because a module is not on its
+ *     own dependency classpath; it goes FIRST so it cannot be shadowed. The
+ *     classpath file is written per module and `modules/basics` is last in the
+ *     reactor, so the file holds its classpath. Keep it inside git-ignored
+ *     `target/` rather than in `/tmp`: two runs sharing one `/tmp` file would
+ *     overwrite each other's classpath.
+ *
+ *  ROUTE B - zero rebuild, from jars already installed (for example by an
+ *  earlier `mvn install`), with no Maven invocation at all:
+ *
+ *       M2="$HOME/.m2/repository"
+ *       jshell --class-path \
+ *         "$M2/com/opengamma/strata/strata-basics/2.12.74-SNAPSHOT/strata-basics-2.12.74-SNAPSHOT.jar:$M2/com/opengamma/strata/strata-collect/2.12.74-SNAPSHOT/strata-collect-2.12.74-SNAPSHOT.jar:$M2/com/google/guava/guava/33.4.0-jre/guava-33.4.0-jre.jar:$M2/com/google/guava/failureaccess/1.0.2/failureaccess-1.0.2.jar:$M2/org/joda/joda-beans/2.11.1/joda-beans-2.11.1.jar:$M2/org/joda/joda-convert/2.2.3/joda-convert-2.2.3.jar" \
+ *         -R-Xmx900m tools/parity-capture/capture-baseline.jsh
+ *
+ *     Those six entries are the whole classpath the capture needs: the two
+ *     Strata jars plus the four third-party jars they require. Keep the
+ *     classpath quoted - it contains no spaces today, but an unquoted `$(...)`
+ *     expansion would break the moment one appeared.
+ *
+ *     Either route prints a per-fixture summary and exits 0 only when every
+ *     check passed AND all seven documents were written; see the FAIL-FAST
+ *     CONTRACT below.
  *
  *  3. Optional: choose where the fixtures are written (default: the current
  *     directory, which is expected to be the repository root):
@@ -91,10 +130,25 @@
  *  cross-checked against that constant using THAT TEST'S OWN tolerance (exact
  *  equality for the DayCount tables, 1e-6 for FxMatrix, 1e-14 for DoubleArray).
  *  Reference-data row counts are asserted against independently verified
- *  expected counts. All documents are built in memory and written only after
- *  every check has passed, so a failed run cannot leave a half-valid fixture on
- *  disk. Any failure prints an actionable diagnostic and the script exits with
- *  a non-zero status.
+ *  expected counts.
+ *
+ *  A REJECTION IS AN EXPECTATION TOO, and it is held to the same standard:
+ *  every failure a Java test states carries the exception TYPE that test names
+ *  and is compared by assignability (see the `Expect` banner), so a rejection
+ *  that changes type cannot be recaptured as the new truth. What a measured
+ *  call may throw at all is bounded separately by `requireCapturable`: a
+ *  closed list of domain rejections is recorded, and an `Error`, a checked
+ *  exception or a runtime type outside that list (NullPointerException,
+ *  ClassCastException, ...) aborts the capture instead of becoming a fixture
+ *  value. A row whose outcome NO Java test states is counted as capture-only
+ *  in the summary, so the size of that set is visible rather than implicit.
+ *
+ *  All documents are built in memory and written only after every check has
+ *  passed, so a failed run cannot leave a half-valid fixture on disk; the
+ *  publication itself is a staged transaction that either replaces every
+ *  document or leaves the previous generation in place (see `flushDocuments`).
+ *  Any failure prints an actionable diagnostic and the script exits with a
+ *  non-zero status.
  *
  *  REFLECTION IS PERMITTED HERE
  *  ----------------------------
@@ -164,6 +218,13 @@ for (String className : REQUIRED_CLASSES) {
   try {
     Class.forName(className);
   } catch (Throwable thrown) {
+    // The ONE place that deliberately catches every Throwable: this is the
+    // classpath preflight, and an absent class arrives either as a checked
+    // ClassNotFoundException or as a NoClassDefFoundError - an Error - when a
+    // class is present but its supertype is not. Both mean the same thing
+    // here, and PREFLIGHT_OK aborts the run before any capture happens.
+    // Everywhere else, an Error is infrastructure failure: see
+    // requireCapturable.
     MISSING_CLASSES.add(className);
   }
 }
@@ -231,6 +292,7 @@ import com.opengamma.strata.basics.schedule.PeriodicSchedule;
 import com.opengamma.strata.basics.schedule.RollConvention;
 import com.opengamma.strata.basics.schedule.RollConventions;
 import com.opengamma.strata.basics.schedule.Schedule;
+import com.opengamma.strata.basics.schedule.ScheduleException;
 import com.opengamma.strata.basics.schedule.SchedulePeriod;
 import com.opengamma.strata.basics.schedule.StubConvention;
 
@@ -249,24 +311,42 @@ import com.opengamma.strata.collect.named.ExtendedEnum;
 import com.opengamma.strata.collect.named.Named;
 
 // --- JDK -------------------------------------------------------------------
+import java.io.IOException;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.RoundingMode;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.SecureDirectoryStream;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.time.DateTimeException;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.Month;
+import java.time.MonthDay;
 import java.time.Period;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
@@ -962,8 +1042,133 @@ String OUTPUT_MANIFEST = "strata-basics/src/test/resources/manifest/reference-da
  */
 String[] FORBIDDEN_OUTPUT_PREFIXES = {"modules", "examples", "eclipse", "src", ".github", "project"};
 
-/** Rejects any output path that escapes the seven declared destinations. */
-void guardOutputPath(String relativePath) {
+/**
+ * The canonical output root, resolved once. `null` until the first call to
+ * `outputRoot()`.
+ */
+Path OUTPUT_ROOT_PATH = null;
+
+/**
+ * True when `directory` is the root of a Strata checkout.
+ *
+ * Both markers are required so that a directory that merely contains a
+ * `modules/` folder is not mistaken for one: the sbt build file is what this
+ * port adds at the checkout root, and `modules/` is the Maven reactor the
+ * baselines are captured from.
+ */
+boolean isCheckoutRoot(Path directory) {
+  return Files.isRegularFile(directory.resolve("build.sbt"), LinkOption.NOFOLLOW_LINKS)
+      && Files.isDirectory(directory.resolve("modules"), LinkOption.NOFOLLOW_LINKS);
+}
+
+/**
+ * Rejects an output root that sits INSIDE a checkout without being its root.
+ *
+ * The seven output paths are relative, so a root of `modules` would write to
+ * `modules/strata-basics/src/test/resources/...` - inside a tree this project
+ * must leave untouched, and creating directories there breaks the repository
+ * boundary check (`git status --porcelain -- modules examples eclipse pom.xml
+ * src .github` has to stay empty). Testing the first path component against a
+ * name list cannot catch `modules/basics` or `strata-basics`; walking upward
+ * from the canonical root catches every one of them, and still allows the two
+ * roots that make sense: the checkout root itself, and any directory outside a
+ * checkout (which is how a dry run into a scratch directory works).
+ */
+void requireOutputRootPlacement(Path root) {
+  for (Path cursor = root.getParent(); cursor != null; cursor = cursor.getParent()) {
+    if (isCheckoutRoot(cursor)) {
+      throw new IllegalStateException("parity.out.dir is inside the checkout rooted at " + cursor
+          + ", which this script must not write into: " + root
+          + " - use the checkout root itself, or a directory outside it");
+    }
+  }
+}
+
+/**
+ * Resolves `parity.out.dir` to a canonical, contained, link-free directory.
+ *
+ * Canonicalising alone is not containment (CWE-59). `toRealPath` would happily
+ * report `/run/lock` for a declared `/var/run/lock` and carry on, so the whole
+ * generation would land somewhere the caller never named - silently, because
+ * the resolved path is perfectly valid. So the components are checked BEFORE
+ * anything is created:
+ *
+ *  1. every component of the declared root, from the filesystem root down, is
+ *     rejected if it is a symbolic link - including the root's own last
+ *     component, and including ancestors, which is the case canonicalisation
+ *     hides. The walk stops at the first component that does not exist yet,
+ *     because what does not exist cannot be a link, and the components created
+ *     below are created one at a time and re-checked;
+ *  2. the missing components are created individually, never through
+ *     `createDirectories`, which would traverse a link that appeared during
+ *     the walk;
+ *  3. the result must equal its own canonical form, which after 1 it does -
+ *     the equality is asserted rather than assumed, so a filesystem that
+ *     aliases paths some other way (a case-insensitive mount, a bind mount)
+ *     is refused instead of quietly redirecting the output;
+ *  4. it must not sit inside a checkout without being its root.
+ */
+Path outputRoot() throws IOException {
+  if (OUTPUT_ROOT_PATH != null) {
+    return OUTPUT_ROOT_PATH;
+  }
+  Path declared = Paths.get(OUT_ROOT).toAbsolutePath().normalize();
+  Path cursor = declared.getRoot();
+  if (cursor == null) {
+    throw new IllegalStateException("parity.out.dir has no filesystem root: " + declared);
+  }
+  List<Path> missing = new ArrayList<>();
+  for (Path element : declared) {
+    cursor = cursor.resolve(element);
+    if (Files.isSymbolicLink(cursor)) {
+      throw new IllegalStateException("Refusing to write under a symbolic link: " + cursor
+          + " (component of parity.out.dir = " + declared + ")");
+    }
+    if (!Files.exists(cursor, LinkOption.NOFOLLOW_LINKS)) {
+      missing.add(cursor);
+    } else if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) {
+      throw new IllegalStateException("Component of parity.out.dir is not a directory: " + cursor);
+    }
+  }
+  for (Path directory : missing) {
+    if (Files.isSymbolicLink(directory)) {
+      throw new IllegalStateException("Refusing to write under a symbolic link: " + directory);
+    }
+    if (!Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
+      Files.createDirectory(directory);
+    }
+  }
+  Path canonical = declared.toRealPath();
+  if (!canonical.equals(declared)) {
+    throw new IllegalStateException("parity.out.dir is not canonical: " + declared
+        + " resolves to " + canonical + " - pass the resolved path instead");
+  }
+  requireOutputRootPlacement(canonical);
+  OUTPUT_ROOT_PATH = canonical;
+  return OUTPUT_ROOT_PATH;
+}
+
+/**
+ * Validates one declared output path and returns the absolute file it names.
+ *
+ * FOUR INDEPENDENT CHECKS, because a string test is not containment (CWE-59):
+ *
+ *  1. the relative string must be plain - no absolute prefix, no `..`, no
+ *     backslash - and its first component must not be a repository area this
+ *     script must never write into;
+ *  2. it must be one of the seven declared output literals, so a typo cannot
+ *     invent an eighth destination;
+ *  3. resolved against the CANONICAL root and normalised, it must still start
+ *     with that root, so no combination of root and relative path can escape;
+ *  4. no existing component of the path may be a symbolic link, and the target
+ *     itself must be absent or a regular file. Without 4, checks 1-3 all pass
+ *     while the write lands wherever the link points - the resolved path never
+ *     leaves the root, but the bytes do.
+ *
+ * Nothing here writes: directory creation happens in `createOutputParents`,
+ * which re-applies check 4 to every directory it creates.
+ */
+Path guardedOutputTarget(String relativePath) throws IOException {
   if (relativePath.startsWith("/") || relativePath.contains("..") || relativePath.contains("\\")) {
     throw new IllegalStateException("Refusing to write outside the repository: " + relativePath);
   }
@@ -983,6 +1188,52 @@ void guardOutputPath(String relativePath) {
   if (!declared) {
     throw new IllegalStateException("Not a declared output path: " + relativePath);
   }
+  Path root = outputRoot();
+  Path target = root.resolve(relativePath).normalize();
+  if (!target.startsWith(root)) {
+    throw new IllegalStateException("Refusing to write outside " + root + ": " + target);
+  }
+  Path cursor = root;
+  for (Path element : root.relativize(target)) {
+    cursor = cursor.resolve(element);
+    if (Files.isSymbolicLink(cursor)) {
+      throw new IllegalStateException("Refusing to write through a symbolic link: " + cursor);
+    }
+    boolean isTarget = cursor.equals(target);
+    if (!isTarget && Files.exists(cursor, LinkOption.NOFOLLOW_LINKS)
+        && !Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) {
+      throw new IllegalStateException("Output parent is not a directory: " + cursor);
+    }
+    if (isTarget && Files.exists(cursor, LinkOption.NOFOLLOW_LINKS)
+        && !Files.isRegularFile(cursor, LinkOption.NOFOLLOW_LINKS)) {
+      throw new IllegalStateException("Output target is not a regular file: " + cursor);
+    }
+  }
+  return target;
+}
+
+/**
+ * Creates the missing parent directories of a validated target, one component
+ * at a time, rejecting a symbolic link at every step.
+ *
+ * `Files.createDirectories` on its own would happily traverse a link that
+ * appeared between validation and the write, which is exactly the window
+ * check 4 above closes.
+ */
+void createOutputParents(Path root, Path target) throws IOException {
+  Path cursor = root;
+  Path relative = root.relativize(target);
+  for (int i = 0; i < relative.getNameCount() - 1; i++) {
+    cursor = cursor.resolve(relative.getName(i));
+    if (Files.isSymbolicLink(cursor)) {
+      throw new IllegalStateException("Refusing to write through a symbolic link: " + cursor);
+    }
+    if (!Files.exists(cursor, LinkOption.NOFOLLOW_LINKS)) {
+      Files.createDirectory(cursor);
+    } else if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) {
+      throw new IllegalStateException("Output parent is not a directory: " + cursor);
+    }
+  }
 }
 
 /**
@@ -992,25 +1243,431 @@ void guardOutputPath(String relativePath) {
  */
 Map<String, String> PENDING_DOCUMENTS = new LinkedHashMap<>();
 
-void stageDocument(String relativePath, Jn root) {
-  guardOutputPath(relativePath);
+void stageDocument(String relativePath, Jn root) throws IOException {
+  guardedOutputTarget(relativePath);
   PENDING_DOCUMENTS.put(relativePath, jsonDocument(root));
 }
 
 /** Stages a row-array document in the one-row-per-line form. */
-void stageRowsPerLineDocument(String relativePath, JArray rows) {
-  guardOutputPath(relativePath);
+void stageRowsPerLineDocument(String relativePath, JArray rows) throws IOException {
+  guardedOutputTarget(relativePath);
   PENDING_DOCUMENTS.put(relativePath, jsonRowsPerLineDocument(rows));
 }
 
+/**
+ * The suffix of every temporary this run creates. The pid keeps two capture
+ * runs in one output tree from colliding; no temporary name ever reaches a
+ * deliverable, so this does not weaken the determinism contract.
+ */
+String FLUSH_TEMP_SUFFIX = ".capture-tmp-" + ProcessHandle.current().pid();
+
+/** Finds a temporary or a backup left behind by ANY capture run, not just this one. */
+String FLUSH_ARTEFACT_GLOB = "*.capture-tmp-*";
+
+/**
+ * A VALIDATED OUTPUT DIRECTORY, OPERATED THROUGH A HANDLE RATHER THAN A NAME.
+ *
+ * Validating a path and then writing to that path are two different acts, and
+ * between them the directory can be replaced by a symbolic link: the checks
+ * pass, the bytes land elsewhere (CWE-59, the classic time-of-check to
+ * time-of-use window). A handle closes it. Every operation below - create,
+ * read back, move, delete - is performed RELATIVE to a directory that was
+ * opened once, after validation, so it reaches the directory that was
+ * validated rather than whatever its name points at now.
+ *
+ * That is what `SecureDirectoryStream` provides, and the JDK implements it on
+ * every platform this capture runs on (Linux, macOS, Solaris - anywhere
+ * `openat` exists). Where it is absent the operations fall back to path-based
+ * equivalents with NOFOLLOW_LINKS, which is what this script did before and
+ * which still refuses to follow a link at the final component; the weaker
+ * guarantee is printed as a NOTE rather than assumed, so it is visible in the
+ * log of the run that relied on it.
+ *
+ * Names passed here are single-element file names, never paths: a handle has
+ * no notion of `..`, which is the point.
+ */
+final class OutputDirectory implements AutoCloseable {
+  final Path path;
+  private final DirectoryStream<Path> stream;
+  private final SecureDirectoryStream<Path> secure;
+
+  OutputDirectory(Path path) throws IOException {
+    this.path = path;
+    this.stream = Files.newDirectoryStream(path);
+    this.secure = stream instanceof SecureDirectoryStream
+        ? (SecureDirectoryStream<Path>) stream
+        : null;
+  }
+
+  boolean isSecure() {
+    return secure != null;
+  }
+
+  private Set<OpenOption> options(OpenOption... requested) {
+    Set<OpenOption> options = new LinkedHashSet<>();
+    for (OpenOption option : requested) {
+      options.add(option);
+    }
+    // A no-follow open is the whole point: if the name is a link, fail rather
+    // than write through it.
+    options.add(LinkOption.NOFOLLOW_LINKS);
+    return options;
+  }
+
+  /** Creates `name` and writes `bytes`; fails if anything already exists there. */
+  void writeNew(Path name, byte[] bytes) throws IOException {
+    Set<OpenOption> options =
+        options(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+    if (secure != null) {
+      try (SeekableByteChannel channel = secure.newByteChannel(name, options)) {
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        while (buffer.hasRemaining()) {
+          channel.write(buffer);
+        }
+      }
+      return;
+    }
+    try (OutputStream out =
+        Files.newOutputStream(path.resolve(name), options.toArray(new OpenOption[0]))) {
+      out.write(bytes);
+      out.flush();
+    }
+  }
+
+  /**
+   * Reads `name` back, at most `limit + 1` bytes.
+   *
+   * The extra byte is deliberate: a file that is LONGER than the document it
+   * should hold has to fail verification too, and reading exactly `limit`
+   * bytes could not tell the two apart.
+   */
+  byte[] readBack(Path name, int limit) throws IOException {
+    ByteBuffer buffer = ByteBuffer.allocate(limit + 1);
+    if (secure != null) {
+      try (SeekableByteChannel channel =
+          secure.newByteChannel(name, options(StandardOpenOption.READ))) {
+        while (buffer.hasRemaining() && channel.read(buffer) > 0) {
+          // read until the buffer is full or the file ends
+        }
+      }
+    } else {
+      try (SeekableByteChannel channel = Files.newByteChannel(path.resolve(name),
+          options(StandardOpenOption.READ).toArray(new OpenOption[0]))) {
+        while (buffer.hasRemaining() && channel.read(buffer) > 0) {
+          // read until the buffer is full or the file ends
+        }
+      }
+    }
+    buffer.flip();
+    byte[] read = new byte[buffer.remaining()];
+    buffer.get(read);
+    return read;
+  }
+
+  /** True when `name` exists, without following a link at that name. */
+  boolean exists(Path name) throws IOException {
+    if (secure == null) {
+      return Files.exists(path.resolve(name), LinkOption.NOFOLLOW_LINKS);
+    }
+    try {
+      secure.getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
+          .readAttributes();
+      return true;
+    } catch (NoSuchFileException absent) {
+      return false;
+    }
+  }
+
+  /** True when `name` is a regular file - not a directory, not a link. */
+  boolean isRegularFile(Path name) throws IOException {
+    if (secure == null) {
+      return Files.isRegularFile(path.resolve(name), LinkOption.NOFOLLOW_LINKS);
+    }
+    try {
+      return secure
+          .getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
+          .readAttributes()
+          .isRegularFile();
+    } catch (NoSuchFileException absent) {
+      return false;
+    }
+  }
+
+  /** Renames within this directory, atomically. */
+  void move(Path from, Path to) throws IOException {
+    if (secure != null) {
+      secure.move(from, secure, to);
+      return;
+    }
+    Files.move(path.resolve(from), path.resolve(to), StandardCopyOption.ATOMIC_MOVE);
+  }
+
+  void deleteIfExists(Path name) throws IOException {
+    if (secure == null) {
+      Files.deleteIfExists(path.resolve(name));
+      return;
+    }
+    try {
+      secure.deleteFile(name);
+    } catch (NoSuchFileException absent) {
+      // nothing to delete
+    }
+  }
+
+  public void close() throws IOException {
+    stream.close();
+  }
+}
+
+/**
+ * One document's place in the publication transaction.
+ *
+ * The three flags are the journal. They are set as each step COMPLETES, so
+ * rollback knows exactly which steps happened - in particular `backedUp` is
+ * set the moment the previous generation has been moved aside, before the new
+ * file is moved in, because the window between those two moves is precisely
+ * where a failure would otherwise strand the previous generation under a
+ * `.old` name with no record that it was there.
+ */
+final class FlushEntry {
+  final String relativePath;
+  final OutputDirectory directory;
+  final Path fileName;
+  final Path temporaryName;
+  final Path backupName;
+  final byte[] bytes;
+  boolean staged;
+  boolean backedUp;
+  boolean published;
+
+  FlushEntry(String relativePath, OutputDirectory directory, Path fileName, byte[] bytes) {
+    this.relativePath = relativePath;
+    this.directory = directory;
+    this.fileName = fileName;
+    this.temporaryName = Paths.get(fileName.toString() + FLUSH_TEMP_SUFFIX + ".new");
+    this.backupName = Paths.get(fileName.toString() + FLUSH_TEMP_SUFFIX + ".old");
+    this.bytes = bytes;
+  }
+
+  Path target() {
+    return directory.path.resolve(fileName);
+  }
+}
+
+/**
+ * Refuses to publish into a directory that still holds an interrupted run's
+ * artefacts.
+ *
+ * A `.new` file is a document that was staged and never published; a `.old`
+ * file is a previous generation that was moved aside and never deleted. Either
+ * one means a capture was killed between two moves, so the tree may hold a
+ * MIXED generation - some files new, some old - and that is the one state this
+ * transaction cannot detect from the published files alone. Overwriting it
+ * would erase the evidence and the operator's only copy of the previous
+ * generation, so the run stops and says what is there instead.
+ */
+void requireNoStaleFlushArtefacts(Path directory) throws IOException {
+  List<String> stale = new ArrayList<>();
+  try (DirectoryStream<Path> entries =
+      Files.newDirectoryStream(directory, FLUSH_ARTEFACT_GLOB)) {
+    for (Path entry : entries) {
+      stale.add(entry.getFileName().toString());
+    }
+  }
+  if (!stale.isEmpty()) {
+    Collections.sort(stale);
+    throw new IllegalStateException("Refusing to publish into " + directory
+        + ": a previous capture left " + stale
+        + ". A `.new` file was staged but never published and can be deleted; a `.old` file IS the"
+        + " previous generation of the target named before the suffix and must be moved back onto"
+        + " it (or deleted, if the current file is the one you want). Resolve it, then re-run.");
+  }
+}
+
+/**
+ * Undoes a partial publication: every target already replaced goes back to the
+ * bytes it had, and every temporary is removed.
+ *
+ * FAIL-CLOSED. Each step is attempted, every failure is printed with both
+ * paths - that is the one case a human has to finish by hand - and the method
+ * then THROWS, because a rollback that only logs turns "all or nothing" into
+ * "nothing, probably", and the run would report success on a tree nobody
+ * checked.
+ */
+void rollbackFlush(List<FlushEntry> entries) {
+  List<String> failures = new ArrayList<>();
+  for (int i = entries.size() - 1; i >= 0; i--) {
+    FlushEntry entry = entries.get(i);
+    try {
+      if (entry.published) {
+        entry.directory.deleteIfExists(entry.fileName);
+        entry.published = false;
+      }
+      if (entry.backedUp) {
+        entry.directory.move(entry.backupName, entry.fileName);
+        entry.backedUp = false;
+      }
+      if (entry.staged) {
+        entry.directory.deleteIfExists(entry.temporaryName);
+        entry.staged = false;
+      }
+    } catch (Throwable failed) {
+      // Deliberately everything: this is the rollback, not a capture handler.
+      // Whatever went wrong - an IOException, a SecurityException, an Error
+      // from a full disk - the remaining targets still have to be attempted,
+      // and the combined failure is thrown at the end.
+      String message = entry.target() + " - " + errorMessage(failed);
+      failures.add(message);
+      System.out.println("ROLLBACK FAILED: could not restore " + message);
+      if (entry.backedUp) {
+        System.out.println("    the previous generation is still at "
+            + entry.directory.path.resolve(entry.backupName));
+      }
+    }
+  }
+  if (!failures.isEmpty()) {
+    throw new IllegalStateException("rollback incomplete, " + failures.size()
+        + " target(s) need manual attention: " + failures);
+  }
+}
+
+/**
+ * Publishes the staged documents as ONE GENERATION, or leaves every file as it
+ * was.
+ *
+ * `Files.writeString` straight onto each target cannot do that: it truncates
+ * before it writes, so an I/O error or an interrupt half way through the seven
+ * files leaves earlier files new, later files old, and the file being written
+ * truncated - a tree that looks like a baseline and is not one.
+ *
+ * The five phases below are the transaction:
+ *
+ *  1. validate all seven destinations before a single byte is written, create
+ *     their parents one link-checked component at a time, take a no-follow
+ *     handle on each directory, and refuse to proceed if an earlier run left
+ *     artefacts there;
+ *  2. write each document to `<target>.capture-tmp-<pid>.new` through that
+ *     handle with CREATE_NEW (so an existing file or link at that name is
+ *     never followed or reused), then verify it by reading the bytes back
+ *     through the same handle and comparing them;
+ *  3. publish: move any existing target aside to `.old` - RECORDING that
+ *     before the next move - then move the verified temporary into place. Both
+ *     moves are renames within one directory, so both are atomic, and a reader
+ *     sees either the whole old file or the whole new one, never a truncated
+ *     one;
+ *  4. only once every target is published, delete the `.old` backups;
+ *  5. any failure in 2, 3 or 4 rolls back to the previous generation and
+ *     rethrows, so the driver records a failure and the exit status is
+ *     non-zero.
+ *
+ * WHAT THIS DOES NOT CLAIM. Seven files in three directories cannot be
+ * replaced in one filesystem operation: a directory swap is the only primitive
+ * that would, and it is unavailable here because the manifest directory also
+ * holds `java-test-mapping.csv`, which this script does not produce, and
+ * because the three directories are separate trees. So a process KILLED
+ * between two of the publish moves - SIGKILL, a power loss - leaves a mixed
+ * generation on disk. What the transaction guarantees is that such a state is
+ * never silent: the interrupted run's `.old` and `.new` files stay where they
+ * are, phase 1 of the NEXT run refuses to publish over them and names them,
+ * and because the fixtures are tracked, `git status` shows the same thing.
+ */
 void flushDocuments() throws Exception {
-  for (Map.Entry<String, String> entry : PENDING_DOCUMENTS.entrySet()) {
-    String relativePath = entry.getKey();
-    guardOutputPath(relativePath);
-    Path target = Paths.get(OUT_ROOT).resolve(relativePath);
-    Files.createDirectories(target.getParent());
-    Files.writeString(target, entry.getValue(), StandardCharsets.UTF_8);
-    System.out.println("wrote " + target + "  (" + entry.getValue().length() + " chars)");
+  Path root = outputRoot();
+  List<FlushEntry> entries = new ArrayList<>();
+  Map<Path, OutputDirectory> handles = new LinkedHashMap<>();
+  try {
+    // Phase 1: validate, create parents, take handles, refuse stale artefacts.
+    for (Map.Entry<String, String> document : PENDING_DOCUMENTS.entrySet()) {
+      Path target = guardedOutputTarget(document.getKey());
+      createOutputParents(root, target);
+      Path directory = target.getParent();
+      OutputDirectory handle = handles.get(directory);
+      if (handle == null) {
+        requireNoStaleFlushArtefacts(directory);
+        handle = new OutputDirectory(directory);
+        handles.put(directory, handle);
+        if (!handle.isSecure()) {
+          System.out.println("NOTE: " + directory + " does not support SecureDirectoryStream;"
+              + " publishing by path with NOFOLLOW_LINKS instead");
+        }
+      }
+      if (handle.exists(target.getFileName()) && !handle.isRegularFile(target.getFileName())) {
+        throw new IllegalStateException("Output target is not a regular file: " + target);
+      }
+      entries.add(new FlushEntry(document.getKey(), handle, target.getFileName(),
+          document.getValue().getBytes(StandardCharsets.UTF_8)));
+    }
+    try {
+      // Phase 2: write and verify every temporary.
+      for (FlushEntry entry : entries) {
+        entry.directory.writeNew(entry.temporaryName, entry.bytes);
+        entry.staged = true;
+        byte[] readBack = entry.directory.readBack(entry.temporaryName, entry.bytes.length);
+        if (!Arrays.equals(readBack, entry.bytes)) {
+          throw new IOException("staged document does not match what was written: "
+              + entry.directory.path.resolve(entry.temporaryName) + " (" + readBack.length
+              + " bytes read back, " + entry.bytes.length + " written)");
+        }
+      }
+      // Phase 3: publish, keeping the previous generation aside until all are in place.
+      for (FlushEntry entry : entries) {
+        if (entry.directory.exists(entry.fileName)) {
+          entry.directory.deleteIfExists(entry.backupName);
+          entry.directory.move(entry.fileName, entry.backupName);
+          // Recorded HERE, between the two moves: if the next move fails, the
+          // previous generation is under `backupName` and rollback knows it.
+          entry.backedUp = true;
+        }
+        entry.directory.move(entry.temporaryName, entry.fileName);
+        entry.staged = false;
+        entry.published = true;
+        System.out.println("wrote " + entry.target() + "  (" + entry.bytes.length + " bytes)");
+      }
+      // Phase 4: the generation is published; the previous one can go.
+      List<String> undeleted = new ArrayList<>();
+      for (FlushEntry entry : entries) {
+        if (entry.backedUp) {
+          try {
+            entry.directory.deleteIfExists(entry.backupName);
+            entry.backedUp = false;
+          } catch (IOException failed) {
+            undeleted.add(entry.directory.path.resolve(entry.backupName) + " - "
+                + errorMessage(failed));
+          }
+        }
+      }
+      if (!undeleted.isEmpty()) {
+        // The new generation IS published, so this is not rolled back - but the
+        // tree holds leftovers that the next run will refuse to publish over,
+        // so the operator has to hear about it and the run fails.
+        throw new IllegalStateException("every document was published, but the previous"
+            + " generation could not be removed: " + undeleted);
+      }
+    } catch (Throwable thrown) {
+      // Phase 5. Deliberately everything: a publication that fails half way
+      // through must be undone whatever failed it, and the original failure is
+      // rethrown afterwards so the driver reports it and the exit status is
+      // non-zero.
+      try {
+        rollbackFlush(entries);
+      } catch (Throwable rollbackFailed) {
+        // A rollback that could not finish is louder than the failure that
+        // caused it: it is printed here AND attached to the original, because
+        // it is the case that needs a human.
+        System.out.println("ROLLBACK INCOMPLETE: " + errorMessage(rollbackFailed));
+        thrown.addSuppressed(rollbackFailed);
+      }
+      throw thrown;
+    }
+  } finally {
+    for (OutputDirectory handle : handles.values()) {
+      try {
+        handle.close();
+      } catch (IOException failed) {
+        System.out.println("NOTE: could not close the handle on " + handle.path + " - "
+            + errorMessage(failed));
+      }
+    }
   }
 }
 
@@ -1040,6 +1697,23 @@ List<LocalDate> list(LocalDate... dates) {
     result.add(date);
   }
   return result;
+}
+
+/*
+ * The two private helpers GlobalHolidayCalendarsTest builds its expected
+ * holiday tables from (GlobalHolidayCalendarsTest.java:1200-1210), copied so
+ * that those tables compile here unchanged.
+ */
+MonthDay md(int month, int day) {
+  return MonthDay.of(month, day);
+}
+
+List<LocalDate> mds(int year, MonthDay... monthDays) {
+  List<LocalDate> holidays = new ArrayList<>();
+  for (MonthDay md : monthDays) {
+    holidays.add(md.atYear(year));
+  }
+  return holidays;
 }
 
 /*
@@ -1151,10 +1825,21 @@ class Info implements DayCount.ScheduleInfo {
  * fields plus the fixed `periodEnd`. The alternative `periodEnds` shape, used
  * for rows evaluated against a real Schedule, is produced by
  * scheduleInfoOfSchedule below. A row always carries exactly one of the two.
+ *
+ * A null `Info` means the row used the two-argument overload, so the schedule
+ * information is Java's own default. That is rendered as the same object with
+ * every field null - NOT as JSON null - so `scheduleInfo` has one type across
+ * the document and `scheduleInfo.periodEnd == null` says "the default" in the
+ * same way for every row.
  */
 Jn jScheduleInfo(Info info) {
   if (info == null) {
-    return jNull();
+    return new JObject()
+        .set("start", jNull())
+        .set("end", jNull())
+        .set("frequency", jNull())
+        .set("eom", jNull())
+        .set("periodEnd", jNull());
   }
   return new JObject()
       .set("start", jDate(info.rawStart()))
@@ -1193,6 +1878,202 @@ Jn scheduleInfoOfSchedule(Schedule schedule) {
 String errorMessage(Throwable thrown) {
   String message = thrown.getMessage();
   return thrown.getClass().getSimpleName() + ": " + (message == null ? "" : message);
+}
+
+/**
+ * THE LINE BETWEEN AN EXPECTATION AND A BROKEN CAPTURE.
+ *
+ * A capture helper that catches everything cannot tell the two apart. The Java
+ * APIs measured here reject an input they cannot serve with one of a small,
+ * closed set of runtime exceptions - IllegalArgumentException (and its Strata
+ * subtypes ScheduleException, ParseFailureException, IllegalArgFailureException),
+ * IllegalStateException, UnsupportedOperationException,
+ * IndexOutOfBoundsException, ArithmeticException, DateTimeException - or with a
+ * runtime exception Strata declares itself, such as
+ * ReferenceDataNotFoundException. Each of those IS the expectation the fixture
+ * records: the Scala port has to reproduce it as a Left or a documented
+ * ArgCheck throw.
+ *
+ * Everything else means the measurement itself failed, and there are two
+ * families of it. A LinkageError or NoClassDefFoundError says the classpath is
+ * wrong; an ExceptionInInitializerError says a Strata class could not
+ * initialise; an OutOfMemoryError or StackOverflowError says the run is broken.
+ * A NullPointerException, ClassCastException, ArrayStoreException or
+ * ConcurrentModificationException says either that the measured code has a
+ * defect or that this script called it wrongly - a domain API answers "I
+ * cannot serve this input" with a rejection, never by dereferencing null.
+ * Serialising any of those as the expected behaviour of a day count would bake
+ * a broken environment, or a bug, into the baseline and still exit 0.
+ *
+ * So this method is called first in every capture handler: a domain rejection
+ * returns and is recorded, and everything else is rethrown - an Error
+ * unchanged, anything else wrapped in an IllegalStateException that names the
+ * type - so it reaches the driver, which records a `driver` failure and exits
+ * non-zero. A checked exception lands in the second group too: no measured API
+ * declares one, so its appearance is itself a defect.
+ *
+ * The allow-list is closed on purpose, and it is wide enough for the behaviour
+ * that exists: the seven documents this script writes contain exactly six
+ * distinct throwable types - UnsupportedOperationException (1028 occurrences),
+ * ScheduleException (565), IllegalArgumentException (103),
+ * IllegalStateException (2), IndexOutOfBoundsException (1) and
+ * ArrayIndexOutOfBoundsException (1) - every one of them on the list. Widening
+ * it is therefore never needed to capture today's behaviour, and a type that
+ * is not on it is news.
+ */
+List<Class<? extends Throwable>> CAPTURABLE_JDK_FAILURES = List.of(
+    IllegalArgumentException.class,
+    IllegalStateException.class,
+    UnsupportedOperationException.class,
+    IndexOutOfBoundsException.class,
+    ArithmeticException.class,
+    DateTimeException.class);
+
+/**
+ * True when `thrown` is a rejection a measured API is allowed to answer with.
+ *
+ * Strata's own runtime exceptions are domain rejections by construction - they
+ * exist to say "this input cannot be served" - so they are accepted by package
+ * rather than enumerated one at a time, which keeps this predicate from going
+ * stale against a Strata version that introduces one. ScheduleException,
+ * ParseFailureException and IllegalArgFailureException are already covered as
+ * IllegalArgumentException subtypes; ReferenceDataNotFoundException, which
+ * extends RuntimeException directly, is covered by the package rule and is
+ * thrown by the manifest's calendar-resolvability probe.
+ */
+boolean isCapturableFailure(Throwable thrown) {
+  if (!(thrown instanceof RuntimeException)) {
+    return false;
+  }
+  for (Class<? extends Throwable> allowed : CAPTURABLE_JDK_FAILURES) {
+    if (allowed.isInstance(thrown)) {
+      return true;
+    }
+  }
+  return thrown.getClass().getName().startsWith("com.opengamma.strata.");
+}
+
+void requireCapturable(Throwable thrown) {
+  if (thrown instanceof Error) {
+    throw (Error) thrown;
+  }
+  if (isCapturableFailure(thrown)) {
+    return;
+  }
+  throw new IllegalStateException(
+      "capture aborted: a measured call threw " + thrown.getClass().getName()
+          + ", which is not a rejection a measured API may answer with: " + errorMessage(thrown),
+      thrown);
+}
+
+/**
+ * The weaker form, for the handful of places that probe with reflection.
+ *
+ * A reflective lookup legitimately throws CHECKED exceptions - the class or
+ * the method may be absent - and those are recorded as check failures with a
+ * useful message. An `Error` still is not: it says the JVM or the classpath is
+ * broken, so it goes to the driver rather than being reported as "the date
+ * rules are unreachable".
+ */
+void rethrowIfError(Throwable thrown) {
+  // A reflective invocation wraps whatever the target threw, so the wrapper is
+  // unwrapped before the test - otherwise an Error raised inside the invoked
+  // method would arrive as a checked InvocationTargetException and be reported
+  // as a check failure.
+  Throwable cause = thrown instanceof InvocationTargetException ? thrown.getCause() : thrown;
+  if (cause instanceof Error) {
+    throw (Error) cause;
+  }
+}
+
+/**
+ * WHAT A JAVA TEST SAYS ABOUT ONE MEASURED CALL.
+ *
+ * `requireCapturable` bounds what a measured call may throw. This bounds what
+ * it may throw HERE, on this row, which is the difference between a fixture
+ * that records behaviour and a fixture that asserts it. Three states:
+ *
+ *   MUST_SUCCEED - the call has to produce a value. A rejection aborts the
+ *       capture, however well-formed that rejection is.
+ *   failsWith(T) - the call has to be rejected, with a throwable assignable to
+ *       T, which is the type the Java test names. A rejection of another type
+ *       aborts the capture, and so does a value.
+ *   CAPTURE_ONLY - no Java test states this outcome: a generated combination,
+ *       a seeded random input. Whatever happens is recorded and the row is
+ *       counted as capture-only in the summary, so the count of unasserted
+ *       rows is visible rather than implicit.
+ *
+ * Without the type, an expected failure only asserts that SOMETHING was
+ * thrown: a change from IllegalArgumentException to IllegalStateException, or
+ * to a NullPointerException from a new bug, would be recaptured as the new
+ * truth and the capture would still exit 0. That is the hole this closes.
+ *
+ * The type is compared by ASSIGNABILITY, not by name, because that is what the
+ * Java assertions mean - `assertThatIllegalArgumentException()` and
+ * `assertThatExceptionOfType(ScheduleException.class)` are both satisfied by a
+ * subtype. Comparing names would make this script stricter than the tests it
+ * transcribes and fail on correct behaviour, which is exactly what
+ * IndexOutOfBoundsException against the implementation's
+ * ArrayIndexOutOfBoundsException does in DoubleArrayTest.
+ */
+final class Expect {
+  /** The type the Java test names, or null when no failure is expected. */
+  final Class<? extends Throwable> failureType;
+  /** False only for capture-only rows, where no Java test states the outcome. */
+  final boolean stated;
+
+  private Expect(Class<? extends Throwable> failureType, boolean stated) {
+    this.failureType = failureType;
+    this.stated = stated;
+  }
+
+  static Expect success() {
+    return new Expect(null, true);
+  }
+
+  static Expect captureOnly() {
+    return new Expect(null, false);
+  }
+
+  static Expect failsWith(Class<? extends Throwable> failureType) {
+    return new Expect(failureType, true);
+  }
+
+  boolean mustSucceed() {
+    return stated && failureType == null;
+  }
+
+  boolean mustFail() {
+    return failureType != null;
+  }
+}
+
+/** The call must produce a value; any rejection aborts the capture. */
+Expect MUST_SUCCEED = Expect.success();
+
+/** No Java test states this outcome; it is recorded and counted, not asserted. */
+Expect CAPTURE_ONLY = Expect.captureOnly();
+
+/**
+ * The call must be rejected with an IllegalArgumentException.
+ *
+ * This is the shape of `assertThatIllegalArgumentException()`, which is how
+ * every ArgChecker-guarded rejection in the measured API is asserted - and it
+ * accepts the Strata subtypes (ScheduleException, ParseFailureException)
+ * because a subtype satisfies that assertion.
+ */
+Expect MUST_REJECT_ARGUMENT = Expect.failsWith(IllegalArgumentException.class);
+
+/**
+ * Asserts that an observed rejection is the rejection the Java test names.
+ *
+ * One check is counted per call, so the summary's check total covers expected
+ * failures exactly as it covers expected values.
+ */
+void checkExpectedFailureType(String fixture, String id, Class<? extends Throwable> expected,
+    Throwable thrown) {
+  CHECK.checkTrue(fixture, id, expected.isInstance(thrown),
+      "expected " + expected.getSimpleName() + " but Java threw " + errorMessage(thrown));
 }
 
 /* =========================================================================
@@ -2191,7 +3072,7 @@ Object[][] data_generation() {
             list(date(2014, 9, 17), date(2014, 10, 1)), IMM},
 
         //IMM with adjusted start dates and various conventions
-        //MF, no stub 
+        //MF, no stub
         {date(2018, 3, 22), date(2020, 3, 18), P6M, STUB_NONE, IMM, BDA_JPY_MF, null, null, BDA_NONE,
             list(date(2018, 3, 21), date(2018, 9, 19), date(2019, 3, 20), date(2019, 9, 18), date(2020, 3, 18)),
             list(date(2018, 3, 22), date(2018, 9, 19), date(2019, 3, 20), date(2019, 9, 18), date(2020, 3, 18)), IMM},
@@ -2277,6 +3158,599 @@ Object[][] data_replace() {
   };
 }
 
+
+/* --- GlobalHolidayCalendarsTest expected-holiday tables (verbatim) ---------
+ *
+ * The 25 `data_*()` providers of
+ * modules/basics/src/test/java/com/opengamma/strata/basics/date/GlobalHolidayCalendarsTest.java:245-1188,
+ * copied byte for byte apart from `ImmutableList.of(` -> `list(`, which is the
+ * local equivalent declared in Section 4.
+ *
+ * WHY THEY ARE HERE. Without them the holiday fixture's only cross-checks are
+ * the implementation talking to itself: `holidays(from, to)` agreeing with a
+ * loop over `isHoliday`, and a sorted list being sorted. Both hold however
+ * wrong the calendar is. These tables are the independent statement - 201
+ * year-rows of hand-sourced dates, each with a citation in the Java test - and
+ * `checkHolidayAgainstJavaTable` applies THAT TEST'S OWN RULE to them:
+ *
+ *     isHoliday = (holidays.contains(date) || Saturday || Sunday)
+ *                 && !workingDays.contains(date)
+ *
+ * The Saturday/Sunday part is the test's, not the calendar's: Budapest
+ * declares Sunday as its only weekend day and carries its Saturdays as
+ * explicit holidays, and its Java test still asserts against Sat+Sun minus its
+ * six working Saturdays, so the port is held to exactly that.
+ * ---------------------------------------------------------------------------
+ */
+
+  public static Object[][] data_gblo() {
+    return new Object[][] {
+        // Whitsun, Last Mon Aug - http://hansard.millbanksystems.com/commons/1964/mar/04/staggered-holidays
+        {1965, mds(1965, md(4, 16), md(4, 19), md(6, 7), md(8, 30), md(12, 27), md(12, 28))},
+        // Whitsun May - http://hansard.millbanksystems.com/commons/1964/mar/04/staggered-holidays
+        // 29th Aug - http://hansard.millbanksystems.com/written_answers/1965/nov/25/august-bank-holiday
+        {1966, mds(1966, md(4, 8), md(4, 11), md(5, 30), md(8, 29), md(12, 26), md(12, 27))},
+        // 29th May, 28th Aug - http://hansard.millbanksystems.com/written_answers/1965/jun/03/bank-holidays-1967-and-1968
+        {1967, mds(1967, md(3, 24), md(3, 27), md(5, 29), md(8, 28), md(12, 25), md(12, 26))},
+        // 3rd Jun, 2nd Sep - http://hansard.millbanksystems.com/written_answers/1965/jun/03/bank-holidays-1967-and-1968
+        {1968, mds(1968, md(4, 12), md(4, 15), md(6, 3), md(9, 2), md(12, 25), md(12, 26))},
+        // 26th May, 1st Sep - http://hansard.millbanksystems.com/written_answers/1967/mar/21/bank-holidays-1969-dates
+        {1969, mds(1969, md(4, 4), md(4, 7), md(5, 26), md(9, 1), md(12, 25), md(12, 26))},
+        // 25th May, 31st Aug - http://hansard.millbanksystems.com/written_answers/1967/jul/28/bank-holidays
+        {1970, mds(1970, md(3, 27), md(3, 30), md(5, 25), md(8, 31), md(12, 25), md(12, 28))},
+        // applying rules
+        {1971, mds(1971, md(4, 9), md(4, 12), md(5, 31), md(8, 30), md(12, 27), md(12, 28))},
+        {2009, mds(2009, md(1, 1), md(4, 10), md(4, 13), md(5, 4), md(5, 25), md(8, 31), md(12, 25), md(12, 28))},
+        {2010, mds(2010, md(1, 1), md(4, 2), md(4, 5), md(5, 3), md(5, 31), md(8, 30), md(12, 27), md(12, 28))},
+        // https://www.gov.uk/bank-holidays
+        {2012, mds(2012, md(1, 2), md(4, 6), md(4, 9), md(5, 7), md(6, 4), md(6, 5), md(8, 27), md(12, 25), md(12, 26))},
+        {2013, mds(2013, md(1, 1), md(3, 29), md(4, 1), md(5, 6), md(5, 27), md(8, 26), md(12, 25), md(12, 26))},
+        {2014, mds(2014, md(1, 1), md(4, 18), md(4, 21), md(5, 5), md(5, 26), md(8, 25), md(12, 25), md(12, 26))},
+        {2015, mds(2015, md(1, 1), md(4, 3), md(4, 6), md(5, 4), md(5, 25), md(8, 31), md(12, 25), md(12, 28))},
+        {2016, mds(2016, md(1, 1), md(3, 25), md(3, 28), md(5, 2), md(5, 30), md(8, 29), md(12, 26), md(12, 27))},
+        {2020, mds(2020, md(1, 1), md(4, 10), md(4, 13), md(5, 8), md(5, 25), md(8, 31), md(12, 25), md(12, 28))},
+        {2022, mds(2022, md(1, 3), md(4, 15), md(4, 18), md(5, 2), md(6, 2), md(6, 3), md(8, 29), md(9, 19), md(12, 26), md(12, 27))},
+        {2023, mds(2023, md(1, 2), md(4, 7), md(4, 10), md(5, 1), md(5, 8), md(5, 29), md(8, 28), md(12, 25), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_frpa() {
+    return new Object[][] {
+        // dates not shifted if fall on a weekend
+        {2003, mds(2003, md(1, 1), md(4, 18), md(4, 21), md(5, 1), md(5, 8), md(5, 29),
+            md(6, 9), md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+        {2004, mds(2004, md(1, 1), md(4, 9), md(4, 12), md(5, 1), md(5, 8), md(5, 20), md(5, 31),
+            md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+        {2005, mds(2005, md(1, 1), md(3, 25), md(3, 28), md(5, 1), md(5, 5), md(5, 8),
+            md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+        {2006, mds(2006, md(1, 1), md(4, 14), md(4, 17), md(5, 1), md(5, 8), md(5, 25),
+            md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+        {2007, mds(2007, md(1, 1), md(4, 6), md(4, 9), md(5, 1), md(5, 8), md(5, 17),
+            md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+        {2008, mds(2008, md(1, 1), md(3, 21), md(3, 24), md(5, 1), md(5, 8), md(5, 12), md(5, 24),
+            md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+
+        {2012, mds(2012, md(1, 1), md(4, 6), md(4, 9), md(5, 1), md(5, 8), md(5, 17),
+            md(5, 28), md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+        {2013, mds(2013, md(1, 1), md(3, 29), md(4, 1), md(5, 1), md(5, 8), md(5, 9), md(5, 20),
+            md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+        {2014, mds(2014, md(1, 1), md(4, 18), md(4, 21), md(5, 1), md(5, 8), md(5, 29),
+            md(6, 9), md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+        {2015, mds(2015, md(1, 1), md(4, 3), md(4, 6), md(5, 1), md(5, 8), md(5, 14), md(5, 25),
+            md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+        {2016, mds(2016, md(1, 1), md(3, 25), md(3, 28), md(5, 1), md(5, 5), md(5, 8), md(5, 16),
+            md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_defr() {
+    return new Object[][] {
+        // dates not shifted if fall on a weekend
+        {2014, mds(2014, md(1, 1), md(4, 18), md(4, 21), md(5, 1), md(5, 29), md(6, 9), md(6, 19),
+            md(10, 3), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+        {2015, mds(2015, md(1, 1), md(4, 3), md(4, 6), md(5, 1), md(5, 14), md(5, 25), md(6, 4),
+            md(10, 3), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+        {2016, mds(2016, md(1, 1), md(3, 25), md(3, 28), md(5, 1), md(5, 5), md(5, 16), md(5, 26),
+            md(10, 3), md(12, 25), md(12, 26), md(12, 31))},
+        {2017, mds(2017, md(1, 1), md(4, 14), md(4, 17), md(5, 1), md(5, 25), md(6, 5), md(6, 15),
+            md(10, 3), md(10, 31), md(12, 25), md(12, 26), md(12, 31))},
+    };
+  }
+
+  public static Object[][] data_chzu() {
+    return new Object[][] {
+        // dates not shifted if fall on a weekend
+        {2012, mds(2012, md(1, 1), md(1, 2), md(4, 6), md(4, 9), md(5, 1), md(5, 17), md(5, 28),
+            md(8, 1), md(12, 25), md(12, 26))},
+        {2013, mds(2013, md(1, 1), md(1, 2), md(3, 29), md(4, 1), md(5, 1), md(5, 9), md(5, 20),
+            md(8, 1), md(12, 25), md(12, 26))},
+        {2014, mds(2014, md(1, 1), md(1, 2), md(4, 18), md(4, 21), md(5, 1), md(5, 29), md(6, 9),
+            md(8, 1), md(12, 25), md(12, 26))},
+        {2015, mds(2015, md(1, 1), md(1, 2), md(4, 3), md(4, 6), md(5, 1), md(5, 14), md(5, 25),
+            md(8, 1), md(12, 25), md(12, 26))},
+        {2016, mds(2016, md(1, 1), md(1, 2), md(3, 25), md(3, 28), md(5, 1), md(5, 5), md(5, 16),
+            md(8, 1), md(12, 25), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_euta() {
+    return new Object[][] {
+        // 1997 - 1998 (testing phase), Jan 1, christmas day
+        {1997, mds(1997, md(1, 1), md(12, 25))},
+        {1998, mds(1998, md(1, 1), md(12, 25))},
+        // in 1999, Jan 1, christmas day, Dec 26, Dec 31
+        {1999, mds(1999, md(1, 1), md(12, 25), md(12, 31))},
+        // in 2000, Jan 1, good friday, easter monday, May 1, christmas day, Dec 26
+        {2000, mds(2000, md(1, 1), md(4, 21), md(4, 24), md(5, 1), md(12, 25), md(12, 26))},
+        // in 2001, Jan 1, good friday, easter monday, May 1, christmas day, Dec 26, Dec 31
+        {2001, mds(2001, md(1, 1), md(4, 13), md(4, 16), md(5, 1), md(12, 25), md(12, 26), md(12, 31))},
+        // from 2002, Jan 1, good friday, easter monday, May 1, christmas day, Dec 26
+        {2002, mds(2002, md(1, 1), md(3, 29), md(4, 1), md(5, 1), md(12, 25), md(12, 26))},
+        {2003, mds(2003, md(1, 1), md(4, 18), md(4, 21), md(5, 1), md(12, 25), md(12, 26))},
+        // http://www.ecb.europa.eu/home/html/holidays.en.html
+        {2014, mds(2014, md(1, 1), md(4, 18), md(4, 21), md(5, 1), md(12, 25), md(12, 26))},
+        {2015, mds(2015, md(1, 1), md(4, 3), md(4, 6), md(5, 1), md(12, 25), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_usgs() {
+    return new Object[][] {
+        // http://www.sifma.org/uploadedfiles/research/statistics/statisticsfiles/misc-us-historical-holiday-market-recommendations-sifma.pdf?n=53384
+        {1996, mds(1996, md(1, 1), md(1, 15), md(2, 19), md(4, 5), md(5, 27), md(7, 4),
+            md(9, 2), md(10, 14), md(11, 11), md(11, 28), md(12, 25))},
+        {1997, mds(1997, md(1, 1), md(1, 20), md(2, 17), md(3, 28), md(5, 26), md(7, 4),
+            md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
+        {1998, mds(1998, md(1, 1), md(1, 19), md(2, 16), md(4, 10), md(5, 25), md(7, 3),
+            md(9, 7), md(10, 12), md(11, 11), md(11, 26), md(12, 25))},
+        {1999, mds(1999, md(1, 1), md(1, 18), md(2, 15), md(4, 2), md(5, 31), md(7, 5),
+            md(9, 6), md(10, 11), md(11, 11), md(11, 25), md(12, 24))},
+        {2000, mds(2000, md(1, 17), md(2, 21), md(4, 21), md(5, 29), md(7, 4),
+            md(9, 4), md(10, 9), md(11, 23), md(12, 25))},
+        {2001, mds(2001, md(1, 1), md(1, 15), md(2, 19), md(4, 13), md(5, 28), md(7, 4),
+            md(9, 3), md(10, 8), md(11, 12), md(11, 22), md(12, 25))},
+        {2002, mds(2002, md(1, 1), md(1, 21), md(2, 18), md(3, 29), md(5, 27), md(7, 4),
+            md(9, 2), md(10, 14), md(11, 11), md(11, 28), md(12, 25))},
+        {2003, mds(2003, md(1, 1), md(1, 20), md(2, 17), md(4, 18), md(5, 26), md(7, 4),
+            md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
+        {2004, mds(2004, md(1, 1), md(1, 19), md(2, 16), md(4, 9), md(5, 31), md(7, 5),
+            md(9, 6), md(10, 11), md(11, 11), md(11, 25), md(12, 24))},
+        {2005, mds(2005, md(1, 17), md(2, 21), md(3, 25), md(5, 30), md(7, 4),
+            md(9, 5), md(10, 10), md(11, 11), md(11, 24), md(12, 26))},
+        {2006, mds(2006, md(1, 2), md(1, 16), md(2, 20), md(4, 14), md(5, 29), md(7, 4),
+            md(9, 4), md(10, 9), md(11, 23), md(12, 25))},
+        {2007, mds(2007, md(1, 1), md(1, 15), md(2, 19), md(4, 6), md(5, 28), md(7, 4),
+            md(9, 3), md(10, 8), md(11, 12), md(11, 22), md(12, 25))},
+        {2008, mds(2008, md(1, 1), md(1, 21), md(2, 18), md(3, 21), md(5, 26), md(7, 4),
+            md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
+        {2009, mds(2009, md(1, 1), md(1, 19), md(2, 16), md(4, 10), md(5, 25), md(7, 3),
+            md(9, 7), md(10, 12), md(11, 11), md(11, 26), md(12, 25))},
+        {2010, mds(2010, md(1, 1), md(1, 18), md(2, 15), md(4, 2), md(5, 31), md(7, 5),
+            md(9, 6), md(10, 11), md(11, 11), md(11, 25), md(12, 24))},
+        {2011, mds(2011, md(1, 17), md(2, 21), md(4, 22), md(5, 30), md(7, 4),
+            md(9, 5), md(10, 10), md(11, 11), md(11, 24), md(12, 26))},
+        {2012, mds(2012, md(1, 2), md(1, 16), md(2, 20), md(4, 6), md(5, 28), md(7, 4),
+            md(9, 3), md(10, 8), md(10, 30), md(11, 12), md(11, 22), md(12, 25))},
+        {2013, mds(2013, md(1, 1), md(1, 21), md(2, 18), md(3, 29), md(5, 27), md(7, 4),
+            md(9, 2), md(10, 14), md(11, 11), md(11, 28), md(12, 25))},
+        {2014, mds(2014, md(1, 1), md(1, 20), md(2, 17), md(4, 18), md(5, 26), md(7, 4),
+            md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
+        {2015, mds(2015, md(1, 1), md(1, 19), md(2, 16), md(4, 3), md(5, 25), md(7, 3),
+            md(9, 7), md(10, 12), md(11, 11), md(11, 26), md(12, 25))},
+    };
+  }
+
+  public static Object[][] data_usny() {
+    return new Object[][] {
+        // http://www.cs.ny.gov/attendance_leave/2012_legal_holidays.cfm
+        // change year for other pages
+        {2008, mds(2008, md(1, 1), md(1, 21), md(2, 18), md(5, 26), md(7, 4),
+            md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
+        {2009, mds(2009, md(1, 1), md(1, 19), md(2, 16), md(5, 25), md(7, 4),
+            md(9, 7), md(10, 12), md(11, 11), md(11, 26), md(12, 25))},
+        {2010, mds(2010, md(1, 1), md(1, 18), md(2, 15), md(5, 31), md(7, 5),
+            md(9, 6), md(10, 11), md(11, 11), md(11, 25), md(12, 25))},
+        {2011, mds(2011, md(1, 1), md(1, 17), md(2, 21), md(5, 30), md(7, 4),
+            md(9, 5), md(10, 10), md(11, 11), md(11, 24), md(12, 26))},
+        {2012, mds(2012, md(1, 2), md(1, 16), md(2, 20), md(5, 28), md(7, 4),
+            md(9, 3), md(10, 8), md(11, 12), md(11, 22), md(12, 25))},
+        {2013, mds(2013, md(1, 1), md(1, 21), md(2, 18), md(5, 27), md(7, 4),
+            md(9, 2), md(10, 14), md(11, 11), md(11, 28), md(12, 25))},
+        {2014, mds(2014, md(1, 1), md(1, 20), md(2, 17), md(5, 26), md(7, 4),
+            md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
+        {2015, mds(2015, md(1, 1), md(1, 19), md(2, 16), md(5, 25), md(7, 4),
+            md(9, 7), md(10, 12), md(11, 11), md(11, 26), md(12, 25))},
+        {2021, mds(2021, md(1, 1), md(1, 18), md(2, 15), md(5, 31), md(7, 5),
+            md(9, 6), md(10, 11), md(11, 11), md(11, 25), md(12, 25))},
+        {2022, mds(2022, md(1, 1), md(1, 17), md(2, 21), md(5, 30), md(6, 20), md(7, 4),
+            md(9, 5), md(10, 10), md(11, 11), md(11, 24), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_nyfd() {
+    return new Object[][] {
+        // http://www.ny.frb.org/aboutthefed/holiday_schedule.html
+        // http://web.archive.org/web/20080403230805/http://www.ny.frb.org/aboutthefed/holiday_schedule.html
+        // http://web.archive.org/web/20100827003740/http://www.ny.frb.org/aboutthefed/holiday_schedule.html
+        // http://web.archive.org/web/20031007222458/http://www.ny.frb.org/aboutthefed/holiday_schedule.html
+        // http://www.federalreserve.gov/aboutthefed/k8.htm
+        {2003, mds(2003, md(1, 1), md(1, 20), md(2, 17), md(5, 26), md(7, 4),
+            md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
+        {2004, mds(2004, md(1, 1), md(1, 19), md(2, 16), md(5, 31), md(7, 5),
+            md(9, 6), md(10, 11), md(11, 11), md(11, 25))},
+        {2005, mds(2005, md(1, 17), md(2, 21), md(5, 30), md(7, 4),
+            md(9, 5), md(10, 10), md(11, 11), md(11, 24), md(12, 26))},
+        {2006, mds(2006, md(1, 2), md(1, 16), md(2, 20), md(5, 29), md(7, 4),
+            md(9, 4), md(10, 9), md(11, 23), md(12, 25))},
+        {2007, mds(2007, md(1, 1), md(1, 15), md(2, 19), md(5, 28), md(7, 4),
+            md(9, 3), md(10, 8), md(11, 12), md(11, 22), md(12, 25))},
+        {2008, mds(2008, md(1, 1), md(1, 21), md(2, 18), md(5, 26), md(7, 4),
+            md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
+        {2009, mds(2009, md(1, 1), md(1, 19), md(2, 16), md(5, 25),
+            md(9, 7), md(10, 12), md(11, 11), md(11, 26), md(12, 25))},
+        {2010, mds(2010, md(1, 1), md(1, 18), md(2, 15), md(5, 31), md(7, 5),
+            md(9, 6), md(10, 11), md(11, 11), md(11, 25))},
+        {2011, mds(2011, md(1, 17), md(2, 21), md(5, 30), md(7, 4),
+            md(9, 5), md(10, 10), md(11, 11), md(11, 24), md(12, 26))},
+        {2012, mds(2012, md(1, 2), md(1, 16), md(2, 20), md(5, 28), md(7, 4),
+            md(9, 3), md(10, 8), md(11, 12), md(11, 22), md(12, 25))},
+        {2013, mds(2013, md(1, 1), md(1, 21), md(2, 18), md(5, 27), md(7, 4),
+            md(9, 2), md(10, 14), md(11, 11), md(11, 28), md(12, 25))},
+        {2014, mds(2014, md(1, 1), md(1, 20), md(2, 17), md(5, 26), md(7, 4),
+            md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
+        {2015, mds(2015, md(1, 1), md(1, 19), md(2, 16), md(5, 25),
+            md(9, 7), md(10, 12), md(11, 11), md(11, 26), md(12, 25))},
+        {2016, mds(2016, md(1, 1), md(1, 18), md(2, 15), md(5, 30), md(7, 4),
+            md(9, 5), md(10, 10), md(11, 11), md(11, 24), md(12, 26))},
+        {2017, mds(2017, md(1, 2), md(1, 16), md(2, 20), md(5, 29), md(7, 4),
+            md(9, 4), md(10, 9), md(11, 23), md(12, 25))},
+        {2018, mds(2018, md(1, 1), md(1, 15), md(2, 19), md(5, 28), md(7, 4),
+            md(9, 3), md(10, 8), md(11, 12), md(11, 22), md(12, 25))},
+    };
+  }
+
+  public static Object[][] data_nyse() {
+    return new Object[][] {
+        // https://www.nyse.com/markets/hours-calendars
+        // http://web.archive.org/web/20110320011340/http://www.nyse.com/about/newsevents/1176373643795.html?sa_campaign=/internal_ads/homepage/08262008holidays
+        // http://web.archive.org/web/20080901164729/http://www.nyse.com/about/newsevents/1176373643795.html?sa_campaign=/internal_ads/homepage/08262008holidays
+        {2008, mds(2008, md(1, 1), md(1, 21), md(2, 18), md(3, 21), md(5, 26), md(7, 4),
+            md(9, 1), md(11, 27), md(12, 25))},
+        {2009, mds(2009, md(1, 1), md(1, 19), md(2, 16), md(4, 10), md(5, 25), md(7, 3),
+            md(9, 7), md(11, 26), md(12, 25))},
+        {2010, mds(2010, md(1, 1), md(1, 18), md(2, 15), md(4, 2), md(5, 31), md(7, 5),
+            md(9, 6), md(11, 25), md(12, 24))},
+        {2011, mds(2011, md(1, 1), md(1, 17), md(2, 21), md(4, 22), md(5, 30), md(7, 4),
+            md(9, 5), md(11, 24), md(12, 26))},
+        {2012, mds(2012, md(1, 2), md(1, 16), md(2, 20), md(4, 6), md(5, 28), md(7, 4),
+            md(9, 3), md(10, 30), md(11, 22), md(12, 25))},
+        {2013, mds(2013, md(1, 1), md(1, 21), md(2, 18), md(3, 29), md(5, 27), md(7, 4),
+            md(9, 2), md(11, 28), md(12, 25))},
+        {2014, mds(2014, md(1, 1), md(1, 20), md(2, 17), md(4, 18), md(5, 26), md(7, 4),
+            md(9, 1), md(11, 27), md(12, 25))},
+        {2015, mds(2015, md(1, 1), md(1, 19), md(2, 16), md(4, 3), md(5, 25), md(7, 3),
+            md(9, 7), md(11, 26), md(12, 25))},
+    };
+  }
+
+  public static Object[][] data_jpto() {
+    return new Object[][] {
+        // https://www.boj.or.jp/en/about/outline/holi.htm/
+        // http://web.archive.org/web/20110513190217/http://www.boj.or.jp/en/about/outline/holi.htm/
+        // https://www.japanspecialist.co.uk/travel-tips/national-holidays-in-japan/
+        {1999, mds(1999, md(1, 1), md(1, 2), md(1, 3), md(1, 15), md(2, 11), md(3, 22), md(4, 29), md(5, 3), md(5, 4), md(5, 5),
+            md(7, 20), md(9, 15), md(9, 23), md(10, 11), md(11, 3), md(11, 23), md(12, 23), md(12, 31))},
+        {2000, mds(2000, md(1, 1), md(1, 2), md(1, 3), md(1, 10), md(2, 11), md(3, 20), md(4, 29), md(5, 3), md(5, 4), md(5, 5),
+            md(7, 20), md(9, 15), md(9, 23), md(10, 9), md(11, 3), md(11, 23), md(12, 23), md(12, 31))},
+        {2001, mds(2001, md(1, 1), md(1, 2), md(1, 3), md(1, 8), md(2, 12), md(3, 20), md(4, 30), md(5, 3), md(5, 4), md(5, 5),
+            md(7, 20), md(9, 15), md(9, 24), md(10, 8), md(11, 3), md(11, 23), md(12, 24), md(12, 31))},
+        {2002, mds(2002, md(1, 1), md(1, 2), md(1, 3), md(1, 14), md(2, 11), md(3, 21), md(4, 29), md(5, 3), md(5, 4), md(5, 6),
+            md(7, 20), md(9, 16), md(9, 23), md(10, 14), md(11, 4), md(11, 23), md(12, 23), md(12, 31))},
+        {2003, mds(2003, md(1, 1), md(1, 2), md(1, 3), md(1, 13), md(2, 11), md(3, 21), md(4, 29), md(5, 3), md(5, 4), md(5, 5),
+            md(7, 21), md(9, 15), md(9, 23), md(10, 13), md(11, 3), md(11, 24), md(12, 23), md(12, 31))},
+        {2004, mds(2004, md(1, 1), md(1, 2), md(1, 3), md(1, 12), md(2, 11), md(3, 20), md(4, 29), md(5, 3), md(5, 4), md(5, 5),
+            md(7, 19), md(9, 20), md(9, 23), md(10, 11), md(11, 3), md(11, 23), md(12, 23), md(12, 31))},
+        {2005, mds(2005, md(1, 1), md(1, 2), md(1, 3), md(1, 10), md(2, 11), md(3, 21), md(4, 29), md(5, 3), md(5, 4), md(5, 5),
+            md(7, 18), md(9, 19), md(9, 23), md(10, 10), md(11, 3), md(11, 23), md(12, 23), md(12, 31))},
+        {2006, mds(2006, md(1, 1), md(1, 2), md(1, 3), md(1, 9), md(2, 11), md(3, 21), md(4, 29), md(5, 3), md(5, 4), md(5, 5),
+            md(7, 17), md(9, 18), md(9, 23), md(10, 9), md(11, 3), md(11, 23), md(12, 23), md(12, 31))},
+        {2011, mds(2011, md(1, 1), md(1, 2), md(1, 3), md(1, 10), md(2, 11), md(3, 21), md(4, 29), md(5, 3), md(5, 4), md(5, 5),
+            md(7, 18), md(9, 19), md(9, 23), md(10, 10), md(11, 3), md(11, 23), md(12, 23), md(12, 31))},
+        {2012, mds(2012, md(1, 1), md(1, 2), md(1, 3), md(1, 9), md(2, 11), md(3, 20), md(4, 30), md(5, 3), md(5, 4), md(5, 5),
+            md(7, 16), md(9, 17), md(9, 22), md(10, 8), md(11, 3), md(11, 23), md(12, 24), md(12, 31))},
+        {2013, mds(2013, md(1, 1), md(1, 2), md(1, 3), md(1, 14), md(2, 11), md(3, 20), md(4, 29),
+            md(5, 3), md(5, 4), md(5, 5), md(5, 6),
+            md(7, 15), md(9, 16), md(9, 23), md(10, 14), md(11, 4), md(11, 23), md(12, 23), md(12, 31))},
+        {2014, mds(2014, md(1, 1), md(1, 2), md(1, 3), md(1, 13), md(2, 11), md(3, 21), md(4, 29),
+            md(5, 3), md(5, 4), md(5, 5), md(5, 6),
+            md(7, 21), md(9, 15), md(9, 23), md(10, 13), md(11, 3), md(11, 24), md(12, 23), md(12, 31))},
+        {2015, mds(2015, md(1, 1), md(1, 2), md(1, 3), md(1, 12), md(2, 11), md(3, 21), md(4, 29),
+            md(5, 3), md(5, 4), md(5, 5), md(5, 6),
+            md(7, 20), md(9, 21), md(9, 22), md(9, 23), md(10, 12), md(11, 3), md(11, 23), md(12, 23), md(12, 31))},
+        {2018, mds(2018, md(1, 1), md(1, 2), md(1, 3), md(1, 8), md(2, 12), md(3, 21), md(4, 30),
+            md(5, 3), md(5, 4), md(5, 5), md(7, 16), md(8, 11), md(9, 17), md(9, 24),
+            md(10, 8), md(11, 3), md(11, 23), md(12, 23), md(12, 24), md(12, 31))},
+        {2019, mds(2019, md(1, 1), md(1, 2), md(1, 3), md(1, 14), md(2, 11), md(3, 21), md(4, 29), md(4, 30),
+            md(5, 1), md(5, 2), md(5, 3), md(5, 4), md(5, 5), md(5, 6), md(7, 15), md(8, 12), md(9, 16), md(9, 23),
+            md(10, 14), md(10, 22), md(11, 4), md(11, 23), md(12, 31))},
+        {2020, mds(2020, md(1, 1), md(1, 2), md(1, 3), md(1, 13), md(2, 11), md(2, 24), md(3, 20), md(4, 29),
+            md(5, 3), md(5, 4), md(5, 5), md(5, 6), md(7, 23), md(7, 24), md(8, 10), md(9, 21), md(9, 22),
+            md(11, 3), md(11, 23), md(12, 31))},
+        {2021, mds(2021, md(1, 1), md(1, 11), md(2, 11), md(2, 23), md(3, 20), md(4, 29),
+            md(5, 3), md(5, 4), md(5, 5), md(7, 22), md(7, 23), md(8, 9), md(9, 20),
+            md(9, 23), md(11, 3), md(11, 23), md(12, 31))},
+    };
+  }
+
+  public static Object[][] data_ausy() {
+    return new Object[][] {
+        {2012, mds(2012, md(1, 1), md(1, 2), md(1, 26), md(4, 6), md(4, 7), md(4, 8), md(4, 9),
+            md(4, 25), md(6, 11), md(8, 6), md(10, 1), md(12, 25), md(12, 26))},
+        {2013, mds(2013, md(1, 1), md(1, 26), md(1, 28), md(3, 29), md(3, 30), md(3, 31), md(4, 1),
+            md(4, 25), md(6, 10), md(8, 5), md(10, 7), md(12, 25), md(12, 26))},
+        {2014, mds(2014, md(1, 1), md(1, 26), md(1, 27), md(4, 18), md(4, 19), md(4, 20), md(4, 21),
+            md(4, 25), md(6, 9), md(8, 4), md(10, 6), md(12, 25), md(12, 26))},
+        {2015, mds(2015, md(1, 1), md(1, 26), md(4, 3), md(4, 4), md(4, 5), md(4, 6), md(4, 25),
+            md(6, 8), md(8, 3), md(10, 5), md(12, 25), md(12, 26), md(12, 27), md(12, 28))},
+        {2016, mds(2016, md(1, 1), md(1, 26), md(3, 25), md(3, 26), md(3, 27), md(3, 28),
+            md(4, 25), md(6, 13), md(8, 1), md(10, 3), md(12, 25), md(12, 26), md(12, 27))},
+        {2017, mds(2017, md(1, 1), md(1, 2), md(1, 26), md(4, 14), md(4, 15), md(4, 16), md(4, 17),
+            md(4, 25), md(6, 12), md(8, 7), md(10, 2), md(12, 25), md(12, 26))},
+        {2022, mds(2022, md(1, 3), md(1, 26), md(4, 15), md(4, 18),
+            md(4, 25), md(6, 13), md(8, 1), md(9, 22), md(10, 3), md(12, 26), md(12, 27))},
+        {2026, mds(2026, md(1, 1), md(1, 26), md(4, 3), md(4, 6),
+            md(4, 27), md(6, 8), md(8, 3), md(10, 5), md(12, 25), md(12, 28))},
+    };
+  }
+
+  public static Object[][] data_brbd() {
+    // http://www.planalto.gov.br/ccivil_03/leis/2002/L10607.htm
+    // fixing data
+    return new Object[][] {
+        {2013, mds(2013, md(1, 1), md(2, 11), md(2, 12), md(3, 29), md(4, 21), md(5, 1),
+            md(5, 30), md(9, 7), md(10, 12), md(11, 2), md(11, 15), md(12, 25))},
+        {2014, mds(2014, md(1, 1), md(3, 3), md(3, 4), md(4, 18), md(4, 21), md(5, 1),
+            md(6, 19), md(9, 7), md(10, 12), md(11, 2), md(11, 15), md(12, 25))},
+        {2015, mds(2015, md(1, 1), md(2, 16), md(2, 17), md(4, 3), md(4, 21), md(5, 1),
+            md(6, 4), md(9, 7), md(10, 12), md(11, 2), md(11, 15), md(12, 25))},
+        {2016, mds(2016, md(1, 1), md(2, 8), md(2, 9), md(3, 25), md(4, 21), md(5, 1),
+            md(5, 26), md(9, 7), md(10, 12), md(11, 2), md(11, 15), md(12, 25))},
+        {2024, mds(2024, md(1, 1), md(2, 12), md(2, 13), md(3, 29), md(4, 21), md(5, 1),
+            md(5, 30), md(9, 7), md(10, 12), md(11, 2), md(11, 15), md(11,20), md(12, 25))}
+    };
+  }
+
+  public static Object[][] data_camo() {
+    // https://www.bankofcanada.ca/about/contact-information/bank-of-canada-holiday-schedule/
+    // also indicate day after new year and boxing day, but no other sources for this
+    return new Object[][] {
+        {2017, mds(2017, md(1, 2), md(4, 14),
+            md(5, 22), md(6, 26), md(7, 3), md(9, 4), md(10, 9), md(12, 25))},
+        {2018, mds(2018, md(1, 1), md(3, 30),
+            md(5, 21), md(6, 25), md(7, 2), md(9, 3), md(10, 8), md(12, 25))},
+        {2022, mds(2022, md(1, 3), md(4, 15),
+            md(5, 23), md(6, 24), md(7, 1), md(9, 5), md(9, 30), md(10, 10), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_cato() {
+    return new Object[][] {
+        {2009, mds(2009, md(1, 1), md(2, 16), md(4, 10),
+            md(5, 18), md(7, 1), md(8, 3), md(9, 7), md(10, 12), md(11, 11), md(12, 25), md(12, 28))},
+        {2010, mds(2010, md(1, 1), md(2, 15), md(4, 2),
+            md(5, 24), md(7, 1), md(8, 2), md(9, 6), md(10, 11), md(11, 11), md(12, 27), md(12, 28))},
+        {2011, mds(2011, md(1, 3), md(2, 21), md(4, 22),
+            md(5, 23), md(7, 1), md(8, 1), md(9, 5), md(10, 10), md(11, 11), md(12, 26), md(12, 27))},
+        {2012, mds(2012, md(1, 2), md(2, 20), md(4, 6),
+            md(5, 21), md(7, 2), md(8, 6), md(9, 3), md(10, 8), md(11, 12), md(12, 25), md(12, 26))},
+        {2013, mds(2013, md(1, 1), md(2, 18), md(3, 29),
+            md(5, 20), md(7, 1), md(8, 5), md(9, 2), md(10, 14), md(11, 11), md(12, 25), md(12, 26))},
+        {2014, mds(2014, md(1, 1), md(2, 17), md(4, 18),
+            md(5, 19), md(7, 1), md(8, 4), md(9, 1), md(10, 13), md(11, 11), md(12, 25), md(12, 26))},
+        {2015, mds(2015, md(1, 1), md(2, 16), md(4, 3),
+            md(5, 18), md(7, 1), md(8, 3), md(9, 7), md(10, 12), md(11, 11), md(12, 25), md(12, 28))},
+        {2016, mds(2016, md(1, 1), md(2, 15), md(3, 25),
+            md(5, 23), md(7, 1), md(8, 1), md(9, 5), md(10, 10), md(11, 11), md(12, 26), md(12, 27))},
+        {2025, mds(2025, md(1, 1), md(2, 17), md(4, 18), md(5, 19),
+            md(7, 1), md(8, 4), md(9, 1), md(9, 30), md(10, 13), md(11, 11), md(12, 25), md(12, 26))}
+    };
+  }
+
+  public static Object[][] data_czpr() {
+    // official data from Czech National Bank
+    // https://www.cnb.cz/en/public/media_service/schedules/media_svatky.html
+    return new Object[][] {
+        {2008, mds(2008, md(1, 1), md(3, 24), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+        {2009, mds(2009, md(1, 1), md(4, 13), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+        {2010, mds(2010, md(1, 1), md(4, 5), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+        {2011, mds(2011, md(1, 1), md(4, 25), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+        {2012, mds(2012, md(1, 1), md(4, 9), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+        {2013, mds(2013, md(1, 1), md(4, 1), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+        {2014, mds(2014, md(1, 1), md(4, 21), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+        {2015, mds(2015, md(1, 1), md(4, 6), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+        {2016, mds(2016, md(1, 1), md(3, 25), md(3, 28), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+        {2017, mds(2017, md(1, 1), md(4, 14), md(4, 17), md(5, 1), md(5, 8),
+            md(7, 5), md(7, 6), md(9, 28), md(10, 28), md(11, 17), md(12, 24), md(12, 25), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_dkco() {
+    // official data from Danish Bankers association via web archive
+    return new Object[][] {
+        {2013, mds(2013, md(1, 1), md(3, 28), md(3, 29), md(4, 1),
+            md(4, 26), md(5, 9), md(5, 10), md(5, 20), md(6, 5), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+        {2014, mds(2014, md(1, 1), md(4, 17), md(4, 18), md(4, 21),
+            md(5, 16), md(5, 29), md(5, 30), md(6, 5), md(6, 9), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+        {2015, mds(2015, md(1, 1), md(4, 2), md(4, 3), md(4, 6),
+            md(5, 1), md(5, 14), md(5, 15), md(5, 25), md(6, 5), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+        {2016, mds(2016, md(1, 1), md(3, 24), md(3, 25), md(3, 28),
+            md(4, 22), md(5, 5), md(5, 6), md(5, 16), md(6, 5), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+    };
+  }
+
+  public static Object[][] data_hubu() {
+    // http://www.mnb.hu/letoltes/bubor2.xls
+    // http://holidays.kayaposoft.com/public_holidays.php?year=2013&country=hun&region=#
+    return new Object[][] {
+        {2012, mds(2012, md(3, 15), md(3, 16), md(4, 9), md(4, 30), md(5, 1), md(5, 28),
+            md(8, 20), md(10, 22), md(10, 23), md(11, 1), md(11, 2), md(12, 24), md(12, 25), md(12, 26), md(12, 31)),
+            list(date(2012, 3, 24), date(2012, 5, 5), date(2012, 10, 27),
+                date(2012, 11, 10), date(2012, 12, 15), date(2012, 12, 29))},
+        {2013, mds(2013, md(1, 1), md(3, 15), md(4, 1), md(5, 1), md(5, 20),
+            md(8, 19), md(8, 20), md(10, 23), md(11, 1), md(12, 24), md(12, 25), md(12, 26), md(12, 27)),
+            list(date(2013, 8, 24), date(2013, 12, 7), date(2013, 12, 21))},
+        {2014, mds(2014, md(1, 1), md(3, 15), md(4, 21), md(5, 1), md(5, 2),
+            md(6, 9), md(8, 20), md(10, 23), md(10, 24), md(12, 24), md(12, 25), md(12, 26)),
+            list(date(2014, 5, 10), date(2014, 10, 18))},
+        {2015, mds(2015, md(1, 1), md(1, 2), md(3, 15), md(4, 6), md(5, 1), md(5, 25),
+            md(8, 20), md(8, 21), md(10, 23), md(12, 24), md(12, 25), md(12, 26)),
+            list(date(2015, 1, 10), date(2015, 8, 8), date(2015, 12, 12))},
+        {2016, mds(2016, md(1, 1), md(3, 14), md(3, 15), md(3, 28), md(5, 1), md(5, 16),
+            md(10, 31), md(11, 1), md(12, 24), md(12, 25), md(12, 26)),
+            list(date(2016, 3, 5), date(2016, 10, 15))},
+        {2020, mds(2020, md(1, 1), md(3, 15), md(4, 10), md(4, 13), md(5, 1), md(6, 1),
+            md(8, 20), md(8, 21), md(10, 23), md(12, 24), md(12, 25), md(12, 26)),
+            list(date(2020, 8, 29), date(2020, 12, 12))},
+    };
+  }
+
+  public static Object[][] data_mxmc() {
+    // http://www.banxico.org.mx/SieInternet/consultarDirectorioInternetAction.do?accion=consultarCuadro&idCuadro=CF111&locale=en
+    return new Object[][] {
+        {2012, mds(2012, md(1, 1), md(2, 6), md(3, 19), md(4, 5), md(4, 6),
+            md(5, 1), md(9, 16), md(11, 2), md(11, 19), md(12, 12), md(12, 25))},
+        {2013, mds(2013, md(1, 1), md(2, 4), md(3, 18), md(3, 28), md(3, 29),
+            md(5, 1), md(9, 16), md(11, 2), md(11, 18), md(12, 12), md(12, 25))},
+        {2014, mds(2014, md(1, 1), md(2, 3), md(3, 17), md(4, 17), md(4, 18),
+            md(5, 1), md(9, 16), md(11, 2), md(11, 17), md(12, 12), md(12, 25))},
+        {2015, mds(2015, md(1, 1), md(2, 2), md(3, 16), md(4, 2), md(4, 3),
+            md(5, 1), md(9, 16), md(11, 2), md(11, 16), md(12, 12), md(12, 25))},
+        {2016, mds(2016, md(1, 1), md(2, 1), md(3, 21), md(3, 24), md(3, 25),
+            md(5, 1), md(9, 16), md(11, 2), md(11, 21), md(12, 12), md(12, 25))},
+        {2024, mds(2024, md(1, 1), md(2, 5), md(3, 18), md(3, 28), md(3, 29),
+            md(5, 1), md(9, 16), md(10, 1), md(11, 2), md(11, 18), md(12, 12), md(12, 25))},
+    };
+  }
+
+  public static Object[][] data_noos() {
+    // official data from Oslo Bors via web archive
+    return new Object[][] {
+        {2009, mds(2009, md(1, 1), md(4, 9), md(4, 10), md(4, 13),
+            md(5, 1), md(5, 21), md(6, 1), md(12, 24), md(12, 25), md(12, 31))},
+        {2011, mds(2011, md(4, 21), md(4, 22), md(4, 25),
+            md(5, 17), md(6, 2), md(6, 13), md(12, 26))},
+        {2012, mds(2012, md(4, 5), md(4, 6), md(4, 9),
+            md(5, 1), md(5, 17), md(5, 28), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+        {2013, mds(2013, md(1, 1), md(3, 28), md(3, 29), md(4, 1),
+            md(5, 1), md(5, 9), md(5, 17), md(5, 20), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+        {2014, mds(2014, md(1, 1), md(4, 17), md(4, 18), md(4, 21),
+            md(5, 1), md(5, 17), md(5, 29), md(6, 9), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+        {2015, mds(2015, md(1, 1), md(4, 2), md(4, 3), md(4, 6),
+            md(5, 1), md(5, 14), md(5, 25), md(12, 24), md(12, 25), md(12, 31))},
+        {2016, mds(2016, md(1, 1), md(3, 24), md(3, 25), md(3, 28),
+            md(5, 5), md(5, 16), md(5, 17), md(12, 26))},
+        {2017, mds(2017, md(4, 13), md(4, 14), md(4, 17),
+            md(5, 1), md(5, 17), md(5, 25), md(6, 5), md(12, 25), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_nzau() {
+    // https://www.govt.nz/browse/work/public-holidays-and-work/public-holidays-and-anniversary-dates/
+    // https://www.employment.govt.nz/leave-and-holidays/public-holidays/public-holidays-and-anniversary-dates/dates-for-previous-years/
+    return new Object[][] {
+        {2015, mds(2015, md(1, 1), md(1, 2), md(1, 26), md(2, 6), md(4, 3), md(4, 6),
+            md(4, 27), md(6, 1), md(10, 26), md(12, 25), md(12, 28))},
+        {2016, mds(2016, md(1, 1), md(1, 4), md(2, 1), md(2, 8), md(3, 25), md(3, 28),
+            md(4, 25), md(6, 6), md(10, 24), md(12, 26), md(12, 27))},
+        {2017, mds(2017, md(1, 2), md(1, 3), md(1, 30), md(2, 6), md(4, 14), md(4, 17),
+            md(4, 25), md(6, 5), md(10, 23), md(12, 25), md(12, 26))},
+        {2018, mds(2018, md(1, 1), md(1, 2), md(1, 29), md(2, 6), md(3, 30), md(4, 2),
+            md(4, 25), md(6, 4), md(10, 22), md(12, 25), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_nzwe() {
+    // https://www.govt.nz/browse/work/public-holidays-and-work/public-holidays-and-anniversary-dates/
+    // https://www.employment.govt.nz/leave-and-holidays/public-holidays/public-holidays-and-anniversary-dates/dates-for-previous-years/
+    return new Object[][] {
+        {2015, mds(2015, md(1, 1), md(1, 2), md(1, 19), md(2, 6), md(4, 3), md(4, 6),
+            md(4, 27), md(6, 1), md(10, 26), md(12, 25), md(12, 28))},
+        {2016, mds(2016, md(1, 1), md(1, 4), md(1, 25), md(2, 8), md(3, 25), md(3, 28),
+            md(4, 25), md(6, 6), md(10, 24), md(12, 26), md(12, 27))},
+        {2017, mds(2017, md(1, 2), md(1, 3), md(1, 23), md(2, 6), md(4, 14), md(4, 17),
+            md(4, 25), md(6, 5), md(10, 23), md(12, 25), md(12, 26))},
+        {2018, mds(2018, md(1, 1), md(1, 2), md(1, 22), md(2, 6), md(3, 30), md(4, 2),
+            md(4, 25), md(6, 4), md(10, 22), md(12, 25), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_nzbd() {
+    // https://www.govt.nz/browse/work/public-holidays-and-work/public-holidays-and-anniversary-dates/
+    // https://www.employment.govt.nz/leave-and-holidays/public-holidays/public-holidays-and-anniversary-dates/dates-for-previous-years/
+    return new Object[][] {
+        {2015, mds(2015, md(1, 1), md(1, 2), md(2, 6), md(4, 3), md(4, 6),
+            md(4, 27), md(6, 1), md(10, 26), md(12, 25), md(12, 28))},
+        {2016, mds(2016, md(1, 1), md(1, 4), md(2, 8), md(3, 25), md(3, 28),
+            md(4, 25), md(6, 6), md(10, 24), md(12, 26), md(12, 27))},
+        {2017, mds(2017, md(1, 2), md(1, 3), md(2, 6), md(4, 14), md(4, 17),
+            md(4, 25), md(6, 5), md(10, 23), md(12, 25), md(12, 26))},
+        {2018, mds(2018, md(1, 1), md(1, 2), md(2, 6), md(3, 30), md(4, 2),
+            md(4, 25), md(6, 4), md(10, 22), md(12, 25), md(12, 26))},
+        {2025, mds(2025, md(1, 1), md(1, 2), md(2, 6), md(4, 18),
+            md(4, 21), md(4, 25), md(6, 2), md(6, 20), md(10, 27), md(12, 25), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_plwa() {
+    // based on government law data and stock exchange holidays
+    return new Object[][] {
+        {2013, mds(2013, md(1, 1), md(4, 1),
+            md(5, 1), md(5, 3), md(5, 30), md(8, 15), md(11, 1), md(11, 11), md(12, 24), md(12, 25), md(12, 26))},
+        {2014, mds(2014, md(1, 1), md(1, 6), md(4, 21),
+            md(5, 1), md(6, 19), md(8, 15), md(11, 11), md(12, 24), md(12, 25), md(12, 26))},
+        {2015, mds(2015, md(1, 1), md(1, 6), md(4, 6),
+            md(5, 1), md(6, 4), md(11, 11), md(12, 24), md(12, 25), md(12, 31))},
+        {2016, mds(2016, md(1, 1), md(1, 6), md(3, 28),
+            md(5, 3), md(5, 26), md(8, 15), md(11, 1), md(11, 11), md(12, 26))},
+        {2017, mds(2017, md(1, 6), md(4, 17),
+            md(5, 1), md(5, 3), md(6, 15), md(8, 15), md(11, 1), md(12, 25), md(12, 26))},
+        {2018, mds(2018, md(1, 1), md(1, 6), md(4, 1), md(4, 2), md(5, 1), md(5, 3),
+            md(5, 20), md(5, 31), md(8, 15), md(11, 1), md(11, 11), md(11, 12), md(12, 24), md(12, 25), md(12, 26), md(12, 31))}
+    };
+  }
+
+  public static Object[][] data_sest() {
+    // official data from published fixing dates
+    return new Object[][] {
+        {2014, mds(2014, md(1, 1), md(1, 6), md(4, 18), md(4, 21),
+            md(5, 1), md(5, 29), md(6, 6), md(6, 20), md(12, 24), md(12, 25), md(12, 26), md(12, 31))},
+        {2015, mds(2015, md(1, 1), md(1, 6), md(4, 3), md(4, 6),
+            md(5, 1), md(5, 14), md(6, 19), md(12, 24), md(12, 25), md(12, 31))},
+        {2016, mds(2016, md(1, 1), md(1, 6), md(3, 25), md(3, 28),
+            md(5, 5), md(6, 6), md(6, 24), md(12, 26))},
+    };
+  }
+
+  public static Object[][] data_zajo() {
+    // http://www.gov.za/about-sa/public-holidays
+    // https://web.archive.org/web/20151230214958/http://www.gov.za/about-sa/public-holidays
+    return new Object[][] {
+        {2015, mds(2015, md(1, 1), md(3, 21), md(4, 3), md(4, 6), md(4, 27), md(5, 1),
+            md(6, 16), md(8, 10), md(9, 24), md(12, 16), md(12, 25), md(12, 26))},
+        {2016, mds(2016, md(1, 1), md(3, 21), md(3, 25), md(3, 28), md(4, 27), md(5, 2),
+            md(6, 16), md(8, 3), md(8, 9), md(9, 24), md(12, 16), md(12, 26), md(12, 27))},
+        {2017, mds(2017, md(1, 1), md(1, 2), md(3, 21), md(4, 14), md(4, 17), md(4, 27), md(5, 1),
+            md(6, 16), md(8, 9), md(9, 25), md(12, 16), md(12, 16), md(12, 25), md(12, 26))},
+    };
+  }
 /* Row counts measured in the Java sources at the lines cited above. */
 Map<String, Integer> EXPECTED_TABLE_ROWS = new TreeMap<>();
 EXPECTED_TABLE_ROWS.put("data_yearFraction", 201);
@@ -2303,22 +3777,36 @@ EXPECTED_TABLE_ROWS.put("data_replace", 11);
 class Eval {
   final double value;
   final String error;
+  /**
+   * The type of the rejection, kept alongside its message so an expectation
+   * can be stated as a TYPE rather than as a message prefix. A prefix match on
+   * "IllegalArgumentException" rejects ScheduleException, which
+   * `assertThatIllegalArgumentException()` accepts, so it would be stricter
+   * than the Java test it stands for.
+   */
+  final Class<? extends Throwable> thrownType;
 
-  private Eval(double value, String error) {
+  private Eval(double value, String error, Class<? extends Throwable> thrownType) {
     this.value = value;
     this.error = error;
+    this.thrownType = thrownType;
   }
 
   static Eval of(double value) {
-    return new Eval(value, null);
+    return new Eval(value, null, null);
   }
 
   static Eval failed(Throwable thrown) {
-    return new Eval(Double.NaN, errorMessage(thrown));
+    return new Eval(Double.NaN, errorMessage(thrown), thrown.getClass());
   }
 
   boolean isError() {
     return error != null;
+  }
+
+  /** True when the rejection is assignable to the type the Java test names. */
+  boolean failedWith(Class<? extends Throwable> expected) {
+    return thrownType != null && expected.isAssignableFrom(thrownType);
   }
 }
 
@@ -2327,6 +3815,7 @@ Eval evalYearFraction(DayCount dayCount, LocalDate start, LocalDate end, DayCoun
     return Eval.of(info == null ? dayCount.yearFraction(start, end)
         : dayCount.yearFraction(start, end, info));
   } catch (Throwable thrown) {
+    requireCapturable(thrown);
     return Eval.failed(thrown);
   }
 }
@@ -2337,6 +3826,7 @@ Eval evalRelativeYearFraction(DayCount dayCount, LocalDate start, LocalDate end,
     return Eval.of(info == null ? dayCount.relativeYearFraction(start, end)
         : dayCount.relativeYearFraction(start, end, info));
   } catch (Throwable thrown) {
+    requireCapturable(thrown);
     return Eval.failed(thrown);
   }
 }
@@ -2345,18 +3835,94 @@ Eval evalDays(DayCount dayCount, LocalDate start, LocalDate end) {
   try {
     return Eval.of(dayCount.days(start, end));
   } catch (Throwable thrown) {
+    requireCapturable(thrown);
     return Eval.failed(thrown);
   }
 }
 
-/** The skeleton every daycount row shares. */
-JObject dayCountRow(String source, DayCount dayCount, LocalDate start, LocalDate end, Jn scheduleInfo) {
+/**
+ * A slug for a row id: lower case, `+` spelled out so it survives, every other
+ * run of non-alphanumeric characters collapsed to a single dash.
+ *
+ * `30E+/360` -> `30eplus-360` (NOT `30e-360`, which is a different day count),
+ * `Bus/252 BRBD` -> `bus-252-brbd`, `Act/Act ICMA` -> `act-act-icma`.
+ */
+String slug(String raw) {
+  StringBuilder sb = new StringBuilder();
+  String lower = raw.toLowerCase(Locale.ENGLISH).replace("+", "plus");
+  for (int i = 0; i < lower.length(); i++) {
+    char c = lower.charAt(i);
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+      sb.append(c);
+    } else if (sb.length() > 0 && sb.charAt(sb.length() - 1) != '-') {
+      sb.append('-');
+    }
+  }
+  while (sb.length() > 0 && sb.charAt(sb.length() - 1) == '-') {
+    sb.setLength(sb.length() - 1);
+  }
+  return sb.toString();
+}
+
+/**
+ * How many times each base id has been used, so a repeated base can be made
+ * unique. LinkedHashMap because nothing here may depend on hash order.
+ */
+Map<String, Integer> DAYCOUNT_ID_USES = new LinkedHashMap<>();
+
+/**
+ * Makes a base id unique WITHIN THE DOCUMENT: the first use is the base
+ * itself, the nth use is `base-n`.
+ *
+ * Bases do repeat - `data_ACTACTAFB` evaluates the same day count over the
+ * same dates more than once, with different expectations - and an id has to
+ * identify a row, so the emission-ordered counter is part of the id contract
+ * rather than a workaround.
+ */
+String dayCountId(String base) {
+  Integer previous = DAYCOUNT_ID_USES.get(base);
+  int use = previous == null ? 1 : previous.intValue() + 1;
+  DAYCOUNT_ID_USES.put(base, Integer.valueOf(use));
+  return use == 1 ? base : base + "-" + use;
+}
+
+/** The base id of a row identified by a day count and a date pair. */
+String dcId(String prefix, DayCount dayCount, LocalDate start, LocalDate end) {
+  return prefix + "-" + slug(dayCount.getName()) + "-" + start + "-" + end;
+}
+
+/** The base id of a row identified by a day count and a single date. */
+String dcId(String prefix, DayCount dayCount, LocalDate start) {
+  return prefix + "-" + slug(dayCount.getName()) + "-" + start;
+}
+
+/**
+ * The skeleton every daycount row shares: TWELVE FIELDS, ALWAYS ALL TWELVE, in
+ * this order.
+ *
+ * A field with nothing to say is `null`, never absent. That is what lets the
+ * consumer decode one uniform schema instead of branching on which keys a row
+ * happens to carry, and it makes the difference between "this row has no
+ * relative year fraction" and "this row was emitted by an older script"
+ * visible rather than silent. `set` on an existing key replaces the value and
+ * keeps its position, so the four evaluated fields below are filled in by
+ * `setYearFraction` / `setDays` without disturbing the order.
+ */
+JObject dayCountRow(String idBase, String source, DayCount dayCount, LocalDate start,
+    LocalDate end, Jn scheduleInfo) {
   return new JObject()
+      .set("id", jStr(dayCountId(idBase)))
       .set("source", jStr(source))
       .set("dayCount", jName(dayCount))
       .set("start", jDate(start))
       .set("end", jDate(end))
-      .set("scheduleInfo", scheduleInfo);
+      .set("scheduleInfo", scheduleInfo)
+      .set("yearFraction", jNull())
+      .set("relativeYearFraction", jNull())
+      .set("relativeYearFractionReversed", jNull())
+      .set("days", jNull())
+      .set("error", jNull())
+      .set("daysError", jNull());
 }
 
 /**
@@ -2379,6 +3945,37 @@ void setYearFraction(String fixture, JObject row, String rowId, Eval eval, Doubl
   }
 }
 
+/**
+ * Adds the evaluated day count to a row, as either `days` or `daysError`, and
+ * cross-checks it when the Java table supplies an expectation.
+ *
+ * EVERY row carries this, not only the rows of `data_days`: `days` and
+ * `yearFraction` are separate Java methods with separate preconditions - the
+ * wrong-order rows fail both, the missing-schedule-information rows fail only
+ * `yearFraction` - and a row that recorded just one of them could not state
+ * that difference.
+ */
+void setDays(String fixture, JObject row, String rowId, Eval eval, Integer expected) {
+  if (eval.isError()) {
+    row.set("daysError", jStr(eval.error));
+    CHECK.countErrorRow(fixture);
+    if (expected != null) {
+      CHECK.fail(fixture, rowId, "expected days=" + expected + " but Java threw " + eval.error);
+    }
+    return;
+  }
+  row.set("days", jInt((long) eval.value));
+  if (expected != null) {
+    CHECK.checkInt(fixture, rowId, expected.intValue(), (long) eval.value);
+  }
+}
+
+/** Evaluates and records `days` for a row with no Java day-count expectation. */
+void setDays(String fixture, JObject row, String rowId, DayCount dayCount, LocalDate start,
+    LocalDate end) {
+  setDays(fixture, row, rowId, evalDays(dayCount, start, end), null);
+}
+
 /* ===========================================================================
  * SECTION 7 - FIXTURE 1 OF 6: daycount-baseline.json
  * ===========================================================================
@@ -2386,23 +3983,87 @@ void setYearFraction(String fixture, JObject row, String rowId, Eval eval, Doubl
 
 String FX_DAYCOUNT = "daycount";
 
-/** The 21 standard day counts, in DayCounts declaration order. */
+/**
+ * The 21 standard day counts, in DayCounts declaration order.
+ *
+ * THE ORDER IS DECLARED HERE, NOT DISCOVERED. It decides the order of ~11,000
+ * rows of this fixture, and neither available way of discovering it is
+ * specified: `Class.getDeclaredFields` returns fields in no defined order (the
+ * JLS and the javadoc both say so - today's JVM happens to return declaration
+ * order, which is exactly the kind of accident that makes a baseline
+ * irreproducible on another JDK 21 build), and
+ * `DayCount.extendedEnum().lookupAllNormalized()` is keyed by name in the
+ * registry's own order, which is neither declaration order nor alphabetical
+ * (measured: it starts `Act/365L, Act/Act ISDA, NL/360, ...`).
+ *
+ * So the names below are transcribed from the constant declarations of
+ * DayCounts.java in file order, and each is resolved by name. Reflection is
+ * still used - as a COMPLETENESS CHECK: if the holder ever declares a constant
+ * this list does not name, or names one it no longer declares, the capture
+ * aborts instead of silently dropping or reordering a day count.
+ *
+ * Source: modules/basics/src/main/java/com/opengamma/strata/basics/date/DayCounts.java
+ * (StandardDayCounts.values(), which the Java test uses, is package-private and
+ * unreachable from a .jsh script - Trap 1.)
+ */
+String[] STANDARD_DAY_COUNT_NAMES = {
+    "1/1",
+    "Act/Act ISDA",
+    "Act/Act ICMA",
+    "Act/Act AFB",
+    "Act/Act Year",
+    "Act/365 Actual",
+    "Act/365L",
+    "Act/360",
+    "Act/364",
+    "Act/365F",
+    "Act/365.25",
+    "NL/360",
+    "NL/365",
+    "30/360 ISDA",
+    "30U/360",
+    "30U/360 EOM",
+    "30/360 PSA",
+    "30E/360 ISDA",
+    "30E/360",
+    "30E+/360",
+    "30E/365",
+};
+
+/** Resolved once: the list is read on every row of the data_types sweeps. */
+List<DayCount> STANDARD_DAY_COUNTS = null;
+
 List<DayCount> standardDayCounts() {
-  // Reflection over the public constants holder gives a provably complete
-  // list. StandardDayCounts.values(), which the Java test uses, is
-  // package-private and therefore unreachable from a .jsh script (Trap 1).
-  List<DayCount> result = new ArrayList<>();
+  if (STANDARD_DAY_COUNTS != null) {
+    return STANDARD_DAY_COUNTS;
+  }
+  List<DayCount> ordered = new ArrayList<>();
+  for (String name : STANDARD_DAY_COUNT_NAMES) {
+    ordered.add(DayCount.of(name));
+  }
+  // Completeness: the declared list and the holder's public constants must be
+  // the same set. Sorted names on both sides, so the comparison itself does
+  // not depend on either order.
+  List<String> declared = new ArrayList<>();
+  for (DayCount dayCount : ordered) {
+    declared.add(dayCount.getName());
+  }
+  List<String> reflected = new ArrayList<>();
   for (Field field : DayCounts.class.getDeclaredFields()) {
     if (Modifier.isPublic(field.getModifiers()) && Modifier.isStatic(field.getModifiers())
         && DayCount.class.equals(field.getType())) {
       try {
-        result.add((DayCount) field.get(null));
+        reflected.add(((DayCount) field.get(null)).getName());
       } catch (IllegalAccessException ex) {
         throw new IllegalStateException("Cannot read DayCounts." + field.getName(), ex);
       }
     }
   }
-  return result;
+  Collections.sort(declared);
+  Collections.sort(reflected);
+  CHECK.checkEquals(FX_DAYCOUNT, "DayCounts constants", reflected, declared);
+  STANDARD_DAY_COUNTS = ordered;
+  return STANDARD_DAY_COUNTS;
 }
 
 /** The 21 standard day counts plus Bus/252 BRBD, the grid's 22 subjects. */
@@ -2434,7 +4095,8 @@ void emitDataYearFraction(JArray rows) {
     LocalDate start = LocalDate.of(y1, m1, d1);
     LocalDate end = LocalDate.of(y2, m2, d2);
     String rowId = dayCount.getName() + " " + start + ".." + end;
-    JObject row = dayCountRow("DayCountTest.data_yearFraction", dayCount, start, end, jNull());
+    JObject row = dayCountRow(dcId("yf", dayCount, start, end),
+        "DayCountTest.data_yearFraction", dayCount, start, end, jScheduleInfo(null));
     Eval yf = evalYearFraction(dayCount, start, end, null);
     setYearFraction(FX_DAYCOUNT, row, rowId, yf, Double.valueOf(expected));
     Eval rel = evalRelativeYearFraction(dayCount, start, end, null);
@@ -2447,6 +4109,7 @@ void emitDataYearFraction(JArray rows) {
       row.set("relativeYearFractionReversed", jDbl(relReversed.value));
       CHECK.checkExact(FX_DAYCOUNT, rowId + " relative reversed", -expected, relReversed.value);
     }
+    setDays(FX_DAYCOUNT, row, rowId, dayCount, start, end);
     rows.add(row);
     CHECK.countRow(FX_DAYCOUNT);
   }
@@ -2471,16 +4134,10 @@ void emitDataDays(JArray rows) {
     LocalDate start = LocalDate.of(y1, m1, d1);
     LocalDate end = LocalDate.of(y2, m2, d2);
     String rowId = dayCount.getName() + " days " + start + ".." + end;
-    JObject row = dayCountRow("DayCountTest.data_days", dayCount, start, end, jNull());
-    Eval days = evalDays(dayCount, start, end);
-    if (days.isError()) {
-      row.set("error", jStr(days.error));
-      CHECK.countErrorRow(FX_DAYCOUNT);
-      CHECK.fail(FX_DAYCOUNT, rowId, "expected=" + expected + " but Java threw " + days.error);
-    } else {
-      row.set("days", jInt((long) days.value));
-      CHECK.checkInt(FX_DAYCOUNT, rowId, expected, (long) days.value);
-    }
+    JObject row = dayCountRow(dcId("days", dayCount, start, end), "DayCountTest.data_days",
+        dayCount, start, end, jScheduleInfo(null));
+    setYearFraction(FX_DAYCOUNT, row, rowId, evalYearFraction(dayCount, start, end, null), null);
+    setDays(FX_DAYCOUNT, row, rowId, evalDays(dayCount, start, end), Integer.valueOf(expected));
     rows.add(row);
     CHECK.countRow(FX_DAYCOUNT);
   }
@@ -2525,9 +4182,11 @@ void emitData30U360(JArray rows) {
       double expected = (Double) c[3];
       String rowId = source + " " + dayCount.getName() + " " + start + ".." + end + " eom="
           + info.rawEom();
-      JObject row = dayCountRow(source, dayCount, start, end, jScheduleInfo(info));
+      JObject row = dayCountRow(dcId(info.rawEom() ? "u360-eom" : "u360-noteom", dayCount, start,
+          end), source, dayCount, start, end, jScheduleInfo(info));
       setYearFraction(FX_DAYCOUNT, row, rowId, evalYearFraction(dayCount, start, end, info),
           Double.valueOf(expected));
+      setDays(FX_DAYCOUNT, row, rowId, dayCount, start, end);
       rows.add(row);
       CHECK.countRow(FX_DAYCOUNT);
     }
@@ -2554,22 +4213,42 @@ void emitData30E360Isda(JArray rows) {
         ? calc360(y1, m1, d1, y2, m2, d2) : ((Number) rawNotMaturity).doubleValue();
     double expectedMaturity = (rawMaturity == SIMPLE_30_360)
         ? calc360(y1, m1, d1, y2, m2, d2) : ((Number) rawMaturity).doubleValue();
-    Info infoNotMaturity = new Info(false);
+    // The Java test passes `new Info(false)` for the not-maturity case, whose
+    // getEndDate() returns null - and 30E/360 ISDA only compares the second
+    // date against it, so null means "not the maturity date" and the value is
+    // computed. A null end date cannot be carried into the port, though: there
+    // `ScheduleInfo.endDate` is an Option, `None` is what Java's own default
+    // accessor models (it throws), and 30E/360 ISDA with `None` therefore
+    // throws rather than answering. The row would then be unsatisfiable - a
+    // numeric expectation against an API that must fail.
+    //
+    // So the not-maturity case is captured with an end date that is one day
+    // AFTER the period end: still not the maturity date, so Java takes exactly
+    // the same branch and produces exactly the value the Java table asserts,
+    // while the row states schedule information the port can evaluate.
+    Info infoNotMaturity = new Info(null, end.plusDays(1), null, false, null);
     Info infoMaturity = new Info(null, end, null, false, P3M);
-    JObject rowNotMaturity = dayCountRow("DayCountTest.test_yearFraction_30E360ISDA_notMaturity",
+    JObject rowNotMaturity = dayCountRow(
+        dcId("e360i-notmaturity", THIRTY_E_360_ISDA, start, end),
+        "DayCountTest.test_yearFraction_30E360ISDA_notMaturity",
         THIRTY_E_360_ISDA, start, end, jScheduleInfo(infoNotMaturity));
     setYearFraction(FX_DAYCOUNT, rowNotMaturity,
         "30E360ISDA notMaturity " + start + ".." + end,
         evalYearFraction(THIRTY_E_360_ISDA, start, end, infoNotMaturity),
         Double.valueOf(expectedNotMaturity));
+    setDays(FX_DAYCOUNT, rowNotMaturity, "30E360ISDA notMaturity " + start + ".." + end,
+        THIRTY_E_360_ISDA, start, end);
     rows.add(rowNotMaturity);
     CHECK.countRow(FX_DAYCOUNT);
-    JObject rowMaturity = dayCountRow("DayCountTest.test_yearFraction_30E360ISDA_maturity",
+    JObject rowMaturity = dayCountRow(dcId("e360i-maturity", THIRTY_E_360_ISDA, start, end),
+        "DayCountTest.test_yearFraction_30E360ISDA_maturity",
         THIRTY_E_360_ISDA, start, end, jScheduleInfo(infoMaturity));
     setYearFraction(FX_DAYCOUNT, rowMaturity,
         "30E360ISDA maturity " + start + ".." + end,
         evalYearFraction(THIRTY_E_360_ISDA, start, end, infoMaturity),
         Double.valueOf(expectedMaturity));
+    setDays(FX_DAYCOUNT, rowMaturity, "30E360ISDA maturity " + start + ".." + end,
+        THIRTY_E_360_ISDA, start, end);
     rows.add(rowMaturity);
     CHECK.countRow(FX_DAYCOUNT);
   }
@@ -2584,9 +4263,11 @@ void emitDataActActAfb(JArray rows) {
     LocalDate start = LocalDate.of((Integer) r[0], (Integer) r[1], (Integer) r[2]);
     LocalDate end = LocalDate.of((Integer) r[3], (Integer) r[4], (Integer) r[5]);
     double expected = ((Number) r[6]).doubleValue();
-    JObject row = dayCountRow("DayCountTest.data_ACTACTAFB", ACT_ACT_AFB, start, end, jNull());
+    JObject row = dayCountRow(dcId("afb", ACT_ACT_AFB, start, end),
+        "DayCountTest.data_ACTACTAFB", ACT_ACT_AFB, start, end, jScheduleInfo(null));
     setYearFraction(FX_DAYCOUNT, row, "ACTACTAFB " + start + ".." + end,
         evalYearFraction(ACT_ACT_AFB, start, end, null), Double.valueOf(expected));
+    setDays(FX_DAYCOUNT, row, "ACTACTAFB " + start + ".." + end, ACT_ACT_AFB, start, end);
     rows.add(row);
     CHECK.countRow(FX_DAYCOUNT);
   }
@@ -2604,10 +4285,13 @@ void emitDataAct365L(JArray rows) {
     LocalDate periodEnd = LocalDate.of((Integer) r[7], (Integer) r[8], (Integer) r[9]);
     double expected = ((Number) r[10]).doubleValue();
     Info info = new Info(null, null, periodEnd, false, frequency);
-    JObject row = dayCountRow("DayCountTest.data_ACT365L", ACT_365L, start, end, jScheduleInfo(info));
-    setYearFraction(FX_DAYCOUNT, row,
-        "ACT365L " + start + ".." + end + " " + frequency + " pe=" + periodEnd,
+    String rowId = "ACT365L " + start + ".." + end + " " + frequency + " pe=" + periodEnd;
+    JObject row = dayCountRow(
+        dcId("l365-" + slug(frequency.toString()) + "-pe-" + periodEnd, ACT_365L, start, end),
+        "DayCountTest.data_ACT365L", ACT_365L, start, end, jScheduleInfo(info));
+    setYearFraction(FX_DAYCOUNT, row, rowId,
         evalYearFraction(ACT_365L, start, end, info), Double.valueOf(expected));
+    setDays(FX_DAYCOUNT, row, rowId, ACT_365L, start, end);
     rows.add(row);
     CHECK.countRow(FX_DAYCOUNT);
   }
@@ -2620,10 +4304,17 @@ void emitDataAct365L(JArray rows) {
  */
 void addInfoCase(JArray rows, String source, DayCount dayCount, LocalDate start, LocalDate end,
     Info info, double expected) {
-  JObject row = dayCountRow(source, dayCount, start, end,
-      info == null ? jNull() : jScheduleInfo(info));
-  setYearFraction(FX_DAYCOUNT, row, source + " " + dayCount.getName() + " " + start + ".." + end,
+  String method = source.substring(source.indexOf(".test_") + ".test_".length());
+  // Two families of the same shape: the ICMA stub cases and the official ISDA
+  // test cases. The id says which, so a row is traceable to its Java method
+  // without reading `source`.
+  String prefix = method.startsWith("actAct_isdaTestCase") ? "isda" : "icma";
+  String rowId = source + " " + dayCount.getName() + " " + start + ".." + end;
+  JObject row = dayCountRow(dcId(prefix + "-" + slug(method), dayCount, start, end), source,
+      dayCount, start, end, jScheduleInfo(info));
+  setYearFraction(FX_DAYCOUNT, row, rowId,
       evalYearFraction(dayCount, start, end, info), Double.valueOf(expected));
+  setDays(FX_DAYCOUNT, row, rowId, dayCount, start, end);
   rows.add(row);
   CHECK.countRow(FX_DAYCOUNT);
 }
@@ -2802,9 +4493,11 @@ void emitActActYearVsIcma(JArray rows) {
       } else {
         CHECK.checkExact(FX_DAYCOUNT, rowId, year.value, icma.value);
         if (iteration % ACT_ACT_YEAR_SAMPLE_STRIDE == 0) {
-          JObject row = dayCountRow("DayCountTest.test_actActYearVsIcma", ACT_ACT_ICMA, start, end,
+          JObject row = dayCountRow(dcId("yvi", ACT_ACT_ICMA, start, end),
+              "DayCountTest.test_actActYearVsIcma", ACT_ACT_ICMA, start, end,
               jScheduleInfo(info));
           row.set("yearFraction", jDbl(icma.value));
+          setDays(FX_DAYCOUNT, row, rowId, ACT_ACT_ICMA, start, end);
           rows.add(row);
           CHECK.countRow(FX_DAYCOUNT);
         }
@@ -2837,19 +4530,21 @@ void emitGeneratedDateGrid(JArray rows) {
   List<List<LocalDate>> series = new ArrayList<>();
   series.add(monthEnds);
   series.add(midMonths);
+  // The id tag of each series, so a row names which grid it belongs to.
+  String[] seriesTags = {"me", "mid"};
   for (DayCount dayCount : gridDayCounts()) {
-    for (List<LocalDate> dates : series) {
+    for (int s = 0; s < series.size(); s++) {
+      List<LocalDate> dates = series.get(s);
       for (int i = 0; i + 1 < dates.size(); i++) {
         LocalDate start = dates.get(i);
         LocalDate end = dates.get(i + 1);
-        JObject row = dayCountRow("grid.simpleInfo", dayCount, start, end, jNull());
+        String rowId = "grid " + dayCount.getName() + " " + start;
+        JObject row = dayCountRow(dcId("grid-" + seriesTags[s], dayCount, start),
+            "grid.simpleInfo", dayCount, start, end, jScheduleInfo(null));
         Eval yf = evalYearFraction(dayCount, start, end, null);
         // Capture-only: generated inputs have no Java test constant.
-        setYearFraction(FX_DAYCOUNT, row, "grid " + dayCount.getName() + " " + start, yf, null);
-        Eval days = evalDays(dayCount, start, end);
-        if (!days.isError()) {
-          row.set("days", jInt((long) days.value));
-        }
+        setYearFraction(FX_DAYCOUNT, row, rowId, yf, null);
+        setDays(FX_DAYCOUNT, row, rowId, dayCount, start, end);
         rows.add(row);
         CHECK.countRow(FX_DAYCOUNT);
         CHECK.countCaptureOnly(FX_DAYCOUNT);
@@ -2905,17 +4600,311 @@ void emitGeneratedScheduleGrid(JArray rows) {
         for (SchedulePeriod period : schedule.getPeriods()) {
           LocalDate start = period.getStartDate();
           LocalDate end = period.getEndDate();
-          JObject row = dayCountRow("grid.schedule." + frequency + "." + shapes[s], dayCount,
-              start, end, info);
+          String rowId = "gridSchedule " + dayCount.getName() + " " + frequency + " " + start;
+          JObject row = dayCountRow(
+              dcId("sched-" + slug(frequency.toString()) + "-" + slug(shapes[s]), dayCount, start),
+              "grid.schedule." + frequency + "." + shapes[s], dayCount, start, end, info);
           Eval yf = evalYearFraction(dayCount, start, end, schedule);
-          setYearFraction(FX_DAYCOUNT, row,
-              "gridSchedule " + dayCount.getName() + " " + frequency + " " + start, yf, null);
+          setYearFraction(FX_DAYCOUNT, row, rowId, yf, null);
+          setDays(FX_DAYCOUNT, row, rowId, dayCount, start, end);
           rows.add(row);
           CHECK.countRow(FX_DAYCOUNT);
           CHECK.countCaptureOnly(FX_DAYCOUNT);
         }
       }
     }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * The four @MethodSource("data_types") sweeps of DayCountTest, over the same
+ * subjects as the generated grid: the 21 standard day counts plus Bus/252
+ * BRBD. Sources: DayCountTest.java:88-124.
+ *
+ * The Java test guards three of the four with `if (type != ONE_ONE)`, because
+ * `1/1` answers 1 for any two dates, and it runs over the 21 standard day
+ * counts only. Both limits are reproduced exactly: the row is always captured,
+ * and the ASSERTION is applied only where the Java test makes it - ONE_ONE is
+ * recorded without a year-fraction expectation, and the extra Bus/252 BRBD row
+ * is marked capture-only rather than being held to a tolerance the Java test
+ * never claimed for it (a business-day count of 251 for a whole year is not
+ * "365 within 5", and is correct).
+ * ---------------------------------------------------------------------------
+ */
+
+/** The dates DayCountTest declares for these four sweeps (:62-65). */
+LocalDate DAYCOUNT_JAN_01 = LocalDate.of(2010, 1, 1);
+LocalDate DAYCOUNT_JAN_02 = LocalDate.of(2010, 1, 2);
+LocalDate DAYCOUNT_JUL_01 = LocalDate.of(2010, 7, 1);
+LocalDate DAYCOUNT_JAN_01_NEXT = LocalDate.of(2011, 1, 1);
+
+/** True for the 21 standard day counts the Java sweeps actually cover. */
+boolean isStandardDayCount(DayCount dayCount) {
+  return standardDayCounts().contains(dayCount);
+}
+
+/**
+ * test_same: every day count except `1/1` answers 0 for a zero-length period,
+ * in both year fraction and days.
+ */
+void emitDataTypesSame(JArray rows) {
+  for (DayCount dayCount : gridDayCounts()) {
+    boolean asserted = isStandardDayCount(dayCount) && !dayCount.equals(ONE_ONE);
+    String rowId = "test_same " + dayCount.getName();
+    JObject row = dayCountRow(dcId("same", dayCount, DAYCOUNT_JAN_02),
+        "DayCountTest.test_same", dayCount, DAYCOUNT_JAN_02, DAYCOUNT_JAN_02,
+        jScheduleInfo(null));
+    setYearFraction(FX_DAYCOUNT, row, rowId,
+        evalYearFraction(dayCount, DAYCOUNT_JAN_02, DAYCOUNT_JAN_02, null),
+        asserted ? Double.valueOf(0d) : null);
+    setDays(FX_DAYCOUNT, row, rowId, evalDays(dayCount, DAYCOUNT_JAN_02, DAYCOUNT_JAN_02),
+        asserted ? Integer.valueOf(0) : null);
+    rows.add(row);
+    CHECK.countRow(FX_DAYCOUNT);
+    if (!asserted) {
+      CHECK.countCaptureOnly(FX_DAYCOUNT);
+    }
+  }
+}
+
+/**
+ * test_halfYear and test_wholeYear: the sanity bounds the Java test states,
+ * with its own tolerances - half a year within 0.01 of 0.5 and 182 days within
+ * 2, a whole year within 0.02 of 1 and 365 days within 5.
+ *
+ * These are tolerance checks rather than equalities, so they are asserted with
+ * checkClose / an explicit integer window instead of the exact comparison the
+ * data tables use.
+ */
+void emitDataTypesYearBounds(JArray rows, boolean halfYear) {
+  LocalDate start = DAYCOUNT_JAN_01;
+  LocalDate end = halfYear ? DAYCOUNT_JUL_01 : DAYCOUNT_JAN_01_NEXT;
+  String source = halfYear ? "DayCountTest.test_halfYear" : "DayCountTest.test_wholeYear";
+  String prefix = halfYear ? "half" : "whole";
+  double expectedFraction = halfYear ? 0.5d : 1d;
+  double fractionTolerance = halfYear ? 0.01d : 0.02d;
+  String toleranceName = halfYear ? "DayCountTest.test_halfYear within(0.01)"
+      : "DayCountTest.test_wholeYear within(0.02)";
+  int expectedDays = halfYear ? 182 : 365;
+  int daysTolerance = halfYear ? 2 : 5;
+  for (DayCount dayCount : gridDayCounts()) {
+    boolean asserted = isStandardDayCount(dayCount) && !dayCount.equals(ONE_ONE);
+    String rowId = source + " " + dayCount.getName();
+    Info info = new Info(DAYCOUNT_JAN_01, DAYCOUNT_JAN_01_NEXT, DAYCOUNT_JAN_01_NEXT, false, P12M);
+    JObject row = dayCountRow(dcId(prefix, dayCount, start, end), source, dayCount, start, end,
+        jScheduleInfo(info));
+    Eval fraction = evalYearFraction(dayCount, start, end, info);
+    if (fraction.isError()) {
+      row.set("error", jStr(fraction.error));
+      CHECK.countErrorRow(FX_DAYCOUNT);
+      CHECK.fail(FX_DAYCOUNT, rowId, "expected a year fraction but Java threw " + fraction.error);
+    } else {
+      row.set("yearFraction", jDbl(fraction.value));
+      if (asserted) {
+        CHECK.checkClose(FX_DAYCOUNT, rowId, expectedFraction, fraction.value, fractionTolerance,
+            toleranceName);
+      }
+    }
+    Eval days = evalDays(dayCount, start, end);
+    setDays(FX_DAYCOUNT, row, rowId, days, null);
+    if (asserted && !days.isError()) {
+      long actualDays = (long) days.value;
+      CHECK.checkTrue(FX_DAYCOUNT, rowId + " days",
+          Math.abs(actualDays - expectedDays) <= daysTolerance,
+          "expected days=" + expectedDays + " +/-" + daysTolerance + " actual=" + actualDays);
+    }
+    rows.add(row);
+    CHECK.countRow(FX_DAYCOUNT);
+    if (!asserted) {
+      CHECK.countCaptureOnly(FX_DAYCOUNT);
+    }
+  }
+}
+
+/**
+ * test_wrongOrder: both `yearFraction` and `days` reject dates out of order,
+ * for every day count - the precondition the Scala port keeps as a documented
+ * ArgCheck throw. `relativeYearFraction`, which accepts them and negates the
+ * result, is captured on the same row, so the two behaviours sit side by side.
+ */
+void emitDataTypesWrongOrder(JArray rows) {
+  for (DayCount dayCount : gridDayCounts()) {
+    boolean asserted = isStandardDayCount(dayCount);
+    String rowId = "test_wrongOrder " + dayCount.getName();
+    JObject row = dayCountRow(dcId("order", dayCount, DAYCOUNT_JAN_02, DAYCOUNT_JAN_01),
+        "DayCountTest.test_wrongOrder", dayCount, DAYCOUNT_JAN_02, DAYCOUNT_JAN_01,
+        jScheduleInfo(null));
+    Eval fraction = evalYearFraction(dayCount, DAYCOUNT_JAN_02, DAYCOUNT_JAN_01, null);
+    if (fraction.isError()) {
+      row.set("error", jStr(fraction.error));
+      CHECK.countErrorRow(FX_DAYCOUNT);
+      if (asserted) {
+        CHECK.checkTrue(FX_DAYCOUNT, rowId + " yearFraction",
+            fraction.failedWith(IllegalArgumentException.class),
+            "expected IllegalArgumentException, got " + fraction.error);
+      }
+    } else {
+      row.set("yearFraction", jDbl(fraction.value));
+      CHECK.fail(FX_DAYCOUNT, rowId,
+          "expected yearFraction to reject reversed dates but it returned " + fraction.value);
+    }
+    Eval relative = evalRelativeYearFraction(dayCount, DAYCOUNT_JAN_02, DAYCOUNT_JAN_01, null);
+    if (!relative.isError()) {
+      row.set("relativeYearFraction", jDbl(relative.value));
+    }
+    Eval relativeReversed = evalRelativeYearFraction(dayCount, DAYCOUNT_JAN_01, DAYCOUNT_JAN_02,
+        null);
+    if (!relativeReversed.isError()) {
+      row.set("relativeYearFractionReversed", jDbl(relativeReversed.value));
+      if (!relative.isError()) {
+        // relativeYearFraction negates when the dates are reversed.
+        CHECK.checkExact(FX_DAYCOUNT, rowId + " relative negates", -relativeReversed.value,
+            relative.value);
+      }
+    }
+    Eval days = evalDays(dayCount, DAYCOUNT_JAN_02, DAYCOUNT_JAN_01);
+    if (days.isError()) {
+      row.set("daysError", jStr(days.error));
+      CHECK.countErrorRow(FX_DAYCOUNT);
+      if (asserted) {
+        CHECK.checkTrue(FX_DAYCOUNT, rowId + " days",
+            days.failedWith(IllegalArgumentException.class),
+            "expected IllegalArgumentException, got " + days.error);
+      }
+    } else {
+      row.set("days", jInt((long) days.value));
+      CHECK.fail(FX_DAYCOUNT, rowId,
+          "expected days to reject reversed dates but it returned " + days.value);
+    }
+    rows.add(row);
+    CHECK.countRow(FX_DAYCOUNT);
+    if (!asserted) {
+      CHECK.countCaptureOnly(FX_DAYCOUNT);
+    }
+  }
+}
+
+/**
+ * The five day counts that READ schedule information, evaluated with Java's
+ * defaults - the `UnsupportedOperationException` of DayCount.ScheduleInfo,
+ * which the Scala port turns into an `Option` that is `None` and an ArgCheck
+ * throw at the accessor.
+ *
+ * The expectation of each row is written out, so this is an assertion and not
+ * a recording: three of the five must fail with the message named here, and
+ * the other two must return the exact fraction named here. `days` never reads
+ * schedule information, so it answers on all five.
+ *
+ * Rows: {day count, expected fraction or null, expected error or null}.
+ */
+Object[][] missingScheduleInfoCases() {
+  return new Object[][] {
+      {ACT_ACT_ICMA, null, "UnsupportedOperationException: The end date of the schedule is required"},
+      // Act/365 Actual reads the period end only to decide 365 vs 366 and
+      // falls back to the actual dates, so it answers: 29/366.
+      {ACT_365_ACTUAL, Double.valueOf(29d / 366d), null},
+      {THIRTY_E_360_ISDA, null,
+          "UnsupportedOperationException: The end date of the schedule is required"},
+      // 30U/360 reads only the end-of-month flag, which defaults to true: 29/360.
+      {THIRTY_U_360, Double.valueOf(29d / 360d), null},
+      {ACT_365L, null,
+          "UnsupportedOperationException: The end date of the schedule period is required"},
+  };
+}
+
+void emitMissingScheduleInfo(JArray rows) {
+  LocalDate start = LocalDate.of(2012, 1, 31);
+  LocalDate end = LocalDate.of(2012, 2, 29);
+  for (Object[] testCase : missingScheduleInfoCases()) {
+    DayCount dayCount = (DayCount) testCase[0];
+    Double expectedFraction = (Double) testCase[1];
+    String expectedError = (String) testCase[2];
+    String rowId = "missingScheduleInfo " + dayCount.getName();
+    JObject row = dayCountRow(dcId("missing", dayCount, start, end),
+        "DayCountTest.data_types.missingScheduleInfo", dayCount, start, end, jScheduleInfo(null));
+    Eval fraction = evalYearFraction(dayCount, start, end, null);
+    setYearFraction(FX_DAYCOUNT, row, rowId, fraction, expectedFraction);
+    if (expectedError != null) {
+      CHECK.checkEquals(FX_DAYCOUNT, rowId + " error", expectedError,
+          fraction.isError() ? fraction.error : null);
+    }
+    setDays(FX_DAYCOUNT, row, rowId, dayCount, start, end);
+    rows.add(row);
+    CHECK.countRow(FX_DAYCOUNT);
+  }
+}
+
+/**
+ * Bus/252 BRBD across and outside the calendar's stored range.
+ *
+ * Business252DayCountTest states its expectation as an identity rather than a
+ * number (:82-92): `yearFraction` is the calendar's own `daysBetween` over
+ * 252, and `days` IS that `daysBetween`. Both are asserted here, on the BRBD
+ * calendar the fixture uses, which makes every value in these rows checked
+ * against something other than itself.
+ *
+ * Six of the nine probes sit outside BRBD's 1950-2099 range, where
+ * ImmutableHolidayCalendar falls back to a weekend-only test. For those the
+ * business-day count is also computed independently - by counting the days
+ * that are neither Saturday nor Sunday - so the fallback is proven rather than
+ * assumed.
+ *
+ * Rows: {label, start, end, true if the whole span is outside the range}.
+ */
+Object[][] business252CalendarRangeCases() {
+  return new Object[][] {
+      {"inrange", LocalDate.of(2020, 1, 15), LocalDate.of(2020, 4, 15), Boolean.FALSE},
+      {"firstyear", LocalDate.of(1950, 1, 2), LocalDate.of(1950, 12, 29), Boolean.FALSE},
+      {"lastyear", LocalDate.of(2099, 1, 2), LocalDate.of(2099, 12, 31), Boolean.FALSE},
+      {"below", LocalDate.of(1949, 1, 3), LocalDate.of(1949, 12, 30), Boolean.TRUE},
+      {"farbelow", LocalDate.of(1940, 1, 31), LocalDate.of(1945, 6, 30), Boolean.TRUE},
+      {"spanlower", LocalDate.of(1948, 12, 31), LocalDate.of(1952, 6, 30), Boolean.FALSE},
+      {"above", LocalDate.of(2100, 1, 4), LocalDate.of(2100, 12, 31), Boolean.TRUE},
+      {"farabove", LocalDate.of(2105, 2, 27), LocalDate.of(2110, 3, 31), Boolean.TRUE},
+      {"spanupper", LocalDate.of(2098, 12, 31), LocalDate.of(2102, 6, 30), Boolean.FALSE},
+  };
+}
+
+/** Days that are neither Saturday nor Sunday, counted independently. */
+int weekdayCount(LocalDate startInclusive, LocalDate endExclusive) {
+  int count = 0;
+  LocalDate cursor = startInclusive;
+  while (cursor.isBefore(endExclusive)) {
+    DayOfWeek dayOfWeek = cursor.getDayOfWeek();
+    if (dayOfWeek != DayOfWeek.SATURDAY && dayOfWeek != DayOfWeek.SUNDAY) {
+      count++;
+    }
+    cursor = cursor.plusDays(1);
+  }
+  return count;
+}
+
+void emitBusiness252CalendarRange(JArray rows) {
+  HolidayCalendarId brbdId = HolidayCalendarId.of("BRBD");
+  DayCount bus252 = DayCount.ofBus252(brbdId);
+  HolidayCalendar brbd = brbdId.resolve(ReferenceData.standard());
+  for (Object[] testCase : business252CalendarRangeCases()) {
+    String label = (String) testCase[0];
+    LocalDate start = (LocalDate) testCase[1];
+    LocalDate end = (LocalDate) testCase[2];
+    boolean outsideRange = ((Boolean) testCase[3]).booleanValue();
+    String rowId = "bus252 " + label + " " + start + ".." + end;
+    int businessDays = brbd.daysBetween(start, end);
+    JObject row = dayCountRow(dcId("bus252-" + label, bus252, start, end),
+        "Business252DayCountTest.calendarRange", bus252, start, end, jScheduleInfo(null));
+    // Business252DayCountTest: yearFraction == daysBetween / 252, days == daysBetween.
+    setYearFraction(FX_DAYCOUNT, row, rowId, evalYearFraction(bus252, start, end, null),
+        Double.valueOf(businessDays / 252d));
+    setDays(FX_DAYCOUNT, row, rowId, evalDays(bus252, start, end),
+        Integer.valueOf(businessDays));
+    if (outsideRange) {
+      // Outside 1950-2099 the calendar answers weekend-only, which is the one
+      // thing about these probes that is not the implementation's own word.
+      CHECK.checkInt(FX_DAYCOUNT, rowId + " weekend-only fallback", weekdayCount(start, end),
+          businessDays);
+    }
+    rows.add(row);
+    CHECK.countRow(FX_DAYCOUNT);
   }
 }
 
@@ -2937,9 +4926,32 @@ Jn buildDayCountFixture() {
   emitDataAct365L(rows);
   emitInfoCases(rows);
   emitActActYearVsIcma(rows);
+  emitDataTypesSame(rows);
+  emitDataTypesYearBounds(rows, true);
+  emitDataTypesYearBounds(rows, false);
+  emitDataTypesWrongOrder(rows);
+  emitMissingScheduleInfo(rows);
+  emitBusiness252CalendarRange(rows);
   emitGeneratedDateGrid(rows);
   emitGeneratedScheduleGrid(rows);
+  // The row count is asserted rather than reported: 201 + 185 year-fraction
+  // and day tables, 88 30U/360, 38 30E/360 ISDA, 57 AFB, 12 ACT/365L, 35
+  // Info-based ICMA and ISDA cases, 146 sampled ACT_ACT_YEAR rows, 4 x 22
+  // data_types sweeps, 5 missing-schedule-information probes, 9 Bus/252 range
+  // probes, 11,044 simple-info grid rows and 6,578 schedule-grid rows.
+  CHECK.checkCount(FX_DAYCOUNT, "daycount rows", 18356, rows.size());
+  CHECK.checkCount(FX_DAYCOUNT, "daycount row ids", 18356, DAYCOUNT_ID_USES.size()
+      + countDuplicateIdBases());
   return rows;
+}
+
+/** The number of extra uses of a repeated base id, so ids can be counted. */
+int countDuplicateIdBases() {
+  int extra = 0;
+  for (Integer uses : DAYCOUNT_ID_USES.values()) {
+    extra += uses.intValue() - 1;
+  }
+  return extra;
 }
 
 /* ===========================================================================
@@ -3104,31 +5116,41 @@ List<List<LocalDate>> setResolvedScheduleExpectations(JObject row, Schedule sche
  * when the row came from a table, and null for generated combinations; when
  * present they are cross-checked, so a table row that stops matching aborts
  * the capture.
+ *
+ * `expect` states what the Java test says about resolution itself: a schedule,
+ * a rejection of a named type, or nothing (a generated combination). A named
+ * rejection is checked by type - see the Expect banner - so a definition that
+ * starts failing differently cannot be recaptured as the expectation.
  */
 void addScheduleRow(JArray rows, String source, PeriodicSchedule definition, String rowId,
     List<LocalDate> expectedUnadjusted, List<LocalDate> expectedAdjusted,
-    RollConvention expectedRoll, boolean expectFailure) {
+    RollConvention expectedRoll, Expect expect) {
   JObject row = jPeriodicScheduleInputs(definition);
   row.set("source", jStr(source));
   Schedule schedule = null;
-  String error = null;
+  Throwable thrownByResolution = null;
   try {
     schedule = definition.createSchedule(ReferenceData.standard());
   } catch (Throwable thrown) {
-    error = errorMessage(thrown);
+    requireCapturable(thrown);
+    thrownByResolution = thrown;
   }
-  if (error != null) {
-    row.set("error", jStr(error));
+  if (thrownByResolution != null) {
+    row.set("error", jStr(errorMessage(thrownByResolution)));
     CHECK.countErrorRow(FX_SCHEDULE);
-    if (!expectFailure && expectedUnadjusted != null) {
-      CHECK.fail(FX_SCHEDULE, rowId, "expected a schedule but Java threw " + error);
+    if (expect.mustFail()) {
+      checkExpectedFailureType(FX_SCHEDULE, rowId, expect.failureType, thrownByResolution);
+    } else if (expect.mustSucceed()) {
+      CHECK.fail(FX_SCHEDULE, rowId,
+          "expected a schedule but Java threw " + errorMessage(thrownByResolution));
     }
     rows.add(row);
     CHECK.countRow(FX_SCHEDULE);
     return;
   }
-  if (expectFailure) {
-    CHECK.fail(FX_SCHEDULE, rowId, "expected Java to throw but a schedule was produced");
+  if (expect.mustFail()) {
+    CHECK.fail(FX_SCHEDULE, rowId, "expected " + expect.failureType.getSimpleName()
+        + " but a schedule was produced");
   }
   List<List<LocalDate>> dates = setResolvedScheduleExpectations(row, schedule);
   List<LocalDate> unadjusted = dates.get(0);
@@ -3184,7 +5206,7 @@ void emitDataGeneration(JArray rows) {
         .build();
     addScheduleRow(rows, "PeriodicScheduleTest.data_generation", definition,
         "generation " + start + ".." + end + " " + frequency + " stub=" + stubConvention,
-        expectedUnadjusted, expectedAdjusted, expectedRoll, false);
+        expectedUnadjusted, expectedAdjusted, expectedRoll, MUST_SUCCEED);
   }
 }
 
@@ -3237,21 +5259,34 @@ void emitDataReplace(JArray rows) {
     PeriodicSchedule replaced = null;
     List<LocalDate> unadjusted = null;
     Schedule schedule = null;
-    String error = null;
+    Throwable thrownByReplace = null;
     try {
       replaced = base.replaceStartDate(replaceStart);
       unadjusted = new ArrayList<>(replaced.createUnadjustedDates());
       schedule = replaced.createSchedule(ReferenceData.standard());
     } catch (Throwable thrown) {
-      error = errorMessage(thrown);
+      requireCapturable(thrown);
+      thrownByReplace = thrown;
     }
-    if (error != null) {
-      row.set("error", jStr(error));
+    // A null expected list is the table's way of saying "this row is the
+    // rejection case", and PeriodicScheduleTest states it as
+    // `assertThatIllegalArgumentException()` (:999), so the row must both fail
+    // AND fail with that type; a row that carries dates must not fail at all.
+    Expect expect = expectedUnadjusted == null ? MUST_REJECT_ARGUMENT : MUST_SUCCEED;
+    if (thrownByReplace != null) {
+      row.set("error", jStr(errorMessage(thrownByReplace)));
       CHECK.countErrorRow(FX_SCHEDULE);
-      if (expectedUnadjusted != null) {
-        CHECK.fail(FX_SCHEDULE, rowId, "expected dates but Java threw " + error);
+      if (expect.mustFail()) {
+        checkExpectedFailureType(FX_SCHEDULE, rowId, expect.failureType, thrownByReplace);
+      } else {
+        CHECK.fail(FX_SCHEDULE, rowId,
+            "expected dates but Java threw " + errorMessage(thrownByReplace));
       }
     } else {
+      if (expect.mustFail()) {
+        CHECK.fail(FX_SCHEDULE, rowId, "expected " + expect.failureType.getSimpleName()
+            + " but replaceStartDate produced a schedule");
+      }
       // `replacedDefinition` is the post-replacement definition itself, whose
       // eleven fields are exactly what the Java test asserts one by one
       // (PeriodicScheduleTest.java:1002-1013: the override start date and the
@@ -3279,9 +5314,9 @@ void emitDataReplace(JArray rows) {
       row.set("expectedStubConvention", jName(expectedStub));
       row.set("expectedLastRegularEndDate", jDate(expectedLastRegular));
       row.set("expectedRollConvention", jName(expectedRoll));
-      if (expectedUnadjusted == null) {
-        CHECK.fail(FX_SCHEDULE, rowId, "expected Java to throw but dates were produced");
-      } else {
+      // The rejection case is reported above, by type, so here the row is one
+      // that carries dates and the table's own expectations are asserted.
+      if (expectedUnadjusted != null) {
         CHECK.checkEquals(FX_SCHEDULE, rowId + " unadjusted", expectedUnadjusted, unadjusted);
         CHECK.checkEquals(FX_SCHEDULE, rowId + " stubConvention",
             Optional.ofNullable(expectedStub), replaced.getStubConvention());
@@ -3350,6 +5385,7 @@ void emitScheduleCombinations(JArray rows) {
                 .rollConvention((RollConvention) roll[1])
                 .build();
           } catch (Throwable thrown) {
+            requireCapturable(thrown);
             // A definition the builder itself rejects is still an expectation.
             // The full input key set is rendered from the raw values so this
             // row is shaped exactly like every other row in the document.
@@ -3365,7 +5401,7 @@ void emitScheduleCombinations(JArray rows) {
           }
           addScheduleRow(rows, "grid.combinations", definition,
               "grid " + frequency + " " + stub + " " + roll[0] + " " + calendar[0], null, null,
-              null, false);
+              null, CAPTURE_ONLY);
           CHECK.countCaptureOnly(FX_SCHEDULE);
         }
       }
@@ -3399,13 +5435,13 @@ void addScheduleCaseRow(JArray rows, String source, String rowId,
     AdjustableDate overrideStartDate,
     List<LocalDate> expectedUnadjusted,
     List<LocalDate> expectedAdjusted,
-    boolean expectFailure) {
+    Expect expect) {
   JObject row = jPeriodicScheduleRawInputs(startDate, endDate, frequency, businessDayAdjustment,
       startDateBusinessDayAdjustment, endDateBusinessDayAdjustment, stubConvention, rollConvention,
       firstRegularStartDate, lastRegularEndDate, overrideStartDate);
   row.set("source", jStr(source));
   Schedule schedule = null;
-  String error = null;
+  Throwable thrownByCase = null;
   try {
     PeriodicSchedule definition = PeriodicSchedule.builder()
         .startDate(startDate)
@@ -3422,20 +5458,25 @@ void addScheduleCaseRow(JArray rows, String source, String rowId,
         .build();
     schedule = definition.createSchedule(ReferenceData.standard());
   } catch (Throwable thrown) {
-    error = errorMessage(thrown);
+    requireCapturable(thrown);
+    thrownByCase = thrown;
   }
-  if (error != null) {
-    row.set("error", jStr(error));
+  if (thrownByCase != null) {
+    row.set("error", jStr(errorMessage(thrownByCase)));
     CHECK.countErrorRow(FX_SCHEDULE);
-    if (!expectFailure) {
-      CHECK.fail(FX_SCHEDULE, rowId, "expected a schedule but Java threw " + error);
+    if (expect.mustFail()) {
+      checkExpectedFailureType(FX_SCHEDULE, rowId, expect.failureType, thrownByCase);
+    } else if (expect.mustSucceed()) {
+      CHECK.fail(FX_SCHEDULE, rowId,
+          "expected a schedule but Java threw " + errorMessage(thrownByCase));
     }
     rows.add(row);
     CHECK.countRow(FX_SCHEDULE);
     return;
   }
-  if (expectFailure) {
-    CHECK.fail(FX_SCHEDULE, rowId, "expected Java to throw but a schedule was produced");
+  if (expect.mustFail()) {
+    CHECK.fail(FX_SCHEDULE, rowId, "expected " + expect.failureType.getSimpleName()
+        + " but a schedule was produced");
   }
   List<List<LocalDate>> dates = setResolvedScheduleExpectations(row, schedule);
   if (expectedUnadjusted != null) {
@@ -3491,7 +5532,7 @@ void emitScheduleFeatures(JArray rows) {
       StubConvention.NONE, null, null, null, null,
       List.of(LocalDate.of(2014, 10, 4), LocalDate.of(2015, 1, 4), LocalDate.of(2015, 4, 4)),
       List.of(LocalDate.of(2014, 10, 3), LocalDate.of(2015, 1, 5), LocalDate.of(2015, 4, 3)),
-      false);
+      MUST_SUCCEED);
 
   // test_firstPaymentDate_before_effectiveDate (:212) - an override start date
   // earlier than the start date, combined with a first regular start date. The
@@ -3506,14 +5547,14 @@ void emitScheduleFeatures(JArray rows) {
           LocalDate.of(2018, 12, 20), LocalDate.of(2019, 3, 20), LocalDate.of(2019, 6, 20)),
       List.of(LocalDate.of(2018, 3, 20), LocalDate.of(2018, 6, 20), LocalDate.of(2018, 9, 20),
           LocalDate.of(2018, 12, 20), LocalDate.of(2019, 3, 20), LocalDate.of(2019, 6, 20)),
-      false);
+      MUST_SUCCEED);
 
   // test_override_fallbackWhenStartDateMismatch (:851) - an adjusted override
   // start date that does not line up with the start date.
   addScheduleCaseRow(rows, "PeriodicScheduleTest.test_override_fallbackWhenStartDateMismatch",
       "override fallback", jul04, sep17, P1M, bda, null, null, null, DAY_17, null, null,
       AdjustableDate.of(jun17, followingSatSun),
-      List.of(jun17, jul17, aug17, sep17), List.of(jun17, jul17, aug18, sep17), false);
+      List.of(jun17, jul17, aug17, sep17), List.of(jun17, jul17, aug18, sep17), MUST_SUCCEED);
 
   // test_override_fallbackWhenStartDateMismatchEndStub (:880) - the same, with
   // an explicit last regular end date producing a final stub.
@@ -3521,13 +5562,13 @@ void emitScheduleFeatures(JArray rows) {
       "PeriodicScheduleTest.test_override_fallbackWhenStartDateMismatchEndStub",
       "override fallback end stub", jul04, sep04, P1M, bda, null, null, null, DAY_17, null, aug17,
       AdjustableDate.of(jun17, followingSatSun),
-      List.of(jun17, jul17, aug17, sep04), List.of(jun17, jul17, aug18, sep04), false);
+      List.of(jun17, jul17, aug17, sep04), List.of(jun17, jul17, aug18, sep04), MUST_SUCCEED);
 
   // coverage_builder (:1447) - the one Java definition with all eleven fields
   // populated at once, so the fixture carries a row in which no input is null.
   addScheduleCaseRow(rows, "PeriodicScheduleTest.coverage_builder", "coverage builder",
       jul17, sep17, P2M, bdaNone, bdaNone, bdaNone, StubConvention.NONE, EOM, jul17, sep17,
-      AdjustableDate.of(jul11, bdaNone), null, null, false);
+      AdjustableDate.of(jul11, bdaNone), null, null, MUST_SUCCEED);
 
   // The builder-time validation branches. Each is a definition Java rejects,
   // and the captured message is the whole contract tying it to the port's
@@ -3536,34 +5577,34 @@ void emitScheduleFeatures(JArray rows) {
   // start date outside the schedule), :370 (last regular end date before the
   // first regular start date).
   addScheduleCaseRow(rows, "PeriodicScheduleTest.invalid.startAfterEnd", "start after end",
-      sep17, jun04, P1M, bda, null, null, null, null, null, null, null, null, null, true);
+      sep17, jun04, P1M, bda, null, null, null, null, null, null, null, null, null, MUST_REJECT_ARGUMENT);
   addScheduleCaseRow(rows, "PeriodicScheduleTest.invalid.startEqualsEnd", "start equals end",
-      jun04, jun04, P1M, bda, null, null, null, null, null, null, null, null, null, true);
+      jun04, jun04, P1M, bda, null, null, null, null, null, null, null, null, null, MUST_REJECT_ARGUMENT);
   addScheduleCaseRow(rows, "PeriodicScheduleTest.invalid.overrideStartAfterEnd",
       "override start after end", jun04, sep17, P1M, bda, null, null, null, null, null, null,
-      AdjustableDate.of(oct17), null, null, true);
+      AdjustableDate.of(oct17), null, null, MUST_REJECT_ARGUMENT);
   addScheduleCaseRow(rows, "PeriodicScheduleTest.invalid.firstRegularAfterEnd",
       "first regular after end", jun04, sep17, P1M, bda, null, null, null, null, oct17, null, null,
-      null, null, true);
+      null, null, MUST_REJECT_ARGUMENT);
   addScheduleCaseRow(rows, "PeriodicScheduleTest.invalid.firstRegularBeforeStart",
       "first regular before start", jul17, sep17, P1M, bda, null, null, null, null, jun04, null,
-      null, null, null, true);
+      null, null, null, MUST_REJECT_ARGUMENT);
   // createDates(JUN_04, SEP_17, SEP_05, SEP_04) at :263 - last regular end date
   // before the first regular start date.
   addScheduleCaseRow(rows, "PeriodicScheduleTest.invalid.lastRegularBeforeFirstRegular",
       "last regular before first regular", jun04, sep17, P1M, bda, null, null, null, null, sep05,
-      sep04, null, null, null, true);
+      sep04, null, null, null, MUST_REJECT_ARGUMENT);
   // The first-regular vs override-start-date conflict at :265-272.
   addScheduleCaseRow(rows, "PeriodicScheduleTest.invalid.firstRegularWithOverride",
       "first regular with override", jun04, sep17, P1M, bda, null, null, null, null, jul17, null,
-      AdjustableDate.of(aug04), null, null, true);
+      AdjustableDate.of(aug04), null, null, MUST_REJECT_ARGUMENT);
   // Term frequency with an explicit regular date: a stub convention that
   // contradicts the explicit dates, rejected at resolution rather than at
   // build time with "Explicit stubs must not be specified when using 'Term'
   // frequency" (PeriodicSchedule.java:591).
   addScheduleCaseRow(rows, "PeriodicScheduleTest.invalid.termWithExplicitStub",
       "term with explicit stub", jun04, sep17, TERM, bda, null, null, null, null, jul17, null,
-      null, null, null, true);
+      null, null, null, Expect.failsWith(ScheduleException.class));
 }
 
 Jn buildScheduleFixture() {
@@ -3642,6 +5683,21 @@ List<RateEntry> rateEntries(Object... baseCounterRate) {
   return result;
 }
 
+/** A stable label for a rate list, used in check ids (never in a fixture). */
+String rateEntryLabel(List<RateEntry> entries) {
+  if (entries.isEmpty()) {
+    return "[empty]";
+  }
+  StringBuilder sb = new StringBuilder();
+  for (RateEntry entry : entries) {
+    if (sb.length() > 0) {
+      sb.append(',');
+    }
+    sb.append(entry.pair).append('@').append(Double.toString(entry.rate));
+  }
+  return sb.toString();
+}
+
 Jn jRateEntries(List<RateEntry> entries) {
   JArray array = new JArray();
   for (RateEntry entry : entries) {
@@ -3671,11 +5727,15 @@ JObject jMatrixState(FxMatrix matrix) {
 }
 
 /**
- * An expected query result: a null expectation with expectFailure false means
- * capture-only, while expectFailure true asserts that Java rejects the query -
- * which is what the `assertThatIllegalArgumentException` cases of
- * FxRateTest.test_fxRate_forPair state, so the capture states them too rather
- * than recording whatever happens.
+ * An expected query result: a null expectation with no expected failure means
+ * capture-only, while an `expectedFailure` type asserts that Java rejects the
+ * query with that type - which is what the `assertThatIllegalArgumentException`
+ * cases of FxRateTest.test_fxRate_forPair state, so the capture states them
+ * too rather than recording whatever happens.
+ *
+ * The type matters: without it an expected failure only asserts that something
+ * was thrown, and a rejection that changed type - or a NullPointerException
+ * from a new defect - would be recaptured as the expectation.
  */
 class FxQuery {
   final Currency base;
@@ -3683,20 +5743,20 @@ class FxQuery {
   final Double expected;
   final double tolerance;
   final String toleranceName;
-  final boolean expectFailure;
+  final Class<? extends Throwable> expectedFailure;
 
   FxQuery(Currency base, Currency counter, Double expected, double tolerance, String toleranceName) {
-    this(base, counter, expected, tolerance, toleranceName, false);
+    this(base, counter, expected, tolerance, toleranceName, null);
   }
 
   FxQuery(Currency base, Currency counter, Double expected, double tolerance, String toleranceName,
-      boolean expectFailure) {
+      Class<? extends Throwable> expectedFailure) {
     this.base = base;
     this.counter = counter;
     this.expected = expected;
     this.tolerance = tolerance;
     this.toleranceName = toleranceName;
-    this.expectFailure = expectFailure;
+    this.expectedFailure = expectedFailure;
   }
 
   static FxQuery of(Currency base, Currency counter) {
@@ -3712,10 +5772,96 @@ class FxQuery {
         "FxMatrixTest.TOLERANCE");
   }
 
-  /** A query the Java implementation must reject, captured as an `error`. */
+  /**
+   * A query the Java implementation must reject, captured as an `error`.
+   *
+   * FxMatrix.fxRate and FxRate.fxRate both reject an unknown currency through
+   * ArgChecker, and FxRateTest.test_fxRate_forPair / FxMatrixTest assert that
+   * with `assertThatIllegalArgumentException()`, so that is the type required
+   * here.
+   */
   static FxQuery failing(Currency base, Currency counter) {
-    return new FxQuery(base, counter, null, 0d, "expected-failure", true);
+    return new FxQuery(base, counter, null, 0d, "expected-failure",
+        IllegalArgumentException.class);
   }
+}
+
+/**
+ * One merge and WHAT FxMatrixTest SAYS ABOUT IT.
+ *
+ * Recording the outcome of a merge is not an expectation: whatever Java did
+ * becomes the fixture, so a change in merge semantics would be recaptured as
+ * the new truth and the capture would still exit 0. Every merge therefore
+ * carries the assertion of the Java test it comes from:
+ *
+ *   cannotMergeDisjointMatrices (FxMatrixTest:490-504) -> `failing`
+ *   mergeAddsInAdditionalCurrencies     (:525-546)     -> `extending`, with
+ *       that test's currency set and all six of its rate constants
+ *   mergeIgnoresDuplicateCurrencies     (:506-523)     -> `extending`, with
+ *       the receiver's own rates as the expectation, which is what "ignores
+ *       duplicates" MEANS for these inputs; the test's literal
+ *       `result equals matrix1` case needs its own receiver and is asserted
+ *       by checkFxMergeConstants below
+ *   merging an empty matrix                            -> `failing`
+ *
+ * `extending` carries both halves of the assertion: the currencies the result
+ * must contain, and the rates it must answer - including the triangulated
+ * ones, which are the part a broken merge gets wrong while still producing a
+ * matrix.
+ */
+class MergeQuery {
+  final List<RateEntry> other;
+  final Class<? extends Throwable> expectedFailure;
+  final List<Currency> expectedCurrencies;
+  final List<FxQuery> rateChecks;
+
+  MergeQuery(List<RateEntry> other, Class<? extends Throwable> expectedFailure,
+      List<Currency> expectedCurrencies, List<FxQuery> rateChecks) {
+    this.other = other;
+    this.expectedFailure = expectedFailure;
+    this.expectedCurrencies = expectedCurrencies;
+    this.rateChecks = rateChecks;
+  }
+
+  /**
+   * Java rejects this merge; the rejection, AND ITS TYPE, is the assertion.
+   *
+   * FxMatrixTest.cannotMergeDisjointMatrices (:490-504) states it as
+   * `assertThatIllegalArgumentException()`, so a merge that starts failing
+   * some other way - an IllegalStateException, or a NullPointerException from
+   * a defect in the merge itself - is a capture failure and not a new
+   * expectation.
+   */
+  static MergeQuery failing(List<RateEntry> other) {
+    return new MergeQuery(other, IllegalArgumentException.class, new ArrayList<>(),
+        new ArrayList<>());
+  }
+
+  /** The merge succeeds: assert the currency set and every named rate. */
+  static MergeQuery extending(List<RateEntry> other, List<Currency> expectedCurrencies,
+      List<FxQuery> rateChecks) {
+    return new MergeQuery(other, null, expectedCurrencies, rateChecks);
+  }
+}
+
+/**
+ * Varargs list builders. Unlike `merges`, these are safe as varargs: Currency
+ * and FxQuery are not generic, so there is no possible-heap-pollution warning.
+ */
+List<Currency> currencyList(Currency... currencies) {
+  List<Currency> result = new ArrayList<>();
+  for (Currency currency : currencies) {
+    result.add(currency);
+  }
+  return result;
+}
+
+List<FxQuery> rateChecks(FxQuery... checks) {
+  List<FxQuery> result = new ArrayList<>();
+  for (FxQuery check : checks) {
+    result.add(check);
+  }
+  return result;
 }
 
 class ConversionQuery {
@@ -3783,21 +5929,27 @@ class CrossQuery {
   final FxRate rate1;
   final FxRate rate2;
   final FxRate expected;
-  final boolean expectFailure;
+  final Class<? extends Throwable> expectedFailure;
 
-  CrossQuery(FxRate rate1, FxRate rate2, FxRate expected, boolean expectFailure) {
+  CrossQuery(FxRate rate1, FxRate rate2, FxRate expected,
+      Class<? extends Throwable> expectedFailure) {
     this.rate1 = rate1;
     this.rate2 = rate2;
     this.expected = expected;
-    this.expectFailure = expectFailure;
+    this.expectedFailure = expectedFailure;
   }
 
   static CrossQuery of(FxRate rate1, FxRate rate2, FxRate expected) {
-    return new CrossQuery(rate1, rate2, expected, false);
+    return new CrossQuery(rate1, rate2, expected, null);
   }
 
+  /**
+   * FxRateTest.test_crossRate asserts every rejected combination - no common
+   * currency, or a rate against itself - with
+   * `assertThatIllegalArgumentException()`, so the type is required here too.
+   */
   static CrossQuery failing(FxRate rate1, FxRate rate2) {
-    return new CrossQuery(rate1, rate2, null, true);
+    return new CrossQuery(rate1, rate2, null, IllegalArgumentException.class);
   }
 }
 
@@ -3826,7 +5978,7 @@ Set<String> FX_ROW_IDS = new LinkedHashSet<>();
 /** Emits one FX scenario row. Every row carries the same nine keys. */
 void addFxScenario(JArray rows, String id, String source, List<RateEntry> definition,
     List<FxQuery> queries, List<ConversionQuery> conversions, List<MultiQuery> multi,
-    List<CrossQuery> crosses, List<List<RateEntry>> merges, boolean captureOnly) {
+    List<CrossQuery> crosses, List<MergeQuery> merges, boolean captureOnly) {
   CHECK.checkTrue(FX_FX, "row id " + id, FX_ROW_IDS.add(id), "row ids are unique");
   JObject row = new JObject()
       .set("id", jStr(id))
@@ -3837,12 +5989,19 @@ void addFxScenario(JArray rows, String id, String source, List<RateEntry> defini
   try {
     matrix = buildMatrix(definition);
   } catch (Throwable thrown) {
+    requireCapturable(thrown);
     buildError = errorMessage(thrown);
   }
   if (buildError != null) {
     // A definition the builder rejects has no matrix to query, so the five
     // query sections are emitted empty and `matrixState` is null: the row keeps
     // the shape of every other row and adds `error` to it.
+    //
+    // No scenario in this document declares such a rejection - every rate list
+    // here is one FxMatrixTest builds successfully - so a build that starts
+    // failing means the definition list or the builder changed, and that is a
+    // capture failure rather than a fixture row to be believed.
+    CHECK.fail(FX_FX, id, "the matrix definition was rejected: " + buildError);
     row.set("matrixState", jNull())
         .set("queries", new JArray())
         .set("conversions", new JArray())
@@ -3869,18 +6028,20 @@ void addFxScenario(JArray rows, String id, String source, List<RateEntry> defini
       if (query.expected != null) {
         CHECK.checkClose(FX_FX, queryId, query.expected.doubleValue(), actual, query.tolerance,
             query.toleranceName);
-      } else if (query.expectFailure) {
-        CHECK.fail(FX_FX, queryId, "expected Java to throw but produced " + actual);
+      } else if (query.expectedFailure != null) {
+        CHECK.fail(FX_FX, queryId, "expected " + query.expectedFailure.getSimpleName()
+            + " but Java produced " + actual);
       }
     } catch (Throwable thrown) {
+      requireCapturable(thrown);
       entry.set("error", jStr(errorMessage(thrown)));
       CHECK.countErrorRow(FX_FX);
       if (query.expected != null) {
         CHECK.fail(FX_FX, queryId,
             "expected=" + query.expected + " but Java threw " + errorMessage(thrown));
-      } else if (query.expectFailure) {
-        // The failure itself is the assertion the Java test makes.
-        CHECK.checkTrue(FX_FX, queryId, true, "expected failure observed");
+      } else if (query.expectedFailure != null) {
+        // The rejection AND ITS TYPE are the assertion the Java test makes.
+        checkExpectedFailureType(FX_FX, queryId, query.expectedFailure, thrown);
       }
     }
     queryArray.add(entry);
@@ -3902,6 +6063,7 @@ void addFxScenario(JArray rows, String id, String source, List<RateEntry> defini
             conversion.toleranceName);
       }
     } catch (Throwable thrown) {
+      requireCapturable(thrown);
       entry.set("error", jStr(errorMessage(thrown)));
       CHECK.countErrorRow(FX_FX);
       if (conversion.expected != null) {
@@ -3927,6 +6089,7 @@ void addFxScenario(JArray rows, String id, String source, List<RateEntry> defini
             query.toleranceName);
       }
     } catch (Throwable thrown) {
+      requireCapturable(thrown);
       entry.set("error", jStr(errorMessage(thrown)));
       CHECK.countErrorRow(FX_FX);
       if (query.expected != null) {
@@ -3949,18 +6112,20 @@ void addFxScenario(JArray rows, String id, String source, List<RateEntry> defini
       entry.set("crossRate", jFxRate(actual));
       if (cross.expected != null) {
         CHECK.checkEquals(FX_FX, crossId, cross.expected, actual);
-      } else if (cross.expectFailure) {
-        CHECK.fail(FX_FX, crossId, "expected Java to throw but produced " + actual);
+      } else if (cross.expectedFailure != null) {
+        CHECK.fail(FX_FX, crossId, "expected " + cross.expectedFailure.getSimpleName()
+            + " but Java produced " + actual);
       }
     } catch (Throwable thrown) {
+      requireCapturable(thrown);
       entry.set("error", jStr(errorMessage(thrown)));
       CHECK.countErrorRow(FX_FX);
       if (cross.expected != null) {
         CHECK.fail(FX_FX, crossId,
             "expected=" + cross.expected + " but Java threw " + errorMessage(thrown));
-      } else if (cross.expectFailure) {
-        // The failure itself is the assertion the Java test makes.
-        CHECK.checkTrue(FX_FX, crossId, true, "expected failure observed");
+      } else if (cross.expectedFailure != null) {
+        // The rejection AND ITS TYPE are the assertion the Java test makes.
+        checkExpectedFailureType(FX_FX, crossId, cross.expectedFailure, thrown);
       }
     }
     crossArray.add(entry);
@@ -3968,14 +6133,55 @@ void addFxScenario(JArray rows, String id, String source, List<RateEntry> defini
   row.set("crosses", crossArray);
 
   JArray mergeArray = new JArray();
-  for (List<RateEntry> other : merges) {
-    JObject entry = new JObject().set("other", jRateEntries(other));
+  for (MergeQuery merge : merges) {
+    JObject entry = new JObject().set("other", jRateEntries(merge.other));
+    String mergeId = source + " merge " + rateEntryLabel(merge.other);
+    FxMatrix merged = null;
+    // The throwable itself is kept, not just its message: the assertion the
+    // Java test makes is about its TYPE.
+    Throwable mergeThrown = null;
     try {
-      FxMatrix merged = matrix.merge(buildMatrix(other));
-      entry.set("merged", jMatrixState(merged));
+      merged = matrix.merge(buildMatrix(merge.other));
     } catch (Throwable thrown) {
-      entry.set("error", jStr(errorMessage(thrown)));
+      requireCapturable(thrown);
+      mergeThrown = thrown;
+    }
+    if (mergeThrown != null) {
+      entry.set("error", jStr(errorMessage(mergeThrown)));
       CHECK.countErrorRow(FX_FX);
+      if (merge.expectedFailure != null) {
+        // The rejection AND ITS TYPE are the assertion the Java test makes.
+        checkExpectedFailureType(FX_FX, mergeId, merge.expectedFailure, mergeThrown);
+      } else {
+        CHECK.fail(FX_FX, mergeId,
+            "expected a merged matrix but Java threw " + errorMessage(mergeThrown));
+      }
+    } else {
+      entry.set("merged", jMatrixState(merged));
+      if (merge.expectedFailure != null) {
+        CHECK.fail(FX_FX, mergeId, "expected " + merge.expectedFailure.getSimpleName()
+            + " but Java produced a merged matrix over " + merged.getCurrencies());
+      }
+      CHECK.checkTrue(FX_FX, mergeId + " has an expectation",
+          merge.expectedCurrencies.size() + merge.rateChecks.size() > 0,
+          "a successful merge must carry the currencies and rates its Java test asserts");
+      for (Currency currency : merge.expectedCurrencies) {
+        CHECK.checkTrue(FX_FX, mergeId + " contains " + currency,
+            merged.getCurrencies().contains(currency),
+            "merged matrix is missing " + currency + ": " + merged.getCurrencies());
+      }
+      for (FxQuery rate : merge.rateChecks) {
+        String rateId = mergeId + " fxRate " + rate.base + "/" + rate.counter;
+        try {
+          double actual = merged.fxRate(rate.base, rate.counter);
+          CHECK.checkClose(FX_FX, rateId, rate.expected.doubleValue(), actual, rate.tolerance,
+              rate.toleranceName);
+        } catch (Throwable thrown) {
+          requireCapturable(thrown);
+          CHECK.fail(FX_FX, rateId,
+              "expected=" + rate.expected + " but Java threw " + errorMessage(thrown));
+        }
+      }
     }
     mergeArray.add(entry);
   }
@@ -4004,39 +6210,63 @@ List<CrossQuery> noCrosses() {
   return new ArrayList<>();
 }
 
-List<List<RateEntry>> noMerges() {
+List<MergeQuery> noMerges() {
   return new ArrayList<>();
 }
 
 /*
- * Fixed-arity helpers rather than a generic varargs method: `merges(List<RateEntry>...)`
+ * Fixed-arity helpers rather than a generic varargs method: `merges(MergeQuery...)`
  * is a parameterized vararg and javac reports possible heap pollution for it,
  * which would put a warning on stdout.
  */
-List<List<RateEntry>> merges(List<RateEntry> first) {
-  List<List<RateEntry>> result = new ArrayList<>();
+List<MergeQuery> merges(MergeQuery first) {
+  List<MergeQuery> result = new ArrayList<>();
   result.add(first);
   return result;
 }
 
-List<List<RateEntry>> merges(List<RateEntry> first, List<RateEntry> second) {
-  List<List<RateEntry>> result = merges(first);
+List<MergeQuery> merges(MergeQuery first, MergeQuery second) {
+  List<MergeQuery> result = merges(first);
   result.add(second);
   return result;
 }
 
-List<List<RateEntry>> merges(List<RateEntry> first, List<RateEntry> second,
-    List<RateEntry> third) {
-  List<List<RateEntry>> result = merges(first, second);
+List<MergeQuery> merges(MergeQuery first, MergeQuery second, MergeQuery third) {
+  List<MergeQuery> result = merges(first, second);
   result.add(third);
   return result;
 }
 
-List<List<RateEntry>> merges(List<RateEntry> first, List<RateEntry> second, List<RateEntry> third,
-    List<RateEntry> fourth) {
-  List<List<RateEntry>> result = merges(first, second, third);
+List<MergeQuery> merges(MergeQuery first, MergeQuery second, MergeQuery third,
+    MergeQuery fourth) {
+  List<MergeQuery> result = merges(first, second, third);
   result.add(fourth);
   return result;
+}
+
+/**
+ * The merge assertions of FxMatrixTest that need their own receiver, checked
+ * without emitting a row.
+ *
+ * `mergeIgnoresDuplicateCurrencies` (FxMatrixTest:506-523) states its result
+ * as `result equals matrix1`, which only holds when EVERY currency of the
+ * other matrix is already present - its matrix1 carries EUR/CHF for exactly
+ * that reason. The emitted merge row uses a two-rate receiver, so the literal
+ * equality case is asserted here, on that test's own matrices, at its own
+ * rates. A merge that started adding the other matrix's rates on top of the
+ * receiver's would fail this check and abort the capture.
+ */
+void checkFxMergeConstants() {
+  FxMatrix matrix1 = buildMatrix(rateEntries(
+      Currency.GBP, Currency.USD, 1.6,
+      Currency.EUR, Currency.USD, 1.4,
+      Currency.EUR, Currency.CHF, 1.2));
+  FxMatrix matrix2 = buildMatrix(rateEntries(
+      Currency.GBP, Currency.USD, 1.7,
+      Currency.EUR, Currency.USD, 1.5,
+      Currency.EUR, Currency.CHF, 1.3));
+  CHECK.checkEquals(FX_FX, "FxMatrixTest.mergeIgnoresDuplicateCurrencies", matrix1,
+      matrix1.merge(matrix2));
 }
 
 /**
@@ -4261,6 +6491,10 @@ Jn buildFxFixture() {
   // matrices, and an empty matrix has none, so merging with it is an error
   // rather than a no-op. That is a real asymmetry of the Java API and the port
   // has to reproduce it.
+  //
+  // Each merge carries the assertion of its Java test rather than just its
+  // outcome; see MergeQuery. The rate constants below are written as the same
+  // arithmetic expressions FxMatrixTest uses, at that test's own TOLERANCE.
   List<RateEntry> mergeBase =
       rateEntries(Currency.GBP, Currency.USD, 1.6, Currency.EUR, Currency.USD, 1.4);
   List<RateEntry> disjoint =
@@ -4269,9 +6503,33 @@ Jn buildFxFixture() {
       Currency.EUR, Currency.USD, 1.5, Currency.EUR, Currency.CHF, 1.3);
   List<RateEntry> additional =
       rateEntries(Currency.EUR, Currency.CHF, 1.2, Currency.CHF, Currency.AUD, 1.2);
+  // mergeIgnoresDuplicateCurrencies, applied to this receiver: the rates for
+  // the currencies the receiver already knows must be the RECEIVER's (1.6 and
+  // 1.4), not the other matrix's (1.7 and 1.5), and CHF - which only the other
+  // matrix carries - is added.
+  MergeQuery duplicateMerge = MergeQuery.extending(duplicate,
+      currencyList(Currency.GBP, Currency.USD, Currency.EUR, Currency.CHF),
+      rateChecks(
+          FxQuery.exact(Currency.GBP, Currency.USD, 1.6),
+          FxQuery.exact(Currency.EUR, Currency.USD, 1.4),
+          FxQuery.close(Currency.GBP, Currency.EUR, 1.6 / 1.4)));
+  // mergeAddsInAdditionalCurrencies (FxMatrixTest:525-546) verbatim: this
+  // receiver and this other matrix are that test's matrix1 and matrix2, so all
+  // six of its rate assertions apply unchanged.
+  MergeQuery additionalMerge = MergeQuery.extending(additional,
+      currencyList(Currency.USD, Currency.GBP, Currency.EUR, Currency.CHF, Currency.AUD),
+      rateChecks(
+          FxQuery.exact(Currency.GBP, Currency.USD, 1.6),
+          FxQuery.close(Currency.GBP, Currency.EUR, 1.6 / 1.4),
+          FxQuery.exact(Currency.EUR, Currency.CHF, 1.2),
+          FxQuery.exact(Currency.CHF, Currency.AUD, 1.2),
+          FxQuery.close(Currency.GBP, Currency.CHF, (1.6 / 1.4) * 1.2),
+          FxQuery.close(Currency.GBP, Currency.AUD, (1.6 / 1.4) * 1.2 * 1.2)));
   addFxScenario(rows, "merge-cases", "FxMatrixTest.merge", mergeBase, noQueries(),
       noConversions(), noMulti(), noCrosses(),
-      merges(disjoint, duplicate, additional, rateEntries()), false);
+      merges(MergeQuery.failing(disjoint), duplicateMerge, additionalMerge,
+          MergeQuery.failing(rateEntries())), false);
+  checkFxMergeConstants();
 
   // Seeded random matrices: capture-only, because no Java constant exists for
   // them. Every rate comes from the single seeded Random.
@@ -4393,29 +6651,33 @@ Jn jMultiCurrencyAmountArrayValues(MultiCurrencyAmountArray array) {
 
 /**
  * Runs one operation, adding either the rendered result or an `error`.
- * `expectFailure` records what the Java test asserts: true means the failure
- * IS the expectation, false means a failure aborts the capture, and null means
- * capture-only.
+ *
+ * `expect` states what the Java test says about the call - a value, a
+ * rejection of a named type, or nothing at all. An expected rejection is
+ * checked by type, so a change from one exception to another is a capture
+ * failure rather than a new fixture value; see the Expect banner.
  */
 interface ResultSupplier {
   Jn get() throws Throwable;
 }
 
 void addOperation(JArray results, String fixture, String rowId, JObject entry,
-    ResultSupplier supplier, Boolean expectFailure) {
+    ResultSupplier supplier, Expect expect) {
   try {
     Jn value = supplier.get();
     entry.set("result", value);
-    if (Boolean.TRUE.equals(expectFailure)) {
-      CHECK.fail(fixture, rowId, "expected Java to throw but produced a value");
+    if (expect.mustFail()) {
+      CHECK.fail(fixture, rowId, "expected " + expect.failureType.getSimpleName()
+          + " but Java produced a value");
     }
   } catch (Throwable thrown) {
+    requireCapturable(thrown);
     entry.set("error", jStr(errorMessage(thrown)));
     CHECK.countErrorRow(fixture);
-    if (Boolean.FALSE.equals(expectFailure)) {
+    if (expect.mustFail()) {
+      checkExpectedFailureType(fixture, rowId, expect.failureType, thrown);
+    } else if (expect.mustSucceed()) {
       CHECK.fail(fixture, rowId, "unexpected Java failure " + errorMessage(thrown));
-    } else if (Boolean.TRUE.equals(expectFailure)) {
-      CHECK.checkTrue(fixture, rowId, true, "expected failure observed");
     }
   }
   results.add(entry);
@@ -4671,51 +6933,51 @@ Jn buildCurrencyAmountResults() {
 
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.plus same currency",
       opEntry("plus").set("left", jCurrencyAmount(gbp100)).set("right", jCurrencyAmount(gbp25)),
-      () -> jCurrencyAmount(gbp100.plus(gbp25)), Boolean.FALSE);
+      () -> jCurrencyAmount(gbp100.plus(gbp25)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.minus same currency",
       opEntry("minus").set("left", jCurrencyAmount(gbp100)).set("right", jCurrencyAmount(gbp25)),
-      () -> jCurrencyAmount(gbp100.minus(gbp25)), Boolean.FALSE);
+      () -> jCurrencyAmount(gbp100.minus(gbp25)), MUST_SUCCEED);
   // CurrencyAmountTest: adding different currencies throws.
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.plus different currency",
       opEntry("plus").set("left", jCurrencyAmount(gbp100)).set("right", jCurrencyAmount(usd50)),
-      () -> jCurrencyAmount(gbp100.plus(usd50)), Boolean.TRUE);
+      () -> jCurrencyAmount(gbp100.plus(usd50)), MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.minus different currency",
       opEntry("minus").set("left", jCurrencyAmount(gbp100)).set("right", jCurrencyAmount(usd50)),
-      () -> jCurrencyAmount(gbp100.minus(usd50)), Boolean.TRUE);
+      () -> jCurrencyAmount(gbp100.minus(usd50)), MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.multipliedBy",
       opEntry("multipliedBy").set("left", jCurrencyAmount(gbp100))
           .set("scalar", jDbl(MATH_IN.scalar(3.5))),
-      () -> jCurrencyAmount(gbp100.multipliedBy(3.5)), Boolean.FALSE);
+      () -> jCurrencyAmount(gbp100.multipliedBy(3.5)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.negated",
       opEntry("negated").set("left", jCurrencyAmount(gbp100)),
-      () -> jCurrencyAmount(gbp100.negated()), Boolean.FALSE);
+      () -> jCurrencyAmount(gbp100.negated()), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.positive",
       opEntry("positive").set("left", jCurrencyAmount(gbp100.negated())),
-      () -> jCurrencyAmount(gbp100.negated().positive()), Boolean.FALSE);
+      () -> jCurrencyAmount(gbp100.negated().positive()), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.negative",
       opEntry("negative").set("left", jCurrencyAmount(gbp100)),
-      () -> jCurrencyAmount(gbp100.negative()), Boolean.FALSE);
+      () -> jCurrencyAmount(gbp100.negative()), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.convertedTo rate",
       opEntry("convertedTo").set("left", jCurrencyAmount(gbp100))
           .set("target", jName(Currency.USD)).set("rate", jDbl(1.25)),
-      () -> jCurrencyAmount(gbp100.convertedTo(Currency.USD, 1.25)), Boolean.FALSE);
+      () -> jCurrencyAmount(gbp100.convertedTo(Currency.USD, 1.25)), MUST_SUCCEED);
   // CurrencyAmount.convertedTo to the SAME currency with a rate that is not 1
   // is rejected (the fixed-rate overload compares with a 1e-8 fuzzy equality).
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.convertedTo same currency rate != 1",
       opEntry("convertedTo").set("left", jCurrencyAmount(gbp100))
           .set("target", jName(Currency.GBP)).set("rate", jDbl(1.25)),
-      () -> jCurrencyAmount(gbp100.convertedTo(Currency.GBP, 1.25)), Boolean.TRUE);
+      () -> jCurrencyAmount(gbp100.convertedTo(Currency.GBP, 1.25)), MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.convertedTo same currency rate 1",
       opEntry("convertedTo").set("left", jCurrencyAmount(gbp100))
           .set("target", jName(Currency.GBP)).set("rate", jDbl(1.0)),
-      () -> jCurrencyAmount(gbp100.convertedTo(Currency.GBP, 1.0)), Boolean.FALSE);
+      () -> jCurrencyAmount(gbp100.convertedTo(Currency.GBP, 1.0)), MUST_SUCCEED);
   // CurrencyAmountTest.test_convertedTo_explicitRate uses 1.5 as its rejected
   // rate, so the literal the Java test names is captured as well as the 1.25
   // above. The fixed-rate overload compares with a 1e-8 fuzzy equality.
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.convertedTo same currency rate 1.5",
       opEntry("convertedTo").set("left", jCurrencyAmount(gbp100))
           .set("target", jName(Currency.GBP)).set("rate", jDbl(1.5)),
-      () -> jCurrencyAmount(gbp100.convertedTo(Currency.GBP, 1.5)), Boolean.TRUE);
+      () -> jCurrencyAmount(gbp100.convertedTo(Currency.GBP, 1.5)), MUST_REJECT_ARGUMENT);
 
   // CurrencyAmountTest.test_of_Currency_negativeZero: -0.0 is normalised to
   // +0.0, which the Java test asserts through Double.doubleToLongBits.
@@ -4731,7 +6993,7 @@ Jn buildCurrencyAmountResults() {
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmount.of(NaN)",
       opEntry("of").set("input",
           new JObject().set("currency", jName(Currency.GBP)).set("amount", jDbl(Double.NaN))),
-      () -> jCurrencyAmount(CurrencyAmount.of(Currency.GBP, Double.NaN)), Boolean.TRUE);
+      () -> jCurrencyAmount(CurrencyAmount.of(Currency.GBP, Double.NaN)), MUST_REJECT_ARGUMENT);
 
   // The normalisation is not confined to the factory: the private constructor
   // adds 0d to every amount, so an ARITHMETIC RESULT of -0.0 is normalised
@@ -4754,7 +7016,7 @@ Jn buildCurrencyAmountResults() {
           .set("left", jCurrencyAmount(CurrencyAmount.of(Currency.GBP, Double.POSITIVE_INFINITY)))
           .set("right", jCurrencyAmount(CurrencyAmount.of(Currency.GBP, Double.NEGATIVE_INFINITY))),
       () -> jCurrencyAmount(CurrencyAmount.of(Currency.GBP, Double.POSITIVE_INFINITY)
-          .plus(CurrencyAmount.of(Currency.GBP, Double.NEGATIVE_INFINITY))), Boolean.TRUE);
+          .plus(CurrencyAmount.of(Currency.GBP, Double.NEGATIVE_INFINITY))), MUST_REJECT_ARGUMENT);
 
   // Seeded random amounts across every configured currency.
   //
@@ -4771,7 +7033,7 @@ Jn buildCurrencyAmountResults() {
     CurrencyAmount value = CurrencyAmount.of(currency, amount);
     addOperation(results, FX_CURRENCY_MATH, "random CurrencyAmount " + currency,
         opEntry("multipliedBy").set("left", jCurrencyAmount(value)).set("scalar", jDbl(1.5)),
-        () -> jCurrencyAmount(value.multipliedBy(1.5)), null);
+        () -> jCurrencyAmount(value.multipliedBy(1.5)), CAPTURE_ONLY);
     CHECK.countCaptureOnly(FX_CURRENCY_MATH);
   }
   // The remaining 19 currencies - the `historic = true` rows of Currency.ini,
@@ -4789,7 +7051,7 @@ Jn buildCurrencyAmountResults() {
         opEntry("multipliedBy").set("left", jCurrencyAmount(value)).set("scalar", jDbl(1.5))
             .set("minorUnitDigits", jInt(row.currency.getMinorUnitDigits()))
             .set("captureOnly", jBool(true)),
-        () -> jCurrencyAmount(value.multipliedBy(1.5)), null);
+        () -> jCurrencyAmount(value.multipliedBy(1.5)), CAPTURE_ONLY);
     CHECK.countCaptureOnly(FX_CURRENCY_MATH);
     historicSwept++;
   }
@@ -4833,11 +7095,11 @@ Jn buildMoneyResults(boolean bigMoney) {
     if (bigMoney) {
       MATH_IN.bigMoney(BigMoney.of(currency, amount));
       addOperation(results, FX_CURRENCY_MATH, "BigMoney.of " + currency + " " + amount, entry,
-          () -> jBigMoney(BigMoney.of(currency, amount)), Boolean.FALSE);
+          () -> jBigMoney(BigMoney.of(currency, amount)), MUST_SUCCEED);
     } else {
       MATH_IN.money(Money.of(currency, amount));
       addOperation(results, FX_CURRENCY_MATH, "Money.of " + currency + " " + amount, entry,
-          () -> jMoney(Money.of(currency, amount)), Boolean.FALSE);
+          () -> jMoney(Money.of(currency, amount)), MUST_SUCCEED);
     }
     if (captureOnly) {
       CHECK.countCaptureOnly(FX_CURRENCY_MATH);
@@ -4849,42 +7111,42 @@ Jn buildMoneyResults(boolean bigMoney) {
     BigMoney other = MATH_IN.bigMoney(BigMoney.of(Currency.AUD, 100));
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.plus",
         opEntry("plus").set("left", jBigMoney(left)).set("right", jBigMoney(right)),
-        () -> jBigMoney(left.plus(right)), Boolean.FALSE);
+        () -> jBigMoney(left.plus(right)), MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.minus",
         opEntry("minus").set("left", jBigMoney(left)).set("right", jBigMoney(right)),
-        () -> jBigMoney(left.minus(right)), Boolean.FALSE);
+        () -> jBigMoney(left.minus(right)), MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.plus different currency",
         opEntry("plus").set("left", jBigMoney(left)).set("right", jBigMoney(other)),
-        () -> jBigMoney(left.plus(other)), Boolean.TRUE);
+        () -> jBigMoney(left.plus(other)), MUST_REJECT_ARGUMENT);
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.minus different currency",
         opEntry("minus").set("left", jBigMoney(left)).set("right", jBigMoney(other)),
-        () -> jBigMoney(left.minus(other)), Boolean.TRUE);
+        () -> jBigMoney(left.minus(other)), MUST_REJECT_ARGUMENT);
     // multipliedBy takes a long, not a double.
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.multipliedBy",
         opEntry("multipliedBy").set("left", jBigMoney(left)).set("scalar", jInt(3L)),
-        () -> jBigMoney(left.multipliedBy(3L)), Boolean.FALSE);
+        () -> jBigMoney(left.multipliedBy(3L)), MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.toMoney",
         opEntry("toMoney").set("left", jBigMoney(left)),
-        () -> jMoney(left.toMoney()), Boolean.FALSE);
+        () -> jMoney(left.toMoney()), MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.toMoney JPY",
         opEntry("toMoney").set("left", jBigMoney(BigMoney.of(Currency.JPY, 123.4567890123456))),
-        () -> jMoney(BigMoney.of(Currency.JPY, 123.4567890123456).toMoney()), Boolean.FALSE);
+        () -> jMoney(BigMoney.of(Currency.JPY, 123.4567890123456).toMoney()), MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.convertedTo",
         opEntry("convertedTo").set("left", jBigMoney(other)).set("target", jName(Currency.USD))
             .set("rate", jDbl(0.65)),
         () -> jBigMoney(other.convertedTo(Currency.USD, java.math.BigDecimal.valueOf(0.65))),
-        Boolean.FALSE);
+        MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.convertedTo same currency rate != 1",
         opEntry("convertedTo").set("left", jBigMoney(other)).set("target", jName(Currency.AUD))
             .set("rate", jDbl(1.25)),
         () -> jBigMoney(other.convertedTo(Currency.AUD, java.math.BigDecimal.valueOf(1.25))),
-        Boolean.TRUE);
+        MUST_REJECT_ARGUMENT);
     // The same-currency rule has a SUCCEEDING side too: a rate of exactly 1
     // is the no-conversion case and must return the value unchanged.
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.convertedTo same currency rate 1",
         opEntry("convertedTo").set("left", jBigMoney(left)).set("target", jName(Currency.RON))
             .set("rate", jDbl(1.0)),
-        () -> jBigMoney(left.convertedTo(Currency.RON, java.math.BigDecimal.ONE)), Boolean.FALSE);
+        () -> jBigMoney(left.convertedTo(Currency.RON, java.math.BigDecimal.ONE)), MUST_SUCCEED);
 
     // BigMoneyTest's discriminating values. BigMoney.of rounds to scale 12
     // HALF_UP, so the first three survive unchanged and the fourth - which has
@@ -4898,14 +7160,14 @@ Jn buildMoneyResults(boolean bigMoney) {
           opEntry("of").set("currency", jName(Currency.GBP)).set("amount", jDbl(amount))
               .set("minorUnitDigits", jInt(Currency.GBP.getMinorUnitDigits()))
               .set("captureOnly", jBool(false)),
-          () -> jBigMoney(value), Boolean.FALSE);
+          () -> jBigMoney(value), MUST_SUCCEED);
     }
     // ... and its narrowing to minor units, which is where the twelve-digit
     // value meets the currency's two.
     addOperation(results, FX_CURRENCY_MATH, "BigMoney.toMoney high precision",
         opEntry("toMoney")
             .set("left", jBigMoney(MATH_IN.bigMoney(BigMoney.of(Currency.AUD, 1.123456789012345d)))),
-        () -> jMoney(BigMoney.of(Currency.AUD, 1.123456789012345d).toMoney()), Boolean.FALSE);
+        () -> jMoney(BigMoney.of(Currency.AUD, 1.123456789012345d).toMoney()), MUST_SUCCEED);
 
     // BigMoneyTest.test_roundToScale / test_roundToScaleNegative, row for row:
     // the six rounding modes at scale 2 and the three negative scales. Every
@@ -4933,7 +7195,7 @@ Jn buildMoneyResults(boolean bigMoney) {
           "BigMoney.roundToScale " + amount + " " + scale + " " + mode,
           opEntry("roundToScale").set("left", jBigMoney(value)).set("scale", jInt(scale))
               .set("roundingMode", jStr(mode.name())),
-          () -> jBigMoney(value.roundToScale(scale, mode)), Boolean.FALSE);
+          () -> jBigMoney(value.roundToScale(scale, mode)), MUST_SUCCEED);
     }
 
     // Every currency, active and historic: the `left` operand shows
@@ -4947,7 +7209,7 @@ Jn buildMoneyResults(boolean bigMoney) {
           opEntry("toMoney").set("left", jBigMoney(value))
               .set("minorUnitDigits", jInt(row.currency.getMinorUnitDigits()))
               .set("captureOnly", jBool(true)),
-          () -> jMoney(value.toMoney()), null);
+          () -> jMoney(value.toMoney()), CAPTURE_ONLY);
       CHECK.countCaptureOnly(FX_CURRENCY_MATH);
       sweptBig++;
     }
@@ -4958,29 +7220,29 @@ Jn buildMoneyResults(boolean bigMoney) {
     Money other = MATH_IN.money(Money.of(Currency.AUD, 100.12));
     addOperation(results, FX_CURRENCY_MATH, "Money.plus",
         opEntry("plus").set("left", jMoney(left)).set("right", jMoney(right)),
-        () -> jMoney(left.plus(right)), Boolean.FALSE);
+        () -> jMoney(left.plus(right)), MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "Money.minus",
         opEntry("minus").set("left", jMoney(left)).set("right", jMoney(right)),
-        () -> jMoney(left.minus(right)), Boolean.FALSE);
+        () -> jMoney(left.minus(right)), MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "Money.plus different currency",
         opEntry("plus").set("left", jMoney(left)).set("right", jMoney(other)),
-        () -> jMoney(left.plus(other)), Boolean.TRUE);
+        () -> jMoney(left.plus(other)), MUST_REJECT_ARGUMENT);
     addOperation(results, FX_CURRENCY_MATH, "Money.minus different currency",
         opEntry("minus").set("left", jMoney(left)).set("right", jMoney(other)),
-        () -> jMoney(left.minus(other)), Boolean.TRUE);
+        () -> jMoney(left.minus(other)), MUST_REJECT_ARGUMENT);
     addOperation(results, FX_CURRENCY_MATH, "Money.multipliedBy",
         opEntry("multipliedBy").set("left", jMoney(left)).set("scalar", jInt(3L)),
-        () -> jMoney(left.multipliedBy(3L)), Boolean.FALSE);
+        () -> jMoney(left.multipliedBy(3L)), MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "Money.convertedTo",
         opEntry("convertedTo").set("left", jMoney(other)).set("target", jName(Currency.USD))
             .set("rate", jDbl(0.65)),
         () -> jMoney(other.convertedTo(Currency.USD, java.math.BigDecimal.valueOf(0.65))),
-        Boolean.FALSE);
+        MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "Money.convertedTo same currency rate != 1",
         opEntry("convertedTo").set("left", jMoney(other)).set("target", jName(Currency.AUD))
             .set("rate", jDbl(1.25)),
         () -> jMoney(other.convertedTo(Currency.AUD, java.math.BigDecimal.valueOf(1.25))),
-        Boolean.TRUE);
+        MUST_REJECT_ARGUMENT);
     // MoneyTest.testConvertedToWithExplicitRateForSameCurrency rejects 1.1
     // with "FX rate must be 1 when no conversion required"; the succeeding
     // side of the same rule is a rate of exactly 1, from
@@ -4988,17 +7250,17 @@ Jn buildMoneyResults(boolean bigMoney) {
     addOperation(results, FX_CURRENCY_MATH, "Money.convertedTo same currency rate 1.1",
         opEntry("convertedTo").set("left", jMoney(left)).set("target", jName(Currency.RON))
             .set("rate", jDbl(1.1)),
-        () -> jMoney(left.convertedTo(Currency.RON, Decimal.of(1.1))), Boolean.TRUE);
+        () -> jMoney(left.convertedTo(Currency.RON, Decimal.of(1.1))), MUST_REJECT_ARGUMENT);
     addOperation(results, FX_CURRENCY_MATH, "Money.convertedTo same currency rate 1",
         opEntry("convertedTo").set("left", jMoney(left)).set("target", jName(Currency.RON))
             .set("rate", jDbl(1.0)),
-        () -> jMoney(left.convertedTo(Currency.RON, Decimal.of(1))), Boolean.FALSE);
+        () -> jMoney(left.convertedTo(Currency.RON, Decimal.of(1))), MUST_SUCCEED);
     // MoneyTest.testConvertedToWithExplicitRate: AUD 100.12 at 2.6 -> RON
     // 260.31, rounded to RON's two minor units.
     addOperation(results, FX_CURRENCY_MATH, "Money.convertedTo cross currency explicit rate",
         opEntry("convertedTo").set("left", jMoney(other)).set("target", jName(Currency.RON))
             .set("rate", jDbl(2.6)),
-        () -> jMoney(other.convertedTo(Currency.RON, Decimal.of(2.6d))), Boolean.FALSE);
+        () -> jMoney(other.convertedTo(Currency.RON, Decimal.of(2.6d))), MUST_SUCCEED);
     // MoneyTest.testConvertedToWithRateProvider: the same conversion through a
     // provider, expressed here as the FxRate that provides it (FxRate IS an
     // FxRateProvider), so the fixture carries the rate in its `rates` list
@@ -5007,10 +7269,10 @@ Jn buildMoneyResults(boolean bigMoney) {
         opEntry("convertedTo").set("left", jMoney(other)).set("target", jName(Currency.RON))
             .set("rates", jRateEntries(rateEntries(Currency.AUD, Currency.RON, 2.5))),
         () -> jMoney(other.convertedTo(Currency.RON,
-            MATH_IN.rate(FxRate.of(Currency.AUD, Currency.RON, 2.5)))), Boolean.FALSE);
+            MATH_IN.rate(FxRate.of(Currency.AUD, Currency.RON, 2.5)))), MUST_SUCCEED);
     addOperation(results, FX_CURRENCY_MATH, "Money.toBigMoney",
         opEntry("toBigMoney").set("left", jMoney(left)),
-        () -> jBigMoney(left.toBigMoney()), Boolean.FALSE);
+        () -> jBigMoney(left.toBigMoney()), MUST_SUCCEED);
 
     // Every currency, active and historic, at one literal amount with five
     // decimal places: the result shows Money.of rounding HALF_UP to that
@@ -5025,7 +7287,7 @@ Jn buildMoneyResults(boolean bigMoney) {
           opEntry("of").set("currency", jName(row.currency)).set("amount", jDbl(SWEEP_AMOUNT))
               .set("minorUnitDigits", jInt(row.currency.getMinorUnitDigits()))
               .set("captureOnly", jBool(true)),
-          () -> jMoney(Money.of(row.currency, SWEEP_AMOUNT)), null);
+          () -> jMoney(Money.of(row.currency, SWEEP_AMOUNT)), CAPTURE_ONLY);
       CHECK.countCaptureOnly(FX_CURRENCY_MATH);
       swept++;
     }
@@ -5049,24 +7311,24 @@ Jn buildCurrencyAmountArrayResults() {
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.plus array",
       opEntry("plus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmountArray(gbpOther)),
-      () -> jCurrencyAmountArray(gbpArray.plus(gbpOther)), Boolean.FALSE);
+      () -> jCurrencyAmountArray(gbpArray.plus(gbpOther)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.minus array",
       opEntry("minus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmountArray(gbpOther)),
-      () -> jCurrencyAmountArray(gbpArray.minus(gbpOther)), Boolean.FALSE);
+      () -> jCurrencyAmountArray(gbpArray.minus(gbpOther)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.plus amount",
       opEntry("plus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmount(MATH_IN.amount(CurrencyAmount.of(Currency.GBP, 10)))),
       () -> jCurrencyAmountArray(gbpArray.plus(CurrencyAmount.of(Currency.GBP, 10))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.plus currency mismatch",
       opEntry("plus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmountArray(usdArray)),
-      () -> jCurrencyAmountArray(gbpArray.plus(usdArray)), Boolean.TRUE);
+      () -> jCurrencyAmountArray(gbpArray.plus(usdArray)), MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.plus size mismatch",
       opEntry("plus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmountArray(shortArray)),
-      () -> jCurrencyAmountArray(gbpArray.plus(shortArray)), Boolean.TRUE);
+      () -> jCurrencyAmountArray(gbpArray.plus(shortArray)), MUST_REJECT_ARGUMENT);
   // The three failing shapes of `minus` mirror those of `plus`: a different
   // currency, a different size, and a scalar amount in another currency. They
   // are captured separately because the Java messages differ ("Currencies must
@@ -5075,33 +7337,33 @@ Jn buildCurrencyAmountArrayResults() {
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.minus currency mismatch",
       opEntry("minus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmountArray(usdArray)),
-      () -> jCurrencyAmountArray(gbpArray.minus(usdArray)), Boolean.TRUE);
+      () -> jCurrencyAmountArray(gbpArray.minus(usdArray)), MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.minus size mismatch",
       opEntry("minus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmountArray(shortArray)),
-      () -> jCurrencyAmountArray(gbpArray.minus(shortArray)), Boolean.TRUE);
+      () -> jCurrencyAmountArray(gbpArray.minus(shortArray)), MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.plus amount currency mismatch",
       opEntry("plus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmount(MATH_IN.amount(CurrencyAmount.of(Currency.USD, 10)))),
       () -> jCurrencyAmountArray(gbpArray.plus(CurrencyAmount.of(Currency.USD, 10))),
-      Boolean.TRUE);
+      MUST_REJECT_ARGUMENT);
   // CurrencyAmountArrayTest.test_minus_currencyAmount
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.minus amount",
       opEntry("minus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmount(MATH_IN.amount(CurrencyAmount.of(Currency.GBP, 0.5)))),
       () -> jCurrencyAmountArray(gbpArray.minus(CurrencyAmount.of(Currency.GBP, 0.5))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.minus amount currency mismatch",
       opEntry("minus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmount(MATH_IN.amount(CurrencyAmount.of(Currency.USD, 0.5)))),
       () -> jCurrencyAmountArray(gbpArray.minus(CurrencyAmount.of(Currency.USD, 0.5))),
-      Boolean.TRUE);
+      MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.convertedTo",
       opEntry("convertedTo").set("left", jCurrencyAmountArray(gbpArray))
           .set("target", jName(Currency.USD)).set("rate", jDbl(1.6)),
       () -> jCurrencyAmountArray(gbpArray.convertedTo(Currency.USD,
           MATH_IN.rate(FxRate.of(Currency.GBP, Currency.USD, 1.6)))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   // Composed: the Java type has no multipliedBy, so the expectation is built
   // from of(currency, getValues().multipliedBy(scalar)).
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.multipliedBy (composed)",
@@ -5110,25 +7372,25 @@ Jn buildCurrencyAmountArrayResults() {
           .set("composed", jBool(true)),
       () -> jCurrencyAmountArray(
           CurrencyAmountArray.of(gbpArray.getCurrency(), gbpArray.getValues().multipliedBy(2.5))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   // Composed: likewise mapAmounts, using the documented function.
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.mapAmounts (composed)",
       opEntry("mapAmounts").set("left", jCurrencyAmountArray(gbpArray))
           .set("mapAmountsFn", jStr(MAP_AMOUNTS_FN)).set("composed", jBool(true)),
       () -> jCurrencyAmountArray(CurrencyAmountArray.of(gbpArray.getCurrency(),
-          gbpArray.getValues().map(v -> mapAmountsFn(v)))), Boolean.FALSE);
+          gbpArray.getValues().map(v -> mapAmountsFn(v)))), MUST_SUCCEED);
   // of(List<CurrencyAmount>) and its mixed-currency rejection.
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.of list",
       opEntry("of").set("input", jDoubles(new double[] {4d, 5d, 6d}))
           .set("currency", jName(Currency.GBP)),
       () -> jCurrencyAmountArray(CurrencyAmountArray.of(Arrays.asList(
           CurrencyAmount.of(Currency.GBP, 4), CurrencyAmount.of(Currency.GBP, 5),
-          CurrencyAmount.of(Currency.GBP, 6)))), Boolean.FALSE);
+          CurrencyAmount.of(Currency.GBP, 6)))), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.of mixed currencies",
       opEntry("of").set("input", jStr("GBP 4, USD 5")),
       () -> jCurrencyAmountArray(CurrencyAmountArray.of(Arrays.asList(
           CurrencyAmount.of(Currency.GBP, 4), CurrencyAmount.of(Currency.USD, 5)))),
-      Boolean.TRUE);
+      MUST_REJECT_ARGUMENT);
   // of(size, valueFunction) - CurrencyAmountArrayTest.test_of_function and
   // test_of_function_mixedCurrency. The second rejects with a different
   // message from the list form ("Currencies differ: GBP and USD"), so both
@@ -5140,14 +7402,14 @@ Jn buildCurrencyAmountArrayResults() {
       opEntry("of").set("size", jInt(3)).set("currency", jName(Currency.GBP))
           .set("input", jDoubles(new double[] {1d, 2d, 3d})),
       () -> jCurrencyAmountArray(CurrencyAmountArray.of(3, i -> functionValues.get(i))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   List<CurrencyAmount> mixedFunctionValues = Arrays.asList(
       CurrencyAmount.of(Currency.GBP, 1), CurrencyAmount.of(Currency.USD, 2),
       CurrencyAmount.of(Currency.GBP, 3));
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.of function mixed currencies",
       opEntry("of").set("size", jInt(3)).set("input", jStr("GBP 1, USD 2, GBP 3")),
       () -> jCurrencyAmountArray(CurrencyAmountArray.of(3, i -> mixedFunctionValues.get(i))),
-      Boolean.TRUE);
+      MUST_REJECT_ARGUMENT);
   // CurrencyAmountArrayTest.test_convertedTo_missingFxRate: converting with a
   // rate for an unrelated pair fails rather than silently leaving the values
   // unconverted.
@@ -5156,7 +7418,7 @@ Jn buildCurrencyAmountArrayResults() {
           .set("target", jName(Currency.USD))
           .set("rates", jRateEntries(rateEntries(Currency.EUR, Currency.USD, 1.61))),
       () -> jCurrencyAmountArray(gbpArray.convertedTo(Currency.USD,
-          MATH_IN.rate(FxRate.of(Currency.EUR, Currency.USD, 1.61)))), Boolean.TRUE);
+          MATH_IN.rate(FxRate.of(Currency.EUR, Currency.USD, 1.61)))), MUST_REJECT_ARGUMENT);
 
   // SIGNED ZERO THROUGH THE ARRAY TYPES - three different answers, all pinned.
   //
@@ -5182,7 +7444,7 @@ Jn buildCurrencyAmountArrayResults() {
           .set("scalar", jDbl(MATH_IN.scalar(-1.0)))
           .set("composed", jBool(true)),
       () -> jCurrencyAmountArray(CurrencyAmountArray.of(signedZeroArray.getCurrency(),
-          signedZeroArray.getValues().multipliedBy(-1.0))), Boolean.FALSE);
+          signedZeroArray.getValues().multipliedBy(-1.0))), MUST_SUCCEED);
   results.add(opEntry("get")
       .set("left", jCurrencyAmountArray(signedZeroArray))
       .set("index", jInt(0))
@@ -5201,55 +7463,55 @@ Jn buildMultiCurrencyAmountResults() {
 
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.of",
       opEntry("of").set("amounts", jMultiCurrencyAmounts(base)),
-      () -> jMultiCurrencyAmounts(base), Boolean.FALSE);
+      () -> jMultiCurrencyAmounts(base), MUST_SUCCEED);
   // of() rejects duplicate currencies; total() merges them.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.of duplicate currency",
       opEntry("of").set("input", jStr("GBP 100, GBP 200")),
       () -> jMultiCurrencyAmounts(MultiCurrencyAmount.of(
           CurrencyAmount.of(Currency.GBP, 100), CurrencyAmount.of(Currency.GBP, 200))),
-      Boolean.TRUE);
+      MUST_REJECT_ARGUMENT);
   // The empty amount is a legal value, not an error, and it is the identity of
   // the port's Monoid, so its encoding (an empty amount list) is pinned here.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.empty",
       opEntry("of").set("input", jStr("empty")),
-      () -> jMultiCurrencyAmounts(MultiCurrencyAmount.empty()), Boolean.FALSE);
+      () -> jMultiCurrencyAmounts(MultiCurrencyAmount.empty()), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.total duplicate currency",
       opEntry("total").set("input", jStr("GBP 100, GBP 200")),
       () -> jMultiCurrencyAmounts(MultiCurrencyAmount.total(Arrays.asList(
           CurrencyAmount.of(Currency.GBP, 100), CurrencyAmount.of(Currency.GBP, 200)))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.plus multi",
       opEntry("plus").set("left", jMultiCurrencyAmounts(base))
           .set("right", jMultiCurrencyAmounts(other)),
-      () -> jMultiCurrencyAmounts(base.plus(other)), Boolean.FALSE);
+      () -> jMultiCurrencyAmounts(base.plus(other)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.minus multi",
       opEntry("minus").set("left", jMultiCurrencyAmounts(base))
           .set("right", jMultiCurrencyAmounts(other)),
-      () -> jMultiCurrencyAmounts(base.minus(other)), Boolean.FALSE);
+      () -> jMultiCurrencyAmounts(base.minus(other)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.multipliedBy",
       opEntry("multipliedBy").set("left", jMultiCurrencyAmounts(base))
           .set("scalar", jDbl(MATH_IN.scalar(1.5))),
-      () -> jMultiCurrencyAmounts(base.multipliedBy(1.5)), Boolean.FALSE);
+      () -> jMultiCurrencyAmounts(base.multipliedBy(1.5)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.mapAmounts",
       opEntry("mapAmounts").set("left", jMultiCurrencyAmounts(base))
           .set("mapAmountsFn", jStr(MAP_AMOUNTS_FN)),
-      () -> jMultiCurrencyAmounts(base.mapAmounts(v -> mapAmountsFn(v))), Boolean.FALSE);
+      () -> jMultiCurrencyAmounts(base.mapAmounts(v -> mapAmountsFn(v))), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.getAmount known",
       opEntry("getAmount").set("left", jMultiCurrencyAmounts(base))
           .set("currency", jName(Currency.GBP)),
-      () -> jCurrencyAmount(base.getAmount(Currency.GBP)), Boolean.FALSE);
+      () -> jCurrencyAmount(base.getAmount(Currency.GBP)), MUST_SUCCEED);
   // getAmount for a currency the amount does not contain throws.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.getAmount unknown",
       opEntry("getAmount").set("left", jMultiCurrencyAmounts(base))
           .set("currency", jName(Currency.CHF)),
-      () -> jCurrencyAmount(base.getAmount(Currency.CHF)), Boolean.TRUE);
+      () -> jCurrencyAmount(base.getAmount(Currency.CHF)), MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.convertedTo",
       opEntry("convertedTo").set("left", jMultiCurrencyAmounts(base))
           .set("target", jName(Currency.USD))
           .set("rates", jRateEntries(rateEntries(Currency.GBP, Currency.USD, 1.6))),
       () -> jCurrencyAmount(base.convertedTo(Currency.USD,
           MATH_IN.rate(FxRate.of(Currency.GBP, Currency.USD, 1.6)))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   return results;
 }
 
@@ -5271,7 +7533,7 @@ Jn buildMultiCurrencyAmountArrayResults() {
 
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.of",
       opEntry("of").set("left", jMultiCurrencyAmountArray(base)),
-      () -> jMultiCurrencyAmountArray(base), Boolean.FALSE);
+      () -> jMultiCurrencyAmountArray(base), MUST_SUCCEED);
   // of() with unequal array lengths across currencies is rejected.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.of unequal lengths",
       opEntry("of").set("input", jStr("GBP[1,2,3], USD[1,2]")),
@@ -5280,7 +7542,7 @@ Jn buildMultiCurrencyAmountArrayResults() {
         bad.put(Currency.GBP, DoubleArray.of(1d, 2d, 3d));
         bad.put(Currency.USD, DoubleArray.of(1d, 2d));
         return jMultiCurrencyAmountArray(MultiCurrencyAmountArray.of(bad));
-      }, Boolean.TRUE);
+      }, MUST_REJECT_ARGUMENT);
   // RAGGED INPUT IS NOT AN ERROR ON THIS PATH, and the contrast with the
   // rejected map form above is the point. MultiCurrencyAmountArrayTest:62-79
   // builds the array from a LIST of MultiCurrencyAmount, where a currency
@@ -5306,75 +7568,75 @@ Jn buildMultiCurrencyAmountArrayResults() {
       DoubleArray.of(4d, 43d, 44d), raggedArray.getValues(Currency.EUR));
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.of ragged list",
       opEntry("of").set("input", jStr("[EUR 4], [GBP 21, USD 32, EUR 43], [EUR 44]")),
-      () -> jMultiCurrencyAmountArray(raggedArray), Boolean.FALSE);
+      () -> jMultiCurrencyAmountArray(raggedArray), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.of ragged function",
       opEntry("of").set("size", jInt(3))
           .set("input", jStr("[EUR 4], [GBP 21, USD 32, EUR 43], [EUR 44]")),
       () -> jMultiCurrencyAmountArray(
-          MultiCurrencyAmountArray.of(3, i -> raggedAmounts.get(i))), Boolean.FALSE);
+          MultiCurrencyAmountArray.of(3, i -> raggedAmounts.get(i))), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.getValues unknown ragged",
       opEntry("getValues").set("left", jMultiCurrencyAmountArray(raggedArray))
           .set("currency", jName(Currency.AUD)),
-      () -> jDoubleArray(raggedArray.getValues(Currency.AUD)), Boolean.TRUE);
+      () -> jDoubleArray(raggedArray.getValues(Currency.AUD)), MUST_REJECT_ARGUMENT);
   // MultiCurrencyAmountArrayTest.test_empty_amounts: a size with no currencies
   // at all, which the port must round-trip without inventing an entry.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.of empty amounts",
       opEntry("of").set("size", jInt(2)).set("input", jStr("[], []")),
       () -> jMultiCurrencyAmountArray(MultiCurrencyAmountArray.of(
-          MultiCurrencyAmount.empty(), MultiCurrencyAmount.empty())), Boolean.FALSE);
+          MultiCurrencyAmount.empty(), MultiCurrencyAmount.empty())), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.getValues known",
       opEntry("getValues").set("left", jMultiCurrencyAmountArray(base))
           .set("currency", jName(Currency.GBP)),
-      () -> jDoubleArray(base.getValues(Currency.GBP)), Boolean.FALSE);
+      () -> jDoubleArray(base.getValues(Currency.GBP)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.getValues unknown",
       opEntry("getValues").set("left", jMultiCurrencyAmountArray(base))
           .set("currency", jName(Currency.CHF)),
-      () -> jDoubleArray(base.getValues(Currency.CHF)), Boolean.TRUE);
+      () -> jDoubleArray(base.getValues(Currency.CHF)), MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.plus array",
       opEntry("plus").set("left", jMultiCurrencyAmountArray(base))
           .set("right", jMultiCurrencyAmountArray(other)),
-      () -> jMultiCurrencyAmountArray(base.plus(other)), Boolean.FALSE);
+      () -> jMultiCurrencyAmountArray(base.plus(other)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.minus array",
       opEntry("minus").set("left", jMultiCurrencyAmountArray(base))
           .set("right", jMultiCurrencyAmountArray(other)),
-      () -> jMultiCurrencyAmountArray(base.minus(other)), Boolean.FALSE);
+      () -> jMultiCurrencyAmountArray(base.minus(other)), MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.plus size mismatch",
       opEntry("plus").set("left", jMultiCurrencyAmountArray(base))
           .set("right", jMultiCurrencyAmountArray(shortArray)),
-      () -> jMultiCurrencyAmountArray(base.plus(shortArray)), Boolean.TRUE);
+      () -> jMultiCurrencyAmountArray(base.plus(shortArray)), MUST_REJECT_ARGUMENT);
   // MultiCurrencyAmountArrayTest.test_minusArray / test_plusDifferentSize: the
   // subtracting side of both shapes, so the port's `minus` is pinned as well
   // as its `plus`.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.minus size mismatch",
       opEntry("minus").set("left", jMultiCurrencyAmountArray(base))
           .set("right", jMultiCurrencyAmountArray(shortArray)),
-      () -> jMultiCurrencyAmountArray(base.minus(shortArray)), Boolean.TRUE);
+      () -> jMultiCurrencyAmountArray(base.minus(shortArray)), MUST_REJECT_ARGUMENT);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.minus multi",
       opEntry("minus").set("left", jMultiCurrencyAmountArray(base))
           .set("right", jMultiCurrencyAmounts(MultiCurrencyAmount.of(
               CurrencyAmount.of(Currency.GBP, 1), CurrencyAmount.of(Currency.CHF, 2)))),
       () -> jMultiCurrencyAmountArray(base.minus(MultiCurrencyAmount.of(
           CurrencyAmount.of(Currency.GBP, 1), CurrencyAmount.of(Currency.CHF, 2)))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.plus multi",
       opEntry("plus").set("left", jMultiCurrencyAmountArray(base))
           .set("right", jMultiCurrencyAmounts(MultiCurrencyAmount.of(
               CurrencyAmount.of(Currency.GBP, 1), CurrencyAmount.of(Currency.USD, 2)))),
       () -> jMultiCurrencyAmountArray(base.plus(MultiCurrencyAmount.of(
           CurrencyAmount.of(Currency.GBP, 1), CurrencyAmount.of(Currency.USD, 2)))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.total",
       opEntry("total").set("input", jStr("GBP[1,2,3] + USD[10,20,30]")),
       () -> jMultiCurrencyAmountArray(MultiCurrencyAmountArray.total(Arrays.asList(
           CurrencyAmountArray.of(Currency.GBP, DoubleArray.of(1d, 2d, 3d)),
           CurrencyAmountArray.of(Currency.USD, DoubleArray.of(10d, 20d, 30d))))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.convertedTo",
       opEntry("convertedTo").set("left", jMultiCurrencyAmountArray(base))
           .set("target", jName(Currency.USD)),
       () -> jCurrencyAmountArray(
           base.convertedTo(Currency.USD, FxRate.of(Currency.GBP, Currency.USD, 1.6))),
-      Boolean.FALSE);
+      MUST_SUCCEED);
   // Composed, exactly as for CurrencyAmountArray.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.multipliedBy (composed)",
       opEntry("multipliedBy").set("left", jMultiCurrencyAmountArray(base)).set("scalar", jDbl(2.5))
@@ -5385,7 +7647,7 @@ Jn buildMultiCurrencyAmountArrayResults() {
           scaled.put(entry.getKey(), entry.getValue().multipliedBy(2.5));
         }
         return jMultiCurrencyAmountArray(MultiCurrencyAmountArray.of(scaled));
-      }, Boolean.FALSE);
+      }, MUST_SUCCEED);
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.mapAmounts (composed)",
       opEntry("mapAmounts").set("left", jMultiCurrencyAmountArray(base))
           .set("mapAmountsFn", jStr(MAP_AMOUNTS_FN)).set("composed", jBool(true)),
@@ -5395,7 +7657,7 @@ Jn buildMultiCurrencyAmountArrayResults() {
           mapped.put(entry.getKey(), entry.getValue().map(v -> mapAmountsFn(v)));
         }
         return jMultiCurrencyAmountArray(MultiCurrencyAmountArray.of(mapped));
-      }, Boolean.FALSE);
+      }, MUST_SUCCEED);
   return results;
 }
 
@@ -5535,6 +7797,7 @@ String moneyFailureMessage(ThrowingCall call) {
     call.get();
     return "no failure";
   } catch (Throwable thrown) {
+    requireCapturable(thrown);
     return errorMessage(thrown);
   }
 }
@@ -5725,6 +7988,154 @@ Map<String, Set<DayOfWeek>> buildHolidayWeekendDays() {
 Map<String, Set<DayOfWeek>> HOLIDAY_WEEKEND_DAYS = buildHolidayWeekendDays();
 
 /**
+ * The expected-holiday tables of GlobalHolidayCalendarsTest, by calendar id.
+ *
+ * Row shape is the Java provider's: {year, expected holidays} and, for HUBU
+ * alone, {year, expected holidays, working days}. A calendar absent from this
+ * map has no Java table, so its rows carry no independent expectation - which
+ * `checkHolidayTablesUsed` reports rather than hides.
+ */
+Map<String, Object[][]> buildHolidayExpectationTables() {
+  Map<String, Object[][]> tables = new LinkedHashMap<>();
+  tables.put("GBLO", data_gblo());
+  tables.put("FRPA", data_frpa());
+  tables.put("DEFR", data_defr());
+  tables.put("CHZU", data_chzu());
+  tables.put("EUTA", data_euta());
+  tables.put("USGS", data_usgs());
+  tables.put("USNY", data_usny());
+  tables.put("NYFD", data_nyfd());
+  tables.put("NYSE", data_nyse());
+  tables.put("JPTO", data_jpto());
+  tables.put("AUSY", data_ausy());
+  tables.put("BRBD", data_brbd());
+  tables.put("CAMO", data_camo());
+  tables.put("CATO", data_cato());
+  tables.put("CZPR", data_czpr());
+  tables.put("DKCO", data_dkco());
+  tables.put("HUBU", data_hubu());
+  tables.put("MXMC", data_mxmc());
+  tables.put("NOOS", data_noos());
+  tables.put("NZAU", data_nzau());
+  tables.put("NZWE", data_nzwe());
+  tables.put("NZBD", data_nzbd());
+  tables.put("PLWA", data_plwa());
+  tables.put("SEST", data_sest());
+  tables.put("ZAJO", data_zajo());
+  return tables;
+}
+
+Map<String, Object[][]> HOLIDAY_EXPECTATION_TABLES = buildHolidayExpectationTables();
+
+/** Row counts measured in GlobalHolidayCalendarsTest, 201 in total. */
+Map<String, Integer> buildHolidayExpectationRowCounts() {
+  Map<String, Integer> counts = new LinkedHashMap<>();
+  counts.put("GBLO", Integer.valueOf(17));
+  counts.put("FRPA", Integer.valueOf(11));
+  counts.put("DEFR", Integer.valueOf(4));
+  counts.put("CHZU", Integer.valueOf(5));
+  counts.put("EUTA", Integer.valueOf(9));
+  counts.put("USGS", Integer.valueOf(20));
+  counts.put("USNY", Integer.valueOf(10));
+  counts.put("NYFD", Integer.valueOf(16));
+  counts.put("NYSE", Integer.valueOf(8));
+  counts.put("JPTO", Integer.valueOf(17));
+  counts.put("AUSY", Integer.valueOf(8));
+  counts.put("BRBD", Integer.valueOf(5));
+  counts.put("CAMO", Integer.valueOf(3));
+  counts.put("CATO", Integer.valueOf(9));
+  counts.put("CZPR", Integer.valueOf(10));
+  counts.put("DKCO", Integer.valueOf(4));
+  counts.put("HUBU", Integer.valueOf(6));
+  counts.put("MXMC", Integer.valueOf(6));
+  counts.put("NOOS", Integer.valueOf(8));
+  counts.put("NZAU", Integer.valueOf(4));
+  counts.put("NZWE", Integer.valueOf(4));
+  counts.put("NZBD", Integer.valueOf(5));
+  counts.put("PLWA", Integer.valueOf(6));
+  counts.put("SEST", Integer.valueOf(3));
+  counts.put("ZAJO", Integer.valueOf(3));
+  return counts;
+}
+
+Map<String, Integer> HOLIDAY_EXPECTATION_ROW_COUNTS = buildHolidayExpectationRowCounts();
+
+/** How many table rows were actually matched by a captured row. */
+Map<String, Integer> HOLIDAY_TABLE_ROWS_USED = new TreeMap<>();
+
+/**
+ * THE INDEPENDENT CHECK on a captured (calendar, year) row.
+ *
+ * When GlobalHolidayCalendarsTest has a row for this year, the captured
+ * holiday list must equal the set that test's own rule produces from its
+ * hand-sourced dates. The dates come from outside the implementation -
+ * legislation, exchange notices, central-bank calendars, each cited in the
+ * Java test - so agreement here is a statement about the calendar rather than
+ * about the capture.
+ *
+ * The test's rule, verbatim: a date is a holiday when the table names it or it
+ * falls at the weekend, unless the row lists it as a working day. The weekend
+ * is Saturday and Sunday for all 25 tables, including Budapest's - see the
+ * table banner.
+ */
+void checkHolidayAgainstJavaTable(String rowId, String calendarName, int year,
+    List<LocalDate> capturedHolidays) {
+  Object[][] table = HOLIDAY_EXPECTATION_TABLES.get(calendarName);
+  if (table == null) {
+    return;
+  }
+  for (Object[] tableRow : table) {
+    if (((Integer) tableRow[0]).intValue() != year) {
+      continue;
+    }
+    // toDateList copies through a wildcard, so no unchecked cast is needed.
+    List<LocalDate> expectedDates = toDateList(tableRow[1]);
+    List<LocalDate> workingDays = tableRow.length > 2 ? toDateList(tableRow[2])
+        : new ArrayList<LocalDate>();
+    List<LocalDate> expected = new ArrayList<>();
+    LocalDate date = LocalDate.of(year, 1, 1);
+    int length = date.lengthOfYear();
+    for (int i = 0; i < length; i++) {
+      boolean weekend = date.getDayOfWeek() == DayOfWeek.SATURDAY
+          || date.getDayOfWeek() == DayOfWeek.SUNDAY;
+      if ((expectedDates.contains(date) || weekend) && !workingDays.contains(date)) {
+        expected.add(date);
+      }
+      date = date.plusDays(1);
+    }
+    CHECK.checkEquals(FX_HOLIDAY,
+        rowId + " GlobalHolidayCalendarsTest.data_" + calendarName.toLowerCase(Locale.ENGLISH),
+        expected, capturedHolidays);
+    Integer used = HOLIDAY_TABLE_ROWS_USED.get(calendarName);
+    HOLIDAY_TABLE_ROWS_USED.put(calendarName,
+        Integer.valueOf(used == null ? 1 : used.intValue() + 1));
+  }
+}
+
+/**
+ * Every table row must have been consumed by a captured row.
+ *
+ * This is the check that makes the one above load-bearing: without it, a year
+ * dropped from the captured range - or a calendar renamed - would simply stop
+ * being compared, and 201 expectations would quietly become none.
+ */
+void checkHolidayTablesUsed() {
+  int total = 0;
+  for (Map.Entry<String, Integer> entry : HOLIDAY_EXPECTATION_ROW_COUNTS.entrySet()) {
+    String calendarName = entry.getKey();
+    int expectedRows = entry.getValue().intValue();
+    Object[][] table = HOLIDAY_EXPECTATION_TABLES.get(calendarName);
+    CHECK.checkCount(FX_HOLIDAY, "data_" + calendarName.toLowerCase(Locale.ENGLISH) + " rows",
+        expectedRows, table == null ? 0 : table.length);
+    Integer used = HOLIDAY_TABLE_ROWS_USED.get(calendarName);
+    CHECK.checkCount(FX_HOLIDAY, "data_" + calendarName.toLowerCase(Locale.ENGLISH)
+        + " rows checked", expectedRows, used == null ? 0 : used.intValue());
+    total += expectedRows;
+  }
+  CHECK.checkCount(FX_HOLIDAY, "GlobalHolidayCalendarsTest expected-year rows", 201, total);
+}
+
+/**
  * One emitted row, kept in Java form so the checks below read it as data
  * rather than by inspecting rendered JSON.
  */
@@ -5840,6 +8251,7 @@ JObject jHolidaySample(HolidayRow row, HolidayCalendar calendar, LocalDate date,
     shifted = shifted0;
     between = between0;
   } catch (Throwable thrown) {
+    requireCapturable(thrown);
     error = errorMessage(thrown);
   }
   row.sampleErrors.add(error);
@@ -5893,11 +8305,28 @@ HolidayRow addHolidayRow(JArray rows, String source, String suffix, String calen
   try {
     holidayDates = holidayDatesOfYear(calendar, year);
   } catch (Throwable thrown) {
+    requireCapturable(thrown);
     error = errorMessage(thrown);
+    // Only ONE kind of row may fail: the `yearRange` probes, whose whole year
+    // lies outside the accepted 0000-9999 range and which checkYearRangeRow
+    // then asserts message-first. Every other row - a generated calendar, a
+    // year outside a calendar's stored range, a weekend-only calendar - has a
+    // holiday list by construction, so a rejection there is a change in
+    // behaviour rather than a fixture value, and it aborts the capture instead
+    // of being recorded as the expectation.
+    CHECK.checkTrue(FX_HOLIDAY, rowId + " may fail", source.equals("yearRange"),
+        "only a year-range probe may be rejected, but this row was: " + error);
+    CHECK.checkTrue(FX_HOLIDAY, rowId + " rejection type",
+        IllegalArgumentException.class.isInstance(thrown),
+        "expected IllegalArgumentException but Java threw " + error);
   }
   row.holidays = holidayDates;
   row.error = error;
   if (holidayDates != null) {
+    // Cross-check 0, and the only one that comes from outside the
+    // implementation: the hand-sourced expected-holiday tables of
+    // GlobalHolidayCalendarsTest, where that test has a row for this year.
+    checkHolidayAgainstJavaTable(rowId, calendarName, year, holidayDates);
     // Cross-check 1: the same truth through a different public API. `holidays`
     // is a Stream over the range, so agreement is not a tautology of the loop
     // above - it also pins the two APIs to each other for the port.
@@ -6024,6 +8453,7 @@ void checkHolidayDateRules() {
   try {
     generators = Class.forName("com.opengamma.strata.basics.date.GlobalHolidayCalendars");
   } catch (Throwable thrown) {
+    rethrowIfError(thrown);
     CHECK.fail(FX_HOLIDAY, "GlobalHolidayCalendars", "not loadable: " + errorMessage(thrown));
     return;
   }
@@ -6038,6 +8468,7 @@ void checkHolidayDateRules() {
     christmas.setAccessible(true);
     boxingDay.setAccessible(true);
   } catch (Throwable thrown) {
+    rethrowIfError(thrown);
     CHECK.fail(FX_HOLIDAY, "GlobalHolidayCalendars", "date rules unreachable: "
         + errorMessage(thrown));
     return;
@@ -6055,6 +8486,7 @@ void checkHolidayDateRules() {
           LocalDate.of(row[0], 12, row[2]), boxingDay.invoke(null, row[0]));
     }
   } catch (Throwable thrown) {
+    rethrowIfError(thrown);
     CHECK.fail(FX_HOLIDAY, "GlobalHolidayCalendars", "date rule invocation threw "
         + errorMessage(thrown));
   }
@@ -6274,6 +8706,7 @@ JArray buildHolidayFixture() {
 
   checkHolidayDateRules();
   checkHolidayDiscrimination(rows);
+  checkHolidayTablesUsed();
 
   // The row count is asserted rather than reported, so thinning the year
   // coverage cannot pass unnoticed: 24 generators x 150 years + EUTA's 103 +
@@ -6295,148 +8728,835 @@ JArray buildHolidayFixture() {
 /* ===========================================================================
  * SECTION 12 - FIXTURE 6 OF 6: double-array-baseline.json
  *
- * DoubleMatrix HAS NO MATRIX PRODUCT. The row schema says "matrix
- * multipliedBy", and the only multipliedBy the class exposes is the SCALAR
- * multipliedBy(double). No matrix-times-matrix product is invented here; the
- * captured matrix operations are the scalar multipliedBy plus transpose,
- * total, with, plus, minus and the element-wise combine.
+ * This fixture is the whole of the port's 1e-9 numerical-parity obligation for
+ * DoubleArray and DoubleMatrix, so its row shape is FIXED AND UNIFORM: every
+ * row carries every input, every index parameter and all TWENTY-TWO
+ * expectations, with no optional field, no null and no `error` entry. A row
+ * that omitted an expectation would silently reduce what Gate 3 measures,
+ * which is the one failure a golden baseline exists to prevent.
  *
- * Rows deliberately include non-finite and signed-zero contents so the
- * tagged-double policy is exercised on both sides.
+ * BOTH OVERLOAD FAMILIES ARE CAPTURED. DoubleArray has a scalar plus, minus,
+ * multipliedBy and dividedBy AND an element-wise overload of each
+ * (DoubleArray.java:660,682,704,726 and :802,829,858,886). Capturing one of
+ * the two would leave four retained public methods unmeasured and would leave
+ * one of the row's two declared operands unused. Each expectation is therefore
+ * named after the overload that produced it - plusScalar and plusArray,
+ * minusScalar and minusArray, and so on - so a reader can tell which operand
+ * produced which value without consulting this script.
+ *
+ * subArray IS THE TWO-BOUND, HALF-OPEN OVERLOAD (DoubleArray.java:561). The
+ * row carries `subArrayFrom` and `subArrayTo` because neither can be derived
+ * from the inputs; the single-bound overload is the special case
+ * subArray(from, a.length) and is covered by DoubleArraySpec as a unit test.
+ *
+ * DoubleMatrix HAS NO MATRIX PRODUCT. Its only multipliedBy takes a double
+ * (DoubleMatrix.java:544), so `matrixMultipliedBy` is the SCALAR multiply and
+ * no matrix-times-matrix product is invented here. `matrixB` is consumed only
+ * by matrixPlus and matrixMinus (:624,:653), the two members that take a
+ * second matrix.
+ *
+ * EVERY ROW IS A SUCCESS ROW. The schema has no error column, so the emitter
+ * asserts each operation's preconditions before computing anything - equal and
+ * non-empty array lengths, identically shaped non-empty matrices,
+ * 0 <= subArrayFrom <= subArrayTo <= a.length, in-range `with` indices - and
+ * THROWS rather than recording a failure as an expectation. The exception
+ * paths (empty-array min/max, mismatched element-wise lengths, out-of-range
+ * indices) belong to DoubleArraySpec and DoubleMatrixSpec as unit tests.
+ *
+ * THE JAVA-DERIVED ROWS ARE CROSS-CHECKED AGAINST THE JAVA TEST CONSTANTS.
+ * Each `javatest-` row is built from inputs DoubleArrayTest or DoubleMatrixTest
+ * uses, and the values the row EMITS - the very objects that are serialized,
+ * not a recomputation of them - are compared against the literals those tests
+ * assert for those inputs: arrays at the test's own DELTA of 1e-14, scalars
+ * exactly. A wrong overload, a mis-mapped operation or a changed
+ * implementation therefore aborts the capture before anything is written. The
+ * seeded-random and IEEE-edge rows have no Java literal to be compared
+ * against and are counted as capture-only, which is what keeps the summary
+ * honest about how much of the fixture is independently pinned.
+ *
+ * The population floors are asserted in code (Section 12's
+ * DOUBLE_ARRAY_MIN_* constants), so thinning the fixture cannot pass
+ * unnoticed, and rows deliberately include signed zero, not-a-number and both
+ * infinities so the tagged-double policy is exercised end to end on both
+ * sides.
  * ===========================================================================
  */
 
 String FX_DOUBLE_ARRAY = "double-array";
 
-void addDoubleArrayRow(JArray rows, String source, double[] a, double[] b, double scalar,
-    double[][] matrixA, double[][] matrixB, boolean captureOnly) {
-  DoubleArray arrayA = DoubleArray.copyOf(a);
-  DoubleArray arrayB = DoubleArray.copyOf(b);
-  JObject row = new JObject()
-      .set("source", jStr(source))
-      .set("a", jDoubles(a))
-      .set("b", jDoubles(b))
-      .set("scalar", jDbl(scalar))
-      .set("matrixA", matrixA == null ? jNull() : jDoubleMatrix(DoubleMatrix.copyOf(matrixA)))
-      .set("matrixB", matrixB == null ? jNull() : jDoubleMatrix(DoubleMatrix.copyOf(matrixB)));
-  JArray results = new JArray();
-  // Element-wise and scalar array operations.
-  addOperation(results, FX_DOUBLE_ARRAY, source + " plus", opEntry("plus"),
-      () -> jDoubleArray(arrayA.plus(arrayB)), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " minus", opEntry("minus"),
-      () -> jDoubleArray(arrayA.minus(arrayB)), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " multipliedBy", opEntry("multipliedBy"),
-      () -> jDoubleArray(arrayA.multipliedBy(scalar)), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " dividedBy", opEntry("dividedBy"),
-      () -> jDoubleArray(arrayA.dividedBy(scalar)), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " map", opEntry("map")
-      .set("mapFn", jStr(MAP_AMOUNTS_FN)),
-      () -> jDoubleArray(arrayA.map(v -> mapAmountsFn(v))), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " reduce", opEntry("reduce")
-      .set("reduceFn", jStr("(acc, v) -> acc + v")).set("identity", jDbl(0d)),
-      () -> jDbl(arrayA.reduce(0d, (acc, v) -> acc + v)), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " sum", opEntry("sum"),
-      () -> jDbl(arrayA.sum()), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " min", opEntry("min"),
-      () -> jDbl(arrayA.min()), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " max", opEntry("max"),
-      () -> jDbl(arrayA.max()), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " sorted", opEntry("sorted"),
-      () -> jDoubleArray(arrayA.sorted()), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " concat", opEntry("concat"),
-      () -> jDoubleArray(arrayA.concat(arrayB)), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " subArray", opEntry("subArray")
-      .set("fromIndex", jInt(1L)),
-      () -> jDoubleArray(arrayA.subArray(1)), null);
-  addOperation(results, FX_DOUBLE_ARRAY, source + " with", opEntry("with")
-      .set("index", jInt(0L)).set("value", jDbl(scalar)),
-      () -> jDoubleArray(arrayA.with(0, scalar)), null);
-  if (matrixA != null) {
-    DoubleMatrix mA = DoubleMatrix.copyOf(matrixA);
-    // Scalar multipliedBy only - see the section banner.
-    addOperation(results, FX_DOUBLE_ARRAY, source + " matrixMultipliedBy",
-        opEntry("matrixMultipliedBy").set("scalar", jDbl(scalar)),
-        () -> jDoubleMatrix(mA.multipliedBy(scalar)), null);
-    addOperation(results, FX_DOUBLE_ARRAY, source + " transpose", opEntry("transpose"),
-        () -> jDoubleMatrix(mA.transpose()), null);
-    addOperation(results, FX_DOUBLE_ARRAY, source + " total", opEntry("total"),
-        () -> jDbl(mA.total()), null);
-    addOperation(results, FX_DOUBLE_ARRAY, source + " matrixWith", opEntry("matrixWith")
-        .set("row", jInt(0L)).set("column", jInt(0L)).set("value", jDbl(scalar)),
-        () -> jDoubleMatrix(mA.with(0, 0, scalar)), null);
-    if (matrixB != null) {
-      DoubleMatrix mB = DoubleMatrix.copyOf(matrixB);
-      addOperation(results, FX_DOUBLE_ARRAY, source + " matrixPlus", opEntry("matrixPlus"),
-          () -> jDoubleMatrix(mA.plus(mB)), null);
-      addOperation(results, FX_DOUBLE_ARRAY, source + " matrixMinus", opEntry("matrixMinus"),
-          () -> jDoubleMatrix(mA.minus(mB)), null);
-      addOperation(results, FX_DOUBLE_ARRAY, source + " matrixCombine", opEntry("matrixCombine")
-          .set("combineFn", jStr("(x, y) -> x * y")),
-          () -> jDoubleMatrix(mA.combine(mB, (x, y) -> x * y)), null);
-    }
+/*
+ * Population floors, and the exact count the fixture is expected to carry.
+ *
+ * The floors are the minimum population the baseline is worth having: enough
+ * Java-derived rows to pin the operations against the original's own test
+ * inputs, as many seeded-random rows again so the relative bound of the parity
+ * rule is exercised across magnitudes, and the IEEE-edge rows without which
+ * the non-finite policy is never measured. They are asserted rather than
+ * documented so that a future reduction fails the capture instead of quietly
+ * shrinking Gate 3.
+ */
+int DOUBLE_ARRAY_MIN_ROWS = 40;
+int DOUBLE_ARRAY_MIN_JAVATEST_ROWS = 16;
+int DOUBLE_ARRAY_MIN_RANDOM_ROWS = 16;
+int DOUBLE_ARRAY_MIN_IEEE_ROWS = 4;
+int DOUBLE_ARRAY_EXPECTED_ROWS = 43;
+
+/**
+ * The seeded source of the random rows of this fixture alone.
+ *
+ * A dedicated generator, seeded from the script's single documented seed,
+ * rather than the shared RND: it makes the rows of this fixture independent of
+ * how many values every earlier section happened to draw, so a change in one
+ * fixture can never move the numbers of another.
+ */
+Random DOUBLE_ARRAY_RND = new Random(RANDOM_SEED);
+
+/** The magnitudes the seeded rows span, so both bounds of the parity rule are exercised. */
+double[] DOUBLE_ARRAY_SCALES = {1e-8d, 1e-4d, 1d, 1e4d, 1e8d};
+
+/** Every emitted row id, so that uniqueness can be asserted against the row count. */
+Set<String> DOUBLE_ARRAY_IDS = new LinkedHashSet<>();
+
+/**
+ * The values of one emitted row, held as the Java objects that were
+ * serialized.
+ *
+ * The cross-checks below read these fields, so they compare what the fixture
+ * actually contains rather than a second computation that could differ from
+ * it.
+ */
+class DoubleArrayCase {
+  String id;
+  DoubleArray a;
+  DoubleArray b;
+  double scalar;
+  DoubleArray plusScalar;
+  DoubleArray plusArray;
+  DoubleArray minusScalar;
+  DoubleArray minusArray;
+  DoubleArray multipliedByScalar;
+  DoubleArray multipliedByArray;
+  DoubleArray dividedByScalar;
+  DoubleArray dividedByArray;
+  DoubleArray mapSquared;
+  DoubleArray sorted;
+  DoubleArray concat;
+  DoubleArray subArray;
+  double reduceSum;
+  double sum;
+  double min;
+  double max;
+  double matrixTotal;
+  DoubleMatrix matrixMultipliedBy;
+  DoubleMatrix matrixPlus;
+  DoubleMatrix matrixMinus;
+  DoubleMatrix matrixTranspose;
+  DoubleMatrix matrixWith;
+}
+
+/**
+ * Rejects a row that cannot satisfy the schema.
+ *
+ * This is a defect in this script rather than a disagreement with Java, so it
+ * throws instead of being recorded as a check failure: the guarded driver
+ * turns it into a non-zero exit with a stack trace, and nothing is written.
+ */
+void requireDoubleArrayRow(boolean condition, String id, String detail) {
+  if (!condition) {
+    throw new IllegalStateException("double-array row '" + id + "': " + detail);
   }
-  row.set("results", results);
-  rows.add(row);
+}
+
+/** Asserts a DoubleArray against values a Java test hard-codes, at its DELTA. */
+void checkDoubleArrayValues(String rowId, DoubleArray actual, double... expected) {
+  CHECK.checkInt(FX_DOUBLE_ARRAY, rowId + " size", expected.length, actual.size());
+  if (actual.size() != expected.length) {
+    return;
+  }
+  for (int i = 0; i < expected.length; i++) {
+    CHECK.checkClose(FX_DOUBLE_ARRAY, rowId + "[" + i + "]", expected[i], actual.get(i),
+        TOL_DOUBLE_ARRAY, "DoubleArrayTest.DELTA");
+  }
+}
+
+/** Asserts a DoubleMatrix against values a Java test hard-codes, row by row. */
+void checkDoubleMatrixValues(String rowId, DoubleMatrix actual, int rowCount, int columnCount,
+    double... expected) {
+  CHECK.checkInt(FX_DOUBLE_ARRAY, rowId + " rowCount", rowCount, actual.rowCount());
+  CHECK.checkInt(FX_DOUBLE_ARRAY, rowId + " columnCount", columnCount, actual.columnCount());
+  if (actual.rowCount() != rowCount || actual.columnCount() != columnCount) {
+    return;
+  }
+  for (int i = 0; i < expected.length; i++) {
+    int row = i / columnCount;
+    int column = i % columnCount;
+    CHECK.checkClose(FX_DOUBLE_ARRAY, rowId + "[" + row + "][" + column + "]", expected[i],
+        actual.get(row, column), TOL_DOUBLE_ARRAY, "DoubleMatrixTest.DELTA");
+  }
+}
+
+/**
+ * Asserts that a call the Java test expects to reject does reject, with an
+ * exception of the type that test names.
+ *
+ * The type is checked by ASSIGNABILITY, not by name: the Java tests assert
+ * `assertThatExceptionOfType(IndexOutOfBoundsException.class)` and the
+ * implementation throws the more specific `ArrayIndexOutOfBoundsException`,
+ * which satisfies that assertion. Comparing simple names would make this check
+ * stricter than the test it transcribes and fail on correct behaviour.
+ */
+void checkDoubleArrayThrows(String rowId, Class<? extends Throwable> expectedType,
+    ThrowingCall call) {
+  try {
+    Object value = call.get();
+    CHECK.fail(FX_DOUBLE_ARRAY, rowId,
+        "expected " + expectedType.getSimpleName() + " but it returned " + value);
+  } catch (Throwable thrown) {
+    requireCapturable(thrown);
+    CHECK.checkTrue(FX_DOUBLE_ARRAY, rowId, expectedType.isInstance(thrown),
+        "expected " + expectedType.getSimpleName() + " but Java threw " + errorMessage(thrown));
+  }
+}
+
+/**
+ * THE HARD-CODED CONSTANTS OF DoubleArrayTest AND DoubleMatrixTest.
+ *
+ * The fixture rows are evaluated over the capture's own inputs, so they pin
+ * the port to the Java implementation but say nothing about whether the Java
+ * implementation still does what its tests claim. These are those claims,
+ * transcribed with their own inputs, expected values, tolerance (DELTA =
+ * 1e-14) and expected exception types:
+ *
+ *   DoubleArrayTest  :192-201 subArray(from), :203-212 subArray(from,to),
+ *                    :315-322 with, :325-364 scalar plus/minus/multipliedBy/
+ *                    dividedBy/map/mapWithIndex, :368-397 the array-valued
+ *                    forms and their length-mismatch rejections, :419-455
+ *                    sorted/min/max/sum/reduce, :458-473 concat.
+ *   DoubleMatrixTest :221-231 with, :234-241 multipliedBy, :257-280
+ *                    plus/minus/combine and their dimension rejections,
+ *                    :282-286 total.
+ *
+ * A change in any of them aborts the capture instead of being recaptured as
+ * the new baseline.
+ */
+void checkDoubleArrayJavaConstants() {
+  DoubleArray oneTwoThree = DoubleArray.of(1d, 2d, 3d);
+  DoubleArray halves = DoubleArray.of(0.5d, 0.6d, 0.7d);
+  DoubleArray tens = DoubleArray.of(10d, 20d, 30d);
+  // Scalar arithmetic (:325-353).
+  checkDoubleArrayValues("DoubleArrayTest.test_plus(5)", oneTwoThree.plus(5), 6d, 7d, 8d);
+  checkDoubleArrayValues("DoubleArrayTest.test_plus(-5)", oneTwoThree.plus(-5), -4d, -3d, -2d);
+  checkDoubleArrayValues("DoubleArrayTest.test_minus(5)", oneTwoThree.minus(5), -4d, -3d, -2d);
+  checkDoubleArrayValues("DoubleArrayTest.test_multipliedBy(5)", oneTwoThree.multipliedBy(5),
+      5d, 10d, 15d);
+  checkDoubleArrayValues("DoubleArrayTest.test_dividedBy(5)", tens.dividedBy(5), 2d, 4d, 6d);
+  // map / mapWithIndex (:355-364).
+  checkDoubleArrayValues("DoubleArrayTest.test_map", oneTwoThree.map(v -> 1 / v), 1d, 1d / 2d,
+      1d / 3d);
+  checkDoubleArrayValues("DoubleArrayTest.test_mapWithIndex",
+      oneTwoThree.mapWithIndex((i, v) -> i * v), 0d, 2d, 6d);
+  // Element-wise arithmetic and its length precondition (:368-397).
+  checkDoubleArrayValues("DoubleArrayTest.test_plus_array", oneTwoThree.plus(halves), 1.5d, 2.6d,
+      3.7d);
+  checkDoubleArrayThrows("DoubleArrayTest.test_plus_array empty", IllegalArgumentException.class,
+      () -> oneTwoThree.plus(DoubleArray.EMPTY));
+  checkDoubleArrayValues("DoubleArrayTest.test_minus_array", oneTwoThree.minus(halves), 0.5d, 1.4d,
+      2.3d);
+  checkDoubleArrayThrows("DoubleArrayTest.test_minus_array empty", IllegalArgumentException.class,
+      () -> oneTwoThree.minus(DoubleArray.EMPTY));
+  checkDoubleArrayValues("DoubleArrayTest.test_multipliedBy_array", oneTwoThree.multipliedBy(halves),
+      0.5d, 1.2d, 2.1d);
+  checkDoubleArrayValues("DoubleArrayTest.test_dividedBy_array",
+      tens.dividedBy(DoubleArray.of(2d, 5d, 10d)), 5d, 4d, 3d);
+  // sorted / min / max / sum / reduce (:419-455).
+  checkDoubleArrayValues("DoubleArrayTest.test_sorted", DoubleArray.of(2d, 1d, 3d, 0d).sorted(),
+      0d, 1d, 2d, 3d);
+  checkDoubleArrayValues("DoubleArrayTest.test_sorted empty", DoubleArray.of().sorted());
+  CHECK.checkExact(FX_DOUBLE_ARRAY, "DoubleArrayTest.test_min", 1d,
+      DoubleArray.of(2d, 1d, 3d).min());
+  checkDoubleArrayThrows("DoubleArrayTest.test_min empty", IllegalStateException.class,
+      () -> Double.valueOf(DoubleArray.EMPTY.min()));
+  CHECK.checkExact(FX_DOUBLE_ARRAY, "DoubleArrayTest.test_max", 3d,
+      DoubleArray.of(2d, 1d, 3d).max());
+  checkDoubleArrayThrows("DoubleArrayTest.test_max empty", IllegalStateException.class,
+      () -> Double.valueOf(DoubleArray.EMPTY.max()));
+  CHECK.checkExact(FX_DOUBLE_ARRAY, "DoubleArrayTest.test_sum", 6d,
+      DoubleArray.of(2d, 1d, 3d).sum());
+  CHECK.checkExact(FX_DOUBLE_ARRAY, "DoubleArrayTest.test_sum empty", 0d, DoubleArray.EMPTY.sum());
+  CHECK.checkExact(FX_DOUBLE_ARRAY, "DoubleArrayTest.test_reduce", 6d,
+      DoubleArray.of(2d, 1d, 3d).reduce(1d, (r, v) -> r * v));
+  CHECK.checkExact(FX_DOUBLE_ARRAY, "DoubleArrayTest.test_reduce empty", 2d,
+      DoubleArray.EMPTY.reduce(2d, (r, v) -> r + v));
+  // concat / subArray / with, including their index preconditions (:192-212,
+  // :315-322, :458-473).
+  checkDoubleArrayValues("DoubleArrayTest.test_concat_object", oneTwoThree.concat(halves), 1d, 2d,
+      3d, 0.5d, 0.6d, 0.7d);
+  checkDoubleArrayValues("DoubleArrayTest.test_subArray_from", oneTwoThree.subArray(1), 2d, 3d);
+  checkDoubleArrayValues("DoubleArrayTest.test_subArray_from end", oneTwoThree.subArray(3));
+  checkDoubleArrayThrows("DoubleArrayTest.test_subArray_from(4)", IndexOutOfBoundsException.class,
+      () -> oneTwoThree.subArray(4));
+  checkDoubleArrayValues("DoubleArrayTest.test_subArray_fromTo", oneTwoThree.subArray(1, 2), 2d);
+  checkDoubleArrayThrows("DoubleArrayTest.test_subArray_fromTo(0,4)", IndexOutOfBoundsException.class,
+      () -> oneTwoThree.subArray(0, 4));
+  checkDoubleArrayValues("DoubleArrayTest.test_with", oneTwoThree.with(0, 2.6d), 2.6d, 2d, 3d);
+  checkDoubleArrayThrows("DoubleArrayTest.test_with(3)", IndexOutOfBoundsException.class,
+      () -> oneTwoThree.with(3, 2d));
+  // DoubleMatrix (:221-286).
+  DoubleMatrix threeByTwo = DoubleMatrix.copyOf(new double[][] {{1d, 2d}, {3d, 4d}, {5d, 6d}});
+  checkDoubleMatrixValues("DoubleMatrixTest.test_with", threeByTwo.with(0, 0, 2.6d), 3, 2, 2.6d, 2d,
+      3d, 4d, 5d, 6d);
+  checkDoubleArrayThrows("DoubleMatrixTest.test_with(3,0)", IndexOutOfBoundsException.class,
+      () -> threeByTwo.with(3, 0, 2d));
+  checkDoubleMatrixValues("DoubleMatrixTest.test_multipliedBy", threeByTwo.multipliedBy(5), 3, 2,
+      5d, 10d, 15d, 20d, 25d, 30d);
+  CHECK.checkExact(FX_DOUBLE_ARRAY, "DoubleMatrixTest.test_total", 21d, threeByTwo.total());
+  CHECK.checkExact(FX_DOUBLE_ARRAY, "DoubleMatrixTest.test_total empty", 0d,
+      DoubleMatrix.EMPTY.total());
+  DoubleMatrix twoByThree = DoubleMatrix.of(2, 3, 1d, 2d, 3d, 4d, 5d, 6d);
+  DoubleMatrix twoByThreeSmall = DoubleMatrix.of(2, 3, 0.5d, 0.6d, 0.7d, 0.5d, 0.6d, 0.7d);
+  checkDoubleMatrixValues("DoubleMatrixTest.test_plus", twoByThree.plus(twoByThreeSmall), 2, 3,
+      1.5d, 2.6d, 3.7d, 4.5d, 5.6d, 6.7d);
+  checkDoubleArrayThrows("DoubleMatrixTest.test_plus empty", IllegalArgumentException.class,
+      () -> twoByThree.plus(DoubleMatrix.EMPTY));
+  checkDoubleMatrixValues("DoubleMatrixTest.test_minus", twoByThree.minus(twoByThreeSmall), 2, 3,
+      0.5d, 1.4d, 2.3d, 3.5d, 4.4d, 5.3d);
+  checkDoubleMatrixValues("DoubleMatrixTest.test_combine",
+      twoByThree.combine(twoByThreeSmall, (x, y) -> x * y), 2, 3, 0.5d, 2d * 0.6d, 3d * 0.7d,
+      4d * 0.5d, 5d * 0.6d, 6d * 0.7d);
+  checkDoubleArrayThrows("DoubleMatrixTest.test_combine empty", IllegalArgumentException.class,
+      () -> twoByThree.combine(DoubleMatrix.EMPTY, (x, y) -> x * y));
+}
+
+/**
+ * Emits one uniform row and returns the values it carries.
+ *
+ * Every operation is applied directly, with no exception handling: the
+ * preconditions above guarantee that none of them can fail, so anything thrown
+ * here is a defect that must abort the capture rather than become an
+ * expectation.
+ */
+DoubleArrayCase addDoubleArrayRow(JArray rows, String id, double[] a, double[] b, double scalar,
+    int subArrayFrom, int subArrayTo, double[][] matrixA, double[][] matrixB,
+    int withRow, int withColumn, double withValue, boolean captureOnly) {
+  requireDoubleArrayRow(DOUBLE_ARRAY_IDS.add(id), id, "duplicate row id");
+  requireDoubleArrayRow(a.length > 0, id, "`a` must be non-empty, because min and max have no value for an empty array");
+  requireDoubleArrayRow(a.length == b.length, id, "`a` and `b` must have the same length, because the element-wise operations require it");
+  requireDoubleArrayRow(matrixA.length > 0 && matrixA[0].length > 0, id, "`matrixA` must have at least one row and one column");
+  requireDoubleArrayRow(matrixB.length == matrixA.length, id, "`matrixB` must have the row count of `matrixA`");
+  for (int r = 0; r < matrixA.length; r++) {
+    requireDoubleArrayRow(matrixA[r].length == matrixA[0].length, id, "`matrixA` must be rectangular");
+    requireDoubleArrayRow(matrixB[r].length == matrixA[0].length, id, "`matrixB` must have the shape of `matrixA`");
+  }
+  requireDoubleArrayRow(subArrayFrom >= 0 && subArrayFrom <= subArrayTo && subArrayTo <= a.length, id,
+      "0 <= subArrayFrom <= subArrayTo <= a.length");
+  requireDoubleArrayRow(withRow >= 0 && withRow < matrixA.length, id, "`withRow` must index a row of `matrixA`");
+  requireDoubleArrayRow(withColumn >= 0 && withColumn < matrixA[0].length, id,
+      "`withColumn` must index a column of `matrixA`");
+
+  DoubleArrayCase emitted = new DoubleArrayCase();
+  emitted.id = id;
+  emitted.a = DoubleArray.copyOf(a);
+  emitted.b = DoubleArray.copyOf(b);
+  emitted.scalar = scalar;
+  DoubleMatrix first = DoubleMatrix.copyOf(matrixA);
+  DoubleMatrix second = DoubleMatrix.copyOf(matrixB);
+  emitted.plusScalar = emitted.a.plus(scalar);
+  emitted.plusArray = emitted.a.plus(emitted.b);
+  emitted.minusScalar = emitted.a.minus(scalar);
+  emitted.minusArray = emitted.a.minus(emitted.b);
+  emitted.multipliedByScalar = emitted.a.multipliedBy(scalar);
+  emitted.multipliedByArray = emitted.a.multipliedBy(emitted.b);
+  emitted.dividedByScalar = emitted.a.dividedBy(scalar);
+  emitted.dividedByArray = emitted.a.dividedBy(emitted.b);
+  emitted.mapSquared = emitted.a.map(value -> value * value);
+  // The identity of the reduction is zero, so `reduceSum` is `sum` computed
+  // through the general member: both are left folds in index order, and the
+  // check below holds them to each other as well as to the fixture.
+  emitted.reduceSum = emitted.a.reduce(0d, (accumulated, value) -> accumulated + value);
+  emitted.sum = emitted.a.sum();
+  emitted.min = emitted.a.min();
+  emitted.max = emitted.a.max();
+  emitted.sorted = emitted.a.sorted();
+  emitted.concat = emitted.a.concat(emitted.b);
+  emitted.subArray = emitted.a.subArray(subArrayFrom, subArrayTo);
+  emitted.matrixMultipliedBy = first.multipliedBy(scalar);
+  emitted.matrixPlus = first.plus(second);
+  emitted.matrixMinus = first.minus(second);
+  emitted.matrixTranspose = first.transpose();
+  emitted.matrixTotal = first.total();
+  emitted.matrixWith = first.with(withRow, withColumn, withValue);
+
+  rows.add(new JObject()
+      .set("id", jStr(id))
+      .set("a", jDoubleArray(emitted.a))
+      .set("b", jDoubleArray(emitted.b))
+      .set("scalar", jDbl(scalar))
+      .set("subArrayFrom", jInt(subArrayFrom))
+      .set("subArrayTo", jInt(subArrayTo))
+      .set("matrixA", jDoubleMatrix(first))
+      .set("matrixB", jDoubleMatrix(second))
+      .set("withRow", jInt(withRow))
+      .set("withColumn", jInt(withColumn))
+      .set("withValue", jDbl(withValue))
+      .set("plusScalar", jDoubleArray(emitted.plusScalar))
+      .set("plusArray", jDoubleArray(emitted.plusArray))
+      .set("minusScalar", jDoubleArray(emitted.minusScalar))
+      .set("minusArray", jDoubleArray(emitted.minusArray))
+      .set("multipliedByScalar", jDoubleArray(emitted.multipliedByScalar))
+      .set("multipliedByArray", jDoubleArray(emitted.multipliedByArray))
+      .set("dividedByScalar", jDoubleArray(emitted.dividedByScalar))
+      .set("dividedByArray", jDoubleArray(emitted.dividedByArray))
+      .set("mapSquared", jDoubleArray(emitted.mapSquared))
+      .set("reduceSum", jDbl(emitted.reduceSum))
+      .set("sum", jDbl(emitted.sum))
+      .set("min", jDbl(emitted.min))
+      .set("max", jDbl(emitted.max))
+      .set("sorted", jDoubleArray(emitted.sorted))
+      .set("concat", jDoubleArray(emitted.concat))
+      .set("subArray", jDoubleArray(emitted.subArray))
+      .set("matrixMultipliedBy", jDoubleMatrix(emitted.matrixMultipliedBy))
+      .set("matrixPlus", jDoubleMatrix(emitted.matrixPlus))
+      .set("matrixMinus", jDoubleMatrix(emitted.matrixMinus))
+      .set("matrixTranspose", jDoubleMatrix(emitted.matrixTranspose))
+      .set("matrixTotal", jDbl(emitted.matrixTotal))
+      .set("matrixWith", jDoubleMatrix(emitted.matrixWith)));
+
+  // `sum` and `reduceSum` are the same left fold from zero, so they must agree
+  // on every row, including the rows whose fold produces a non-finite value -
+  // which is checked here rather than only on the rows that have a Java
+  // literal.
+  CHECK.checkExact(FX_DOUBLE_ARRAY, id + " reduceSum equals sum", emitted.sum, emitted.reduceSum);
   CHECK.countRow(FX_DOUBLE_ARRAY);
   if (captureOnly) {
     CHECK.countCaptureOnly(FX_DOUBLE_ARRAY);
   }
+  return emitted;
+}
+
+/**
+ * Compares one emitted array against the literal a Java test asserts for it.
+ *
+ * The tolerance is DoubleArrayTest's own DELTA, because that is the tolerance
+ * the literal was written to: the fixture stores the full-precision value, and
+ * this check exists to prove that value is the one the Java test describes.
+ */
+void checkDoubleArrayAgainstJava(String id, String expectation, DoubleArray actual, double[] expected,
+    String javaSource) {
+  String label = id + " " + expectation + " (" + javaSource + ")";
+  CHECK.checkInt(FX_DOUBLE_ARRAY, label + " length", expected.length, actual.size());
+  if (expected.length != actual.size()) {
+    return;
+  }
+  for (int i = 0; i < expected.length; i++) {
+    CHECK.checkClose(FX_DOUBLE_ARRAY, label + "[" + i + "]", expected[i], actual.get(i),
+        TOL_DOUBLE_ARRAY, "DoubleArrayTest.DELTA");
+  }
+}
+
+/** Compares one emitted matrix, row-major, against the literal a Java test asserts for it. */
+void checkDoubleMatrixAgainstJava(String id, String expectation, DoubleMatrix actual, int expectedRows,
+    int expectedColumns, double[] expectedRowMajor, String javaSource) {
+  String label = id + " " + expectation + " (" + javaSource + ")";
+  CHECK.checkInt(FX_DOUBLE_ARRAY, label + " rowCount", expectedRows, actual.rowCount());
+  CHECK.checkInt(FX_DOUBLE_ARRAY, label + " columnCount", expectedColumns, actual.columnCount());
+  if (expectedRows != actual.rowCount() || expectedColumns != actual.columnCount()) {
+    return;
+  }
+  for (int r = 0; r < expectedRows; r++) {
+    for (int c = 0; c < expectedColumns; c++) {
+      CHECK.checkClose(FX_DOUBLE_ARRAY, label + "[" + r + "][" + c + "]",
+          expectedRowMajor[r * expectedColumns + c], actual.get(r, c), TOL_DOUBLE_ARRAY,
+          "DoubleMatrixTest literal");
+    }
+  }
+}
+
+/** Compares one emitted scalar against the value a Java test asserts exactly. */
+void checkDoubleArrayScalarAgainstJava(String id, String expectation, double expected, double actual,
+    String javaSource) {
+  CHECK.checkExact(FX_DOUBLE_ARRAY, id + " " + expectation + " (" + javaSource + ")", expected, actual);
+}
+
+/**
+ * The rows built from the inputs of DoubleArrayTest and DoubleMatrixTest, each
+ * cross-checked against the constants those tests assert.
+ *
+ * The inputs are the literal arrays and matrices of the Java tests - [1,2,3],
+ * [0.5,0.6,0.7], [10,20,30], [2,5,10], [2,1,3], [2,1,3,0], [1,2,3,3,4], [2],
+ * the tolerance pairs, the `filled` arrays, {{1,2},{3,4},{5,6}}, of(2,3,1..6),
+ * of(2,3,0.5,0.6,0.7,...), {{1,2,3},{4,5,6},{7,8,9}}, the 3x6 transpose matrix,
+ * {{2,3}}, {{2}}, {{1,2},{3,4}} and identity(2)/identity(3) - so that every
+ * expectation with a Java literal is compared against it.
+ */
+void addJavaDerivedDoubleArrayRows(JArray rows) {
+  double[] oneTwoThree = {1d, 2d, 3d};
+  double[] halves = {0.5d, 0.6d, 0.7d};
+  double[] tens = {10d, 20d, 30d};
+  double[] divisors = {2d, 5d, 10d};
+  double[][] threeByTwo = {{1d, 2d}, {3d, 4d}, {5d, 6d}};
+  double[][] threeByTwoHalves = {{0.5d, 0.6d}, {0.7d, 0.5d}, {0.6d, 0.7d}};
+  double[][] twoByThree = {{1d, 2d, 3d}, {4d, 5d, 6d}};
+  double[][] twoByThreeHalves = {{0.5d, 0.6d, 0.7d}, {0.5d, 0.6d, 0.7d}};
+  double[][] threeByThree = {{1d, 2d, 3d}, {4d, 5d, 6d}, {7d, 8d, 9d}};
+  double[][] identityThree = DoubleMatrix.identity(3).toArray();
+  double[][] identityTwo = DoubleMatrix.identity(2).toArray();
+  double[][] twoByTwo = {{1d, 2d}, {3d, 4d}};
+  double[][] oneByTwo = {{2d, 3d}};
+  double[][] oneByTwoOnes = {{1d, 1d}};
+  double[][] oneByOne = {{2d}};
+  double[][] oneByOneThree = {{3d}};
+  double[][] threeBySix = {
+      {1d, 2d, 3d, 4d, 5d, 6d},
+      {7d, 8d, 9d, 10d, 11d, 12d},
+      {13d, 14d, 15d, 16d, 17d, 18d}};
+  double[][] threeBySixHalves = {
+      {0.5d, 0.6d, 0.7d, 0.5d, 0.6d, 0.7d},
+      {0.5d, 0.6d, 0.7d, 0.5d, 0.6d, 0.7d},
+      {0.5d, 0.6d, 0.7d, 0.5d, 0.6d, 0.7d}};
+
+  // DoubleArrayTest.test_plus (:325-331), test_minus (:333-339),
+  // test_multipliedBy (:341-346), test_map (:355-359), test_plus_array
+  // (:368-374), test_minus_array (:376-382), test_multipliedBy_array
+  // (:384-390), test_concat_object (:467-470), test_subArray_fromTo
+  // (:203-213), test_sorted (:419-425); DoubleMatrixTest.test_multipliedBy
+  // (:234-240), test_total (:282-286), test_with (:220-232).
+  DoubleArrayCase plusFive = addDoubleArrayRow(rows, "javatest-plus-scalar-5", oneTwoThree, halves,
+      5d, 1, 3, threeByTwo, threeByTwoHalves, 0, 0, 2.6d, false);
+  checkDoubleArrayAgainstJava(plusFive.id, "plusScalar", plusFive.plusScalar,
+      new double[] {6d, 7d, 8d}, "DoubleArrayTest.test_plus");
+  checkDoubleArrayAgainstJava(plusFive.id, "minusScalar", plusFive.minusScalar,
+      new double[] {-4d, -3d, -2d}, "DoubleArrayTest.test_minus");
+  checkDoubleArrayAgainstJava(plusFive.id, "multipliedByScalar", plusFive.multipliedByScalar,
+      new double[] {5d, 10d, 15d}, "DoubleArrayTest.test_multipliedBy");
+  checkDoubleArrayAgainstJava(plusFive.id, "plusArray", plusFive.plusArray,
+      new double[] {1.5d, 2.6d, 3.7d}, "DoubleArrayTest.test_plus_array");
+  checkDoubleArrayAgainstJava(plusFive.id, "minusArray", plusFive.minusArray,
+      new double[] {0.5d, 1.4d, 2.3d}, "DoubleArrayTest.test_minus_array");
+  checkDoubleArrayAgainstJava(plusFive.id, "multipliedByArray", plusFive.multipliedByArray,
+      new double[] {0.5d, 1.2d, 2.1d}, "DoubleArrayTest.test_multipliedBy_array");
+  checkDoubleArrayAgainstJava(plusFive.id, "mapSquared", plusFive.mapSquared,
+      new double[] {1d, 4d, 9d}, "DoubleArrayTest.test_map shape, x -> x * x");
+  checkDoubleArrayAgainstJava(plusFive.id, "sorted", plusFive.sorted, oneTwoThree,
+      "DoubleArrayTest.test_sorted");
+  checkDoubleArrayAgainstJava(plusFive.id, "concat", plusFive.concat,
+      new double[] {1d, 2d, 3d, 0.5d, 0.6d, 0.7d}, "DoubleArrayTest.test_concat_object");
+  checkDoubleArrayAgainstJava(plusFive.id, "subArray", plusFive.subArray, new double[] {2d, 3d},
+      "DoubleArrayTest.test_subArray_fromTo subArray(1, 3)");
+  checkDoubleArrayScalarAgainstJava(plusFive.id, "sum", 6d, plusFive.sum,
+      "DoubleArrayTest.test_sum");
+  checkDoubleArrayScalarAgainstJava(plusFive.id, "min", 1d, plusFive.min,
+      "DoubleArrayTest.test_min");
+  checkDoubleArrayScalarAgainstJava(plusFive.id, "max", 3d, plusFive.max,
+      "DoubleArrayTest.test_max");
+  checkDoubleMatrixAgainstJava(plusFive.id, "matrixMultipliedBy", plusFive.matrixMultipliedBy, 3, 2,
+      new double[] {5d, 10d, 15d, 20d, 25d, 30d}, "DoubleMatrixTest.test_multipliedBy");
+  checkDoubleMatrixAgainstJava(plusFive.id, "matrixWith", plusFive.matrixWith, 3, 2,
+      new double[] {2.6d, 2d, 3d, 4d, 5d, 6d}, "DoubleMatrixTest.test_with");
+  checkDoubleArrayScalarAgainstJava(plusFive.id, "matrixTotal", 21d, plusFive.matrixTotal,
+      "DoubleMatrixTest.test_total");
+
+  // The zero scalar of test_plus / test_minus, which both leave the array
+  // unchanged, and the second `with` assertion of DoubleMatrixTest.test_with.
+  DoubleArrayCase plusZero = addDoubleArrayRow(rows, "javatest-plus-scalar-0", oneTwoThree, halves,
+      0d, 0, 3, threeByTwo, threeByTwoHalves, 0, 0, 1d, false);
+  checkDoubleArrayAgainstJava(plusZero.id, "plusScalar", plusZero.plusScalar, oneTwoThree,
+      "DoubleArrayTest.test_plus plus(0)");
+  checkDoubleArrayAgainstJava(plusZero.id, "minusScalar", plusZero.minusScalar, oneTwoThree,
+      "DoubleArrayTest.test_minus minus(0)");
+  checkDoubleArrayAgainstJava(plusZero.id, "subArray", plusZero.subArray, oneTwoThree,
+      "DoubleArrayTest.test_subArray_fromTo subArray(0, 3)");
+  checkDoubleMatrixAgainstJava(plusZero.id, "matrixWith", plusZero.matrixWith, 3, 2,
+      new double[] {1d, 2d, 3d, 4d, 5d, 6d}, "DoubleMatrixTest.test_with with(0, 0, 1)");
+
+  // The negative scalar of test_plus / test_minus, whose expectations are the
+  // mirror image of the plus(5) row - which is what proves the two overloads
+  // were not transposed.
+  DoubleArrayCase plusMinusFive = addDoubleArrayRow(rows, "javatest-plus-scalar-minus-5",
+      oneTwoThree, halves, -5d, 2, 3, threeByTwo, threeByTwoHalves, 2, 1, 2.6d, false);
+  checkDoubleArrayAgainstJava(plusMinusFive.id, "plusScalar", plusMinusFive.plusScalar,
+      new double[] {-4d, -3d, -2d}, "DoubleArrayTest.test_plus plus(-5)");
+  checkDoubleArrayAgainstJava(plusMinusFive.id, "minusScalar", plusMinusFive.minusScalar,
+      new double[] {6d, 7d, 8d}, "DoubleArrayTest.test_minus minus(-5)");
+  checkDoubleArrayAgainstJava(plusMinusFive.id, "subArray", plusMinusFive.subArray,
+      new double[] {3d}, "DoubleArrayTest.test_subArray_fromTo subArray(2, 3)");
+
+  // The unit scalar, where both multipliedBy overloads short-circuit, and the
+  // empty half-open slice subArray(3, 3).
+  DoubleArrayCase timesOne = addDoubleArrayRow(rows, "javatest-multipliedby-scalar-1", oneTwoThree,
+      halves, 1d, 3, 3, threeByTwo, threeByTwoHalves, 1, 0, 0d, false);
+  checkDoubleArrayAgainstJava(timesOne.id, "multipliedByScalar", timesOne.multipliedByScalar,
+      oneTwoThree, "DoubleArrayTest.test_multipliedBy multipliedBy(1)");
+  checkDoubleArrayAgainstJava(timesOne.id, "subArray", timesOne.subArray, new double[] {},
+      "DoubleArrayTest.test_subArray_fromTo subArray(3, 3)");
+  checkDoubleMatrixAgainstJava(timesOne.id, "matrixMultipliedBy", timesOne.matrixMultipliedBy, 3, 2,
+      new double[] {1d, 2d, 3d, 4d, 5d, 6d}, "DoubleMatrixTest.test_multipliedBy multipliedBy(1)");
+
+  // DoubleArrayTest.test_dividedBy (:348-353) and test_dividedBy_array
+  // (:392-398), the only two operations whose Java implementation differs
+  // between its overloads: the scalar form multiplies by the reciprocal, the
+  // element-wise form divides.
+  DoubleArrayCase dividedByFive = addDoubleArrayRow(rows, "javatest-dividedby-scalar-5", tens,
+      divisors, 5d, 1, 2, twoByThree, twoByThreeHalves, 0, 2, 2.6d, false);
+  checkDoubleArrayAgainstJava(dividedByFive.id, "dividedByScalar", dividedByFive.dividedByScalar,
+      new double[] {2d, 4d, 6d}, "DoubleArrayTest.test_dividedBy");
+  checkDoubleArrayAgainstJava(dividedByFive.id, "dividedByArray", dividedByFive.dividedByArray,
+      new double[] {5d, 4d, 3d}, "DoubleArrayTest.test_dividedBy_array");
+  checkDoubleArrayScalarAgainstJava(dividedByFive.id, "sum", 60d, dividedByFive.sum,
+      "DoubleArrayTest.test_sum shape");
+
+  DoubleArrayCase dividedByOne = addDoubleArrayRow(rows, "javatest-dividedby-scalar-1", tens,
+      divisors, 1d, 0, 2, twoByThree, twoByThreeHalves, 1, 1, -5d, false);
+  checkDoubleArrayAgainstJava(dividedByOne.id, "dividedByScalar", dividedByOne.dividedByScalar,
+      tens, "DoubleArrayTest.test_dividedBy dividedBy(1)");
+
+  // DoubleArrayTest.test_sorted (:419-425) four-element case.
+  DoubleArrayCase sortedFour = addDoubleArrayRow(rows, "javatest-sorted-four",
+      new double[] {2d, 1d, 3d, 0d}, new double[] {1d, 1d, 1d, 1d}, 2.6d, 1, 4, twoByTwo,
+      identityTwo, 1, 1, 2.6d, false);
+  checkDoubleArrayAgainstJava(sortedFour.id, "sorted", sortedFour.sorted,
+      new double[] {0d, 1d, 2d, 3d}, "DoubleArrayTest.test_sorted");
+
+  // DoubleArrayTest.test_min (:427-432), test_max (:434-439), test_sum
+  // (:441-446), test_reduce (:448-455).
+  DoubleArrayCase minMaxSum = addDoubleArrayRow(rows, "javatest-min-max-sum-three",
+      new double[] {2d, 1d, 3d}, new double[] {3d, 2d, 1d}, 2.6d, 0, 2, oneByTwo, oneByTwoOnes, 0,
+      1, 5d, false);
+  checkDoubleArrayScalarAgainstJava(minMaxSum.id, "min", 1d, minMaxSum.min,
+      "DoubleArrayTest.test_min");
+  checkDoubleArrayScalarAgainstJava(minMaxSum.id, "max", 3d, minMaxSum.max,
+      "DoubleArrayTest.test_max");
+  checkDoubleArrayScalarAgainstJava(minMaxSum.id, "sum", 6d, minMaxSum.sum,
+      "DoubleArrayTest.test_sum");
+  checkDoubleArrayScalarAgainstJava(minMaxSum.id, "reduceSum", 6d, minMaxSum.reduceSum,
+      "DoubleArrayTest.test_reduce, identity 0 and addition");
+
+  // The single-element array of test_min / test_max / test_sum / test_sorted,
+  // where min and max short-circuit rather than folding, together with the
+  // one-by-one matrix of DoubleMatrixTest.test_reduce (:288-295).
+  DoubleArrayCase single = addDoubleArrayRow(rows, "javatest-single-element", new double[] {2d},
+      new double[] {5d}, 2d, 0, 1, oneByOne, oneByOneThree, 0, 0, 2.6d, false);
+  checkDoubleArrayScalarAgainstJava(single.id, "min", 2d, single.min, "DoubleArrayTest.test_min");
+  checkDoubleArrayScalarAgainstJava(single.id, "max", 2d, single.max, "DoubleArrayTest.test_max");
+  checkDoubleArrayScalarAgainstJava(single.id, "sum", 2d, single.sum, "DoubleArrayTest.test_sum");
+  checkDoubleArrayAgainstJava(single.id, "sorted", single.sorted, new double[] {2d},
+      "DoubleArrayTest.test_sorted");
+  checkDoubleArrayScalarAgainstJava(single.id, "matrixTotal", 2d, single.matrixTotal,
+      "DoubleMatrixTest.test_reduce one-by-one matrix");
+
+  // The duplicate-bearing array of DoubleArrayTest (:36-38 assertContent
+  // usage), which is the row that exercises `sorted` with equal elements.
+  DoubleArrayCase duplicates = addDoubleArrayRow(rows, "javatest-duplicates-five",
+      new double[] {1d, 2d, 3d, 3d, 4d}, new double[] {4d, 3d, 2d, 1d, 0d}, -1.5d, 1, 4, twoByTwo,
+      identityTwo, 0, 1, 1d, false);
+  checkDoubleArrayAgainstJava(duplicates.id, "sorted", duplicates.sorted,
+      new double[] {1d, 2d, 3d, 3d, 4d}, "DoubleArrayTest sorted with duplicates");
+  checkDoubleArrayScalarAgainstJava(duplicates.id, "min", 1d, duplicates.min,
+      "DoubleArrayTest.test_min shape");
+  checkDoubleArrayScalarAgainstJava(duplicates.id, "max", 4d, duplicates.max,
+      "DoubleArrayTest.test_max shape");
+
+  // The four pairs of DoubleArrayTest.test_equalWithTolerance (:496-514):
+  // [1,2] against [1,2.02] and [1,2.009], and [0,0] against [0,0.02] and
+  // [0,0.009]. They are the arrays whose differences sit either side of that
+  // test's tolerance, which makes them the most informative inputs for the
+  // element-wise operations.
+  DoubleArrayCase tolerancePair = addDoubleArrayRow(rows, "javatest-tolerance-pair-2-02",
+      new double[] {1d, 2d}, new double[] {1d, 2.02d}, 1d, 0, 2, oneByTwo, oneByTwoOnes, 0, 0, 0d,
+      false);
+  checkDoubleArrayAgainstJava(tolerancePair.id, "minusArray", tolerancePair.minusArray,
+      new double[] {0d, -0.02d}, "DoubleArrayTest.test_equalWithTolerance difference");
+  addDoubleArrayRow(rows, "javatest-tolerance-pair-2-009", new double[] {1d, 2.02d},
+      new double[] {1d, 2.009d}, 2d, 1, 2, oneByTwo, new double[][] {{2d, 3d}}, 0, 1, 2.6d, false);
+  addDoubleArrayRow(rows, "javatest-tolerance-zeros-02", new double[] {0d, 0d},
+      new double[] {0d, 0.02d}, 0.5d, 0, 1, twoByTwo, identityTwo, 1, 0, -5d, false);
+  addDoubleArrayRow(rows, "javatest-tolerance-zeros-009", new double[] {0d, 0.009d},
+      new double[] {0d, 0d}, 2.6d, 0, 2, twoByTwo, identityTwo, 0, 0, 5d, false);
+
+  // The two `filled` factories of DoubleArrayTest (:305-313): filled(3) is
+  // three zeros and filled(3, 1.5) is three copies of 1.5.
+  DoubleArrayCase filled = addDoubleArrayRow(rows, "javatest-filled-three",
+      DoubleArray.filled(3).toArray(), DoubleArray.filled(3, 1.5d).toArray(), 1.5d, 0, 3,
+      identityThree, threeByThree, 1, 2, 2.6d, false);
+  checkDoubleArrayAgainstJava(filled.id, "a", filled.a, new double[] {0d, 0d, 0d},
+      "DoubleArrayTest filled(3)");
+  checkDoubleArrayAgainstJava(filled.id, "b", filled.b, new double[] {1.5d, 1.5d, 1.5d},
+      "DoubleArrayTest filled(3, 1.5)");
+  checkDoubleArrayScalarAgainstJava(filled.id, "matrixTotal", 3d, filled.matrixTotal,
+      "DoubleMatrix.identity(3) total");
+
+  // The nine-element array and the square matrix of
+  // DoubleMatrixTest.testTransposeMatrix (:298-310).
+  DoubleArrayCase nine = addDoubleArrayRow(rows, "javatest-nine-elements",
+      new double[] {1d, 2d, 3d, 4d, 5d, 6d, 7d, 8d, 9d},
+      new double[] {9d, 8d, 7d, 6d, 5d, 4d, 3d, 2d, 1d}, 3d, 2, 7, threeByThree, identityThree, 2,
+      2, 5d, false);
+  checkDoubleMatrixAgainstJava(nine.id, "matrixTranspose", nine.matrixTranspose, 3, 3,
+      new double[] {1d, 4d, 7d, 2d, 5d, 8d, 3d, 6d, 9d}, "DoubleMatrixTest.testTransposeMatrix");
+  checkDoubleArrayScalarAgainstJava(nine.id, "sum", 45d, nine.sum, "DoubleArrayTest.test_sum shape");
+
+  // The non-square matrix of DoubleMatrixTest.testTransposeMatrix
+  // (:311-321), whose transpose is six-by-three - the shape the transposition
+  // is most likely to be got wrong on.
+  DoubleArrayCase nonSquare = addDoubleArrayRow(rows, "javatest-matrix-three-by-six",
+      new double[] {1d, 2d, 3d, 4d, 5d, 6d}, new double[] {13d, 14d, 15d, 16d, 17d, 18d}, 2d, 1, 5,
+      threeBySix, threeBySixHalves, 2, 5, 2.6d, false);
+  checkDoubleMatrixAgainstJava(nonSquare.id, "matrixTranspose", nonSquare.matrixTranspose, 6, 3,
+      new double[] {
+          1d, 7d, 13d,
+          2d, 8d, 14d,
+          3d, 9d, 15d,
+          4d, 10d, 16d,
+          5d, 11d, 17d,
+          6d, 12d, 18d},
+      "DoubleMatrixTest.testTransposeMatrix");
+
+  // DoubleMatrixTest.test_plus (:256-263) and test_minus (:264-271), whose
+  // operands are exactly these two two-by-three matrices.
+  DoubleArrayCase matrixPair = addDoubleArrayRow(rows, "javatest-matrix-two-by-three-plus-minus",
+      oneTwoThree, halves, 2.6d, 0, 3, twoByThree, twoByThreeHalves, 1, 2, 1d, false);
+  checkDoubleMatrixAgainstJava(matrixPair.id, "matrixPlus", matrixPair.matrixPlus, 2, 3,
+      new double[] {1.5d, 2.6d, 3.7d, 4.5d, 5.6d, 6.7d}, "DoubleMatrixTest.test_plus");
+  checkDoubleMatrixAgainstJava(matrixPair.id, "matrixMinus", matrixPair.matrixMinus, 2, 3,
+      new double[] {0.5d, 1.4d, 2.3d, 3.5d, 4.4d, 5.3d}, "DoubleMatrixTest.test_minus");
+
+  // The one-by-two matrix of DoubleMatrixTest.test_reduce (:288-295) and the
+  // remaining `assertContent` array of DoubleArrayTest, so that a row with a
+  // single matrix row and a two-element array is present.
+  DoubleArrayCase oneRow = addDoubleArrayRow(rows, "javatest-matrix-one-by-two",
+      new double[] {2d, 3d}, new double[] {0.5d, 0.6d}, 2d, 0, 2, oneByTwo, oneByTwoOnes, 0, 0, 2d,
+      false);
+  checkDoubleArrayScalarAgainstJava(oneRow.id, "matrixTotal", 5d, oneRow.matrixTotal,
+      "DoubleMatrixTest.test_reduce one-by-two matrix");
+  checkDoubleMatrixAgainstJava(oneRow.id, "matrixTranspose", oneRow.matrixTranspose, 2, 1,
+      new double[] {2d, 3d}, "DoubleMatrixTest.testTransposeMatrix shape");
+}
+
+/** The value of one seeded element at the given magnitude, signed either way. */
+double nextDoubleArrayValue(double scale) {
+  return (DOUBLE_ARRAY_RND.nextDouble() * 2d - 1d) * scale;
+}
+
+/**
+ * The seeded-random rows.
+ *
+ * Every row draws its two operands, its scalar, its matrices and its
+ * replacement value from a different combination of the declared magnitudes,
+ * so the parity rule's relative bound is exercised across fifteen orders of
+ * magnitude and with both signs rather than only near one. The generator is
+ * seeded, so the rows are the same on every run; they carry no Java literal
+ * and are counted as capture-only.
+ */
+void addSeededRandomDoubleArrayRows(JArray rows) {
+  for (int scenario = 0; scenario < 18; scenario++) {
+    double scale = DOUBLE_ARRAY_SCALES[scenario % DOUBLE_ARRAY_SCALES.length];
+    double otherScale = DOUBLE_ARRAY_SCALES[(scenario + 2) % DOUBLE_ARRAY_SCALES.length];
+    double scalarScale = DOUBLE_ARRAY_SCALES[(scenario + 1) % DOUBLE_ARRAY_SCALES.length];
+    int length = 2 + (scenario % 6);
+    double[] a = new double[length];
+    double[] b = new double[length];
+    for (int i = 0; i < length; i++) {
+      a[i] = nextDoubleArrayValue(scale);
+      b[i] = nextDoubleArrayValue(otherScale);
+    }
+    int matrixRows = 1 + (scenario % 3);
+    int matrixColumns = 1 + ((scenario + 1) % 4);
+    double[][] matrixA = new double[matrixRows][matrixColumns];
+    double[][] matrixB = new double[matrixRows][matrixColumns];
+    for (int r = 0; r < matrixRows; r++) {
+      for (int c = 0; c < matrixColumns; c++) {
+        matrixA[r][c] = nextDoubleArrayValue(scale);
+        matrixB[r][c] = nextDoubleArrayValue(otherScale);
+      }
+    }
+    int subArrayFrom = scenario % (length + 1);
+    int subArrayTo = subArrayFrom + ((scenario * 3) % (length - subArrayFrom + 1));
+    String id = "random-seeded-" + (scenario < 10 ? "0" : "") + scenario;
+    addDoubleArrayRow(rows, id, a, b, nextDoubleArrayValue(scalarScale), subArrayFrom, subArrayTo,
+        matrixA, matrixB, scenario % matrixRows, scenario % matrixColumns,
+        nextDoubleArrayValue(scale), true);
+  }
+}
+
+/**
+ * The IEEE-edge rows, without which the tagged-double policy this fixture
+ * exists to pin is never exercised end to end.
+ *
+ * Between them they drive: the total order of `sorted`, where negative zero
+ * precedes positive zero and not-a-number sorts last; the propagation of
+ * not-a-number through `min`, `max`, `sum` and `reduceSum`; a zero scalar,
+ * whose reciprocal is an infinity and whose product with an infinity is
+ * not-a-number; a zero element in the second operand, which makes
+ * `dividedByArray` non-finite; and multiplication of large magnitudes, which
+ * overflows to an infinity. None of them has a Java literal to be compared
+ * against, so all are counted as capture-only.
+ */
+void addIeeeEdgeDoubleArrayRows(JArray rows) {
+  double[][] onesTwoByTwo = {{1d, 1d}, {1d, 1d}};
+  // Not-a-number, both infinities and both zeros in one array.
+  addDoubleArrayRow(rows, "ieee-nonfinite-mix",
+      new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, -0.0d, 0d},
+      new double[] {1d, 2d, 3d, 4d, 5d}, 2.5d, 0, 5,
+      new double[][] {{Double.NaN, Double.POSITIVE_INFINITY}, {Double.NEGATIVE_INFINITY, -0.0d}},
+      onesTwoByTwo, 1, 1, 0d, true);
+  // A zero scalar: the reciprocal is an infinity, and an infinite element
+  // multiplied by zero is not-a-number.
+  addDoubleArrayRow(rows, "ieee-scalar-zero",
+      new double[] {1d, 0d, -2d, Double.POSITIVE_INFINITY}, new double[] {1d, 1d, 1d, 1d}, 0d, 1, 3,
+      new double[][] {{1d, 0d}, {-1d, Double.POSITIVE_INFINITY}}, onesTwoByTwo, 0, 1, 0d, true);
+  // A zero element in the second operand, so the element-wise division is
+  // non-finite in two places and not-a-number where both elements are zero.
+  addDoubleArrayRow(rows, "ieee-divisor-zero-element", new double[] {1d, 2d, 0d, 4d},
+      new double[] {1d, 0d, -0.0d, 2d}, 2d, 2, 4, new double[][] {{1d, 2d}, {0d, -0.0d}},
+      onesTwoByTwo, 1, 0, -0.0d, true);
+  // Magnitudes whose products overflow the finite range.
+  addDoubleArrayRow(rows, "ieee-multiply-overflow",
+      new double[] {1e200d, -1e200d, 1.5e308d}, new double[] {1e200d, 1e200d, 2d}, 1e10d, 0, 2,
+      new double[][] {{1e200d, -1e200d}, {1.5e308d, 1e-320d}}, onesTwoByTwo, 0, 0, 1e308d, true);
+  // Signed zero on both sides, which `sorted` orders and which the equality of
+  // the port distinguishes.
+  addDoubleArrayRow(rows, "ieee-signed-zero", new double[] {0d, -0.0d, 1d, -1d},
+      new double[] {-0.0d, 0d, -1d, 1d}, -0.0d, 1, 4,
+      new double[][] {{0d, -0.0d}, {-0.0d, 0d}}, onesTwoByTwo, 0, 1, -0.0d, true);
+  // Both infinities as operands and as the scalar, so that the sum of opposite
+  // infinities is captured as not-a-number.
+  addDoubleArrayRow(rows, "ieee-infinities",
+      new double[] {Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 1d},
+      new double[] {1d, 1d, Double.POSITIVE_INFINITY}, Double.POSITIVE_INFINITY, 0, 3,
+      new double[][] {{Double.POSITIVE_INFINITY, 1d}, {1d, Double.NEGATIVE_INFINITY}},
+      onesTwoByTwo, 1, 1, Double.NEGATIVE_INFINITY, true);
 }
 
 Jn buildDoubleArrayFixture() {
   JArray rows = new JArray();
-  // The literal arrays DoubleArrayTest and DoubleMatrixTest use.
-  addDoubleArrayRow(rows, "DoubleArrayTest.basic", new double[] {1d, 2d, 3d},
-      new double[] {0.5d, 1.5d, 2.5d}, 2.5d,
-      new double[][] {{1d, 2d, 3d}, {4d, 5d, 6d}},
-      new double[][] {{6d, 5d, 4d}, {3d, 2d, 1d}}, false);
-  addDoubleArrayRow(rows, "DoubleArrayTest.duplicates", new double[] {1d, 2d, 3d, 3d, 4d},
-      new double[] {4d, 3d, 2d, 1d, 0d}, -1.5d,
-      new double[][] {{1d, 2d}, {2d, 4d}}, new double[][] {{1d, 0d}, {0d, 1d}}, false);
-  addDoubleArrayRow(rows, "DoubleArrayTest.nine",
-      new double[] {1d, 2d, 3d, 4d, 5d, 6d, 7d, 8d, 9d},
-      new double[] {9d, 8d, 7d, 6d, 5d, 4d, 3d, 2d, 1d}, 3d,
-      new double[][] {{1d, 2d, 3d, 4d, 5d, 6d}}, null, false);
-  addDoubleArrayRow(rows, "DoubleArrayTest.single", new double[] {1d}, new double[] {2d}, 0.5d,
-      new double[][] {{42d}}, new double[][] {{-42d}}, false);
-  // Empty arrays: min and max throw, which is itself an expectation.
-  addDoubleArrayRow(rows, "DoubleArrayTest.empty", new double[] {}, new double[] {}, 1d, null,
-      null, false);
-  // Non-finite and signed-zero contents, so the tagged-double policy is
-  // exercised end to end on both sides.
-  addDoubleArrayRow(rows, "nonFinite.signedZero",
-      new double[] {0d, -0.0d, 1d, -1d},
-      new double[] {-0.0d, 0d, -1d, 1d}, -0.0d,
-      new double[][] {{0d, -0.0d}, {-0.0d, 0d}}, new double[][] {{1d, 1d}, {1d, 1d}}, false);
-  addDoubleArrayRow(rows, "nonFinite.infinities",
-      new double[] {Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 1d},
-      new double[] {1d, 1d, Double.POSITIVE_INFINITY}, Double.POSITIVE_INFINITY,
-      new double[][] {{Double.POSITIVE_INFINITY, 1d}, {1d, Double.NEGATIVE_INFINITY}},
-      new double[][] {{1d, 1d}, {1d, 1d}}, false);
-  addDoubleArrayRow(rows, "nonFinite.nan",
-      new double[] {Double.NaN, 1d, 2d}, new double[] {1d, Double.NaN, 3d}, Double.NaN,
-      new double[][] {{Double.NaN, 1d}, {1d, Double.NaN}},
-      new double[][] {{1d, 1d}, {1d, 1d}}, false);
-  // Seeded random arrays: capture-only.
-  for (int scenario = 0; scenario < 6; scenario++) {
-    int length = 3 + scenario;
-    double[] a = new double[length];
-    double[] b = new double[length];
-    for (int i = 0; i < length; i++) {
-      a[i] = nextRandomAmount();
-      b[i] = nextRandomAmount();
-    }
-    double[][] matrixA = new double[2][length];
-    double[][] matrixB = new double[2][length];
-    for (int r = 0; r < 2; r++) {
-      for (int c = 0; c < length; c++) {
-        matrixA[r][c] = nextRandomAmount();
-        matrixB[r][c] = nextRandomAmount();
-      }
-    }
-    addDoubleArrayRow(rows, "random.seed" + RANDOM_SEED + ".array" + scenario, a, b,
-        nextRandomRate(), matrixA, matrixB, true);
-  }
+  addJavaDerivedDoubleArrayRows(rows);
+  int javaDerived = rows.size();
+  addSeededRandomDoubleArrayRows(rows);
+  int seededRandom = rows.size() - javaDerived;
+  addIeeeEdgeDoubleArrayRows(rows);
+  int ieeeEdge = rows.size() - javaDerived - seededRandom;
+
+  // The population floors, asserted rather than described. A fixture below any
+  // of them measures less than the baseline is required to measure, so it
+  // aborts the capture instead of being written.
+  CHECK.checkTrue(FX_DOUBLE_ARRAY, "Java-derived row floor",
+      javaDerived >= DOUBLE_ARRAY_MIN_JAVATEST_ROWS,
+      "expected at least " + DOUBLE_ARRAY_MIN_JAVATEST_ROWS + " Java-derived rows, found "
+          + javaDerived);
+  CHECK.checkTrue(FX_DOUBLE_ARRAY, "seeded-random row floor",
+      seededRandom >= DOUBLE_ARRAY_MIN_RANDOM_ROWS,
+      "expected at least " + DOUBLE_ARRAY_MIN_RANDOM_ROWS + " seeded-random rows, found "
+          + seededRandom);
+  CHECK.checkTrue(FX_DOUBLE_ARRAY, "IEEE-edge row floor", ieeeEdge >= DOUBLE_ARRAY_MIN_IEEE_ROWS,
+      "expected at least " + DOUBLE_ARRAY_MIN_IEEE_ROWS + " IEEE-edge rows, found " + ieeeEdge);
+  CHECK.checkTrue(FX_DOUBLE_ARRAY, "total row floor", rows.size() >= DOUBLE_ARRAY_MIN_ROWS,
+      "expected at least " + DOUBLE_ARRAY_MIN_ROWS + " rows, found " + rows.size());
+  CHECK.checkCount(FX_DOUBLE_ARRAY, "double-array rows", DOUBLE_ARRAY_EXPECTED_ROWS, rows.size());
+  // Every id was added to a set as its row was emitted, so an equal count is
+  // the uniqueness the fixture's failure reporting depends on.
+  CHECK.checkCount(FX_DOUBLE_ARRAY, "double-array row ids", DOUBLE_ARRAY_EXPECTED_ROWS,
+      DOUBLE_ARRAY_IDS.size());
+
+  checkDoubleArrayJavaConstants();
   // DoubleArrayTest asserts equalWithTolerance against its own DELTA of 1e-14;
   // that tolerance is checked here rather than being folded into the fixture.
   DoubleArray base = DoubleArray.of(1d, 2d, 3d);
@@ -6466,30 +9586,58 @@ Jn buildDoubleArrayFixture() {
 String FX_MANIFEST = "manifest";
 
 /**
- * Public static constants of a holder class, read reflectively.
+ * Public static constants of a holder class, read reflectively and returned in
+ * NAME ORDER.
  *
  * Reflection is deliberate and permitted in this tool (see the header): it is
  * the only way to get a provably COMPLETE constant list, which is the point of
  * a manifest. The type is matched by simple name so that the element types do
  * not all have to be imported.
+ *
+ * What reflection does NOT give is an order: `Class.getDeclaredFields` is
+ * specified to return the fields in no particular order. Using it as the
+ * serialized order would make the manifest depend on a JVM implementation
+ * detail, so the constants are sorted by (name, field name) - a TOTAL order
+ * the JDK cannot change.
+ *
+ * The field name is part of the key because a name on its own is not unique: a
+ * holder may declare two constants for one value, as `OvernightIndices`
+ * declares the deprecated `EUR_ESTER` alongside `EUR_ESTR` for the same
+ * `EUR-ESTR` index. Both are public constants, the asserted counts count
+ * fields, and sorting by name alone would leave their relative order to the
+ * JVM again.
  */
 List<Named> namedConstants(Class<?> holder, String typeSimpleName) {
-  List<Named> result = new ArrayList<>();
+  List<String[]> keys = new ArrayList<>();
+  Map<String, Named> byKey = new LinkedHashMap<>();
   for (Field field : holder.getDeclaredFields()) {
     if (Modifier.isPublic(field.getModifiers()) && Modifier.isStatic(field.getModifiers())
         && field.getType().getSimpleName().equals(typeSimpleName)) {
       try {
-        result.add((Named) field.get(null));
+        Named constant = (Named) field.get(null);
+        String key = constant.getName() + "\u0000" + field.getName();
+        keys.add(new String[] {constant.getName(), field.getName(), key});
+        byKey.put(key, constant);
       } catch (IllegalAccessException ex) {
         throw new IllegalStateException("Cannot read " + holder.getSimpleName() + "."
             + field.getName(), ex);
       }
     }
   }
+  keys.sort(new Comparator<String[]>() {
+    public int compare(String[] left, String[] right) {
+      int byName = left[0].compareTo(right[0]);
+      return byName != 0 ? byName : left[1].compareTo(right[1]);
+    }
+  });
+  List<Named> result = new ArrayList<>();
+  for (String[] key : keys) {
+    result.add(byKey.get(key[2]));
+  }
   return result;
 }
 
-/** A named-constant group: its asserted count and its names in declaration order. */
+/** A named-constant group: its asserted count and its names in name order. */
 Jn jNamedGroup(String what, Class<?> holder, String typeSimpleName, int expectedCount) {
   List<Named> constants = namedConstants(holder, typeSimpleName);
   CHECK.checkCount(FX_MANIFEST, what, expectedCount, constants.size());
@@ -6801,6 +9949,9 @@ Jn buildHolidayCalendarDefaultManifest() {
       HolidayCalendarId.of(calendarId).resolve(ReferenceData.standard());
       canResolve = true;
     } catch (Throwable thrown) {
+      // A calendar id with no built-in calendar is the expectation here; an
+      // Error is not, and requireCapturable sends it to the driver.
+      requireCapturable(thrown);
       canResolve = false;
     }
     rows.add(new JObject()

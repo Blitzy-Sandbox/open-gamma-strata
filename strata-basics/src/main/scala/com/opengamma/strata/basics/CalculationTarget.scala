@@ -30,8 +30,11 @@ trait CalculationTarget
  * A list of calculation targets.
  *
  * [[CalculationTarget]] is a marker trait that all financial instruments implement, such as
- * trades and positions. This allows them to be the target of calculations in the system, and
- * this type allows a group of them to be treated as a single calculation target.
+ * trades and positions. This allows them to be the target of calculations in the system. This
+ * type is an immutable, ordered container of such targets and nothing more: it does not extend
+ * [[CalculationTarget]] itself - the Java `CalculationTargetList` does not implement
+ * `CalculationTarget` either - so a value of this type cannot be passed where a single
+ * calculation target is required.
  *
  * The list is held as a `scala.collection.immutable.List`, so the value is immutable and
  * thread-safe without any defensive copying: unlike the Java original, which wrapped a

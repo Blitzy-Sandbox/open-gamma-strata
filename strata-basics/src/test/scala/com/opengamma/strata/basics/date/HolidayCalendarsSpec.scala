@@ -5,8 +5,10 @@
  */
 package com.opengamma.strata.basics.date
 
+import java.time.DayOfWeek.FRIDAY
 import java.time.DayOfWeek.SATURDAY
 import java.time.DayOfWeek.SUNDAY
+import java.time.DayOfWeek.THURSDAY
 import java.time.LocalDate
 
 import cats.Hash
@@ -75,15 +77,19 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     Java method. A concrete shape is worth asserting here as well: a property cannot say
  *     whether a built-in calendar is written as a name or as an object.
  *
- * ===Why no assertion here reads the built-in calendar set===
+ * ===Which assertions here read the built-in calendar set===
  *
- * Nothing in this spec calls [[HolidayCalendars.of]] or touches `ReferenceData.standard`. Both
- * read [[StandardHolidayCalendars]], which is the library's data rather than anything
- * `HolidayCalendars` decides, and the Java methods ported here read neither: they build their
- * own reference data and ask for `GBLO` precisely because it is '''absent'''. The four
- * constants and the composites of weekend calendars asserted below are values whose whole
- * content follows from their names, so every assertion here is a statement about
- * `HolidayCalendars` itself.
+ * None of the seven ported methods does. They build their own reference data and ask for `GBLO`
+ * precisely because it is '''absent''', and the four constants and the composites of weekend
+ * calendars they assert are values whose whole content follows from their names, so each of
+ * those assertions is a statement about `HolidayCalendars` itself.
+ *
+ * `test_of_name` is the exception, and deliberately so: looking a calendar up by name is the one
+ * remaining behaviour of this holder, it is the port of the Java `ENUM_LOOKUP.lookup` call, and
+ * what it has to be held to is the '''name space''' that registry offered - each calendar under
+ * its canonical name and under the English upper-case of that name. It therefore reads
+ * [[StandardHolidayCalendars]], and it also states the invariant that data is keyed by: every
+ * entry of the built-in set is filed under the identifier its own calendar carries.
  *
  * @see [[HolidaySafeReferenceData]] for the decoration `defaultingReferenceData` applies
  * @see [[HolidayCalendar]] for the sealed family, its composites and its JSON form
@@ -371,6 +377,71 @@ class HolidayCalendarsSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  test("test_of_name") {
+    // The port of the Java `HolidayCalendars.of`, whose lookup went through the extended-enum
+    // registry. Every provider of that registry filed each calendar twice - under the canonical
+    // name and under the English upper-case of it, first registration winning - so all four of
+    // the upper-case names below named a calendar there and must name one here. They are asserted
+    // one by one because a name space that has quietly lost half its keys still answers every
+    // canonical name correctly.
+    HolidayCalendars.of("NoHolidays") should haveValue(HolidayCalendars.NO_HOLIDAYS)
+    HolidayCalendars.of("Sat/Sun") should haveValue(HolidayCalendars.SAT_SUN)
+    HolidayCalendars.of("Fri/Sat") should haveValue(HolidayCalendars.FRI_SAT)
+    HolidayCalendars.of("Thu/Fri") should haveValue(HolidayCalendars.THU_FRI)
+    HolidayCalendars.of("NOHOLIDAYS") should haveValue(HolidayCalendars.NO_HOLIDAYS)
+    HolidayCalendars.of("SAT/SUN") should haveValue(HolidayCalendars.SAT_SUN)
+    HolidayCalendars.of("FRI/SAT") should haveValue(HolidayCalendars.FRI_SAT)
+    HolidayCalendars.of("THU/FRI") should haveValue(HolidayCalendars.THU_FRI)
+
+    // The value found is the library's own instance, not a copy of it - which is what lets the
+    // JSON form tell a built-in calendar from an application's calendar of the same name.
+    HolidayCalendars.of("SAT/SUN").getOrElse(fail("Sat/Sun was not found")) should
+      be theSameInstanceAs HolidayCalendars.SAT_SUN
+
+    // A calendar of an actual centre, by its canonical name, and the identifier it carries.
+    val london = HolidayCalendars.of("GBLO").getOrElse(fail("GBLO was not found"))
+    london.id shouldBe HolidayCalendarIds.GBLO
+    london should be theSameInstanceAs StandardHolidayCalendars.GBLO
+
+    // Composite names are split on '+' and each part looked up in turn, so a composite one of
+    // whose parts is written in the registry's upper case resolves as well - a part is looked up
+    // exactly as a whole name is.
+    val weekendComposite = HolidayCalendars.of("SAT/SUN+THU/FRI").getOrElse(fail("the composite was not found"))
+    weekendComposite shouldBe HolidayCalendars.SAT_SUN.combinedWith(HolidayCalendars.THU_FRI)
+    weekendComposite.name shouldBe "Sat/Sun+Thu/Fri"
+    val londonComposite = HolidayCalendars.of("GBLO+SAT/SUN").getOrElse(fail("the composite was not found"))
+    londonComposite.name shouldBe "GBLO+Sat/Sun"
+    londonComposite.isHoliday(SAT_2014_07_12) shouldBe true
+
+    // A name in neither key space is a failure rather than an empty result, and carries the name
+    // that could not be resolved. The registry being replaced matched its two key spaces exactly
+    // and did not fold the case of the name it was given, so a lower-case name was unknown to it
+    // and is unknown here.
+    HolidayCalendars.of("Unknown") should beFailureWith(FailureReason.PARSING)
+    HolidayCalendars.of("gblo") should beFailureWith(FailureReason.PARSING)
+    HolidayCalendars.of("GBLO+") should beFailureWith(FailureReason.PARSING)
+    HolidayCalendars.of("Unknown").swap.map(failure => failure.attributes.get("name")) shouldBe
+      Right(Some("Unknown"))
+
+    // And the invariant the built-in set is keyed by: each calendar is filed under the identifier
+    // it carries, so a name resolves to a calendar that agrees about what it is. The set is
+    // reproduced from a table of identifiers, which is what makes this worth asserting.
+    StandardHolidayCalendars.all should have size 30
+    StandardHolidayCalendars.all.foreach {
+      case (id, calendar) => withClue(s"$id: ")(calendar.id shouldBe id)
+    }
+    StandardHolidayCalendars.minimal should have size 4
+    StandardHolidayCalendars.all.foreach {
+      case (id, calendar) =>
+        withClue(s"$id: ") {
+          StandardHolidayCalendars.byName(id.name) shouldBe Some(calendar)
+          StandardHolidayCalendars.byUpperName(id.name) shouldBe Some(calendar)
+          HolidayCalendars.of(id.name) should haveValue(calendar)
+        }
+    }
+  }
+
+  //-------------------------------------------------------------------------
   test("coverage_weekend") {
     // As `coverage_combined`, for the weekend calendar the Java method named.
     val test: HolidayCalendar = HolidayCalendars.FRI_SAT
@@ -408,6 +479,85 @@ class HolidayCalendarsSpec extends AnyFunSuite with Matchers {
     test.toString shouldBe "HolidayCalendar[Fri/Sat]"
     Show[HolidayCalendar].show(test) shouldBe test.toString
     Show[HolidayCalendar].show(test) should not be empty
+  }
+
+  //-------------------------------------------------------------------------
+  test("coverage_weekend_family") {
+    // The three weekend calendars are members of the sealed family in their own right. There is
+    // no intermediate weekend type between them and `HolidayCalendar`: the family has exactly
+    // seven members, and this line would compile if an eighth had been introduced - the spec
+    // shares their package, so a package-private type would be visible to it too.
+    assertDoesNotCompile("val weekend: WeekendHolidayCalendar = HolidayCalendar.SatSun")
+    assertCompiles("val calendar: HolidayCalendar = HolidayCalendar.SatSun")
+
+    val weekendCalendars: List[HolidayCalendar] =
+      List(HolidayCalendars.SAT_SUN, HolidayCalendars.FRI_SAT, HolidayCalendars.THU_FRI)
+
+    // Equality and hashing are the identifier's, as in the library being ported - not the
+    // identity hash a Scala object would otherwise use, which differs from run to run and would
+    // make the hash of a calendar, and so the layout of any map keyed by one, unrepeatable.
+    weekendCalendars.foreach { calendar =>
+      withClue(s"$calendar: ") {
+        calendar.hashCode shouldBe calendar.id.hashCode
+        Hash[HolidayCalendar].hash(calendar) shouldBe calendar.id.hashCode
+        calendar shouldBe calendar
+        Hash[HolidayCalendar].eqv(calendar, calendar) shouldBe true
+        // and a calendar carrying holiday data is not equal to a weekend calendar, whatever the
+        // two identifiers say - asserted in both directions, so the relation stays symmetric
+        val sameIdWithData = ImmutableHolidayCalendar.of(calendar.id, Nil, List(SATURDAY, SUNDAY))
+        sameIdWithData.id shouldBe calendar.id
+        calendar should not be sameIdWithData
+        sameIdWithData should not be calendar
+        calendar.equals(calendar.id.name) shouldBe false
+      }
+    }
+
+    // No two of the three are equal, and each knows which days its weekend is.
+    weekendCalendars.distinct should have size 3
+    HolidayCalendar.SatSun.weekendDays shouldBe Set(SATURDAY, SUNDAY)
+    HolidayCalendar.FriSat.weekendDays shouldBe Set(FRIDAY, SATURDAY)
+    HolidayCalendar.ThuFri.weekendDays shouldBe Set(THURSDAY, FRIDAY)
+
+    // What each answers, over the five days this spec walks, from the days named above.
+    WEEK_2014_07.foreach { date =>
+      withClue(s"$date: ") {
+        HolidayCalendar.SatSun.isHoliday(date) shouldBe
+          HolidayCalendar.SatSun.weekendDays.contains(date.getDayOfWeek)
+        HolidayCalendar.FriSat.isHoliday(date) shouldBe
+          HolidayCalendar.FriSat.weekendDays.contains(date.getDayOfWeek)
+        HolidayCalendar.ThuFri.isHoliday(date) shouldBe
+          HolidayCalendar.ThuFri.weekendDays.contains(date.getDayOfWeek)
+      }
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_daysBetween_narrowing") {
+    // The count of business days is narrowed to an `Int` with `Math.toIntExact`, as in the
+    // library being ported, so a range holding more business days than an `Int` can express is
+    // reported rather than silently wrapped. The calendar with no holidays is where that is
+    // reachable: it answers from the difference of the two dates instead of walking them, and the
+    // whole of the supported date range holds some 730 billion days.
+    a[ArithmeticException] should be thrownBy
+      HolidayCalendars.NO_HOLIDAYS.daysBetween(LocalDate.MIN, LocalDate.MAX)
+
+    // The counting path every other calendar uses walks the range and accumulates into a `Long`.
+    // A range wide enough to overflow an `Int` cannot be walked in a test, so what is asserted is
+    // that the count agrees with an independent count of the same range over a century of days.
+    val start = LocalDate.of(2014, 1, 1)
+    val end = LocalDate.of(2114, 1, 1)
+    val expected = Iterator
+      .iterate(start)(date => date.plusDays(1L))
+      .takeWhile(date => date.isBefore(end))
+      .count(date => HolidayCalendars.SAT_SUN.isBusinessDay(date))
+    HolidayCalendars.SAT_SUN.daysBetween(start, end) shouldBe expected
+    HolidayCalendars.SAT_SUN.daysBetween(start, start) shouldBe 0
+    // a century of days: 36,500 for the years plus the 24 leap days of 2016 to 2096, 2100 being
+    // a year the Gregorian calendar does not make a leap year
+    HolidayCalendars.NO_HOLIDAYS.daysBetween(start, end) shouldBe 36524
+
+    // The order check the count has always made is unchanged.
+    an[IllegalArgumentException] should be thrownBy HolidayCalendars.SAT_SUN.daysBetween(end, start)
   }
 
   //-------------------------------------------------------------------------

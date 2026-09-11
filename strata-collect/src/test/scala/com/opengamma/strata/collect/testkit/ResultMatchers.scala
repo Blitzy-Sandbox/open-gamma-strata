@@ -553,4 +553,3 @@ trait ResultMatchers {
  * framework's own matcher trait, so that a spec sees exactly one definition of each name.
  */
 object ResultMatchers extends ResultMatchers
-

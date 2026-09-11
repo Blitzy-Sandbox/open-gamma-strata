@@ -16,6 +16,26 @@ ThisBuild / scalaVersion := "2.13.18"
 ThisBuild / organization := "com.opengamma.strata"
 ThisBuild / version := "2.12.74-SNAPSHOT"
 
+// ---------------------------------------------------------------------------
+// The two directories the acceptance gates collect their artifacts from.
+//
+// Both are anchored at the build root and handed to the test JVMs as absolute paths.
+// That is not a stylistic choice: tests are forked, the two projects have different base
+// directories, and the gate script reads the parity reports and the JUnit XML from one
+// place each. A relative path would resolve against whichever working directory a forked
+// JVM happened to have, and the consumers therefore refuse one - see
+// `ParityHarness.reportDirectoryFrom` and the equivalent in `DoubleArrayParitySpec`.
+//
+// Both directories also sit outside every project's own build output, because the root
+// project keeps its output under strata-basics/. They are consequently registered with
+// `cleanFiles` on the root project below, so that `sbt clean` empties them: a report or a
+// test-report file left behind by an earlier run is indistinguishable from one this run
+// produced, and a gate that aggregates the directory would count it.
+// ---------------------------------------------------------------------------
+def parityReportDirectory(buildRoot: File): File = buildRoot / "target" / "parity-report"
+
+def testReportDirectory(buildRoot: File): File = buildRoot / "target" / "test-reports"
+
 lazy val catsVersion = "2.13.0"
 lazy val catsEffectVersion = "3.7.1"
 lazy val circeVersion = "0.14.16"
@@ -68,12 +88,12 @@ lazy val commonSettings = Seq(
   // gate script expect all reports under <build root>/target.
   Test / fork := true,
   Test / javaOptions ++= Seq(
-    s"-Dparity.report.dir=${(ThisBuild / baseDirectory).value}/target/parity-report"
+    s"-Dparity.report.dir=${parityReportDirectory((ThisBuild / baseDirectory).value).getAbsolutePath}"
   ),
   Test / testOptions += Tests.Argument(
     TestFrameworks.ScalaTest,
     "-u",
-    s"${(ThisBuild / baseDirectory).value}/target/test-reports"
+    testReportDirectory((ThisBuild / baseDirectory).value).getAbsolutePath
   )
 )
 
@@ -100,6 +120,17 @@ lazy val `strata-basics` = Project("strata-basics", file("."))
     Compile / resourceDirectory := baseDirectory.value / "strata-basics" / "src" / "main" / "resources",
     Test / resourceDirectory := baseDirectory.value / "strata-basics" / "src" / "test" / "resources",
     target := baseDirectory.value / "strata-basics" / "target",
+    // The two gate artifact directories are outside both projects' `target`, so nothing
+    // would otherwise remove them. Registering them here - on the aggregating root
+    // project only, so an aggregated `clean` deletes each of them exactly once rather
+    // than racing a second delete of the same tree - makes `sbt clean` the step that
+    // guarantees a run's reports are that run's. Note that this deletes the two report
+    // directories and nothing else under the build root's target, which also holds sbt's
+    // own live logging and streams directories.
+    cleanFiles ++= Seq(
+      parityReportDirectory((ThisBuild / baseDirectory).value),
+      testReportDirectory((ThisBuild / baseDirectory).value)
+    ),
     // `sbt "strata-basics/run"` launches the demo without prompting. The demo
     // is an IOApp, so it runs in its own JVM: that gives it the main thread and
     // therefore the ordinary cats-effect shutdown and resource-cleanup path.

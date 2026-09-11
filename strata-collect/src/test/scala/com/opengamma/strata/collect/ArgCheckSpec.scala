@@ -100,9 +100,10 @@ private[collect] object ArgCheckTables extends Tables {
   /**
    * The name the two tolerance-bearing checks report their own tolerance argument under.
    *
-   * A negative tolerance is rejected by the checks themselves, and the message names the
-   * tolerance rather than the argument being checked, so a spec can tell the two failures of
-   * those checks apart.
+   * A tolerance that is not a number and a tolerance that is negative are both rejected by
+   * the checks themselves, each with its own wording, and the message names the tolerance
+   * rather than the argument being checked, so a spec can tell the failures of those checks
+   * apart.
    */
   val ToleranceName: String = "tolerance"
 
@@ -609,9 +610,11 @@ private[collect] object ArgCheckTables extends Tables {
   /**
    * Arguments and tolerances the tolerant check rejects, with the message reporting which.
    *
-   * The check reports three distinct failures, all of which appear here: a tolerance that
-   * describes no interval, an argument the tolerance counts as zero, and an argument clearly
-   * below zero.
+   * The check reports four distinct failures, all of which appear here: a tolerance that is
+   * not a number, a tolerance that is negative - neither of which describes an interval - an
+   * argument the tolerance counts as zero, and an argument clearly below zero. The two
+   * tolerance rows pair their unusable tolerance with an argument the check would otherwise
+   * accept, so the row proves which of the two checks reported.
    */
   val invalidNotNegativeOrZeroWithTolerance: TableFor3[Double, Double, String] =
     Table(
@@ -623,7 +626,8 @@ private[collect] object ArgCheckTables extends Tables {
       (0.0001, 0.0001, "Argument 'name' must not be zero"),
       (-1.0, 0.0001, "Argument 'name' must be greater than zero but has value -1.0"),
       (-2.5, 0.0001, "Argument 'name' must be greater than zero but has value -2.5"),
-      (1.0, -0.1, "Argument 'tolerance' must not be negative but has value -0.1"))
+      (1.0, -0.1, "Argument 'tolerance' must not be negative but has value -0.1"),
+      (1.0, Double.NaN, "Argument 'tolerance' must not be NaN"))
 
   /** Arguments the tolerant check accepts, paired with the tolerance it accepted them at. */
   val validNotNegativeOrZeroWithTolerance: TableFor2[Double, Double] =
@@ -659,7 +663,9 @@ private[collect] object ArgCheckTables extends Tables {
    * Arguments and tolerances the tolerant check rejects, with the message reporting which.
    *
    * Unlike the check for a value above zero, this one has no interest in the sign: an
-   * argument within the tolerance of zero in either direction is zero to it.
+   * argument within the tolerance of zero in either direction is zero to it. It rejects the
+   * same two unusable tolerances as that check, in the same wording, so a row for each
+   * appears here as well.
    */
   val invalidNotZeroWithTolerance: TableFor3[Double, Double, String] =
     Table(
@@ -670,7 +676,8 @@ private[collect] object ArgCheckTables extends Tables {
       (0.05, 0.1, "Argument 'name' must not be zero"),
       (-0.05, 0.1, "Argument 'name' must not be zero"),
       (0.1, 0.1, "Argument 'name' must not be zero"),
-      (1.0, -0.1, "Argument 'tolerance' must not be negative but has value -0.1"))
+      (1.0, -0.1, "Argument 'tolerance' must not be negative but has value -0.1"),
+      (1.0, Double.NaN, "Argument 'tolerance' must not be NaN"))
 
   /** Arguments the tolerant check accepts, paired with the tolerance it accepted them at. */
   val validNotZeroWithTolerance: TableFor2[Double, Double] =
@@ -1992,6 +1999,23 @@ class ArgCheckSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
       "Argument 'tolerance' must not be negative but has value -0.1"
   }
 
+  test("the tolerant form rejects a not-a-number tolerance, which describes no interval") {
+    messageOf(ArgCheck.notNegativeOrZero(1.0, Double.NaN, Name)) shouldBe
+      "Argument 'tolerance' must not be NaN"
+  }
+
+  test("the tolerant form names a not-a-number tolerance before judging the argument") {
+    messageOf(ArgCheck.notNegativeOrZero(0.0, Double.NaN, Name)) shouldBe
+      "Argument 'tolerance' must not be NaN"
+    messageOf(ArgCheck.notNegativeOrZero(-1.0, Double.NaN, Name)) shouldBe
+      "Argument 'tolerance' must not be NaN"
+  }
+
+  test("the tolerant form admits a zero tolerance of either sign, neither being negative") {
+    noException should be thrownBy ArgCheck.notNegativeOrZero(1.0, 0.0, Name)
+    noException should be thrownBy ArgCheck.notNegativeOrZero(1.0, -0.0, Name)
+  }
+
   test("the tolerant form admits a not-a-number double, which is neither near zero nor below it") {
     noException should be thrownBy ArgCheck.notNegativeOrZero(Double.NaN, 0.0001, Name)
   }
@@ -2088,6 +2112,20 @@ class ArgCheckSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
   test("the tolerant form of notZero rejects a negative tolerance, naming the tolerance") {
     messageOf(ArgCheck.notZero(1.0, -0.1, Name)) shouldBe
       "Argument 'tolerance' must not be negative but has value -0.1"
+  }
+
+  test("the tolerant form of notZero rejects a not-a-number tolerance, naming the tolerance") {
+    messageOf(ArgCheck.notZero(1.0, Double.NaN, Name)) shouldBe
+      "Argument 'tolerance' must not be NaN"
+  }
+
+  test("the tolerant form of notZero names a not-a-number tolerance before judging the argument") {
+    messageOf(ArgCheck.notZero(0.0, Double.NaN, Name)) shouldBe "Argument 'tolerance' must not be NaN"
+  }
+
+  test("the tolerant form of notZero admits a zero tolerance of either sign") {
+    noException should be thrownBy ArgCheck.notZero(1.0, 0.0, Name)
+    noException should be thrownBy ArgCheck.notZero(1.0, -0.0, Name)
   }
 
   test("the tolerant form of notZero admits a not-a-number double, which is not near zero") {
@@ -2729,4 +2767,3 @@ class ArgCheckSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
     }
   }
 }
-

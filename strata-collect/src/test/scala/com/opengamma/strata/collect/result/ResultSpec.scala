@@ -17,7 +17,9 @@ import org.scalatest.exceptions.TestFailedException
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
+import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 
+import com.opengamma.strata.collect.Arbitraries._
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
@@ -80,18 +82,51 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * argument is a Scala collection; the pair of cases the original had for each predicate is
  * kept, with the inline-argument case building its collection at the call site.
  *
+ * ===Fixed cases and generated cases===
+ *
+ * Most of this file asserts against literal data, because most of what it covers is a named
+ * member applied to a chosen input. The equality section is the exception. Equality of an
+ * outcome is not one behaviour but a set of laws - reflexive, symmetric, transitive, agreeing
+ * with hashing - and every other spec of both modules relies on those laws holding of
+ * outcomes it never wrote down, so they are asserted over outcomes drawn from the shared
+ * generators of [[com.opengamma.strata.collect.Arbitraries]] rather than over a table of
+ * hand-written values. The generators are bounded, so the values they draw stay small enough
+ * to read in a failure report, and they reach both shapes of each of the three channels this
+ * file names.
+ *
  * ===Determinism===
  *
- * Every case here is a pure function of literal data. Nothing reads a clock, a file, the
- * class path or the environment, nothing depends on iteration order beyond the order the
- * spec itself writes, and no case shares mutable state with another, so the outcome of this
- * spec does not depend on the order its cases run in.
+ * Nothing here reads a clock, a file, the class path or the environment, nothing depends on
+ * iteration order beyond the order the spec itself writes, and no case shares mutable state
+ * with another, so the outcome of this spec does not depend on the order its cases run in.
+ * The fixed cases are pure functions of literal data. The property cases of the equality
+ * section are pure functions of the data drawn for them, which differs from run to run by
+ * design: a law is asserted of every value a generator can produce, not of one the spec
+ * happened to choose, and a counterexample found in any run is reported with the value that
+ * produced it.
  *
  * @see [[Failure]] for the failure each outcome carries
  * @see [[FailureReason]] for the ten reasons a failure can carry
  * @see [[com.opengamma.strata.collect.testkit.ResultMatchers]] for the matchers used throughout
  */
-final class ResultSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
+final class ResultSpec
+    extends AnyFunSuite
+    with Matchers
+    with ScalaCheckPropertyChecks
+    with TableDrivenPropertyChecks {
+
+  /**
+   * The number of outcomes each generated property of the equality section is checked against.
+   *
+   * The default of the framework is a handful, which is too few for what those cases assert.
+   * Each of the three channels generates both of its shapes, the failure side of two of them
+   * is a chain of one to four failures, and a chain has to be drawn whose reversal is not
+   * itself before the order-sensitivity of equality is exercised at all. A hundred draws
+   * reaches every one of those combinations many times over while keeping the whole file well
+   * inside the second it runs in.
+   */
+  implicit override val generatorDrivenConfig: PropertyCheckConfiguration =
+    PropertyCheckConfiguration(minSuccessful = 100)
 
   // ---------------------------------------------------------------------------
   // Fixtures, carried over from the test class being ported.
@@ -1371,6 +1406,247 @@ final class ResultSpec extends AnyFunSuite with Matchers with TableDrivenPropert
   }
 
   //-------------------------------------------------------------------------
+  // Equality over generated outcomes.
+  //
+  // The case above fixes five outcomes and asserts the table of comparisons
+  // between them, which is what the reflective sweep of the original did for
+  // the bean it walked. A table of five values states no law, though, and the
+  // laws are what the rest of this port relies on: an outcome is compared
+  // against an expected value in almost every spec of both modules, is held in
+  // a set, and reaches a map as a key. The cases below assert those laws over
+  // outcomes drawn from the generators of this module rather than over values
+  // chosen here - reflexivity, symmetry and transitivity of equality, the
+  // agreement of hashing and of the published instances with it, the
+  // distinction of the two shapes, and the structural round trip - and they do
+  // it on all three channels this file names, because the accumulating channels
+  // carry an ordered chain on their failure side and an equality that ignored
+  // that order would pass every fixed case in this file.
+  //
+  // Transitivity needs three values that can genuinely be equal, which three
+  // independent draws never are, so the second and third are rebuilt from the
+  // parts of the first by the helpers below.
+
+  /**
+   * Rebuilds a failure from the reason, the message and the attributes it holds.
+   *
+   * Those three are the whole of what a failure holds, so the rebuilt failure shares nothing
+   * with the one it came from beyond the strings inside it, and an assertion that the two are
+   * equal is an assertion about their parts rather than about a reference. `Failure.of` maps
+   * the reason back onto the member of the family that carries it, so the class of the
+   * failure survives the trip as well.
+   */
+  private def rebuiltFailure(failure: Failure): Failure =
+    Failure.of(failure.reason, failure.message, failure.attributes)
+
+  /** Rebuilds an outcome on the value channel from the one side it holds. */
+  private def rebuiltOutcome[A](outcome: FailureOr[A]): FailureOr[A] =
+    outcome.fold(failure => rebuiltFailure(failure).asLeft[A], value => value.asRight[Failure])
+
+  /**
+   * Rebuilds an outcome on the accumulating channel, failure by failure, in order.
+   *
+   * The chain is taken apart into the non-empty list of its failures and rebuilt from it, so
+   * the order of the failures is carried by the rebuild rather than preserved by sharing the
+   * chain, and the non-emptiness the type guarantees is never in question - there is no
+   * absent value to unwrap on the way back.
+   */
+  private def rebuiltChainOutcome[A](outcome: ResultNec[A]): ResultNec[A] =
+    outcome.fold(
+      failures =>
+        NonEmptyChain.fromNonEmptyList(failures.toNonEmptyList.map(rebuiltFailure)).asLeft[A],
+      value => value.asRight[NonEmptyChain[Failure]])
+
+  /**
+   * Rebuilds an accumulating outcome through the two conversions this package declares.
+   *
+   * Going out through `toResult` and back through `toValidated` is the route a validating
+   * factory of this library takes, so this helper rebuilds such an outcome the way the
+   * library itself does rather than by reaching into the type.
+   */
+  private def rebuiltAccumulating[A](outcome: ValidatedFailures[A]): ValidatedFailures[A] =
+    toValidated(rebuiltChainOutcome(toResult(outcome)))
+
+  test("equality over arbitrary outcomes is reflexive, symmetric and transitive") {
+    forAll { (outcome: FailureOr[String]) =>
+      val copy: FailureOr[String] = rebuiltOutcome(outcome)
+      val furtherCopy: FailureOr[String] = rebuiltOutcome(copy)
+
+      // Reflexivity, then symmetry and transitivity over three values that are equal by
+      // construction rather than by having been written out three times.
+      outcome shouldBe outcome
+      outcome shouldBe copy
+      copy shouldBe outcome
+      copy shouldBe furtherCopy
+      outcome shouldBe furtherCopy
+    }
+
+    // Symmetry has to hold of outcomes that are not equal as well, where it is the answer
+    // `false` that has to be the same in both directions, and that needs two independent
+    // draws rather than a value and its rebuild.
+    forAll { (first: FailureOr[String], second: FailureOr[String]) =>
+      (first == second) shouldBe (second == first)
+      Eq[FailureOr[String]].eqv(first, second) shouldBe Eq[FailureOr[String]].eqv(second, first)
+    }
+  }
+
+  test("equal arbitrary outcomes hash alike and the published instances agree with equality") {
+    forAll { (outcome: FailureOr[String]) =>
+      val copy: FailureOr[String] = rebuiltOutcome(outcome)
+
+      // Hashing agrees with equality, which is what makes an outcome usable as a key. Both
+      // hashings are asserted: the universal one a hash-based collection uses, and the one
+      // the `Hash` instance publishes for code that works through the typeclass.
+      copy.hashCode shouldBe outcome.hashCode
+      Hash[FailureOr[String]].hash(copy) shouldBe Hash[FailureOr[String]].hash(outcome)
+      Set(outcome, copy) should have size 1
+    }
+
+    forAll { (first: FailureOr[String], second: FailureOr[String]) =>
+      // The agreement runs in both directions: the instance holds exactly where structural
+      // equality holds, so neither can drift from the other without this failing.
+      Eq[FailureOr[String]].eqv(first, second) shouldBe (first == second)
+      if (first == second) {
+        first.hashCode shouldBe second.hashCode
+        Hash[FailureOr[String]].hash(first) shouldBe Hash[FailureOr[String]].hash(second)
+      } else {
+        Set(first, second) should have size 2
+      }
+    }
+  }
+
+  test("a failed outcome is never equal to a successful one, whatever each of them carries") {
+    forAll { (failure: Failure, value: String) =>
+      val failed: FailureOr[String] = failure.asLeft[String]
+      val succeeded: FailureOr[String] = value.asRight[Failure]
+
+      (failed == succeeded) shouldBe false
+      (succeeded == failed) shouldBe false
+      Eq[FailureOr[String]].eqv(failed, succeeded) shouldBe false
+      failed should beFailureWith(failure.reason)
+      succeeded should haveValue(value)
+    }
+
+    // Stated the other way round, over two arbitrary outcomes: equal outcomes are always of
+    // the same shape, which is the fact the two cases of the sealed type give this channel.
+    forAll { (first: FailureOr[String], second: FailureOr[String]) =>
+      if (first == second) {
+        first.isLeft shouldBe second.isLeft
+        first.isRight shouldBe second.isRight
+      } else {
+        // And equality is no finer than what an outcome holds: two outcomes that are not
+        // equal differ in their shape, in the value they carry or in the failure they carry.
+        val sameParts: Boolean =
+          first.toOption == second.toOption && first.swap.toOption == second.swap.toOption
+        sameParts shouldBe false
+      }
+    }
+  }
+
+  test("taking an arbitrary outcome apart and rebuilding it from its parts yields an equal outcome") {
+    forAll { (outcome: FailureOr[String]) =>
+      val rebuilt: FailureOr[String] = rebuiltOutcome(outcome)
+
+      rebuilt shouldBe outcome
+      // The parts survive the trip, which is what makes the equality above a statement about
+      // the value rather than about the route taken to it. A failure keeps its reason - and
+      // with it the member of the family that carries it - along with its message and every
+      // one of its attributes, so the whole failure is asserted as well as each part of it.
+      rebuilt.toOption shouldBe outcome.toOption
+      rebuilt.swap.toOption shouldBe outcome.swap.toOption
+      rebuilt.swap.toOption.map(_.reason) shouldBe outcome.swap.toOption.map(_.reason)
+      rebuilt.swap.toOption.map(_.message) shouldBe outcome.swap.toOption.map(_.message)
+      rebuilt.swap.toOption.map(_.attributes) shouldBe outcome.swap.toOption.map(_.attributes)
+    }
+  }
+
+  test("the conversions between the channels preserve the value and the ordered failures of any outcome") {
+    forAll { (outcome: FailureOr[String]) =>
+      val chained: ResultNec[String] = toNec(outcome)
+      val accumulating: ValidatedFailures[String] = toValidated(chained)
+      val back: ResultNec[String] = toResult(accumulating)
+
+      // The three conversions of this package compose into the identity on the accumulating
+      // channel, and lifting a single failure onto that channel gives a chain of exactly one.
+      back shouldBe chained
+      chained.toOption shouldBe outcome.toOption
+      failuresOf(chained) shouldBe outcome.swap.toOption.toList
+      failuresOf(back) shouldBe failuresOf(chained)
+    }
+
+    forAll { (outcome: ResultNec[String]) =>
+      val roundTripped: ResultNec[String] = toResult(toValidated(outcome))
+
+      // An outcome that already carries a chain keeps every failure of it, in order, which
+      // is the property the accumulating shape exists for.
+      roundTripped shouldBe outcome
+      roundTripped.toOption shouldBe outcome.toOption
+      failuresOf(roundTripped) shouldBe failuresOf(outcome)
+    }
+  }
+
+  test("equality and hashing on the accumulating channel follow the ordered chain an outcome holds") {
+    forAll { (outcome: ResultNec[String]) =>
+      val copy: ResultNec[String] = rebuiltChainOutcome(outcome)
+      val furtherCopy: ResultNec[String] = rebuiltChainOutcome(copy)
+
+      outcome shouldBe copy
+      copy shouldBe outcome
+      copy shouldBe furtherCopy
+      outcome shouldBe furtherCopy
+      copy.hashCode shouldBe outcome.hashCode
+      Hash[ResultNec[String]].hash(copy) shouldBe Hash[ResultNec[String]].hash(outcome)
+      Eq[ResultNec[String]].eqv(outcome, copy) shouldBe true
+      failuresOf(copy) shouldBe failuresOf(outcome)
+    }
+
+    // The order of the chain is part of the outcome. This is where an equality that compared
+    // the failures as a bag rather than as a sequence would show, and no fixed case in this
+    // file could show it: a chain reversed is a different outcome unless reversing it leaves
+    // the same sequence of failures, which is the one case where it must stay equal.
+    forAll { (failures: NonEmptyChain[Failure]) =>
+      val forward: ResultNec[String] = failures.asLeft[String]
+      val reversed: ResultNec[String] = failures.reverse.asLeft[String]
+      val ordered: List[Failure] = failuresOf(forward)
+
+      failuresOf(reversed) shouldBe ordered.reverse
+      if (ordered == ordered.reverse) {
+        reversed shouldBe forward
+      } else {
+        (reversed == forward) shouldBe false
+        Eq[ResultNec[String]].eqv(reversed, forward) shouldBe false
+      }
+    }
+  }
+
+  test("equality and hashing of the accumulating form follow the value or the chain it holds") {
+    forAll { (outcome: ValidatedFailures[String]) =>
+      val copy: ValidatedFailures[String] = rebuiltAccumulating(outcome)
+
+      // The rebuild goes out through `toResult` and back through `toValidated`, so this is
+      // both the equality law and the statement that the pair of conversions loses nothing.
+      outcome shouldBe copy
+      copy shouldBe outcome
+      copy.hashCode shouldBe outcome.hashCode
+      Eq[ValidatedFailures[String]].eqv(outcome, copy) shouldBe true
+      copy.toOption shouldBe outcome.toOption
+      failuresOf(toResult(copy)) shouldBe failuresOf(toResult(outcome))
+    }
+
+    forAll { (first: ValidatedFailures[String], second: ValidatedFailures[String]) =>
+      Eq[ValidatedFailures[String]].eqv(first, second) shouldBe (first == second)
+      if (first.isValid != second.isValid) {
+        // A valid value and an accumulated chain are never the same outcome, whatever each
+        // of them carries, exactly as a success is never a failure on the value channel.
+        (first == second) shouldBe false
+      } else {
+        // Where they are of the same shape, their equality is the equality of what they
+        // carry, which the conversion to the value channel makes directly comparable.
+        (first == second) shouldBe (toResult(first) == toResult(second))
+      }
+    }
+  }
+
+  //-------------------------------------------------------------------------
   // The matchers.
   //
   // Seven cases of the original existed to exercise its assertion helpers
@@ -1482,6 +1758,76 @@ final class ResultSpec extends AnyFunSuite with Matchers with TableDrivenPropert
       FailureReason.valueOf(reason.name) shouldBe Some(reason)
     }
   }
+
+  test("the module root's re-export names the same four outcome types as this package") {
+    // The four names of this channel are declared twice: here, in the package object of this
+    // package, and again in the package object of the module root, which re-exports them so
+    // that one wildcard import of `com.opengamma.strata.collect` supplies the error
+    // vocabulary along with everything else the module offers. That is the import route this
+    // library asks its callers to take, and it is the route every module built on this one
+    // takes, so the two sets of names agreeing is part of this module's public contract.
+    //
+    // This file cannot state that contract in unqualified names. It is declared in the
+    // `result` package, so an unqualified `FailureOr` here is the local declaration and a
+    // case written with it would assert nothing about the re-export. The root names are
+    // therefore written out in full below, and the assertion is made to the compiler rather
+    // than at run time: a value of the local name is bound to a binding of the root name and
+    // a value of the root name is bound back to a binding of the local name, for each of the
+    // four. Were either name to drift - a different failure type, a second type parameter, a
+    // definition that shadowed rather than aliased - one of those eight bindings would stop
+    // compiling. The run-time assertions that follow each pair keep the case from being
+    // vacuous and pin the value that travelled through both names.
+
+    val localSingle: FailureOr[String] = Failure.MissingData("message 1").asLeft[String]
+    val rootSingle: com.opengamma.strata.collect.FailureOr[String] = localSingle
+    val singleAgain: FailureOr[String] = rootSingle
+    singleAgain shouldBe localSingle
+    rootSingle should beFailureWith(FailureReason.MISSING_DATA)
+
+    val localChained: ResultNec[String] = toNec(singleAgain)
+    val rootChained: com.opengamma.strata.collect.ResultNec[String] = localChained
+    val chainedAgain: ResultNec[String] = rootChained
+    chainedAgain shouldBe localChained
+    failuresOf(chainedAgain) shouldBe List(Failure.MissingData("message 1"))
+
+    val localAccumulating: ValidatedFailures[String] = toValidated(chainedAgain)
+    val rootAccumulating: com.opengamma.strata.collect.ValidatedFailures[String] = localAccumulating
+    val accumulatingAgain: ValidatedFailures[String] = rootAccumulating
+    accumulatingAgain shouldBe localAccumulating
+    toResult(accumulatingAgain) shouldBe localChained
+
+    // The fourth name is the one nothing in this repository referred to before this port, so
+    // it is the one a missing consumer would leave untested. Only the type is re-exported:
+    // the term of the same name - the factory object used on the right below - stays in this
+    // package, which is why the value is built through the local object and then named by the
+    // root alias. That is exactly how a caller outside this package writes it.
+    val localPartial: ValueWithFailures[String] =
+      ValueWithFailures.of("some rows", List(Failure.MissingData("message 1")))
+    val rootPartial: com.opengamma.strata.collect.ValueWithFailures[String] = localPartial
+    val partialAgain: ValueWithFailures[String] = rootPartial
+    partialAgain shouldBe localPartial
+    partialAgain.right shouldBe Some("some rows")
+    rootPartial should beFailureWith(FailureReason.MISSING_DATA)
+
+    // The eight assignments above are only a proof because each root name denotes one
+    // particular type rather than something everything conforms to, so the negative is stated
+    // as well: an outcome of a different shape is rejected by the root name, exactly as it is
+    // by the local one.
+    assertDoesNotCompile("""
+      val wrongShape: com.opengamma.strata.collect.ValueWithFailures[String] =
+        Failure.MissingData("message 1").asLeft[String]
+      wrongShape
+    """)
+
+    // The re-export is an alias and adds no members of its own, so the root name reaches the
+    // combinators of the type it names and nothing else. Naming the factory object through
+    // the root is therefore an error, and stating that here is what records the asymmetry
+    // between the type and the term for the next reader of the package object.
+    assertDoesNotCompile("""
+      val throughTheRoot = com.opengamma.strata.collect.ValueWithFailures.of("some rows")
+      throughTheRoot
+    """)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1503,8 +1849,10 @@ final class ResultSpec extends AnyFunSuite with Matchers with TableDrivenPropert
 //     owning file is named.
 //
 // No entry is dropped and none is partial: every method of the original is
-// accounted for by a named case here. The 85 cases contribute to this module's
-// test-count floor of 491.
+// accounted for by a named case here. Eight further cases, listed at the foot of
+// this block, have no counterpart in the original because they assert laws the
+// original never stated; the 93 cases of this file together contribute to this
+// module's test-count floor of 491.
 //
 // ---- A success, and what can be read from one ----------------------------
 //
@@ -1844,6 +2192,25 @@ final class ResultSpec extends AnyFunSuite with Matchers with TableDrivenPropert
 //      properties. There is no bean to walk, and the property worth asserting in
 //      its place is the one the design rests on - the four names are aliases for
 //      types that already exist, so the conversions between them lose nothing.
+//
+// ---- Cases with no counterpart in the class being ported ------------------
+//
+// The eight cases below are not mapped to a method of the original, because the
+// original had no method whose subject they are. Seven of them state the
+// equality laws of an outcome over values drawn from this module's generators,
+// where the original asserted equality by walking the properties of a bean it
+// had built, a route that says nothing about a value it never built. The eighth
+// asserts the module root's re-export of these four names, which the original
+// had no equivalent of: its names lived in one place.
+//
+// "equality over arbitrary outcomes is reflexive, symmetric and transitive"
+// "equal arbitrary outcomes hash alike and the published instances agree with equality"
+// "a failed outcome is never equal to a successful one, whatever each of them carries"
+// "taking an arbitrary outcome apart and rebuilding it from its parts yields an equal outcome"
+// "the conversions between the channels preserve the value and the ordered failures of any outcome"
+// "equality and hashing on the accumulating channel follow the ordered chain an outcome holds"
+// "equality and hashing of the accumulating form follow the value or the chain it holds"
+// "the module root's re-export names the same four outcome types as this package"
 //
 // ---------------------------------------------------------------------------
 // One member of the package object is deliberately absent from this file:

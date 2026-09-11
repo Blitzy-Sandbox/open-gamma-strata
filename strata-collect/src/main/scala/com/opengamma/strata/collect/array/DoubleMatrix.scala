@@ -40,16 +40,18 @@ import com.opengamma.strata.collect.ArgCheck
  * ===The stored array never escapes===
  *
  * Immutability here is enforced rather than promised. Every factory that is handed an array
- * copies it before storing it, `toArray` answers with a deep copy, and the two members that
+ * copies it before storing it, `toArray` answers with a deep copy, and the four members that
  * expose a single row or column - `row`, `rowArray`, `column` and `columnArray` - each answer
  * with independent data. The Java original returned the stored row from `row` and handed out
  * the array behind a freshly built column, relying on a documented convention that callers
  * would not write to either; this port copies instead, so no caller can reach the array an
- * instance holds and change the value from underneath it. Two members skip the copy -
- * `ofUnsafe`, which adopts an array, and `toArrayUnsafe`, which hands back the stored one - and
- * both are visible only inside this module, where the array involved is known to be freshly
- * allocated and published nowhere else. Scoping them is what turns the convention of the
- * original into a rule the compiler keeps.
+ * instance holds and change the value from underneath it. Independence costs one allocation and
+ * no more: a row is cloned once, and a column is read element by element into one buffer that
+ * the caller then owns outright - `column` wraps that buffer and `columnArray` returns it - so
+ * neither accessor copies a copy. Two members skip the copy - `ofUnsafe`, which adopts an array,
+ * and `toArrayUnsafe`, which hands back the stored one - and both are visible only inside this
+ * module, where the array involved is known to be freshly allocated and published nowhere else.
+ * Scoping them is what turns the convention of the original into a rule the compiler keeps.
  *
  * The one place where data is deliberately shared is internal and invisible: `with` clones only
  * the row it changes and shares every other row with the instance it was derived from. That is
@@ -87,13 +89,19 @@ import com.opengamma.strata.collect.ArgCheck
  * ===Failures===
  *
  * Every failure this type reports is a caller-contract violation rather than a data-dependent
- * outcome, so each is raised rather than handed back as a value to inspect. There are two kinds
- * and the port preserves the type of both:
+ * outcome, so each is raised rather than handed back as a value to inspect. There are two kinds,
+ * and the port preserves the type the Java original reported in every case but the one noted
+ * below:
  *
- *   - a shape violation - values that do not fill the requested shape, a function that returns a
- *     row of the wrong length, or two matrices that have to match in shape and do not - is
- *     raised as an `IllegalArgumentException` through `ArgCheck`, carrying the message of the
- *     Java original word for word, which is what that original threw directly;
+ *   - a shape violation - a negative row, column or size count, values that do not fill the
+ *     requested shape, a function that returns a row of the wrong length, or two matrices that
+ *     have to match in shape and do not - is raised as an `IllegalArgumentException` through
+ *     `ArgCheck`, carrying the message of the Java original word for word wherever that original
+ *     threw one directly. A negative dimension is the one case where the port reports a
+ *     different type from the Java original, which let the runtime raise
+ *     `NegativeArraySizeException` from the allocation it had already begun: checking the
+ *     dimension first is what keeps an invalid shape from allocating at all, and an invalid
+ *     dimension is a caller-contract violation like any other, so it is reported like one;
  *   - an index outside the matrix surfaces as the index exception the runtime raises for the
  *     array access, which is a subclass of the exception the Java original documents.
  *
@@ -103,23 +111,32 @@ import com.opengamma.strata.collect.ArgCheck
  *
  * ===Implementation===
  *
- * The class holds no mutable state and declares no mutable local: every loop is a tail-recursive
- * private method threading its row index, its column index and any running total as parameters,
- * which the compiler turns into the same jump a hand-written loop would produce. An operation
- * that produces a matrix allocates its rows once, fills them in row-major order and wraps them
- * only once they are complete, and bulk moves - copying, filling, hashing and cloning - go
- * straight to the primitive array operations of the platform. Every element-wise operation
- * funnels through the one row-major fill in the companion, so the traversal order that the
- * parity duty above depends on is defined in a single place.
+ * The class holds no mutable state and declares no mutable variable: every loop is a
+ * tail-recursive private method threading its row index, its column index and any running total
+ * as parameters, which the compiler turns into the same jump a hand-written loop would produce.
+ * One member owns mutable storage for the length of a single call - `toString` creates a string
+ * builder, threads it through its two recursions as an argument and a result, and reads its
+ * contents once at the end - and that is safe for the reason a freshly allocated array is safe:
+ * it is published nowhere, no other thread can observe it, and it is unreachable the moment the
+ * string it produced is returned. An operation that produces a matrix allocates its rows once,
+ * fills them in row-major order and wraps them only once they are complete, and bulk moves -
+ * copying, filling, hashing and cloning - go straight to the primitive array operations of the
+ * platform. Every element-wise operation funnels through the one row-major fill in the companion,
+ * so the traversal order that the parity duty above depends on is defined in a single place.
  *
- * No element is boxed on any of those paths, because the one- and two-argument function types
- * they use are specialised over primitives by the standard library. The two members that take a
- * three-argument function, `mapWithIndex` and `forEach`, are the exception: the standard library
- * does not specialise that function type, so a call through one boxes its two indices, its value
- * and its result. That cost is inherent to the function type rather than to this
- * implementation - it is the shape the corresponding members of the Java original expose - and
- * it is confined to those two members, each of which passes its function through exactly one
- * lambda.
+ * No element and no index is boxed on any path of this type. Where a member takes a one- or
+ * two-argument function - `map`, `multipliedBy`, `combine`, `reduce`, `tabulate` and `diagonal` -
+ * the standard library specialises that function type over primitives and nothing has to be
+ * done. Where a member needs a shape the standard library does not specialise, the callback is
+ * declared here instead: `forEach` and `mapWithIndex` would each box two indices and a value on
+ * every element through a three-argument function, and the two row factories would box a row
+ * index on every row through a one-argument function whose result is a reference, so the four
+ * take the single-abstract-method traits `ElementAction`, `ElementFunction`, `RowArrayFunction`
+ * and `RowArrayObjectFunction` of the companion, whose compiled methods pass `int` and `double`
+ * directly. A lambda at the call site is converted to the trait automatically, so those members
+ * are called exactly as the corresponding members of the Java original are, and the absence of
+ * boxing is a property of the compiled code rather than a claim about it: the build asserts it
+ * by disassembling these methods and requiring no boxing call in any of them.
  *
  * The bean and serialization framework that the Java original was built on is gone entirely:
  * there is no meta-object, no property or builder machinery, no deserialization hook and no
@@ -218,27 +235,51 @@ final class DoubleMatrix private (
   /**
    * Gets the column at the specified index.
    *
-   * The column is built by reading one element from each row in turn, so the result is
-   * independent of this matrix. An empty matrix has no rows to read, so every column index -
-   * including one that no matrix could hold - answers with the empty array, which is the
-   * behaviour of the Java original.
+   * The column is built by reading one element from each row in turn into a buffer allocated for
+   * the purpose, which the result then wraps: one array is allocated per call and nothing else,
+   * and because that array is never stored anywhere else the result is independent of this
+   * matrix. An empty matrix has no rows to read, so every column index - including one that no
+   * matrix could hold - answers with the empty array, which is the behaviour of the Java
+   * original, and it answers with the shared empty instance because a column of no elements has
+   * nothing to hold.
    *
    * @param column  the zero-based column index to retrieve
    * @return the column, as an independent array of doubles
    * @throws IndexOutOfBoundsException if the column index is outside a non-empty matrix
    */
-  def column(column: Int): DoubleArray = DoubleArray.tabulate(rowCount)(row => array(row)(column))
+  def column(column: Int): DoubleArray = DoubleArray.ofUnsafe(columnCopy(column))
 
   /**
    * Gets the column at the specified index as an independent primitive array.
    *
-   * The array is a copy, so the caller may modify it freely without affecting this matrix.
+   * The array is the buffer `column` would have wrapped, handed over directly rather than copied
+   * again: the two members share one way of materialising a column, so each allocates exactly
+   * one array per call. The caller owns the result and may modify it freely without affecting
+   * this matrix.
    *
    * @param column  the zero-based column index to retrieve
-   * @return the column, as a cloned array
+   * @return the column, as an independent array
    * @throws IndexOutOfBoundsException if the column index is outside a non-empty matrix
    */
-  def columnArray(column: Int): Array[Double] = this.column(column).toArray
+  def columnArray(column: Int): Array[Double] = columnCopy(column)
+
+  // Materialises one column into a freshly allocated array of the row count, which the caller
+  // owns: this is the single allocation behind both column accessors, and the buffer is never
+  // stored on this instance, so handing it out unwrapped keeps this matrix unreachable. An empty
+  // matrix has no row to read, so the result is an array of no elements for any index at all.
+  private def columnCopy(column: Int): Array[Double] = {
+    val result = new Array[Double](rowCount)
+    fillColumn(result, column, 0)
+    result
+  }
+
+  // reads the column out of each row from the index upwards, in row order
+  @tailrec
+  private def fillColumn(result: Array[Double], column: Int, row: Int): Unit =
+    if (row < result.length) {
+      result(row) = array(row)(column)
+      fillColumn(result, column, row + 1)
+    }
 
   //-------------------------------------------------------------------------
   /**
@@ -275,20 +316,21 @@ final class DoubleMatrix private (
    * base.forEach((row, column, value) => println(s"$row: $column: $value"))
    * }}}
    *
-   * The action is called through a three-argument function type, which the standard library does
-   * not specialise over primitives, so each call boxes the two indices and the value. That is
-   * the cost of the function shape the Java original exposes, and it is the reason the
-   * element-wise operations of this type, which do not need it, use narrower function types.
+   * The action is a `DoubleMatrix.ElementAction`, a callback whose two indices and value are
+   * primitives, so traversing a matrix of any size boxes nothing. A three-argument function of
+   * the standard library would have boxed all three on every element, because that function type
+   * is not specialised over primitives; the lambda above is converted to the callback type
+   * automatically, so the call site is the one the Java original had.
    *
    * This instance is immutable and unaffected by this method.
    *
    * @param action  the action to apply to each row index, column index and value
    */
-  def forEach(action: (Int, Int, Double) => Unit): Unit = forEachFrom(action, 0, 0)
+  def forEach(action: DoubleMatrix.ElementAction): Unit = forEachFrom(action, 0, 0)
 
   // applies the action to each element from the position upwards, in row-major order
   @tailrec
-  private def forEachFrom(action: (Int, Int, Double) => Unit, row: Int, column: Int): Unit =
+  private def forEachFrom(action: DoubleMatrix.ElementAction, row: Int, column: Int): Unit =
     if (row < rowCount) {
       if (column >= columnCount) {
         forEachFrom(action, row + 1, 0)
@@ -376,17 +418,19 @@ final class DoubleMatrix private (
    * val weighted = base.mapWithIndex((row, column, value) => row * (column + 1) * value)
    * }}}
    *
-   * The function is called through a three-argument function type, which the standard library
-   * does not specialise over primitives, so each call boxes the two indices, the value and the
-   * result. That is the cost of the function shape the Java original exposes; `map` and
-   * `multipliedBy` take narrower function types and box nothing.
+   * The function is a `DoubleMatrix.ElementFunction`, a callback whose two indices, value and
+   * result are all primitives, so mapping a matrix of any size boxes nothing - as it boxes
+   * nothing in `map` and `multipliedBy`, which take a one-argument function the standard library
+   * specialises. A three-argument function of the standard library is not specialised, and would
+   * have boxed all four on every element; the lambda above is converted to the callback type
+   * automatically, so the call site is the one the Java original had.
    *
    * This instance is immutable and unaffected by this method.
    *
    * @param function  the function to apply to each row index, column index and value
    * @return a copy of this matrix with the function applied to each element
    */
-  def mapWithIndex(function: (Int, Int, Double) => Double): DoubleMatrix =
+  def mapWithIndex(function: DoubleMatrix.ElementFunction): DoubleMatrix =
     DoubleMatrix.tabulate(rowCount, columnCount)((row, column) =>
       function(row, column, array(row)(column)))
 
@@ -590,21 +634,65 @@ final class DoubleMatrix private (
    *
    * The form is that of the Java original: each row holds its elements separated by single
    * spaces and is followed by a line break, so a two by two matrix renders over two lines and
-   * the empty matrix renders as empty text. The Java original built this by appending to a
-   * mutable buffer; joining the rows produces the same characters without one.
+   * the empty matrix renders as empty text.
+   *
+   * Like the Java original, this appends to one buffer, which is what keeps the rendering free
+   * of per-element and per-row garbage: appending a `Double` to a string builder takes the
+   * primitive, so no element is boxed, and no text for a row exists apart from the text of the
+   * whole matrix. The buffer is created here, threaded through the two recursions below as an
+   * argument and a result, and dropped once its contents have been read, so it is owned by this
+   * one call and reachable from nowhere else.
    *
    * @return the rendering of this matrix
    */
-  override def toString: String = array.iterator.map(row => row.mkString(" ") + "\n").mkString
+  override def toString: String = appendRows(new java.lang.StringBuilder, 0).toString
+
+  // Appends each row from the index upwards to the builder, in row order, and answers with the
+  // builder. Answering with it rather than relying on the append is what makes each step a value
+  // the next step consumes, which is how this renders without a mutable local of its own.
+  @tailrec
+  private def appendRows(builder: java.lang.StringBuilder, row: Int): java.lang.StringBuilder =
+    if (row >= rowCount) {
+      builder
+    } else {
+      appendRows(appendRow(builder, row, 0), row + 1)
+    }
+
+  // appends one row from the column upwards, each element separated by a space and the last
+  // followed by the line break that terminates every row, including the last row of the matrix
+  @tailrec
+  private def appendRow(
+      builder: java.lang.StringBuilder,
+      row: Int,
+      column: Int): java.lang.StringBuilder =
+
+    if (column >= columnCount) {
+      builder
+    } else {
+      appendRow(
+        builder.append(array(row)(column)).append(if (column == columnCount - 1) '\n' else ' '),
+        row,
+        column + 1)
+    }
 }
 
 /**
  * Factories and typeclass instances for immutable two-dimensional arrays of doubles.
  *
  * Construction is total: every factory here either answers with a matrix or fails on a
- * caller-contract violation - values that do not fill the requested shape, or a function that
- * returns a row of the wrong length - and none of them can reject the data it is given, so there
- * is no validated form of construction and no error to hand back as a value.
+ * caller-contract violation - a negative dimension, values that do not fill the requested shape,
+ * or a function that returns a row of the wrong length - and none of them can reject the data it
+ * is given, so there is no validated form of construction and no error to hand back as a value.
+ *
+ * Every factory that is given its shape as numbers validates both dimensions as its first act,
+ * before it allocates anything, before it decides whether the shape is empty and before it calls
+ * any function it was passed. That order matters rather than being tidy: a negative column count
+ * discovered after the array of rows had been allocated would already have reserved memory
+ * proportional to a row count the caller chose, and a negative count discovered after a row
+ * function had been called would already have run a caller's code, so an argument that can never
+ * produce a matrix would still be able to consume resources. The factories that take their shape
+ * from an array they are given - `copyOf`, `ofUnsafe` and `diagonal` - need no such check,
+ * because an array's length cannot be negative.
  *
  * Every factory funnels a zero row count or a zero column count to `EMPTY`, so a matrix with
  * rows of length zero cannot be built, and a caller may recognise the empty result by identity
@@ -628,6 +716,117 @@ object DoubleMatrix {
 
   //-------------------------------------------------------------------------
   /**
+   * An action applied to one element of a matrix, identified by its position.
+   *
+   * This is the callback `forEach` takes. It exists in place of the three-argument function type
+   * of the standard library because that type is generic in all three of its parameters: the
+   * standard library specialises a function of one or two arguments over primitives, but not one
+   * of three, so calling through it would box the two indices and the value once per element.
+   * Declaring the shape here as a trait with a single abstract method whose parameters are
+   * `Int`, `Int` and `Double` gives the compiled method the descriptor `(IID)V`, which passes
+   * the position and the value in registers and allocates nothing.
+   *
+   * A caller does not name this type: a trait with one abstract method is a target for lambda
+   * conversion, so a lambda written at the call site becomes an instance of it automatically and
+   * reads exactly as a call on a function would:
+   *
+   * {{{
+   * matrix.forEach((row, column, value) => println(s"$row: $column: $value"))
+   * }}}
+   */
+  trait ElementAction {
+
+    /**
+     * Applies this action to one element.
+     *
+     * @param row  the zero-based row index of the element
+     * @param column  the zero-based column index of the element
+     * @param value  the value of the element
+     */
+    def apply(row: Int, column: Int, value: Double): Unit
+  }
+
+  /**
+   * A function from one element of a matrix, identified by its position, to a new value.
+   *
+   * This is the callback `mapWithIndex` takes, and it exists for the reason `ElementAction`
+   * does: a three-argument function of the standard library is generic in every parameter and
+   * in its result, so a call through one would box the two indices, the value and the result.
+   * The single abstract method declared here compiles to the descriptor `(IID)D`, so a mapping
+   * over a matrix of any size boxes nothing at all.
+   *
+   * As with `ElementAction`, a caller writes a lambda and the compiler converts it:
+   *
+   * {{{
+   * val weighted = matrix.mapWithIndex((row, column, value) => row * (column + 1) * value)
+   * }}}
+   */
+  trait ElementFunction {
+
+    /**
+     * Applies this function to one element.
+     *
+     * @param row  the zero-based row index of the element
+     * @param column  the zero-based column index of the element
+     * @param value  the value of the element
+     * @return the new value for that position
+     */
+    def apply(row: Int, column: Int, value: Double): Double
+  }
+
+  /**
+   * A function from a row index to the elements of that row, as a primitive array.
+   *
+   * This is the callback `ofArrays` takes. A one-argument function of the standard library is
+   * specialised over primitive ''results'' only - a function returning an array returns a
+   * reference, so no specialisation applies - and its parameter would therefore be boxed once
+   * per row. The single abstract method declared here compiles to the descriptor `(I)[D`, so
+   * building a matrix row by row allocates nothing beyond the rows themselves.
+   *
+   * A caller writes a lambda and the compiler converts it:
+   *
+   * {{{
+   * val matrix = DoubleMatrix.ofArrays(2, 2)(row => Array(row.toDouble, row.toDouble))
+   * }}}
+   */
+  trait RowArrayFunction {
+
+    /**
+     * Returns the elements of one row.
+     *
+     * @param row  the zero-based row index
+     * @return the elements of that row, which must number the column count of the matrix
+     */
+    def apply(row: Int): Array[Double]
+  }
+
+  /**
+   * A function from a row index to the elements of that row, as an immutable array.
+   *
+   * This is the callback `ofArrayObjects` takes, and it exists for the reason
+   * `RowArrayFunction` does: the row index would be boxed once per row if the callback were a
+   * one-argument function of the standard library, whose result here is a reference type. The
+   * single abstract method declared here compiles to a descriptor taking a primitive `int`.
+   *
+   * A caller writes a lambda and the compiler converts it:
+   *
+   * {{{
+   * val matrix = DoubleMatrix.ofArrayObjects(2, 2)(row => rows(row))
+   * }}}
+   */
+  trait RowArrayObjectFunction {
+
+    /**
+     * Returns the elements of one row.
+     *
+     * @param row  the zero-based row index
+     * @return the elements of that row, which must number the column count of the matrix
+     */
+    def apply(row: Int): DoubleArray
+  }
+
+  //-------------------------------------------------------------------------
+  /**
    * Obtains an empty instance.
    *
    * @return the empty matrix
@@ -644,26 +843,90 @@ object DoubleMatrix {
    * val matrix = DoubleMatrix.of(2, 3, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
    * }}}
    *
-   * The count is checked before the shape is examined, as in the Java original, so supplying the
-   * wrong number of elements for an empty shape is reported rather than ignored. The sequence
-   * copies itself into a fresh array, so a caller that expanded an array of its own into this
-   * call cannot reach the rows the result holds.
+   * Each dimension is checked for negativity first, then the count is checked before the shape is
+   * examined, as in the Java original, so supplying the wrong number of elements for an empty
+   * shape is reported rather than ignored. The expected count is computed as a long, because the
+   * product of two large positive dimensions overflows an int and would otherwise compare equal
+   * to a small number of elements.
    *
-   * @param rows  the number of rows
-   * @param columns  the number of columns
+   * The elements are copied straight into the rows of the result, one bulk move per row from the
+   * array the compiler builds behind the argument list, so the payload is written once and no
+   * flat copy of the whole matrix exists at any point. A sequence of some other kind - which only
+   * a caller expanding a collection of its own with `: _*` can supply - is drained through its
+   * iterator into the same freshly allocated rows. Either way the rows of the result are the
+   * only arrays the elements reach, so a caller that expanded an array of its own into this call
+   * cannot reach them afterwards.
+   *
+   * @param rows  the number of rows, zero or greater
+   * @param columns  the number of columns, zero or greater
    * @param values  the elements, row by row
    * @return a matrix of the specified shape holding the specified elements
-   * @throws IllegalArgumentException if the number of elements is not `rows * columns`
+   * @throws IllegalArgumentException if either dimension is negative, or the number of elements
+   *   is not `rows * columns`
    */
   def of(rows: Int, columns: Int, values: Double*): DoubleMatrix = {
-    ArgCheck.isTrue(values.length == rows * columns, "Values array not of length rows * columns")
+    ArgCheck.notNegative(rows, "rows")
+    ArgCheck.notNegative(columns, "columns")
+    ArgCheck.isTrue(
+      values.length.toLong == rows.toLong * columns.toLong,
+      "Values array not of length rows * columns")
     if (rows == 0 || columns == 0) {
       EMPTY
     } else {
-      val source = values.toArray
-      tabulate(rows, columns)((row, column) => source(row * columns + column))
+      val result = new Array[Array[Double]](rows)
+      values match {
+        case flat: scala.collection.immutable.ArraySeq.ofDouble =>
+          fillFromFlat(result, flat.unsafeArray, columns, 0)
+        case other =>
+          fillFromElements(result, other.iterator, columns, 0)
+      }
+      new DoubleMatrix(result, rows, columns)
     }
   }
+
+  // Copies each row from the index upwards out of a flat array of every element in row-major
+  // order. This is the path a call with elements written out takes: the compiler gathers them
+  // into one primitive array to pass them, which this reads directly, so each element is moved
+  // exactly once, by the bulk copy of the platform, into a row the result owns.
+  @tailrec
+  private def fillFromFlat(
+      result: Array[Array[Double]],
+      source: Array[Double],
+      columns: Int,
+      row: Int): Unit =
+
+    if (row < result.length) {
+      val start = row * columns
+      result(row) = Arrays.copyOfRange(source, start, start + columns)
+      fillFromFlat(result, source, columns, row + 1)
+    }
+
+  // Fills each row from the index upwards from a sequence of elements in row-major order, taking
+  // the elements from one iterator advanced across all the rows. This is the path a sequence
+  // expanded at the call site takes, where the elements are already held boxed and no flat
+  // primitive array exists to copy from; the iterator is drained exactly once, and its element
+  // count has been checked against the shape before any of this runs.
+  @tailrec
+  private def fillFromElements(
+      result: Array[Array[Double]],
+      source: Iterator[Double],
+      columns: Int,
+      row: Int): Unit =
+
+    if (row < result.length) {
+      val inner = new Array[Double](columns)
+      drainInto(inner, source, 0)
+      result(row) = inner
+      fillFromElements(result, source, columns, row + 1)
+    }
+
+  // takes the next element of the iterator into each position of one row, from the column upwards
+  @tailrec
+  private def drainInto(inner: Array[Double], source: Iterator[Double], column: Int): Unit =
+    if (column < inner.length) {
+      inner(column) = source.next()
+      drainInto(inner, source, column + 1)
+    }
 
   //-------------------------------------------------------------------------
   /**
@@ -688,14 +951,17 @@ object DoubleMatrix {
    * @param columns  the number of columns, zero or greater
    * @param valueFunction  the function from row and column index to value
    * @return a matrix of the specified shape populated by the function
-   * @throws NegativeArraySizeException if either dimension is negative
+   * @throws IllegalArgumentException if either dimension is negative
    */
-  def tabulate(rows: Int, columns: Int)(valueFunction: (Int, Int) => Double): DoubleMatrix =
+  def tabulate(rows: Int, columns: Int)(valueFunction: (Int, Int) => Double): DoubleMatrix = {
+    ArgCheck.notNegative(rows, "rows")
+    ArgCheck.notNegative(columns, "columns")
     if (rows == 0 || columns == 0) {
       EMPTY
     } else {
       new DoubleMatrix(build(rows, columns, valueFunction), rows, columns)
     }
+  }
 
   // builds the rows of a matrix of the specified shape, each element taken from the function
   private def build(
@@ -743,14 +1009,21 @@ object DoubleMatrix {
    * of that row, which must number exactly `columns`. Each array returned is copied, so the
    * function may reuse a buffer of its own.
    *
+   * The function is a `DoubleMatrix.RowArrayFunction` rather than a one-argument function of the
+   * standard library, which would have boxed the row index on every row: specialisation applies
+   * to a function with a primitive result, and the result here is an array. A lambda written at
+   * the call site is converted to it automatically.
+   *
    * @param rows  the number of rows, zero or greater
    * @param columns  the number of columns, zero or greater
    * @param valuesFunction  the function from row index to the elements of that row
    * @return a matrix of the specified shape populated by the function
-   * @throws IllegalArgumentException if the function returns a row of the wrong length
-   * @throws NegativeArraySizeException if the row count is negative
+   * @throws IllegalArgumentException if either dimension is negative, or the function returns a
+   *   row of the wrong length
    */
-  def ofArrays(rows: Int, columns: Int)(valuesFunction: Int => Array[Double]): DoubleMatrix =
+  def ofArrays(rows: Int, columns: Int)(valuesFunction: RowArrayFunction): DoubleMatrix = {
+    ArgCheck.notNegative(rows, "rows")
+    ArgCheck.notNegative(columns, "columns")
     if (rows == 0 || columns == 0) {
       EMPTY
     } else {
@@ -758,13 +1031,14 @@ object DoubleMatrix {
       fillFromArrays(result, columns, valuesFunction, 0)
       new DoubleMatrix(result, rows, columns)
     }
+  }
 
   // takes each row from the index upwards from the function, checking its length and copying it
   @tailrec
   private def fillFromArrays(
       result: Array[Array[Double]],
       columns: Int,
-      valuesFunction: Int => Array[Double],
+      valuesFunction: RowArrayFunction,
       row: Int): Unit =
 
     if (row < result.length) {
@@ -782,14 +1056,24 @@ object DoubleMatrix {
    * are taken over without copying, which is safe because both types are immutable: neither the
    * array handed over nor the matrix built from it can be modified afterwards.
    *
+   * The function is a `DoubleMatrix.RowArrayObjectFunction` rather than a one-argument function
+   * of the standard library, for the reason `ofArrays` takes its own callback type: the row index
+   * would otherwise be boxed on every row. A lambda written at the call site is converted to it
+   * automatically.
+   *
    * @param rows  the number of rows, zero or greater
    * @param columns  the number of columns, zero or greater
    * @param valuesFunction  the function from row index to the elements of that row
    * @return a matrix of the specified shape populated by the function
-   * @throws IllegalArgumentException if the function returns a row of the wrong length
-   * @throws NegativeArraySizeException if the row count is negative
+   * @throws IllegalArgumentException if either dimension is negative, or the function returns a
+   *   row of the wrong length
    */
-  def ofArrayObjects(rows: Int, columns: Int)(valuesFunction: Int => DoubleArray): DoubleMatrix =
+  def ofArrayObjects(
+      rows: Int,
+      columns: Int)(valuesFunction: RowArrayObjectFunction): DoubleMatrix = {
+
+    ArgCheck.notNegative(rows, "rows")
+    ArgCheck.notNegative(columns, "columns")
     if (rows == 0 || columns == 0) {
       EMPTY
     } else {
@@ -797,13 +1081,14 @@ object DoubleMatrix {
       fillFromArrayObjects(result, columns, valuesFunction, 0)
       new DoubleMatrix(result, rows, columns)
     }
+  }
 
   // takes each row from the index upwards from the function, checking its length
   @tailrec
   private def fillFromArrayObjects(
       result: Array[Array[Double]],
       columns: Int,
-      valuesFunction: Int => DoubleArray,
+      valuesFunction: RowArrayObjectFunction,
       row: Int): Unit =
 
     if (row < result.length) {
@@ -887,14 +1172,17 @@ object DoubleMatrix {
    * @param rows  the number of rows, zero or greater
    * @param columns  the number of columns, zero or greater
    * @return a matrix of the specified shape filled with zeroes
-   * @throws NegativeArraySizeException if either dimension is negative
+   * @throws IllegalArgumentException if either dimension is negative
    */
-  def filled(rows: Int, columns: Int): DoubleMatrix =
+  def filled(rows: Int, columns: Int): DoubleMatrix = {
+    ArgCheck.notNegative(rows, "rows")
+    ArgCheck.notNegative(columns, "columns")
     if (rows == 0 || columns == 0) {
       EMPTY
     } else {
       new DoubleMatrix(rectangle(rows, columns), rows, columns)
     }
+  }
 
   /**
    * Obtains an instance with every element equal to the same value.
@@ -903,9 +1191,11 @@ object DoubleMatrix {
    * @param columns  the number of columns, zero or greater
    * @param value  the value of every element
    * @return a matrix of the specified shape filled with the specified value
-   * @throws NegativeArraySizeException if either dimension is negative
+   * @throws IllegalArgumentException if either dimension is negative
    */
-  def filled(rows: Int, columns: Int, value: Double): DoubleMatrix =
+  def filled(rows: Int, columns: Int, value: Double): DoubleMatrix = {
+    ArgCheck.notNegative(rows, "rows")
+    ArgCheck.notNegative(columns, "columns")
     if (rows == 0 || columns == 0) {
       EMPTY
     } else {
@@ -913,6 +1203,7 @@ object DoubleMatrix {
       fillWith(result, value, 0)
       new DoubleMatrix(result, rows, columns)
     }
+  }
 
   // allocates the rows of a matrix of the specified shape, every element left at zero
   private def rectangle(rows: Int, columns: Int): Array[Array[Double]] = {
@@ -946,14 +1237,16 @@ object DoubleMatrix {
    *
    * @param size  the number of rows and columns, zero or greater
    * @return an identity matrix of the specified size
-   * @throws NegativeArraySizeException if the size is negative
+   * @throws IllegalArgumentException if the size is negative
    */
-  def identity(size: Int): DoubleMatrix =
+  def identity(size: Int): DoubleMatrix = {
+    ArgCheck.notNegative(size, "size")
     if (size == 0) {
       EMPTY
     } else {
       diagonalMatrix(size, _ => 1d)
     }
+  }
 
   /**
    * Obtains a diagonal matrix holding the specified values.

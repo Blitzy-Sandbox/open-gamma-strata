@@ -106,8 +106,10 @@ package com.opengamma.strata.collect.array {
    * The remaining tests answer requirements of this port rather than of the Java original: the
    * copy-safety and deliberate-aliasing tests (`copy_safety_*`, `aliasing_*`), the proof that the
    * two escape hatches cannot be reached from outside this module
-   * (`unsafe_members_are_inaccessible_outside_collect`), the bit-level equality cases (`ieee_*`)
-   * and the property section (`property_*`).
+   * (`unsafe_members_are_inaccessible_outside_collect`), the failure paths of the sized and range
+   * factories that the original left untested (`negative_size_of_filled_and_tabulate`,
+   * `reversed_range_of_copyOf_and_subArray`), the bit-level equality cases (`ieee_*`) and the
+   * property section (`property_*`).
    *
    * ===Divergences from the Java original that this spec asserts===
    *
@@ -122,10 +124,12 @@ package com.opengamma.strata.collect.array {
    *    runtime raises, exactly as in the original;
    *  - `min` and `max` on an empty array fail with `IllegalArgumentException` where the original
    *    raised `IllegalStateException`. Both messages are unchanged, and both are asserted here;
-   *  - `equalWithTolerance` treats a not-a-number element as equal to another not-a-number element,
-   *    which is the behaviour of the scalar fuzzy comparison the original delegated to and which
-   *    the port reproduces. It is asserted here as reflexivity over such an array; the contract
-   *    itself belongs to the comparison, whose own spec owns it;
+   *  - `equalWithTolerance` never matches a not-a-number element: an array holding one is not
+   *    equal within any tolerance to an array holding one at the same index, because no tolerance
+   *    reaches such a value. Bit-for-bit structural equality - `equals`, `hashCode` and the
+   *    lookups built on them - does keep such an element reflexive, and that asymmetry between
+   *    the two contracts is deliberate: both are asserted here, side by side. The fuzzy contract
+   *    itself belongs to the comparison this delegates to, whose own spec owns it;
    *  - `ofUnsafe` and `toArrayUnsafe` are visible only inside this module, where the original
    *    exposed both to every caller. This spec is inside the module and exercises both positively;
    *    the prohibition outside it is proved from a probe object in a sibling package;
@@ -395,6 +399,54 @@ package com.opengamma.strata.collect.array {
     test("test_filled_withValue") {
       assertContent(DoubleArray.filled(0, 1.5))
       assertContent(DoubleArray.filled(3, 1.5), 1.5, 1.5, 1.5)
+    }
+
+    test("negative_size_of_filled_and_tabulate") {
+      // The three factories that are told how many elements to produce document a negative size
+      // as a failure, and each fails it at the allocation of the storage rather than by checking
+      // the argument first: an array of negative length is not a value the platform can make, so
+      // the runtime raises the size exception and names the size it was asked for. This is a
+      // distinct path from the bounds failures of the copying factories above, which are checked
+      // against the length of an input array and reported as illegal arguments
+      val zeroes = intercept[NegativeArraySizeException](DoubleArray.filled(-1))
+      zeroes.getMessage shouldBe "-1"
+      val valued = intercept[NegativeArraySizeException](DoubleArray.filled(-1, 1.5))
+      valued.getMessage shouldBe "-1"
+
+      // the failure precedes any call of the value function, which is why the function here fails
+      // the test if it is invoked at all - the same shape `test_of_lambda` uses for a size of zero
+      val tabulated = intercept[NegativeArraySizeException](
+        DoubleArray.tabulate(-1)(_ => fail("the function must not be invoked")))
+      tabulated.getMessage shouldBe "-1"
+    }
+
+    test("reversed_range_of_copyOf_and_subArray") {
+      // A range whose start is after its end is a fourth failure path, separate from a negative
+      // start index and from either bound running past the end of the array: both indices here
+      // are inside the array, so the two bounds checks of the range factory pass and the failure
+      // comes from the range copy of the platform, which reports the reversed pair. The exception
+      // type and the message are those of the Java original, which reached the same range copy
+      val base = Array(1.0, 2.0, 3.0)
+      val reversed = intercept[IllegalArgumentException](DoubleArray.copyOf(base, 2, 1))
+      reversed.getMessage shouldBe "2 > 1"
+
+      // a negative end index is a reversed range too, and is reported the same way. It is not
+      // caught by the bounds checks, which only ask whether an index is beyond the end
+      val negativeEnd = intercept[IllegalArgumentException](DoubleArray.copyOf(base, 0, -1))
+      negativeEnd.getMessage shouldBe "0 > -1"
+
+      // a start index at the end of the array is legal on its own - `copyOf(base, 3, 3)` is the
+      // empty array - so it is the reversal that fails this one
+      val fromTheEnd = intercept[IllegalArgumentException](DoubleArray.copyOf(base, 3, 1))
+      fromTheEnd.getMessage shouldBe "3 > 1"
+      assertContent(DoubleArray.copyOf(base, 3, 3))
+
+      // the sub-array member delegates to that factory, so it fails the same two ways
+      val test = DoubleArray.of(1.0, 2.0, 3.0)
+      val subReversed = intercept[IllegalArgumentException](test.subArray(2, 1))
+      subReversed.getMessage shouldBe "2 > 1"
+      val subNegativeEnd = intercept[IllegalArgumentException](test.subArray(0, -1))
+      subNegativeEnd.getMessage shouldBe "0 > -1"
     }
 
     //-------------------------------------------------------------------------
@@ -926,6 +978,34 @@ package com.opengamma.strata.collect.array {
       elements shouldBe List(1.0, 2.0, 3.0)
     }
 
+    test("copy_safety_of_concat_varargs") {
+      // `concat` allocates its result at the final length and copies each source into it, which
+      // is one copy per source rather than two. The values arriving from the sequence therefore
+      // reach the result directly, and this is what proves that reaching them directly is still
+      // copy-safe: the sequence expanded here is a view of `base` rather than a copy of it - the
+      // sharpest input the member can be given - so if the result shared storage with the caller
+      // it would be this call that showed it
+      val test = DoubleArray.of(1.0, 2.0)
+      val base = Array(0.5, 0.6)
+      val joined = test.concat(ArraySeq.unsafeWrapArray(base): _*)
+      assertContent(joined, 1.0, 2.0, 0.5, 0.6)
+      (joined.toArrayUnsafe eq base) shouldBe false
+      base(0) = 9.0
+      assertContent(joined, 1.0, 2.0, 0.5, 0.6)
+
+      // the copy answered by the result is fresh on every call, as it is for any other value of
+      // this type, so nothing done to one of those arrays reaches the result
+      val extracted = joined.toArray
+      extracted(3) = 8.0
+      assertContent(joined, 1.0, 2.0, 0.5, 0.6)
+
+      // a sequence that is not backed by a primitive array takes the element-by-element path of
+      // the copy rather than a bulk move, so it is exercised too, from a non-empty receiver
+      assertContent(test.concat(List(0.5, 0.6, 0.7): _*), 1.0, 2.0, 0.5, 0.6, 0.7)
+      assertContent(test.concat(Vector(0.5): _*), 1.0, 2.0, 0.5)
+      assertContent(DoubleArray.EMPTY.concat(List(0.5, 0.6): _*), 0.5, 0.6)
+    }
+
     test("copy_safety_of_tabulate_and_filled") {
       // the two factories that produce their own elements allocate the storage they wrap, so
       // nothing the caller holds can reach it
@@ -1021,25 +1101,40 @@ package com.opengamma.strata.collect.array {
     }
 
     test("ieee_tolerance_comparison_of_nan") {
-      // The tolerance comparison is delegated, and it holds a not-a-number value equal to another
-      // one - which is the behaviour of the scalar comparison the Java original delegated to in
-      // turn, so the port reproduces it rather than diverging from it. It is asserted here because
-      // it is surprising; its contract belongs to the comparison, whose own spec owns it.
+      // The tolerance comparison is delegated, and it matches no not-a-number value at all: such
+      // a value has no distance from anything, so no tolerance reaches it and an array holding
+      // one is not equal to an array holding one at the same index. It is asserted here because
+      // it is the opposite of the bitwise equality asserted above, where such an element is
+      // reflexive; the fuzzy contract belongs to the comparison, whose own spec owns it.
       val nan = DoubleArray.of(1.0, Double.NaN)
-      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), 0.0) shouldBe true
+      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), 0.0) shouldBe false
+      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), Double.PositiveInfinity) shouldBe false
+      nan.equalWithTolerance(nan, 0.01) shouldBe false
       nan.equalWithTolerance(DoubleArray.of(1.0, 2.0), 0.01) shouldBe false
       nan.equalZeroWithTolerance(0.01) shouldBe false
+      nan.equalZeroWithTolerance(Double.PositiveInfinity) shouldBe false
 
-      // each infinity is equal to itself under any tolerance, because the comparison also accepts
-      // two values that are simply the same value, and is equal to nothing else
+      // the same array without that element is equal to itself within a tolerance, so it is the
+      // element and not the delegation that refuses the comparison
+      val finite = DoubleArray.of(1.0, 2.0)
+      finite.equalWithTolerance(DoubleArray.of(1.0, 2.0), 0.0) shouldBe true
+
+      // each infinity is equal to itself under any tolerance, an infinite one included, and to
+      // nothing else - neither the other infinity nor any finite value, zero among them
       val positive = DoubleArray.of(Double.PositiveInfinity)
       positive.equalWithTolerance(DoubleArray.of(Double.PositiveInfinity), 0.0) shouldBe true
+      positive.equalWithTolerance(DoubleArray.of(Double.PositiveInfinity), Double.PositiveInfinity) shouldBe true
       positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), 0.01) shouldBe false
+      positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe false
       positive.equalZeroWithTolerance(0.01) shouldBe false
+      positive.equalZeroWithTolerance(Double.PositiveInfinity) shouldBe false
 
-      // the tolerance itself is checked, as a caller-contract invariant
+      // the tolerance itself is checked, as a caller-contract invariant: a negative tolerance and
+      // a not-a-number tolerance are both caller errors rather than comparisons that answer false
       assertThrows[IllegalArgumentException](nan.equalWithTolerance(nan, -0.01))
       assertThrows[IllegalArgumentException](nan.equalZeroWithTolerance(-0.01))
+      assertThrows[IllegalArgumentException](nan.equalWithTolerance(nan, Double.NaN))
+      assertThrows[IllegalArgumentException](nan.equalZeroWithTolerance(Double.NaN))
     }
 
     test("ieee_sorted_orders_signed_zero_and_nan") {

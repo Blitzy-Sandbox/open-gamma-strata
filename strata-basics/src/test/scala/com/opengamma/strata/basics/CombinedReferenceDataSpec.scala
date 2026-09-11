@@ -5,9 +5,16 @@
  */
 package com.opengamma.strata.basics
 
+import java.time.DayOfWeek.SATURDAY
+import java.time.DayOfWeek.SUNDAY
+import java.time.LocalDate
+
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import com.opengamma.strata.basics.date.HolidayCalendarIds
+import com.opengamma.strata.basics.date.HolidayCalendars
+import com.opengamma.strata.basics.date.ImmutableHolidayCalendar
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
@@ -29,6 +36,24 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * library ships, because those carry resolution rules of their own - a `HolidayCalendarId`
  * resolves its components separately, for instance - and a lookup that failed could then
  * have failed in the identifier rather than in the combination.
+ *
+ * ===The third fixture, and why it is a calendar===
+ *
+ * The library applies this same rule on a caller's behalf in one place, and that place is
+ * `ReferenceData.of`: it lays a caller's entries over the four built-in weekend and
+ * no-holiday calendars, the caller's entry winning where the two meet. `test_combination`
+ * asserts it, because a combination preferring the caller is exactly what it is, and because
+ * nothing else in this module asserts which way round those two sets go - an assertion that
+ * only read back values the built-in set and the caller agree about would pass just as
+ * happily with the two laid the other way.
+ *
+ * So [[OVERRIDING_SAT_SUN]] is a deliberately different `Sat/Sun` calendar: it carries the
+ * identifier of the built-in one and a holiday the built-in one does not have. It has to be
+ * a calendar, because the minimal set holds nothing else, and the assertions about it have to
+ * be about behaviour rather than equality: a holiday calendar is equal to any other calendar
+ * of the same identifier whatever holidays it holds, so `getValue(SAT_SUN)` answering with
+ * '''a''' `Sat/Sun` calendar says nothing, while its answer about [[OVERRIDDEN_DATE]] says
+ * which one.
  *
  * ===How the shape of the port changes the assertions===
  *
@@ -91,12 +116,35 @@ class CombinedReferenceDataSpec extends AnyFunSuite with Matchers {
   private val BASE_DATA2: ImmutableReferenceData = baseData2()
 
   /**
-   * Every identifier the fixtures mention, in the order the assertions below use them.
+   * Every identifier the two overlapping fixtures mention, in the order the assertions below
+   * use them.
    *
    * The three tests each walk this list at least once, which is what makes "every entry" a
    * statement about a known set rather than about whichever entries a test happened to name.
    */
   private val ALL_IDS: List[TestingReferenceDataId] = List(ID1, ID2, ID3, ID4)
+
+  /**
+   * The date that tells the caller's `Sat/Sun` calendar apart from the built-in one.
+   *
+   * A Tuesday, so neither calendar's weekend covers it: the built-in `Sat/Sun` calendar
+   * reports it as a business day and [[OVERRIDING_SAT_SUN]], which names it as a holiday,
+   * reports it as a holiday. Every assertion about which of the two answered a lookup is
+   * asked about this date, and `test_combination` asserts the built-in calendar's answer
+   * alongside, so the two really do differ rather than being assumed to.
+   */
+  private val OVERRIDDEN_DATE: LocalDate = LocalDate.of(2015, 6, 30)
+
+  /**
+   * A caller's own definition of the `Sat/Sun` calendar, differing from the built-in one.
+   *
+   * It carries the identifier of one of the four calendars `ReferenceData.of` lays underneath
+   * a caller's entries, and it observes [[OVERRIDDEN_DATE]] as a holiday, which the built-in
+   * calendar of that identifier does not. Substituting a definition of a weekend calendar is
+   * the case that factory's contract explicitly allows, and this is the substitution.
+   */
+  private val OVERRIDING_SAT_SUN: ImmutableHolidayCalendar =
+    ImmutableHolidayCalendar.of(HolidayCalendarIds.SAT_SUN, List(OVERRIDDEN_DATE), Set(SATURDAY, SUNDAY))
 
   //-------------------------------------------------------------------------
   test("test_combination") {
@@ -130,6 +178,47 @@ class CombinedReferenceDataSpec extends AnyFunSuite with Matchers {
     test.findValue(ID2) shouldBe Some(VAL2)
     test.findValue(ID3) shouldBe Some(VAL3)
     test.findValue(ID4) shouldBe None
+
+    //-----------------------------------------------------------------------
+    // The same rule where the library applies it for a caller. `ReferenceData.of` combines
+    // the caller's entries with the four built-in weekend and no-holiday calendars, the
+    // caller's side preferred, so an entry filed under one of those four identifiers wins
+    // and the other three remain. See the note on this class for why the discriminating
+    // entry is a calendar and why these assertions are about behaviour.
+    val layered = layeredOverMinimal(
+      ReferenceData.Entry(HolidayCalendarIds.SAT_SUN, OVERRIDING_SAT_SUN),
+      ReferenceData.Entry(ID1, VAL1))
+
+    // The calendar that answers for `Sat/Sun` is the caller's: it treats 2015-06-30 as a
+    // holiday. The next line is what makes that discriminating - the built-in calendar this
+    // entry replaced treats the same Tuesday as a business day - so laying the built-in set
+    // over the caller's entries instead of underneath them would turn the first assertion
+    // false.
+    layered.getValue(HolidayCalendarIds.SAT_SUN).map(cal => cal.isHoliday(OVERRIDDEN_DATE)) should
+      haveValue(true)
+    HolidayCalendars.SAT_SUN.isHoliday(OVERRIDDEN_DATE) shouldBe false
+
+    // The other three minimal identifiers are still present, still answer with the built-in
+    // calendars, and are untouched by the override: none of them observes that Tuesday.
+    layered.getValue(HolidayCalendarIds.NO_HOLIDAYS) should haveValue(HolidayCalendars.NO_HOLIDAYS)
+    layered.getValue(HolidayCalendarIds.FRI_SAT) should haveValue(HolidayCalendars.FRI_SAT)
+    layered.getValue(HolidayCalendarIds.THU_FRI) should haveValue(HolidayCalendars.THU_FRI)
+    layered.getValue(HolidayCalendarIds.NO_HOLIDAYS).map(cal => cal.isHoliday(OVERRIDDEN_DATE)) should
+      haveValue(false)
+    layered.getValue(HolidayCalendarIds.FRI_SAT).map(cal => cal.isHoliday(OVERRIDDEN_DATE)) should
+      haveValue(false)
+    layered.getValue(HolidayCalendarIds.THU_FRI).map(cal => cal.isHoliday(OVERRIDDEN_DATE)) should
+      haveValue(false)
+
+    // Seeding the four calendars costs the caller nothing it supplied: the entry that is not
+    // a calendar answers exactly as it was given.
+    layered.getValue(ID1) should haveValue(VAL1)
+    layered.findValue(ID4) shouldBe None
+
+    // And it is the minimal set that is laid underneath, not the whole built-in one: `GBLO`
+    // is a calendar of `ReferenceData.standard` and is absent here.
+    layered.containsValue(HolidayCalendarIds.GBLO) shouldBe false
+    layered.getValue(HolidayCalendarIds.GBLO) should beFailureWith(FailureReason.MISSING_DATA)
   }
 
   //-------------------------------------------------------------------------
@@ -254,6 +343,27 @@ class CombinedReferenceDataSpec extends AnyFunSuite with Matchers {
    */
   private def store(entries: ReferenceData.Entry[_]*): ImmutableReferenceData =
     ImmutableReferenceData.of(entries: _*) match {
+      case Right(data) => data
+      case Left(failure) => fail(s"Fixture reference data could not be built: ${failure.message}")
+    }
+
+  /**
+   * Builds a set of reference data the way an application does, through `ReferenceData.of`.
+   *
+   * This is the counterpart of [[store]] and the difference between the two is the subject of
+   * the last group of assertions in `test_combination`: this factory combines the entries
+   * given with the four built-in weekend and no-holiday calendars, preferring the entries,
+   * where `store` yields a set holding nothing it was not given.
+   *
+   * It reports the same single failure mode - two entries filed under one identifier - and a
+   * fixture that cannot be built is a defect in this spec rather than a property of the
+   * subject, so it is reported as a failed test naming the cause.
+   *
+   * @param entries  the reference data entries, which must not repeat an identifier
+   * @return the entries combined with the minimal set of built-in calendars
+   */
+  private def layeredOverMinimal(entries: ReferenceData.Entry[_]*): ReferenceData =
+    ReferenceData.of(entries: _*) match {
       case Right(data) => data
       case Left(failure) => fail(s"Fixture reference data could not be built: ${failure.message}")
     }

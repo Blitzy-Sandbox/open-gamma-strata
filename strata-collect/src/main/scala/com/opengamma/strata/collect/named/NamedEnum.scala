@@ -525,13 +525,21 @@ object NamedEnum {
      * after it is applied to the replacement, so the rewrites chain. The replacement may
      * refer back to the groups the expression captured.
      *
+     * One matcher is created per rule and serves both purposes: it decides whether the rule
+     * applies and then performs the replacement, as the type being ported did. Asking an
+     * expression to replace within text a second time would match that text a second time,
+     * which is an allocation and a scan this loop does not need - a matcher resets itself
+     * when it replaces, so the replacement sees the whole of the text exactly as the test
+     * did.
+     *
      * @param name  the text to rewrite, already folded to upper case
      * @return the text that survives every rewrite
      */
     private def rewriteLeniently(name: String): String =
       lenientMatchers.foldLeft(name) { case (current, (expression, replacement)) =>
-        if (expression.pattern.matcher(current).matches()) {
-          expression.replaceFirstIn(current, replacement)
+        val matcher = expression.pattern.matcher(current)
+        if (matcher.matches()) {
+          matcher.replaceFirst(replacement)
         } else {
           current
         }
@@ -557,4 +565,3 @@ object NamedEnum {
     override def toString: String = s"NamedEnum[$familyName]"
   }
 }
-

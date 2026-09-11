@@ -110,8 +110,8 @@ object StandardId {
   /**
    * The characters a scheme may hold in addition to ASCII letters and digits.
    *
-   * Percent is among them so that a scheme produced by [[encodeScheme]] is itself a
-   * permitted scheme, which is the whole point of that method.
+   * Percent is among them so that the escapes [[encodeScheme]] emits are themselves
+   * permitted scheme characters, which is the whole point of that method.
    */
   private val SchemeSpecialCharacters: Set[Char] = Set(':', '/', '+', '.', '=', '_', '-', '%')
 
@@ -127,7 +127,15 @@ object StandardId {
   /** The regular expression a rejected scheme is described against. */
   private val SchemeRegex: String = "[A-Za-z0-9:/+.=_%-]+"
 
-  /** The regular expression a rejected value is described against. */
+  /**
+   * The regular expression a rejected value is described against.
+   *
+   * This is message text, not the language a value has to be in: the original quoted the `+`
+   * form in its failures while accepting a value of one character, and that text is
+   * reproduced here word for word because it reaches logs and test expectations. The
+   * language actually accepted is `[!-z][ -z]*`, which is what [[of]] documents and what
+   * [[ValueCharacter]] and the length bounds of [[checkedValue]] enforce.
+   */
   private val ValueRegex: String = "[!-z][ -z]+"
 
   /** The digits an escaped byte is written with, upper case as the escaper being replaced wrote them. */
@@ -162,9 +170,11 @@ object StandardId {
    * dash and percent. Text that is not a permitted scheme can be turned into one with
    * [[encodeScheme]].
    *
-   * The value must be non-empty and match the regular expression `[!-z][ -z]+`. This is the
+   * The value must be non-empty and match the regular expression `[!-z][ -z]*`. This is the
    * printable ASCII characters excluding curly brackets, pipe and tilde, and a value may
-   * not begin with a space.
+   * not begin with a space. One character is therefore enough, as it is in the library this
+   * type is ported from; the `+` form the failures quote is that library's message text and
+   * not the language accepted here.
    *
    * Both parts are checked, and the outcome carries a failure for each one that was
    * unacceptable rather than only the first:
@@ -221,8 +231,12 @@ object StandardId {
    * // "https://opengamma.com/foo/../%7Ebar%23test"
    * }}}
    *
-   * Because percent is a permitted scheme character, the result is always an acceptable
-   * scheme for [[of]], whatever the input held.
+   * Every character the encoding can emit is a permitted scheme character, percent among
+   * them, so text holding at least one character encodes to a scheme [[of]] accepts
+   * unchanged, whatever that text held. Empty text is the single exception: it encodes to
+   * empty text, which [[of]] rejects because a scheme may not be empty. Encoding is text to
+   * text here, as it is in the library being ported, so that is the caller's case to rule
+   * out rather than a failure this method reports.
    *
    * The one behaviour that differs from the escaper being replaced is malformed text: where
    * the original rejected a surrogate character that is not part of a pair, this escapes

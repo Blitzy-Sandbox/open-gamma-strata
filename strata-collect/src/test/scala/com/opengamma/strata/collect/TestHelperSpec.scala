@@ -6,7 +6,9 @@
 package com.opengamma.strata.collect
 
 import java.time.{DateTimeException, LocalDate, Month}
-import java.util.logging.{Level, LogRecord, Logger}
+import java.util.logging.{Handler, Level, LogRecord, Logger}
+
+import scala.collection.mutable.ListBuffer
 
 import org.scalacheck.Gen
 import org.scalatest.funsuite.AnyFunSuite
@@ -39,9 +41,20 @@ import com.opengamma.strata.collect.testkit.TestHelper._
  * on that state from outside a capture. Restoration is observed from inside an
  * enclosing capture instead: the helper holds its monitor for the whole of the
  * nested call, so nothing another thread captures can interleave with the
- * observation. Every test here is therefore deterministic, and none leaves
- * output redirection or logger configuration behind to surface as flakiness in
- * a spec that runs later in the same test JVM.
+ * observation. State the block itself sees is reported the same way round, as
+ * the text of a record or a line of output the capture returns, so no assertion
+ * runs while the redirect is in force. Every test here is therefore
+ * deterministic, and none leaves output redirection or logger configuration
+ * behind to surface as flakiness in a spec that runs later in the same test
+ * JVM.
+ *
+ * What the logger capture leaves behind is held to two kinds of logger, because
+ * one kind cannot distinguish the two ways of getting it wrong. A logger left
+ * at the logging framework's defaults catches a capture that restores nothing,
+ * and a logger preconfigured away from those defaults - carrying a handler of
+ * this spec's own - catches a capture that resets to defaults or discards a
+ * handler it never installed. The second kind is set up and unwound by
+ * `withPreconfiguredLogger`, which returns it to the state it was found in.
  */
 final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
 
@@ -58,6 +71,54 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
    * how this source file happens to be encoded.
    */
   private val FourByteChar: String = new String(Character.toChars(0x1f600))
+
+  /**
+   * Runs the given body against a logger whose configuration differs from both
+   * the logging framework's defaults and the configuration `captureLog`
+   * installs, and leaves that logger exactly as it was found.
+   *
+   * The level is set to `WARNING` - neither the absent level a fresh logger
+   * reports nor the `ALL` the capture installs - and the parent-handler flag is
+   * set to `false`, the opposite of the framework's default. A capture that
+   * reset the logger to defaults instead of restoring it would therefore be
+   * visible to the caller of this method, which a logger left at its defaults
+   * cannot show. The handler attached here belongs to the caller, and the
+   * capture is required to leave it attached and receiving records, so the body
+   * is handed the instance to check identity against.
+   *
+   * The logger is held in a local for the whole call because the log manager
+   * references loggers weakly: dropping the reference would let the
+   * configuration applied here be collected while the body still runs. The
+   * unwinding is the outer `finally` of every test that uses this fixture -
+   * the whole module shares one test JVM, so a handler or a level left behind
+   * here would surface as flakiness in a spec that runs later.
+   *
+   * @tparam A  the result type of the body
+   * @param subject  the class whose name identifies the logger to preconfigure
+   * @param body  the block to run, given the preconfigured logger and the
+   *   handler attached to it by this fixture
+   * @return the result of the body
+   */
+  private def withPreconfiguredLogger[A](subject: Class[_])(body: (Logger, SentinelLogHandler) => A): A = {
+    val logger = Logger.getLogger(subject.getName)
+    val sentinel = new SentinelLogHandler
+    val savedLevel: Option[Level] = Option(logger.getLevel)
+    val savedUseParentHandlers = logger.getUseParentHandlers
+    try {
+      sentinel.setLevel(Level.ALL)
+      logger.setLevel(Level.WARNING)
+      logger.setUseParentHandlers(false)
+      logger.addHandler(sentinel)
+      body(logger, sentinel)
+    } finally {
+      logger.removeHandler(sentinel)
+      // An absent level means "inherit from the parent logger", so handing the
+      // saved value straight back restores either case; this is the idiom the
+      // helper under test uses to restore the same field.
+      logger.setLevel(savedLevel.orNull)
+      logger.setUseParentHandlers(savedUseParentHandlers)
+    }
+  }
 
   //-------------------------------------------------------------------------
   // date(Int, Int, Int)
@@ -377,6 +438,82 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
     logger.getUseParentHandlers shouldBe parentHandlersBefore
   }
 
+  test("captureLog restores a non-default configuration and leaves a caller's handler receiving records") {
+    // The two tests above start from a logger at its defaults, which pins down
+    // that something is restored but not that the entry state is what comes
+    // back: an absent level and a set parent-handler flag are also what a reset
+    // to defaults would produce. This logger is configured to differ from the
+    // defaults and from what the capture installs, so only restoration of the
+    // entry state satisfies it, and it carries a handler of the spec's own that
+    // the capture must neither detach nor silence.
+    val subject = classOf[PreconfiguredLogSubject]
+    withPreconfiguredLogger(subject) { (logger, sentinel) =>
+      val handlersAtEntry = logger.getHandlers.length
+      // The state seen inside the block leaves it as the text of a record, in
+      // the way the level-and-handler test does it: nothing may assert while
+      // the capture holds the logger, and a record at the finest level shows
+      // the raised level at the same time.
+      val records = captureLog(subject) {
+        logger.log(
+          Level.FINEST,
+          s"handlers=${logger.getHandlers.length}" +
+            s";sentinelAttached=${logger.getHandlers.exists(_ eq sentinel)}" +
+            s";levelIsAll=${logger.getLevel == Level.ALL}" +
+            s";parentHandlers=${logger.getUseParentHandlers}")
+      }
+      // The capture's own purpose still holds: the record the block published
+      // is what it returned, alongside the fixture's handler rather than
+      // instead of it.
+      records.map(_.getMessage) shouldBe List(
+        s"handlers=${handlersAtEntry + 1};sentinelAttached=true;levelIsAll=true;parentHandlers=false")
+      records.map(_.getLevel) shouldBe List(Level.FINEST)
+      // The handler the spec installed saw the same record, which is what shows
+      // the capture did not stop it receiving records for the duration.
+      sentinel.snapshot.map(_.getMessage) shouldBe records.map(_.getMessage)
+      // Identity, not equality: the instance installed by the fixture is the
+      // one still attached, so a capture that cleared the logger's handlers and
+      // installed a fresh one of the same class would fail here.
+      val impostor = new SentinelLogHandler
+      logger.getHandlers.count(_ eq sentinel) shouldBe 1
+      logger.getHandlers.exists(_ eq impostor) shouldBe false
+      // Back to the entry count, so the capture's own handler is gone.
+      logger.getHandlers.length shouldBe handlersAtEntry
+      logger.getLevel shouldBe Level.WARNING
+      logger.getUseParentHandlers shouldBe false
+    }
+  }
+
+  test("captureLog restores a non-default configuration and leaves a caller's handler receiving records when the block throws") {
+    val subject = classOf[PreconfiguredFailingLogSubject]
+    withPreconfiguredLogger(subject) { (logger, sentinel) =>
+      val handlersAtEntry = logger.getHandlers.length
+      val failure = intercept[IllegalStateException] {
+        captureLog(subject) {
+          logger.log(
+            Level.FINEST,
+            s"handlers=${logger.getHandlers.length}" +
+              s";sentinelAttached=${logger.getHandlers.exists(_ eq sentinel)}" +
+              s";levelIsAll=${logger.getLevel == Level.ALL}" +
+              s";parentHandlers=${logger.getUseParentHandlers}")
+          throw new IllegalStateException("preconfigured logging block failed")
+        }
+      }
+      failure.getMessage shouldBe "preconfigured logging block failed"
+      // A block that throws returns no records, so the handler the spec
+      // installed is the only witness of what was published - which is itself
+      // the evidence that it kept receiving records while the capture was in
+      // force, on the path where the capture unwinds through its `finally`.
+      sentinel.snapshot.map(_.getMessage) shouldBe List(
+        s"handlers=${handlersAtEntry + 1};sentinelAttached=true;levelIsAll=true;parentHandlers=false")
+      val impostor = new SentinelLogHandler
+      logger.getHandlers.count(_ eq sentinel) shouldBe 1
+      logger.getHandlers.exists(_ eq impostor) shouldBe false
+      logger.getHandlers.length shouldBe handlersAtEntry
+      logger.getLevel shouldBe Level.WARNING
+      logger.getUseParentHandlers shouldBe false
+    }
+  }
+
   test("captureLog returns the empty list for a block that logs nothing") {
     val records = captureLog(classOf[SecondaryLogSubject]) {
       ()
@@ -407,6 +544,10 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
   test("captureLog supports two successive captures without leaking records between them") {
     val subject = classOf[PrimaryLogSubject]
     val logger = Logger.getLogger(subject.getName)
+    // The count the captures must return to is the one the logger had before
+    // them, not zero: a hard-coded zero is also what a capture that removed
+    // handlers it never installed would leave behind.
+    val handlersBefore = logger.getHandlers.length
     val first = captureLog(subject) {
       logger.log(Level.INFO, "first block")
     }
@@ -415,7 +556,7 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
     }
     first.map(_.getMessage) shouldBe List("first block")
     second.map(_.getMessage) shouldBe List("second block")
-    logger.getHandlers.length shouldBe 0
+    logger.getHandlers.length shouldBe handlersBefore
   }
 
   test("captureLog returns a scala.collection.immutable.List of log records") {
@@ -450,3 +591,66 @@ private[collect] final class RestoringLogSubject
 
 /** A logger-naming subject used by the restoration-on-failure test. */
 private[collect] final class FailingLogSubject
+
+/**
+ * A logger-naming subject whose logger is preconfigured away from the
+ * framework's defaults before it is captured.
+ *
+ * It is separate from the subjects above because those are deliberately left at
+ * their defaults: one logger cannot serve both halves of the discrimination
+ * between restoring the entry state and resetting to defaults.
+ */
+private[collect] final class PreconfiguredLogSubject
+
+/**
+ * A logger-naming subject whose logger is preconfigured away from the
+ * framework's defaults before a capture whose block throws.
+ *
+ * The throwing path gets a logger of its own so that the records its capture
+ * publishes cannot be confused with those of the normal path.
+ */
+private[collect] final class PreconfiguredFailingLogSubject
+
+/**
+ * A log handler that a test attaches to a logger itself, before that logger is
+ * handed to `captureLog`.
+ *
+ * It stands for a handler the caller owns. The capture helper is required to
+ * leave such a handler attached and to leave it receiving records, so the
+ * records collected here are the evidence for the second half of that
+ * requirement and the instance's own identity is the evidence for the first.
+ *
+ * The buffer is private and observable only through `snapshot`, which copies it
+ * into an immutable list; both the append and the copy hold the buffer's
+ * monitor, exactly as the helper's own handler does it, because the logging
+ * framework may publish from any thread.
+ */
+private[collect] final class SentinelLogHandler extends Handler {
+
+  private val records = ListBuffer.empty[LogRecord]
+
+  /**
+   * Appends a published record to the buffer.
+   *
+   * @param record  the record being published
+   */
+  override def publish(record: LogRecord): Unit =
+    records.synchronized {
+      val _ = records.addOne(record)
+    }
+
+  /** Does nothing: the buffer needs no flushing. */
+  override def flush(): Unit = ()
+
+  /** Does nothing: the buffer holds no resource to release. */
+  override def close(): Unit = ()
+
+  /**
+   * @return an immutable snapshot of the records published so far, in
+   *   publication order
+   */
+  def snapshot: List[LogRecord] =
+    records.synchronized {
+      records.toList
+    }
+}

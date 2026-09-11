@@ -41,7 +41,8 @@ import org.scalatest.matchers.should.Matchers
  * consequently the only exercise either type gets, and the only thing standing between the
  * pair and silent drift before their first consumer arrives. It is written to that brief: it
  * pins the shape of both factories, the order sensitivity of the list, the two published
- * typeclass instances, and the deliberate absence of a codec.
+ * typeclass instances, the place of the list in the type hierarchy - a container of targets
+ * and not itself a target - and the deliberate absence of a codec.
  *
  * ===The fixture===
  *
@@ -151,6 +152,26 @@ final class CalculationTargetListSpec extends AnyFunSuite with Matchers {
     Show[CalculationTargetList].show(same) shouldBe rendered
     Show[CalculationTargetList].show(CalculationTargetList.of()) shouldBe
       "CalculationTargetList{targets=[]}"
+
+    // the place of this type in the hierarchy is pinned here, alongside the rest of its
+    // published shape, because it is asserted nowhere else and no consumer inside this module
+    // would notice it changing: the Java type implements `ImmutableBean` and `Serializable`
+    // and pointedly not `CalculationTarget`, so a list of targets is a container of targets
+    // and never itself one. Mixing the marker trait in would widen the contract of a type
+    // whose first real consumers arrive in a later slice, and would do so silently
+    assertTypeError("""
+      val target: com.opengamma.strata.basics.CalculationTarget =
+        com.opengamma.strata.basics.CalculationTargetList.of()
+    """)
+
+    // the control for the assertion above, without which it would also pass if the snippet
+    // failed to compile for some unrelated reason, such as a mistyped name: the same ascription
+    // in the same position does compile for the fixture, which is a calculation target. What
+    // the failure above shows is therefore the absence of that relationship for the list alone
+    assertCompiles("""
+      val target: com.opengamma.strata.basics.CalculationTarget =
+        com.opengamma.strata.basics.CalculationTargetListSpec.TestTarget(1)
+    """)
   }
 
   test("test_serialization") {

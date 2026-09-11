@@ -12,6 +12,7 @@ import cats.Show
 import io.circe.Decoder
 import io.circe.Encoder
 import io.circe.generic.semiauto.deriveDecoder
+import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.collect.ArgCheck
 import com.opengamma.strata.collect.DoubleArrayMath
@@ -286,7 +287,10 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    * no arithmetic, so a rate of one - within a tolerance of `1e-8`, which is the literal that
    * implementation used - returns this amount unchanged, and any other rate is reported as a
    * failure rather than silently applied. That keeps a caller from scaling an amount by passing a
-   * rate for a conversion that does not happen.
+   * rate for a conversion that does not happen. Under the comparison used a rate that is not a
+   * number is equal to nothing at all, itself included, and an infinite rate is equal only to
+   * the same infinity, so neither compares equal to one and both are reported as a failure
+   * rather than applied.
    *
    * {{{
    * gbp100.convertedTo(Currency.USD, 1.6d)   // Right(USD 160)
@@ -400,14 +404,7 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
 object CurrencyAmount {
 
   /**
-   * The name of the currency field, as the argument name of a check and as the JSON key.
-   *
-   * Held once so that a message naming the field and a document carrying it cannot disagree.
-   */
-  private val CurrencyField: String = "currency"
-
-  /**
-   * The name of the amount field, as the argument name of a check and as the JSON key.
+   * The name of the amount field, as the argument name of the checks that reject it.
    *
    * This is the name that appears in `Argument 'amount' must not be NaN`, the message both routes
    * into the type report for a value that is not a number, so the wording is that of the
@@ -647,21 +644,25 @@ object CurrencyAmount {
   implicit val show: Show[CurrencyAmount] = Show.show(_.toString)
 
   //-------------------------------------------------------------------------
-  // The codec of the double field, brought into scope for the derivation below and for nothing
-  // else: the amount goes through the single policy this port has for a double, which writes the
-  // values JSON cannot express as the tagged strings `"NaN"`, `"Infinity"` and `"-Infinity"`. The
-  // import is what makes that choice deliberate and local, as the codec support of
-  // `strata-collect` intends.
+  // The codec of the double field, brought into scope for the two derivations below and for
+  // nothing else: the amount goes through the single policy this port has for a double, which
+  // writes the values JSON cannot express as the tagged strings `"NaN"`, `"Infinity"` and
+  // `"-Infinity"`. The import is what makes that choice deliberate and local, as the codec
+  // support of `strata-collect` intends.
   import Codecs.implicits._
 
   /**
-   * The raw field shape the decoder reads before the amount is checked.
+   * The raw field shape both codecs of this type are derived over.
    *
-   * Decoding a checked type is two steps: read the fields, then hand them to the factory that
-   * decides whether they describe a value. This product is the first step, and it exists only for
-   * that purpose - it is private, it is never returned, and nothing but the decoder below builds
-   * one. Its field names are the JSON keys, and they are the names of the two fields of
-   * [[CurrencyAmount]] itself.
+   * A checked type cannot be derived over directly: its constructor is not public, and decoding
+   * it is two steps - read the fields, then hand them to the factory that decides whether they
+   * describe a value. This product is the shape those fields have, and it is what makes the
+   * derivation possible in both directions: the decoder below derives over it and then checks,
+   * and the encoder below derives over it and is contramapped from an amount that is already
+   * valid. It exists only for that purpose - it is private and it is never returned, so no caller
+   * can hold an unchecked pair. Its field names are the JSON keys, and they are the names of the
+   * two fields of [[CurrencyAmount]] itself, which is what keeps the derived shape and the type
+   * from drifting apart.
    *
    * @param currency  the currency, read from its three letter code
    * @param amount  the amount, unchecked, read as a number or as one of the three tagged strings
@@ -672,6 +673,16 @@ object CurrencyAmount {
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
   /**
+   * The derived encoder of the raw field shape, used by the encoder below.
+   *
+   * This sits after the import above deliberately: the derivation picks up the double codec of
+   * this port from that import, which is what writes an infinite amount as its tagged string. A
+   * derivation site without that import in scope would take circe's plain numeric encoder
+   * instead, which has no representation for a value JSON cannot express.
+   */
+  private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
+
+  /**
    * The JSON encoding of amounts.
    *
    * An amount is an object of two fields, the currency as its code and the amount as a number:
@@ -680,21 +691,22 @@ object CurrencyAmount {
    * {"currency":"GBP","amount":100.0}
    * }}}
    *
-   * The fields are written out here rather than derived, because the constructor of a checked
-   * type is not public and so its shape cannot be derived; the shape produced is the one a
-   * derivation would have produced, with the field names of the bean being ported. An infinite
-   * amount is written as the tagged string the double policy of this port defines, so every value
-   * this type admits survives a round trip. The result is wrapped so that a field holding no
-   * value would be omitted, which is the policy every product of this port follows - this type
-   * has no optional field, so the wrapping changes nothing about its output and exists so that
-   * the policy holds without exception.
+   * The shape is derived at compile time over the raw product above rather than written out
+   * field by field, which is what every product of this port does, and the value is contramapped
+   * into that product: an amount in memory has already been checked, so nothing further has to be
+   * decided on the way out. Deriving it is what keeps the document and the type in step - a field
+   * added to one is a field added to the other, with no second list of names to keep current. An
+   * infinite amount is written as the tagged string the double policy of this port defines, so
+   * every value this type admits survives a round trip. The result is wrapped so that a field
+   * holding no value would be omitted, which is the policy every product of this port follows -
+   * this type has no optional field, so the wrapping changes nothing about its output and exists
+   * so that the policy holds without exception.
    *
    * @return the JSON encoding of an amount
    */
   implicit val encoder: Encoder[CurrencyAmount] =
     Codecs.dropNulls(
-      Encoder.forProduct2[CurrencyAmount, Currency, Double](CurrencyField, AmountField)(value =>
-        (value.currency, value.amount)))
+      rawEncoder.contramap[CurrencyAmount](value => Raw(value.currency, value.amount)))
 
   /**
    * The JSON decoding of amounts.

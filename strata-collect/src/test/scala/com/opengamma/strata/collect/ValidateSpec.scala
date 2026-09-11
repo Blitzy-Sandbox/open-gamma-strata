@@ -1521,6 +1521,23 @@ class ValidateSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
     failuresOf(outcome) should have size 1
   }
 
+  test("the tolerant form of notNegativeOrZero reports a not-a-number tolerance rather than throwing") {
+    rejects(Validate.notNegativeOrZero(1.0, Double.NaN, Name), "Argument 'tolerance' must not be NaN")
+  }
+
+  test("the tolerant form of notNegativeOrZero stops at a not-a-number tolerance, whatever the argument") {
+    val nearZero = Validate.notNegativeOrZero(0.0, Double.NaN, Name)
+    messagesOf(nearZero) shouldBe List("Argument 'tolerance' must not be NaN")
+    failuresOf(nearZero) should have size 1
+    val belowZero = Validate.notNegativeOrZero(-1.0, Double.NaN, Name)
+    messagesOf(belowZero) shouldBe List("Argument 'tolerance' must not be NaN")
+    failuresOf(belowZero) should have size 1
+  }
+
+  test("the tolerant form of notNegativeOrZero admits a negative zero tolerance, which is not negative") {
+    Validate.notNegativeOrZero(1.0, -0.0, Name) should haveValue(1.0)
+  }
+
   test("the tolerant form of notNegativeOrZero admits a zero tolerance, which describes no interval") {
     Validate.notNegativeOrZero(1.0, 0.0, Name) should haveValue(1.0)
     rejects(Validate.notNegativeOrZero(0.0, 0.0, Name), "Argument 'name' must not be zero")
@@ -1597,6 +1614,20 @@ class ValidateSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
     val outcome = Validate.notZero(0.0, -0.1, Name)
     messagesOf(outcome) shouldBe List("Argument 'tolerance' must not be negative but has value -0.1")
     failuresOf(outcome) should have size 1
+  }
+
+  test("the tolerant form of notZero reports a not-a-number tolerance rather than throwing") {
+    rejects(Validate.notZero(1.0, Double.NaN, Name), "Argument 'tolerance' must not be NaN")
+  }
+
+  test("the tolerant form of notZero stops at a not-a-number tolerance, whatever the argument") {
+    val outcome = Validate.notZero(0.0, Double.NaN, Name)
+    messagesOf(outcome) shouldBe List("Argument 'tolerance' must not be NaN")
+    failuresOf(outcome) should have size 1
+  }
+
+  test("the tolerant form of notZero admits a negative zero tolerance, which is not negative") {
+    Validate.notZero(1.0, -0.0, Name) should haveValue(1.0)
   }
 
   test("the tolerant form of notZero reports every row the shared fixture rejects") {
@@ -2368,8 +2399,12 @@ class ValidateSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
   test("the tolerance-bearing checks report an unusable tolerance as a value, not as an error") {
     noException should be thrownBy Validate.notZero(1.0, -0.1, Name)
     noException should be thrownBy Validate.notNegativeOrZero(1.0, -0.1, Name)
+    noException should be thrownBy Validate.notZero(1.0, Double.NaN, Name)
+    noException should be thrownBy Validate.notNegativeOrZero(1.0, Double.NaN, Name)
     Validate.notZero(1.0, -0.1, Name) should beFailure
     Validate.notNegativeOrZero(1.0, -0.1, Name) should beFailure
+    Validate.notZero(1.0, Double.NaN, Name) should beFailure
+    Validate.notNegativeOrZero(1.0, Double.NaN, Name) should beFailure
   }
 
   test("combining failing checks does not throw either") {

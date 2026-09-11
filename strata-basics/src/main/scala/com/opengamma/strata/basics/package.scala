@@ -33,10 +33,21 @@ import com.opengamma.strata.collect.FailureOr
  * available, when the answer is wanted:
  *
  * {{{
- * val schedule: RefDataReader[Schedule] = periodic.toReader
- * val fixing: RefDataReader[LocalDate] = adjustment.toReader(tradeDate)
- * val both = (schedule, fixing).tupled.run(ReferenceData.standard)
+ * import cats.syntax.apply._
+ *
+ * val calendar: RefDataReader[HolidayCalendar] = HolidayCalendarIds.GBLO.toReader
+ * val fixing: RefDataReader[LocalDate] = adjustment.toReader.map(_.adjust(tradeDate))
+ * val both: FailureOr[(HolidayCalendar, LocalDate)] =
+ *   (calendar, fixing).tupled.run(ReferenceData.standard)
  * }}}
+ *
+ * `toReader` takes no argument: it is the whole resolution awaiting its data, so a reader of
+ * one date is that reader mapped over what it resolves to - here the `DateAdjuster` a
+ * `BusinessDayAdjustment` resolves to, applied to the trade date. The `tupled` in the last
+ * expression is `cats` syntax on the pair of readers, not a member of either, which is why
+ * the import is part of the example; `run` then supplies the data once and answers with the
+ * `FailureOr` of both values, or with the single failure of whichever lookup could not be
+ * satisfied.
  *
  * Every type in this module that resolves or adjusts against reference data offers both
  * forms - the direct method taking a `ReferenceData` and a `toReader` returning this type -

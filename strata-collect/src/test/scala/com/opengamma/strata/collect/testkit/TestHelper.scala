@@ -177,6 +177,15 @@ object TestHelper {
    * An exception thrown by the block propagates unchanged and uncaught, so no
    * partial list is ever returned.
    *
+   * The handler detached afterwards is only the one attached here: a handler
+   * the caller had already attached to the same logger is left exactly where it
+   * was found, and, being neither detached nor reconfigured, it goes on
+   * receiving every record published for as long as the capture is in force.
+   * The level and the parent-handler flag are handed back the values read on
+   * entry rather than the framework's defaults, and a logger that had no level
+   * of its own - that is, one inheriting its level from its parent - is
+   * restored to inheriting it.
+   *
    * Calls take turns on this object's monitor, which mirrors the static
    * synchronization of the original. A logger is process-global, so the helper
    * is thread-safe only so long as nothing else reconfigures the same logger

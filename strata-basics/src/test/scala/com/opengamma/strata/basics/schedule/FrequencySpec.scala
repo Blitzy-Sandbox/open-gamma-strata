@@ -10,6 +10,7 @@ import java.time.Period
 
 import cats.Eq
 import cats.Hash
+import cats.Order
 import cats.Show
 
 import io.circe.Codec
@@ -54,6 +55,22 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * row that is supposed to describe a valid frequency does not. The rows themselves are
  * therefore identical to the Java rows, which is the point of the helper.
  *
+ * ===The rows that are not identical, and why===
+ *
+ * The type under test is a normalising type: its construction reduces a period to the canonical
+ * form of its length, so a frequency of 12 months and a frequency of 1 year are one value here
+ * where Java had two, and a month count above twelve is held - and named - in years and months.
+ * Ten rows across four of the Java providers - six distinct lengths, some of them asserted by
+ * more than one provider - stated the un-normalised outcome and now state the canonical one
+ * instead: the 18-, 24-, 30-month and one-year rows of `data_create`, the 20-, 24- and
+ * 30-month rows of `data_ofMonths`, the one-year row of `data_ofYears`, and the two rows of
+ * `data_normalized` that converted between the two spellings of a year. Each is marked where it
+ * appears. Every other row, including every constant, every day- and week-based row and every
+ * events-per-year and division row, is the Java row unchanged - canonicalisation moves no
+ * length, so it moves no arithmetic. `test_normalized` carries the assertions that pin the new
+ * contract: that the five construction paths to a year reach one value, that construction is
+ * idempotent, and that two spellings of one length are one frequency.
+ *
  * Four Java assertions have no direct counterpart and are recorded at the test that carries
  * them: the `TemporalAmount` interface the ported type deliberately does not implement
  * (`test_temporalAmount`, `test_addTo`, `test_subtractFrom`), Java serialization
@@ -93,9 +110,14 @@ final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPrope
    *
    * Each row is a frequency, the period it is expected to hold and the text it is expected to
    * render as - which is also the text `parse` reads back. The rows built by `ofDays` and
-   * `ofWeeks` are the ones that pin the canonicalisation: seven days is a week and ninety-one
+   * `ofWeeks` are the ones that pin the days-to-weeks naming: seven days is a week and ninety-one
    * days is thirteen weeks, so those rows expect the week-named text against a period still
    * measured in days.
+   *
+   * Four rows state the canonical form of their length where the Java rows stated the period
+   * they were handed: eighteen, twenty-four and thirty months are held as years and months, and
+   * one year is held as twelve months - the canonical form of that length, so the row is the
+   * `P12M` row twice over, once through each factory that reaches it.
    */
   private val data_create: TableFor3[Frequency, Period, String] = Table(
     ("frequency", "period", "text"),
@@ -108,10 +130,11 @@ final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPrope
     (freq(Frequency.ofWeeks(3)), Period.ofDays(21), "P3W"),
     (freq(Frequency.ofMonths(8)), Period.ofMonths(8), "P8M"),
     (freq(Frequency.ofMonths(12)), Period.ofMonths(12), "P12M"),
-    (freq(Frequency.ofMonths(18)), Period.ofMonths(18), "P18M"),
-    (freq(Frequency.ofMonths(24)), Period.ofMonths(24), "P24M"),
-    (freq(Frequency.ofMonths(30)), Period.ofMonths(30), "P30M"),
-    (freq(Frequency.ofYears(1)), Period.ofYears(1), "P1Y"),
+    // canonical rows: Java held P18M, P24M, P30M and P1Y here
+    (freq(Frequency.ofMonths(18)), Period.of(1, 6, 0), "P1Y6M"),
+    (freq(Frequency.ofMonths(24)), Period.ofYears(2), "P2Y"),
+    (freq(Frequency.ofMonths(30)), Period.of(2, 6, 0), "P2Y6M"),
+    (freq(Frequency.ofYears(1)), Period.ofMonths(12), "P12M"),
     (freq(Frequency.ofYears(2)), Period.ofYears(2), "P2Y"),
     (freq(Frequency.of(Period.of(1, 2, 3))), Period.of(1, 2, 3), "P1Y2M3D"),
     (Frequency.P1D, Period.ofDays(1), "P1D"),
@@ -133,8 +156,10 @@ final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPrope
    * The provider of `test_ofMonths`, transcribed from the Java `data_ofMonths`.
    *
    * Each row is a number of months, the period the factory is expected to hold for it and the
-   * text it renders as. Months are not normalised into years, which is what the twenty-, twenty
-   * four- and thirty-month rows assert: they stay months rather than becoming years and months.
+   * text it renders as. Months beyond twelve are redistributed into years and months, which is
+   * what the twenty-, twenty-four- and thirty-month rows assert - the Java rows expected `P20M`,
+   * `P24M` and `P30M` there, the periods those factories were handed. Twelve months is the one
+   * length whose canonical form is months, so that row is the Java row unchanged.
    */
   private val data_ofMonths: TableFor3[Int, Period, String] = Table(
     ("months", "period", "text"),
@@ -144,20 +169,24 @@ final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPrope
     (4, Period.ofMonths(4), "P4M"),
     (6, Period.ofMonths(6), "P6M"),
     (12, Period.ofMonths(12), "P12M"),
-    (20, Period.ofMonths(20), "P20M"),
-    (24, Period.ofMonths(24), "P24M"),
-    (30, Period.ofMonths(30), "P30M")
+    // canonical rows: Java held P20M, P24M and P30M here
+    (20, Period.of(1, 8, 0), "P1Y8M"),
+    (24, Period.ofYears(2), "P2Y"),
+    (30, Period.of(2, 6, 0), "P2Y6M")
   )
 
   /**
    * The provider of `test_ofYears`, transcribed from the Java `data_ofYears`.
    *
-   * Each row is a number of years, the period the factory holds for it and its text. A
-   * frequency of years keeps its years, so a year is `P1Y` and not `P12M`.
+   * Each row is a number of years, the period the factory holds for it and its text. Two years
+   * and three years are held as years, as the Java rows expected. One year is not: the canonical
+   * form of that length is twelve months, so the factory yields `Frequency.P12M`, where the Java
+   * row expected a distinct value named `P1Y`.
    */
   private val data_ofYears: TableFor3[Int, Period, String] = Table(
     ("years", "period", "text"),
-    (1, Period.ofYears(1), "P1Y"),
+    // canonical row: Java held P1Y here
+    (1, Period.ofMonths(12), "P12M"),
     (2, Period.ofYears(2), "P2Y"),
     (3, Period.ofYears(3), "P3Y")
   )
@@ -165,21 +194,28 @@ final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPrope
   /**
    * The provider of `test_normalized`, transcribed from the Java `data_normalized`.
    *
-   * Each row is the period a frequency is built from and the period its normalisation holds.
-   * The first four rows are the day-based and week-based cases, which normalisation leaves
-   * exactly as they are; the rest redistribute months into years and months, so twelve months
-   * becomes a year and thirty months becomes two years and six months.
+   * Each row is the period a frequency is built from and the canonical period the frequency
+   * holds - which, because construction canonicalises, is both the period of the value and the
+   * period of its normalisation. The first four rows are the day-based and week-based cases,
+   * which canonicalisation leaves exactly as they are; the rest redistribute months into years
+   * and months, so thirty months becomes two years and six months.
+   *
+   * The two rows for a year are where this port departs from the Java provider. There, twelve
+   * months and one year were distinct frequencies and `normalized()` mapped both to the one-year
+   * value; here they are a single value whose canonical period is twelve months, so both rows
+   * expect `P12M`.
    */
   private val data_normalized: TableFor2[Period, Period] = Table(
-    ("period", "normalized"),
+    ("period", "canonical"),
     (Period.ofDays(1), Period.ofDays(1)),
     (Period.ofDays(7), Period.ofDays(7)),
     (Period.ofDays(10), Period.ofDays(10)),
     (Period.ofWeeks(2), Period.ofDays(14)),
     (Period.ofMonths(1), Period.ofMonths(1)),
     (Period.ofMonths(2), Period.ofMonths(2)),
-    (Period.ofMonths(12), Period.ofYears(1)),
-    (Period.ofYears(1), Period.ofYears(1)),
+    // canonical rows: Java expected P1Y for both of these
+    (Period.ofMonths(12), Period.ofMonths(12)),
+    (Period.ofYears(1), Period.ofMonths(12)),
     (Period.ofMonths(20), Period.of(1, 8, 0)),
     (Period.ofMonths(24), Period.ofYears(2)),
     (Period.ofYears(2), Period.ofYears(2)),
@@ -429,20 +465,64 @@ final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPrope
 
   //-------------------------------------------------------------------------
   test("test_normalized") {
-    forAll(data_normalized) { (period: Period, normalized: Period) =>
-      Frequency.of(period).map(_.normalized.period) should haveValue(normalized)
+    // Canonicalisation happens during construction, so each row is read twice: the period the
+    // value holds and the period of its normalisation are the same canonical period, and
+    // `normalized` hands back the value itself.
+    forAll(data_normalized) { (period: Period, canonical: Period) =>
+      val created: ResultNec[Frequency] = Frequency.of(period)
+      created.map(_.period) should haveValue(canonical)
+      created.map(_.normalized.period) should haveValue(canonical)
+      created.map(_.normalized) shouldBe created
     }
-    // Normalisation is idempotent and length-preserving, which the construction policy of a
-    // normalising type requires and the table above cannot show: it only redistributes the
-    // months of the period into years and months, so applying it twice adds nothing and
-    // neither the total number of months nor the number of days moves.
-    forAll(Gen.chooseNum(1, 11999), Gen.chooseNum(0, 400)) { (months: Int, days: Int) =>
+
+    // Every public path to a length of one year reaches one value, and everything derived from
+    // that value agrees: its name, its hash, its position in the ordering and its JSON. This is
+    // the heart of the normalising contract - the Java type had two unequal frequencies of this
+    // length, which made the choice of factory observable in equality, in sorted collections and
+    // in serialized documents.
+    val frequencyCodec: Codec[Frequency] = implicitly[Codec[Frequency]]
+    val annualPaths: TableFor1[ResultNec[Frequency]] = Table(
+      "outcome",
+      Frequency.ofMonths(12),
+      Frequency.ofYears(1),
+      Frequency.of(Period.ofMonths(12)),
+      Frequency.of(Period.ofYears(1)),
+      Frequency.of(Period.of(1, 0, 0))
+    )
+    forAll(annualPaths) { (outcome: ResultNec[Frequency]) =>
+      outcome should haveValue(Frequency.P12M)
+      // the constant itself, not a value equal to it, as the companion documents
+      outcome.exists(_ eq Frequency.P12M) shouldBe true
+      outcome.map(_.name) should haveValue("P12M")
+      outcome.map(_.hashCode) should haveValue(Frequency.P12M.hashCode)
+      outcome.map(frequency => Order[Frequency].compare(frequency, Frequency.P12M)) should haveValue(0)
+      outcome.map(frequency => frequencyCodec(frequency)) should haveValue(Json.fromString("P12M"))
+    }
+    // and the same length spelled as text, with and without the prefix, in either unit
+    forAll(Table("text", "P1Y", "1Y", "P12M", "12M")) { (text: String) =>
+      Frequency.parse(text) should haveValue(Frequency.P12M)
+    }
+
+    // Construction is idempotent and length-preserving over the whole space, not just the rows:
+    // rebuilding a frequency from the period it holds gives the same value back, normalising it
+    // changes nothing, and the two ways of spelling one length - all months, or years and months
+    // - are one frequency. Neither the total number of months nor the number of days moves,
+    // which is why no arithmetic of this type is affected by canonicalisation.
+    forAll(Gen.chooseNum(1, 12000), Gen.chooseNum(0, 400)) { (months: Int, days: Int) =>
       val frequency = freq(Frequency.of(Period.of(0, months, days)))
-      val once = frequency.normalized
-      once.normalized shouldBe once
-      once.period.toTotalMonths shouldBe frequency.period.toTotalMonths
-      once.period.getDays shouldBe frequency.period.getDays
+      Frequency.of(Period.of(months / 12, months % 12, days)) should haveValue(frequency)
+      Frequency.of(frequency.period) should haveValue(frequency)
+      frequency.normalized shouldBe frequency
+      frequency.period.toTotalMonths shouldBe months.toLong
+      frequency.period.getDays shouldBe days
     }
+
+    // The term frequency is the one value no factory admits - ten thousand years exceeds the
+    // thousand-year bound, exactly as in Java - so it is canonical by construction and is read
+    // back through its name rather than through a factory.
+    Frequency.TERM.normalized shouldBe Frequency.TERM
+    Frequency.of(Frequency.TERM.period) should beFailureWith(FailureReason.INVALID)
+    Frequency.parse(Frequency.TERM.name) should haveValue(Frequency.TERM)
   }
 
   //-------------------------------------------------------------------------

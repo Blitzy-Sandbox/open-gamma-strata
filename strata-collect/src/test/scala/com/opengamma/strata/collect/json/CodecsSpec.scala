@@ -24,6 +24,7 @@ import io.circe.CursorOp
 import io.circe.Decoder
 import io.circe.Encoder
 import io.circe.Json
+import io.circe.JsonNumber
 import io.circe.KeyDecoder
 import io.circe.KeyEncoder
 import io.circe.generic.semiauto.deriveDecoder
@@ -316,16 +317,18 @@ object SampleBounds {
 /**
  * A product whose every field type is carried by the nested implicits object.
  *
- * A derivation site needs the codec of each of its field types in implicit scope, and the four
- * types below are the ones for which this module publishes a single sensible choice. The
- * derivation in the companion imports them together, which is the whole purpose of that
- * object: the plain numeric codec the JSON library publishes for a double would otherwise be
- * found instead, and the values this port has to carry outside the finite range would be lost.
+ * A derivation site needs the codec of each of its field types in implicit scope, and each of
+ * the four types below is one for which this module publishes a single sensible choice. They
+ * are four of the five that object offers - the fifth, a time of day, is carried by
+ * [[SampleOpening]] instead, so that each product stays small enough to read. The derivation
+ * in the companion imports them together, which is the whole purpose of that object: the plain
+ * numeric codec the JSON library publishes for a double would otherwise be found instead, and
+ * the values this port has to carry outside the finite range would be lost.
  *
  * @param factor  a double, which adopts the tagged policy through the import
  * @param series  an immutable array of doubles
  * @param grid  an immutable matrix of doubles
- * @param day  a day of the week, the one date and time type the JSON library does not cover
+ * @param day  a day of the week, the date and time type the JSON library does not cover at all
  */
 final case class SampleReading(factor: Double, series: DoubleArray, grid: DoubleMatrix, day: DayOfWeek)
 
@@ -342,6 +345,19 @@ object SampleReading {
   /** The derived decoder, which reads every field through the imported policy. */
   implicit val decoder: Decoder[SampleReading] = deriveDecoder[SampleReading]
 }
+
+/**
+ * A product carrying a time of day, which the nested implicits object also covers.
+ *
+ * A time of day is the one date and time type whose published instance disagrees with the
+ * serialization policy of this port, so the port publishes its own and offers it among the
+ * implicits. This product exists to show that a derivation site picks that one up from the
+ * same single import, rather than the longer form the JSON library would otherwise supply.
+ *
+ * @param venue  a plain field, so the product has more than one
+ * @param opens  a time of day, which adopts the policy's form through the import
+ */
+final case class SampleOpening(venue: String, opens: LocalTime)
 
 /**
  * Tests [[Codecs]], the reusable JSON machinery of this module.
@@ -465,6 +481,19 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   private def keysOf(json: Json): List[String] = json.asObject.toList.flatMap(fields => fields.keys.toList)
 
   /**
+   * The fields of a JSON object as a mapping, without regard to the order they appear in.
+   *
+   * This is the shape to assert against whenever the order of the fields is not itself part
+   * of the contract under test - which is the case wherever the fields come from a collection
+   * that does not define an order of its own.
+   *
+   * @param json  the JSON to inspect
+   * @return the field names with the JSON each holds, or nothing if it is not an object
+   */
+  private def fieldsOf(json: Json): Map[String, Json] =
+    json.asObject.fold(Map.empty[String, Json])(fields => fields.toMap)
+
+  /**
    * The JSON a value reaches after being written out as text and read back.
    *
    * Passing through the text form is what makes a round trip complete: an assertion made only
@@ -474,6 +503,33 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
    * @return the JSON that survived the text form
    */
   private def reparse(json: Json): Json = parse(json.noSpaces).value
+
+  /**
+   * The JSON a piece of document text states.
+   *
+   * Going through the parser is what makes a payload one a real document could carry: a value
+   * assembled in memory can only hold what the memory representation allows, while text can
+   * state anything the JSON grammar allows.
+   *
+   * @param text  the document text to read
+   * @return the JSON it states
+   */
+  private def parsedText(text: String): Json = parse(text).value
+
+  /**
+   * A JSON number built straight from its digits, without a document around it.
+   *
+   * This is the other way a number reaches a codec: not parsed out of a document but handed
+   * over as a number value by a caller that assembled it. Both routes matter, because the two
+   * carry the digits differently.
+   *
+   * @param text  the digits of the number
+   * @return the JSON number they state
+   */
+  private def numberFrom(text: String): Json =
+    JsonNumber
+      .fromString(text)
+      .fold(fail(s"the text $text does not state a JSON number"))(number => Json.fromJsonNumber(number))
 
   //-------------------------------------------------------------------------
   // namedEnumCodec: a closed family is the string of a member's name
@@ -713,10 +769,18 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   }
 
   test("a map keyed by named values encodes with the canonical names as its field names") {
+    // the map is an ordinary one, which defines no order over its entries, so what is asserted
+    // is the mapping the object states rather than the sequence its fields happen to appear in:
+    // the order of the fields is the map's business and no part of the contract of a key codec
     val map: Map[SampleFruit, Int] = Map(SampleFruit.Apple -> 1, SampleFruit.Cherry -> 3)
     val json = Encoder[Map[SampleFruit, Int]].apply(map)
-    keysOf(json) shouldBe List("Apple", "Cherry")
-    json.noSpaces shouldBe """{"Apple":1,"Cherry":3}"""
+    fieldsOf(json) shouldBe Map("Apple" -> Json.fromInt(1), "Cherry" -> Json.fromInt(3))
+  }
+
+  test("a map keyed by one named value encodes as exactly the one field that value names") {
+    // one entry leaves no room for an order, so the bytes are pinned exactly here instead
+    val map: Map[SampleFruit, Int] = Map(SampleFruit.Cherry -> 3)
+    Encoder[Map[SampleFruit, Int]].apply(map).noSpaces shouldBe """{"Cherry":3}"""
   }
 
   test("a map keyed by named values round-trips") {
@@ -773,6 +837,28 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     java.lang.Double.MIN_VALUE,
     java.lang.Double.MAX_VALUE,
     -java.lang.Double.MAX_VALUE)
+
+  /**
+   * Numbers the JSON grammar allows and no double can hold, each with the form it takes.
+   *
+   * The grammar bounds neither the digits nor the exponent of a number, so a document may
+   * state a magnitude beyond the range of a double. Converting such a literal produces an
+   * infinity, which would be a second spelling of a value this codec writes only as a string,
+   * so every row here must be refused. Both routes a number takes into a codec are covered:
+   * parsed out of document text, and handed over as a number value assembled by a caller.
+   */
+  private val overRangeNumbers = Table(
+    ("payload", "form"),
+    (parsedText("1e999"), "a positive magnitude far beyond the range, parsed from text"),
+    (parsedText("-1e999"), "a negative magnitude far beyond the range, parsed from text"),
+    (parsedText("1e309"), "a positive magnitude just beyond the range, parsed from text"),
+    (parsedText("-1e309"), "a negative magnitude just beyond the range, parsed from text"),
+    (parsedText("2e308"), "a magnitude just above the largest double, parsed from text"),
+    (parsedText("1" + "0" * 309), "a magnitude written out in digits rather than with an exponent"),
+    (numberFrom("1e9999"), "a positive magnitude beyond the range, as a number value"),
+    (numberFrom("-1e9999"), "a negative magnitude beyond the range, as a number value"),
+    (Json.fromBigDecimal(BigDecimal("1e999")), "a positive magnitude beyond the range, as an exact decimal"),
+    (Json.fromBigDecimal(BigDecimal("-1e999")), "a negative magnitude beyond the range, as an exact decimal"))
 
   /** Text a lenient codec might have accepted, and this one must not. */
   private val rejectedDoubleTexts = Table(
@@ -897,6 +983,65 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     Codecs.taggedDouble.decodeJson(Json.fromString("")).isLeft shouldBe true
   }
 
+  test("taggedDouble rejects a number no double can hold") {
+    forAll(overRangeNumbers) { (payload: Json, form: String) =>
+      withClue(s"$form: ") {
+        payload.isNumber shouldBe true
+        Codecs.taggedDouble.decodeJson(payload).isLeft shouldBe true
+      }
+    }
+  }
+
+  test("taggedDouble never reads a number as a value outside the finite range") {
+    // this is the property the rejection exists for: the string tags are the only way a value
+    // JSON cannot express enters, so no number may ever decode to one
+    forAll(overRangeNumbers) { (payload: Json, form: String) =>
+      withClue(s"$form: ") {
+        Codecs.taggedDouble.decodeJson(payload).toOption.exists(value => !java.lang.Double.isFinite(value)) shouldBe
+          false
+      }
+    }
+  }
+
+  test("taggedDouble reports the range it expected when it rejects a number no double can hold") {
+    val outcome = Codecs.taggedDouble.decodeJson(parsedText("1e999"))
+    outcome.left.value.message shouldBe
+      "Expected a JSON number a double can hold; a magnitude beyond that range is written as " +
+        "the string Infinity or -Infinity"
+  }
+
+  test("taggedDouble positions a rejected over-range number at the cursor it was decoding") {
+    val payload = parsedText("""{"factor":1e999}""")
+    val outcome = payload.hcursor.downField("factor").as[Double](Codecs.taggedDouble)
+    outcome.left.value.history shouldBe List[CursorOp](CursorOp.DownField("factor"))
+  }
+
+  test("taggedDouble still accepts the tag of the value an over-range number would have produced") {
+    // the value itself is representable and carried; what is refused is the numeric spelling
+    bitsOf(Codecs.taggedDouble.decodeJson(Json.fromString("Infinity")).value) shouldBe
+      bitsOf(Double.PositiveInfinity)
+    bitsOf(Codecs.taggedDouble.decodeJson(Json.fromString("-Infinity")).value) shouldBe
+      bitsOf(Double.NegativeInfinity)
+  }
+
+  test("taggedDouble accepts the largest and smallest magnitudes a double can hold as numbers") {
+    // the boundary is the range of a double itself, not some narrower window
+    bitsOf(Codecs.taggedDouble.decodeJson(parsedText("1.7976931348623157e308")).value) shouldBe
+      bitsOf(java.lang.Double.MAX_VALUE)
+    bitsOf(Codecs.taggedDouble.decodeJson(parsedText("-1.7976931348623157e308")).value) shouldBe
+      bitsOf(-java.lang.Double.MAX_VALUE)
+    bitsOf(Codecs.taggedDouble.decodeJson(parsedText("4.9e-324")).value) shouldBe
+      bitsOf(java.lang.Double.MIN_VALUE)
+  }
+
+  test("taggedDouble reads a magnitude too small for a double as a zero") {
+    // a magnitude below the smallest positive value converts to a zero, which is what reading
+    // the same text as a double produces anywhere else, and stays inside the finite range this
+    // codec is defined over - unlike a magnitude beyond the top of the range, which does not
+    bitsOf(Codecs.taggedDouble.decodeJson(parsedText("1e-999")).value) shouldBe bitsOf(0.0)
+    bitsOf(Codecs.taggedDouble.decodeJson(parsedText("-1e-999")).value) shouldBe bitsOf(-0.0)
+  }
+
   test("taggedDouble rejects an absent value") {
     Codecs.taggedDouble.decodeJson(Json.Null).isLeft shouldBe true
   }
@@ -1018,6 +1163,35 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   private def numbers(values: Double*): Json =
     Json.fromValues(values.map(value => Json.fromDoubleOrNull(value)))
 
+  /**
+   * A JSON array of a stated length, as a payload of this spec.
+   *
+   * The elements are one and the same JSON value repeated, which is what makes a payload at
+   * the ceiling affordable to build: the array states a length of its own choosing while
+   * holding a single element value, so the cost of the payload is the run of references and
+   * nothing more. What the decoder does with that stated length is precisely what is under
+   * test.
+   *
+   * @param length  the number of elements the array states
+   * @return the JSON array of that length
+   */
+  private def arrayPayload(length: Int): Json =
+    Json.fromValues(Vector.fill(length)(Json.fromDoubleOrNull(1.0)))
+
+  /**
+   * A JSON array of rows of a stated shape, as a payload of this spec.
+   *
+   * Built the same way and for the same reason as `arrayPayload`: one row value repeated, so
+   * a payload stating a shape far larger than anything the port reads costs a run of
+   * references rather than the elements it names.
+   *
+   * @param rows  the number of rows the payload states
+   * @param columns  the number of elements each of those rows states
+   * @return the JSON array of rows of that shape
+   */
+  private def rowsPayload(rows: Int, columns: Int): Json =
+    Json.fromValues(Vector.fill(rows)(arrayPayload(columns)))
+
   /** Payloads whose elements the array codec cannot read. */
   private val arraysWithBadElements = Table(
     "payload",
@@ -1096,6 +1270,49 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     forAll(arraysWithBadElements) { (payload: Json) =>
       Codecs.doubleArrayCodec.decodeJson(payload).isLeft shouldBe true
     }
+  }
+
+  test("doubleArrayCodec rejects an array holding an element no double can hold") {
+    // the elements go through the double policy, so the refusal of an over-range number is
+    // inherited here rather than restated
+    val outcome = Codecs.doubleArrayCodec.decodeJson(parsedText("[1.0,1e999]"))
+    outcome.left.value.message shouldBe
+      "Expected a JSON number a double can hold; a magnitude beyond that range is written as " +
+        "the string Infinity or -Infinity"
+    outcome.left.value.history shouldBe List[CursorOp](CursorOp.MoveRight, CursorOp.DownArray)
+  }
+
+  test("doubleArrayCodec accepts an array holding as many elements as it reads") {
+    val payload = arrayPayload(Codecs.MaximumArrayElements)
+    val decoded = Codecs.doubleArrayCodec.decodeJson(payload).value
+    decoded.size shouldBe Codecs.MaximumArrayElements
+  }
+
+  test("doubleArrayCodec rejects an array stating more elements than it reads") {
+    // the length is the document's to state, so it is measured against the ceiling before any
+    // element is read and nothing is allocated for a payload beyond it
+    val payload = arrayPayload(Codecs.MaximumArrayElements + 1)
+    val outcome = Codecs.doubleArrayCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumArrayElements} elements in the array, " +
+        s"but the payload states ${Codecs.MaximumArrayElements + 1}"
+  }
+
+  test("doubleArrayCodec refuses an array beyond the ceiling without reading its elements") {
+    // the answer does not depend on the elements: a payload beyond the ceiling whose every
+    // element is unreadable is still refused for its length, which is what shows the length is
+    // measured before anything is read, and therefore before anything is allocated for it
+    val payload = Json.fromValues(Vector.fill(Codecs.MaximumArrayElements + 1)(Json.fromString("rubbish")))
+    val outcome = Codecs.doubleArrayCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumArrayElements} elements in the array, " +
+        s"but the payload states ${Codecs.MaximumArrayElements + 1}"
+  }
+
+  test("doubleArrayCodec positions an array beyond the ceiling at the cursor it was decoding") {
+    val payload = Json.obj("series" -> arrayPayload(Codecs.MaximumArrayElements + 1))
+    val outcome = payload.hcursor.downField("series").as[DoubleArray](Codecs.doubleArrayCodec)
+    outcome.left.value.history shouldBe List[CursorOp](CursorOp.DownField("series"))
   }
 
   test("doubleArrayCodec round-trips every generated array exactly") {
@@ -1193,6 +1410,81 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     forAll(arraysWithBadElements) { (payload: Json) =>
       Codecs.doubleMatrixCodec.decodeJson(Json.arr(payload)).isLeft shouldBe true
     }
+  }
+
+  test("doubleMatrixCodec rejects a row holding an element no double can hold") {
+    Codecs.doubleMatrixCodec.decodeJson(parsedText("[[1.0,1e999]]")).left.value.message shouldBe
+      "Expected a JSON number a double can hold; a magnitude beyond that range is written as " +
+        "the string Infinity or -Infinity"
+  }
+
+  test("doubleMatrixCodec refuses rows that disagree without reading the elements of any of them") {
+    // the shape is read from the payload as it stands, so raggedness is settled before a single
+    // element is read: a payload that is both ragged and holds an unreadable element is refused
+    // for its shape, which is the answer that did not depend on reading anything
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(parsedText("""[[1.0,"rubbish"],[3.0]]"""))
+    outcome.left.value.message shouldBe
+      "Expected every row of the matrix to hold the same number of elements"
+    outcome.left.value.history shouldBe List.empty[CursorOp]
+  }
+
+  test("doubleMatrixCodec accepts a matrix stating as many elements as it reads") {
+    val side = 1024
+    side * side shouldBe Codecs.MaximumMatrixElements
+    val decoded = Codecs.doubleMatrixCodec.decodeJson(rowsPayload(side, side)).value
+    decoded.rowCount shouldBe side
+    decoded.columnCount shouldBe side
+  }
+
+  test("doubleMatrixCodec rejects a matrix stating more rows than it reads") {
+    val payload = rowsPayload(Codecs.MaximumMatrixRows + 1, 1)
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumMatrixRows} rows in the matrix, " +
+        s"but the payload states ${Codecs.MaximumMatrixRows + 1}"
+  }
+
+  test("doubleMatrixCodec rejects a matrix stating a row longer than it reads") {
+    val payload = rowsPayload(1, Codecs.MaximumMatrixColumns + 1)
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumMatrixColumns} elements in each row of the matrix, " +
+        s"but the payload states ${Codecs.MaximumMatrixColumns + 1}"
+  }
+
+  test("doubleMatrixCodec rejects a matrix whose dimensions are each acceptable but whose product is not") {
+    // neither dimension is beyond its own ceiling here; what is beyond a ceiling is the number
+    // of elements the two of them together name, which is what would have been allocated
+    val payload = rowsPayload(Codecs.MaximumMatrixRows, Codecs.MaximumMatrixColumns)
+    val elements = Codecs.MaximumMatrixRows.toLong * Codecs.MaximumMatrixColumns.toLong
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumMatrixElements} elements in the matrix, " +
+        s"but the payload states $elements"
+  }
+
+  test("doubleMatrixCodec refuses a matrix beyond the row ceiling without reading its rows") {
+    // as with the array, the refusal stands even though not one of the rows could have been
+    // read, so the shape is settled from the payload rather than from what reading it produced
+    val payload = Json.fromValues(Vector.fill(Codecs.MaximumMatrixRows + 1)(Json.fromString("rubbish")))
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumMatrixRows} rows in the matrix, " +
+        s"but the payload states ${Codecs.MaximumMatrixRows + 1}"
+  }
+
+  test("doubleMatrixCodec positions a matrix beyond a ceiling at the cursor it was decoding") {
+    val payload = Json.obj("grid" -> rowsPayload(Codecs.MaximumMatrixRows + 1, 1))
+    val outcome = payload.hcursor.downField("grid").as[DoubleMatrix](Codecs.doubleMatrixCodec)
+    outcome.left.value.history shouldBe List[CursorOp](CursorOp.DownField("grid"))
+  }
+
+  test("doubleMatrixCodec accepts a payload of many empty rows only up to the row ceiling") {
+    // a row holding nothing still costs a row, so the row ceiling applies to a shape whose
+    // element count is zero
+    Codecs.doubleMatrixCodec.decodeJson(rowsPayload(Codecs.MaximumMatrixRows, 0)).value shouldBe
+      DoubleMatrix.EMPTY
+    Codecs.doubleMatrixCodec.decodeJson(rowsPayload(Codecs.MaximumMatrixRows + 1, 0)).isLeft shouldBe true
   }
 
   test("doubleMatrixCodec round-trips every generated matrix exactly") {
@@ -1469,10 +1761,13 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     DoubleMatrix.of(2, 2, 1.0, 2.0, 3.0, 4.0),
     DayOfWeek.MONDAY)
 
-  test("the implicits object brings the four type-driven codecs into scope together") {
+  test("the implicits object brings all five type-driven codecs into scope together") {
+    // the whole inventory of that object, so a member added to it or dropped from it without
+    // the type it serves being considered shows up here
     import Codecs.implicits._
     implicitly[Codec[Double]] should be theSameInstanceAs Codecs.taggedDouble
     implicitly[Codec[DayOfWeek]] should be theSameInstanceAs Codecs.dayOfWeekCodec
+    implicitly[Codec[LocalTime]] should be theSameInstanceAs Codecs.localTimeCodec
     implicitly[Codec[DoubleArray]] should be theSameInstanceAs Codecs.doubleArrayCodec
     implicitly[Codec[DoubleMatrix]] should be theSameInstanceAs Codecs.doubleMatrixCodec
   }
@@ -1517,6 +1812,22 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     Decoder[SampleReading].decodeJson(payload).isLeft shouldBe true
   }
 
+  test("a product derived under the implicits object rejects a number no double can hold") {
+    // the point of the shared instance is that a derived field inherits the whole policy, the
+    // refusal of an over-range number included, without the product restating any of it
+    val payload = parse("""{"factor":1e999,"series":[1.0],"grid":[[1.0]],"day":"SATURDAY"}""").value
+    val outcome = Decoder[SampleReading].decodeJson(payload)
+    outcome.left.value.message shouldBe
+      "Expected a JSON number a double can hold; a magnitude beyond that range is written as " +
+        "the string Infinity or -Infinity"
+    outcome.left.value.history shouldBe List[CursorOp](CursorOp.DownField("factor"))
+  }
+
+  test("a product derived under the implicits object rejects an over-range element of an array field") {
+    val payload = parse("""{"factor":1.0,"series":[1.0,1e999],"grid":[[1.0]],"day":"SATURDAY"}""").value
+    Decoder[SampleReading].decodeJson(payload).isLeft shouldBe true
+  }
+
   test("a product derived under the implicits object rejects a day name it does not know") {
     val payload = parse("""{"factor":1.0,"series":[1.0],"grid":[[1.0]],"day":"Saturday"}""").value
     Decoder[SampleReading].decodeJson(payload).isLeft shouldBe true
@@ -1533,21 +1844,35 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   /**
    * The five date and time types of this port's fields, with the text each is written as.
    *
-   * The library publishes the codecs for these five, so this port restates none of them and
-   * this spec asserts what they actually do rather than what they might be assumed to do. Four
-   * of the five are the forms the serialization policy of this port records. The fifth is not:
-   * a time of day is written with its seconds, so eleven o'clock is `11:00:00` rather than the
-   * `11:00` the policy states. The form below is the one the library produces, and the case
-   * further down shows that the shorter form is still read back, so a document written by hand
-   * in either form is accepted.
+   * Every row is the form the serialization policy of this port records, and every row is
+   * asserted against the codec the port actually publishes for that type - four of which it
+   * takes from the library unchanged, because what they produce is what the policy states.
+   *
+   * The time of day is the one the port publishes itself. The library's encoder for it formats
+   * through the standard pattern for a time, which always writes a seconds field, so eleven
+   * o'clock would come out as `11:00:00`; the policy states `11:00`, so the port has its own
+   * encoder producing exactly that. The cases below hold the port's codec to the policy's form
+   * and, separately, record what the library's own instance produces, so a change on either
+   * side is detected rather than assumed.
    */
   private val javaTimeForms = Table(
     ("written", "text"),
     (Encoder[LocalDate].apply(LocalDate.of(2024, 1, 31)), "2024-01-31"),
-    (Encoder[LocalTime].apply(LocalTime.of(11, 0)), "11:00:00"),
+    (Codecs.localTimeCodec(LocalTime.of(11, 0)), "11:00"),
     (Encoder[ZoneId].apply(ZoneId.of("Europe/London")), "Europe/London"),
     (Encoder[Period].apply(Period.ofMonths(3)), "P3M"),
     (Encoder[YearMonth].apply(YearMonth.of(2024, 1)), "2024-01"))
+
+  /** Times of day, with the text each is written as, covering what a seconds field carries. */
+  private val localTimeForms = Table(
+    ("time", "text"),
+    (LocalTime.of(11, 0), "11:00"),
+    (LocalTime.of(0, 0), "00:00"),
+    (LocalTime.of(23, 59), "23:59"),
+    (LocalTime.of(11, 0, 30), "11:00:30"),
+    (LocalTime.of(23, 59, 59), "23:59:59"),
+    (LocalTime.of(11, 0, 0, 500000000), "11:00:00.500"),
+    (LocalTime.of(23, 59, 59, 999999999), "23:59:59.999999999"))
 
   /** Text that is not a local date. */
   private val rejectedDateTexts = Table(
@@ -1596,7 +1921,7 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     "2024-01-31",
     "")
 
-  test("the JSON library renders each date and time type of the port in its ISO form") {
+  test("each date and time type of the port is written in the ISO form the policy states") {
     forAll(javaTimeForms) { (written: Json, text: String) =>
       written shouldBe Json.fromString(text)
     }
@@ -1608,11 +1933,47 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     Decoder[LocalDate].decodeJson(Json.fromString("2024-01-31")) shouldBe Right(date)
   }
 
-  test("a time of day is written with its seconds and read back from either form") {
+  test("a time of day is written in the form the policy states") {
     val time = LocalTime.of(11, 0)
-    Encoder[LocalTime].apply(time) shouldBe Json.fromString("11:00:00")
-    Decoder[LocalTime].decodeJson(Json.fromString("11:00:00")) shouldBe Right(time)
-    Decoder[LocalTime].decodeJson(Json.fromString("11:00")) shouldBe Right(time)
+    Codecs.localTimeCodec(time) shouldBe Json.fromString("11:00")
+    Codecs.localTimeCodec.decodeJson(Json.fromString("11:00")) shouldBe Right(time)
+  }
+
+  test("a time of day is written with as much of it as says something, and no more") {
+    forAll(localTimeForms) { (time: LocalTime, text: String) =>
+      Codecs.localTimeCodec(time) shouldBe Json.fromString(text)
+    }
+  }
+
+  test("a time of day round-trips every form it is written in, in memory and as text") {
+    forAll(localTimeForms) { (time: LocalTime, _: String) =>
+      Codecs.localTimeCodec.decodeJson(Codecs.localTimeCodec(time)) shouldBe Right(time)
+      Codecs.localTimeCodec.decodeJson(reparse(Codecs.localTimeCodec(time))) shouldBe Right(time)
+    }
+  }
+
+  test("a time of day is read back from a document that states its seconds as well") {
+    // reading is deliberately the more forgiving of the two directions: a document written by
+    // the library, or by hand with the seconds field spelled out, names the same time
+    Codecs.localTimeCodec.decodeJson(Json.fromString("11:00:00")) shouldBe Right(LocalTime.of(11, 0))
+    Codecs.localTimeCodec.decodeJson(Json.fromString("11:00:00.000")) shouldBe Right(LocalTime.of(11, 0))
+    Codecs.localTimeCodec.decodeJson(Json.fromString("11:00:30.0")) shouldBe Right(LocalTime.of(11, 0, 30))
+  }
+
+  test("the port's own time-of-day encoder writes the policy's form rather than the library's") {
+    // the reason the port publishes an encoder for this one type, stated as a fact that fails if
+    // either side changes: the library writes a seconds field that says nothing, the port does not
+    Encoder[LocalTime].apply(LocalTime.of(11, 0)) shouldBe Json.fromString("11:00:00")
+    Codecs.localTimeCodec(LocalTime.of(11, 0)) shouldBe Json.fromString("11:00")
+  }
+
+  test("a product deriving a time of day under the implicits object writes the policy's form") {
+    import Codecs.implicits._
+    val encoder: Encoder[SampleOpening] = deriveEncoder[SampleOpening]
+    val decoder: Decoder[SampleOpening] = deriveDecoder[SampleOpening]
+    val opening = SampleOpening("London", LocalTime.of(11, 0))
+    encoder(opening).noSpaces shouldBe """{"venue":"London","opens":"11:00"}"""
+    decoder.decodeJson(encoder(opening)) shouldBe Right(opening)
   }
 
   test("a time zone is written and read back by its region name") {
@@ -1641,7 +2002,7 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
 
   test("a time of day rejects text that is not one") {
     forAll(rejectedTimeTexts) { (text: String) =>
-      Decoder[LocalTime].decodeJson(Json.fromString(text)).isLeft shouldBe true
+      Codecs.localTimeCodec.decodeJson(Json.fromString(text)).isLeft shouldBe true
     }
   }
 
@@ -1666,11 +2027,10 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   test("each date and time type rejects a JSON value that is not a string") {
     forAll(nonStringPayloads) { (payload: Json) =>
       Decoder[LocalDate].decodeJson(payload).isLeft shouldBe true
-      Decoder[LocalTime].decodeJson(payload).isLeft shouldBe true
+      Codecs.localTimeCodec.decodeJson(payload).isLeft shouldBe true
       Decoder[ZoneId].decodeJson(payload).isLeft shouldBe true
       Decoder[Period].decodeJson(payload).isLeft shouldBe true
       Decoder[YearMonth].decodeJson(payload).isLeft shouldBe true
     }
   }
 }
-

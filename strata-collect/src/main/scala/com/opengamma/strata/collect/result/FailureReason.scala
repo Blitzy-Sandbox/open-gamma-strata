@@ -67,10 +67,12 @@ import com.opengamma.strata.collect.named.NamedEnum
  * ===Equality, ordering and rendering===
  *
  * The companion publishes exactly one equality-bearing instance, an `Order` that is also a
- * `Hash`, so there is no way for two notions of equality to disagree about a reason. It
- * compares by `name`, which makes the ordering alphabetical, whereas the enum being ported
- * compared its constants by declaration position; `values` still lists the members in
- * declaration order, so both orders remain available and neither is implied by the other.
+ * `Hash`, so there is no way for two notions of equality to disagree about a reason. It is
+ * derived from `name` throughout - it compares, equates and hashes reasons by their
+ * canonical name, as every named family of this library does. Comparing by name makes the
+ * ordering alphabetical, whereas the enum being ported compared its constants by declaration
+ * position; `values` still lists the members in declaration order, so both orders remain
+ * available and neither is implied by the other.
  *
  * @see [[Failure]] for the failures that carry a reason
  */
@@ -217,10 +219,16 @@ object FailureReason {
    * an external protocol. The whole name space of the family is therefore its ten
    * canonical names, which is exactly the name space of the enum being ported.
    *
+   * The lookup is labelled `FailureReason`, the simple name of the type, which is the label
+   * a rejection carries: text naming no reason is reported as a failure whose message opens
+   * with this family rather than with a generic one, as `FailureReason name not found:
+   * Rubbish`. That reproduces the message of the registry being ported, which built it from
+   * the simple name of the type it was looking a name up in.
+   *
    * @return the name lookup for the ten reasons
    */
   implicit val namedEnum: NamedEnum[FailureReason] =
-    NamedEnum.of(values, Map.empty, Nil, Map.empty)
+    NamedEnum.of(values, Map.empty, Nil, Map.empty, "FailureReason")
 
   /**
    * Obtains the reason with the specified canonical name, if one exists.
@@ -272,26 +280,19 @@ object FailureReason {
    *
    * This is the only equality-bearing instance of the type: `Order` extends `Eq` and
    * `Hash` extends `Eq`, so summoning any of the three yields this one value and the three
-   * can never disagree. Equality and hashing are those of the values themselves, which is
-   * correct because each reason exists exactly once, and comparison is over `name`, which
-   * makes the ordering alphabetical rather than the declaration ordering of the enum being
-   * ported. The two agree with one another - names are unique across the family, so two
-   * reasons compare equal if, and only if, they are the same reason - which is the law the
-   * combined instance has to satisfy.
+   * can never disagree. All three notions are derived from `name`, as they are for every
+   * named family of this library: comparison is the comparison of the names as text,
+   * equality is equality of the names, and the hash of a reason is the hash of its name.
+   * Comparison is therefore alphabetical rather than the declaration ordering of the enum
+   * being ported, which `values` still lists. Equality follows the comparison - names are
+   * unique across the family, so two reasons compare equal if, and only if, they are the
+   * same reason - which is the law the combined instance has to satisfy, and it coincides
+   * with the equality of the values themselves because each reason exists exactly once.
    *
    * @return the ordering of reasons by name, which is also their hashing
    */
   implicit val order: Order[FailureReason] with Hash[FailureReason] =
-    new Order[FailureReason] with Hash[FailureReason] {
-
-      private val universal: Hash[FailureReason] = Hash.fromUniversalHashCode[FailureReason]
-
-      override def compare(x: FailureReason, y: FailureReason): Int = x.name.compareTo(y.name)
-
-      override def eqv(x: FailureReason, y: FailureReason): Boolean = universal.eqv(x, y)
-
-      override def hash(x: FailureReason): Int = universal.hash(x)
-    }
+    NamedEnum.orderByName[FailureReason]
 
   /**
    * The rendering of reasons as text.

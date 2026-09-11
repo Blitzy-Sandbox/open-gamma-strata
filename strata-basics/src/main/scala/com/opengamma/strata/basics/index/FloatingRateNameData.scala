@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics.index
 
+import java.util.Locale
+
 import scala.collection.immutable.ListMap
 
 import com.opengamma.strata.basics.currency.Currency
@@ -845,13 +847,19 @@ object FloatingRateNameData {
    * to case is what places it there. The three rows are the Danish CIBOR variants that fix on the
    * day of the period rather than two days before it.
    *
+   * The match is made through `iborFixingDateOffsetsByUpperCaseName`, the table of the same three
+   * offsets built once under upper-case keys, so a lookup is one direct lookup in a table of three
+   * entries rather than a reconstruction of the section followed by a scan of it. Normalising the
+   * argument the same way the table was keyed is how case is discounted here, which mirrors the key
+   * normalisation the Java loader itself performed on the entry it read this section into; the
+   * standard library returns the argument unchanged when it is already upper case, so only a name
+   * that is not produces a second string.
+   *
    * @param externalName  the published external name of an Ibor row
    * @return the offset in days declared for that name, or nothing when none is declared
    */
   private def fixingDateOffsetOf(externalName: String): Option[Int] =
-    iborFixingDateOffsetPairs.collectFirst {
-      case (key, days) if key.equalsIgnoreCase(externalName) => days
-    }
+    iborFixingDateOffsetsByUpperCaseName.get(externalName.toUpperCase(Locale.ENGLISH))
 
   /**
    * Builds the rows of a section whose published values are complete index names.
@@ -882,9 +890,37 @@ object FloatingRateNameData {
    * the reference data manifest, and consumed by [[iborRows]], where the same three offsets appear
    * as the `fixingDateOffsetDays` of the rows they name. The order is the published order.
    *
-   * This value is declared before [[iborRows]] because the rows are built from it.
+   * This value is declared before the private `iborFixingDateOffsetsByUpperCaseName` lookup table
+   * and before [[iborRows]] because both are built from it.
    */
   val iborFixingDateOffsets: Map[String, Int] = ListMap.from(iborFixingDateOffsetPairs)
+
+  /**
+   * The 3 non-standard fixing date offsets of [[iborFixingDateOffsets]], keyed by the upper-case
+   * form of the external name each applies to.
+   *
+   * This is the table [[fixingDateOffsetOf]] reads, and it exists so that the 159 lookups made
+   * while [[iborRows]] initialises are 159 direct lookups in one table of three entries rather than
+   * 159 reconstructions of the section and linear scans of the result. It is derived from the
+   * already-initialised [[iborFixingDateOffsets]] rather than from a second transcription of the
+   * three rows, so the published table and the lookup table cannot disagree; it is a plain map
+   * rather than an ordered one because order is a property of the published table alone and no
+   * consumer reads this one.
+   *
+   * Upper-case keys - folded with `Locale.ENGLISH`, so the folding is independent of the default
+   * locale of the host - are what make the lookup case-insensitive, as [[fixingDateOffsetOf]]
+   * explains. Being private, this table is invisible to the reference data manifest comparison,
+   * which reads [[iborFixingDateOffsets]].
+   *
+   * This value is declared after [[iborFixingDateOffsets]], which it is derived from, and before
+   * [[iborRows]], which reads it through [[fixingDateOffsetOf]]: the vals of an object initialise
+   * in textual order, so either declaration moved out of that order would leave this table empty
+   * while the rows were built and silently strip the three offsets.
+   */
+  private val iborFixingDateOffsetsByUpperCaseName: Map[String, Int] =
+    iborFixingDateOffsets.iterator.map {
+      case (externalName, days) => externalName.toUpperCase(Locale.ENGLISH) -> days
+    }.toMap
 
   /**
    * The 159 Ibor rows, in published order.

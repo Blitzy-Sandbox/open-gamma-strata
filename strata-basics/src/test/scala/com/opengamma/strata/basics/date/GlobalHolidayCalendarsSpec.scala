@@ -1455,4 +1455,3 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
     GlobalHolidayCalendars.boxingDayBumpedSatSun(2023) shouldBe LocalDate.of(2023, 12, 26)
   }
 }
-

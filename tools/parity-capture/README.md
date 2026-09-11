@@ -9,14 +9,20 @@ It contains exactly two files:
   and emits six numerical parity fixtures plus one reference-data manifest.
 * `README.md` — this document: the procedure, the fixture schemas and the manifest schema.
 
-The seven JSON documents are the deliverable; they live in the two Scala modules' test resources
-and are committed alongside the Scala code. The script is retained so that the baselines can be
-**regenerated and audited** by a third party, and this README is what that third party follows.
+The JSON documents the script emits are the deliverable, and they belong in the two Scala modules'
+test resources. **Six of the seven are committed**: the five `strata-basics` parity fixtures and
+the `strata-collect` one, listed in section 4. The seventh, `reference-data-manifest.json`, is
+produced by every run but is **not committed at this revision** — section 4 records the path it
+belongs at, section 7 documents its schema, and *Known limitations at this revision* in section 3
+records it as outstanding. The script is retained so that the baselines can be **regenerated and
+audited** by a third party, and this README is what that third party follows.
 
-No user-specified rules apply to this file: `review_rules` reports that no rules were provided, so
-the work is held to enterprise-standard best practice instead — the commands below were run in
-this repository, every number is traceable to a file, and nothing is claimed that was not
-observed. *Verification status* in section 3 records exactly what was executed, and what was not.
+No user-specified rules govern this file, so it is held to enterprise-standard best practice
+instead: every number is traceable to a file, nothing is claimed that was not observed, and each
+command is recorded with whether it was run here. The *Verification record* in section 3 lists the
+ones that were — with tool versions, exit statuses, document hashes and the outcome per document —
+and says plainly which one was not; the limitations subsection next to it records what the script
+does *not* currently deliver.
 
 ### 0. Read this first
 
@@ -31,19 +37,32 @@ Maven module. The fixtures are the product; the script is the audit trail.
 
 **The capture classpath deliberately carries Guava and Joda.** The dependency-purity requirement
 (Rule 1 / Gate 2) is measured on the sbt `Compile` and `Test` classpaths of `strata-collect` and
-`strata-basics`. `tools/` is on neither: it is on no sbt source root, it is compiled by nothing,
-and no CI job runs it — the Scala CI job runs `scripts/verify-gates.sh`, which invokes `sbt`, not
-`mvn` and not `jshell`. The Java implementation being measured depends on Guava and Joda, so
+`strata-basics`. `tools/` is on neither: it is on no sbt source root, and it is compiled by
+nothing. No CI job runs it — the jobs in `.circleci/config.yml` are the Maven ones, and the Scala
+job the plan adds (`scala_build21`, which runs `scripts/verify-gates.sh` and so invokes `sbt`,
+never `mvn` and never `jshell`) is not in that configuration at this revision and will not run
+this script when it lands. The Java implementation being measured depends on Guava and Joda, so
 removing them here does not improve purity; it only makes the capture impossible.
 
-**The procedure never writes into the Java tree.** The acceptance gate requires
+**Run with the default output root and the procedure writes nowhere near the Java tree — but the
+root is yours to choose, and that is the part no check covers.** The acceptance gate requires
 `git status --porcelain -- modules examples eclipse pom.xml src .github` to stay empty. The Maven
-build writes only into `target/`, which is git-ignored (`.gitignore:13`), and the script writes
-only the seven paths in section 4 — `guardOutputPath` enforces that at run time by rejecting
-absolute paths, `..`, and anything whose first path segment is `modules`, `examples`, `eclipse`,
-`src`, `.github` or `project`. The Java sources, tests and resources under `modules/**` are
-read-only reference material: they are the source every later migration slice ports from, and the
-only reproducible source of these baselines. Never edit them to make a fixture match.
+build writes only into `target/`, which is git-ignored
+(`.gitignore:13`). The script writes exactly the seven **relative** paths in section 4, resolved
+against the output root: `guardOutputPath` checks each one at run time, rejecting an absolute
+path, any path containing `..` or a backslash, any path whose first segment is `modules`,
+`examples`, `eclipse`, `src`, `.github` or `project`, and any path that is not one of the seven
+declared destinations. The root those paths are resolved against is vetted too:
+the root comes from the `parity.out.dir` system property (default `.`), and `outputRoot` rejects a
+symbolic link at **any** component of it, creates the missing components one at a time, requires
+the result to equal its own canonical form, and refuses a root that sits inside a checkout without
+being that checkout's root — so a root such as `modules` is refused rather than quietly writing a
+`strata-basics/…` tree where the boundary gate forbids one. Run from the repository root with the
+default, or point it at a scratch directory you own (section 3), and confirm with `git status`
+afterwards. The Java
+sources, tests and resources under `modules/**` are read-only reference material: they are the
+source every later migration slice ports from, and the only reproducible source of these
+baselines. Never edit them to make a fixture match.
 
 ### 1. Purpose and why this exists
 
@@ -59,8 +78,9 @@ So the baseline is captured, not written:
 
 1. build the untouched Maven modules once;
 2. run `capture-baseline.jsh` against the resulting jars;
-3. commit the seven JSON documents it emits;
-4. let the Scala specs assert against them.
+3. commit the JSON documents it emits — six of the seven are in the tree today (section 4);
+4. let the Scala specs assert against them — two consumers exist, and the rest are still to be
+   written (section 4, and *Known limitations at this revision* in section 3).
 
 Two consequences follow, and both matter more than they look.
 
@@ -68,11 +88,15 @@ Two consequences follow, and both matter more than they look.
   Either the Scala code is wrong (fix the code), or the fixture is stale because the Java tree
   changed (regenerate it with this procedure and review the diff). Hand-editing a value destroys
   the only independent evidence the port has.
-* **The capture cross-checks itself.** Every captured value that has a hard-coded Java test
-  constant is compared against that constant during capture, and every reference-data row count is
-  compared against an independently verified expected count. A mismatch aborts the run with a
-  non-zero status and writes nothing, so a fixture on disk is one that agreed with the Java tests
-  when it was produced.
+* **The capture cross-checks itself.** Captured values are compared against the hard-coded Java
+  test constants and the structural invariants that section 6 itemises fixture by fixture, and
+  every reference-data row count is compared against an independently verified expected count. The
+  run reports how many checks each fixture contributed and counts separately the entries that have
+  no Java constant to compare against. Every check runs *before* any file is written, so a mismatch
+  aborts the run with a non-zero status having written nothing at all, and a document on disk is
+  one that agreed with the checks the script ran when it was produced. That check coverage is not
+  uniform across fixtures — section 6 states it per fixture, and the summary table in section 3
+  gives the measured counts.
 
 ### 2. Prerequisites
 
@@ -81,8 +105,11 @@ Two consequences follow, and both matter more than they look.
 * **Apache Maven**, to build the two Java modules.
 * **A clean checkout**, and a shell whose working directory is the **repository root** — the
   paths below, including the script's default output root, are repository-root relative.
-* Roughly 1 GB of free heap for the capture JVM (`-R-Xmx900m` is what the script is run with) and
-  about 20 MB of disk for the emitted documents.
+* Roughly 1 GB of free heap for the capture JVM (`-R-Xmx900m` is what the script is run with), and
+  disk for the documents: one capture writes **19,792,844 bytes** at this revision, and the six
+  documents already committed occupy **24,003,436 bytes**. Capturing into a scratch root beside
+  them — which is how section 3 verifies a run — therefore needs both, so allow **at least 60 MB**
+  free. Re-measure these figures whenever a fixture's coverage changes.
 
 No network access is needed once Maven's dependencies are cached, and no database, service or
 container is involved.
@@ -112,16 +139,33 @@ only if you take route (a) below.
 #### Step 2 — assemble the capture classpath
 
 The script needs the two module jars **plus** the Java implementation's third-party dependencies
-(Guava, `failureaccess`, Joda-Beans, Joda-Convert). Two routes work; both were verified and both
-produce byte-identical fixtures.
+(Guava, `failureaccess`, Joda-Beans, Joda-Convert). Three routes work. Route (c) was measured at
+this revision, three times, and produced byte-identical documents; route (a) differs from route (b)
+only in where the same jars come from, and its classpath step was measured while its `install` line
+was not — the *Verification record* below is explicit about that, and does not claim byte-identity
+for a route it did not run end to end.
+
+Two of them write Maven's resolved classpath to a file first. Create that file in a **private
+scratch directory you own**, never at a fixed path under `/tmp`: a predictable shared name can
+collide with another run on the same machine, can be pre-created or symlinked by another user, and
+what lands in it is fed straight to `--class-path`. `mktemp -d` gives a private directory; the
+`trap` removes it however the shell exits:
+
+```
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf -- "$SCRATCH"' EXIT
+```
+
+Quote every path derived from it, as the routes below do.
 
 Route (a) — `install`, then let Maven resolve the whole basics classpath:
 
 ```
 mvn -B -pl modules/collect,modules/basics -am -DskipTests -Dcheckstyle.skip=true \
     -Dmaven.javadoc.skip=true install
-mvn -q -pl modules/basics dependency:build-classpath -Dmdep.outputFile=/tmp/basics-cp.txt
-CP="$(cat /tmp/basics-cp.txt):modules/basics/target/strata-basics-2.12.74-SNAPSHOT.jar"
+mvn -q -pl modules/basics dependency:build-classpath \
+    -Dmdep.outputFile="$SCRATCH/basics-cp.txt"
+CP="$(cat "$SCRATCH/basics-cp.txt"):modules/basics/target/strata-basics-2.12.74-SNAPSHOT.jar"
 ```
 
 This is the shortest form, and it works because `modules/basics/pom.xml` already depends on
@@ -134,17 +178,33 @@ Route (b) — `package` only, resolving just the third-party jars and naming the
 explicitly:
 
 ```
-mvn -q -pl modules/collect dependency:build-classpath -Dmdep.outputFile=/tmp/collect-cp.txt
+mvn -q -pl modules/collect dependency:build-classpath \
+    -Dmdep.outputFile="$SCRATCH/collect-cp.txt"
 CP="modules/basics/target/strata-basics-2.12.74-SNAPSHOT.jar"
 CP="$CP:modules/collect/target/strata-collect-2.12.74-SNAPSHOT.jar"
-CP="$CP:$(cat /tmp/collect-cp.txt)"
+CP="$CP:$(cat "$SCRATCH/collect-cp.txt")"
 ```
 
 `modules/collect` has no OpenGamma dependencies, so its classpath is purely third-party.
 
-If the jars are already present in the local Maven repository, the equivalent zero-rebuild
-classpath is just those six entries: `strata-basics`, `strata-collect`, `guava`, `failureaccess`,
-`joda-beans`, `joda-convert`.
+Route (c) — zero rebuild, no temporary file at all. If both module jars are already in the local
+Maven repository, the classpath is exactly six entries, named directly:
+
+```
+M2="${HOME}/.m2/repository"
+CP="$M2/com/opengamma/strata/strata-basics/2.12.74-SNAPSHOT/strata-basics-2.12.74-SNAPSHOT.jar"
+CP="$CP:$M2/com/opengamma/strata/strata-collect/2.12.74-SNAPSHOT/strata-collect-2.12.74-SNAPSHOT.jar"
+CP="$CP:$M2/com/google/guava/guava/33.4.0-jre/guava-33.4.0-jre.jar"
+CP="$CP:$M2/com/google/guava/failureaccess/1.0.2/failureaccess-1.0.2.jar"
+CP="$CP:$M2/org/joda/joda-beans/2.11.1/joda-beans-2.11.1.jar"
+CP="$CP:$M2/org/joda/joda-convert/2.2.3/joda-convert-2.2.3.jar"
+```
+
+The versions are the Java build's own — Guava `33.4.0-jre` and Joda-Convert `2.2.3` / Joda-Beans
+`2.11.1` (`modules/pom.xml:768,771-772`), with `failureaccess` arriving as Guava's own dependency —
+and step 1 can be skipped entirely on this route. It is the route the *Verification record* below
+measured all three times, because it touches neither the shared local repository nor a temporary
+file.
 
 #### Step 3 — run the capture
 
@@ -153,133 +213,287 @@ jshell --class-path "$CP" -R-Xmx900m tools/parity-capture/capture-baseline.jsh
 ```
 
 Before anything else the script runs a **classpath preflight** over the types it needs. An
-incomplete classpath is the most common mistake, and it produces an actionable message naming the
-missing classes and the build command to fix them, rather than a wall of JShell "package does not
-exist" errors.
+incomplete classpath is the most common mistake, and the preflight puts an actionable message
+**first** — naming the missing classes and the build command that fixes them — instead of leaving
+JShell's "package does not exist" errors as the only diagnostic. It does not suppress them: the
+preflight prints and returns, JShell carries on loading the snippets that follow, and the Strata
+imports a few lines later fail exactly as they would have. So read the *first* block of output
+rather than the last. The run still fails closed — the capture driver checks the preflight result
+before building anything, so nothing is written and the exit status is non-zero.
 
-**Output root.** The script writes the seven documents relative to the value of the
+**Output root.** The script writes the seven documents **relative** to the value of the
 `parity.out.dir` system property, whose default is `.` — the current directory, expected to be the
-repository root. Pass it through JShell's `-R` prefix to write elsewhere, which is the safe way to
-inspect a capture before letting it touch the working tree:
+repository root. Pass it through JShell's `-R` prefix to write elsewhere. Capturing into a
+directory you own and then comparing is the safe way to inspect a run before it touches the
+working tree, and it is how the *Verification record* below was produced:
 
 ```
-jshell --class-path "$CP" -R-Xmx900m -R-Dparity.out.dir=/tmp/parity-out \
+: "${SCRATCH:=$(mktemp -d)}"
+OUT="$SCRATCH/out"
+jshell --class-path "$CP" -R-Xmx900m -R-Dparity.out.dir="$OUT" \
        tools/parity-capture/capture-baseline.jsh
-diff -r /tmp/parity-out/strata-basics strata-basics
 ```
+
+The first line reuses the private directory step 2 created, or creates one on route (c), which
+skips step 2 — never leave `$SCRATCH` unset, or `"$SCRATCH/out"` resolves to `/out`. If you
+created it here rather than in step 2, `trap 'rm -rf -- "$SCRATCH"' EXIT` cleans it up on the way
+out.
+
+**Comparing a capture with what is committed.** Compare the exact documents, one at a time, in
+both modules — not directory trees. `$OUT/strata-basics` holds only the generated
+`src/test/resources/…` subtree, so `diff -r "$OUT/strata-basics" strata-basics` reports every
+source and test file the capture never produces, and a `strata-basics`-only comparison misses the
+`strata-collect` fixture altogether:
+
+```
+for f in strata-basics/src/test/resources/parity/daycount-baseline.json \
+         strata-basics/src/test/resources/parity/schedule-baseline.json \
+         strata-basics/src/test/resources/parity/fx-baseline.json \
+         strata-basics/src/test/resources/parity/currency-math-baseline.json \
+         strata-basics/src/test/resources/parity/holiday-baseline.json \
+         strata-collect/src/test/resources/parity/double-array-baseline.json \
+         strata-basics/src/test/resources/manifest/reference-data-manifest.json; do
+  if [ ! -e "$f" ]; then
+    echo "not committed: $f"
+  elif cmp -s "$OUT/$f" "$f"; then
+    echo "identical:     $f"
+  else
+    echo "DIFFERS:       $f"
+  fi
+done
+```
+
+`cmp -s` exits 0 when two files match, so the loop's own lines are the report; drop `-s` to have
+`cmp` name the first differing byte. At this revision the loop prints `identical` for five
+documents, `DIFFERS` for `daycount-baseline.json` and `not committed` for the manifest — exactly
+what the *Verification record* below measured and the limitations after it explain. Any other
+result is a finding: investigate it before you replace a committed file.
 
 **Exit status.** Zero only when every document was built *and* every self-check passed; non-zero
 on any check failure, count mismatch, preflight failure or exception in the driver. The documents
-are accumulated in memory and flushed only after all checks pass, so **a failed run writes
-nothing** and cannot leave a half-valid fixture behind. A failure prints one line per failing
-check, naming the fixture, the row and the expected/actual/delta/tolerance.
+are accumulated in memory and flushed only once every check has passed, so any failure that
+happens **before the flush begins** — a failed check, a count mismatch, the preflight, or an
+exception raised while the documents are being built — writes **nothing at all**: no document is
+touched and none can be left half-valid. A failure prints one line per failing check, naming the
+fixture, the row and the expected/actual/delta/tolerance.
+
+Once the flush begins, that no longer holds, and the distinction is worth reading carefully because
+the flush runs inside the same driver. The seven documents are written one after another to their
+final paths, with no staging directory and no rollback, so an I/O failure part way through — a full
+disk, a read-only destination, an interrupted run — leaves the documents written before it new and
+the rest untouched. The driver catches the exception and the run still exits non-zero, so a non-zero
+status alone does **not** tell you nothing was written: check. Recovery is the same as for any
+failed run — compare against what is committed with the loop above, then re-run. This is a property
+of the script as it stands at this revision, pinned in the limitations subsection below.
 
 **Progress output.** The run prints the JDK version, the resolved output root, the random seed,
 one line per document, then a summary table of `rows`, `checks`, `errRows` (rows whose expectation
-is a Java failure) and `capOnly` (rows deliberately without a Java constant to check against),
-and finally the path and size of each document written.
+is a Java failure) and `capOnly` (rows — or, in `currency-math`, expectation entries — deliberately
+without a Java constant to check against; limitation 6 below records the one place that tally and
+the fixture's own marker disagree), and finally the path and size of each document written.
 
-**Safety.** Run all three steps from the repository root. The capture writes only the seven paths
-listed in section 4 and never under `modules/`, `examples/`, `eclipse/`, `src/` or `.github/` — it
-refuses to, as section 0 describes — and Maven writes only into git-ignored `target/`. Nothing in
-this procedure modifies the Java tree.
+**Safety.** Run every step from the repository root. The capture writes only the seven relative
+paths listed in section 4, resolved against the output root, and refuses any other relative path —
+including anything whose first segment is `modules`, `examples`, `eclipse`, `src`, `.github` or
+`project`, as section 0 describes; Maven writes only into git-ignored `target/`. The one input the
+script cannot vet for you is the root itself, so when you pass a non-default `parity.out.dir` keep
+it inside a directory you own, and run
+`git status --porcelain -- modules examples eclipse pom.xml src .github` afterwards: empty is the
+acceptance gate, and it is a one-second check. With the default root, or any root outside the
+repository, nothing in this procedure modifies the Java tree; a root that points inside the
+repository is the one way that changes, which is why that check is part of the procedure rather
+than an afterthought.
 
-#### Verification status
+#### Verification record
 
-This procedure was executed on this branch, on OpenJDK 21.0.12.1 (Temurin) with Maven 3.9.16, and
-the results below are what was observed — not an estimate:
+Everything in this subsection was measured, and it is pinned to one revision — the only way a
+statement about a script's output stays checkable:
 
-* Step 1 completed with `BUILD SUCCESS` in about 12 s against warm Maven caches, producing both
-  jars.
-* The capture ran in well under a minute at `-R-Xmx900m`, reported `all checks passed` and wrote
-  all seven documents, exiting 0. Observed totals for the script as it now stands:
-  **23,014 rows and 198,001 checks**, made up of `daycount` 18,254, `holiday` 3,846, `schedule`
-  879, `fx` 14, `double-array` 14, `currency-math` 6 and the manifest counted as one. Each
-  fixture's own section below states the coverage it contributes; the total moves whenever one of
-  them is extended, so treat it as a reading of this revision rather than a fixed figure.
-* It was run five times in total — three times before the holiday fixture's checks were added
-  (twice with the zero-rebuild classpath of six local-repository entries, once with the route-(b)
-  classpath assembled from the `package` output) and twice after — and within each set the
-  documents were **byte-identical** (`diff -r`), which is the determinism contract of section 5
-  demonstrated rather than asserted. Adding those checks changed `holiday-baseline.json` only: the
-  other six documents stayed byte-identical to the earlier runs, which is how the change was
-  verified.
-* The abort path was exercised for real rather than hypothetically: a two-row transcription error
-  in the `data_easter` constants was caught by the new cross-check (`expected=2051-03-26
-  actual=2051-04-02`), the run exited 1 and wrote nothing, and the constants were then re-extracted
-  mechanically from the Java test source instead of being hand-corrected.
-* The `fx-baseline.json` section was subsequently extended — row ids, one uniform row shape, and
-  the `streamPairsToMatrix`, `addMultipleRatesSingle`, identity and empty-merge scenarios of
-  section 6 — taking that fixture from 11 rows and 35 checks to 14 and 77. Every one of the added
-  scenarios uses literal rates and draws nothing from the seeded `Random`, so the stream the later
-  fixtures consume is untouched: the other six documents were verified **byte-identical**
-  (`diff`) to the ones produced before that change, the already-committed
-  `double-array-baseline.json` among them.
-* It was run three times — twice with the zero-rebuild classpath (the six local-repository
-  entries) and once with the route-(b) classpath assembled from the `package` output — and the
-  three sets of documents were **byte-identical** (`diff -r`), which is the determinism contract
-  of section 5 demonstrated rather than asserted.
-* When the `currency-math` coverage was later extended, the capture was re-run twice more with the
-  zero-rebuild classpath into two scratch output roots, and those two runs were byte-identical to
-  each other across all seven documents. Diffed against the run that preceded the extension, the
-  other **six** documents were byte-identical as well — which is the property that makes an
-  extension to one fixture safe: the additions consume nothing from the shared seeded `Random`, so
-  no later fixture's values move.
-* Re-running the script now reproduces `schedule-baseline.json`, `fx-baseline.json`,
-  `currency-math-baseline.json`, `holiday-baseline.json` and `double-array-baseline.json`
-  **byte-identically** to the committed files, so the determinism contract of section 5 holds for
-  those five. `daycount-baseline.json` is the exception and the difference is a known gap rather
-  than drift: the committed fixture was captured with a day-count section ahead of the one in this
-  script — it carries the uniform row shape and the per-row `id` of section 6, the
-  `scheduleInfo.end` of the `test_yearFraction_30E360ISDA_notMaturity` rows, and 102 rows the
-  script does not yet emit (`test_same`, `test_halfYear`, `test_wholeYear`, `test_wrongOrder` at
-  22 rows each, `data_types.missingScheduleInfo` at 5 and
-  `Business252DayCountTest.calendarRange` at 9). Every year fraction the two agree on is
-  identical, so the fixture is sound and is the file the parity spec reads; bringing the day-count
-  section up to it is the outstanding work, and until that is done do **not** overwrite
-  `daycount-baseline.json` from a run of this script, because doing so would drop that coverage.
-* Route (a) was verified as far as its classpath: `dependency:build-classpath` was run for both
-  `modules/basics` and `modules/collect` and its output inspected, which is how the
-  local-repository caveat above was established. The `install` invocation itself was **not** run,
-  because the jars were already present in this environment's local repository.
-* The failure path was exercised with a deliberately incomplete classpath: the preflight aborted,
-  listed the missing classes, exited 1 and wrote zero files.
-* `git status --porcelain -- modules examples eclipse pom.xml src .github` was empty afterwards.
+| Pinned to | Value |
+|---|---|
+| Measured against | the revision of the script whose hash is the next row |
+| `capture-baseline.jsh` | sha256 `6a952af08dadfd16ef6058f2f423e79bdc9443cdf203d2fbe44ad40eec72a700` |
+| Toolchain | OpenJDK 21.0.12.1 (Temurin 21.0.12.1+1 LTS), Apache Maven 3.9.16 |
 
-Re-running on a different JDK 21 build should reproduce the same bytes; if it does not, treat the
-difference as a finding and investigate it before committing anything.
+The script hash is the anchor: check it with
+`sha256sum tools/parity-capture/capture-baseline.jsh`, and if it no longer matches, re-run the
+commands below rather than trusting the numbers that follow them.
+
+Commands run, in this order:
+
+1. Step 1 as printed above (`… package`) — `BUILD SUCCESS`, exit 0, 37.9 s against warm Maven
+   caches, producing `strata-collect-2.12.74-SNAPSHOT.jar` (428,082 bytes) and
+   `strata-basics-2.12.74-SNAPSHOT.jar` (570,411 bytes).
+2. `dependency:build-classpath` for `modules/collect` and for `modules/basics`, each into a
+   private scratch file — exit 0 both times. The collect classpath is purely third-party (Guava,
+   `failureaccess`, Joda-Beans, Joda-Convert, plus the test-scope JUnit/AssertJ/Mockito jars); the
+   basics classpath resolves `strata-collect` and its test-jar **from the local repository**, which
+   is the caveat route (a) states above.
+3. The capture three times, each into its own scratch output root, with the route-(c) classpath.
+   Every run printed `all checks passed`, wrote seven documents and exited 0, at `-R-Xmx900m`.
+4. `git status --porcelain -- modules examples eclipse pom.xml src .github` — no output, before and
+   after.
+
+Route (a)'s `install` line was **not** run: both artifacts were already in this environment's
+local repository, and installing them again is what routes (b) and (c) exist to avoid. So route (a)
+is documented and its classpath step measured, while its first line is unverified here.
+
+**The three captures produced byte-identical documents** — `diff -r` over the three output roots,
+all seven documents, no differences. That is the determinism contract of section 5 demonstrated
+rather than asserted, on one JDK; the limitations below say what it does not extend to.
+
+The script's own summary, as printed by each run. `rows` and `checks` are what the script counted,
+`errRows` the rows whose expectation is a Java failure, and `capOnly` the entries with no Java
+constant to check against:
+
+| Fixture | rows | checks | errRows | capOnly |
+|---|---|---|---|---|
+| `currency-math` | 6 | 227 | 29 | 228 |
+| `daycount` | 18,356 | 147,239 | 1,072 | 17,497 |
+| `double-array` | 43 | 382 | 0 | 24 |
+| `fx` | 14 | 100 | 14 | 4 |
+| `holiday` | 3,846 | 50,561 | 2 | 0 |
+| `manifest` | 1 | 52 | 0 | 0 |
+| `schedule` | 879 | 320 | 573 | 769 |
+| **TOTAL** | **23,145** | **198,881** | | |
+
+The day-count emitter now produces the committed fixture's 18,356 rows, and all six committed
+documents are reproduced byte for byte; the comparison follows. The totals move whenever a fixture
+is extended, so read them as this revision's reading rather than a fixed figure, and note how
+uneven the `checks` column is — `schedule` states 320 checks against 879 rows, because most of a
+schedule row's expectations have no Java constant to check against and are counted under
+`capOnly`.
+
+What the run produced, against what is committed:
+
+| Document | Captured bytes | Committed bytes | `cmp` |
+|---|---|---|---|
+| `daycount-baseline.json` | 13,302,984 | 13,302,984 | identical |
+| `schedule-baseline.json` | 1,179,362 | 1,179,362 | identical |
+| `fx-baseline.json` | 63,920 | 63,920 | identical |
+| `currency-math-baseline.json` | 123,318 | 123,318 | identical |
+| `holiday-baseline.json` | 9,287,428 | 9,287,428 | identical |
+| `double-array-baseline.json` | 90,821 | 90,821 | identical |
+| `reference-data-manifest.json` | 254,640 | — | not committed |
+
+sha256 of the committed documents: `daycount` `52ec04ee…`, `schedule` `a313f9c2…`, `fx`
+`9c3f9d00…`, `currency-math` `fe711eee…`, `holiday` `e71adc59…`, `double-array` `a9e5ff95…`. The
+capture reproduces all six hash for hash; its uncommitted manifest is `a6d285dd…`.
+
+The failure path was measured too, with a deliberately incomplete classpath (the `strata-collect`
+jar alone): the preflight's fourteen lines named all twelve missing classes **first**, 1,608
+further JShell error lines followed it, the run exited 1 and wrote **zero** files.
+
+#### Known limitations at this revision
+
+Each item below is a property of the script and of the committed set at the revision pinned above,
+not of the procedure in general, and each says how to check whether it still holds.
+
+1. **`reference-data-manifest.json` is not committed.** Every run emits it — 254,640 bytes, the 29
+   top-level keys of section 7, every count asserted — but the file is absent from the working
+   tree, and the spec that would compare it with the Scala data objects does not exist either, so
+   nothing currently reads it. Capture it when you need the Java-side enumeration of the reference
+   data; committing it, and writing that spec, is outstanding work.
+   Check: `ls strata-basics/src/test/resources/manifest/`.
+
+2. **`reference-data-manifest.json` is the only document with no committed counterpart.** All six
+   committed fixtures — `daycount-baseline.json` included — are regenerated byte for byte by the
+   checked-in script, so a re-capture is a valid way to refresh any of them, and a document that
+   comes back `DIFFERS` is a finding rather than the expected state. The day-count section emits
+   the committed 18,356-row document with the uniform twelve-key row shape, a unique `id` on every
+   row and `scheduleInfo` always an object. Check: capture into a scratch root and run the
+   comparison loop above; all six printing `identical` is the expected state.
+
+3. **The flush is a transaction, but seven files in three directories cannot be replaced in one
+   filesystem operation.** Documents are staged in memory and every check runs first, so a failure
+   before the flush writes nothing. The flush itself then validates all seven destinations, takes a
+   no-follow handle on each directory and refuses to proceed if an earlier run left artefacts
+   there; writes each document to `<target>.capture-tmp-<pid>.new` with `CREATE_NEW` and verifies
+   it by reading the bytes back; publishes by moving any existing target aside to `.old` and
+   renaming the verified temporary into place, both renames being atomic within one directory; and
+   rolls back to the previous generation on any failure. What it does not claim is a single atomic
+   swap of the whole generation: a process **killed** between two publish moves leaves a mixed set
+   on disk. That state is never silent — the `.old` and `.new` files stay where they are, the next
+   run's phase 1 refuses to publish over them and names them, and `git status` shows the same thing
+   because the fixtures are tracked. Check: read `flushDocuments` in the script, then compare and
+   re-run as step 3 describes.
+
+4. **The output root is validated, and an absolute root still writes wherever it points.**
+   `guardOutputPath` vets the seven relative suffixes, and `outputRoot` vets the root they resolve
+   against: every component is rejected if it is a symbolic link, the missing components are created
+   one at a time rather than through `createDirectories`, the result must equal its own canonical
+   form, and a root inside a checkout that is not that checkout's root is refused — so a root such
+   as `modules` is rejected instead of breaking the repository-boundary gate. What remains yours is
+   the choice itself: an absolute root outside the repository writes there, which is exactly how the
+   verification above captured into a scratch directory. Run the `git status --porcelain` check after
+   any non-default run.
+
+5. **Two orderings come from reflection, so byte-identity is claimed only within one JDK.** The
+   day-count list is built from `DayCounts.class.getDeclaredFields()` and every manifest constant
+   array from `holder.getDeclaredFields()`. Java SE specifies no order for the array those methods
+   return, so a different JDK 21 build — or the same one after the Java jars are recompiled — may
+   order the day-count rows and the manifest's `*Constants.names` arrays differently. The three
+   runs measured above, on one JDK, were byte-identical; that is the evidence, and it does not
+   extend to another JDK. If a re-capture differs *only* in the order of those arrays, this
+   dependency is why: compare the arrays sorted before concluding anything. A difference anywhere
+   else is a finding — investigate it before committing.
+
+6. **The `capOnly` summary column counts more entries than carry the marker.** For
+   `currency-math` the summary reports 228 while the fixture carries `"captureOnly": true` on 173
+   of its 355 expectation entries: the 55 per-currency seeded-random amounts are counted without
+   the field being emitted. The marker in the fixture is the contract a consumer reads; the column
+   is a run-time counter. Do not derive one from the other.
+
+7. **Most consumers of these fixtures do not exist yet.** Present: `ParityHarness.scala`,
+   `strata-collect/src/test/scala/com/opengamma/strata/collect/parity/DoubleArrayParitySpec.scala`
+   and `collect.io.Resources.readClasspathText`. Absent: the five basics parity specs,
+   `ReferenceDataManifestSpec.scala`, `scripts/verify-gates.sh` (so nothing yet aggregates the
+   parity reports into `target/gate-report.md`), the `scala_build21` CI job and
+   `SCALA_MIGRATION.md`. Five of the six committed fixtures are therefore pinned data waiting for
+   the specs that will read them — which is why a schema change here is cheap today and expensive
+   later. Section 4 lists both sides of that split.
 
 ### 4. Outputs
 
-Seven documents, all UTF-8, LF-terminated, with exactly one trailing newline:
+Seven documents, all UTF-8, LF-terminated, with exactly one trailing newline. The `Committed`
+column is the state at this revision, not a plan:
 
-| Path | Contents |
-|---|---|
-| `strata-basics/src/test/resources/parity/daycount-baseline.json` | Day-count year fractions, relative year fractions and day counts, with and without schedule information |
-| `strata-basics/src/test/resources/parity/schedule-baseline.json` | `PeriodicSchedule` resolutions: unadjusted and adjusted dates, periods, stubs, resolved conventions |
-| `strata-basics/src/test/resources/parity/fx-baseline.json` | `FxMatrix` / `FxRate` rates, conversions, cross rates and merges |
-| `strata-basics/src/test/resources/parity/currency-math-baseline.json` | `CurrencyAmount`, `Money`, `BigMoney`, `MultiCurrencyAmount` and the two amount-array types |
-| `strata-basics/src/test/resources/parity/holiday-baseline.json` | Per-calendar, per-year holiday sets and date-arithmetic samples |
-| `strata-collect/src/test/resources/parity/double-array-baseline.json` | `DoubleArray` and `DoubleMatrix` operation results |
-| `strata-basics/src/test/resources/manifest/reference-data-manifest.json` | The reference-data manifest: every ported data table, enumerated from Java, with asserted counts |
+| Path | Committed | Contents |
+|---|---|---|
+| `strata-basics/src/test/resources/parity/daycount-baseline.json` | yes | Day-count year fractions, relative year fractions and day counts, with and without schedule information |
+| `strata-basics/src/test/resources/parity/schedule-baseline.json` | yes | `PeriodicSchedule` resolutions: unadjusted and adjusted dates, periods, stubs, resolved conventions |
+| `strata-basics/src/test/resources/parity/fx-baseline.json` | yes | `FxMatrix` / `FxRate` rates, conversions, cross rates and merges |
+| `strata-basics/src/test/resources/parity/currency-math-baseline.json` | yes | `CurrencyAmount`, `Money`, `BigMoney`, `MultiCurrencyAmount` and the two amount-array types |
+| `strata-basics/src/test/resources/parity/holiday-baseline.json` | yes | Per-calendar, per-year holiday sets and date-arithmetic samples |
+| `strata-collect/src/test/resources/parity/double-array-baseline.json` | yes | `DoubleArray` and `DoubleMatrix` operation results |
+| `strata-basics/src/test/resources/manifest/reference-data-manifest.json` | **no** — emitted by every run, not yet in the tree | The reference-data manifest: every ported data table, enumerated from Java, with asserted counts |
 
-Consumers — a schema change breaks these, so change both sides together:
+Consumers — a schema change breaks these, so change both sides together. Two exist today:
 
 * `strata-basics/src/test/scala/com/opengamma/strata/basics/parity/ParityHarness.scala` — loads a
-  fixture and applies the tolerance rule.
+  fixture and applies the tolerance rule. Present, and not yet used by any basics spec.
+* `strata-collect/src/test/scala/com/opengamma/strata/collect/parity/DoubleArrayParitySpec.scala` —
+  present, and the one spec that reads its fixture today.
+
+The rest are planned and **absent at this revision**, so nothing currently asserts against the
+other six documents:
+
 * `strata-basics/src/test/scala/com/opengamma/strata/basics/parity/DayCountParitySpec.scala`,
   `ScheduleParitySpec.scala`, `FxParitySpec.scala`, `CurrencyMathParitySpec.scala`,
   `HolidayCalendarParitySpec.scala`.
-* `strata-collect/src/test/scala/com/opengamma/strata/collect/parity/DoubleArrayParitySpec.scala`.
-* `strata-basics/src/test/scala/com/opengamma/strata/basics/ReferenceDataManifestSpec.scala` —
-  asserts the Scala data objects equal the manifest.
+* `strata-basics/src/test/scala/com/opengamma/strata/basics/ReferenceDataManifestSpec.scala`, which
+  is to assert that the Scala data objects equal the manifest.
 
-All of them read their resource through `collect.io.Resources.readClasspathText` and decode it
-with circe, so every field name and nesting decision in sections 6 and 7 is part of a compile-time
-contract on the Scala side.
+Both existing consumers read their resource through `collect.io.Resources.readClasspathText` and
+decode it with circe, and the planned ones are specified to do the same — which is what makes
+every field name and nesting decision in sections 6 and 7 a compile-time contract on the Scala
+side once they land. Until then the schemas below are the only statement of that contract, so keep
+them exact.
 
-Nothing here is deferred: the documents are committed with the Scala code, and this script is what
-regenerates them.
+The six committed documents are the deliverable and are committed alongside the Scala code; the
+manifest and the specs listed above are the outstanding work, itemised in *Known limitations at
+this revision*. This script is what regenerates the documents — with the day-count exception
+recorded there.
 
 ### 5. Encoding conventions
 
@@ -313,8 +527,12 @@ circe decoders read them, so neither side may change one alone.
   sorted maps; object keys are written in a fixed declared order; strings are escaped to pure
   ASCII, so the bytes do not depend on the platform charset; indentation is two spaces, line
   endings are `\n`, and scalar arrays are chunked at a fixed ten items per line, so a long array
-  is neither one unreadable line nor one line per element. Same inputs, same bytes — see
-  *Verification status*.
+  is neither one unreadable line nor one line per element. Same inputs, same bytes: three runs on
+  one JDK produced byte-identical documents, as the *Verification record* shows. Two *array
+  orders* are the exception, and they are the reason that record is scoped to one JDK — the
+  day-count list and the manifest's constant-name arrays are built from
+  `Class.getDeclaredFields()`, whose order Java SE does not specify, so another JDK 21 build may
+  order them differently. Limitation 5 in section 3 says what to do about it.
 * **`holiday-baseline.json` alone is written one row object per line**, unindented, because its
   3,846 rows carry about 445,000 date strings: pretty-printing them costs roughly 2 MB of pure
   indentation and buys nothing, since the unit anyone reads or diffs there is the row. It is the
@@ -338,19 +556,52 @@ correct. Each check in the script names the tolerance it used, and prints it on 
 
 Each fixture is a **JSON array of row objects**. Every row carries a `source` field naming the
 Java test method or the generated population it came from, which is what makes a failure
-attributable; where `source` cannot identify a single row the row also carries a unique `id`, and
-that is the name the parity report prints: `daycount-baseline.json` carries one on every row, and
-`holiday-baseline.json`, at 3,846 rows, does the same. A row either carries its expectations or
-carries an `error` — an `error` row is an expectation in its own right, not an omission.
+attributable.
 
-**Harness contract.** `ParityHarness.assertParity(actual, expected)` passes when
-`|a − e| ≤ 1e-9` **and** `|a − e| ≤ 1e-9 · max(|a|, |e|, 1e-300)` — both bounds, so neither a
-large magnitude nor a near-zero value can hide a discrepancy. Dates, lists and strings compare
+**Row identity differs by fixture, and a decoder has to know which case it is in.** Four fixtures
+carry an explicit, unique `id`, and that is the name a parity report prints: `daycount-baseline.json`
+(on all 18,356 rows), `holiday-baseline.json` (all 3,846), `fx-baseline.json` (all 14) and
+`currency-math-baseline.json` (all 6). The other two do not:
+
+* `double-array-baseline.json` needs none — each of its 14 rows has a distinct `source`, so
+  `source` *is* the identity.
+* `schedule-baseline.json` has neither an `id` nor a distinct `source`: 879 rows share 16 `source`
+  values, and `grid.combinations` alone accounts for 768 of them. A consumer therefore derives a
+  row's identity from `source` **plus the eleven input fields *and* `replacedStartDate` where the
+  row carries one**. That last part is not optional: over the committed fixture, `source` plus the
+  eleven inputs yields **878** distinct identities for 879 rows, because two `data_replace` rows
+  share one base definition and differ only in the replacement date (`2014-07-04`, which resolves,
+  and `2014-09-04`, which is rejected). With `replacedStartDate` included, all 879 are distinct —
+  measured, not assumed. A report that names only the `source` cannot say which of the 768 grid
+  rows failed either, so put the frequency, stub convention, roll convention and calendar in the
+  message. Adding an `id` to the fixture would be the better fix, and would mean regenerating it
+  and updating this section together.
+
+**An `error` is an expectation in its own right, not an omission** — but exclusivity is per
+*operation*, not per row. A row that evaluates one operation carries either its value or its
+`error`. A row that evaluates several carries one outcome per operation and may legitimately mix
+them: in `daycount-baseline.json`, `yearFraction` and `error` are never both present, `days` and
+`daysError` are never both present, yet **1,048 rows carry an `error` for one operation alongside a
+successful value for another** — 1,028 where the year fraction fails and `days` succeeds, and the
+20 out-of-order rows where `relativeYearFraction` succeeds because it has no order check while
+`yearFraction` and `days` both reject the pair. Per-fixture sections below state which fields pair
+with which error.
+
+**Harness contract.** `ParityHarness.assertParity(label, actual, expected)` returns the
+discrepancy, or nothing when the two values are at parity: at parity means `|a − e| ≤ 1e-9`
+**and** `|a − e| ≤ 1e-9 · max(|a|, |e|, 1e-300)` — both bounds, so neither a large magnitude nor a
+near-zero value can hide a discrepancy. The `label` is what makes a report readable, so it names
+the field being compared. `assertParityOpt` compares values either side may be without (two
+absences are at parity, one absence differs) and `assertParitySeq` compares lists element by
+element. Bit-identical values, signed zero included, are at parity without arithmetic, and a
+non-finite value is at parity only with an identical one. Dates, lists and strings compare
 exactly. An `error` row must produce a `Left` from an `Either`-returning API, or the documented
-`ArgCheck` exception from a precondition API. Each parity spec writes
+`ArgCheck` exception from a precondition API. Each parity spec is specified to write
 `<parity.report.dir>/<fixture>.json` with its pass/fail counts *before* asserting that nothing
-failed, and `scripts/verify-gates.sh` collects those reports into `target/gate-report.md`. Those
-reports come from the **ScalaTest run**; this script never writes them.
+failed, and `scripts/verify-gates.sh` is to collect those reports into `target/gate-report.md`;
+that script does not exist at this revision, so today the reports are written by whichever spec
+runs and read by whoever looks. Either way the reports come from the **ScalaTest run** — this
+script never writes them.
 
 #### `daycount-baseline.json`
 
@@ -430,11 +681,17 @@ information); `sched` 6,446 (all 22 subjects × `P1M`/`P3M`/`P6M`/`P12M` × regu
 with `firstRegularStartDate`, `SHORT_FINAL` with `lastRegularEndDate` × every period,
 2015-01-15 → 2020-01-15, evaluated with the real `Schedule`).
 
-Observed: **18,356 rows, 165,634 checks, 1,050 `error` rows**, 13,302,984 bytes. Three of the Java
-tables contain literal duplicate rows carrying identical expectations — one in `data_yearFraction`,
-one in `data_days` and nine date pairs repeated between the sections of `data_ACTACTAFB` — and
-those rows are reproduced rather than de-duplicated, so the second occurrence takes a `-2` id
-suffix; the total (11) is asserted, so a new duplicate cannot appear unnoticed.
+Measured on the committed document: **18,356 rows**, each with a unique `id`, **1,050** of them
+carrying a year-fraction `error` and 22 a `daysError`, **13,302,984 bytes**. The check count the
+capture that produced it reported is not quoted here, because it is not reproducible from this
+script — see the note below and limitation 2; the script's current day-count figures are in the
+section 3 summary table.
+
+Three of the Java tables contain literal duplicate rows carrying identical expectations — one in
+`data_yearFraction`, one in `data_days` and nine date pairs repeated between the sections of
+`data_ACTACTAFB` — and those rows are reproduced rather than de-duplicated, so the second
+occurrence takes a `-2` id suffix; the total (11) is asserted, so a new duplicate cannot appear
+unnoticed.
 
 The capture asserts one hard anchor before emitting anything: `Act/Act ISDA` from 2011-12-28 to
 2012-02-28 must equal `4/365 + 58/366` (`0.16942884946478032`). The `SIMPLE_30_360` /
@@ -442,18 +699,14 @@ The capture asserts one hard anchor before emitting anything: `Act/Act ISDA` fro
 exactly as the Java consumers resolve them, so no row carries `"NaN"` or `0` as a stand-in for a
 30/360 expectation — and the fixture contains no non-finite year fraction at all.
 
-Because the schema above is uniform where `capture-baseline.jsh` section 7 is not (that emitter
-predates it: no `id`, a nullable `scheduleInfo`, five different row key sets), the committed
-document was produced by an equivalent capture assembled **outside the checkout** from this
-script's verbatim data tables, JSON writer and self-check framework plus the emitter this schema
-requires. Regenerating it means reproducing the rules in this sub-section; the numbers above, the
-anchor, and the row-by-row agreement of all 18,234 shared rows with section 7's output are what
-make the document auditable in the meantime.
+**The checked-in script reproduces this fixture byte for byte**, at the uniform schema above: one
+twelve-key row shape, a unique `id` on every row, `scheduleInfo` always an object, and all 18,356
+rows. The hard anchor holds, and a re-capture that comes back `DIFFERS` is a finding — section 3's
+verification record carries the comparison.
 
-The document is 13 MB, which is large enough to ask about and small enough not to worry about:
-reading it through `Resources.readClasspathText`, parsing it with circe and decoding all 18,356
-rows into a twelve-field product was measured at about 1.3 s inside a forked test JVM capped at
-`-Xmx320m`, so the parity spec needs no special heap.
+The document is 13 MB — large for a test resource, and what coverage of this size costs. It is read
+in one pass and decoded in full by the spec that will consume it, so size the forked test JVM's
+heap with that in mind rather than assuming a small resource.
 
 #### `schedule-baseline.json`
 
@@ -467,8 +720,16 @@ optional field is `null`.
 **All twelve input keys — the eleven fields plus `source` — are present in every row of this
 fixture, `null` where unset, including in rows that carry an `error`.** A definition the builder
 itself rejects never becomes a `PeriodicSchedule` object, so its inputs are rendered from the raw
-values instead; the key set and the key order are the same either way. That uniformity is what
-lets the Scala decoder read the whole document into one case class.
+values instead; the input key set and its order are the same either way. That uniformity is what
+lets the Scala decoder read every row's inputs into one case class. The *expectation* keys do vary
+with the outcome, which is why the document holds four row shapes in all: 296 resolved rows (the
+twelve inputs plus seven expectation keys), 572 rejected rows (the twelve plus `error`), and the
+`data_replace` rows in their two forms (25 keys resolved, 14 rejected).
+
+This is also the one fixture with **no `id`** and no distinct `source` — 879 rows over 16 `source`
+values, 768 of them `grid.combinations` — so a row is identified by its `source` together with its
+eleven input fields *and* the `replacedStartDate` of the `data_replace` rows, without which two of
+them collide. The row-identity note at the top of this section has the measured counts.
 
 Row expectations: `unadjustedDates`, `adjustedDates`,
 `periods[{unadjustedStart, unadjustedEnd, start, end}]`, `initialStub`, `finalStub` (each a period
@@ -483,7 +744,8 @@ adjustedDates[i+1]` and `periods.length == unadjustedDates.length - 1` hold by c
 The `data_replace` rows model an operation rather than a plain resolution, so they add four keys
 of their own. `replacedStartDate` is the input: the date passed to
 `PeriodicSchedule.replaceStartDate(...)`, applied to the base definition the eleven input fields
-describe. `replacedDefinition` is the post-replacement definition, rendered with the same eleven
+describe — and it is part of a row's identity, because two of these rows share their base
+definition and differ only in this date. `replacedDefinition` is the post-replacement definition, rendered with the same eleven
 fields, which is what the Java test asserts field by field
 (`PeriodicScheduleTest.java:1002-1013`: the override start date and the first regular start date
 are cleared, the start date becomes the replacement, the start-date adjustment becomes
@@ -531,11 +793,17 @@ Observed: 879 rows, 311 checks, 573 `error` rows.
 
 #### `fx-baseline.json`
 
-One row per scenario, and **every row carries the same nine keys in the same order** — a query
-list a scenario does not exercise is emitted as an empty array, never omitted, so the fixture has
-exactly one shape:
+One row per scenario. **Every row carries these nine keys, in this order** — a query list a
+scenario does not exercise is emitted as an empty array, never omitted:
 
 `id`, `source`, `matrix`, `matrixState`, `queries`, `conversions`, `multi`, `crosses`, `merges`.
+
+There is one variant, and it adds a tenth key rather than removing any: a row whose matrix
+definition the **builder itself** rejects carries `"matrixState": null`, the five query lists
+empty, and a top-level `error`. No row in the committed fixture exercises it — all 14 have exactly
+the nine keys above — so a decoder that treats `error` as an optional tenth field reads both
+shapes, and one that demands exactly nine keys reads today's fixture and breaks on the first
+rejected definition anyone adds.
 
 Inputs:
 
@@ -652,9 +920,14 @@ naming:
   no per-array `total`; the aggregate is the static
   `MultiCurrencyAmountArray.total(Iterable<CurrencyAmountArray>)` and is captured in the
   multi-array bucket.
-* `"captureOnly": true` (with `minorUnitDigits`) — an entry with no hard-coded Java test constant
-  to compare against: a seeded-random amount, or one of the per-currency sweeps below. The summary
-  counts them separately so an entry that *should* have been checked cannot hide among them.
+* `"captureOnly": true` (with `minorUnitDigits` where a currency's minor units are the point) — an
+  entry with no hard-coded Java test constant to compare against: a seeded-random amount, or one of
+  the per-currency sweeps below. **173 of this fixture's 355 expectation entries carry it.** The
+  run's `capOnly` column reports a larger figure — 228 — because the 55 per-currency random-amount
+  operations increment that counter without the field being emitted on the entry. The field is the
+  contract a consumer reads; the column is a run-time tally. They are not the same number, and
+  limitation 6 in section 3 records it. What the marker is for holds either way: an entry that
+  *should* have been checked cannot hide among the unchecked ones.
 * `doubleToLongBits` — the exact bit pattern of a signed zero, on the entries where the sign is
   the thing being pinned. `CurrencyAmount` normalises `-0.0` to `+0.0` in both its factory and its
   arithmetic results, `CurrencyAmountArray` stores a `DoubleArray` and **keeps** the sign bit, and
@@ -707,8 +980,9 @@ amounts `1234.56789` (five decimal places, so rounding to 0, 2 and 3 minor units
 from the shared seeded `Random`: the stream is consumed in fixture order, so a draw added here
 would shift the random values of every fixture captured afterwards.
 
-Observed: 6 rows, 227 checks, 29 `error` entries, 228 capture-only entries, 355 expectation
-entries in total, covering all 74 configured and historic currencies.
+Observed: 6 rows, 227 checks, 29 `error` entries and 355 expectation entries in total, of which
+173 carry `captureOnly: true` (the run's `capOnly` tally reports 228, as above), covering all 74
+configured and historic currencies.
 
 #### `holiday-baseline.json`
 
@@ -806,29 +1080,43 @@ asserted, so thinning the year coverage cannot pass unnoticed.
 
 #### `double-array-baseline.json`
 
-Row inputs: `source`, `a`, `b` (arrays), `scalar`, `matrixA`, `matrixB` (arrays of row arrays, or
-`null`). Expectations live in `results`, one entry per operation, each naming its `op` and carrying
-`result` or `error`, plus any operation parameter (`mapFn`, `reduceFn`, `identity`, `fromIndex`,
-`index`, `value`, `row`, `column`, `combineFn`, `scalar`).
+One flat row shape, the same keys on every row, with no optional field, no `null` and no `error`
+entry anywhere. Eleven of the keys are the row's inputs — `id`, `a`, `b` (arrays), `scalar`,
+`subArrayFrom`, `subArrayTo`, `matrixA`, `matrixB` (arrays of row arrays), `withRow`, `withColumn`,
+`withValue` — and the remaining twenty-two are the expectations, each named for the operation that
+produced it: `plusScalar`, `plusArray`, `minusScalar`, `minusArray`, `multipliedByScalar`,
+`multipliedByArray`, `dividedByScalar`, `dividedByArray`, `mapSquared`, `reduceSum`, `sum`, `min`,
+`max`, `sorted`, `concat`, `subArray`, `matrixMultipliedBy` (**scalar** — see section 8),
+`matrixPlus`, `matrixMinus`, `matrixTranspose`, `matrixTotal`, `matrixWith`.
 
-Operations: `plus`, `minus`, `multipliedBy`, `dividedBy`, `map`, `reduce`, `sum`, `min`, `max`,
-`sorted`, `concat`, `subArray`, `with`; and when a matrix is present `matrixMultipliedBy`
-(**scalar** — see section 8), `transpose`, `total`, `matrixWith`, `matrixPlus`, `matrixMinus`,
-`matrixCombine`.
+Every row's inputs are chosen so that all twenty-two operations have a value: the row carries the
+`subArray` bounds and the `with` coordinates it is legal for, and the empty array and the
+length-mismatched pair are not rows here. The behaviour those cases pin — `min`/`max` on an empty
+array, `subArray` and `with` outside the array, the element-wise operations on arrays of different
+lengths, and the matrix dimension preconditions — is asserted at capture time against the exception
+types the Java tests name, rather than being serialised as an expectation.
 
-Input population: the literal arrays of `DoubleArrayTest` and `DoubleMatrixTest` — including the
-empty array, whose `min`/`max` throw and are therefore `error` expectations — rows with signed zero
-and with `NaN`/`±Infinity` contents so the tagged-double policy is exercised end to end, and
-seeded random arrays and matrices. Observed: 14 rows, 4 `error` entries.
+Input population: 43 rows, each with a unique `id`, in three groups the capture asserts the size of
+— 19 `javatest-*` rows derived from the literal arrays of `DoubleArrayTest` and `DoubleMatrixTest`,
+18 `random-*` rows drawn from a generator seeded by this fixture alone and spanning the magnitudes
+`1e-8` to `1e8` so both halves of the parity rule are exercised, and 6 `ieee-*` rows carrying signed
+zero, infinities and `NaN` so the tagged-double policy is exercised end to end. A non-finite
+expectation is compared by exact IEEE identity rather than by the `1e-9` tolerance. The fixture
+contributes 382 capture-time checks against 24 capture-only entries, and the hard-coded constants of
+`DoubleArrayTest` and `DoubleMatrixTest` are re-asserted at those tests' own `DELTA` of `1e-14`
+alongside the rows.
 
 ### 7. Manifest schema
 
 `reference-data-manifest.json` is a single object, not a row array. It enumerates every reference
 data table from the **Java** side with **every count asserted during capture**, so a resource
-edited under the port cannot silently reshape it. `ReferenceDataManifestSpec` then asserts that the
-ported Scala data objects equal this document exactly — which is why the key names and the nesting
-below are a contract: renaming a key, flattening an object or turning an ordered array into a map
-breaks that spec.
+edited under the port cannot silently reshape it. The document below is what a run produces —
+254,640 bytes with exactly these 29 top-level keys, measured at the revision pinned in section 3 —
+and it is **not committed** at this revision, nor is the `ReferenceDataManifestSpec` that is to
+assert the ported Scala data objects equal it exactly. So the key names and the nesting below are
+the specification that spec will be written against: renaming a key, flattening an object or
+turning an ordered array into a map changes what it will have to read, and until it exists nothing
+detects such a change automatically.
 
 Top-level keys, in the order they are written:
 
@@ -883,11 +1171,11 @@ Each of the following silently corrupts a baseline if forgotten, and each is a v
 of the Java sources this capture reads — not a style preference. Check them before changing how
 anything is captured.
 
-* **The day-count section is behind its committed fixture.** `daycount-baseline.json` as committed
-  is richer than what this script emits, in the ways the verification log above itemises, so the
-  two are not interchangeable: regenerate the other five fixtures freely, but treat
-  `daycount-baseline.json` as the reference until the day-count section reproduces it. The gap is
-  one of coverage, not of correctness — the values present in both agree exactly.
+* **Every committed fixture is regenerable, so a diff after a re-capture is a finding.** All six —
+  `daycount-baseline.json` included — come back byte for byte from a run of the checked-in script at
+  the schemas section 6 documents. Re-capture freely, but compare document by document as step 3
+  describes, and treat any difference as something to investigate before committing rather than as
+  the new baseline.
 
 * **Public API only.** A `.jsh` script runs in the unnamed package, so the package-private classes
   the Java tests reach by sharing their package are **unreachable** here:
@@ -954,11 +1242,19 @@ anything is captured.
 * **`[THBA]` has a trailing `Weekend` key.** Its section holds 75 year rows (2005–2079) *and* a
   `Weekend = Sat,Sun` entry, so a naive key count returns 76. The manifest emits the weekend value
   separately.
-* **Reflection is fine here.** Enumerating a public constants holder with `getDeclaredFields()` is
-  the only way to obtain a provably *complete* constant list, which is the whole point of a
-  manifest. The no-reflection requirement applies to the Scala **codec path**, not to a developer
-  tool under `tools/`. Where an `ExtendedEnum` accessor gives the same answer, the accessor is
-  preferred.
+* **Reflection is fine here, but its *order* is not a contract.** Enumerating a public constants
+  holder with `getDeclaredFields()` is the only way to obtain a provably *complete* constant list,
+  which is the whole point of a manifest, and the no-reflection requirement applies to the Scala
+  **codec path**, not to a developer tool under `tools/`. Where an `ExtendedEnum` accessor gives
+  the same answer, the accessor is preferred. What does not follow is the order: Java SE specifies
+  none for the array `getDeclaredFields()` returns, yet the day-count list
+  (`DayCounts.class.getDeclaredFields()`) and every manifest `*Constants.names` array are emitted
+  in exactly that order. Byte-identity across JDK builds therefore is not guaranteed — limitation
+  5 of section 3 says what to expect and what to check — and sorting these arrays, or deriving
+  their order from an ordered source table, is the change that would make it guaranteed.
 
-For the wider context — the module layout, the sbt commands and the list of deliberate divergences
-from the Java behaviour — see [the repository README](../../README.md) and `SCALA_MIGRATION.md`.
+For the wider context, `build.sbt` defines the module layout and the sbt commands, and
+`strata-collect/README.md` describes the ported collect subset. The list of deliberate divergences
+from the Java behaviour belongs in `SCALA_MIGRATION.md`, which does not exist at this revision, and
+the repository's [root README](../../README.md) does not yet carry a Scala-port section — so until
+those land, this document and `strata-collect/README.md` are the context that exists.

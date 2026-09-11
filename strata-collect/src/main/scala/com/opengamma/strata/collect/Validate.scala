@@ -814,29 +814,37 @@ object Validate {
    * Validate.notNegativeOrZero(amount, 0.0001, "amount")
    * }}}
    *
-   * The tolerance is itself checked first, because a negative tolerance describes no
-   * interval and the comparison against it would mean nothing; the numeric helper that the
-   * Java original called rejected one the same way. The two checks are therefore chained
-   * rather than accumulated: an unusable tolerance is reported on its own, since the outcome
-   * of the check it governs would be meaningless. A not-a-number argument is not near zero
+   * The tolerance is itself checked first, because neither a not-a-number tolerance nor a
+   * negative one describes an interval, and the comparison against either would mean nothing;
+   * the numeric helper that the Java original called rejected both the same way. The checks
+   * are therefore chained rather than accumulated: an unusable tolerance is reported on its
+   * own, as a single failure, since the outcome of the check it governs would be meaningless.
+   * The two tolerance checks are chained with each other for the same reason, being a number
+   * first, so a not-a-number tolerance is reported as not being a number and a negative one
+   * as being negative, never as both. A zero tolerance is usable and is accepted, and so is
+   * negative zero, which is not a negative value. A not-a-number argument is not near zero
    * and is not below zero, so it passes both tests here, as it did there.
    *
    * @param argument  the argument to check
-   * @param tolerance  the tolerance to use for zero, which has to not be negative
+   * @param tolerance  the tolerance to use for zero, which has to be a number and has to not
+   *   be negative
    * @param name  the name of the argument to use in the error message
-   * @return the argument if it lies above the tolerance, otherwise the failure describing
-   *   the tolerance or the argument
+   * @return the argument if it lies above the tolerance, otherwise the single failure
+   *   describing the tolerance - not a number, or negative - or the failure describing the
+   *   argument
    */
   def notNegativeOrZero(argument: Double, tolerance: Double, name: String): ValidatedFailures[Double] =
-    notNegative(tolerance, "tolerance").andThen { checkedTolerance =>
-      if (isNearZero(argument, checkedTolerance)) {
-        invalidNec(notZeroMsg(name))
-      } else if (argument < 0.0) {
-        invalidNec(s"Argument '$name' must be greater than zero but has value $argument")
-      } else {
-        valid(argument)
+    notNaN(tolerance, "tolerance")
+      .andThen(checkedNumber => notNegative(checkedNumber, "tolerance"))
+      .andThen { checkedTolerance =>
+        if (isNearZero(argument, checkedTolerance)) {
+          invalidNec(notZeroMsg(name))
+        } else if (argument < 0.0) {
+          invalidNec(s"Argument '$name' must be greater than zero but has value $argument")
+        } else {
+          valid(argument)
+        }
       }
-    }
 
   /**
    * Checks that the argument is neither negative nor zero.
@@ -879,20 +887,27 @@ object Validate {
    * Validate.notZero(amount, 0.0001, "amount")
    * }}}
    *
-   * As in the check above, the tolerance is examined first and the two checks are chained
-   * rather than accumulated, because a negative tolerance describes no interval. A
-   * not-a-number argument is not near zero, so it passes.
+   * As in the check above, the tolerance is examined first and the checks are chained rather
+   * than accumulated, because neither a not-a-number tolerance nor a negative one describes
+   * an interval; being a number is checked before being non-negative, so an unusable
+   * tolerance is reported as what it is and always as a single failure. A zero tolerance, of
+   * either sign, is usable and is accepted. A not-a-number argument is not near zero, so it
+   * passes.
    *
    * @param argument  the argument to check
-   * @param tolerance  the tolerance to use for zero, which has to not be negative
+   * @param tolerance  the tolerance to use for zero, which has to be a number and has to not
+   *   be negative
    * @param name  the name of the argument to use in the error message
    * @return the argument if it lies further than the tolerance from zero, otherwise the
-   *   failure describing the tolerance or the argument
+   *   single failure describing the tolerance - not a number, or negative - or the failure
+   *   describing the argument
    */
   def notZero(argument: Double, tolerance: Double, name: String): ValidatedFailures[Double] =
-    notNegative(tolerance, "tolerance").andThen { checkedTolerance =>
-      checked(!isNearZero(argument, checkedTolerance), argument, notZeroMsg(name))
-    }
+    notNaN(tolerance, "tolerance")
+      .andThen(checkedNumber => notNegative(checkedNumber, "tolerance"))
+      .andThen { checkedTolerance =>
+        checked(!isNearZero(argument, checkedTolerance), argument, notZeroMsg(name))
+      }
 
   private def notZeroMsg(name: String): String =
     s"Argument '$name' must not be zero"
@@ -904,15 +919,26 @@ object Validate {
    * fuzzy-comparison semantics of the numeric helper that the Java original called: a value
    * is near zero when its magnitude does not exceed the tolerance, or when it equals zero
    * exactly. The second clause is what makes the comparison total, and the two clauses
-   * together give the behaviour that matters at the edges of the domain: a not-a-number value
-   * is never near zero, and neither infinity is either.
+   * together give the behaviour at the edges of the domain. A not-a-number argument is never
+   * near zero: its magnitude does not compare against the tolerance and it does not equal
+   * zero, so both checks above admit it, exactly as the Java checks did. An infinity is near
+   * zero only when the tolerance is itself infinite, since that is the only tolerance an
+   * infinite magnitude does not exceed; at every finite tolerance it is clear of zero and
+   * passes. The callers establish, before reaching here, that the tolerance is a number and
+   * is not negative.
    *
-   * The array-oriented forms of the same comparison live with the rest of the array
-   * arithmetic, in `DoubleArrayMath`. They are deliberately not called from here, so that
-   * this object depends on nothing but the failure model it reports through.
+   * The array-oriented forms of the comparison live with the rest of the array arithmetic, in
+   * `DoubleArrayMath`, and a reader comparing the two should expect them to differ: that
+   * object states the migration plan's reading of a fuzzy comparison, under which a
+   * not-a-number value is equal to nothing at all and each infinity is equal only to itself
+   * at any tolerance, including an infinite one. This local zero test deliberately keeps the
+   * Java behaviour instead, because the Java check is the authority for these two checks and
+   * their messages. They are also deliberately not called from here, so that this object
+   * depends on nothing but the failure model it reports through.
    *
    * @param argument  the value to test
-   * @param tolerance  the tolerance to use for zero
+   * @param tolerance  the tolerance to use for zero, already checked to be a number that is
+   *   not negative
    * @return true if the value counts as zero
    */
   private def isNearZero(argument: Double, tolerance: Double): Boolean =

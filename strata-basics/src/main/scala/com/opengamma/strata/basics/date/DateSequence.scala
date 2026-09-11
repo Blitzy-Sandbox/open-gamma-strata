@@ -24,9 +24,8 @@ import cats.syntax.apply._
 import _root_.io.circe.Codec
 import _root_.io.circe.Decoder
 import _root_.io.circe.Encoder
-import _root_.io.circe.Json
 import _root_.io.circe.generic.semiauto.deriveDecoder
-import _root_.io.circe.syntax.EncoderOps
+import _root_.io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.collect.ArgCheck
 import com.opengamma.strata.collect.Named
@@ -746,6 +745,40 @@ sealed abstract case class SequenceDate private (
         }
     }
   }
+
+  /**
+   * Returns a string describing the instruction.
+   *
+   * All four fields are named, in the declaration order of the type, and a field holding
+   * nothing is rendered with the companion's `AbsentFieldMarker` rather than left out, so the
+   * rendering is that of the bean being ported character for character:
+   *
+   * {{{
+   * SequenceDate{yearMonth=[absent], minimumPeriod=P2M, sequenceNumber=3, fullSequence=true}
+   * SequenceDate{yearMonth=2020-02, minimumPeriod=[absent], sequenceNumber=2, fullSequence=false}
+   * }}}
+   *
+   * `[absent]` stands in for the text of `AbsentFieldMarker`, which these examples name rather
+   * than print: that text is the host platform's rendering of an absent reference, a token the
+   * domain code of this port writes nowhere, and the constant carries the reason why.
+   *
+   * The field set is fixed rather than derived from which fields are present, because a reader
+   * of a log line or a snapshot compares renderings of different instructions against one
+   * another, and a layout that changes with the data cannot be read that way. It is also what
+   * the `Show` instance renders, which is obtained from this method so the two cannot diverge.
+   *
+   * Note that this is not the shape of the JSON this type writes, where an absent field is
+   * dropped from the document entirely: the two serve different readers, and only this one is
+   * required to reproduce the rendering of the type being ported.
+   *
+   * @return the descriptive string, naming all four fields
+   */
+  override def toString: String = {
+    val renderedYearMonth = yearMonth.fold(SequenceDate.AbsentFieldMarker)(_.toString)
+    val renderedMinimumPeriod = minimumPeriod.fold(SequenceDate.AbsentFieldMarker)(_.toString)
+    s"SequenceDate{yearMonth=$renderedYearMonth, minimumPeriod=$renderedMinimumPeriod, " +
+      s"sequenceNumber=$sequenceNumber, fullSequence=$fullSequence}"
+  }
 }
 
 /**
@@ -767,12 +800,29 @@ object SequenceDate {
   private val NegativeMinimumPeriodMessage = "Minimum period cannot be negative"
 
   /**
-   * The raw field shape the JSON decoder reads before validation.
+   * The text an absent optional field is rendered with by [[SequenceDate.toString]].
+   *
+   * This is the marker the bean being ported printed for a field holding nothing, and it has to
+   * be reproduced exactly for the rendering of an instruction to be the rendering that bean
+   * produced. It is obtained from the way the host platform renders an absent reference -
+   * converting an empty `Option` to a reference and asking the platform for its text - rather
+   * than written out as a string literal, because the domain code of this port names no absent
+   * reference anywhere and is checked for that: taking the text from the platform keeps the one
+   * place that needs the marker free of the token as well.
+   */
+  private val AbsentFieldMarker: String = String.valueOf(Option.empty[AnyRef].orNull)
+
+  /**
+   * The raw field shape the JSON codec is derived from.
    *
    * Decoding a validated type is two steps: read the fields, then hand them to the factory that
-   * decides whether they describe a value. This product is the first step, and it exists only
-   * for that purpose - it is private, it is never returned, and nothing but the decoder below
-   * builds one.
+   * decides whether they describe a value. This product is the first step, and encoding is the
+   * same two steps run backwards - an instruction is taken apart into these fields and the
+   * derived encoder writes them. It exists only for those purposes: it is private, it is never
+   * returned, and nothing but the codec below builds one.
+   *
+   * The field names and their declaration order are therefore the wire shape, and holding them
+   * in one product is what keeps the two directions of the codec describing the same document.
    *
    * @param yearMonth  the month to count from, if the document carried one
    * @param minimumPeriod  the minimum period, if the document carried one
@@ -787,6 +837,9 @@ object SequenceDate {
 
   /** The derived decoder of the raw field shape, used by the validating decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
+
+  /** The derived encoder of the raw field shape, used by the encoder below. */
+  private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
   //-------------------------------------------------------------------------
   /**
@@ -940,31 +993,23 @@ object SequenceDate {
   /**
    * The rendering of instructions as text.
    *
-   * The rendering names every field the instruction actually carries, and leaves out the two
-   * optional fields when they hold nothing:
+   * Renders what [[SequenceDate.toString]] renders, which reproduces the rendering of the type
+   * being ported field for field: all four fields, always, in declaration order, an absent
+   * optional field carrying the `AbsentFieldMarker` text that type printed for one, which the
+   * examples below stand in for as `[absent]`:
    *
    * {{{
-   * SequenceDate{yearMonth=2020-03, sequenceNumber=1, fullSequence=false}
-   * SequenceDate{minimumPeriod=P3M, sequenceNumber=2, fullSequence=true}
+   * SequenceDate{yearMonth=[absent], minimumPeriod=P3M, sequenceNumber=2, fullSequence=true}
+   * SequenceDate{yearMonth=2020-03, minimumPeriod=[absent], sequenceNumber=1, fullSequence=false}
    * }}}
    *
-   * The type being ported named both optional fields in the same layout, rendering an absent
-   * one with the empty marker of the host language. Omitting the field instead is a deliberate
-   * divergence, recorded in the migration note: it matches the JSON this type writes, where an
-   * absent field is likewise absent rather than explicitly empty, and it keeps the rendering to
-   * the information the instruction actually holds.
+   * Taking the rendering from `toString` rather than writing it a second time is what keeps the
+   * two ways of putting an instruction into a message in agreement, since neither can be changed
+   * without the other following.
    *
-   * @return the rendering of an instruction, naming only the fields it carries
+   * @return the rendering of an instruction, naming all four of its fields
    */
-  implicit val show: Show[SequenceDate] = Show.show { value =>
-    val optionalFields = List(
-      value.yearMonth.map(month => s"yearMonth=$month"),
-      value.minimumPeriod.map(period => s"minimumPeriod=$period")).flatten
-    val fields = optionalFields ::: List(
-      s"sequenceNumber=${value.sequenceNumber}",
-      s"fullSequence=${value.fullSequence}")
-    s"SequenceDate{${fields.mkString(", ")}}"
-  }
+  implicit val show: Show[SequenceDate] = Show.show(_.toString)
 
   //-------------------------------------------------------------------------
   /**
@@ -972,19 +1017,29 @@ object SequenceDate {
    *
    * An instruction is written as an object of its four fields, the two optional ones being
    * omitted rather than written as explicitly empty, with the month as `2020-03` and the period
-   * as `P3M` - the ISO forms. The encoder is written out field by field rather than derived,
-   * because the type is a validated one whose constructor is not public, and it is wrapped so
-   * that a field holding nothing is dropped from the output.
+   * as `P3M` - the ISO forms:
+   *
+   * {{{
+   * {"minimumPeriod":"P2M","sequenceNumber":3,"fullSequence":true}
+   * {"yearMonth":"2020-02","sequenceNumber":2,"fullSequence":false}
+   * }}}
+   *
+   * The encoding is derived when this file is compiled, so no part of it inspects a class while
+   * the program runs. It is derived for the raw field shape rather than for the type itself,
+   * because the type is a normalising one whose constructor is not public: an instruction is
+   * taken apart into those fields and the derived encoder writes them, which is the exact
+   * counterpart of the decoder below reading them and handing them to the factory. Deriving the
+   * field set instead of listing it is what keeps the written document and the product in step -
+   * a field added to the type is a field the compiler makes appear here.
+   *
+   * The derived encoder is then wrapped so that a field holding nothing is dropped from the
+   * output rather than written as explicitly empty, as every product encoding of this port is.
    *
    * @return the encoder writing an instruction as an object of the fields it carries
    */
   implicit val encoder: Encoder[SequenceDate] =
-    Codecs.dropNulls(Encoder.instance[SequenceDate] { value =>
-      Json.obj(
-        "yearMonth" -> value.yearMonth.asJson,
-        "minimumPeriod" -> value.minimumPeriod.asJson,
-        "sequenceNumber" -> value.sequenceNumber.asJson,
-        "fullSequence" -> value.fullSequence.asJson)
+    Codecs.dropNulls(rawEncoder.contramap[SequenceDate] { value =>
+      Raw(value.yearMonth, value.minimumPeriod, value.sequenceNumber, value.fullSequence)
     })
 
   /**

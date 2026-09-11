@@ -169,6 +169,22 @@ class DecimalSpec
   private val RoundingModes: List[RoundingMode] =
     RoundingMode.values.toList.filterNot(mode => mode == RoundingMode.UNNECESSARY)
 
+  /**
+   * The three values of a `Double` that name no decimal, each with the message it is reported
+   * by.
+   *
+   * These are the only values a `Double` takes that are not finite, and every arithmetic
+   * method taking a `Double` converts its operand before computing, so the same three cases
+   * apply to all four of them. The message is the literal text of the report rather than a
+   * string this spec builds the way the implementation builds it, so a change to either the
+   * text or the branch producing it fails these cases instead of passing quietly.
+   */
+  private val nonFiniteValues: TableFor2[Double, String] = Table(
+    ("value", "message"),
+    (Double.NaN, "Decimal value must be finite: NaN"),
+    (Double.PositiveInfinity, "Decimal value must be finite: Infinity"),
+    (Double.NegativeInfinity, "Decimal value must be finite: -Infinity"))
+
   //-------------------------------------------------------------------------
   // The seven tables of the ported test class, with their rows unchanged.
 
@@ -723,6 +739,16 @@ class DecimalSpec
     fromDouble(-123.45).plus(123.45) shouldBe fromDouble(0.0)
   }
 
+  test("adding a Double that is not finite raises rather than adding") {
+    // the operand is converted before the addition and a value that is not finite names no
+    // decimal, so the precondition broken is that of the conversion and the message names the
+    // value; the finite case is here so this cannot pass by every addition raising
+    fromDouble(1.5).plus(2.5) shouldBe fromDouble(4.0)
+    forAll(nonFiniteValues) { (value, message) =>
+      intercept[IllegalArgumentException](fromDouble(1.5).plus(value)).getMessage shouldBe message
+    }
+  }
+
   test("subtracting a whole number covers the values no decimal of its own can hold") {
     fromDouble(12.0).minus(13L) shouldBe whole(-1L)
     fromDouble(0.0).minus(0L) shouldBe whole(0L)
@@ -745,6 +771,13 @@ class DecimalSpec
     fromDouble(0.0).minus(123.45) shouldBe fromDouble(-123.45)
     fromDouble(123.45).minus(123.45) shouldBe fromDouble(0.0)
     fromDouble(-123.45).minus(123.45) shouldBe fromDouble(-246.9)
+  }
+
+  test("subtracting a Double that is not finite raises rather than subtracting") {
+    fromDouble(1.5).minus(2.5) shouldBe fromDouble(-1.0)
+    forAll(nonFiniteValues) { (value, message) =>
+      intercept[IllegalArgumentException](fromDouble(1.5).minus(value)).getMessage shouldBe message
+    }
   }
 
   //-------------------------------------------------------------------------
@@ -776,6 +809,14 @@ class DecimalSpec
     fromDouble(0.0).multipliedBy(123.45) shouldBe fromDouble(0.0)
     fromDouble(123.45).multipliedBy(2.0) shouldBe fromDouble(246.9)
     fromDouble(-123.45).multipliedBy(2.0) shouldBe fromDouble(-246.9)
+  }
+
+  test("multiplying by a Double that is not finite raises rather than multiplying") {
+    fromDouble(1.5).multipliedBy(2.5) shouldBe fromDouble(3.75)
+    forAll(nonFiniteValues) { (value, message) =>
+      intercept[IllegalArgumentException](fromDouble(1.5).multipliedBy(value))
+        .getMessage shouldBe message
+    }
   }
 
   //-------------------------------------------------------------------------
@@ -840,6 +881,25 @@ class DecimalSpec
     fromDouble(-123.45).dividedBy(2.0) shouldBe fromDouble(-61.725)
   }
 
+  test("dividing by a Double that is not finite raises rather than dividing") {
+    // a divisor that is not finite is rejected by the conversion, which is a broken
+    // precondition and not the arithmetic error a zero divisor raises
+    fromDouble(1.5).dividedBy(2.5) shouldBe fromDouble(0.6)
+    forAll(nonFiniteValues) { (value, message) =>
+      intercept[IllegalArgumentException](fromDouble(1.5).dividedBy(value))
+        .getMessage shouldBe message
+    }
+  }
+
+  test("dividing by a whole zero raises whatever the dividend is") {
+    // zero is no power of ten, so the division reaches BigDecimal and raises the arithmetic
+    // error of the platform - for a dividend of zero as for any other - while a divisor that
+    // is not zero divides normally
+    whole(6L).dividedBy(3L) shouldBe whole(2L)
+    assertThrows[ArithmeticException](whole(7L).dividedBy(0L))
+    assertThrows[ArithmeticException](Decimal.ZERO.dividedBy(0L))
+  }
+
   test("the remainder carries the sign of the dividend and rejects a zero divisor") {
     whole(7L).remainder(whole(3L)) shouldBe whole(1L)
     whole(-7L).remainder(whole(3L)) shouldBe whole(-1L)
@@ -886,6 +946,20 @@ class DecimalSpec
     assertThrows[IllegalArgumentException](Decimal.MAX_VALUE.roundToScale(-Decimal.MAX_SCALE - 1, RoundingMode.HALF_UP))
   }
 
+  test("rounding to a scale under UNNECESSARY raises where a digit must be dropped") {
+    // the mode that refuses to round is the one mode the BigDecimal-agreement cases of this
+    // section exclude, and it reports an arithmetic error rather than a broken precondition.
+    // A scale at or above the scale of a decimal returns it unchanged without consulting the
+    // mode, so a case reaching the rounding itself has to ask for a smaller scale; because
+    // every decimal is normalised, a fraction never ends in a zero and a smaller positive
+    // scale therefore always drops a digit that matters. The control consequently rounds the
+    // whole part, where the digits dropped are zeroes and the mode has nothing to refuse
+    whole(1200L).roundToScale(-2, RoundingMode.UNNECESSARY) shouldBe whole(1200L)
+    assertThrows[ArithmeticException](scaled(1235L, 3).roundToScale(2, RoundingMode.UNNECESSARY))
+    assertThrows[ArithmeticException](scaled(1235L, 3).roundToScale(0, RoundingMode.UNNECESSARY))
+    assertThrows[ArithmeticException](whole(1235L).roundToScale(-1, RoundingMode.UNNECESSARY))
+  }
+
   test("rounding to a number of significant digits keeps that many") {
     scaled(12345L, 2).roundToPrecision(3, RoundingMode.UP) shouldBe scaled(124L, 0)
     scaled(12345L, 2).roundToPrecision(2, RoundingMode.UP) shouldBe scaled(130L, 0)
@@ -897,6 +971,14 @@ class DecimalSpec
     assertThrows[IllegalArgumentException](Decimal.MAX_VALUE.roundToPrecision(-Decimal.MAX_SCALE, RoundingMode.DOWN))
     assertThrows[IllegalArgumentException](Decimal.MAX_VALUE.roundToPrecision(-Decimal.MAX_SCALE, RoundingMode.HALF_UP))
     assertThrows[IllegalArgumentException](Decimal.MAX_VALUE.roundToPrecision(-Decimal.MAX_SCALE - 1, RoundingMode.HALF_UP))
+  }
+
+  test("rounding to a precision under UNNECESSARY raises where a digit must be dropped") {
+    // a precision that keeps every significant digit of the value leaves it unchanged and the
+    // mode has nothing to refuse, so the control keeps all five digits of 123.45
+    scaled(12345L, 2).roundToPrecision(5, RoundingMode.UNNECESSARY) shouldBe scaled(12345L, 2)
+    assertThrows[ArithmeticException](scaled(12345L, 2).roundToPrecision(3, RoundingMode.UNNECESSARY))
+    assertThrows[ArithmeticException](scaled(12345L, 2).roundToPrecision(1, RoundingMode.UNNECESSARY))
   }
 
   //-------------------------------------------------------------------------
@@ -972,6 +1054,16 @@ class DecimalSpec
     assertThrows[IllegalArgumentException](Decimal.ZERO.format(Decimal.MAX_SCALE + 1, RoundingMode.HALF_UP))
     assertThrows[IllegalArgumentException](Decimal.ZERO.formatAtLeast(-1))
     assertThrows[IllegalArgumentException](Decimal.ZERO.formatAtLeast(Decimal.MAX_SCALE + 1))
+  }
+
+  test("formatting under UNNECESSARY raises where a digit must be dropped") {
+    // formatting rounds to the requested places before padding, so the mode that refuses to
+    // round refuses the format that would drop a digit; asking for the places the decimal
+    // already has, or more, drops nothing and formats as it always does
+    scaled(1235L, 3).format(3, RoundingMode.UNNECESSARY) shouldBe "1.235"
+    scaled(1235L, 3).format(4, RoundingMode.UNNECESSARY) shouldBe "1.2350"
+    assertThrows[ArithmeticException](scaled(1235L, 3).format(2, RoundingMode.UNNECESSARY))
+    assertThrows[ArithmeticException](scaled(1235L, 3).format(0, RoundingMode.UNNECESSARY))
   }
 
   //-------------------------------------------------------------------------
@@ -1251,4 +1343,3 @@ class DecimalSpec
     }
   }
 }
-

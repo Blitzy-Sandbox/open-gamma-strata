@@ -9,12 +9,14 @@ import java.util.Locale
 
 import scala.collection.immutable.SortedMap
 
+import cats.Eq
 import cats.Hash
 import cats.Order
 import cats.Show
 import cats.data.Chain
 import cats.data.NonEmptyChain
 
+import io.circe.DecodingFailure
 import io.circe.parser.decode
 import io.circe.syntax._
 
@@ -232,13 +234,20 @@ final class FailureSpec
   test("text that names no reason is rejected as a parsing failure") {
     // Where the original raised an error, the port reports the rejection as a value: the
     // left of the outcome holds one failure whose reason is `PARSING` and whose message
-    // quotes the text that could not be resolved. The message is asserted by the text it
-    // names rather than in full - the label it opens with is the generic one of the shared
-    // lookup, because this family supplies no label of its own.
+    // names both the family and the text that could not be resolved. The message is
+    // asserted in full, because the label it opens with is this family's own - the lookup
+    // is labelled `FailureReason`, as the registry being ported labelled its own rejections
+    // with the simple name of the type - and not the generic label a family that supplies
+    // none would carry.
     FailureReason.valueOf("Rubbish") shouldBe None
     FailureReason.parse("Rubbish") should beFailure
     FailureReason.parse("Rubbish") should beFailureWith(FailureReason.PARSING)
-    FailureReason.parse("Rubbish") should haveFailureMessageMatching(".*Rubbish.*")
+    FailureReason.parse("Rubbish") should
+      haveFailureMessageMatching("FailureReason name not found: Rubbish")
+    // The same fact without the matcher, which also pins that exactly one failure is
+    // reported: the chain is a single parse failure carrying that message and no other.
+    FailureReason.parse("Rubbish").left.map(_.iterator.map(_.message).toList) shouldBe
+      Left(List("FailureReason name not found: Rubbish"))
   }
 
   test("empty and blank text name no reason") {
@@ -296,6 +305,11 @@ final class FailureSpec
     lookup.alternateNames.isEmpty shouldBe true
     lookup.lenientPatterns.isEmpty shouldBe true
     lookup.externalNameGroups.isEmpty shouldBe true
+    // The lookup carries this family's own label rather than the generic one a family that
+    // supplies none falls back to, which is what makes a rejection name `FailureReason`
+    // exactly as the registry being ported named the type it was searching.
+    lookup.familyName shouldBe "FailureReason"
+    lookup.toString shouldBe "NamedEnum[FailureReason]"
   }
 
   test("the ordering of reasons agrees with their equality and hashing") {
@@ -318,6 +332,17 @@ final class FailureSpec
     }
     // Comparison is by name, so the ordering is alphabetical rather than positional.
     values.sorted(order.toOrdering).map(_.name) shouldBe values.map(_.name).sorted
+    // Every one of the three notions is derived from the name, hashing included: the hash of
+    // a reason is the hash of its canonical name, which is the hashing a named family of
+    // this library publishes and what lets a reason hash the same way as the name a document
+    // holds it under. An identity-based or constant hash fails this line, and it holds for
+    // all ten reasons rather than for a sampled one.
+    values.foreach(reason => withClue(s"${reason.name}: ") {
+      hash.hash(reason) shouldBe reason.name.hashCode
+    })
+    // Distinct reasons hash distinctly, which is what makes the previous line a statement
+    // about the names rather than about one shared number.
+    values.map(hash.hash).distinct should have size 10
   }
 
   // ===========================================================================
@@ -346,11 +371,14 @@ final class FailureSpec
     // The decoder reads through the lenient lookup, so a document holding a name in the
     // lower-case form the original also wrote is accepted.
     decode[FailureReason]("\"missing_data\"") shouldBe Right(FailureReason.MISSING_DATA)
-    // Text that names no reason is a decoding failure that quotes the offending text, and a
-    // value of the wrong JSON type is rejected as well: only a string is a reason.
+    // Text that names no reason is a decoding failure carrying the messages of the parse
+    // failures joined with "; " - one message here - so the decoding failure reads as the
+    // family-labelled rejection in full, and a value of the wrong JSON type is rejected as
+    // well: only a string is a reason.
     val unknown = decode[FailureReason]("\"Rubbish\"")
     unknown.isLeft shouldBe true
-    unknown.left.toOption.map(_.getMessage).exists(_.contains("Rubbish")) shouldBe true
+    unknown.left.toOption.collect { case failure: DecodingFailure => failure.message } shouldBe
+      Some("FailureReason name not found: Rubbish")
     decode[FailureReason]("42").isLeft shouldBe true
     decode[FailureReason]("{}").isLeft shouldBe true
   }
@@ -763,8 +791,10 @@ final class FailureSpec
   // The aggregate type of the original, and the builder that assembled one, have
   // no counterpart here: an operation that can fail in more than one way reports
   // a `NonEmptyChain[Failure]`, and each failure in it keeps its own reason,
-  // message and attributes. The eight cases below are the eight cases of the
-  // aggregate test class, re-expressed against that chain.
+  // message and attributes. The first eight cases below are the eight cases of
+  // the aggregate test class, re-expressed against that chain; the four that
+  // follow them restate four of those cases over generated chains, and the
+  // comment above them says which and why.
   //
   // Two operations must not be confused, and both are asserted here.
   // Concatenation keeps every failure, duplicates included, in order; collapsing
@@ -856,6 +886,120 @@ final class FailureSpec
     collapsed.asJson.noSpaces shouldBe
       """{"Multiple":{"message":"invalid, data","attributes":{}}}"""
     decode[Failure](collapsed.asJson.noSpaces) shouldBe Right(collapsed)
+  }
+
+  // ---------------------------------------------------------------------------
+  // The same four contracts over generated chains.
+  //
+  // The four cases above state them at the pair of failures the aggregate test
+  // class being ported used. That class closed with a reflective sweep of the
+  // bean, which reached every shape of aggregate the type admitted rather than
+  // the one an example names, so the same contracts are stated again over the
+  // shared generator of chains - equality and hashing, sensitivity to order,
+  // concatenation against decomposition, and the collapse that is a chain's only
+  // route to JSON.
+  //
+  // Every chain here is ascribed to `NonEmptyChain[Failure]`. A chain left to
+  // inference takes the element type `Failure with Product with Serializable`,
+  // for which the shared shrinking does not apply, and a counterexample would
+  // then be reported at the size it was generated at rather than minimised.
+  // ---------------------------------------------------------------------------
+
+  test("any chain rebuilt from its own failures, in their order, is equal to it and hashes alike") {
+    forAll { (failures: NonEmptyChain[Failure]) =>
+      val elements: List[Failure] = failures.toChain.toList
+      val rebuilt: NonEmptyChain[Failure] = NonEmptyChain.of(elements.head, elements.tail: _*)
+      rebuilt shouldBe failures
+      rebuilt.hashCode shouldBe failures.hashCode
+
+      // The other two factories answer the same chain from the same failures, so how a chain
+      // was assembled leaves no trace in the value - which is what makes a chain comparable
+      // by what it holds, and what the bean sweep of the original established by walking it.
+      NonEmptyChain.fromSeq(elements) shouldBe Some(failures)
+      NonEmptyChain.fromChain(failures.toChain) shouldBe Some(failures)
+
+      // The instances agree with `==`. `Hash[Failure]` is universal equality, so the chain
+      // instances the effect library derives from it are the structural equality and the
+      // structural hash of the chain, and a spec may use either form.
+      val equality = Eq[NonEmptyChain[Failure]]
+      val hashing = Hash[NonEmptyChain[Failure]]
+      equality.eqv(rebuilt, failures) shouldBe true
+      equality.eqv(rebuilt, failures) shouldBe (rebuilt == failures)
+      hashing.hash(rebuilt) shouldBe hashing.hash(failures)
+    }
+  }
+
+  test("reversing a chain of two or more distinct failures yields a different chain") {
+    forAll { (failures: NonEmptyChain[Failure]) =>
+      val elements: List[Failure] = failures.toChain.toList
+      val reversed: NonEmptyChain[Failure] = failures.reverse
+
+      // Reversing holds the same failures in the opposite order, and doing it twice is the
+      // identity - true of every chain, whatever it holds.
+      reversed.toChain.toList shouldBe elements.reverse
+      reversed.reverse shouldBe failures
+
+      // Order is part of the value, so a chain that reads differently backwards is a different
+      // chain. The guard excludes the two arrangements for which that statement is false
+      // rather than letting them falsify it: a chain of one failure, and a chain that reads
+      // the same in both directions. The generator produces both, since it draws one to four
+      // failures from a small pool of messages, so they are guarded rather than assumed away.
+      whenever(elements != elements.reverse) {
+        reversed should not be failures
+        Eq[NonEmptyChain[Failure]].eqv(reversed, failures) shouldBe false
+
+        // What order does not change is the reason the chain collapses to: collapsing folds
+        // equal failures together and then asks whether one reason is common to what is left,
+        // and reversing the chain changes neither the failures that remain nor their reasons.
+        Failure.collapse(reversed).reason shouldBe Failure.collapse(failures).reason
+      }
+    }
+  }
+
+  test("reading any chain out and rebuilding it, and concatenating two chains, keep every failure in order") {
+    forAll { (left: NonEmptyChain[Failure], right: NonEmptyChain[Failure]) =>
+      val leftElements: List[Failure] = left.toChain.toList
+      val rightElements: List[Failure] = right.toChain.toList
+
+      // Decomposition and construction are inverse: reading a chain out to a list and
+      // rebuilding it from that list yields the chain it came from, by either factory.
+      NonEmptyChain.fromSeq(leftElements) shouldBe Some(left)
+      NonEmptyChain.fromChain(Chain.fromSeq(leftElements)) shouldBe Some(left)
+
+      // Concatenation lays the second chain after the first and folds nothing together: the
+      // elements of `a ++ b` are the elements of `a` followed by those of `b`, duplicates and
+      // order included. This is the distinction from `collapse` that the next section turns on.
+      val joined: NonEmptyChain[Failure] = left ++ right
+      joined.toChain.toList shouldBe leftElements ::: rightElements
+      joined.length shouldBe left.length + right.length
+      joined.head shouldBe left.head
+
+      // A chain concatenated with itself therefore holds every failure twice, however many
+      // of its failures are already equal to one another.
+      val doubled: NonEmptyChain[Failure] = left ++ left
+      doubled.toChain.toList shouldBe leftElements ::: leftElements
+      doubled.length shouldBe left.length + left.length
+    }
+  }
+
+  test("collapsing any chain round-trips through JSON, and a doubled chain collapses to the same failure") {
+    forAll { (failures: NonEmptyChain[Failure]) =>
+      val collapsed: Failure = Failure.collapse(failures)
+
+      // Collapsing is a chain's only route to JSON, so the two have to agree at every chain
+      // and not only at the pair above: the wire form is the single-key object that names the
+      // member the reason chose, and reading it back gives the failure that was written.
+      collapsed.asJson.asObject.map(fields => fields.keys.size) shouldBe Some(1)
+      decode[Failure](collapsed.asJson.noSpaces) shouldBe Right(collapsed)
+      decode[Failure](collapsed.asJson.noSpaces).map(failure => failure.reason) shouldBe
+        Right(collapsed.reason)
+
+      // Collapsing a chain concatenated with itself gives the same failure as collapsing it
+      // once, because equal failures fold together: the duplicates concatenation keeps are
+      // exactly the ones the collapse removes, so the wire form is stable under them too.
+      Failure.collapse(failures ++ failures) shouldBe collapsed
+      Failure.collapse(failures ++ failures).asJson.noSpaces shouldBe collapsed.asJson.noSpaces
+    }
   }
 
   // ===========================================================================
@@ -1118,13 +1262,30 @@ final class FailureSpec
 //      replaces: the bulk form of that builder.
 // test_combinedWith
 //   -> "concatenating chains keeps every failure, duplicates included, in order"
+//   -> "reading any chain out and rebuilding it, and concatenating two chains,
+//      keep every failure in order"
+//      consolidated:FailureSpec - the same contract over generated chains, with
+//      decomposition and construction asserted to be inverse.
 // coverage
 //   -> "two chains holding the same failures in the same order are equal and hash alike"
 //      replaces: the reflective bean sweep. A chain is an ordinary value.
+//   -> "any chain rebuilt from its own failures, in their order, is equal to it
+//      and hashes alike"
+//      consolidated:FailureSpec - the equality and the hashing of the sweep over
+//      generated chains rather than over one pair, including the agreement of the
+//      derived `Eq` and `Hash` instances with `==`.
+//   -> "reversing a chain of two or more distinct failures yields a different chain"
+//      consolidated:FailureSpec - the other half of that equality: order is part
+//      of the value, asserted over generated chains and guarded for the single
+//      and the palindromic arrangements.
 // test_serialization
 //   -> "a chain reaches JSON by being collapsed to the single failure that describes it"
 //      replaces: binary serialization of the aggregate. The chain is a container
 //      of the effect library and carries no codec of this port's making.
+//   -> "collapsing any chain round-trips through JSON, and a doubled chain
+//      collapses to the same failure"
+//      consolidated:FailureSpec - the same round trip over generated chains, plus
+//      the stability of the collapse under the duplicates concatenation keeps.
 //
 // ---- Cases with no counterpart in the test classes being ported ----------
 //
@@ -1152,4 +1313,3 @@ final class FailureSpec
 //   "collapsing any chain reports MULTIPLE exactly when its failures disagree"
 //
 // ---------------------------------------------------------------------------
-

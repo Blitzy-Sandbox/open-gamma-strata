@@ -9,6 +9,8 @@ import java.util.Arrays
 
 import scala.collection.immutable.List
 
+import org.scalacheck.Gen
+import org.scalatest.Assertion
 import org.scalatest.Outcome
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -60,21 +62,21 @@ import com.opengamma.strata.collect.array.DoubleArray
  * exactly when its value is integral. Nothing else in the port covers them, so every edge of
  * their contract is asserted here individually:
  *
- *   - values no further apart than the tolerance are equal, and values further apart are not;
- *   - each infinity is equal to itself and to no other value, at any tolerance;
+ *   - two finite values no further apart than the tolerance are equal, and values further
+ *     apart are not - so two finite values any distance apart are equal at an infinite
+ *     tolerance;
+ *   - each infinity is equal to itself and to no other value, at any tolerance, an infinite
+ *     tolerance included: neither the other infinity nor any finite value is brought to it;
  *   - negative zero and positive zero are equal, at any tolerance;
- *   - a not-a-number value is equal to no ''different'' value however large the tolerance,
- *     and equal to another not-a-number value. That last case is the one edge where the
- *     wording of the migration plan ("never fuzzy-equal") and the behaviour of the replaced
- *     helper part company: the helper's final clause compared the two values as boxed
- *     numbers, under which a not-a-number value equals itself, and the numeric baselines this
- *     module's parity is measured against were captured from it. The implementation follows
- *     the helper and records the reconciliation in its own documentation, so this spec
- *     asserts the behaviour that is implemented, which is also the behaviour the baselines
- *     hold;
- *   - a negative tolerance is a caller error and is reported as one, by all three comparison
- *     members, ahead of any comparison - so an empty array and a mismatched pair of arrays
- *     report it too;
+ *   - a not-a-number value is equal to nothing, itself included, however large the tolerance.
+ *     It has no distance from any value, so no tolerance reaches it, and reflexivity of the
+ *     comparison therefore holds exactly for the values that are not not-a-number. Bit-for-bit
+ *     structural equality is a different contract and does keep such a value reflexive; the
+ *     two stand side by side deliberately;
+ *   - a tolerance that is negative, or that is not a number, is a caller error and is reported
+ *     as one, by all three comparison members, ahead of any comparison - so an empty array and
+ *     a mismatched pair of arrays report it too. Negative zero is not a negative tolerance and
+ *     is accepted, comparing two finite values exactly;
  *   - a value is a mathematical integer when it is finite and has no fractional part, which
  *     both zeroes and every large enough magnitude satisfy, and which no infinity and no
  *     not-a-number value satisfies.
@@ -83,8 +85,9 @@ import com.opengamma.strata.collect.array.DoubleArray
  *
  * Every failure of this object states a caller contract rather than a property of the data -
  * two arrays that cannot be combined or sorted because they differ in length, a position that
- * does not index the array being reordered, a negative tolerance - so each is a fail-fast
- * check from [[ArgCheck]] and arrives as an `IllegalArgumentException`. That is what the
+ * does not index the array being reordered, a tolerance that is negative or is not a number -
+ * so each is a fail-fast check from [[ArgCheck]] and arrives as an
+ * `IllegalArgumentException`. That is what the
  * failing cases here expect, and the complete message text is asserted rather than the type
  * alone. There is no failure channel on this object to assert instead, and the one question
  * it answers about data rather than about its caller - whether two arrays of different
@@ -164,6 +167,20 @@ final class DoubleArrayMathSpec
       fail(s"expected ${expected.toList} but found ${actual.toList}")
     }
 
+  /**
+   * The bits of every element of an array, which is how a conversion is held to its values.
+   *
+   * A conversion that lost the sign of a zero, or answered one not-a-number value where it was
+   * given another, would pass an ordinary comparison of the elements: `-0.0 == 0.0` holds and
+   * `Double.NaN == Double.NaN` does not. Comparing the bits is what makes either visible.
+   */
+  private def bitsOf(values: Array[Double]): List[Long] =
+    values.iterator.map(value => java.lang.Double.doubleToLongBits(value)).toList
+
+  /** The bits of every element of an array of boxed values, the counterpart of [[bitsOf]]. */
+  private def bitsOfBoxed(values: Array[java.lang.Double]): List[Long] =
+    values.iterator.map(value => java.lang.Double.doubleToLongBits(value.doubleValue)).toList
+
   /** Runs a check that is required to fail, and answers the message it failed with. */
   private def messageOf(check: => Any): String =
     intercept[IllegalArgumentException](check).getMessage
@@ -180,6 +197,9 @@ final class DoubleArrayMathSpec
   /** The message a negative tolerance reports, worded by the fail-fast check itself. */
   private def negativeToleranceMessage(tolerance: Double): String =
     s"Argument 'tolerance' must not be negative but has value $tolerance"
+
+  /** The message a not-a-number tolerance reports, worded by the fail-fast check itself. */
+  private val NanToleranceMessage: String = "Argument 'tolerance' must not be NaN"
 
   /** The message a position that does not index the values being reordered reports. */
   private def positionRangeMessage(length: Int, position: Int): String =
@@ -229,6 +249,39 @@ final class DoubleArrayMathSpec
   test("conversion carries an infinity, a signed zero and a not-a-number value through unaltered") {
     val values = Array(Double.NaN, Double.PositiveInfinity, Double.NegativeInfinity, -0.0, 0.0)
     assertValues(DoubleArrayMath.toPrimitive(DoubleArrayMath.toObject(values)), values)
+  }
+
+  test("conversion preserves the bits of every element, in both directions") {
+    val values = Array(0.0, -0.0, Double.NaN, Double.PositiveInfinity, Double.NegativeInfinity, 1.5, -2.5)
+    val boxed = DoubleArrayMath.toObject(values)
+    boxed.length shouldBe values.length
+    bitsOfBoxed(boxed) shouldBe bitsOf(values)
+    val primitive = DoubleArrayMath.toPrimitive(boxed)
+    primitive.length shouldBe values.length
+    bitsOf(primitive) shouldBe bitsOf(values)
+  }
+
+  test("conversion answers a fresh array that the array it was given can no longer reach") {
+    val values = Array(1.0, 2.0, 3.0)
+    val boxed = DoubleArrayMath.toObject(values)
+    val primitive = DoubleArrayMath.toPrimitive(boxed)
+    (primitive ne values) shouldBe true
+    values(0) = 9.0
+    bitsOfBoxed(boxed) shouldBe bitsOf(Array(1.0, 2.0, 3.0))
+    bitsOf(primitive) shouldBe bitsOf(Array(1.0, 2.0, 3.0))
+  }
+
+  test("conversion of a generated array preserves its length and the bits of every element") {
+    forAll(genDoubleArray) { array =>
+      val values = elementsOf(array)
+      val boxed = DoubleArrayMath.toObject(values)
+      boxed.length shouldBe values.length
+      bitsOfBoxed(boxed) shouldBe bitsOf(values)
+      val primitive = DoubleArrayMath.toPrimitive(boxed)
+      primitive.length shouldBe values.length
+      assertValues(primitive, values)
+      succeed
+    }
   }
 
   //-------------------------------------------------------------------------
@@ -435,18 +488,35 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEquals(-0.0, 0.0, 1.0e-8) shouldBe true
   }
 
-  test("each infinity is equal to itself and to no other value") {
+  test("each infinity is equal to itself and to no other value, at any tolerance") {
     DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.PositiveInfinity, 0.0) shouldBe true
     DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.NegativeInfinity, 0.0) shouldBe true
     DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.NegativeInfinity, Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.PositiveInfinity, Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, 1.0e300, Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEquals(1.0e300, Double.NegativeInfinity, Double.MaxValue) shouldBe false
+
+    // an infinite tolerance is no exception: it brings neither the other infinity nor any
+    // finite value to an infinity, which is the edge the comparison used to get wrong
+    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.PositiveInfinity, Double.PositiveInfinity) shouldBe
+      true
+    DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.NegativeInfinity, Double.PositiveInfinity) shouldBe
+      true
+    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.NegativeInfinity, Double.PositiveInfinity) shouldBe
+      false
+    DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.PositiveInfinity, Double.PositiveInfinity) shouldBe
+      false
+    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, 1.0e300, Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, 0.0, Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEquals(0.0, Double.PositiveInfinity, Double.PositiveInfinity) shouldBe false
   }
 
-  test("an infinite tolerance admits every pair of values that are a finite or infinite distance apart") {
+  test("an infinite tolerance admits any two finite values, and still brings no infinity to another value") {
     DoubleArrayMath.fuzzyEquals(0.0, 1.0e300, Double.PositiveInfinity) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.NegativeInfinity, Double.PositiveInfinity) shouldBe true
+    DoubleArrayMath.fuzzyEquals(-Double.MaxValue, Double.MaxValue, Double.PositiveInfinity) shouldBe true
+    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.NegativeInfinity, Double.PositiveInfinity) shouldBe
+      false
+    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, 0.0, Double.PositiveInfinity) shouldBe false
     DoubleArrayMath.fuzzyEquals(Double.NaN, 0.0, Double.PositiveInfinity) shouldBe false
   }
 
@@ -458,9 +528,11 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.NaN, Double.PositiveInfinity) shouldBe false
   }
 
-  test("a not-a-number value is equal to another not-a-number value, as the comparison it replaces was") {
-    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, 0.0) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, 1.0e-8) shouldBe true
+  test("a not-a-number value is not equal to another not-a-number value, at any tolerance") {
+    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, 0.0) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, 1.0e-8) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, Double.MaxValue) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, Double.PositiveInfinity) shouldBe false
   }
 
   test("a negative tolerance is rejected by every comparison member") {
@@ -489,23 +561,48 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEqualsZero(Array(0.0, -0.0), -0.0) shouldBe true
   }
 
-  test("a not-a-number tolerance is accepted and reduces the comparison to exact equality") {
-    DoubleArrayMath.fuzzyEquals(1.0, 1.0, Double.NaN) shouldBe true
-    DoubleArrayMath.fuzzyEquals(1.0, math.nextUp(1.0), Double.NaN) shouldBe false
-    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, Double.NaN) shouldBe true
-    DoubleArrayMath.fuzzyEqualsZero(Array(0.0, -0.0), Double.NaN) shouldBe true
-    DoubleArrayMath.fuzzyEqualsZero(Array(1.0e-300), Double.NaN) shouldBe false
+  test("a not-a-number tolerance is rejected by every comparison member") {
+    messageOf(DoubleArrayMath.fuzzyEquals(1.0, 1.0, Double.NaN)) shouldBe NanToleranceMessage
+    messageOf(DoubleArrayMath.fuzzyEquals(Array12, Array12, Double.NaN)) shouldBe NanToleranceMessage
+    messageOf(DoubleArrayMath.fuzzyEqualsZero(Array12, Double.NaN)) shouldBe NanToleranceMessage
+  }
+
+  test("a not-a-number tolerance is rejected ahead of the comparison, so empty and mismatched arrays report it too") {
+    messageOf(
+      DoubleArrayMath.fuzzyEquals(DoubleArrayMath.EMPTY_DOUBLE_ARRAY, Array12, Double.NaN)) shouldBe
+      NanToleranceMessage
+    messageOf(
+      DoubleArrayMath.fuzzyEquals(
+        DoubleArrayMath.EMPTY_DOUBLE_ARRAY,
+        DoubleArrayMath.EMPTY_DOUBLE_ARRAY,
+        Double.NaN)) shouldBe NanToleranceMessage
+    messageOf(
+      DoubleArrayMath.fuzzyEqualsZero(DoubleArrayMath.EMPTY_DOUBLE_ARRAY, Double.NaN)) shouldBe
+      NanToleranceMessage
   }
 
   //-------------------------------------------------------------------------
   // The array comparisons over the edges of the value space, and over lengths that differ.
 
   test("the comparison of two arrays sees every element, including the edges of the value space") {
+    // one not-a-number element is enough to make the two arrays unequal, however the rest compare
     DoubleArrayMath.fuzzyEquals(
       Array(Double.NaN, Double.PositiveInfinity, -0.0),
       Array(Double.NaN, Double.PositiveInfinity, 0.0),
+      0.0) shouldBe false
+
+    // the same pair without that element is equal, so it is the element and not the infinity or
+    // the signed zero that the comparison refuses
+    DoubleArrayMath.fuzzyEquals(
+      Array(Double.PositiveInfinity, -0.0),
+      Array(Double.PositiveInfinity, 0.0),
       0.0) shouldBe true
     DoubleArrayMath.fuzzyEquals(Array(Double.PositiveInfinity), Array(Double.NegativeInfinity), 1.0) shouldBe false
+    DoubleArrayMath.fuzzyEquals(
+      Array(Double.PositiveInfinity),
+      Array(Double.NegativeInfinity),
+      Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Array(Double.NaN), Array(Double.NaN), Double.PositiveInfinity) shouldBe false
     DoubleArrayMath.fuzzyEquals(Array(1.0, Double.NaN), Array(1.0, 2.0), 1.0) shouldBe false
     DoubleArrayMath.fuzzyEquals(Array(1.0, 2.0), Array(1.0, Double.NaN), 1.0) shouldBe false
   }
@@ -531,7 +628,12 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.NaN), Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.PositiveInfinity), Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.NegativeInfinity), Double.MaxValue) shouldBe false
-    DoubleArrayMath.fuzzyEqualsZero(Array(Double.PositiveInfinity), Double.PositiveInfinity) shouldBe true
+
+    // no tolerance brings an infinity or a not-a-number element to zero, an infinite one included
+    DoubleArrayMath.fuzzyEqualsZero(Array(Double.PositiveInfinity), Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEqualsZero(Array(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEqualsZero(Array(Double.NaN), Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEqualsZero(Array(1.0e300), Double.PositiveInfinity) shouldBe true
   }
 
   //-------------------------------------------------------------------------
@@ -782,6 +884,79 @@ final class DoubleArrayMathSpec
   }
 
   //-------------------------------------------------------------------------
+  // The lengths and the key shapes the sort itself turns on. It orders a permutation of the
+  // indices by merging runs of it and doubling the width of the runs until one run spans the
+  // whole array, so what has to be covered is: the lengths too short to merge at all; a length
+  // that leaves a run without a partner to merge with, at more than one width; the ties a merge
+  // has to resolve in favour of the run that came first, which is what makes the sort stable;
+  // and the keys where the total ordering of doubles and the primitive comparison part company.
+
+  test("sorting a single pair answers that pair, with nothing to merge") {
+    val (sortedKeys, sortedValues) = DoubleArrayMath.sortPairs(Array(7.5), Array(75.0))
+    sortedKeys.toList shouldBe List(7.5)
+    sortedValues.toList shouldBe List(75.0)
+  }
+
+  test("sorting two pairs orders them whichever way round they were given") {
+    val (orderedKeys, orderedValues) = DoubleArrayMath.sortPairs(Array(1.0, 2.0), Array(10.0, 20.0))
+    orderedKeys.toList shouldBe List(1.0, 2.0)
+    orderedValues.toList shouldBe List(10.0, 20.0)
+    val (reversedKeys, reversedValues) = DoubleArrayMath.sortPairs(Array(2.0, 1.0), Array(20.0, 10.0))
+    reversedKeys.toList shouldBe List(1.0, 2.0)
+    reversedValues.toList shouldBe List(10.0, 20.0)
+  }
+
+  test("sorting an odd number of pairs merges the run that has no partner") {
+    val keys = Array(5.0, 1.0, 4.0, 2.0, 7.0, 3.0, 6.0)
+    val values = Array(50.0, 10.0, 40.0, 20.0, 70.0, 30.0, 60.0)
+    val (sortedKeys, sortedValues) = DoubleArrayMath.sortPairs(keys, values)
+    sortedKeys.toList shouldBe List(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0)
+    sortedValues.toList shouldBe List(10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0)
+    keys.toList shouldBe List(5.0, 1.0, 4.0, 2.0, 7.0, 3.0, 6.0)
+    values.toList shouldBe List(50.0, 10.0, 40.0, 20.0, 70.0, 30.0, 60.0)
+  }
+
+  test("sorting keys that are all equal keeps every value where it was, at every run width") {
+    val values = Array.range(0, 9)
+    val (sortedKeys, sortedValues) = DoubleArrayMath.sortPairs(Array.fill(9)(4.0), values)
+    sortedKeys.toList shouldBe List.fill(9)(4.0)
+    sortedValues.toList shouldBe List.range(0, 9)
+  }
+
+  test("sorting keys that are all not-a-number keeps every value where it was") {
+    val values = Array.range(0, 5)
+    val (sortedKeys, sortedValues) = DoubleArrayMath.sortPairs(Array.fill(5)(Double.NaN), values)
+    assertValues(sortedKeys, Array.fill(5)(Double.NaN))
+    sortedValues.toList shouldBe List.range(0, 5)
+  }
+
+  test("sorting not-a-number keys mixed in among finite ones sorts every one of them last") {
+    val keys = Array(Double.NaN, 3.0, Double.NaN, 1.0, 2.0, Double.NaN, -1.0)
+    val values = Array(1, 2, 3, 4, 5, 6, 7)
+    val (sortedKeys, sortedValues) = DoubleArrayMath.sortPairs(keys, values)
+    assertValues(sortedKeys, Array(-1.0, 1.0, 2.0, 3.0, Double.NaN, Double.NaN, Double.NaN))
+    sortedValues.toList shouldBe List(7, 4, 5, 2, 1, 3, 6)
+  }
+
+  test("sorting orders negative zero before positive zero and keeps each value with its own zero") {
+    val keys = Array(0.0, -0.0, 0.0, -0.0)
+    val values = Array(1, 2, 3, 4)
+    val (sortedKeys, sortedValues) = DoubleArrayMath.sortPairs(keys, values)
+    assertValues(sortedKeys, Array(-0.0, -0.0, 0.0, 0.0))
+    sortedValues.toList shouldBe List(2, 4, 1, 3)
+  }
+
+  test("sorting agrees with the total ordering of doubles at every length from empty up to forty") {
+    forAll(SortLengths) { length =>
+      assertSortedByTotalOrdering(scrambledKeys(length))
+    }
+  }
+
+  test("sorting a long array agrees with the total ordering, merging several times over") {
+    assertSortedByTotalOrdering(scrambledKeys(1501))
+  }
+
+  //-------------------------------------------------------------------------
   // The Java coverage method reached a private constructor by reflection, to satisfy a
   // coverage tool that a utility class cannot be instantiated. The unit under test is an
   // object, so there is no constructor to reach and nothing to reflect over.
@@ -903,19 +1078,21 @@ final class DoubleArrayMathSpec
     }
   }
 
-  test("the comparison of a generated array with itself holds at any tolerance") {
+  test("the comparison of a generated array with itself holds exactly when no element is not-a-number") {
     forAll(genDoubleArray) { array =>
       val values = elementsOf(array)
-      DoubleArrayMath.fuzzyEquals(values, values, 0.0) shouldBe true
-      DoubleArrayMath.fuzzyEquals(values, elementsOf(array), 1.0) shouldBe true
+      val expected = !values.exists(value => value.isNaN)
+      DoubleArrayMath.fuzzyEquals(values, values, 0.0) shouldBe expected
+      DoubleArrayMath.fuzzyEquals(values, elementsOf(array), 1.0) shouldBe expected
       DoubleArrayMath.fuzzyEquals(values, values :+ 1.0, 1.0) shouldBe false
     }
   }
 
-  test("the scalar comparison is reflexive for every generated value, the edges included") {
+  test("the scalar comparison is reflexive for every generated value that is not not-a-number, and for no other") {
     forAll(genDouble) { value =>
-      DoubleArrayMath.fuzzyEquals(value, value, 0.0) shouldBe true
-      DoubleArrayMath.fuzzyEquals(value, value, 1.0e-8) shouldBe true
+      val expected = !value.isNaN
+      DoubleArrayMath.fuzzyEquals(value, value, 0.0) shouldBe expected
+      DoubleArrayMath.fuzzyEquals(value, value, 1.0e-8) shouldBe expected
     }
   }
 
@@ -949,6 +1126,12 @@ final class DoubleArrayMathSpec
     }
   }
 
+  test("sorting a generated array of keys agrees with the total ordering of doubles") {
+    forAll(genSortKeys) { keys =>
+      assertSortedByTotalOrdering(keys)
+    }
+  }
+
   test("reordering a generated array by a permutation of its indices permutes its elements") {
     forAll(genDoubleArray) { array =>
       val values = elementsOf(array)
@@ -967,4 +1150,84 @@ final class DoubleArrayMathSpec
 
   private def unboxedInts(values: Array[java.lang.Integer]): List[Int] =
     values.iterator.map(value => value.intValue).toList
+
+  //-------------------------------------------------------------------------
+  // Fixtures and the expectation of the paired sort. The sort orders a permutation of the
+  // indices by merging runs of it, so the cases it turns on are lengths and ties rather than
+  // values, and the expectation below is computed independently of it at every length.
+
+  /** Every length the run widths of the sort turn on, from empty up to forty. */
+  private val SortLengths = Table("length", (0 to 40).toList: _*)
+
+  /**
+   * A deterministic array of keys of the given length.
+   *
+   * The keys recur on a cycle that shares no factor with the powers of two the run widths of the
+   * sort take, so that ties are merged at every width and a run boundary falls in a different
+   * place at every length, and one position in eleven carries one of the IEEE-754 values the
+   * total ordering of doubles is held to. The sequence is computed rather than generated so that
+   * a failure names an array that can be reproduced exactly.
+   */
+  private def scrambledKeys(length: Int): Array[Double] =
+    Array.tabulate(length)(index => scrambledKey(index))
+
+  /** The key at one position of [[scrambledKeys]]. */
+  private def scrambledKey(index: Int): Double =
+    index % 11 match {
+      case 3 => Double.NaN
+      case 5 => Double.PositiveInfinity
+      case 7 => Double.NegativeInfinity
+      case 9 => if (index % 22 == 9) -0.0 else 0.0
+      case _ => ((index * 7919) % 13).toDouble - 6.0
+    }
+
+  /**
+   * Generates keys for the sort property, at every length from empty up to forty.
+   *
+   * Most elements come from the generator that mixes ordinary values with the IEEE-754 edges,
+   * and the rest from a handful of values that recur, so that a generated array of any length
+   * holds ties for the merge to resolve as well as the edges the ordering is held to.
+   */
+  private val genSortKeys: Gen[Array[Double]] =
+    for {
+      length <- Gen.choose(0, 40)
+      keys <- Gen.listOfN(length, Gen.frequency(3 -> genDouble, 2 -> Gen.oneOf(-1.0, 0.0, 1.0, 2.0)))
+    } yield keys.toArray
+
+  /**
+   * Asserts that the paired sort of the given keys is the one the total ordering of doubles
+   * defines, for a value array of each of the three element types, and that nothing was modified.
+   *
+   * The expectation is computed here rather than by the object under test: each key is tagged
+   * with the position it was given in, and that pairing is sorted by key under
+   * `Ordering.Double.TotalOrdering` by the library's own stable sort, which fixes the order of
+   * the keys and, through the positions, the order of the values among keys that compare equal.
+   * The values are the positions themselves, in each of the three element types, so a value that
+   * failed to follow its key names the position it came from. The keys are compared by their
+   * bits, because a not-a-number key and the two signed zeroes are the cases the ordering is
+   * being held to and ordinary comparison has no answer for either.
+   */
+  private def assertSortedByTotalOrdering(keys: Array[Double]): Assertion = {
+    val expected = keys.zipWithIndex.sortBy(entry => entry._1)(Ordering.Double.TotalOrdering)
+    val expectedKeys = expected.map(entry => entry._1)
+    val expectedPositions = expected.map(entry => entry._2).toList
+    val keysSnapshot = keys.clone()
+    val doubleValues = Array.tabulate(keys.length)(index => index.toDouble)
+    val intValues = Array.range(0, keys.length)
+    val textValues = Array.tabulate(keys.length)(index => index.toString)
+    val (doubleKeys, sortedDoubles) = DoubleArrayMath.sortPairs(keys, doubleValues)
+    val (intKeys, sortedInts) = DoubleArrayMath.sortPairs(keys, intValues)
+    val (textKeys, sortedTexts) = DoubleArrayMath.sortPairs(keys, textValues)
+    assertValues(doubleKeys, expectedKeys)
+    assertValues(intKeys, expectedKeys)
+    assertValues(textKeys, expectedKeys)
+    sortedDoubles.toList shouldBe expectedPositions.map(position => position.toDouble)
+    sortedInts.toList shouldBe expectedPositions
+    sortedTexts.toList shouldBe expectedPositions.map(position => position.toString)
+    doubleValues.toList shouldBe List.tabulate(keys.length)(index => index.toDouble)
+    intValues.toList shouldBe List.range(0, keys.length)
+    textValues.toList shouldBe List.tabulate(keys.length)(index => index.toString)
+    assertValues(keys, keysSnapshot)
+    succeed
+  }
 }

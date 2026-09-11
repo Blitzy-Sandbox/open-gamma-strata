@@ -134,20 +134,73 @@ trait FloatingRate extends Named {
  * FloatingRate.tryParse("rubbish")        // None
  * }}}
  *
+ * ===The search and the families it searches are declared apart===
+ *
+ * The union is two things, and they are declared separately on purpose.
+ * [[FloatingRate.tryParseWith]] is the search: it is handed the probes it is to try, in the
+ * order it is to try them, and it names no family at all - it is stated over any probe type,
+ * so it can be read, reasoned about and tested without a single family in existence, and a
+ * caller with its own composition (a subset of the families below, or a probe of its own in
+ * addition to them) hands that composition over instead of writing the search again.
+ * [[FloatingRate.standardLookups]] is the composition this library ships: the four families in
+ * the order documented above, and the one place in this file that names them.
+ *
+ * That composition is a compile-time dependency of this file on the two files that declare the
+ * families - the sealed index hierarchy of `Index.scala` and the family identifiers of
+ * `FloatingRateName.scala` - and the dependency belongs to the contract rather than to the way
+ * the search happens to be written. Three things put it there, and none of them is negotiable
+ * from here.
+ *
+ * The first is the shape of the entry points. `parse` and `tryParse` take the text and nothing
+ * else, as the interface being ported does, and both sibling parsers are built on them: the
+ * parse of a concrete floating rate index calls `tryParse` and then converts a family
+ * identifier for a tenor, and the parse of a family identifier falls back through that one. An
+ * entry point taking the text alone has to reach its families through something, and the two
+ * mechanisms that would let it reach them without naming them - resolving them reflectively,
+ * or reading them from a registry that the families write themselves into - are both ruled out
+ * for this port, the first because no part of it may reflect and the second because a mutable
+ * registry is exactly the runtime extensibility the port exists to remove. What is left is a
+ * name, written somewhere. The second is that the specification of this port places the union
+ * on this abstraction, over exactly those four families, in exactly that order. The third is
+ * the trait above: it declares `floatingRateName`, whose type is declared in
+ * `FloatingRateName.scala`, so this file names that file whether or not it searches anything.
+ *
+ * What the separation buys, then, is not the absence of the dependency but its shape: it is
+ * declared once, in a value whose whole extent a reader can see, rather than spread through
+ * the body of the search; the search itself carries none of it and can be read and tested
+ * without it; and a caller who wants a different set of families is served by the search
+ * rather than having to reimplement it.
+ *
  * ===Initialization order===
  *
- * This object names the companions of all four families, and every one of them declares types
- * that extend the trait above, so the dependency between this file and theirs is mutual -
- * exactly as it is in the sources being ported. It is safe because each reference sits inside
- * a method body: nothing here is a `val` or a `lazy val` reading another companion, so loading
- * this object forces none of the four, and each is initialized when a program first reaches it,
- * in whatever order that happens to be. Anything added here has to preserve that property. A
- * field holding, say, the four lookups pre-assembled into a list would introduce an
- * initialization cycle, and the symptom of such a cycle - a member observed as missing while a
- * class initializer is still running - depends on which of the classes the program touches
- * first, which makes it a defect that testing can easily miss.
+ * Every family the composition names declares a type that extends the trait above, so the
+ * dependency between this file and theirs is mutual - exactly as it is in the sources being
+ * ported. It is safe because nothing here holds a family: [[FloatingRate.standardLookups]] is
+ * a method, and the elements of the sequence it returns are supplied by name, so obtaining the
+ * composition forces none of the four companions and each is forced only when its own probe is
+ * reached. Loading this object therefore forces none of them, and each is initialized when a
+ * program first reaches it, in whatever order that happens to be.
+ *
+ * Anything added here has to preserve that property, and the composition in particular has to
+ * stay a method whose elements are by-name. A `val` holding the four lookups pre-assembled, or
+ * a strict sequence built in place, would force all four companions on the first parse and
+ * reintroduce an initialization cycle; the symptom of such a cycle - a member observed as
+ * missing while a class initializer is still running - depends on which of the classes the
+ * program touches first, which makes it a defect that testing can easily miss.
  */
 object FloatingRate {
+
+  /**
+   * One family's probe, as the search consumes it: the family's own exact, alias-aware lookup
+   * by name, widened to this trait.
+   *
+   * A family declares its lookup over its own type - the Ibor index family answers with an
+   * `Option[IborIndex]` - and conforms to this type by that type being a floating rate, which
+   * is checked where the probe is supplied to a composition. A family that ceased to be a
+   * floating rate is therefore reported by the compiler, at [[FloatingRate.standardLookups]],
+   * rather than quietly dropping out of the searched set.
+   */
+  type Lookup = String => Option[FloatingRate]
 
   /**
    * Parses text naming a floating rate, of either kind, reporting a failure when it names
@@ -170,21 +223,69 @@ object FloatingRate {
    * Tries to parse text naming a floating rate, of either kind, answering with nothing when
    * it names none.
    *
-   * The four families are searched in the order documented above, and the first value found
-   * is returned. Each probe is evaluated only if the probes before it found nothing, since the
-   * alternatives of `orElse` are passed by name, so resolving an Ibor index costs one lookup
-   * rather than four. The result of each probe is widened to `FloatingRate` explicitly: the
-   * widening is then checked against the declaration of each family rather than inferred from
-   * it, so a family that ceased to be a floating rate would be reported here, by the compiler,
-   * instead of quietly leaving the searched set.
+   * This is [[FloatingRate.tryParseWith]] applied to [[FloatingRate.standardLookups]]: the
+   * four families are searched in the order documented above, and the first value found is
+   * returned. A probe is reached only if the probes before it found nothing, so resolving an
+   * Ibor index costs one lookup rather than four.
    *
    * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR-BBA`
    * @return the floating rate that the text names, or nothing if it names none
    */
   def tryParse(indexStr: String): Option[FloatingRate] =
-    IborIndex
-      .valueOf(indexStr)
-      .orElse[FloatingRate](OvernightIndex.valueOf(indexStr))
-      .orElse[FloatingRate](PriceIndex.valueOf(indexStr))
-      .orElse[FloatingRate](FloatingRateName.valueOf(indexStr))
+    tryParseWith(indexStr, standardLookups)
+
+  /**
+   * Searches an explicitly supplied composition of probes and answers the first value one of
+   * them finds.
+   *
+   * This is the union rule itself, and nothing more: the probes are tried in the order they
+   * are supplied, each is reached only if the ones before it found nothing, and the first
+   * value found is the answer. The operation is stated over any probe type rather than over
+   * this trait, because the rule has nothing to do with what a floating rate is, and stating
+   * it this way is what lets it be read and tested with no family involved. Supplying a
+   * sequence whose elements are themselves by-name - the `LazyList` that
+   * [[FloatingRate.standardLookups]] returns is one - additionally defers producing each probe
+   * until it is reached, which is what keeps a family's companion from being loaded by a
+   * search that never consults it.
+   *
+   * {{{
+   * // the four families this library ships, which is what `tryParse` searches
+   * FloatingRate.tryParseWith(text, FloatingRate.standardLookups)
+   *
+   * // the concrete indices only, leaving the family identifiers out of the search
+   * FloatingRate.tryParseWith(text, FloatingRate.standardLookups.take(3))
+   * }}}
+   *
+   * @tparam A  the type of value the probes answer with
+   * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR-BBA`
+   * @param lookups  the probes to search, in the order they are to be tried
+   * @return the value the first matching probe found, or nothing if none of them matched
+   */
+  def tryParseWith[A](indexStr: String, lookups: Seq[String => Option[A]]): Option[A] =
+    lookups.iterator.map(lookup => lookup(indexStr)).find(_.isDefined).flatten
+
+  /**
+   * The composition of family probes this library searches, in the order documented above:
+   * Ibor index, Overnight index, Price index, then floating rate name.
+   *
+   * This is the one place in this file that names the four families, and it is what
+   * [[FloatingRate.tryParse]] and [[FloatingRate.parse]] search. Each probe is a family's own
+   * exact, alias-aware lookup, so `EUR-ESTER` resolves through the Overnight family's
+   * alternate names and no family's lenient rewriting takes part - which is what keeps an
+   * earlier family from claiming text that a later one matches precisely. A caller that needs
+   * a different set composes one and passes it to [[FloatingRate.tryParseWith]] rather than
+   * reimplementing the search.
+   *
+   * It is a method rather than a field, and the elements of the sequence it returns are
+   * supplied by name: the note on initialization order above explains why both matter and
+   * must not be changed.
+   *
+   * @return the four family probes, in probe order, each produced when it is first reached
+   */
+  def standardLookups: LazyList[Lookup] =
+    ((name: String) => IborIndex.valueOf(name)) #::
+      ((name: String) => OvernightIndex.valueOf(name)) #::
+      ((name: String) => PriceIndex.valueOf(name)) #::
+      ((name: String) => FloatingRateName.valueOf(name)) #::
+      LazyList.empty[Lookup]
 }

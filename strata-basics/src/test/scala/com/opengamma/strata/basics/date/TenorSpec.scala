@@ -387,6 +387,10 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     forAll(data_parseGood) { (input: String, expected: Tenor) =>
       Tenor.parse(input) should haveValue(expected)
     }
+    // the three-month tenor is not one of the transcribed provider rows, and it is the form
+    // users, stored documents and other systems hand to `parse`, so the migration pins it
+    // here as well: the text `3M` names this tenor and nothing else
+    Tenor.parse("3M") should haveValue(TENOR_3M)
   }
 
   test("test_parse_String_good_withP") {
@@ -395,6 +399,10 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
       // name deliberately drops that prefix, so both forms name one tenor
       Tenor.parse("P" + input) should haveValue(expected)
     }
+    // the same statement for the three-month tenor, which is the case where the prefix
+    // matters most: `P3M` is the canonical name of a quarterly frequency elsewhere in this
+    // library, and parsing it as a tenor has to yield the three-month tenor all the same
+    Tenor.parse("P3M") should haveValue(TENOR_3M)
   }
 
   test("test_parse_String_bad") {
@@ -596,7 +604,8 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     // the canonical text of a tenor has no `P` prefix, which is the form users, stored
     // documents and other systems know a tenor by; all seven cases of the original are
     // asserted, including the two that pin the absence of normalisation between months and
-    // years - `12M` stays `12M`, and `18M` is not `1Y6M`
+    // years - `12M` stays `12M`, and `18M` is not `1Y6M` - and they are followed by the
+    // three-month form this migration pins as the canonical contract
     TENOR_3D.toString shouldBe "3D"
     TENOR_2W.toString shouldBe "2W"
     TENOR_4M.toString shouldBe "4M"
@@ -604,6 +613,15 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     TENOR_1Y.toString shouldBe "1Y"
     TENOR_18M.toString shouldBe "18M"
     TENOR_4Y.toString shouldBe "4Y"
+
+    // the three-month tenor is the identity most quoted rates, stored documents and other
+    // systems carry, and it is the one name where the prefix changes what is named rather
+    // than merely how it is spelled: `3M` is this tenor, while `P3M` names a quarterly
+    // frequency. Both the name and the rendering are asserted, because the rest of the
+    // library reads the name while a message or a log reads `toString`, and the two are
+    // one string that must not drift apart
+    TENOR_3M.name shouldBe "3M"
+    TENOR_3M.toString shouldBe "3M"
   }
 
   //-----------------------------------------------------------------------
@@ -614,10 +632,14 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     TENOR_3D.asJson shouldBe Json.fromString("3D")
     TENOR_4M.asJson shouldBe Json.fromString("4M")
     TENOR_3Y.asJson shouldBe Json.fromString("3Y")
+    // the three-month tenor is written in the canonical form too, so a document this port
+    // writes holds the `3M` that other systems read, never the `P3M` of a frequency
+    TENOR_3M.asJson shouldBe Json.fromString("3M")
 
     Json.fromString("3D").as[Tenor] shouldBe Right(TENOR_3D)
     Json.fromString("4M").as[Tenor] shouldBe Right(TENOR_4M)
     Json.fromString("3Y").as[Tenor] shouldBe Right(TENOR_3Y)
+    Json.fromString("3M").as[Tenor] shouldBe Right(TENOR_3M)
 
     // reading goes through the same parsing the text form uses, so a document holding the
     // ISO-8601 form is accepted as well - part of the contract of the codec, and the
@@ -625,6 +647,7 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     Json.fromString("P3D").as[Tenor] shouldBe Right(TENOR_3D)
     Json.fromString("P4M").as[Tenor] shouldBe Right(TENOR_4M)
     Json.fromString("P3Y").as[Tenor] shouldBe Right(TENOR_3Y)
+    Json.fromString("P3M").as[Tenor] shouldBe Right(TENOR_3M)
 
     // and text that names no tenor is rejected rather than decoded into one
     Json.fromString("2K").as[Tenor].isLeft shouldBe true
@@ -637,18 +660,32 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     Show[Tenor].show(TENOR_3D) shouldBe "3D"
     Show[Tenor].show(TENOR_4M) shouldBe "4M"
     Show[Tenor].show(TENOR_3Y) shouldBe "3Y"
+    // the three-month tenor renders as the name it is known by rather than as the ISO-8601
+    // form, which is the same contract the codec and `toString` carry
+    Show[Tenor].show(TENOR_3M) shouldBe "3M"
 
     Tenor.parse(Show[Tenor].show(TENOR_3D)) should haveValue(TENOR_3D)
     Tenor.parse(Show[Tenor].show(TENOR_4M)) should haveValue(TENOR_4M)
     Tenor.parse(Show[Tenor].show(TENOR_3Y)) should haveValue(TENOR_3Y)
+    Tenor.parse(Show[Tenor].show(TENOR_3M)) should haveValue(TENOR_3M)
   }
 
   //-------------------------------------------------------------------------
   // Mapping from the Java test class, for the record: all twenty-three annotated methods
-  // are present above under their Java names, and none is dropped or consolidated. Two are
-  // reshaped where the port's design makes the Java form unstatable, and both keep every
-  // fact they asserted: `test_temporalAmount`, because this type is not a `TemporalAmount`,
-  // and `test_compare`, because its permutation is fixed rather than random. The fourteen
-  // exception assertions of the original become failure assertions, save the one
-  // `java.time` exception documented in `test_temporalAmount`.
+  // are represented above under their Java names, and none is dropped, so the method-level
+  // traceability of the migration stays one to one.
+  //
+  // One of the twenty-three is nevertheless consolidated in the mapping file, and the two
+  // facts are separate. `java-test-mapping.csv` records `TenorTest.test_serialization`
+  // against `com.opengamma.strata.basics.json.JsonRoundTripSpec` as
+  // `Tenor_test_serialization`, designating that spec the owner of the property-based codec
+  // round trips of this port; the `test_serialization` above is additional coverage of the
+  // same codec, stating the exact encoded text of particular tenors, rather than the mapped
+  // row itself.
+  //
+  // Two methods are reshaped where the port's design makes the Java form unstatable, and
+  // both keep every fact they asserted: `test_temporalAmount`, because this type is not a
+  // `TemporalAmount`, and `test_compare`, because its permutation is fixed rather than
+  // random. The fourteen exception assertions of the original become failure assertions,
+  // save the one `java.time` exception documented in `test_temporalAmount`.
 }

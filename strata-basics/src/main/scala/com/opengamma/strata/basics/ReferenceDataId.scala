@@ -59,9 +59,14 @@ import com.opengamma.strata.collect.result.Failure
  * The accessor that reported the runtime type of the data - `getReferenceDataType` - is not
  * ported. It existed so that the reference data implementation could check a stored value
  * against its identifier by reflection at run time, and the port achieves the same guarantee
- * at compile time with `ReferenceData.Entry[T]`, which can only pair an identifier with a
- * value of its own type. Carrying a runtime type token on an identifier again, in any form,
- * would reintroduce precisely the reflection this migration removes.
+ * at compile time: reference data enters a store either as a `ReferenceData.Entry[T]`, which
+ * can only pair an identifier with a value of its own type, or through a factory whose key
+ * type is required to be an identifier of its value type, and `ImmutableReferenceData` keeps
+ * its store in a private field of a final class with a private constructor, so there is no
+ * route by which a value could be filed under an identifier of another type. That is what an
+ * implementation of this trait relies on when it hands back the value a lookup found without
+ * checking it. Carrying a runtime type token on an identifier again, in any form, would
+ * reintroduce precisely the reflection this migration removes.
  *
  * The low-level query primitive - `queryValueOrNull` - is not ported either. It signalled the
  * absence of a value by returning a reference to nothing, a convention this port does not use

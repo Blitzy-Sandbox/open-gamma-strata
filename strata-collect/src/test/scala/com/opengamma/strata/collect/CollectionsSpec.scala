@@ -6,14 +6,15 @@
 package com.opengamma.strata.collect
 
 import java.time.LocalDate
+import java.util.concurrent.atomic.AtomicLong
 
 import scala.collection.immutable.List
-import scala.collection.immutable.ListMap
 import scala.collection.immutable.Map
 import scala.collection.immutable.Set
 import scala.collection.immutable.SortedMap
 import scala.collection.immutable.SortedSet
 import scala.collection.immutable.Vector
+import scala.collection.immutable.VectorMap
 import scala.util.Try
 
 import cats.Order
@@ -80,7 +81,11 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     their keys, so an implementation that grouped with the standard library - whose map
  *     iteration order is unspecified - fails these tests rather than passing them by
  *     coincidence. The larger of the two inputs was checked to iterate in a different order
- *     under standard grouping.
+ *     under standard grouping. That order is not paid for by complexity, and one case says so
+ *     without measuring time: it counts the comparisons the member makes between keys while
+ *     grouping two thousand elements of distinct keys and holds the count to a multiple of the
+ *     number of elements, which an assembly that searched its accumulated entries for every key
+ *     it was given could not satisfy.
  *
  * Reading a collection once is part of the contract of every member, so the members that
  * promise to stop early are given an iterator and the state of that iterator afterwards is
@@ -150,6 +155,13 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
    * reference to the enclosing instance.
    */
   import CollectionsSpec.Code
+
+  /**
+   * The key type of the case that counts the key comparisons the ordered grouping makes. It is
+   * declared in the companion for the same reason as [[CollectionsSpec.Code]]; the counter it
+   * increments is the one that case creates and passes to it.
+   */
+  import CollectionsSpec.CountingKey
 
   //-------------------------------------------------------------------------
   // ensureOnlyOne, with the message of the helper being ported
@@ -457,7 +469,7 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
     // The keys of this input are first encountered as 2 then 1, the reverse of their sorted
     // order, so the assertion below distinguishes the member from grouping that does not
     // promise an order.
-    val grouped: ListMap[Int, NonEmptyList[String]] =
+    val grouped: VectorMap[Int, NonEmptyList[String]] =
       Collections.groupByPreservingOrder(List("bb", "a", "cc", "b", "aa"))(lengthOf)
     grouped.keys.toList shouldBe List(2, 1)
     grouped.get(2).map(_.toList) shouldBe Some(List("bb", "cc", "aa"))
@@ -469,7 +481,7 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
     // this input with the standard library yields the keys in an order that is neither of
     // those, so this case fails against any implementation that does not preserve encounter
     // order rather than passing by coincidence.
-    val grouped: ListMap[Int, NonEmptyList[String]] =
+    val grouped: VectorMap[Int, NonEmptyList[String]] =
       Collections.groupByPreservingOrder(DescendingLengths)(lengthOf)
     grouped.keys.toList shouldBe List(6, 5, 4, 3, 2, 1)
     grouped.iterator.map { case (key, group) => (key, group.toList) }.toList shouldBe List(
@@ -483,7 +495,7 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
   }
 
   test("groupByPreservingOrder keeps the arrival order within each group, duplicates included") {
-    val grouped: ListMap[Int, NonEmptyList[String]] =
+    val grouped: VectorMap[Int, NonEmptyList[String]] =
       Collections.groupByPreservingOrder(GroupingInput)(lengthOf)
     grouped.keys.toList shouldBe List(1, 2)
     grouped.get(1).map(_.toList) shouldBe Some(List("a", "b", "c", "a"))
@@ -492,7 +504,7 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
   }
 
   test("groupByPreservingOrder makes a group of one element a list of one element") {
-    val grouped: ListMap[Int, NonEmptyList[String]] =
+    val grouped: VectorMap[Int, NonEmptyList[String]] =
       Collections.groupByPreservingOrder(List("a"))(lengthOf)
     grouped.keys.toList shouldBe List(1)
     grouped.get(1) shouldBe Some(NonEmptyList.one("a"))
@@ -501,15 +513,15 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
   }
 
   test("groupByPreservingOrder of an empty collection is the empty map") {
-    val grouped: ListMap[Int, NonEmptyList[String]] =
+    val grouped: VectorMap[Int, NonEmptyList[String]] =
       Collections.groupByPreservingOrder(List.empty[String])(lengthOf)
-    grouped shouldBe ListMap.empty[Int, NonEmptyList[String]]
+    grouped shouldBe VectorMap.empty[Int, NonEmptyList[String]]
     grouped.keys.toList shouldBe List.empty[Int]
     grouped.isEmpty shouldBe true
   }
 
   test("groupByPreservingOrder groups by a key that is not derived from the element order") {
-    val grouped: ListMap[Boolean, NonEmptyList[Int]] =
+    val grouped: VectorMap[Boolean, NonEmptyList[Int]] =
       Collections.groupByPreservingOrder(List(1, 2, 3, 4, 5))(value => value % 2 == 0)
     grouped.keys.toList shouldBe List(false, true)
     grouped.get(false).map(_.toList) shouldBe Some(List(1, 3, 5))
@@ -518,11 +530,42 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
 
   test("groupByPreservingOrder reads a single-use collection once") {
     val remaining = List("a", "ab", "b").iterator
-    val grouped: ListMap[Int, NonEmptyList[String]] =
+    val grouped: VectorMap[Int, NonEmptyList[String]] =
       Collections.groupByPreservingOrder(remaining)(lengthOf)
     grouped.keys.toList shouldBe List(1, 2)
     grouped.get(1).map(_.toList) shouldBe Some(List("a", "b"))
     remaining.hasNext shouldBe false
+  }
+
+  test("groupByPreservingOrder assembles its result without comparing every key with every other") {
+    // Assembling the result is where an insertion-ordered map decides the complexity of the
+    // member. An insertion-ordered map whose builder searches the entries it has already
+    // accumulated for each key it is given compares keys about size * size / 2 times, which is
+    // some 2,000,000 comparisons for the 2000 distinct keys below; a builder that appends each
+    // key and records it by hash compares them a small number of times per key. The bound
+    // asserted here is a multiple of the element count, so this case fails against the
+    // quadratic assembly rather than passing against it by coincidence.
+    val size = 2000
+    val comparisonBound = 20L * size.toLong
+    val elements: List[Int] = List.range(0, size)
+    // The counter belongs to this invocation: it is created here and reachable only through the
+    // keys this invocation builds, so nothing else can add to it. Its value is read immediately
+    // after the call and of nothing else, so the comparisons the assertions below make - and
+    // those the grouped result makes when a failed assertion renders it - are not counted as
+    // work of the member.
+    val counter = new AtomicLong(0L)
+    val grouped: VectorMap[CountingKey, NonEmptyList[Int]] =
+      Collections.groupByPreservingOrder(elements)(value => new CountingKey(value, counter))
+    val comparisons = counter.get()
+    info(s"grouping $size distinct keys compared keys $comparisons times, bound $comparisonBound")
+    comparisons should be <= comparisonBound
+    // The result is still the one the member promises: one group per distinct key, the keys in
+    // the order they were first encountered, and each group holding the element it was built
+    // from.
+    grouped.size shouldBe size
+    grouped.keys.toList.map(_.value) shouldBe elements
+    grouped.iterator.map { case (key, group) => (key.value, group.toList) }.toList shouldBe
+      elements.map(value => (value, List(value)))
   }
 
   //-------------------------------------------------------------------------
@@ -751,7 +794,7 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
   test("the grouping collectors of the original are the ordered grouping of Collections") {
     // The one use the dependent module made of a grouping collector was grouping that had to
     // keep the order of its input, which is the member this spec covers above.
-    val grouped: ListMap[Int, NonEmptyList[String]] =
+    val grouped: VectorMap[Int, NonEmptyList[String]] =
       Collections.groupByPreservingOrder(GroupingInput)(lengthOf)
     val asMapOfLists: Map[Int, List[String]] =
       grouped.iterator.map { case (key, group) => (key, group.toList) }.toMap
@@ -842,7 +885,7 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
     // the port reads the map as its entries, groups them with the order-preserving member and
     // reduces each group - and the order the Java case asserted is the order of the result.
     val entries: List[(String, Int)] = List("d" -> 1, "dd" -> 2, "b" -> 10, "bb" -> 20, "c" -> 1)
-    val grouped: ListMap[String, NonEmptyList[(String, Int)]] =
+    val grouped: VectorMap[String, NonEmptyList[(String, Int)]] =
       Collections.groupByPreservingOrder(entries) { case (key, _) => key.substring(0, 1) }
     val summed: List[(String, Int)] =
       grouped.iterator.map { case (key, group) => (key, group.toList.map { case (_, value) => value }.sum) }.toList
@@ -883,5 +926,56 @@ private object CollectionsSpec {
 
     /** Orders codes by their text. */
     val ordering: Ordering[Code] = Ordering.by[Code, String](code => code.value)
+  }
+
+  /**
+   * A key type that counts every equality comparison made against it.
+   *
+   * How the ordered grouping assembles its result is only visible from the key: the number of
+   * times one key is compared with another is what separates an assembly that appends each key
+   * to one that searches the keys it has already accumulated. This type therefore counts its
+   * own `equals` calls, and hashes by the value it wraps so that distinct values reach distinct
+   * buckets and the count reflects the shape of the assembly rather than accidental collisions.
+   * It is declared here, in the companion, for the reason [[Code]] is.
+   *
+   * The counter is supplied by the case that measures it rather than held here, so the count is
+   * that of one invocation and of nothing else: two invocations count into two counters, and no
+   * state of this type outlives the case that created it.
+   *
+   * @param value  the value this key stands for
+   * @param comparisons  the counter of the invocation this key was built for, incremented once
+   *                     for every equality comparison made against this key
+   */
+  final class CountingKey(val value: Int, comparisons: AtomicLong) {
+
+    /**
+     * Counts this comparison, then compares by the value the key stands for.
+     *
+     * @param obj  the object to compare to
+     * @return true if the other object is a key standing for the same value
+     */
+    override def equals(obj: Any): Boolean = {
+      // Bound to a wildcard because the new count is of no interest here; the case that
+      // measures the comparisons reads the counter itself, once, after the call it measures.
+      val _ = comparisons.incrementAndGet()
+      obj match {
+        case other: CountingKey => value == other.value
+        case _ => false
+      }
+    }
+
+    /**
+     * Returns a hash code consistent with `equals`, and free of comparisons.
+     *
+     * @return the hash code of the value this key stands for
+     */
+    override def hashCode: Int = value.hashCode
+
+    /**
+     * Returns the value this key stands for as text.
+     *
+     * @return the rendering of this key
+     */
+    override def toString: String = s"CountingKey($value)"
   }
 }

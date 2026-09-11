@@ -16,7 +16,9 @@ import cats.syntax.apply._
 import io.circe.Decoder
 import io.circe.Encoder
 import io.circe.generic.semiauto.deriveDecoder
+import io.circe.generic.semiauto.deriveEncoder
 
+import com.opengamma.strata.collect.ArgCheck
 import com.opengamma.strata.collect.DoubleArrayMath
 import com.opengamma.strata.collect.FailureOr
 import com.opengamma.strata.collect.ResultNec
@@ -38,9 +40,10 @@ import com.opengamma.strata.collect.result.Failure
  *
  * The constructor is private and the compiler synthesises neither `apply` nor `copy`, so
  * `FxRate.of` and [[FxRate.parse]] are the only ways to obtain a rate. Both report what was
- * wrong with their input as a value instead of interrupting the caller, which is what makes
- * every rate in existence satisfy the two constraints of the type and why nothing downstream
- * re-checks them:
+ * wrong with their input as a value instead of interrupting the caller, and the members that
+ * derive one rate from another - [[inverse]], [[toConventional]] and [[crossRate]] - are held to
+ * the same two constraints, which together are what make every rate in existence satisfy them
+ * and why nothing downstream re-checks them:
  *
  * {{{
  * FxRate.of(Currency.GBP, Currency.USD, 1.25d)   // Right(GBP/USD 1.25)
@@ -58,7 +61,8 @@ import com.opengamma.strata.collect.result.Failure
  *     compared the rate against zero and a not-a-number rate does not order against anything;
  *     that is stated here rather than quietly tightened, since a document or a calculation that
  *     produced such a rate behaves as it did before this port. `Double.PositiveInfinity` is
- *     accepted for the same reason - it is greater than zero;
+ *     accepted for the same reason - it is greater than zero - although its reciprocal is not a
+ *     rate, which is the one numeric edge [[inverse]] documents;
  *   - two identical currencies force a rate of exactly one. `GBP/GBP 1` is the identity rate and
  *     `GBP/GBP 1.5` describes nothing, so it is rejected with the wording the original used.
  *
@@ -72,8 +76,12 @@ import com.opengamma.strata.collect.result.Failure
  * cross through. Each of those was an `IllegalArgumentException` in the original, with the
  * message reproduced here word for word.
  *
- * Three members stay total, exactly as they were: [[inverse]], [[toConventional]] and
- * [[toString]]. See [[inverse]] for the one numeric edge that totality costs.
+ * Three members return a rate or its text rather than an outcome, exactly as they did:
+ * [[inverse]], [[toConventional]] and [[toString]]. Their signatures carry no failure channel
+ * because a rate derived from a rate that exists is a rate, for every input but one - and that
+ * one, the reciprocal of an infinite rate, is refused where the original refused it and with the
+ * same wording, so no rate this object can hand out breaks the two constraints above. See
+ * [[inverse]] for the edge and what it costs.
  *
  * ===Equality is bit for bit===
  *
@@ -81,8 +89,8 @@ import com.opengamma.strata.collect.result.Failure
  * platform, under which a rate that is not a number is not equal to itself and a negative zero
  * equals a positive one. The generated bean this replaces compared the bit patterns instead, so
  * that is what [[equals]] and [[hashCode]] do here: a not-a-number rate equals itself, and the
- * two signed zeros are distinct - neither of which is reachable through `FxRate.of` for the
- * zeros, and both of which keep equality reflexive for a rate that already exists.
+ * two signed zeros are distinct - the zeros being reachable through no route into the type at
+ * all, and both rules keeping equality reflexive for a rate that already exists.
  *
  * This class is immutable and thread-safe.
  *
@@ -113,15 +121,24 @@ sealed abstract case class FxRate private (pair: CurrencyPair, rate: Double)
    * always exactly - `1d / (1d / 0.1d)` is not `0.1d` - which is why a caller comparing a
    * doubly-inverted rate to the original should compare with a tolerance.
    *
-   * This is total, as it was in the original, and one numeric edge is the price of that. The
-   * reciprocal of a rate greater than zero is greater than zero, except for one input: the
-   * reciprocal of `Double.PositiveInfinity` is zero, which `FxRate.of` rejects. The original
-   * threw there, from the validation its constructor performed; here the value is returned, so
-   * that this member needs no failure channel for a state reachable only from an infinite rate a
-   * caller supplied. It is the one way to hold a rate this type's factories would not have built,
-   * and a rate of zero cannot be decoded from JSON, so it does not survive a round trip.
+   * This returns a rate rather than an outcome, as it did in the original, and one numeric edge
+   * is the price of that. The reciprocal of a rate greater than zero is greater than zero, except
+   * for one input: the reciprocal of `Double.PositiveInfinity` is zero, which is not a rate this
+   * type admits. The original refused it - the constructor its inversion called checked the rate
+   * and threw - and so does this member, because the check lives on the single creation route of
+   * the companion and therefore holds for a derived rate as much as for a supplied one. The
+   * refusal is an `IllegalArgumentException` carrying the message the original carried, rather
+   * than a returned failure, which is the treatment this port gives a numeric edge reachable only
+   * from a value a caller chose to supply: no rate a caller can obtain from this method breaks
+   * the constraints of the type, and the signature is the one it had.
+   *
+   * The same edge is reached one step later by an inversion of a rate small enough that its
+   * reciprocal is infinite: `FxRate.of(pair, Double.MinPositiveValue)` inverts to an infinite
+   * rate, which the type admits, and inverting '''that''' is the refusal above.
    *
    * @return the inverse rate
+   * @throws java.lang.IllegalArgumentException if the reciprocal is not a rate, which happens for
+   *   exactly one input - a rate of `Double.PositiveInfinity`
    */
   def inverse: FxRate = FxRate.create(pair.inverse, 1d / rate)
 
@@ -212,9 +229,15 @@ sealed abstract case class FxRate private (pair: CurrencyPair, rate: Double)
    * the identity rate is returned unchanged rather than inverted.
    *
    * The reciprocal is the same division [[inverse]] performs and carries the same single numeric
-   * edge, documented there.
+   * edge, documented there: an infinite rate whose pair is written the other way round has no
+   * conventional form, and asking for one is refused with the wording the original was refused
+   * with. An infinite rate whose pair is already conventional is returned untouched, since no
+   * division is performed.
    *
    * @return the rate in the market convention direction
+   * @throws java.lang.IllegalArgumentException if the pair has to be inverted and the reciprocal
+   *   of the rate is not a rate, which happens for exactly one input - a rate of
+   *   `Double.PositiveInfinity`
    */
   def toConventional: FxRate =
     if (pair.isConventional) this else FxRate.create(pair.toConventional, 1d / rate)
@@ -315,13 +338,13 @@ object FxRate {
     "Conversion rate between identical currencies must be one"
 
   /**
-   * The name of the pair, used both as the name of the checked argument and as the JSON key.
+   * The name of the rate, used as the name of the checked argument.
    *
-   * The bean property and the JSON field carry the same name, so the text exists once.
+   * The bean property being ported, the checked argument and the JSON key all carry this name;
+   * the JSON key comes from the field of the raw shape at the end of this object, which the
+   * codecs derive from, so the text a caller reads in a failure is written here and the text a
+   * document carries is written there, and the two are deliberately the same.
    */
-  private val PairField: String = "pair"
-
-  /** The name of the rate, used both as the name of the checked argument and as the JSON key. */
   private val RateField: String = "rate"
 
   /** The seed the hash of a rate mixes from, the hash of the name of the type. */
@@ -426,19 +449,34 @@ object FxRate {
 
   //-------------------------------------------------------------------------
   /**
-   * Creates a rate without checking it, which every validated route funnels through.
+   * Creates a rate, holding it to both constraints of the type, which every route funnels
+   * through.
    *
-   * This is the only instantiation of the type and it is private, so the checked routes above are
-   * the only way into it from outside this file. It is used where the rate is already known to be
-   * one the type admits: by `of`, which has just checked it, and by the two inversions, whose
-   * reciprocal of a rate greater than zero is greater than zero for every input but the one
-   * documented on [[FxRate.inverse]].
+   * This is the only instantiation of the type and it is private, so the routes above are the
+   * only way into it from outside this file - and because the two constraints are checked here,
+   * they hold for '''every''' rate that exists rather than only for the ones a caller's arguments
+   * produced. That is what the implementation being ported did: it declared the positivity of the
+   * rate on the bean property and the identity constraint in a validator method, and its private
+   * constructor ran both on every construction, the derived ones included.
+   *
+   * The checks are the reason [[FxRate.inverse]] and [[FxRate.toConventional]] can keep returning
+   * a rate rather than an outcome while the type stays sound: a rate derived from a rate that
+   * exists is one the type admits for every input but the reciprocal of an infinite rate, and
+   * that one input is refused here, exactly where and with exactly the wording the original
+   * refused it. They cost nothing that matters - `of` reaches this method only when its own
+   * accumulating checks have passed, so the checks here can fail only on a derived value.
    *
    * @param pair  the currency pair
-   * @param rate  the rate, already known to be acceptable
+   * @param rate  the rate, checked here against both constraints of the type
    * @return the rate
+   * @throws java.lang.IllegalArgumentException if the rate is not greater than zero, or the pair
+   *   names one currency twice and the rate is not one
    */
-  private def create(pair: CurrencyPair, rate: Double): FxRate = new FxRate(pair, rate) {}
+  private def create(pair: CurrencyPair, rate: Double): FxRate = {
+    ArgCheck.notNegativeOrZero(rate, RateField)
+    ArgCheck.isTrue(!pair.isIdentity || rate == 1d, IdenticalCurrencyMessage)
+    new FxRate(pair, rate) {}
+  }
 
   /**
    * Checks that a pair of identical currencies carries a rate of one.
@@ -548,21 +586,26 @@ object FxRate {
   import Codecs.implicits._
 
   /**
-   * The raw field shape the decoder reads before validation.
+   * The field shape both codecs are derived from, which the decoder reads before validation.
    *
    * Decoding a validated type is two steps: read the fields, then hand them to the factory that
-   * decides whether they describe a value. This product is the first step, and it exists only for
-   * that purpose - it is private, it is never returned, and nothing but the decoder below builds
-   * one. Its field names are the JSON keys, and they are the names of the two fields of
-   * [[FxRate]] itself.
+   * decides whether they describe a value. This product is the first step, and encoding is the
+   * same two steps in reverse, so both codecs below derive from this one declaration and the JSON
+   * shape of a rate is stated exactly once. It is private and never returned - the only values of
+   * it that exist are the ones the two codecs build. Its field names are the JSON keys, and they
+   * are the names of the two fields of [[FxRate]] itself, which are the names of the two
+   * properties of the bean being ported.
    *
-   * @param pair  the currency pair, whose own codec reads it from the `EUR/USD` string form
-   * @param rate  the rate, unvalidated
+   * @param pair  the currency pair, whose own codec carries it as the `EUR/USD` string form
+   * @param rate  the rate, unvalidated on the way in and already checked on the way out
    */
   private final case class Raw(pair: CurrencyPair, rate: Double)
 
   /** The derived decoder of the raw field shape, used by the validating decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
+
+  /** The derived encoder of the raw field shape, used by the encoder below. */
+  private val rawEncoder: Encoder.AsObject[Raw] = deriveEncoder[Raw]
 
   /**
    * The JSON encoding of rates.
@@ -573,19 +616,21 @@ object FxRate {
    * {"pair":"EUR/USD","rate":1.25}
    * }}}
    *
-   * The fields are written out here rather than derived, because the constructor of a validated
-   * type is not public and so its shape cannot be derived; the shape produced is the one a
-   * derivation would have produced, with the field names of the bean being ported. The result is
-   * wrapped so that a field holding no value would be omitted, which is the policy every product
-   * of this port follows - this type has no optional field, so the wrapping changes nothing about
-   * its output and exists so that the policy holds without exception.
+   * Both halves of the codec are assembled by the same compile-time derivation over the same raw
+   * shape, which is what keeps them from drifting apart: the field names, their order and their
+   * element codecs are stated once, in [[Raw]], and the encoder reaches them by mapping a rate
+   * onto that shape. Deriving from [[FxRate]] itself is not possible - the constructor of a
+   * validated type is not public, so there is no public shape to derive from - and writing the
+   * fields out by hand instead would state the same contract a second time.
+   *
+   * The result is wrapped so that a field holding no value would be omitted, which is the policy
+   * every product of this port follows - this type has no optional field, so the wrapping changes
+   * nothing about its output and exists so that the policy holds without exception.
    *
    * @return the JSON encoding of a rate
    */
   implicit val encoder: Encoder[FxRate] =
-    Codecs.dropNulls(
-      Encoder.forProduct2[FxRate, CurrencyPair, Double](PairField, RateField)(fxRate =>
-        (fxRate.pair, fxRate.rate)))
+    Codecs.dropNulls(rawEncoder.contramap[FxRate](fxRate => Raw(fxRate.pair, fxRate.rate)))
 
   /**
    * The JSON decoding of rates.

@@ -231,12 +231,15 @@ object StandardHolidayCalendars {
    * covariant, so a `Map[HolidayCalendarId, HolidayCalendar]` is an
    * `Iterable[(ReferenceDataId[_], Any)]` by ordinary subtyping.
    *
-   * Computed on first use, which generates every calendar in it. Code that needs one calendar
-   * should name that calendar - `StandardHolidayCalendars.GBLO` - rather than index this map.
+   * Computed on first use, and the '''one''' member of this object that generates every calendar
+   * in it: it exists for `ReferenceData.standard`, which by its nature has to answer for all of
+   * them. Code that needs one calendar should name that calendar -
+   * `StandardHolidayCalendars.GBLO` - or look it up by name through [[byName]], which generates
+   * the calendar it finds and no other.
    *
    * @return the built-in calendars by identifier
    */
-  lazy val all: Map[HolidayCalendarId, HolidayCalendar] = keyedBy(builtIn)(_.id)
+  lazy val all: Map[HolidayCalendarId, HolidayCalendar] = generatedFrom(builtIn)
 
   /**
    * The built-in calendars that carry no market convention of their own, by identifier.
@@ -249,7 +252,7 @@ object StandardHolidayCalendars {
    *
    * @return the weekend and no-holiday calendars by identifier
    */
-  lazy val minimal: Map[HolidayCalendarId, HolidayCalendar] = keyedBy(nameDerived)(_.id)
+  lazy val minimal: Map[HolidayCalendarId, HolidayCalendar] = generatedFrom(nameDerived)
 
   //-------------------------------------------------------------------------
   /**
@@ -264,10 +267,14 @@ object StandardHolidayCalendars {
    * `HolidayCalendars.of` is the entry point that understands them, and it reports an
    * unknown name as a failure rather than as an empty result.
    *
+   * Only the calendar found is generated. The view this searches maps each name to a way of
+   * obtaining its calendar rather than to the calendar itself, so asking for London costs
+   * London: the other twenty-five remain ungenerated, however many times this is called.
+   *
    * @param name  the canonical name of the calendar, such as `GBLO`
    * @return the calendar of that name, or empty where this library defines no calendar of it
    */
-  def byName(name: String): Option[HolidayCalendar] = byCanonicalName.get(name)
+  def byName(name: String): Option[HolidayCalendar] = generate(byCanonicalName.get(name))
 
   /**
    * Finds a built-in calendar by name, ignoring the case the name was written in.
@@ -285,13 +292,70 @@ object StandardHolidayCalendars {
    * library being ported. Where a name is known to be canonical, prefer [[byName]]: it answers
    * without folding case and so cannot accept a name this library would not have written.
    *
+   * As with [[byName]], only the calendar found is generated.
+   *
    * @param name  the name of the calendar in any case, such as `gblo`
    * @return the calendar of that name, or empty where this library defines no calendar of it
    */
   def byUpperName(name: String): Option[HolidayCalendar] =
-    byUpperCaseName.get(name.toUpperCase(Locale.ENGLISH))
+    generate(byUpperCaseName.get(name.toUpperCase(Locale.ENGLISH)))
+
+  /**
+   * Finds a built-in calendar by one of the names the registry being replaced registered it
+   * under.
+   *
+   * Those names are two per calendar: the canonical name the calendar carries, and the English
+   * upper-case of that name, which every provider of the library being ported filed its
+   * calendars under as well - so `GBLO`, `Sat/Sun`, `SAT/SUN` and `NOHOLIDAYS` were all names of
+   * calendars there and are all names of calendars here. The canonical name is tried first, and
+   * the match is exact within the two key spaces: unlike [[byUpperName]] this does not fold the
+   * case of the name it is given, because the registry did not, and a name in some other case
+   * was unknown to it.
+   *
+   * This is what `HolidayCalendars.of` resolves a simple name with, and it is the reason that
+   * method accepts exactly the names the library being ported accepted. Only the calendar found
+   * is generated.
+   *
+   * @param name  the name of the calendar, canonical or upper-case
+   * @return the calendar of that name, or empty where this library defines no calendar of it
+   */
+  private[date] def byRegisteredName(name: String): Option[HolidayCalendar] =
+    generate(byCanonicalName.get(name).orElse(byUpperCaseName.get(name)))
+
+  /**
+   * Checks whether a calendar '''is''' one of the calendars built into this library.
+   *
+   * The test is reference identity against the built-in calendar of the same name, not equality
+   * with it. That distinction is the whole point of this method: a calendar carrying holiday
+   * data is equal to any calendar of the same identifier, whatever dates it holds, so equality
+   * cannot tell the library's own `GBLO` from an application's `GBLO` - and the JSON form of a
+   * calendar, which writes a built-in calendar as its bare name and everything else as its
+   * dates, has to be able to.
+   *
+   * Only the built-in calendar of the name given is generated, so this costs at most one
+   * calendar rather than the whole set.
+   *
+   * @param calendar  the calendar to test
+   * @return true where the calendar is this library's own instance of its name
+   */
+  private[date] def isBuiltIn(calendar: HolidayCalendar): Boolean =
+    byCanonicalName.get(calendar.name).exists(builtInCalendar => builtInCalendar() eq calendar)
 
   //-------------------------------------------------------------------------
+  /**
+   * A built-in calendar, as its identifier and a way of obtaining it.
+   *
+   * The pair - rather than the calendar itself - is what the registrations below are made of,
+   * and it is what keeps the laziness of this object meaningful. A map of identifier to calendar
+   * cannot be built without building every calendar in it, so any view keyed by name would
+   * generate all twenty-six dated calendars the first time one name was looked up; a map of
+   * identifier to `() => calendar` is built without generating any of them, and reading one
+   * entry generates one calendar. The identifier is available without the calendar because
+   * every built-in calendar is identified by a constant of [[HolidayCalendarIds]], or, for the
+   * one calendar that has no constant there, by its own name.
+   */
+  private type Registration = (HolidayCalendarId, () => HolidayCalendar)
+
   /**
    * The calendars whose whole content follows from their names.
    *
@@ -299,8 +363,12 @@ object StandardHolidayCalendars {
    * fall out of step: these four are exactly the calendars that belong in the minimal set, and
    * they are also the first entries of the complete one.
    */
-  private lazy val nameDerived: List[HolidayCalendar] =
-    List(NO_HOLIDAYS, SAT_SUN, FRI_SAT, THU_FRI)
+  private lazy val nameDerived: List[Registration] =
+    List(
+      HolidayCalendarIds.NO_HOLIDAYS -> (() => NO_HOLIDAYS),
+      HolidayCalendarIds.SAT_SUN -> (() => SAT_SUN),
+      HolidayCalendarIds.FRI_SAT -> (() => FRI_SAT),
+      HolidayCalendarIds.THU_FRI -> (() => THU_FRI))
 
   /**
    * Every built-in calendar, in the order the calendars of the library being ported were
@@ -312,63 +380,101 @@ object StandardHolidayCalendars {
    * today; keeping it means that a calendar added in the future takes effect exactly where the
    * original would have put it, rather than silently displacing one that was already there.
    */
-  private lazy val builtIn: List[HolidayCalendar] =
-    nameDerived ::: THBA :: generated
-
-  /** The calendars derived from rules, in the order their identifiers sort. */
-  private lazy val generated: List[HolidayCalendar] =
-    List(
-      AUSY,
-      BRBD,
-      CAMO,
-      CATO,
-      CHZU,
-      CZPR,
-      DEFR,
-      DKCO,
-      EUTA,
-      FRPA,
-      GBLO,
-      HUBU,
-      JPTO,
-      MXMC,
-      NOOS,
-      NYFD,
-      NYSE,
-      NZAU,
-      NZBD,
-      NZWE,
-      PLWA,
-      SEST,
-      USGS,
-      USNY,
-      ZAJO)
-
-  /** The built-in calendars keyed by the name each of them carries. */
-  private lazy val byCanonicalName: Map[String, HolidayCalendar] = keyedBy(builtIn)(_.id.name)
-
-  /** The built-in calendars keyed by the English upper-case of the name each of them carries. */
-  private lazy val byUpperCaseName: Map[String, HolidayCalendar] =
-    keyedBy(builtIn)(calendar => calendar.id.name.toUpperCase(Locale.ENGLISH))
+  private lazy val builtIn: List[Registration] =
+    nameDerived ::: (HolidayCalendarIds.THBA -> (() => THBA)) :: generated
 
   /**
-   * Keys a list of calendars, letting the first claim of a key win.
+   * The calendars derived from rules, in the order their identifiers sort.
+   *
+   * The identifier of each is its constant in [[HolidayCalendarIds]], except for the New Zealand
+   * bank calendar, which has no constant there - as it had none in the library being ported -
+   * and so names itself. `HolidayCalendarsSpec` holds every identifier registered here to the
+   * one its own calendar carries, which is what makes writing them down beside the calendars
+   * safe: the point of doing so is that a name can be looked up without generating anything.
+   */
+  private lazy val generated: List[Registration] =
+    List(
+      HolidayCalendarIds.AUSY -> (() => AUSY),
+      HolidayCalendarIds.BRBD -> (() => BRBD),
+      HolidayCalendarIds.CAMO -> (() => CAMO),
+      HolidayCalendarIds.CATO -> (() => CATO),
+      HolidayCalendarIds.CHZU -> (() => CHZU),
+      HolidayCalendarIds.CZPR -> (() => CZPR),
+      HolidayCalendarIds.DEFR -> (() => DEFR),
+      HolidayCalendarIds.DKCO -> (() => DKCO),
+      HolidayCalendarIds.EUTA -> (() => EUTA),
+      HolidayCalendarIds.FRPA -> (() => FRPA),
+      HolidayCalendarIds.GBLO -> (() => GBLO),
+      HolidayCalendarIds.HUBU -> (() => HUBU),
+      HolidayCalendarIds.JPTO -> (() => JPTO),
+      HolidayCalendarIds.MXMC -> (() => MXMC),
+      HolidayCalendarIds.NOOS -> (() => NOOS),
+      HolidayCalendarIds.NYFD -> (() => NYFD),
+      HolidayCalendarIds.NYSE -> (() => NYSE),
+      HolidayCalendarIds.NZAU -> (() => NZAU),
+      HolidayCalendarId.of("NZBD") -> (() => NZBD),
+      HolidayCalendarIds.NZWE -> (() => NZWE),
+      HolidayCalendarIds.PLWA -> (() => PLWA),
+      HolidayCalendarIds.SEST -> (() => SEST),
+      HolidayCalendarIds.USGS -> (() => USGS),
+      HolidayCalendarIds.USNY -> (() => USNY),
+      HolidayCalendarIds.ZAJO -> (() => ZAJO))
+
+  /** The built-in calendars keyed by the name each of them carries, none of them generated. */
+  private lazy val byCanonicalName: Map[String, () => HolidayCalendar] =
+    keyedBy(builtIn)(id => id.name)
+
+  /**
+   * The built-in calendars keyed by the English upper-case of the name each of them carries,
+   * none of them generated.
+   */
+  private lazy val byUpperCaseName: Map[String, () => HolidayCalendar] =
+    keyedBy(builtIn)(id => id.name.toUpperCase(Locale.ENGLISH))
+
+  /**
+   * Keys the registrations of built-in calendars, letting the first claim of a key win.
    *
    * Building the views this way rather than with a straight conversion to a map states the rule
    * the registry being replaced followed: it registered each calendar only where the key was
    * free, so the provider consulted first decided what a name meant. A straight conversion
    * would silently give the key to the last claim instead.
    *
-   * @param source  the calendars, in the order they are registered
-   * @param keyOf  the key of a calendar
+   * The key is taken from the identifier of a registration, never from its calendar, so that
+   * building a view generates nothing.
+   *
+   * @param source  the registrations, in the order they are registered
+   * @param keyOf  the key of an identifier
    * @tparam K  the type of the key
-   * @return the calendars by key, each key held by the first calendar that claimed it
+   * @return the registrations by key, each key held by the first calendar that claimed it
    */
-  private def keyedBy[K](source: List[HolidayCalendar])(
-      keyOf: HolidayCalendar => K): Map[K, HolidayCalendar] =
+  private def keyedBy[K](source: List[Registration])(
+      keyOf: HolidayCalendarId => K): Map[K, () => HolidayCalendar] =
 
-    source.foldLeft(Map.empty[K, HolidayCalendar]) { (keyed, calendar) =>
-      val key = keyOf(calendar)
-      if (keyed.contains(key)) keyed else keyed.updated(key, calendar)
+    source.foldLeft(Map.empty[K, () => HolidayCalendar]) {
+      case (keyed, (id, calendar)) =>
+        val key = keyOf(id)
+        if (keyed.contains(key)) keyed else keyed.updated(key, calendar)
     }
+
+  /**
+   * Generates the calendars of a list of registrations, keyed by identifier.
+   *
+   * This is the deliberate full-materialisation path, used by [[all]] and [[minimal]] alone:
+   * every calendar of the list is generated. Nothing else in this object forces more than the
+   * one calendar it was asked for.
+   *
+   * @param source  the registrations, in the order they are registered
+   * @return the calendars by identifier
+   */
+  private def generatedFrom(source: List[Registration]): Map[HolidayCalendarId, HolidayCalendar] =
+    keyedBy(source)(id => id).map { case (id, calendar) => id -> calendar() }
+
+  /**
+   * Generates the calendar a view answered with, where it answered with one.
+   *
+   * @param found  the way of obtaining the calendar, where a view held one
+   * @return the calendar, or empty where the view held none
+   */
+  private def generate(found: Option[() => HolidayCalendar]): Option[HolidayCalendar] =
+    found.map(calendar => calendar())
 }

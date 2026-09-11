@@ -124,6 +124,17 @@ final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropert
    */
   private val ANOTHER_TYPE: Any = ""
 
+  /**
+   * The refusal of a rate of zero, which is what the reciprocal of an infinite rate is.
+   *
+   * The wording is the one the argument check of the original produced, and it is the wording the
+   * factory rows above already assert for a supplied zero; the derived-rate tests assert it too,
+   * because the point of those tests is that a derived rate is held to the same constraint as a
+   * supplied one, in the same place and with the same words.
+   */
+  private val ZeroRateMessage: String =
+    "Argument 'rate' must not be negative or zero but has value 0.0"
+
   //-------------------------------------------------------------------------
   /**
    * The rates the cross-rate test crosses, named and valued as the original named and valued
@@ -494,6 +505,24 @@ final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropert
     rateOf(GBP, GBP, 1d).toConventional shouldBe rateOf(GBP, GBP, 1d)
   }
 
+  test("test_toConventional_infinite") {
+    // the conventional direction of an infinite rate written the other way round would carry the
+    // reciprocal of infinity, which is not a rate, so it is refused for the same reason and with
+    // the same wording as the inversion above - as the original refused it, from the factory its
+    // conventionalisation called
+    val infinite = rateOf(USD, EUR, Double.PositiveInfinity)
+    infinite.pair.isConventional shouldBe false
+    intercept[IllegalArgumentException](infinite.toConventional).getMessage shouldBe
+      ZeroRateMessage
+
+    // an infinite rate already written in the conventional direction performs no division and is
+    // returned as it is, so the edge is reached by the orientation and not by the value
+    val conventional = rateOf(EUR, USD, Double.PositiveInfinity)
+    conventional.pair.isConventional shouldBe true
+    conventional.toConventional shouldBe conventional
+    conventional.toConventional.rate shouldBe Double.PositiveInfinity
+  }
+
   //-------------------------------------------------------------------------
   test("test_parse_String_good") {
     forAll(data_parseGood) { (input: String, base: Currency, counter: Currency, rate: Double) =>
@@ -530,6 +559,33 @@ final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropert
     val test = rateOf(GBP, GBP, 1d)
     test.inverse shouldBe rateOf(GBP, GBP, 1d)
     test.inverse.rate shouldBe 1d
+  }
+
+  test("test_inverse_infinite") {
+    // An infinite rate is one the factory admits - it is greater than zero - but its reciprocal
+    // is zero, which is not a rate. The original refused that reciprocal from the constructor its
+    // inversion called; this port refuses it in the single creation route of the companion, so
+    // there is no way to hold a rate that the factory and the decoder would reject. The refusal
+    // is the exception the original threw, with its wording, because the member keeps the
+    // signature it had rather than growing a failure channel for an edge reachable only from a
+    // rate a caller supplied.
+    val infinite = rateOf(EUR, USD, Double.PositiveInfinity)
+    infinite.rate shouldBe Double.PositiveInfinity
+    intercept[IllegalArgumentException](infinite.inverse).getMessage shouldBe ZeroRateMessage
+
+    // the same edge one step later: the reciprocal of the smallest positive rate is infinite,
+    // which is a rate the factory admits, and inverting that one is the refusal above
+    val denormal = rateOf(EUR, USD, Double.MinPositiveValue)
+    denormal.inverse.pair shouldBe CurrencyPair.of(USD, EUR)
+    denormal.inverse.rate shouldBe Double.PositiveInfinity
+    intercept[IllegalArgumentException](denormal.inverse.inverse).getMessage shouldBe
+      ZeroRateMessage
+
+    // a rate that is not a number inverts to one that is not a number, which is admitted for the
+    // same reason the input is admitted, so this is not the refused edge
+    val notANumber = rateOf(EUR, USD, Double.NaN)
+    notANumber.inverse.pair shouldBe CurrencyPair.of(USD, EUR)
+    notANumber.inverse.rate.isNaN shouldBe true
   }
 
   //-------------------------------------------------------------------------
@@ -696,6 +752,32 @@ final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropert
       .isLeft shouldBe true
   }
 
+  test("test_serialization_derivedShape") {
+    // Both halves of the codec are derived, at compile time, from one declaration of the field
+    // shape, so what the encoder writes and what the decoder reads cannot drift apart. The
+    // properties that follow from that are pinned here: the two keys, in declaration order, and
+    // nothing else in the object.
+    val test = rateOf(EUR, USD, 1.6d)
+    test.asJson.asObject.map(obj => obj.keys.toList) shouldBe Some(List("pair", "rate"))
+    test.asJson.noSpaces shouldBe """{"pair":"EUR/USD","rate":1.6}"""
+    test.asJson.as[FxRate] shouldBe Right(test)
+
+    // the rate is written through the single policy this port has for a double, which writes the
+    // three values JSON cannot express as tagged strings; both survive the round trip, which is
+    // what makes the encoded form of every rate a rate again
+    val infinite = rateOf(EUR, USD, Double.PositiveInfinity)
+    infinite.asJson.noSpaces shouldBe """{"pair":"EUR/USD","rate":"Infinity"}"""
+    infinite.asJson.as[FxRate] shouldBe Right(infinite)
+
+    val notANumber = rateOf(EUR, USD, Double.NaN)
+    notANumber.asJson.noSpaces shouldBe """{"pair":"EUR/USD","rate":"NaN"}"""
+    notANumber.asJson.as[FxRate] shouldBe Right(notANumber)
+
+    // and the pair is written as its text form rather than as a nested object, which is the codec
+    // the pair itself publishes and what keeps the document readable
+    test.asJson.hcursor.get[String]("pair") shouldBe Right("EUR/USD")
+  }
+
   //-----------------------------------------------------------------------
   test("coverage") {
     // The reflective bean sweep of the original has no counterpart: there is no meta-bean to walk
@@ -706,10 +788,13 @@ final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropert
     val same = rateOf(GBP, USD, 1.25d)
     val other = rateOf(GBP, USD, 1.35d)
 
+    // inequality is stated through `eqv`, which is the form the contract bears: the instance
+    // guarantees that equal rates hash equally and says nothing whatever about unequal ones, so
+    // the hashes of `test` and `other` are deliberately left uncompared. Two distinct rates may
+    // legally collide, and asserting that they do not would make a correct hash fail here.
     Hash[FxRate].eqv(test, same) shouldBe true
     Hash[FxRate].eqv(test, other) shouldBe false
     Hash[FxRate].hash(test) shouldBe Hash[FxRate].hash(same)
-    Hash[FxRate].hash(test) should not be Hash[FxRate].hash(other)
 
     // the rendering instance renders what the text form renders, so a rate reaching a message
     // through either route reads the same
@@ -726,6 +811,19 @@ final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropert
     // and the text form is the form the parsing factory reads back
     FxRate.parse(Show[FxRate].show(test)) should haveValue(test)
     FxRate.parse(Show[FxRate].show(integral)) should haveValue(integral)
+
+    // which supplies a second, independently built pair for the direction the contract does
+    // constrain: a rate from the factory and the same rate read back out of its own text are
+    // equal, so they are required to hash equally however differently they were reached.
+    // `parse` reports a single failure rather than a chain, so it is unwrapped here as
+    // `decimalOf` unwraps one.
+    val reparsed: FxRate = FxRate
+      .parse(Show[FxRate].show(test))
+      .fold(
+        failure => fail(s"Expected a rate but parsing failed with: ${failure.message}"),
+        rate => rate)
+    Hash[FxRate].eqv(test, reparsed) shouldBe true
+    Hash[FxRate].hash(test) shouldBe Hash[FxRate].hash(reparsed)
   }
 
   //-------------------------------------------------------------------------

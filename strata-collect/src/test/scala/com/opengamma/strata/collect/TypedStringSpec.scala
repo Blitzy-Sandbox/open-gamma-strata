@@ -18,10 +18,13 @@ import _root_.io.circe.Json
 import _root_.io.circe.parser.decode
 import _root_.io.circe.syntax._
 
+import org.scalacheck.Shrink
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
+import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 
+import com.opengamma.strata.collect.Arbitraries._
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.result.ResultNec
@@ -73,6 +76,27 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *
  * The remaining six cases keep both their names and their assertions, except where the port's
  * behaviour genuinely differs; each such difference is stated in the test that pins it.
+ *
+ * ===What the generated-text properties add to the fixed tables===
+ *
+ * The two redirected cases, and the fixed tables beside them, pin the behaviour at the texts
+ * this file names. The two contracts they replace were reflective, and therefore unbounded in
+ * the text they reached, so each of those assertions is made a second time over generated
+ * text: the shared generators of [[Arbitraries]] supply the text a fixture accepts -
+ * [[Arbitraries.genNonEmptyText]] for the plain fixture, [[Arbitraries.genUpperLetterText]]
+ * for the two that constrain the shape of their text as well - and
+ * [[Arbitraries.genNonUpperText]] supplies the text a shape check has to reject. The
+ * properties at the foot of this file assert, over those generators, the three text forms,
+ * the JSON round trip, equality and hashing, the laws of the ordering, the rejecting branch of
+ * both validated fixtures and the rejecting branch of the decoder. Every one of them
+ * exercises all three fixtures of [[TypedStringFixtures]], so a divergence between the three
+ * validations cannot hide behind whichever of them the fixed tables happen to name.
+ *
+ * One consequence of generating the text has to be handled deliberately, and is handled where
+ * the shrinking is declared below: every fixture rejects empty text, and the shrinking the
+ * library supplies for text minimises towards the empty string, so a genuine counterexample
+ * would be reported as one of the builders of this spec rejecting empty text rather than as
+ * the behaviour that actually broke.
  *
  * ===Divergences from the type being ported, settled by measurement===
  *
@@ -137,7 +161,11 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     first rule are asserted, in `test_equalsHashCode` and in the case covering two typed
  *     strings that wrap the same text.
  */
-final class TypedStringSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
+final class TypedStringSpec
+    extends AnyFunSuite
+    with Matchers
+    with ScalaCheckPropertyChecks
+    with TableDrivenPropertyChecks {
 
   import TypedStringFixtures._
 
@@ -183,6 +211,58 @@ final class TypedStringSpec extends AnyFunSuite with Matchers with TableDrivenPr
       ("Act/360", "Act/365F"),
       (" ", "A"),
       ("1", "A"))
+
+  /**
+   * Whether text is built only from the letters `A` to `Z`, which is the shape two fixtures
+   * require and the third is indifferent to.
+   *
+   * This is the predicate the two shape validations of [[TypedStringFixtures]] apply, written
+   * out here rather than borrowed from them: the shrinking below has to agree with the
+   * generators of [[Arbitraries]] about which side of that line a piece of text falls on, and
+   * a predicate taken from the code under test would agree with a broken validation.
+   *
+   * @param text  the text to classify
+   * @return true if every character is an upper-case letter
+   */
+  private def isUpperLetterText(text: String): Boolean =
+    text.forall(character => character >= 'A' && character <= 'Z')
+
+  /**
+   * Minimises failing text without leaving the domain the text was generated from.
+   *
+   * Minimisation has to stay inside the validation domain of the generator that produced the
+   * failing value, and the shrinking the library supplies for text leaves it in two ways. It
+   * removes characters, so it reaches the empty string, which every fixture rejects. It also
+   * shrinks characters individually - through the shrinking of `Char` - so upper-case text can
+   * shrink to text holding a lower-case character, and text whose only offending character is
+   * that one can shrink to upper-case text. Either departure makes a minimised counterexample
+   * fail for the wrong reason: the builders below would report a fixture rejecting the
+   * minimised text, or a case asserting a rejection would find the minimised text accepted,
+   * and in both readings the behaviour that actually broke goes unnamed.
+   *
+   * The shrinking declared here keeps every candidate on the same side of both lines as the
+   * text it came from: non-empty, so the emptiness check is never what fails, and upper-case
+   * only exactly when its source was, so text drawn from [[Arbitraries.genUpperLetterText]]
+   * minimises to text a shape validation still accepts and text drawn from
+   * [[Arbitraries.genNonUpperText]] minimises to text a shape validation still rejects. It is
+   * a filter over the library's candidates rather than a replacement for them, so it inherits
+   * their order and their termination: filtering a well-founded sequence of candidates leaves
+   * it well founded, and text of one character has no candidate at all, which is correct -
+   * nothing smaller is in the domain.
+   *
+   * It is declared rather than derived because it has to outrank the one the library would
+   * otherwise supply for text, and it is local to this spec because a generator of text is not
+   * by itself a generator of text a typed string accepts. The two cases at the foot of this
+   * file assert both invariants directly, so the guarantee is tested rather than argued.
+   */
+  private implicit val shrinkNonEmptyText: Shrink[String] =
+    Shrink.withLazyList[String] { text =>
+      val upperOnly = isUpperLetterText(text)
+      LazyList
+        .from(Shrink.shrinkString.shrink(text))
+        .filter(candidate =>
+          candidate.nonEmpty && isUpperLetterText(candidate) == upperOnly)
+    }
 
   /** Builds a value of the unvalidated fixture, failing the test if its text is rejected. */
   private def sample(text: String): SampleType =
@@ -651,6 +731,287 @@ final class TypedStringSpec extends AnyFunSuite with Matchers with TableDrivenPr
       Hash[SampleType].hash(value) shouldBe text.hashCode
       Order[SampleType].compare(value, sample(text)) shouldBe 0
       Eq[SampleType].eqv(value, sample(text)) shouldBe true
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  // the same contracts over generated text
+  //
+  // The cases above assert at the texts this file names; the cases below assert
+  // the same contracts over the shared generators, which is what the two
+  // reflective contracts the port dropped - platform serialization and the
+  // text-form conversion of the dropped library - covered by walking a type
+  // rather than by naming its values. Each case exercises all three fixtures,
+  // and the text a fixture rejects is generated too, so both branches of every
+  // validation are reached over generated input rather than over literals.
+  //-------------------------------------------------------------------------
+
+  test("the three text forms of any accepted text are that text, on every fixture") {
+    // This is the property the dropped text-form conversion existed to provide, stated over
+    // generated text rather than over the fixed table: the name, the rendering and the JSON
+    // of a value are one text, so a value survives being written out and read back whatever
+    // text it carries.
+    forAll(genNonEmptyText) { (text: String) =>
+      val value = sample(text)
+      value.name shouldBe text
+      value.toString shouldBe text
+      value.show shouldBe text
+      Show[SampleType].show(value) shouldBe text
+      value.asJson shouldBe Json.fromString(text)
+      value.asJson.asString shouldBe Some(text)
+    }
+
+    // The two fixtures that constrain the shape of their text are driven by the generator of
+    // text they accept. The character-validated fixture is the one written to the minimal
+    // documented pattern, so its rendering is the platform default and its name, its `Show`
+    // and its JSON are the text regardless - which is the divergence the fixed cases pin, held
+    // here over every text the fixture accepts.
+    forAll(genUpperLetterText) { (text: String) =>
+      val validatedValue = validated(text)
+      validatedValue.name shouldBe text
+      validatedValue.toString shouldBe text
+      validatedValue.show shouldBe text
+      validatedValue.asJson shouldBe Json.fromString(text)
+
+      val characterValue = characters(text)
+      characterValue.name shouldBe text
+      characterValue.show shouldBe text
+      Show[SampleCharacterType].show(characterValue) shouldBe text
+      characterValue.asJson shouldBe Json.fromString(text)
+      characterValue.toString should include("SampleCharacterType@")
+    }
+  }
+
+  test("any accepted text round-trips through the JSON form of every fixture") {
+    // The replacement for the platform serialization the original asserted, over generated
+    // text: decoding what encoding produced yields the same value, and decoding the bare JSON
+    // string of the text yields it too, so a document written by hand reads as one written by
+    // the encoder.
+    forAll(genNonEmptyText) { (text: String) =>
+      val value = sample(text)
+      decode[SampleType](value.asJson.noSpaces) shouldBe Right(value)
+      decode[SampleType](Json.fromString(text).noSpaces) shouldBe Right(value)
+      decode[SampleType](value.asJson.noSpaces).map(decoded => decoded.name) shouldBe Right(text)
+    }
+
+    forAll(genUpperLetterText) { (text: String) =>
+      val validatedValue = validated(text)
+      decode[SampleValidatedType](validatedValue.asJson.noSpaces) shouldBe Right(validatedValue)
+      decode[SampleValidatedType](Json.fromString(text).noSpaces) shouldBe Right(validatedValue)
+
+      val characterValue = characters(text)
+      decode[SampleCharacterType](characterValue.asJson.noSpaces) shouldBe Right(characterValue)
+      decode[SampleCharacterType](Json.fromString(text).noSpaces) shouldBe Right(characterValue)
+
+      // The same text reaches all three fixtures, and each decodes to its own type - the
+      // static discrimination the abstraction exists to provide, exercised through the codecs.
+      decode[SampleType](Json.fromString(text).noSpaces) shouldBe Right(sample(text))
+    }
+  }
+
+  test("values of the same text are equal and hash alike, values of different texts are not") {
+    forAll(genNonEmptyText, genNonEmptyText) { (left: String, right: String) =>
+      val first = sample(left)
+      val second = sample(left)
+      val other = sample(right)
+
+      // Equal values, by every route the companion publishes.
+      (first == second) shouldBe true
+      first.hashCode shouldBe second.hashCode
+      Eq[SampleType].eqv(first, second) shouldBe true
+      Hash[SampleType].hash(first) shouldBe Hash[SampleType].hash(second)
+
+      // The measured divergence of this port, over generated text: the hash of a value is the
+      // hash of its text, because a value class takes its hash from the value it wraps.
+      first.hashCode shouldBe left.hashCode
+      Hash[SampleType].hash(first) shouldBe left.hashCode
+
+      // Two values are equal exactly when their texts are, so nothing beside the text
+      // participates in equality - and equal values hash alike, which is the contract a
+      // hashed collection depends on.
+      (first == other) shouldBe (left == right)
+      Eq[SampleType].eqv(first, other) shouldBe (left == right)
+      Set(first, second, other).size shouldBe Set(left, right).size
+    }
+
+    // The same, on the two fixtures that constrain their text.
+    forAll(genUpperLetterText, genUpperLetterText) { (left: String, right: String) =>
+      (validated(left) == validated(left)) shouldBe true
+      validated(left).hashCode shouldBe left.hashCode
+      (validated(left) == validated(right)) shouldBe (left == right)
+      Eq[SampleValidatedType].eqv(validated(left), validated(right)) shouldBe (left == right)
+
+      (characters(left) == characters(left)) shouldBe true
+      characters(left).hashCode shouldBe left.hashCode
+      (characters(left) == characters(right)) shouldBe (left == right)
+      Eq[SampleCharacterType].eqv(characters(left), characters(right)) shouldBe (left == right)
+    }
+  }
+
+  test("the ordering obeys its laws over generated text and agrees with the ordering of the text") {
+    forAll(genNonEmptyText, genNonEmptyText, genNonEmptyText) {
+      (first: String, second: String, third: String) =>
+        val order = Order[SampleType]
+        val a = sample(first)
+        val b = sample(second)
+
+        // Reflexive, antisymmetric, and in agreement with the text the values wrap - the
+        // ordering being `name.compareTo` is what makes the last of those hold by sign rather
+        // than only by direction.
+        order.compare(a, a) shouldBe 0
+        order.compare(a, b).sign shouldBe -order.compare(b, a).sign
+        order.compare(a, b).sign shouldBe first.compareTo(second).sign
+
+        // Comparison returns zero exactly when the values are equal, and the equality it
+        // agrees with is the published one: one instance is both, so the three notions cannot
+        // disagree - which is the invariant the fixed case asserts at two values and this one
+        // asserts over generated text.
+        (order.compare(a, b) == 0) shouldBe (a == b)
+        (order.compare(a, b) == 0) shouldBe Eq[SampleType].eqv(a, b)
+        (order.compare(a, b) == 0) shouldBe (first == second)
+
+        // Transitivity, asserted on the arrangement of the three texts in which its premise
+        // holds: sorting the texts puts them in that arrangement without discarding any
+        // generated triple, and the conclusion is then the comparison of the outer two.
+        val ordered = List(first, second, third).sorted.map(text => sample(text))
+        order.lteqv(ordered.head, ordered(1)) shouldBe true
+        order.lteqv(ordered(1), ordered(2)) shouldBe true
+        order.lteqv(ordered.head, ordered(2)) shouldBe true
+
+        // And sorting the values is sorting their texts, which is what the original reached
+        // through its own sort.
+        List(a, b, sample(third)).sorted(order.toOrdering).map(value => value.name) shouldBe
+          List(first, second, third).sorted
+    }
+  }
+
+  test("text outside A to Z is rejected by both validated fixtures, and text inside it accepted") {
+    forAll(genNonUpperText) { (text: String) =>
+      // Generated text holding at least one character outside `A` to `Z` passes the emptiness
+      // check and fails the shape check, so the rejecting branch of both shape validations is
+      // reached over generated input. The reason and the wording are the fixture's own, and
+      // exactly one failure is reported, because these validations stop at the first check
+      // that fails.
+      val rejectedByPattern = SampleValidatedType.of(text)
+      rejectedByPattern should beFailure
+      rejectedByPattern should beFailureWith(FailureReason.INVALID)
+      failuresOf(rejectedByPattern).map(failure => failure.message) shouldBe
+        List("Name must be letters")
+      failuresOf(rejectedByPattern).forall(failure => failure.attributes.isEmpty) shouldBe true
+
+      val rejectedByCharacters = SampleCharacterType.of(text)
+      rejectedByCharacters should beFailure
+      rejectedByCharacters should beFailureWith(FailureReason.INVALID)
+      failuresOf(rejectedByCharacters).map(failure => failure.message) shouldBe
+        List("Name must be letters")
+      failuresOf(rejectedByCharacters).forall(failure => failure.attributes.isEmpty) shouldBe true
+
+      // The pattern form and the character form agree on this text, which is what lets a
+      // concrete type choose between them on cost alone.
+      failuresOf(rejectedByPattern) shouldBe failuresOf(rejectedByCharacters)
+
+      // Nothing rejected the text for being empty: the plain fixture, whose only requirement
+      // is that the text is present, accepts every value this generator produces.
+      SampleType.of(text) should beSuccess
+      sample(text).name shouldBe text
+    }
+
+    forAll(genUpperLetterText) { (text: String) =>
+      // The accepting branch of the same two validations, over the generator of the text they
+      // require: the value is built, carries the text, and round-trips.
+      SampleValidatedType.of(text) should beSuccess
+      SampleValidatedType.of(text) should haveValue(validated(text))
+      validated(text).name shouldBe text
+      decode[SampleValidatedType](validated(text).asJson.noSpaces) shouldBe Right(validated(text))
+
+      SampleCharacterType.of(text) should beSuccess
+      SampleCharacterType.of(text) should haveValue(characters(text))
+      characters(text).name shouldBe text
+      decode[SampleCharacterType](characters(text).asJson.noSpaces) shouldBe Right(characters(text))
+    }
+  }
+
+  test("minimising accepted text keeps it inside the domain every fixture accepts") {
+    // The shrinking declared at the head of this file is asserted directly, because every
+    // generated case above depends on it: were a candidate allowed out of the domain, a
+    // failure in any of those cases would be reported at a minimised value that one of the
+    // builders rejects, naming the emptiness or the shape check instead of the behaviour that
+    // broke. Reading the candidates out and checking them is the only way that guarantee is
+    // observable, since minimisation runs only when a property has already failed.
+    forAll(genNonEmptyText) { (text: String) =>
+      val candidates = Shrink.shrink(text).toList
+      candidates.foreach { candidate =>
+        candidate should not be empty
+        SampleType.of(candidate) should beSuccess
+      }
+      // Every candidate is a reduction rather than a restatement, so minimisation makes
+      // progress and cannot circle.
+      candidates.foreach(candidate => candidate should not be text)
+    }
+
+    forAll(genUpperLetterText) { (text: String) =>
+      // Text the shape validations accept minimises to text they still accept: every candidate
+      // holds only the letters A to Z, so neither validated fixture can reject a minimised
+      // case that its generator produced.
+      val candidates = Shrink.shrink(text).toList
+      candidates.foreach { candidate =>
+        candidate should not be empty
+        isUpperLetterText(candidate) shouldBe true
+        SampleValidatedType.of(candidate) should beSuccess
+        SampleCharacterType.of(candidate) should beSuccess
+      }
+      // Minimisation does reach somewhere: text of more than one letter always has a candidate,
+      // and text of one letter is already the smallest value in this domain.
+      if (text.length > 1) {
+        candidates should not be empty
+      }
+    }
+  }
+
+  test("minimising rejected text keeps it rejected, so the rejection is what stays under test") {
+    forAll(genNonUpperText) { (text: String) =>
+      // The counterpart invariant: text that fails a shape validation minimises to text that
+      // still fails it. Without this, a case asserting a rejection could be minimised into
+      // upper-case text, which is accepted, and the report would describe an acceptance the
+      // property never asserted.
+      val candidates = Shrink.shrink(text).toList
+      candidates.foreach { candidate =>
+        candidate should not be empty
+        isUpperLetterText(candidate) shouldBe false
+        candidate.exists(character => character < 'A' || character > 'Z') shouldBe true
+        SampleValidatedType.of(candidate) should beFailureWith(FailureReason.INVALID)
+        SampleCharacterType.of(candidate) should beFailureWith(FailureReason.INVALID)
+        // The plain fixture, which asks only that the text is present, accepts every candidate
+        // as it accepts the text itself.
+        SampleType.of(candidate) should beSuccess
+      }
+    }
+  }
+
+  test("the decoder rejects any text the factory rejects, with the message the factory reported") {
+    forAll(genNonUpperText) { (text: String) =>
+      // The codec reads its string through `of`, so decoding is one more route to the same
+      // rejection: the message the decoding failure carries is the message the factory
+      // reported, whatever the text was, and not a wording the codec invented.
+      val byPattern = SampleValidatedType.of(text)
+      val reportedByPattern = failuresOf(byPattern).map(failure => failure.message)
+      reportedByPattern should have size 1
+      decode[SampleValidatedType](Json.fromString(text).noSpaces) match {
+        case Left(failure: DecodingFailure) => failure.message shouldBe reportedByPattern.head
+        case other => fail(s"expected a decoding failure but got: $other")
+      }
+
+      val byCharacters = SampleCharacterType.of(text)
+      val reportedByCharacters = failuresOf(byCharacters).map(failure => failure.message)
+      reportedByCharacters should have size 1
+      decode[SampleCharacterType](Json.fromString(text).noSpaces) match {
+        case Left(failure: DecodingFailure) => failure.message shouldBe reportedByCharacters.head
+        case other => fail(s"expected a decoding failure but got: $other")
+      }
+
+      // The plain fixture accepts the same text, so the rejection belongs to the validation of
+      // the type and not to the codec the three fixtures share.
+      decode[SampleType](Json.fromString(text).noSpaces) shouldBe Right(sample(text))
     }
   }
 }

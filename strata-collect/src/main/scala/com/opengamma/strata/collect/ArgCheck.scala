@@ -717,18 +717,24 @@ object ArgCheck {
    * ArgCheck.notNegativeOrZero(amount, 0.0001, "amount")
    * }}}
    *
-   * The tolerance is itself checked, because a negative tolerance describes no interval;
-   * the third-party helper that the Java original used for the comparison rejected one the
-   * same way. A not-a-number argument is not near zero and is not below zero, so it passes
-   * both tests here, as it did there.
+   * The tolerance is itself checked, because a not-a-number tolerance describes no interval
+   * and a negative one describes none either; the numeric helper that the Java original
+   * delegated the comparison to rejected both the same way. The tolerance is examined for
+   * being a number first, so an unusable tolerance is reported as what it is: a
+   * not-a-number tolerance is reported as not being a number, a negative one as being
+   * negative. A zero tolerance is usable and is accepted, and so is negative zero, which is
+   * not a negative value. A not-a-number argument is not near zero and is not below zero, so
+   * it passes both tests here, as it did there.
    *
    * @param argument  the argument to check
-   * @param tolerance  the tolerance to use for zero, must not be negative
+   * @param tolerance  the tolerance to use for zero, must be a number and must not be
+   *   negative
    * @param name  the name of the argument to use in the error message
-   * @throws IllegalArgumentException if the tolerance is negative, or if the argument is
-   *   within the tolerance of zero or is below it
+   * @throws IllegalArgumentException if the tolerance is not a number or is negative, or if
+   *   the argument is within the tolerance of zero or is below it
    */
   def notNegativeOrZero(argument: Double, tolerance: Double, name: String): Unit = {
+    notNaN(tolerance, "tolerance")
     notNegative(tolerance, "tolerance")
     if (isNearZero(argument, tolerance)) {
       fail(s"Argument '$name' must not be zero")
@@ -784,17 +790,22 @@ object ArgCheck {
    * ArgCheck.notZero(amount, 0.0001, "amount")
    * }}}
    *
-   * The tolerance is itself checked, because a negative tolerance describes no interval;
-   * the third-party helper that the Java original used for the comparison rejected one the
-   * same way. A not-a-number argument is not near zero, so it passes, as it did there.
+   * As in the check above, the tolerance is itself checked, and for the same reason: neither
+   * a not-a-number tolerance nor a negative one describes an interval, and the numeric helper
+   * that the Java original delegated the comparison to rejected both. Being a number is
+   * checked first, so each of the two unusable tolerances is reported as what it is, and a
+   * zero tolerance - either signed zero - is usable and accepted. A not-a-number argument is
+   * not near zero, so it passes, as it did there.
    *
    * @param argument  the argument to check
-   * @param tolerance  the tolerance to use for zero, must not be negative
+   * @param tolerance  the tolerance to use for zero, must be a number and must not be
+   *   negative
    * @param name  the name of the argument to use in the error message
-   * @throws IllegalArgumentException if the tolerance is negative, or if the argument is
-   *   within the tolerance of zero
+   * @throws IllegalArgumentException if the tolerance is not a number or is negative, or if
+   *   the argument is within the tolerance of zero
    */
   def notZero(argument: Double, tolerance: Double, name: String): Unit = {
+    notNaN(tolerance, "tolerance")
     notNegative(tolerance, "tolerance")
     if (isNearZero(argument, tolerance)) {
       fail(notZeroMsg(name))
@@ -812,16 +823,27 @@ object ArgCheck {
    * is near zero when its magnitude does not exceed the tolerance, or when it equals zero
    * exactly. The second clause is what makes the comparison total - it is the clause that
    * lets a value equal itself even when subtraction would not be informative - and the two
-   * clauses together give the behaviour that matters at the edges of the domain: a
-   * not-a-number value is never near zero, and neither infinity is either.
+   * clauses together give the behaviour at the edges of the domain. A not-a-number argument
+   * is never near zero: its magnitude does not compare against the tolerance and it does not
+   * equal zero, so both checks above admit it, exactly as the Java checks did. An infinity is
+   * near zero only when the tolerance is itself infinite, since that is the only tolerance an
+   * infinite magnitude does not exceed; at every finite tolerance it is clear of zero and
+   * passes. The callers guarantee, before reaching here, that the tolerance is a number and
+   * is not negative.
    *
-   * The array-oriented forms of the same comparison live with the rest of the array
-   * arithmetic, in `DoubleArrayMath`. They are deliberately not called from here: that
-   * object checks its own arguments through this one, and calling back into it would tie
-   * the two together in a cycle.
+   * The array-oriented forms of the comparison live with the rest of the array arithmetic, in
+   * `DoubleArrayMath`, and a reader comparing the two should expect them to differ: that
+   * object states the migration plan's reading of a fuzzy comparison, under which a
+   * not-a-number value is equal to nothing at all and each infinity is equal only to itself
+   * at any tolerance, including an infinite one. This local zero test deliberately keeps the
+   * Java behaviour instead, because the Java check is the authority for these two checks and
+   * their messages. They are also deliberately not called from here: that object checks its
+   * own arguments through this one, and calling back into it would tie the two together in a
+   * cycle.
    *
    * @param argument  the value to test
-   * @param tolerance  the tolerance to use for zero
+   * @param tolerance  the tolerance to use for zero, already checked to be a number that is
+   *   not negative
    * @return true if the value counts as zero
    */
   private def isNearZero(argument: Double, tolerance: Double): Boolean =

@@ -263,6 +263,25 @@ final class NoRoundingSpec extends AnyFunSuite with Matchers {
     test.asJson.asObject.map(_.keys.toList) shouldBe Some(List("NoRounding"))
     test.asJson.hcursor.downField("NoRounding").as[Json] shouldBe Right(Json.obj())
 
+    // The payload of the member is read as that member's own shape rather than ignored, so the
+    // empty object above is the whole of what this convention accepts: this member has no
+    // fields, and a payload that is not an object - or an object that carries a field - would
+    // otherwise decode to this convention while what it held was silently discarded. Each such
+    // document is rejected, and the message of the rejection is asserted rather than only its
+    // presence, so what is pinned here is the reason and not merely the count of failures.
+    def rejectionOf(text: String): String =
+      decode[Rounding](text).fold(
+        error => error.getMessage,
+        decodedConvention =>
+          fail(s"a document outside the shape of the family decoded as $decodedConvention: $text"))
+
+    rejectionOf("""{"NoRounding":123}""") should include("'NoRounding' must hold an empty object")
+    rejectionOf("""{"NoRounding":null}""") should include("'NoRounding' must hold an empty object")
+    rejectionOf("""{"NoRounding":[1]}""") should include("'NoRounding' must hold an empty object")
+    rejectionOf("""{"NoRounding":"x"}""") should include("'NoRounding' must hold an empty object")
+    rejectionOf("""{"NoRounding":{"decimalPlaces":2}}""") should include(
+      "'NoRounding' must hold an empty object")
+
     // The value is encoded through the type of the family rather than through the type of the
     // member, which is how a convention held as a field of a larger document is encoded, and it
     // decodes back at that same type. That is what makes the round trip above a statement about

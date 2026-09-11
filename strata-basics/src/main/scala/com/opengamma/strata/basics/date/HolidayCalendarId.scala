@@ -37,8 +37,9 @@ import com.opengamma.strata.collect.result.Failure
  *
  * An identifier is an identity and nothing more: its name is its whole content, so two
  * identifiers of the same name are equal, hash alike and resolve to the same calendar. That
- * is the contract [[ReferenceDataId]] requires of an identifier, and here it comes from the
- * type being a case class over a single element.
+ * is the contract [[ReferenceDataId]] requires of an identifier, and here the equality comes
+ * from the type being a case class over a single element, while the hash is the name's, held
+ * on the instance by [[HolidayCalendarId.hashCode]].
  *
  * ===Composite identifiers===
  *
@@ -247,6 +248,23 @@ sealed abstract case class HolidayCalendarId private (name: String)
    * @return the unique name
    */
   override def toString: String = name
+
+  /**
+   * Returns a suitable hash code for the identifier, which is the hash of its name.
+   *
+   * It is computed once, when the identifier is built, and held in a field on the instance,
+   * which is where the identifier being ported held it. The hash a case class generates would
+   * instead walk the value and mix it afresh on every call, and that cost is worth removing
+   * here because an identifier is the key of every reference-data lookup: it is hashed at
+   * least once per resolution - once more for each part of a composite - and every date
+   * adjustment resolves a calendar.
+   *
+   * It agrees with equality, as it must for the identifier to work as a key: the hash is the
+   * name's and equality is the name's, since the name is the only element the value carries.
+   *
+   * @return the hash code of this identifier, which is the hash code of its name
+   */
+  override val hashCode: Int = name.hashCode
 
   /**
    * Resolves the parts of a composite identifier and reads them together.
@@ -652,8 +670,9 @@ object HolidayCalendarId {
    * `Eq`, so declaring them together is what makes it impossible for the ordering, the hashing
    * and the equality of an identifier to disagree, and it is why no separate `Eq` is declared.
    *
-   * All three are the name. Equality and hashing are those of the value itself, which is the
-   * name alone since that is the only element the case class carries - the equality of the
+   * All three are the name. Equality and hashing are those of the value itself: its equality
+   * is the name alone, since that is the only element the case class carries, and its hash is
+   * the one [[HolidayCalendarId.hashCode]] holds, which is the name's - the equality of the
    * original, which compared names and hashed the name. Ordering is the ordering of the names,
    * which agrees with that equality exactly: two identifiers compare equal precisely when
    * their names are equal, and that is precisely when they are equal. The effect is that a
@@ -983,4 +1002,3 @@ object HolidayCalendarIds {
    */
   val ZAJO: HolidayCalendarId = HolidayCalendarId.of("ZAJO")
 }
-

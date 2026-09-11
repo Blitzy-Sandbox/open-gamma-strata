@@ -68,10 +68,10 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
    */
   private val dataName: TableFor2[ValueAdjustmentType, String] = Table(
     ("type", "name"),
-    (ValueAdjustmentType.DELTA_AMOUNT, "DeltaAmount"),
-    (ValueAdjustmentType.DELTA_MULTIPLIER, "DeltaMultiplier"),
-    (ValueAdjustmentType.MULTIPLIER, "Multiplier"),
-    (ValueAdjustmentType.REPLACE, "Replace")
+    (ValueAdjustmentType.DeltaAmount, "DeltaAmount"),
+    (ValueAdjustmentType.DeltaMultiplier, "DeltaMultiplier"),
+    (ValueAdjustmentType.Multiplier, "Multiplier"),
+    (ValueAdjustmentType.Replace, "Replace")
   )
 
   /**
@@ -87,10 +87,10 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
     // the four arithmetic shapes, with the operands and expectations of the Java test.
     // Every literal carries an explicit `d`: the build compiles with numeric widening
     // treated as an error, so an `Int` literal in a `Double` position would not compile
-    ValueAdjustmentType.DELTA_AMOUNT.adjust(2.0d, 3.0d) shouldBe 5.0d
-    ValueAdjustmentType.DELTA_MULTIPLIER.adjust(2.0d, 1.5d) shouldBe 5.0d
-    ValueAdjustmentType.MULTIPLIER.adjust(2.0d, 1.5d) shouldBe 3.0d
-    ValueAdjustmentType.REPLACE.adjust(2.0d, 1.5d) shouldBe 1.5d
+    ValueAdjustmentType.DeltaAmount.adjust(2.0d, 3.0d) shouldBe 5.0d
+    ValueAdjustmentType.DeltaMultiplier.adjust(2.0d, 1.5d) shouldBe 5.0d
+    ValueAdjustmentType.Multiplier.adjust(2.0d, 1.5d) shouldBe 3.0d
+    ValueAdjustmentType.Replace.adjust(2.0d, 1.5d) shouldBe 1.5d
   }
 
   //-------------------------------------------------------------------------
@@ -114,6 +114,18 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
       ValueAdjustmentType.valueOf(name) shouldBe Some(adjustmentType)
       ValueAdjustmentType.parse(name) should haveValue(adjustmentType)
     }
+
+    // The members of this family are named after their canonical names, not after the
+    // SCREAMING_SNAKE constants of the Java enum, so the constant spellings survive only as
+    // alternate names of the lookup. That is where compatibility with text written against the
+    // original now lives, and it is asserted here so that removing a row of the alternate table
+    // fails rather than silently narrowing the set of spellings a stored document may use.
+    ValueAdjustmentType.valueOf("DELTA_AMOUNT") shouldBe Some(ValueAdjustmentType.DeltaAmount)
+    ValueAdjustmentType.valueOf("delta_amount") shouldBe Some(ValueAdjustmentType.DeltaAmount)
+    ValueAdjustmentType.valueOf("DELTA_MULTIPLIER") shouldBe Some(ValueAdjustmentType.DeltaMultiplier)
+    ValueAdjustmentType.valueOf("delta_multiplier") shouldBe Some(ValueAdjustmentType.DeltaMultiplier)
+    ValueAdjustmentType.parse("DELTA_AMOUNT") should haveValue(ValueAdjustmentType.DeltaAmount)
+    ValueAdjustmentType.parse("DELTA_MULTIPLIER") should haveValue(ValueAdjustmentType.DeltaMultiplier)
   }
 
   test("test_of_lookupUpperCase") {
@@ -168,10 +180,10 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
     // over the published family directly - which is also what makes the family closed:
     // `values` is the whole of it, in declaration order
     allTypes shouldBe List(
-      ValueAdjustmentType.REPLACE,
-      ValueAdjustmentType.DELTA_AMOUNT,
-      ValueAdjustmentType.DELTA_MULTIPLIER,
-      ValueAdjustmentType.MULTIPLIER
+      ValueAdjustmentType.Replace,
+      ValueAdjustmentType.DeltaAmount,
+      ValueAdjustmentType.DeltaMultiplier,
+      ValueAdjustmentType.Multiplier
     )
     allTypes.size shouldBe 4
     allTypes.distinct shouldBe allTypes
@@ -217,9 +229,9 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
     // Java serialization has no target in this port; the JSON codec is what carries a type
     // out of the process and back. The type is ascribed because the encoder is invariant in
     // its type and the singleton type of a member is not the type the family publishes
-    val deltaAmount: ValueAdjustmentType = ValueAdjustmentType.DELTA_AMOUNT
+    val deltaAmount: ValueAdjustmentType = ValueAdjustmentType.DeltaAmount
     deltaAmount.asJson shouldBe Json.fromString("DeltaAmount")
-    decode[ValueAdjustmentType]("\"DeltaAmount\"") shouldBe Right(ValueAdjustmentType.DELTA_AMOUNT)
+    decode[ValueAdjustmentType]("\"DeltaAmount\"") shouldBe Right(ValueAdjustmentType.DeltaAmount)
 
     forAll(dataName) { (adjustmentType: ValueAdjustmentType, name: String) =>
       // a bare string, never a wrapper object, so a serialized adjustment carries its type

@@ -164,14 +164,21 @@ object FixedScaleDecimal {
    * one shape of outcome whichever of the two factories it reached the value through, and no
    * cause is dropped on the way.
    *
+   * The text is read as a decimal first and only then scanned for the point, which is the
+   * order the type being ported reads it in. The bound a decimal applies to its own text -
+   * rejecting text longer than it accepts without looking at any of it - therefore holds
+   * before the text is scanned, so oversized text is turned away rather than measured, and
+   * the scale is derived only from text that named a decimal.
+   *
    * @param str  the text to parse
    * @return the fixed-scale decimal, or the failures describing why the text names none
    */
-  def parse(str: String): ResultNec[FixedScaleDecimal] = {
-    val pointPosition = str.lastIndexOf('.')
-    val impliedScale = if (pointPosition < 0) 0 else str.length - pointPosition - 1
-    result.toNec(Decimal.parse(str)).flatMap(decimal => of(decimal, impliedScale))
-  }
+  def parse(str: String): ResultNec[FixedScaleDecimal] =
+    result.toNec(Decimal.parse(str)).flatMap { decimal =>
+      val pointPosition = str.lastIndexOf('.')
+      val impliedScale = if (pointPosition < 0) 0 else str.length - pointPosition - 1
+      of(decimal, impliedScale)
+    }
 
   //-------------------------------------------------------------------------
   /**

@@ -17,7 +17,7 @@ import cats.syntax.all._
 import io.circe.Decoder
 import io.circe.Encoder
 import io.circe.generic.semiauto.deriveEncoder
-import io.circe.parser.decode
+import io.circe.parser.parse
 import io.circe.syntax._
 
 import com.opengamma.strata.collect.io.Resources
@@ -140,12 +140,15 @@ final case class ParityReport(
  * are worth having. A row whose check raises is recorded as a discrepancy of that row rather than
  * being allowed to abandon the run for the same reason.
  *
- * ===The report directory is required===
+ * ===The report directory is required, and absolute===
  *
  * The directory comes from the `parity.report.dir` system property, which `build.sbt` supplies to
- * the forked test JVM. There is no fallback: a default would let a misconfigured run write its
- * reports where the gate does not look and so report a pass that nothing measured. A missing
- * property fails loudly instead.
+ * the forked test JVM as an absolute path anchored at the build root. There is no fallback: a
+ * default would let a misconfigured run write its reports where the gate does not look and so
+ * report a pass that nothing measured. A missing property fails loudly instead, and so does a
+ * relative one - tests are forked, so a relative path resolves against whatever working directory
+ * the forked JVM was given, which is not the one directory Gate 3 collects. The whole decision is
+ * [[reportDirectoryFrom]], which is a function of the configured text alone and is tested as one.
  *
  * ===Effects, and why they are all here===
  *
@@ -186,11 +189,37 @@ object ParityHarness {
   /** The floor of the relative bound's scale, which keeps that bound meaningful near zero. */
   private val RelativeFloor: Double = 1e-300
 
-  /** The system property through which the build supplies the report directory. */
-  private val ReportDirectoryProperty: String = "parity.report.dir"
+  /**
+   * The system property through which the build supplies the report directory.
+   *
+   * Visible across this package so that the harness's own contract tests name the same property
+   * the harness reads, rather than a copy of its name that could drift from it.
+   */
+  private[parity] val ReportDirectoryProperty: String = "parity.report.dir"
 
   /** The number of discrepancies quoted in a failure message; the report always holds them all. */
   private val FailureMessageLimit: Int = 20
+
+  /**
+   * The largest fixture document this harness decodes, in characters.
+   *
+   * The ceiling bounds what a fixture can cost this process, and it is checked before the document
+   * is parsed rather than after. The largest baseline committed today is `daycount-baseline.json`
+   * at roughly 12.7 MiB, so the ceiling leaves it a factor of two and a half of headroom: a
+   * regenerated fixture is not going to be refused, while a resource of arbitrary size still
+   * cannot be materialised. [[com.opengamma.strata.collect.io.Resources.MaxBytes]] is the bound on
+   * the read that precedes this one; this is the bound on the decode.
+   */
+  private[parity] val MaxFixtureCharacters: Int = 32 * 1024 * 1024
+
+  /**
+   * The largest number of rows a fixture may hold.
+   *
+   * Checked on the parsed array before any row model is built, so an oversized document costs the
+   * JSON tree and not a vector of domain values as well. The largest baseline committed today
+   * holds 18,356 rows, so the ceiling is an order of magnitude above the data it guards.
+   */
+  private[parity] val MaxFixtureRows: Int = 200000
 
   //-------------------------------------------------------------------------
   // JSON encoding of the report. Derived at compile time, so nothing on this path reflects at
@@ -244,19 +273,93 @@ object ParityHarness {
   /**
    * Reads and decodes a captured baseline.
    *
-   * Every fixture is a top-level JSON array of uniform row objects, so the document is decoded
-   * into row models in one step. A document that does not match the row model fails the effect
-   * unchanged, carrying the cursor path circe reports: that a fixture and a spec no longer agree
-   * on what is being measured is a different fact from the port disagreeing with Java, and
-   * absorbing the first into the second would make the gate's verdict worthless.
+   * Every fixture is a top-level JSON array of uniform row objects. A document that does not match
+   * the row model fails the effect, carrying the cursor path circe reports: that a fixture and a
+   * spec no longer agree on what is being measured is a different fact from the port disagreeing
+   * with Java, and absorbing the first into the second would make the gate's verdict worthless.
+   *
+   * Four things about the document are settled here rather than left to the caller, each because
+   * the alternative is a measurement that looks like a pass:
+   *
+   *  - '''The read is bounded.''' `Resources` refuses a resource beyond its own documented byte
+   *    ceiling, and this decode refuses a document beyond [[MaxFixtureCharacters]].
+   *  - '''The row count is bounded''', at [[MaxFixtureRows]], and is checked on the parsed array
+   *    before a single row model is built.
+   *  - '''The document is an array.''' A fixture that has become an object, or a number, is
+   *    rejected as such rather than as a decode failure of a row.
+   *  - '''An empty fixture is refused.''' This is the one that matters most. An empty array
+   *    decodes perfectly well into no rows, and [[runFixture]] would then publish a report of
+   *    `rows = 0`, `passed = 0`, `failed = 0`, which [[failIfAny]] accepts - so replacing any
+   *    baseline with `[]` would retire every comparison in it while Gate 3 still reported green.
+   *    A fixture with no rows measures nothing, and measuring nothing is not a pass.
+   *
+   * The two ceilings bound the document as a whole, and therefore everything inside it: no string
+   * and no depth of nesting can exceed the length of the text that carries them. What they do not
+   * decide is whether a row is '''shaped''' as its measurement needs - that two operand lists are
+   * the same length, that a matrix is rectangular, that a row carries the expectations the spec
+   * evaluates. Those are invariants of the row model rather than of the document, so each spec
+   * asserts its own before it evaluates anything, and a row that fails one is reported as a
+   * fixture that no longer agrees with the spec rather than as a discrepancy of the port.
    *
    * @param resource  the classpath name of the fixture, relative to the test resource root and
    *                  without a leading separator, for example `parity/daycount-baseline.json`
-   * @return the decoded rows in fixture order; the effect fails when the resource is absent or
-   *         does not decode
+   * @return the decoded rows in fixture order, of which there is at least one; the effect fails
+   *         when the resource is absent, oversized, empty, not an array, too long or does not
+   *         decode
    */
   def load[A: Decoder](resource: String): IO[Vector[A]] =
-    Resources.readClasspathText(resource).flatMap(text => IO.fromEither(decode[Vector[A]](text)))
+    Resources
+      .readClasspathText(resource)
+      .flatMap(text => decodeRows[A](resource, text, MaxFixtureCharacters, MaxFixtureRows))
+
+  /**
+   * Decodes one fixture document under explicit bounds.
+   *
+   * The order of the four steps is the point of the method: each bound is applied before the work
+   * it bounds. The length of the text is known without parsing it, the length of the array is
+   * known without decoding its elements, and only a document that has passed both is turned into
+   * row models. The bounds are parameters rather than constants read from scope so that this
+   * decision can be tested at a size a test can afford, on exactly the code the fixtures go
+   * through; [[load]] supplies the real ceilings.
+   *
+   * @param resource  the name of the fixture, for the failure messages
+   * @param text  the document
+   * @param maxCharacters  the longest document accepted
+   * @param maxRows  the largest number of rows accepted
+   * @return the decoded rows in document order, of which there is at least one
+   */
+  private[parity] def decodeRows[A: Decoder](
+      resource: String,
+      text: String,
+      maxCharacters: Int,
+      maxRows: Int): IO[Vector[A]] =
+    for {
+      _ <- refuse(
+        text.length > maxCharacters,
+        s"the parity fixture '$resource' is ${text.length} characters, which is beyond the " +
+          s"$maxCharacters this harness decodes; the limit exists so that the size of a fixture " +
+          "cannot determine the memory of the test process")
+      json <- IO.fromEither(parse(text))
+      rows <- IO.fromOption(json.asArray)(
+        new IllegalStateException(
+          s"the parity fixture '$resource' is not a top-level JSON array of rows, which is the " +
+            "shape every captured baseline has"))
+      _ <- refuse(
+        rows.isEmpty,
+        s"the parity fixture '$resource' holds no rows; an empty fixture would publish a report " +
+          "of zero rows, zero passed and zero failed, which the failure gate accepts, so every " +
+          "comparison the baseline exists to make would be retired while Gate 3 still reported " +
+          "a pass")
+      _ <- refuse(
+        rows.size > maxRows,
+        s"the parity fixture '$resource' holds ${rows.size} rows, which is beyond the $maxRows " +
+          "this harness measures")
+      decoded <- IO.fromEither(Decoder[Vector[A]].decodeJson(json))
+    } yield decoded
+
+  /** Fails the effect with the given explanation when the condition holds. */
+  private def refuse(condition: Boolean, message: String): IO[Unit] =
+    if (condition) IO.raiseError(new IllegalStateException(message)) else IO.unit
 
   //-------------------------------------------------------------------------
   // The comparators.
@@ -492,17 +595,39 @@ object ParityHarness {
    * @param fixture  the fixture stem, which names both the measurement and the report file
    * @param resource  the classpath name of the captured baseline
    * @param check  the comparisons to apply to one row, answering with everything that differed
-   * @return the published report; the effect fails only when the fixture cannot be read or
-   *         decoded, or when the report cannot be written
+   * @return the published report; the effect fails only when the report directory is not
+   *         configured as an absolute path, when the fixture cannot be read, is empty or does not
+   *         decode, or when the report cannot be written
    */
   def runFixture[R <: ParityRow: Decoder](fixture: String, resource: String)(
       check: R => IO[List[String]]): IO[ParityReport] =
+    reportDir.flatMap(directory => runFixtureIn(directory, fixture, resource)(check))
+
+  /**
+   * Measures a whole fixture and publishes the result into a named directory.
+   *
+   * This is [[runFixture]] with the one piece of ambient configuration - where the report goes -
+   * supplied as an argument instead of read from a system property. Every spec uses [[runFixture]]
+   * and therefore the configured directory; this form exists so that the harness's own contract
+   * tests can observe a published report, including the report of a failing run, without writing
+   * into the directory the gate collects.
+   *
+   * @param directory  the directory the report is written to, which is created if absent
+   * @param fixture  the fixture stem, which names both the measurement and the report file
+   * @param resource  the classpath name of the captured baseline
+   * @param check  the comparisons to apply to one row, answering with everything that differed
+   * @return the published report
+   */
+  private[parity] def runFixtureIn[R <: ParityRow: Decoder](
+      directory: Path,
+      fixture: String,
+      resource: String)(check: R => IO[List[String]]): IO[ParityReport] =
     for {
       rows <- load[R](resource)
       outcomes <- rows.traverse(row => check(row).attempt.map(outcome => discrepancies(row, outcome)))
       failures = outcomes.flatten
       report = ParityReport(fixture, rows.size, outcomes.count(_.isEmpty), failures.size, failures)
-      _ <- writeReport(report)
+      _ <- writeReportTo(directory, report)
     } yield report
 
   /**
@@ -533,37 +658,72 @@ object ParityHarness {
   /**
    * The directory the report is written to, which the build must have named.
    *
-   * There is deliberately no default. Gate 3 reads the six reports from one absolute path, so a
-   * fallback would let a misconfigured run write them somewhere the gate never looks, and a gate
-   * that finds no report is indistinguishable from a measurement that was never made. A loud
-   * failure is the correct outcome, and the property is read inside the effect so that no spec
-   * touches ambient state while it is being constructed.
+   * The property is read inside the effect so that no spec touches ambient state while it is being
+   * constructed, and the decision it feeds is [[reportDirectoryFrom]].
    */
   private def reportDir: IO[Path] =
-    IO.delay(sys.props.get(ReportDirectoryProperty).map(_.trim).filter(_.nonEmpty)).flatMap {
-      case Some(configured) => IO.pure(Paths.get(configured))
+    IO.delay(sys.props.get(ReportDirectoryProperty))
+      .flatMap(configured =>
+        IO.fromEither(reportDirectoryFrom(configured).leftMap(new IllegalStateException(_))))
+
+  /**
+   * Decides where reports go, from the configured text alone.
+   *
+   * Two values are refused, and neither refusal has a fallback.
+   *
+   * '''Nothing configured.''' Gate 3 reads the six reports from one path. A default directory would
+   * let a misconfigured run write them somewhere the gate never looks, and a gate that finds no
+   * report is indistinguishable from a measurement that was never made.
+   *
+   * '''A relative path.''' Tests are forked, so a relative path resolves against the working
+   * directory of whichever forked JVM ran the spec - which is not the build root the gate collects
+   * from, and is not even the same for the two projects. A relative value is therefore a
+   * misconfiguration that would scatter the reports rather than a shorter way of naming the right
+   * directory, and `build.sbt` supplies an absolute path precisely so that it never arises.
+   *
+   * @param configured  the value of the system property, if it is set
+   * @return the directory, or the explanation of why the configured value cannot be used
+   */
+  private[parity] def reportDirectoryFrom(configured: Option[String]): Either[String, Path] =
+    configured.map(_.trim).filter(_.nonEmpty) match {
       case None =>
-        IO.raiseError(
-          new IllegalStateException(
-            s"the system property '$ReportDirectoryProperty' is not set, so there is nowhere to " +
-              "write the parity report; build.sbt supplies it to the forked test JVM through " +
-              "'Test / javaOptions' under 'Test / fork := true', and this harness has no default " +
-              "on purpose, because a report the gate cannot find is indistinguishable from a " +
-              "measurement that was never made"))
+        Left(
+          s"the system property '$ReportDirectoryProperty' is not set, so there is nowhere to " +
+            "write the parity report; build.sbt supplies it to the forked test JVM through " +
+            "'Test / javaOptions' under 'Test / fork := true', and this harness has no default " +
+            "on purpose, because a report the gate cannot find is indistinguishable from a " +
+            "measurement that was never made")
+      case Some(value) =>
+        Either
+          .catchNonFatal(Paths.get(value))
+          .leftMap(error =>
+            s"the system property '$ReportDirectoryProperty' is '$value', which is not a usable " +
+              s"path: ${error.getMessage}")
+          .flatMap { path =>
+            if (path.isAbsolute) {
+              Right(path.normalize)
+            } else {
+              Left(
+                s"the system property '$ReportDirectoryProperty' is '$value', which is relative; " +
+                  "it must be absolute, because the test JVM is forked and a relative path would " +
+                  "resolve against its working directory rather than the one directory the gate " +
+                  "reads the reports from")
+            }
+          }
     }
 
   /**
-   * Writes one report, creating the directory if it is not there yet.
+   * Writes one report into a named directory, creating the directory if it is not there yet.
    *
    * The document is the JSON of [[ParityReport]] and carries exactly its five fields, in
    * declaration order, followed by a single newline so that the file is a well-formed text file.
    *
+   * @param directory  the directory to write into
    * @param report  the report to publish
    * @return the path written, so that a caller can name it
    */
-  private def writeReport(report: ParityReport): IO[Path] =
+  private[parity] def writeReportTo(directory: Path, report: ParityReport): IO[Path] =
     for {
-      directory <- reportDir
       stem <- reportStem(report.fixture)
       written <- IO.blocking {
         val created = Files.createDirectories(directory)

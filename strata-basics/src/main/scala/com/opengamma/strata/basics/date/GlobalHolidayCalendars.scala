@@ -65,9 +65,10 @@ import scala.collection.immutable.SortedSet
  *     the rule applies, because the rule reads what has already been accumulated;
  *   - [[addDateWithHungarianBridging]] returns both the holidays and the working Saturdays a
  *     bridged holiday implies, as a pair;
- *   - [[addHungarianSaturdays]] returns the transformed holiday list, since it both removes
- *     the weekend days and adds the Saturdays that are not working Saturdays;
- *   - [[removeSatSun]] filters rather than removing in place.
+ *   - [[addHungarianSaturdays]] returns the transformed holidays as the ordered set the
+ *     calendar is built from, since it both removes the weekend days and adds the Saturdays
+ *     that are not working Saturdays;
+ *   - [[removeSatSun]] filters lazily rather than removing in place.
  *
  * The original also cached its output in a binary resource written by a `main` method, which a
  * comment at the top of the file warned had to be re-run by hand whenever a rule changed. That
@@ -79,10 +80,18 @@ import scala.collection.immutable.SortedSet
  *
  * Every generator is deterministic and depends on nothing outside its own rules, so two calls
  * produce equal calendars and the calendars can be compared byte for byte against a baseline
- * captured from the library being ported. Holidays are accumulated into a sorted set, so a
- * calendar does not depend on the order its rules happened to be written in, and duplicates -
- * which the rules do produce, New Year's Eve bumped from a Sunday landing on a New Year's Day
- * that is already a holiday, for instance - collapse rather than being carried.
+ * captured from the library being ported. Each one produces its dates as an iterator and
+ * collects them, once, into the sorted set the calendar is built from, so a calendar does not
+ * depend on the order its rules happened to be written in, and duplicates - which the rules do
+ * produce, New Year's Eve bumped from a Sunday landing on a New Year's Day that is already a
+ * holiday, for instance - collapse rather than being carried. Tokyo is the one generator whose
+ * years are accumulated into a set as they are computed rather than afterwards, because its
+ * citizens' day rule reads the holidays established so far - see [[citizensDay]].
+ *
+ * That single ordering is the whole cost of ordering a calendar. Dropping the weekend days does
+ * not depend on the order of the dates, so it happens before the set is built rather than after
+ * it, and the ordered set is handed to [[ImmutableHolidayCalendar.ofNormalized]], which does not
+ * order it again - see [[weekdaysOnly]].
  *
  * @see [[StandardHolidayCalendars]] for the built-in calendars these rules produce
  * @see [[HolidayCalendarData]] for the built-in calendar whose dates are published rather than
@@ -91,24 +100,76 @@ import scala.collection.immutable.SortedSet
 private[date] object GlobalHolidayCalendars {
 
   /**
-   * The ordering of dates used to accumulate holidays.
+   * The weekend of every calendar here but Budapest.
    *
-   * `LocalDate` is comparable to `ChronoLocalDate` rather than to itself, so no ordering can
-   * be derived by the compiler and one has to be named. It is passed explicitly to each sorted
-   * set rather than being implicit, so that it cannot become an ambient ordering for every
-   * date comparison in this package.
+   * A single shared set, rather than one built per generator, because the weekend of a calendar
+   * is read once when it is built and the set is immutable. Budapest works a Saturday some weeks
+   * and so cannot use it - see [[generateBudapest]].
    */
-  private val dateOrdering: Ordering[LocalDate] =
-    Ordering.fromLessThan((left, right) => left.isBefore(right))
+  private val satSunWeekend: Set[DayOfWeek] = Set(SATURDAY, SUNDAY)
 
   /**
-   * Collects dates into a sorted, deduplicated set.
+   * Collects dates into the ordered set a calendar is built from, dropping the weekend days.
    *
-   * @param dates  the dates, in any order and with any duplicates
-   * @return the dates, sorted and deduplicated
+   * The dates a rule produces are unordered and contain duplicates, so they have to be ordered
+   * and deduplicated once; the weekend days have to be dropped, because a holiday falling on a
+   * Saturday or a Sunday is not observed. Dropping them does not depend on the order of the
+   * dates, so it happens first, lazily, and the ordering is then the only pass over the whole
+   * calendar. The result is handed straight to [[ImmutableHolidayCalendar.ofNormalized]], which
+   * orders nothing.
+   *
+   * The ordering applied is [[ImmutableHolidayCalendar.dateOrdering]], the one ordering of dates
+   * this package has, which is what makes the result acceptable to that factory.
+   *
+   * @param dates  the dates, in any order and with any duplicates, including any at a weekend
+   * @return the dates that fall on a weekday, sorted and deduplicated
    */
-  private def sortedDates(dates: IterableOnce[LocalDate]): SortedSet[LocalDate] =
-    SortedSet.from(dates)(dateOrdering)
+  private def weekdaysOnly(dates: IterableOnce[LocalDate]): SortedSet[LocalDate] =
+    ImmutableHolidayCalendar.sortedDates(removeSatSun(dates))
+
+  /**
+   * Drops the weekend days from dates that are ordered already.
+   *
+   * This is [[weekdaysOnly]] for a caller that holds the ordered set rather than the dates it was
+   * built from - which is the Tokyo calendar, whose rules accumulate into one because the
+   * citizens' day rule reads the holidays established so far. Filtering a sorted set yields a
+   * sorted set, in one pass over it and with no date compared against another, so ordering that
+   * calendar's dates a second time is avoided rather than moved: the accumulation its rules
+   * require is the only ordering pass it makes.
+   *
+   * @param dates  the dates, ordered by [[ImmutableHolidayCalendar.dateOrdering]]
+   * @return the dates that fall on a weekday, in the same order
+   */
+  private def weekdaysOf(dates: SortedSet[LocalDate]): SortedSet[LocalDate] =
+    dates.filterNot(date => isWeekend(date))
+
+  /**
+   * Checks whether a date falls at a Saturday/Sunday weekend.
+   *
+   * @param date  the date
+   * @return true where the date is a Saturday or a Sunday
+   */
+  private def isWeekend(date: LocalDate): Boolean =
+    date.getDayOfWeek == SATURDAY || date.getDayOfWeek == SUNDAY
+
+  /**
+   * Builds a calendar whose weekend is Saturday and Sunday from the dates its rules produced.
+   *
+   * Twenty-four of the twenty-five calendars here end this way, so the weekend, the single
+   * ordering pass and the absence of working-day overrides are stated here once rather than
+   * twenty-four times. Budapest is the exception and builds its own calendar, because its
+   * weekend is Sunday alone.
+   *
+   * @param id  the identifier of the calendar
+   * @param dates  the dates the rules of the calendar produced, in any order, with any
+   *   duplicates, and including any that fall at a weekend
+   * @return the calendar
+   */
+  private def satSunCalendar(
+      id: HolidayCalendarId,
+      dates: IterableOnce[LocalDate]): ImmutableHolidayCalendar =
+
+    ImmutableHolidayCalendar.ofNormalized(id, weekdaysOnly(dates), satSunWeekend, Nil)
 
   //-------------------------------------------------------------------------
   // generate GBLO
@@ -133,15 +194,14 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of London bank holidays from 1950 to 2099
    */
-  def generateLondon(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates(
+  def generateLondon(): ImmutableHolidayCalendar =
+    satSunCalendar(
+      HolidayCalendarIds.GBLO,
       (1950 to 2099).iterator.flatMap(londonYear) ++
         Iterator(
           date(1999, 12, 31), // millennium
           date(2011, 4, 29), // royal wedding
           date(2023, 5, 8))) // king's coronation
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.GBLO, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
 
   /**
    * Calculates the London bank holidays of one year.
@@ -210,12 +270,11 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Paris bank holidays from 1950 to 2099
    */
-  def generateParis(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates(
+  def generateParis(): ImmutableHolidayCalendar =
+    satSunCalendar(
+      HolidayCalendarIds.FRPA,
       (1950 to 2099).iterator.flatMap(parisYear) ++
         Iterator(date(1999, 12, 31))) // millennium
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.FRPA, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
 
   /**
    * Calculates the Paris bank holidays of one year.
@@ -256,12 +315,11 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Frankfurt bank holidays from 1950 to 2099
    */
-  def generateFrankfurt(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates(
+  def generateFrankfurt(): ImmutableHolidayCalendar =
+    satSunCalendar(
+      HolidayCalendarIds.DEFR,
       (1950 to 2099).iterator.flatMap(frankfurtYear) ++
         Iterator(date(2017, 10, 31))) // reformation day
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.DEFR, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
 
   /**
    * Calculates the Frankfurt bank holidays of one year.
@@ -308,14 +366,13 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Zurich bank holidays from 1950 to 2099
    */
-  def generateZurich(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates(
+  def generateZurich(): ImmutableHolidayCalendar =
+    satSunCalendar(
+      HolidayCalendarIds.CHZU,
       (1950 to 2099).iterator.flatMap(zurichYear) ++
         Iterator(
           date(1999, 12, 31), // millennium
           date(2000, 1, 3))) // millennium
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.CHZU, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
 
   /**
    * Calculates the Zurich bank holidays of one year.
@@ -357,10 +414,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of European TARGET settlement holidays from 1997 to 2099
    */
-  def generateEuropeanTarget(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1997 to 2099).iterator.flatMap(europeanTargetYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.EUTA, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateEuropeanTarget(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarIds.EUTA, (1997 to 2099).iterator.flatMap(europeanTargetYear))
 
   /**
    * Calculates the European TARGET settlement holidays of one year.
@@ -476,12 +531,11 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of United States government securities holidays from 1950 to 2099
    */
-  def generateUsGovtSecurities(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates(
+  def generateUsGovtSecurities(): ImmutableHolidayCalendar =
+    satSunCalendar(
+      HolidayCalendarIds.USGS,
       (1950 to 2099).iterator.flatMap(usGovtSecuritiesYear) ++
         Iterator(date(2018, 12, 5))) // Death of George H.W. Bush
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.USGS, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
 
   /**
    * Calculates the United States government securities holidays of one year.
@@ -512,12 +566,11 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of New York State holidays from 1950 to 2099
    */
-  def generateUsNewYork(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates(
+  def generateUsNewYork(): ImmutableHolidayCalendar =
+    satSunCalendar(
+      HolidayCalendarIds.USNY,
       (1950 to 2099).iterator
         .flatMap(year => usCommon(year, bumpBack = false, columbusVeteran = true, mlkStartYear = 1986)))
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.USNY, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
 
   //-------------------------------------------------------------------------
   // generate NYFD
@@ -527,12 +580,11 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of New York Federal Reserve holidays from 1950 to 2099
    */
-  def generateNewYorkFed(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates(
+  def generateNewYorkFed(): ImmutableHolidayCalendar =
+    satSunCalendar(
+      HolidayCalendarIds.NYFD,
       (1950 to 2099).iterator
         .flatMap(year => usCommon(year, bumpBack = false, columbusVeteran = true, mlkStartYear = 1986)))
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.NYFD, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
 
   //-------------------------------------------------------------------------
   // generate NYSE
@@ -547,14 +599,13 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of New York Stock Exchange holidays from 1950 to 2099
    */
-  def generateNewYorkStockExchange(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates(
+  def generateNewYorkStockExchange(): ImmutableHolidayCalendar =
+    satSunCalendar(
+      HolidayCalendarIds.NYSE,
       (1950 to 2099).iterator.flatMap(newYorkStockExchangeYear) ++
         nyseLincolnColumbusVeterans.iterator ++
         nyseElectionDays.iterator ++
         nyseSpecialDays.iterator)
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.NYSE, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
 
   /**
    * Calculates the rule-derived New York Stock Exchange holidays of one year.
@@ -679,22 +730,35 @@ private[date] object GlobalHolidayCalendars {
    * Generates the Tokyo holiday calendar, `JPTO`.
    *
    * The years are accumulated in order rather than independently, because the citizens' day
-   * rule reads the holidays established so far - see [[citizensDay]].
+   * rule reads the holidays established so far - see [[citizensDay]]. That accumulation is the
+   * ordered set the calendar is built from, so this is the one generator that does not order its
+   * dates through [[weekdaysOnly]]: it drops the weekend days from the set it already has - see
+   * [[weekdaysOf]] - and so orders the calendar once, as every other generator here does.
    *
    * @return the calendar of Tokyo bank holidays from 1950 to 2099
    */
   def generateTokyo(): ImmutableHolidayCalendar = {
-    val generated = (1950 to 2099).foldLeft(SortedSet.empty[LocalDate](dateOrdering))(tokyoYear)
-    val holidays = generated ++ List(
-      date(1959, 4, 10), // marriage akihito
-      date(1989, 2, 24), // funeral showa
-      date(1990, 11, 12), // enthrone akihito
-      date(1993, 6, 9), // marriage naruhito
-      date(2019, 4, 30), // abdication
-      date(2019, 5, 1), // accession
-      date(2019, 5, 2), // accession
-      date(2019, 10, 22)) // enthronement
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.JPTO, removeSatSun(holidays), SATURDAY, SUNDAY)
+    val generated =
+      (1950 to 2099).foldLeft(SortedSet.empty[LocalDate](ImmutableHolidayCalendar.dateOrdering))(tokyoYear)
+    val withOneOffDates = generated ++
+      List(
+        date(1959, 4, 10), // marriage akihito
+        date(1989, 2, 24), // funeral showa
+        date(1990, 11, 12), // enthrone akihito
+        date(1993, 6, 9), // marriage naruhito
+        date(2019, 4, 30), // abdication
+        date(2019, 5, 1), // accession
+        date(2019, 5, 2), // accession
+        date(2019, 10, 22)) // enthronement
+    // The accumulation these rules require is already the ordered set the calendar is built
+    // from, so this calendar does not go through `satSunCalendar`: the weekend days are dropped
+    // from the ordered set in place and the result handed straight to the factory, leaving the
+    // accumulation as the one ordering pass over the whole calendar.
+    ImmutableHolidayCalendar.ofNormalized(
+      HolidayCalendarIds.JPTO,
+      weekdaysOf(withOneOffDates),
+      satSunWeekend,
+      Nil)
   }
 
   /**
@@ -889,10 +953,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Montreal bank holidays from 1950 to 2099
    */
-  def generateMontreal(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(montrealYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("CAMO"), removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateMontreal(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarId.of("CAMO"), (1950 to 2099).iterator.flatMap(montrealYear))
 
   /**
    * Calculates the Montreal bank holidays of one year.
@@ -940,10 +1002,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Toronto bank holidays from 1950 to 2099
    */
-  def generateToronto(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(torontoYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("CATO"), removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateToronto(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarId.of("CATO"), (1950 to 2099).iterator.flatMap(torontoYear))
 
   /**
    * Calculates the Toronto bank holidays of one year.
@@ -998,10 +1058,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Copenhagen bank holidays from 1950 to 2099
    */
-  def generateCopenhagen(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(copenhagenYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("DKCO"), removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateCopenhagen(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarId.of("DKCO"), (1950 to 2099).iterator.flatMap(copenhagenYear))
 
   /**
    * Calculates the Copenhagen bank holidays of one year.
@@ -1049,10 +1107,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Oslo bank holidays from 1950 to 2099
    */
-  def generateOslo(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(osloYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("NOOS"), removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateOslo(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarId.of("NOOS"), (1950 to 2099).iterator.flatMap(osloYear))
 
   /**
    * Calculates the Oslo bank holidays of one year.
@@ -1096,10 +1152,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Auckland bank holidays from 1950 to 2099
    */
-  def generateAuckland(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(aucklandYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("NZAU"), removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateAuckland(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarId.of("NZAU"), (1950 to 2099).iterator.flatMap(aucklandYear))
 
   /**
    * Calculates the Auckland bank holidays of one year.
@@ -1120,10 +1174,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Wellington bank holidays from 1950 to 2099
    */
-  def generateWellington(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(wellingtonYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("NZWE"), removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateWellington(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarId.of("NZWE"), (1950 to 2099).iterator.flatMap(wellingtonYear))
 
   /**
    * Calculates the Wellington bank holidays of one year.
@@ -1153,8 +1205,7 @@ private[date] object GlobalHolidayCalendars {
   def generateNewZealand(): ImmutableHolidayCalendar = {
     // artificial non-ISDA definition named after BRBD for Brazil
     // this is needed as NZD-BBR index is published on both Wellington and Auckland anniversary days
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(newZealand))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("NZBD"), removeSatSun(holidays), SATURDAY, SUNDAY)
+    satSunCalendar(HolidayCalendarId.of("NZBD"), (1950 to 2099).iterator.flatMap(newZealand))
   }
 
   /**
@@ -1266,11 +1317,11 @@ private[date] object GlobalHolidayCalendars {
    */
   def generateWarsaw(): ImmutableHolidayCalendar = {
     // holiday law dates from 1951, but don't know situation before then, so ignore 1951 date
-    val holidays = sortedDates(
+    satSunCalendar(
+      HolidayCalendarId.of("PLWA"),
       (1950 to 2099).iterator.flatMap(warsawYear) ++
         // 100th independence day anniversary
         Iterator(date(2018, 11, 12)))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("PLWA"), removeSatSun(holidays), SATURDAY, SUNDAY)
   }
 
   /**
@@ -1359,10 +1410,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Stockholm bank holidays from 1950 to 2099
    */
-  def generateStockholm(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(stockholmYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("SEST"), removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateStockholm(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarId.of("SEST"), (1950 to 2099).iterator.flatMap(stockholmYear))
 
   /**
    * Calculates the Stockholm bank holidays of one year.
@@ -1412,10 +1461,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Sydney bank holidays from 1950 to 2099
    */
-  def generateSydney(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(sydneyYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("AUSY"), removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateSydney(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarId.of("AUSY"), (1950 to 2099).iterator.flatMap(sydneyYear))
 
   /**
    * Calculates the Sydney bank holidays of one year.
@@ -1473,11 +1520,10 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Johannesburg bank holidays from 1950 to 2099
    */
-  def generateJohannesburg(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates(
+  def generateJohannesburg(): ImmutableHolidayCalendar =
+    satSunCalendar(
+      HolidayCalendarId.of("ZAJO"),
       (1950 to 2099).iterator.flatMap(johannesburgYear) ++ johannesburgElectionDays.iterator)
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("ZAJO"), removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
 
   /**
    * Calculates the Johannesburg bank holidays of one year.
@@ -1570,20 +1616,22 @@ private[date] object GlobalHolidayCalendars {
    * fall in a different month or year from the holiday that caused it, so the set has to be
    * complete before the Saturdays are listed. The years are computed independently and their
    * holidays and working Saturdays combined, which is safe because no rule here reads what
-   * another year produced.
+   * another year produced. The working Saturdays are collected into a plain set rather than an
+   * ordered one, because the only question ever asked of them is whether a given Saturday is
+   * one of them; the holidays, which do have to be ordered, are ordered once by
+   * [[addHungarianSaturdays]].
    *
    * @return the calendar of Budapest bank holidays from 1950 to 2099
    */
   def generateBudapest(): ImmutableHolidayCalendar = {
     val byYear = (1950 to 2099).map(budapestYear)
-    val holidays = sortedDates(byYear.iterator.flatMap(_._1))
     // some Saturdays are work days
-    val workDays = sortedDates(byYear.iterator.flatMap(_._2))
-    ImmutableHolidayCalendar.of(
+    val workDays = byYear.iterator.flatMap(_._2).toSet
+    ImmutableHolidayCalendar.ofNormalized(
       HolidayCalendarId.of("HUBU"),
-      addHungarianSaturdays(holidays, workDays),
-      SUNDAY,
-      SUNDAY)
+      addHungarianSaturdays(byYear.iterator.flatMap(_._1), workDays),
+      Set(SUNDAY),
+      Nil)
   }
 
   /**
@@ -1718,23 +1766,26 @@ private[date] object GlobalHolidayCalendars {
    * The range ends on the last Saturday strictly before the last day of 2099, which is where
    * the loop being ported stopped.
    *
-   * @param holidays  the holidays declared by the Hungarian rules
-   * @param workDays  the Saturdays that are working days
+   * Both the removal and the addition are lazy, so the holidays and the Saturdays are ordered
+   * together in one pass and the result is the ordered set the calendar is built from; nothing
+   * orders it again.
+   *
+   * @param holidays  the holidays declared by the Hungarian rules, in any order
+   * @param workDays  the Saturdays that are working days, tested for membership alone
    * @return the holidays of the calendar, sorted and deduplicated
    */
   private def addHungarianSaturdays(
-      holidays: Iterable[LocalDate],
-      workDays: Set[LocalDate]): List[LocalDate] = {
+      holidays: IterableOnce[LocalDate],
+      workDays: Set[LocalDate]): SortedSet[LocalDate] = {
 
-    // remove all saturdays and sundays
-    val withoutWeekends = removeSatSun(holidays)
     // add all saturdays
     val endDate = LocalDate.of(2099, 12, 31)
     val saturdays = Iterator
       .iterate(LocalDate.of(1950, 1, 7))(saturday => saturday.plusDays(7))
       .takeWhile(saturday => saturday.isBefore(endDate))
       .filterNot(saturday => workDays.contains(saturday))
-    sortedDates(withoutWeekends.iterator ++ saturdays).toList
+    // remove all saturdays and sundays from the rule-derived holidays, then order once
+    ImmutableHolidayCalendar.sortedDates(removeSatSun(holidays) ++ saturdays)
   }
 
   //-------------------------------------------------------------------------
@@ -1748,10 +1799,8 @@ private[date] object GlobalHolidayCalendars {
    *
    * @return the calendar of Mexico City bank holidays from 1950 to 2099
    */
-  def generateMexicoCity(): ImmutableHolidayCalendar = {
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(mexicoCityYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarIds.MXMC, removeSatSun(holidays), SATURDAY, SUNDAY)
-  }
+  def generateMexicoCity(): ImmutableHolidayCalendar =
+    satSunCalendar(HolidayCalendarIds.MXMC, (1950 to 2099).iterator.flatMap(mexicoCityYear))
 
   /**
    * Calculates the Mexico City bank holidays of one year.
@@ -1808,8 +1857,7 @@ private[date] object GlobalHolidayCalendars {
    */
   def generateBrazil(): ImmutableHolidayCalendar = {
     // base law is from 1949, reworded in 2002
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(brazilYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("BRBD"), removeSatSun(holidays), SATURDAY, SUNDAY)
+    satSunCalendar(HolidayCalendarId.of("BRBD"), (1950 to 2099).iterator.flatMap(brazilYear))
   }
 
   /**
@@ -1867,8 +1915,7 @@ private[date] object GlobalHolidayCalendars {
    */
   def generatePrague(): ImmutableHolidayCalendar = {
     // dates are fixed - no moving Sunday to Monday or similar
-    val holidays = sortedDates((1950 to 2099).iterator.flatMap(pragueYear))
-    ImmutableHolidayCalendar.of(HolidayCalendarId.of("CZPR"), removeSatSun(holidays), SATURDAY, SUNDAY)
+    satSunCalendar(HolidayCalendarId.of("CZPR"), (1950 to 2099).iterator.flatMap(pragueYear))
   }
 
   /**
@@ -2054,13 +2101,17 @@ private[date] object GlobalHolidayCalendars {
    * A holiday that falls on a Saturday or a Sunday is not observed, and the calendars here
    * treat the weekend as a weekend rather than as a holiday, so such a date is dropped rather
    * than carried. Where the procedure being ported removed the dates in place, this filters
-   * and returns what is left, preserving the order of its argument.
+   * and returns what is left, in the order of its argument.
+   *
+   * The filtering is lazy and the dates are not collected, because the caller is about to
+   * collect them into the ordered set of the calendar - see [[weekdaysOnly]] - and materialising
+   * a whole calendar's dates in between would allocate thousands of them for nothing.
    *
    * @param dates  the dates
-   * @return the dates that fall on a weekday
+   * @return an iterator over the dates that fall on a weekday
    */
-  private def removeSatSun(dates: Iterable[LocalDate]): List[LocalDate] =
-    dates.iterator.filterNot(d => d.getDayOfWeek == SATURDAY || d.getDayOfWeek == SUNDAY).toList
+  private def removeSatSun(dates: IterableOnce[LocalDate]): Iterator[LocalDate] =
+    dates.iterator.filterNot(d => isWeekend(d))
 
   // calculate easter day by Delambre
   /**

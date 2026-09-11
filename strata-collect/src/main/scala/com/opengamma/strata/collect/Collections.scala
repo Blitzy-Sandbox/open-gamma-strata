@@ -7,9 +7,9 @@ package com.opengamma.strata.collect
 
 import scala.annotation.tailrec
 import scala.collection.immutable.List
-import scala.collection.immutable.ListMap
 import scala.collection.immutable.Map
 import scala.collection.immutable.SortedMap
+import scala.collection.immutable.VectorMap
 
 import cats.Order
 import cats.data.NonEmptyChain
@@ -366,25 +366,32 @@ object Collections {
    *
    * {{{
    * Collections.groupByPreservingOrder(List("bb", "a", "cc", "b", "aa"))(_.length)
-   * // ListMap(2 -> NonEmptyList("bb", "cc", "aa"), 1 -> NonEmptyList("a", "b"))
+   * // VectorMap(2 -> NonEmptyList("bb", "cc", "aa"), 1 -> NonEmptyList("a", "b"))
    * }}}
    *
    * That determinism is why this member exists at all. Grouping with the standard library
    * produces a map whose iteration order is unspecified, which is enough to make a rendered
    * or serialized form of the result differ between runs on the same input; this port treats
    * the serialized form of a value as something that can be compared byte for byte, so an
-   * unspecified order cannot be allowed into it. The result type says so: `ListMap` iterates
-   * in insertion order, and the insertion order here is the order of first encounter.
+   * unspecified order cannot be allowed into it. The result type says so: `VectorMap` is an
+   * immutable map that iterates in insertion order, and the insertion order here is the order
+   * of first encounter.
    *
    * Each group is a `NonEmptyList`, because a group only exists once an element has been put
    * in it. The invariant is therefore carried by the type and a caller never has to consider
    * an empty group, which is what the multimap of the original made it do.
    *
-   * The grouping itself is a single pass with constant-time lookup per element. The result is
-   * then assembled once from the keys in encounter order, so the cost of the member is
-   * governed by the number of distinct keys rather than by the number of elements; `ListMap`
-   * is a linked structure and is meant for the modest number of groups that the call sites of
-   * this port produce, not as a general-purpose map to be queried repeatedly.
+   * The grouping itself is a single pass with constant-time lookup per element, and the result
+   * is assembled once from the keys in encounter order, so the member is linear in the number
+   * of elements and its assembly is linear in the number of distinct keys. `VectorMap` is what
+   * makes the second half of that true: it is built by appending each key to a vector and
+   * recording it in a hashed map, so a key costs a constant amount to add however many keys
+   * precede it. The other insertion-ordered map of the standard library, `ListMap`, is a
+   * linked structure whose builder searches the entries it has already accumulated for every
+   * key it is given, which makes assembling `k` groups quadratic in `k` - and quadratic in the
+   * number of elements in the case where every element has a key of its own. Reading the
+   * result is constant time per key for the same reason: a key is looked up by hash rather
+   * than by walking a chain of entries whose length is the number of groups.
    *
    * @tparam A  the type of the elements
    * @tparam K  the type of the keys
@@ -392,7 +399,7 @@ object Collections {
    * @param key  extracts the key of each element
    * @return the groups, keyed in order of first encounter, each in order of arrival
    */
-  def groupByPreservingOrder[A, K](items: IterableOnce[A])(key: A => K): ListMap[K, NonEmptyList[A]] = {
+  def groupByPreservingOrder[A, K](items: IterableOnce[A])(key: A => K): VectorMap[K, NonEmptyList[A]] = {
     // The fold carries the keys in reverse order of first encounter alongside the groups, so
     // that neither prepending a key nor prepending an element to its group costs more than a
     // constant. Both are reversed once, at the end.
@@ -408,7 +415,7 @@ object Collections {
     // Every key in the list was inserted into the groups by the same step that recorded it,
     // so the lookup below always finds a group; it is written as a lookup that may find
     // nothing so that the member is total whatever happens to the fold above.
-    ListMap.from(
+    VectorMap.from(
       reversedKeys.reverseIterator
         .flatMap(groupKey => groups.get(groupKey).map(group => groupKey -> group.reverse)))
   }
