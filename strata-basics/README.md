@@ -4,119 +4,96 @@ This directory contains the `strata-basics` module: the Scala port of the Java `
 It depends on the Scala [`strata-collect`](../strata-collect/README.md), and the two are the sbt
 build's only modules - `strata-basics` is the build's root project, with its sources under
 `strata-basics/src`. The package root is retained, `com.opengamma.strata.basics`, and so are the
-names of every type, constant and property, so `HolidayCalendarIds.GBLO`,
-`BusinessDayConventions.MODIFIED_FOLLOWING`, `Tenor.TENOR_3M` and `Frequency.P3M` mean here what
-they meant there. Sources are Scala 2.13.18 on JDK 21, built by the root `build.sbt` with sbt
-1.13.0.
+names of every type, constant and property, so `DayCounts.ACT_365F`, `HolidayCalendarIds.GBLO`,
+`IborIndices.GBP_LIBOR_3M`, `Tenor.TENOR_3M` and `Frequency.P3M` mean here what they meant there.
+Sources are Scala 2.13.18 on JDK 21, built by the root `build.sbt` with sbt 1.13.0.
 
 ### Overview
 
-This module provides the common financial concepts the rest of Strata is built from. The port is
-incremental and these are the concepts it carries today:
+This module provides common financial concepts used by Strata:
 
-* reference data - an explicit `ReferenceData` that a caller supplies and a `ReferenceDataId` that
-  resolves against it, never an ambient lookup; `StandardId` and the standard schemes
-* money and currency - `Currency`, `CurrencyPair`, `CurrencyAmount`, `FxRate` and the rate providers
-* holiday calendars - the `HolidayCalendar` family, its identifiers, the twenty-five generated
-  national calendars and the published Thai dates, with the holiday-safe reference data
-* business-day conventions and `BusinessDayAdjustment`
-* dates - `Tenor`, `DateSequence`, `PeriodAdditionConvention`, `DateAdjuster` and `LocalDateUtils`
-* `Frequency`, and the value types `Rounding`, `ValueAdjustment`, `ValueAdjustmentType` and
-  `ValueDerivatives`
-* indices - the sealed `Index` family, the floating-rate names and types, and their reference data
-* `Country` and its code tables
+* reference data
+* money and currency
+* day counts
+* day rolling
+* schedule generation
+* indices
 
-Every value type is immutable, every failure that depends on the data of a call is returned as
-`Either[Failure, _]` or `EitherNec[Failure, _]` rather than thrown, and the named families are
-closed sealed ADTs with a `NamedEnum` instance instead of a runtime registry. Serialization is
-circe, derived at compile time; there is no Joda-Beans, no Java serialization and no reflection.
+Every value type is immutable; a data-dependent failure is returned as `Either[Failure, _]` or
+`EitherNec[Failure, _]` rather than thrown; the named families - currencies, day counts,
+conventions, indices, floating-rate names - are closed sealed ADTs carrying a `NamedEnum` instance
+in place of the Java runtime registry; and serialization is circe, derived at compile time, so
+nothing on the codec path uses reflection. Reference data is threaded explicitly rather than looked
+up ambiently: a `ReferenceDataId` resolves against the `ReferenceData` a caller supplies,
+`ReferenceData.standard` holding the built-in holiday calendars, and an adjustment offers
+`resolve(refData)` and `toReader` as well as `adjust(date, refData)`, so a run of dates resolves its
+calendar once.
 
-### Reference data is code, not configuration
+The currencies, currency pairs, countries, indices, floating-rate names and holiday calendars the
+Java module read from INI, CSV and properties resources on the class path are held here as immutable
+Scala data - the `*Data.scala` objects beside the types that read them, and the generated national
+calendars as the rules that produce them. The module therefore ships no main resources and reads
+nothing from the class path at run time; an application that needs calendars of its own supplies its
+own `ReferenceData`, a parameter rather than a resource.
 
-The Java module loaded its currencies, currency pairs, countries, indices, floating-rate names and
-holiday calendars from INI, CSV and properties resources on the class path, through an extended-enum
-registry that an application could override. This port holds all of it as Scala data - the `*Data`
-objects beside the types that read them - and the generated holiday calendars as the rules that
-produce them, so a lookup cannot depend on what happens to be on the class path and no resource is
-read at run time. The tables are checked row for row against a manifest of values captured from the
-Java implementation, so a row that is self-consistent but mistranscribed cannot pass, and the
-numerical results are checked against Java baselines to 1e-9, absolute and relative, by the parity
-specs.
 
-An application that needs holidays of its own supplies its own `ReferenceData` mapping the same
-identifiers - or identifiers of its own - to whatever calendars it trusts. That is the one
-extension point, and it is a parameter rather than a resource.
+### Building and running
 
-### Working with reference data, and resolving once
-
-`ReferenceData.standard` holds the built-in holiday calendars; `ReferenceData.minimal` holds only
-the four calendars whose content follows from their name. A calendar is reached by resolving an
-identifier against the data a caller holds:
-
-```scala
-val calendar = HolidayCalendarIds.GBLO.resolve(ReferenceData.standard)   // Either[Failure, HolidayCalendar]
-```
-
-Types that name a calendar rather than holding one - `BusinessDayAdjustment` today, and the
-adjustments and schedules that follow it - offer two forms, and they differ only in when that
-resolution happens:
-
-```scala
-val adjustment = BusinessDayAdjustment.of(BusinessDayConventions.MODIFIED_FOLLOWING, HolidayCalendarIds.GBLO)
-
-// one date: resolve and adjust in one call
-val one = adjustment.adjust(date, ReferenceData.standard)
-
-// many dates: resolve once, then adjust each date against the calendar already in hand
-val many = adjustment.resolve(ReferenceData.standard).map(adjuster => dates.map(adjuster.adjust))
-
-// or compose several adjustments before any data is available, and supply it once
-val reader = adjustment.toReader.map(adjuster => dates.map(adjuster.adjust))
-val result = reader.run(ReferenceData.standard)
-```
-
-**Resolve once for a run of dates, and especially for a composite calendar.** A composite
-identifier such as `GBLO+USNY` is resolved by asking the reference data for the whole name and, when
-it does not hold it, resolving each part and reading the results together; `adjust(date, refData)`
-repeats that assembly for every date. Measured over a batch of dates, resolving once is cheaper per
-date for any calendar, several times cheaper for a composite one, and allocates a fraction as much -
-the wider the composite, the wider the difference. The `toReader` form costs the same as `resolve`
-and composes, so there is no reason to resolve per date in a loop. A resolved adjuster is bound to the
-calendar as it stood when it was resolved and does not follow later changes to the reference data,
-which is the one thing the unresolved form gives you and the reason both exist.
-
-The same rule applies to the calendars themselves: `HolidayCalendar.combinedWith` builds a
-combination that reads both calendars on every query, which suits one calculation, while
-`ImmutableHolidayCalendar.combined` merges their holiday data once and answers as fast as either
-part - build that one up front for a combination an application will hold and reuse.
-
-### Building and testing
+JDK 21 and sbt 1.13.0 are the only prerequisites. The build definition is the root `build.sbt`,
+which compiles this module as Scala 2.13.18 with `-release 21` under `-Werror`.
 
 ```
-sbt test                                     # both modules, through the root aggregation
-sbt "strata-basics/testOnly com.opengamma.strata.basics.*"   # this module's specs alone
-sbt "strata-basics/testOnly com.opengamma.strata.basics.date.HolidayCalendarsSpec"
-sbt "strata-basics/testOnly *Parity*"        # the Java-baseline parity specs
+  sbt test
+  sbt "strata-basics/run"
+  sbt "testOnly *ParitySpec"
+  scripts/verify-gates.sh
 ```
 
-`strata-basics` is the build's root project and aggregates `strata-collect`, so `test` scoped to it
-runs both modules; the second form above is what runs this module's specs on their own.
+`sbt test` runs both modules' specs, because `strata-basics` is the sbt root project - which is why
+this module directory holds no build file of its own - and it aggregates `strata-collect`.
 
-The specs are ScalaTest with ScalaCheck properties, one spec per Java test class, and the mapping
-from each Java test method to the spec that carries it is recorded in
-`src/test/resources/manifest/java-test-mapping.csv`.
+`sbt "strata-basics/run"` runs the demo, `com.opengamma.strata.basics.demo.BasicsDemoApp`, a
+cats-effect `IOApp.Simple`. It builds a `PeriodicSchedule`, adjusts its dates against a built-in
+`HolidayCalendar` through an explicitly supplied `ReferenceData`, converts a two-currency
+`MultiCurrencyAmount` into US dollars through an `FxMatrix`, then serializes the results to JSON and
+prints them.
+
+[`scripts/verify-gates.sh`](../scripts/verify-gates.sh) is the single authoritative acceptance-gate
+runner: it executes every gate of the migration in order, writes `target/gate-report.md`, and exits
+non-zero if any gate fails. CI runs it in the `scala_build21` job.
+
 
 ### Parity harness
 
-The port's numbers are pinned to the Java implementation's. `src/test/resources/parity` holds the
-baseline fixtures captured from the Java jars by `tools/parity-capture`, one per subject -
-`daycount`, `schedule`, `fx`, `currency-math` and `holiday` - and `parity/ParityHarness` loads a
-fixture through `cats-effect` `IO`, decodes it with circe and asserts every row within 1e-9 both
-absolute and relative, exact equality being required of dates, lists and text. Each fixture run
-writes `<parity.report.dir>/<fixture>.json` with its row, pass and fail counts *before* asserting
-that nothing failed, so the counts survive a failing run; `build.sbt` points `parity.report.dir` at
-`target/parity-report` in the repository root, and the tests are forked so every project writes
-there.
+The port's numbers are pinned to values captured from the Java implementation rather than re-derived
+by hand. `src/test/resources/parity` holds the five baseline fixtures - `daycount-baseline.json`,
+`schedule-baseline.json`, `fx-baseline.json`, `currency-math-baseline.json` and
+`holiday-baseline.json` - captured from the Maven-built Java jars by
+`tools/parity-capture/capture-baseline.jsh`, whose procedure is in
+[`tools/parity-capture/README.md`](../tools/parity-capture/README.md). `parity/ParityHarness.scala`
+loads a fixture through `cats-effect` `IO`, decodes it with circe and asserts every numeric row
+within 1e-9 both absolute and relative, exact equality being required of dates, lists and text. Each
+fixture run writes its row, pass and fail counts to one report per fixture under
+`target/parity-report/` *before* asserting that nothing failed, so the counts survive a failing run.
+
+Two further fixtures guard transcription rather than arithmetic.
+`src/test/resources/manifest/reference-data-manifest.json` is captured from the Java side by the
+same script, and `ReferenceDataManifestSpec` asserts that every Scala data table - down to the
+market-convention currency priority order - equals it, so a row that is self-consistent but
+mistranscribed cannot pass. `src/test/resources/manifest/java-test-mapping.csv` maps every Java
+`@Test` and `@ParameterizedTest` method to the Scala spec that carries it, with a status, giving
+method-level traceability from the Java suite to this one.
+
+
+### Migration notes
+
+[`SCALA_MIGRATION.md`](../SCALA_MIGRATION.md) records the migration in full: the member-level table
+of every `strata-collect` symbol with its Scala replacement, and every deliberate divergence from
+the Java behaviour - among them a closed `Currency` of the 74 configured codes with no dynamic
+minting, a closed `FxIndex` of the 16 configured rows with no `createFxIndex`, and exceptions
+replaced by `Either` and the `Failure` ADT. [`README.md`](../README.md) is the repository-level
+overview.
+
 
 ### Source code
 

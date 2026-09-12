@@ -281,6 +281,69 @@ jobs:
             - maven_test
 
 #----------------------------------------------------------------------------
+# builds and gate-checks the Scala port, every gate owned by verify-gates.sh
+  scala_build21:
+    executor: jdk21
+    steps:
+      - checkout
+      - run:
+          name: Checking Java version
+          command: java -version 2>&1 | grep -q '"21'
+      - run:
+          name: Installing sbt 1.13.0
+          command: |
+            curl -fsSL -o sbt.tgz https://github.com/sbt/sbt/releases/download/v1.13.0/sbt-1.13.0.tgz
+            echo "06806805ffd26232727326216766ed4793b549f8c1e6ffeef2e610db7245b698  sbt.tgz" | sha256sum -c -
+            mkdir -p "$HOME/tools"
+            tar -xzf sbt.tgz -C "$HOME/tools"
+            rm -f sbt.tgz
+            echo 'export PATH="$HOME/tools/sbt/bin:$PATH"' >> $BASH_ENV
+      - run:
+          name: Checking sbt version
+          command: sbt --script-version | grep -qx 1.13.0
+      - restore_cache:
+          name: "Restoring sbt cache"
+          keys:
+            - sbt-deps-v{{ .Environment.CACHE_VERSION }}-{{ .Environment.CIRCLE_JOB }}-{{ checksum "build.sbt" }}-{{ checksum "project/build.properties" }}-{{ checksum "project/plugins.sbt" }}
+            - sbt-deps-v{{ .Environment.CACHE_VERSION }}-{{ .Environment.CIRCLE_JOB }}-{{ checksum "build.sbt" }}
+            - sbt-deps-v{{ .Environment.CACHE_VERSION }}-{{ .Environment.CIRCLE_JOB }}
+            - sbt-deps-v{{ .Environment.CACHE_VERSION }}-
+      - run:
+          name: Verifying acceptance gates
+          command: scripts/verify-gates.sh
+      - save_cache:
+          name: "Storing sbt cache"
+          key: sbt-deps-v{{ .Environment.CACHE_VERSION }}-{{ .Environment.CIRCLE_JOB }}-{{ checksum "build.sbt" }}-{{ checksum "project/build.properties" }}-{{ checksum "project/plugins.sbt" }}
+          paths:
+            - ~/.sbt
+            - ~/.cache/coursier
+          when: always
+      - store_test_results:
+          name: "Uploading Scala test results"
+          path: target/test-reports
+          when: always
+      - store_artifacts:
+          name: "Storing gate report"
+          path: target/gate-report.md
+          destination: gate-report.md
+          when: always
+      - store_artifacts:
+          name: "Storing parity reports"
+          path: target/parity-report
+          destination: parity-report
+          when: always
+      - store_artifacts:
+          name: "Storing Scala test reports"
+          path: target/test-reports
+          destination: test-reports
+          when: always
+      - store_artifacts:
+          name: "Storing audit logs"
+          path: target/audit
+          destination: audit
+          when: always
+
+#----------------------------------------------------------------------------
   release:
     executor: jdk8
     steps:
@@ -336,6 +399,8 @@ workflows:
       - build17:
           context: OG-OSS
       - build21:
+          context: OG-OSS
+      - scala_build21:
           context: OG-OSS
 
 #----------------------------------------------------------------------------
