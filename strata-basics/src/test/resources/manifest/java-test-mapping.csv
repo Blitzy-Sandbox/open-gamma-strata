@@ -40,7 +40,7 @@ com.opengamma.strata.basics.StandardIdTest,test_equals,com.opengamma.strata.basi
 com.opengamma.strata.basics.StandardIdTest,test_comparisonByScheme,com.opengamma.strata.basics.StandardIdSpec,test_comparisonByScheme,ported
 com.opengamma.strata.basics.StandardIdTest,test_comparisonWithSchemeSame,com.opengamma.strata.basics.StandardIdSpec,test_comparisonWithSchemeSame,ported
 com.opengamma.strata.basics.StandardIdTest,coverage,com.opengamma.strata.basics.StandardIdSpec,coverage,ported
-com.opengamma.strata.basics.StandardIdTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,StandardId_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.StandardIdTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: StandardId,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.StandardSchemesTest,test_schemes,com.opengamma.strata.basics.StandardSchemesSpec,test_schemes,ported
 com.opengamma.strata.basics.StandardSchemesTest,test_ticMic,com.opengamma.strata.basics.StandardSchemesSpec,test_ticMic,ported
 com.opengamma.strata.basics.currency.AdjustablePaymentTest,test_of_3argsFixed,com.opengamma.strata.basics.currency.AdjustablePaymentSpec,test_of_3argsFixed,ported
@@ -54,7 +54,7 @@ com.opengamma.strata.basics.currency.AdjustablePaymentTest,test_ofReceiveAdjusta
 com.opengamma.strata.basics.currency.AdjustablePaymentTest,test_resolve,com.opengamma.strata.basics.currency.AdjustablePaymentSpec,test_resolve,ported
 com.opengamma.strata.basics.currency.AdjustablePaymentTest,test_negated,com.opengamma.strata.basics.currency.AdjustablePaymentSpec,test_negated,ported
 com.opengamma.strata.basics.currency.AdjustablePaymentTest,coverage,com.opengamma.strata.basics.currency.AdjustablePaymentSpec,coverage,ported
-com.opengamma.strata.basics.currency.AdjustablePaymentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,AdjustablePayment_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.AdjustablePaymentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: AdjustablePayment,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.currency.BigMoneyTest,testOfCurrencyAndAmount,com.opengamma.strata.basics.currency.BigMoneySpec,testOfCurrencyAndAmount,ported
 com.opengamma.strata.basics.currency.BigMoneyTest,testOfCurrencyAmount,com.opengamma.strata.basics.currency.BigMoneySpec,testOfCurrencyAmount,ported
 com.opengamma.strata.basics.currency.BigMoneyTest,testPlus,com.opengamma.strata.basics.currency.BigMoneySpec,testPlus,ported
@@ -88,7 +88,7 @@ com.opengamma.strata.basics.currency.CurrencyAmountArrayTest,test_convertedTo_no
 com.opengamma.strata.basics.currency.CurrencyAmountArrayTest,test_convertedTo_missingFxRate,com.opengamma.strata.basics.currency.CurrencyAmountArraySpec,test_convertedTo_missingFxRate,ported
 com.opengamma.strata.basics.currency.CurrencyAmountArrayTest,test_minus_currencyAmount,com.opengamma.strata.basics.currency.CurrencyAmountArraySpec,test_minus_currencyAmount,ported
 com.opengamma.strata.basics.currency.CurrencyAmountArrayTest,coverage,com.opengamma.strata.basics.currency.CurrencyAmountArraySpec,coverage,ported
-com.opengamma.strata.basics.currency.CurrencyAmountArrayTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,CurrencyAmountArray_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.CurrencyAmountArrayTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: CurrencyAmountArray,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.currency.CurrencyAmountTest,test_fixture,com.opengamma.strata.basics.currency.CurrencyAmountSpec,test_fixture,ported
 com.opengamma.strata.basics.currency.CurrencyAmountTest,test_zero_Currency,com.opengamma.strata.basics.currency.CurrencyAmountSpec,test_zero_Currency,ported
 com.opengamma.strata.basics.currency.CurrencyAmountTest,test_zero_Currency_nullCurrency,com.opengamma.strata.basics.currency.CurrencyAmountSpec,test_zero_Currency_nullCurrency,ported
@@ -120,7 +120,7 @@ com.opengamma.strata.basics.currency.CurrencyAmountTest,test_convertedTo_ratePro
 com.opengamma.strata.basics.currency.CurrencyAmountTest,test_equals_hashCode,com.opengamma.strata.basics.currency.CurrencyAmountSpec,test_equals_hashCode,ported
 com.opengamma.strata.basics.currency.CurrencyAmountTest,test_equals_bad,com.opengamma.strata.basics.currency.CurrencyAmountSpec,test_equals_bad,ported
 com.opengamma.strata.basics.currency.CurrencyAmountTest,test_toString,com.opengamma.strata.basics.currency.CurrencyAmountSpec,test_toString,ported
-com.opengamma.strata.basics.currency.CurrencyAmountTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,CurrencyAmount_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.CurrencyAmountTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: CurrencyAmount,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.currency.CurrencyAmountTest,test_jodaConvert,com.opengamma.strata.basics.currency.CurrencyAmountSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.currency.CurrencyPairTest,test_getAvailable,com.opengamma.strata.basics.currency.CurrencyPairSpec,test_getAvailable,ported
 com.opengamma.strata.basics.currency.CurrencyPairTest,test_of_CurrencyCurrency,com.opengamma.strata.basics.currency.CurrencyPairSpec,test_of_CurrencyCurrency,ported
@@ -147,7 +147,7 @@ com.opengamma.strata.basics.currency.CurrencyPairTest,test_toConventional,com.op
 com.opengamma.strata.basics.currency.CurrencyPairTest,test_rateDigits,com.opengamma.strata.basics.currency.CurrencyPairSpec,test_rateDigits,ported
 com.opengamma.strata.basics.currency.CurrencyPairTest,test_equals_hashCode,com.opengamma.strata.basics.currency.CurrencyPairSpec,test_equals_hashCode,ported
 com.opengamma.strata.basics.currency.CurrencyPairTest,test_equals_bad,com.opengamma.strata.basics.currency.CurrencyPairSpec,test_equals_bad,ported
-com.opengamma.strata.basics.currency.CurrencyPairTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,CurrencyPair_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.CurrencyPairTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: CurrencyPair,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.currency.CurrencyPairTest,test_jodaConvert,com.opengamma.strata.basics.currency.CurrencyPairSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.currency.CurrencyTest,test_constants,com.opengamma.strata.basics.currency.CurrencySpec,test_constants,ported
 com.opengamma.strata.basics.currency.CurrencyTest,test_getAvailable,com.opengamma.strata.basics.currency.CurrencySpec,test_getAvailable,ported
@@ -171,7 +171,7 @@ com.opengamma.strata.basics.currency.CurrencyTest,test_equals_hashCode,com.openg
 com.opengamma.strata.basics.currency.CurrencyTest,test_equals_bad,com.opengamma.strata.basics.currency.CurrencySpec,test_equals_bad,ported
 com.opengamma.strata.basics.currency.CurrencyTest,test_toString,com.opengamma.strata.basics.currency.CurrencySpec,test_toString,ported
 com.opengamma.strata.basics.currency.CurrencyTest,coverage,com.opengamma.strata.basics.currency.CurrencySpec,coverage,ported
-com.opengamma.strata.basics.currency.CurrencyTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,Currency_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.CurrencyTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: Currency,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.currency.CurrencyTest,test_jodaConvert,com.opengamma.strata.basics.currency.CurrencySpec,test_jodaConvert,ported
 com.opengamma.strata.basics.currency.CurrencyTest,test_consistency,com.opengamma.strata.basics.currency.CurrencySpec,test_consistency,ported
 com.opengamma.strata.basics.currency.FxMatrixTest,emptyMatrixCanHandleTrivialRate,com.opengamma.strata.basics.currency.FxMatrixSpec,emptyMatrixCanHandleTrivialRate,ported
@@ -205,7 +205,7 @@ com.opengamma.strata.basics.currency.FxMatrixTest,equalsGood,com.opengamma.strat
 com.opengamma.strata.basics.currency.FxMatrixTest,equalsBad,com.opengamma.strata.basics.currency.FxMatrixSpec,equalsBad,ported
 com.opengamma.strata.basics.currency.FxMatrixTest,hashCodeCoverage,com.opengamma.strata.basics.currency.FxMatrixSpec,hashCodeCoverage,ported
 com.opengamma.strata.basics.currency.FxMatrixTest,coverage,com.opengamma.strata.basics.currency.FxMatrixSpec,coverage,ported
-com.opengamma.strata.basics.currency.FxMatrixTest,testSerializeDeserialize,com.opengamma.strata.basics.json.JsonRoundTripSpec,FxMatrix_testSerializeDeserialize,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.FxMatrixTest,testSerializeDeserialize,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: FxMatrix,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.currency.FxRateProviderTest,noConversion,com.opengamma.strata.basics.currency.FxRateProviderSpec,noConversion,ported
 com.opengamma.strata.basics.currency.FxRateProviderTest,minimal,com.opengamma.strata.basics.currency.FxRateProviderSpec,minimal,ported
 com.opengamma.strata.basics.currency.FxRateProviderTest,emptyMatrixCanHandleTrivialRate,com.opengamma.strata.basics.currency.FxRateProviderSpec,emptyMatrixCanHandleTrivialRate,ported
@@ -231,7 +231,7 @@ com.opengamma.strata.basics.currency.FxRateTest,test_convert_Decimal,com.opengam
 com.opengamma.strata.basics.currency.FxRateTest,test_crossRate,com.opengamma.strata.basics.currency.FxRateSpec,test_crossRate,ported
 com.opengamma.strata.basics.currency.FxRateTest,test_equals_hashCode,com.opengamma.strata.basics.currency.FxRateSpec,test_equals_hashCode,ported
 com.opengamma.strata.basics.currency.FxRateTest,test_equals_bad,com.opengamma.strata.basics.currency.FxRateSpec,test_equals_bad,ported
-com.opengamma.strata.basics.currency.FxRateTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,FxRate_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.FxRateTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: FxRate,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.currency.FxRateTest,coverage,com.opengamma.strata.basics.currency.FxRateSpec,coverage,ported
 com.opengamma.strata.basics.currency.LazyFxRateProviderTest,testLaziness,com.opengamma.strata.basics.currency.LazyFxRateProviderSpec,testLaziness,ported
 com.opengamma.strata.basics.currency.LazyFxRateProviderTest,testDelegation,com.opengamma.strata.basics.currency.LazyFxRateProviderSpec,testDelegation,ported
@@ -255,7 +255,7 @@ com.opengamma.strata.basics.currency.MoneyTest,testParseWrongElementsNumber,com.
 com.opengamma.strata.basics.currency.MultiCurrencyAmountArrayTest,test_of,com.opengamma.strata.basics.currency.MultiCurrencyAmountArraySpec,test_of,ported
 com.opengamma.strata.basics.currency.MultiCurrencyAmountArrayTest,test_empty_amounts,com.opengamma.strata.basics.currency.MultiCurrencyAmountArraySpec,test_empty_amounts,ported
 com.opengamma.strata.basics.currency.MultiCurrencyAmountArrayTest,test_of_function,com.opengamma.strata.basics.currency.MultiCurrencyAmountArraySpec,test_of_function,ported
-com.opengamma.strata.basics.currency.MultiCurrencyAmountArrayTest,serializeSize,com.opengamma.strata.basics.json.JsonRoundTripSpec,MultiCurrencyAmountArray_serializeSize,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.MultiCurrencyAmountArrayTest,serializeSize,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: MultiCurrencyAmountArray,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.currency.MultiCurrencyAmountArrayTest,test_of_function_empty_amounts,com.opengamma.strata.basics.currency.MultiCurrencyAmountArraySpec,test_of_function_empty_amounts,ported
 com.opengamma.strata.basics.currency.MultiCurrencyAmountArrayTest,test_of_map,com.opengamma.strata.basics.currency.MultiCurrencyAmountArraySpec,test_of_map,ported
 com.opengamma.strata.basics.currency.MultiCurrencyAmountArrayTest,test_getValues,com.opengamma.strata.basics.currency.MultiCurrencyAmountArraySpec,test_getValues,ported
@@ -326,7 +326,7 @@ com.opengamma.strata.basics.currency.MultiCurrencyAmountTest,test_toMap,com.open
 com.opengamma.strata.basics.currency.MultiCurrencyAmountTest,test_convertedTo_rateProvider_noConversionSize1,com.opengamma.strata.basics.currency.MultiCurrencyAmountSpec,test_convertedTo_rateProvider_noConversionSize1,ported
 com.opengamma.strata.basics.currency.MultiCurrencyAmountTest,test_convertedTo_rateProvider_conversionSize1,com.opengamma.strata.basics.currency.MultiCurrencyAmountSpec,test_convertedTo_rateProvider_conversionSize1,ported
 com.opengamma.strata.basics.currency.MultiCurrencyAmountTest,test_convertedTo_rateProvider_conversionSize2,com.opengamma.strata.basics.currency.MultiCurrencyAmountSpec,test_convertedTo_rateProvider_conversionSize2,ported
-com.opengamma.strata.basics.currency.MultiCurrencyAmountTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,MultiCurrencyAmount_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.MultiCurrencyAmountTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: MultiCurrencyAmount,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.currency.MultiCurrencyAmountTest,coverage,com.opengamma.strata.basics.currency.MultiCurrencyAmountSpec,coverage,ported
 com.opengamma.strata.basics.currency.PaymentTest,test_of_3args,com.opengamma.strata.basics.currency.PaymentSpec,test_of_3args,ported
 com.opengamma.strata.basics.currency.PaymentTest,test_of_2args,com.opengamma.strata.basics.currency.PaymentSpec,test_of_2args,ported
@@ -338,7 +338,7 @@ com.opengamma.strata.basics.currency.PaymentTest,test_adjustDate_noChange,com.op
 com.opengamma.strata.basics.currency.PaymentTest,test_negated,com.opengamma.strata.basics.currency.PaymentSpec,test_negated,ported
 com.opengamma.strata.basics.currency.PaymentTest,test_convertedTo_rateProvider,com.opengamma.strata.basics.currency.PaymentSpec,test_convertedTo_rateProvider,ported
 com.opengamma.strata.basics.currency.PaymentTest,coverage,com.opengamma.strata.basics.currency.PaymentSpec,coverage,ported
-com.opengamma.strata.basics.currency.PaymentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,Payment_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.currency.PaymentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: Payment,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.AdjustableDateTest,test_of_1arg,com.opengamma.strata.basics.date.AdjustableDateSpec,test_of_1arg,ported
 com.opengamma.strata.basics.date.AdjustableDateTest,test_of_2args_withAdjustment,com.opengamma.strata.basics.date.AdjustableDateSpec,test_of_2args_withAdjustment,ported
 com.opengamma.strata.basics.date.AdjustableDateTest,test_of_2args_withNoAdjustment,com.opengamma.strata.basics.date.AdjustableDateSpec,test_of_2args_withNoAdjustment,ported
@@ -346,7 +346,7 @@ com.opengamma.strata.basics.date.AdjustableDateTest,test_of_null,com.opengamma.s
 com.opengamma.strata.basics.date.AdjustableDateTest,test_adjusted,com.opengamma.strata.basics.date.AdjustableDateSpec,test_adjusted,ported
 com.opengamma.strata.basics.date.AdjustableDateTest,equals,com.opengamma.strata.basics.date.AdjustableDateSpec,equals,ported
 com.opengamma.strata.basics.date.AdjustableDateTest,coverage,com.opengamma.strata.basics.date.AdjustableDateSpec,coverage,ported
-com.opengamma.strata.basics.date.AdjustableDateTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,AdjustableDate_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.AdjustableDateTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: AdjustableDate,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.AdjustableDatesTest,test_of_noAdjustment,com.opengamma.strata.basics.date.AdjustableDatesSpec,test_of_noAdjustment,ported
 com.opengamma.strata.basics.date.AdjustableDatesTest,test_of_withAdjustment,com.opengamma.strata.basics.date.AdjustableDatesSpec,test_of_withAdjustment,ported
 com.opengamma.strata.basics.date.AdjustableDatesTest,coverage,com.opengamma.strata.basics.date.AdjustableDatesSpec,coverage,ported
@@ -358,7 +358,7 @@ com.opengamma.strata.basics.date.Business252DayCountTest,test_yearFraction_badOr
 com.opengamma.strata.basics.date.Business252DayCountTest,test_days,com.opengamma.strata.basics.date.Business252DayCountSpec,test_days,ported
 com.opengamma.strata.basics.date.Business252DayCountTest,test_equalsHashCode,com.opengamma.strata.basics.date.Business252DayCountSpec,test_equalsHashCode,ported
 com.opengamma.strata.basics.date.Business252DayCountTest,coverage,com.opengamma.strata.basics.date.Business252DayCountSpec,coverage,ported
-com.opengamma.strata.basics.date.Business252DayCountTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,Business252DayCount_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.Business252DayCountTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: DayCount,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.Business252DayCountTest,test_jodaConvert,com.opengamma.strata.basics.date.Business252DayCountSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.date.BusinessDayAdjustmentTest,test_basics,com.opengamma.strata.basics.date.BusinessDayAdjustmentSpec,test_basics,ported
 com.opengamma.strata.basics.date.BusinessDayAdjustmentTest,test_adjustDate,com.opengamma.strata.basics.date.BusinessDayAdjustmentSpec,test_adjustDate,ported
@@ -367,7 +367,7 @@ com.opengamma.strata.basics.date.BusinessDayAdjustmentTest,test_noAdjust_factory
 com.opengamma.strata.basics.date.BusinessDayAdjustmentTest,test_noAdjust_normalized,com.opengamma.strata.basics.date.BusinessDayAdjustmentSpec,test_noAdjust_normalized,ported
 com.opengamma.strata.basics.date.BusinessDayAdjustmentTest,coverage,com.opengamma.strata.basics.date.BusinessDayAdjustmentSpec,coverage,ported
 com.opengamma.strata.basics.date.BusinessDayAdjustmentTest,coverage_builder,com.opengamma.strata.basics.date.BusinessDayAdjustmentSpec,coverage_builder,ported
-com.opengamma.strata.basics.date.BusinessDayAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,BusinessDayAdjustment_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.BusinessDayAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: BusinessDayAdjustment,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.BusinessDayConventionTest,test_convention,com.opengamma.strata.basics.date.BusinessDayConventionSpec,test_convention,ported
 com.opengamma.strata.basics.date.BusinessDayConventionTest,test_nearest,com.opengamma.strata.basics.date.BusinessDayConventionSpec,test_nearest,ported
 com.opengamma.strata.basics.date.BusinessDayConventionTest,test_name,com.opengamma.strata.basics.date.BusinessDayConventionSpec,test_name,ported
@@ -380,7 +380,7 @@ com.opengamma.strata.basics.date.BusinessDayConventionTest,test_of_lookup_null,c
 com.opengamma.strata.basics.date.BusinessDayConventionTest,test_lenientLookup_specialNames,com.opengamma.strata.basics.date.BusinessDayConventionSpec,test_lenientLookup_specialNames,ported
 com.opengamma.strata.basics.date.BusinessDayConventionTest,test_lenientLookup_constants,com.opengamma.strata.basics.date.BusinessDayConventionSpec,test_lenientLookup_constants,ported
 com.opengamma.strata.basics.date.BusinessDayConventionTest,coverage,com.opengamma.strata.basics.date.BusinessDayConventionSpec,coverage,ported
-com.opengamma.strata.basics.date.BusinessDayConventionTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,BusinessDayConvention_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.BusinessDayConventionTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: BusinessDayConvention,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.BusinessDayConventionTest,test_jodaConvert,com.opengamma.strata.basics.date.BusinessDayConventionSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.date.DateAdjustersTest,test_nextLeapDay_LocalDate,com.opengamma.strata.basics.date.DateAdjustersSpec,test_nextLeapDay_LocalDate,ported
 com.opengamma.strata.basics.date.DateAdjustersTest,test_nextLeapDay_Temporal,com.opengamma.strata.basics.date.DateAdjustersSpec,test_nextLeapDay_Temporal,ported
@@ -409,7 +409,7 @@ com.opengamma.strata.basics.date.DateSequenceTest,test_nextMonthly1st,com.openga
 com.opengamma.strata.basics.date.DateSequenceTest,test_dummy,com.opengamma.strata.basics.date.DateSequenceSpec,test_dummy,ported
 com.opengamma.strata.basics.date.DateSequenceTest,test_extendedEnum,com.opengamma.strata.basics.date.DateSequenceSpec,test_extendedEnum,ported
 com.opengamma.strata.basics.date.DateSequenceTest,coverage,com.opengamma.strata.basics.date.DateSequenceSpec,coverage,ported
-com.opengamma.strata.basics.date.DateSequenceTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,DateSequence_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.DateSequenceTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: DateSequence,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.DateSequenceTest,test_jodaConvert,com.opengamma.strata.basics.date.DateSequenceSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.date.DayCountTest,test_null,com.opengamma.strata.basics.date.DayCountSpec,test_null,ported
 com.opengamma.strata.basics.date.DayCountTest,test_wrongOrder,com.opengamma.strata.basics.date.DayCountSpec,test_wrongOrder,ported
@@ -458,7 +458,7 @@ com.opengamma.strata.basics.date.DayCountTest,test_lenientLookup_constants,com.o
 com.opengamma.strata.basics.date.DayCountTest,test_relativeYearFraction_defaultMethod,com.opengamma.strata.basics.date.DayCountSpec,test_relativeYearFraction_defaultMethod,ported
 com.opengamma.strata.basics.date.DayCountTest,test_scheduleInfo,com.opengamma.strata.basics.date.DayCountSpec,test_scheduleInfo,ported
 com.opengamma.strata.basics.date.DayCountTest,coverage,com.opengamma.strata.basics.date.DayCountSpec,coverage,ported
-com.opengamma.strata.basics.date.DayCountTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,DayCount_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.DayCountTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: DayCount,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.DayCountTest,test_jodaConvert,com.opengamma.strata.basics.date.DayCountSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.date.DaysAdjustmentTest,test_NONE,com.opengamma.strata.basics.date.DaysAdjustmentSpec,test_NONE,ported
 com.opengamma.strata.basics.date.DaysAdjustmentTest,test_ofCalendarDays1_oneDay,com.opengamma.strata.basics.date.DaysAdjustmentSpec,test_ofCalendarDays1_oneDay,ported
@@ -485,7 +485,7 @@ com.opengamma.strata.basics.date.DaysAdjustmentTest,test_normalized,com.opengamm
 com.opengamma.strata.basics.date.DaysAdjustmentTest,equals,com.opengamma.strata.basics.date.DaysAdjustmentSpec,equals,ported
 com.opengamma.strata.basics.date.DaysAdjustmentTest,coverage,com.opengamma.strata.basics.date.DaysAdjustmentSpec,coverage,ported
 com.opengamma.strata.basics.date.DaysAdjustmentTest,coverage_builder,com.opengamma.strata.basics.date.DaysAdjustmentSpec,coverage_builder,ported
-com.opengamma.strata.basics.date.DaysAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,DaysAdjustment_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.DaysAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: DaysAdjustment,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.GlobalHolidayCalendarsTest,test_easter,com.opengamma.strata.basics.date.GlobalHolidayCalendarsSpec,test_easter,ported
 com.opengamma.strata.basics.date.GlobalHolidayCalendarsTest,test_gblo,com.opengamma.strata.basics.date.GlobalHolidayCalendarsSpec,test_gblo,ported
 com.opengamma.strata.basics.date.GlobalHolidayCalendarsTest,test_frpa,com.opengamma.strata.basics.date.GlobalHolidayCalendarsSpec,test_frpa,ported
@@ -534,7 +534,7 @@ com.opengamma.strata.basics.date.HolidayCalendarIdTest,test_combinedWith,com.ope
 com.opengamma.strata.basics.date.HolidayCalendarIdTest,test_combinedWithSelf,com.opengamma.strata.basics.date.HolidayCalendarIdSpec,test_combinedWithSelf,ported
 com.opengamma.strata.basics.date.HolidayCalendarIdTest,test_equalsHashCode,com.opengamma.strata.basics.date.HolidayCalendarIdSpec,test_equalsHashCode,ported
 com.opengamma.strata.basics.date.HolidayCalendarIdTest,coverage,com.opengamma.strata.basics.date.HolidayCalendarIdSpec,coverage,ported
-com.opengamma.strata.basics.date.HolidayCalendarIdTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,HolidayCalendarId_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.HolidayCalendarIdTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: HolidayCalendarId,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.HolidayCalendarIniLookupTest,test_valid1,,,dropped:subject-HolidayCalendarIniLookup-not-ported-no-runtime-INI
 com.opengamma.strata.basics.date.HolidayCalendarIniLookupTest,test_workingDays,,,dropped:subject-HolidayCalendarIniLookup-not-ported-no-runtime-INI
 com.opengamma.strata.basics.date.HolidayCalendarIniLookupTest,test_valid2,,,dropped:subject-HolidayCalendarIniLookup-not-ported-no-runtime-INI
@@ -600,7 +600,7 @@ com.opengamma.strata.basics.date.HolidayCalendarsTest,coverage,com.opengamma.str
 com.opengamma.strata.basics.date.HolidayCalendarsTest,coverage_combined,com.opengamma.strata.basics.date.HolidayCalendarsSpec,coverage_combined,ported
 com.opengamma.strata.basics.date.HolidayCalendarsTest,coverage_noHolidays,com.opengamma.strata.basics.date.HolidayCalendarsSpec,coverage_noHolidays,ported
 com.opengamma.strata.basics.date.HolidayCalendarsTest,coverage_weekend,com.opengamma.strata.basics.date.HolidayCalendarsSpec,coverage_weekend,ported
-com.opengamma.strata.basics.date.HolidayCalendarsTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,HolidayCalendars_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.HolidayCalendarsTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: HolidayCalendar,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.HolidaySafeReferenceDataTest,test_singleCalendar_inReferenceData,com.opengamma.strata.basics.date.HolidaySafeReferenceDataSpec,test_singleCalendar_inReferenceData,ported
 com.opengamma.strata.basics.date.HolidaySafeReferenceDataTest,test_singleCalendar_missingFromReferenceData,com.opengamma.strata.basics.date.HolidaySafeReferenceDataSpec,test_singleCalendar_missingFromReferenceData,ported
 com.opengamma.strata.basics.date.HolidaySafeReferenceDataTest,test_singleCalendar_getValue,com.opengamma.strata.basics.date.HolidaySafeReferenceDataSpec,test_singleCalendar_getValue,ported
@@ -658,7 +658,7 @@ com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_combineWith_s
 com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_broadCheck,com.opengamma.strata.basics.date.ImmutableHolidayCalendarSpec,test_broadCheck,ported
 com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_equals,com.opengamma.strata.basics.date.ImmutableHolidayCalendarSpec,test_equals,ported
 com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,coverage,com.opengamma.strata.basics.date.ImmutableHolidayCalendarSpec,coverage,ported
-com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,ImmutableHolidayCalendar_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: HolidayCalendar,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest,test_readOldJodaFormat,,,dropped:legacy-joda-json-fixture-not-ported-no-joda-wire-compatibility
 com.opengamma.strata.basics.date.LocalDateUtilsTest,test_dayOfYear,com.opengamma.strata.basics.date.LocalDateUtilsSpec,test_dayOfYear,ported
 com.opengamma.strata.basics.date.LocalDateUtilsTest,test_plusDays0,com.opengamma.strata.basics.date.LocalDateUtilsSpec,test_plusDays0,ported
@@ -682,7 +682,7 @@ com.opengamma.strata.basics.date.MarketTenorTest,test_parse_String_bad,com.openg
 com.opengamma.strata.basics.date.MarketTenorTest,test_compare,com.opengamma.strata.basics.date.MarketTenorSpec,test_compare,ported
 com.opengamma.strata.basics.date.MarketTenorTest,test_equals_hashCode,com.opengamma.strata.basics.date.MarketTenorSpec,test_equals_hashCode,ported
 com.opengamma.strata.basics.date.MarketTenorTest,test_equals_bad,com.opengamma.strata.basics.date.MarketTenorSpec,test_equals_bad,ported
-com.opengamma.strata.basics.date.MarketTenorTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,MarketTenor_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.MarketTenorTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: MarketTenor,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.MarketTenorTest,test_jodaConvert,com.opengamma.strata.basics.date.MarketTenorSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.date.PeriodAdditionConventionTest,test_null,com.opengamma.strata.basics.date.PeriodAdditionConventionSpec,test_null,ported
 com.opengamma.strata.basics.date.PeriodAdditionConventionTest,test_convention,com.opengamma.strata.basics.date.PeriodAdditionConventionSpec,test_convention,ported
@@ -694,7 +694,7 @@ com.opengamma.strata.basics.date.PeriodAdditionConventionTest,test_of_lookup_not
 com.opengamma.strata.basics.date.PeriodAdditionConventionTest,test_of_lookup_null,com.opengamma.strata.basics.date.PeriodAdditionConventionSpec,test_of_lookup_null,ported
 com.opengamma.strata.basics.date.PeriodAdditionConventionTest,test_lenientLookup_constants,com.opengamma.strata.basics.date.PeriodAdditionConventionSpec,test_lenientLookup_constants,ported
 com.opengamma.strata.basics.date.PeriodAdditionConventionTest,coverage,com.opengamma.strata.basics.date.PeriodAdditionConventionSpec,coverage,ported
-com.opengamma.strata.basics.date.PeriodAdditionConventionTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,PeriodAdditionConvention_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.PeriodAdditionConventionTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: PeriodAdditionConvention,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.PeriodAdditionConventionTest,test_jodaConvert,com.opengamma.strata.basics.date.PeriodAdditionConventionSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.date.PeriodAdjustmentTest,test_NONE,com.opengamma.strata.basics.date.PeriodAdjustmentSpec,test_NONE,ported
 com.opengamma.strata.basics.date.PeriodAdjustmentTest,test_of_additionConventionNone,com.opengamma.strata.basics.date.PeriodAdjustmentSpec,test_of_additionConventionNone,ported
@@ -706,7 +706,7 @@ com.opengamma.strata.basics.date.PeriodAdjustmentTest,test_adjust,com.opengamma.
 com.opengamma.strata.basics.date.PeriodAdjustmentTest,equals,com.opengamma.strata.basics.date.PeriodAdjustmentSpec,equals,ported
 com.opengamma.strata.basics.date.PeriodAdjustmentTest,test_beanBuilder,com.opengamma.strata.basics.date.PeriodAdjustmentSpec,test_beanBuilder,ported
 com.opengamma.strata.basics.date.PeriodAdjustmentTest,coverage,com.opengamma.strata.basics.date.PeriodAdjustmentSpec,coverage,ported
-com.opengamma.strata.basics.date.PeriodAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,PeriodAdjustment_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.PeriodAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: PeriodAdjustment,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.SequenceDateTest,test_base_YearMonth,com.opengamma.strata.basics.date.SequenceDateSpec,test_base_YearMonth,ported
 com.opengamma.strata.basics.date.SequenceDateTest,test_base_YearMonth_int,com.opengamma.strata.basics.date.SequenceDateSpec,test_base_YearMonth_int,ported
 com.opengamma.strata.basics.date.SequenceDateTest,test_base_int,com.opengamma.strata.basics.date.SequenceDateSpec,test_base_int,ported
@@ -716,8 +716,8 @@ com.opengamma.strata.basics.date.SequenceDateTest,test_full_YearMonth_int,com.op
 com.opengamma.strata.basics.date.SequenceDateTest,test_full_int,com.opengamma.strata.basics.date.SequenceDateSpec,test_full_int,ported
 com.opengamma.strata.basics.date.SequenceDateTest,test_full_Period_int,com.opengamma.strata.basics.date.SequenceDateSpec,test_full_Period_int,ported
 com.opengamma.strata.basics.date.SequenceDateTest,coverage,com.opengamma.strata.basics.date.SequenceDateSpec,coverage,ported
-com.opengamma.strata.basics.date.SequenceDateTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,SequenceDate_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
-com.opengamma.strata.basics.date.SerializeTest,test_jodaBeans_serialize,com.opengamma.strata.basics.json.JsonRoundTripSpec,Serialize_test_jodaBeans_serialize,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.SequenceDateTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: SequenceDate,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.SerializeTest,test_jodaBeans_serialize,com.opengamma.strata.basics.json.JsonRoundTripSpec,test_jodaBeans_serialize,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.TenorAdjustmentTest,test_of_additionConventionNone,com.opengamma.strata.basics.date.TenorAdjustmentSpec,test_of_additionConventionNone,ported
 com.opengamma.strata.basics.date.TenorAdjustmentTest,test_of_additionConventionLastDay,com.opengamma.strata.basics.date.TenorAdjustmentSpec,test_of_additionConventionLastDay,ported
 com.opengamma.strata.basics.date.TenorAdjustmentTest,test_ofLastDay,com.opengamma.strata.basics.date.TenorAdjustmentSpec,test_ofLastDay,ported
@@ -727,7 +727,7 @@ com.opengamma.strata.basics.date.TenorAdjustmentTest,test_adjust,com.opengamma.s
 com.opengamma.strata.basics.date.TenorAdjustmentTest,equals,com.opengamma.strata.basics.date.TenorAdjustmentSpec,equals,ported
 com.opengamma.strata.basics.date.TenorAdjustmentTest,test_beanBuilder,com.opengamma.strata.basics.date.TenorAdjustmentSpec,test_beanBuilder,ported
 com.opengamma.strata.basics.date.TenorAdjustmentTest,coverage,com.opengamma.strata.basics.date.TenorAdjustmentSpec,coverage,ported
-com.opengamma.strata.basics.date.TenorAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,TenorAdjustment_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.TenorAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: TenorAdjustment,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.TenorTest,test_ofPeriod,com.opengamma.strata.basics.date.TenorSpec,test_ofPeriod,ported
 com.opengamma.strata.basics.date.TenorTest,test_ofMonths,com.opengamma.strata.basics.date.TenorSpec,test_ofMonths,ported
 com.opengamma.strata.basics.date.TenorTest,test_ofYears,com.opengamma.strata.basics.date.TenorSpec,test_ofYears,ported
@@ -749,7 +749,7 @@ com.opengamma.strata.basics.date.TenorTest,test_compare,com.opengamma.strata.bas
 com.opengamma.strata.basics.date.TenorTest,test_equals_hashCode,com.opengamma.strata.basics.date.TenorSpec,test_equals_hashCode,ported
 com.opengamma.strata.basics.date.TenorTest,test_equals_bad,com.opengamma.strata.basics.date.TenorSpec,test_equals_bad,ported
 com.opengamma.strata.basics.date.TenorTest,test_toString,com.opengamma.strata.basics.date.TenorSpec,test_toString,ported
-com.opengamma.strata.basics.date.TenorTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,Tenor_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.date.TenorTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: Tenor,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.date.TenorTest,test_jodaConvert,com.opengamma.strata.basics.date.TenorSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.index.FloatingRateIndexTest,test_parse_noTenor,com.opengamma.strata.basics.index.FloatingRateIndexSpec,test_parse_noTenor,ported
 com.opengamma.strata.basics.index.FloatingRateIndexTest,test_parse_withTenor,com.opengamma.strata.basics.index.FloatingRateIndexSpec,test_parse_withTenor,ported
@@ -781,7 +781,7 @@ com.opengamma.strata.basics.index.FloatingRateNamesTest,test_nzd,com.opengamma.s
 com.opengamma.strata.basics.index.FloatingRateNamesTest,test_types,com.opengamma.strata.basics.index.FloatingRateNamesSpec,test_types,ported
 com.opengamma.strata.basics.index.FloatingRateNamesTest,coverage,com.opengamma.strata.basics.index.FloatingRateNamesSpec,coverage,ported
 com.opengamma.strata.basics.index.FloatingRateNamesTest,test_jodaConvert,com.opengamma.strata.basics.index.FloatingRateNamesSpec,test_jodaConvert,ported
-com.opengamma.strata.basics.index.FloatingRateNamesTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,FloatingRateNames_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.FloatingRateNamesTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: FloatingRateName,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.FloatingRateTypeTest,test_isIbor,com.opengamma.strata.basics.index.FloatingRateTypeSpec,test_isIbor,ported
 com.opengamma.strata.basics.index.FloatingRateTypeTest,test_isOvernight,com.opengamma.strata.basics.index.FloatingRateTypeSpec,test_isOvernight,ported
 com.opengamma.strata.basics.index.FloatingRateTypeTest,test_isPrice,com.opengamma.strata.basics.index.FloatingRateTypeSpec,test_isPrice,ported
@@ -792,11 +792,11 @@ com.opengamma.strata.basics.index.FloatingRateTypeTest,test_of_lookupLowerCase,c
 com.opengamma.strata.basics.index.FloatingRateTypeTest,test_of_lookup_notFound,com.opengamma.strata.basics.index.FloatingRateTypeSpec,test_of_lookup_notFound,ported
 com.opengamma.strata.basics.index.FloatingRateTypeTest,test_of_lookup_null,com.opengamma.strata.basics.index.FloatingRateTypeSpec,test_of_lookup_null,ported
 com.opengamma.strata.basics.index.FloatingRateTypeTest,coverage,com.opengamma.strata.basics.index.FloatingRateTypeSpec,coverage,ported
-com.opengamma.strata.basics.index.FloatingRateTypeTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,FloatingRateType_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.FloatingRateTypeTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: FloatingRateType,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.FloatingRateTypeTest,test_jodaConvert,com.opengamma.strata.basics.index.FloatingRateTypeSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.index.FxIndexObservationTest,test_of,com.opengamma.strata.basics.index.FxIndexObservationSpec,test_of,ported
 com.opengamma.strata.basics.index.FxIndexObservationTest,coverage,com.opengamma.strata.basics.index.FxIndexObservationSpec,coverage,ported
-com.opengamma.strata.basics.index.FxIndexObservationTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,FxIndexObservation_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.FxIndexObservationTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: FxIndexObservation,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.FxIndexTest,test_name,com.opengamma.strata.basics.index.FxIndexSpec,test_name,ported
 com.opengamma.strata.basics.index.FxIndexTest,test_toString,com.opengamma.strata.basics.index.FxIndexSpec,test_toString,ported
 com.opengamma.strata.basics.index.FxIndexTest,test_of_lookup,com.opengamma.strata.basics.index.FxIndexSpec,test_of_lookup,ported
@@ -812,10 +812,10 @@ com.opengamma.strata.basics.index.FxIndexTest,test_inr,com.opengamma.strata.basi
 com.opengamma.strata.basics.index.FxIndexTest,test_equals,com.opengamma.strata.basics.index.FxIndexSpec,test_equals,ported
 com.opengamma.strata.basics.index.FxIndexTest,coverage,com.opengamma.strata.basics.index.FxIndexSpec,coverage,ported
 com.opengamma.strata.basics.index.FxIndexTest,test_jodaConvert,com.opengamma.strata.basics.index.FxIndexSpec,test_jodaConvert,ported
-com.opengamma.strata.basics.index.FxIndexTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,FxIndex_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.FxIndexTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: FxIndex,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.IborIndexObservationTest,test_of,com.opengamma.strata.basics.index.IborIndexObservationSpec,test_of,ported
 com.opengamma.strata.basics.index.IborIndexObservationTest,coverage,com.opengamma.strata.basics.index.IborIndexObservationSpec,coverage,ported
-com.opengamma.strata.basics.index.IborIndexObservationTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,IborIndexObservation_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.IborIndexObservationTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: IborIndexObservation,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.IborIndexTest,test_gbpLibor3m,com.opengamma.strata.basics.index.IborIndexSpec,test_gbpLibor3m,ported
 com.opengamma.strata.basics.index.IborIndexTest,test_gbpLibor3m_dates,com.opengamma.strata.basics.index.IborIndexSpec,test_gbpLibor3m_dates,ported
 com.opengamma.strata.basics.index.IborIndexTest,test_getFloatingRateName,com.opengamma.strata.basics.index.IborIndexSpec,test_getFloatingRateName,ported
@@ -863,7 +863,7 @@ com.opengamma.strata.basics.index.IborIndexTest,test_of_lookup_null,com.opengamm
 com.opengamma.strata.basics.index.IborIndexTest,test_equals,com.opengamma.strata.basics.index.IborIndexSpec,test_equals,ported
 com.opengamma.strata.basics.index.IborIndexTest,coverage,com.opengamma.strata.basics.index.IborIndexSpec,coverage,ported
 com.opengamma.strata.basics.index.IborIndexTest,test_jodaConvert,com.opengamma.strata.basics.index.IborIndexSpec,test_jodaConvert,ported
-com.opengamma.strata.basics.index.IborIndexTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,IborIndex_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.IborIndexTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: IborIndex,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.IndexTest,test_name,com.opengamma.strata.basics.index.IndexSpec,test_name,ported
 com.opengamma.strata.basics.index.IndexTest,test_toString,com.opengamma.strata.basics.index.IndexSpec,test_toString,ported
 com.opengamma.strata.basics.index.IndexTest,test_of_lookup,com.opengamma.strata.basics.index.IndexSpec,test_of_lookup,ported
@@ -872,7 +872,7 @@ com.opengamma.strata.basics.index.IndexTest,test_of_lookup_null,com.opengamma.st
 com.opengamma.strata.basics.index.IndexTest,coverage,com.opengamma.strata.basics.index.IndexSpec,coverage,ported
 com.opengamma.strata.basics.index.OvernightIndexObservationTest,test_of,com.opengamma.strata.basics.index.OvernightIndexObservationSpec,test_of,ported
 com.opengamma.strata.basics.index.OvernightIndexObservationTest,coverage,com.opengamma.strata.basics.index.OvernightIndexObservationSpec,coverage,ported
-com.opengamma.strata.basics.index.OvernightIndexObservationTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,OvernightIndexObservation_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.OvernightIndexObservationTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: OvernightIndexObservation,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.OvernightIndexTest,test_gbpSonia,com.opengamma.strata.basics.index.OvernightIndexSpec,test_gbpSonia,ported
 com.opengamma.strata.basics.index.OvernightIndexTest,test_gbpSonia_dates,com.opengamma.strata.basics.index.OvernightIndexSpec,test_gbpSonia_dates,ported
 com.opengamma.strata.basics.index.OvernightIndexTest,test_chfSaron,com.opengamma.strata.basics.index.OvernightIndexSpec,test_chfSaron,ported
@@ -907,10 +907,10 @@ com.opengamma.strata.basics.index.OvernightIndexTest,test_of_lookup_null,com.ope
 com.opengamma.strata.basics.index.OvernightIndexTest,test_equals,com.opengamma.strata.basics.index.OvernightIndexSpec,test_equals,ported
 com.opengamma.strata.basics.index.OvernightIndexTest,coverage,com.opengamma.strata.basics.index.OvernightIndexSpec,coverage,ported
 com.opengamma.strata.basics.index.OvernightIndexTest,test_jodaConvert,com.opengamma.strata.basics.index.OvernightIndexSpec,test_jodaConvert,ported
-com.opengamma.strata.basics.index.OvernightIndexTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,OvernightIndex_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.OvernightIndexTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: OvernightIndex,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.PriceIndexObservationTest,test_of,com.opengamma.strata.basics.index.PriceIndexObservationSpec,test_of,ported
 com.opengamma.strata.basics.index.PriceIndexObservationTest,coverage,com.opengamma.strata.basics.index.PriceIndexObservationSpec,coverage,ported
-com.opengamma.strata.basics.index.PriceIndexObservationTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,PriceIndexObservation_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.PriceIndexObservationTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: PriceIndexObservation,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.PriceIndexTest,test_gbpHicp,com.opengamma.strata.basics.index.PriceIndexSpec,test_gbpHicp,ported
 com.opengamma.strata.basics.index.PriceIndexTest,test_getFloatingRateName,com.opengamma.strata.basics.index.PriceIndexSpec,test_getFloatingRateName,ported
 com.opengamma.strata.basics.index.PriceIndexTest,test_name,com.opengamma.strata.basics.index.PriceIndexSpec,test_name,ported
@@ -922,7 +922,7 @@ com.opengamma.strata.basics.index.PriceIndexTest,test_of_lookup_null,com.opengam
 com.opengamma.strata.basics.index.PriceIndexTest,test_gb_rpi,com.opengamma.strata.basics.index.PriceIndexSpec,test_gb_rpi,ported
 com.opengamma.strata.basics.index.PriceIndexTest,coverage,com.opengamma.strata.basics.index.PriceIndexSpec,coverage,ported
 com.opengamma.strata.basics.index.PriceIndexTest,test_jodaConvert,com.opengamma.strata.basics.index.PriceIndexSpec,test_jodaConvert,ported
-com.opengamma.strata.basics.index.PriceIndexTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,PriceIndex_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.index.PriceIndexTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: PriceIndex,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.index.RateIndexTest,test_name,com.opengamma.strata.basics.index.RateIndexSpec,test_name,ported
 com.opengamma.strata.basics.index.RateIndexTest,test_toString,com.opengamma.strata.basics.index.RateIndexSpec,test_toString,ported
 com.opengamma.strata.basics.index.RateIndexTest,test_of_lookup,com.opengamma.strata.basics.index.RateIndexSpec,test_of_lookup,ported
@@ -948,7 +948,7 @@ com.opengamma.strata.basics.location.CountryTest,test_get3CharString,com.opengam
 com.opengamma.strata.basics.location.CountryTest,test_get3CharString_missing,com.opengamma.strata.basics.location.CountrySpec,test_get3CharString_missing,ported
 com.opengamma.strata.basics.location.CountryTest,test_equals_hashCode,com.opengamma.strata.basics.location.CountrySpec,test_equals_hashCode,ported
 com.opengamma.strata.basics.location.CountryTest,test_toString,com.opengamma.strata.basics.location.CountrySpec,test_toString,ported
-com.opengamma.strata.basics.location.CountryTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,Country_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.location.CountryTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: Country,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.location.CountryTest,test_jodaConvert,com.opengamma.strata.basics.location.CountrySpec,test_jodaConvert,ported
 com.opengamma.strata.basics.schedule.FrequencyTest,test_of_int,com.opengamma.strata.basics.schedule.FrequencySpec,test_of_int,ported
 com.opengamma.strata.basics.schedule.FrequencyTest,test_of_Period,com.opengamma.strata.basics.schedule.FrequencySpec,test_of_Period,ported
@@ -979,7 +979,7 @@ com.opengamma.strata.basics.schedule.FrequencyTest,test_addTo,com.opengamma.stra
 com.opengamma.strata.basics.schedule.FrequencyTest,test_subtractFrom,com.opengamma.strata.basics.schedule.FrequencySpec,test_subtractFrom,ported
 com.opengamma.strata.basics.schedule.FrequencyTest,test_temporalAmount,com.opengamma.strata.basics.schedule.FrequencySpec,test_temporalAmount,ported
 com.opengamma.strata.basics.schedule.FrequencyTest,test_equals_hashCode,com.opengamma.strata.basics.schedule.FrequencySpec,test_equals_hashCode,ported
-com.opengamma.strata.basics.schedule.FrequencyTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,Frequency_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.schedule.FrequencyTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: Frequency,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.schedule.FrequencyTest,test_jodaConvert,com.opengamma.strata.basics.schedule.FrequencySpec,test_jodaConvert,ported
 com.opengamma.strata.basics.schedule.PeriodicScheduleTest,test_of_LocalDateEomFalse,com.opengamma.strata.basics.schedule.PeriodicScheduleSpec,test_of_LocalDateEomFalse,ported
 com.opengamma.strata.basics.schedule.PeriodicScheduleTest,test_of_LocalDateEomTrue,com.opengamma.strata.basics.schedule.PeriodicScheduleSpec,test_of_LocalDateEomTrue,ported
@@ -1019,7 +1019,7 @@ com.opengamma.strata.basics.schedule.PeriodicScheduleTest,test_emptyWhenAdjusted
 com.opengamma.strata.basics.schedule.PeriodicScheduleTest,coverage_equals,com.opengamma.strata.basics.schedule.PeriodicScheduleSpec,coverage_equals,ported
 com.opengamma.strata.basics.schedule.PeriodicScheduleTest,coverage_builder,com.opengamma.strata.basics.schedule.PeriodicScheduleSpec,coverage_builder,ported
 com.opengamma.strata.basics.schedule.PeriodicScheduleTest,coverage,com.opengamma.strata.basics.schedule.PeriodicScheduleSpec,coverage,ported
-com.opengamma.strata.basics.schedule.PeriodicScheduleTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,PeriodicSchedule_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.schedule.PeriodicScheduleTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: PeriodicSchedule,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.schedule.RollConventionTest,test_null,com.opengamma.strata.basics.schedule.RollConventionSpec,test_null,ported
 com.opengamma.strata.basics.schedule.RollConventionTest,test_noAdjust,com.opengamma.strata.basics.schedule.RollConventionSpec,test_noAdjust,ported
 com.opengamma.strata.basics.schedule.RollConventionTest,test_adjust,com.opengamma.strata.basics.schedule.RollConventionSpec,test_adjust,ported
@@ -1057,7 +1057,7 @@ com.opengamma.strata.basics.schedule.RollConventionTest,test_lenientLookup_speci
 com.opengamma.strata.basics.schedule.RollConventionTest,test_lenientLookup_constants,com.opengamma.strata.basics.schedule.RollConventionSpec,test_lenientLookup_constants,ported
 com.opengamma.strata.basics.schedule.RollConventionTest,test_equals,com.opengamma.strata.basics.schedule.RollConventionSpec,test_equals,ported
 com.opengamma.strata.basics.schedule.RollConventionTest,coverage,com.opengamma.strata.basics.schedule.RollConventionSpec,coverage,ported
-com.opengamma.strata.basics.schedule.RollConventionTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,RollConvention_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.schedule.RollConventionTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: RollConvention,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.schedule.RollConventionTest,test_jodaConvert,com.opengamma.strata.basics.schedule.RollConventionSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.schedule.ScheduleExceptionTest,test_withDefinition,com.opengamma.strata.basics.schedule.ScheduleFailureSpec,test_withDefinition,consolidated:com.opengamma.strata.basics.schedule.ScheduleFailureSpec
 com.opengamma.strata.basics.schedule.ScheduleExceptionTest,test_withoutDefinition,com.opengamma.strata.basics.schedule.ScheduleFailureSpec,test_withoutDefinition,consolidated:com.opengamma.strata.basics.schedule.ScheduleFailureSpec
@@ -1083,7 +1083,7 @@ com.opengamma.strata.basics.schedule.SchedulePeriodTest,test_compareTo,com.openg
 com.opengamma.strata.basics.schedule.SchedulePeriodTest,coverage_equals,com.opengamma.strata.basics.schedule.SchedulePeriodSpec,coverage_equals,ported
 com.opengamma.strata.basics.schedule.SchedulePeriodTest,coverage_builder,com.opengamma.strata.basics.schedule.SchedulePeriodSpec,coverage_builder,ported
 com.opengamma.strata.basics.schedule.SchedulePeriodTest,coverage,com.opengamma.strata.basics.schedule.SchedulePeriodSpec,coverage,ported
-com.opengamma.strata.basics.schedule.SchedulePeriodTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,SchedulePeriod_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.schedule.SchedulePeriodTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: SchedulePeriod,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.schedule.ScheduleTest,test_of_size0,com.opengamma.strata.basics.schedule.ScheduleSpec,test_of_size0,ported
 com.opengamma.strata.basics.schedule.ScheduleTest,test_ofTerm,com.opengamma.strata.basics.schedule.ScheduleSpec,test_ofTerm,ported
 com.opengamma.strata.basics.schedule.ScheduleTest,test_size1_stub,com.opengamma.strata.basics.schedule.ScheduleSpec,test_size1_stub,ported
@@ -1120,7 +1120,7 @@ com.opengamma.strata.basics.schedule.ScheduleTest,test_toUnadjusted,com.opengamm
 com.opengamma.strata.basics.schedule.ScheduleTest,coverage_equals,com.opengamma.strata.basics.schedule.ScheduleSpec,coverage_equals,ported
 com.opengamma.strata.basics.schedule.ScheduleTest,coverage_builder,com.opengamma.strata.basics.schedule.ScheduleSpec,coverage_builder,ported
 com.opengamma.strata.basics.schedule.ScheduleTest,coverage,com.opengamma.strata.basics.schedule.ScheduleSpec,coverage,ported
-com.opengamma.strata.basics.schedule.ScheduleTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,Schedule_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.schedule.ScheduleTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: Schedule,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.schedule.StubConventionTest,test_null,com.opengamma.strata.basics.schedule.StubConventionSpec,test_null,ported
 com.opengamma.strata.basics.schedule.StubConventionTest,test_toRollConvention,com.opengamma.strata.basics.schedule.StubConventionSpec,test_toRollConvention,ported
 com.opengamma.strata.basics.schedule.StubConventionTest,test_toImplicit,com.opengamma.strata.basics.schedule.StubConventionSpec,test_toImplicit,ported
@@ -1140,7 +1140,7 @@ com.opengamma.strata.basics.schedule.StubConventionTest,test_of_lookupLowerCase,
 com.opengamma.strata.basics.schedule.StubConventionTest,test_of_lookup_notFound,com.opengamma.strata.basics.schedule.StubConventionSpec,test_of_lookup_notFound,ported
 com.opengamma.strata.basics.schedule.StubConventionTest,test_of_lookup_null,com.opengamma.strata.basics.schedule.StubConventionSpec,test_of_lookup_null,ported
 com.opengamma.strata.basics.schedule.StubConventionTest,coverage,com.opengamma.strata.basics.schedule.StubConventionSpec,coverage,ported
-com.opengamma.strata.basics.schedule.StubConventionTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,StubConvention_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.schedule.StubConventionTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: StubConvention,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.schedule.StubConventionTest,test_jodaConvert,com.opengamma.strata.basics.schedule.StubConventionSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.value.HalfUpRoundingTest,test_of_Currency,com.opengamma.strata.basics.value.HalfUpRoundingSpec,test_of_Currency,ported
 com.opengamma.strata.basics.value.HalfUpRoundingTest,test_ofDecimalPlaces,com.opengamma.strata.basics.value.HalfUpRoundingSpec,test_ofDecimalPlaces,ported
@@ -1154,13 +1154,13 @@ com.opengamma.strata.basics.value.HalfUpRoundingTest,round_double,com.opengamma.
 com.opengamma.strata.basics.value.HalfUpRoundingTest,round_BigDecimal,com.opengamma.strata.basics.value.HalfUpRoundingSpec,round_BigDecimal,ported
 com.opengamma.strata.basics.value.HalfUpRoundingTest,round_Decimal,com.opengamma.strata.basics.value.HalfUpRoundingSpec,round_Decimal,ported
 com.opengamma.strata.basics.value.HalfUpRoundingTest,coverage,com.opengamma.strata.basics.value.HalfUpRoundingSpec,coverage,ported
-com.opengamma.strata.basics.value.HalfUpRoundingTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,HalfUpRounding_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.value.HalfUpRoundingTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: Rounding,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.value.NoRoundingTest,test_none,com.opengamma.strata.basics.value.NoRoundingSpec,test_none,ported
 com.opengamma.strata.basics.value.NoRoundingTest,round_double,com.opengamma.strata.basics.value.NoRoundingSpec,round_double,ported
 com.opengamma.strata.basics.value.NoRoundingTest,round_BigDecimal,com.opengamma.strata.basics.value.NoRoundingSpec,round_BigDecimal,ported
 com.opengamma.strata.basics.value.NoRoundingTest,round_Decimal,com.opengamma.strata.basics.value.NoRoundingSpec,round_Decimal,ported
 com.opengamma.strata.basics.value.NoRoundingTest,coverage,com.opengamma.strata.basics.value.NoRoundingSpec,coverage,ported
-com.opengamma.strata.basics.value.NoRoundingTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,NoRounding_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.value.NoRoundingTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: Rounding,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.value.ValueAdjustmentTest,test_NONE,com.opengamma.strata.basics.value.ValueAdjustmentSpec,test_NONE,ported
 com.opengamma.strata.basics.value.ValueAdjustmentTest,test_ofReplace,com.opengamma.strata.basics.value.ValueAdjustmentSpec,test_ofReplace,ported
 com.opengamma.strata.basics.value.ValueAdjustmentTest,test_ofDeltaAmount,com.opengamma.strata.basics.value.ValueAdjustmentSpec,test_ofDeltaAmount,ported
@@ -1168,7 +1168,7 @@ com.opengamma.strata.basics.value.ValueAdjustmentTest,test_ofDeltaMultiplier,com
 com.opengamma.strata.basics.value.ValueAdjustmentTest,test_ofMultiplier,com.opengamma.strata.basics.value.ValueAdjustmentSpec,test_ofMultiplier,ported
 com.opengamma.strata.basics.value.ValueAdjustmentTest,equals,com.opengamma.strata.basics.value.ValueAdjustmentSpec,equals,ported
 com.opengamma.strata.basics.value.ValueAdjustmentTest,coverage,com.opengamma.strata.basics.value.ValueAdjustmentSpec,coverage,ported
-com.opengamma.strata.basics.value.ValueAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,ValueAdjustment_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.value.ValueAdjustmentTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: ValueAdjustment,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,test_adjust,com.opengamma.strata.basics.value.ValueAdjustmentTypeSpec,test_adjust,ported
 com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,test_toString,com.opengamma.strata.basics.value.ValueAdjustmentTypeSpec,test_toString,ported
 com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,test_of_lookup,com.opengamma.strata.basics.value.ValueAdjustmentTypeSpec,test_of_lookup,ported
@@ -1177,11 +1177,11 @@ com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,test_of_lookupLowerCas
 com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,test_of_lookup_notFound,com.opengamma.strata.basics.value.ValueAdjustmentTypeSpec,test_of_lookup_notFound,ported
 com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,test_of_lookup_null,com.opengamma.strata.basics.value.ValueAdjustmentTypeSpec,test_of_lookup_null,ported
 com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,coverage,com.opengamma.strata.basics.value.ValueAdjustmentTypeSpec,coverage,ported
-com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,ValueAdjustmentType_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: ValueAdjustmentType,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.value.ValueAdjustmentTypeTest,test_jodaConvert,com.opengamma.strata.basics.value.ValueAdjustmentTypeSpec,test_jodaConvert,ported
 com.opengamma.strata.basics.value.ValueDerivativesTest,test_of,com.opengamma.strata.basics.value.ValueDerivativesSpec,test_of,ported
 com.opengamma.strata.basics.value.ValueDerivativesTest,coverage,com.opengamma.strata.basics.value.ValueDerivativesSpec,coverage,ported
-com.opengamma.strata.basics.value.ValueDerivativesTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,ValueDerivatives_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.value.ValueDerivativesTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: ValueDerivatives,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.value.ValueScheduleTest,test_constant_ALWAYS_0,com.opengamma.strata.basics.value.ValueScheduleSpec,test_constant_ALWAYS_0,ported
 com.opengamma.strata.basics.value.ValueScheduleTest,test_constant_ALWAYS_1,com.opengamma.strata.basics.value.ValueScheduleSpec,test_constant_ALWAYS_1,ported
 com.opengamma.strata.basics.value.ValueScheduleTest,test_of_int,com.opengamma.strata.basics.value.ValueScheduleSpec,test_of_int,ported
@@ -1208,20 +1208,20 @@ com.opengamma.strata.basics.value.ValueScheduleTest,test_resolveValues_sequenceA
 com.opengamma.strata.basics.value.ValueScheduleTest,test_resolveValues_sequenceAndStepClash,com.opengamma.strata.basics.value.ValueScheduleSpec,test_resolveValues_sequenceAndStepClash,ported
 com.opengamma.strata.basics.value.ValueScheduleTest,equals,com.opengamma.strata.basics.value.ValueScheduleSpec,equals,ported
 com.opengamma.strata.basics.value.ValueScheduleTest,coverage,com.opengamma.strata.basics.value.ValueScheduleSpec,coverage,ported
-com.opengamma.strata.basics.value.ValueScheduleTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,ValueSchedule_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.value.ValueScheduleTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: ValueSchedule,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.value.ValueStepSequenceTest,test_of,com.opengamma.strata.basics.value.ValueStepSequenceSpec,test_of,ported
 com.opengamma.strata.basics.value.ValueStepSequenceTest,test_of_invalid,com.opengamma.strata.basics.value.ValueStepSequenceSpec,test_of_invalid,ported
 com.opengamma.strata.basics.value.ValueStepSequenceTest,test_resolve,com.opengamma.strata.basics.value.ValueStepSequenceSpec,test_resolve,ported
 com.opengamma.strata.basics.value.ValueStepSequenceTest,test_resolve_with_roll_convention,com.opengamma.strata.basics.value.ValueStepSequenceSpec,test_resolve_with_roll_convention,ported
 com.opengamma.strata.basics.value.ValueStepSequenceTest,test_resolve_invalid,com.opengamma.strata.basics.value.ValueStepSequenceSpec,test_resolve_invalid,ported
 com.opengamma.strata.basics.value.ValueStepSequenceTest,coverage,com.opengamma.strata.basics.value.ValueStepSequenceSpec,coverage,ported
-com.opengamma.strata.basics.value.ValueStepSequenceTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,ValueStepSequence_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.value.ValueStepSequenceTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: ValueStepSequence,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.basics.value.ValueStepTest,test_of_intAdjustment,com.opengamma.strata.basics.value.ValueStepSpec,test_of_intAdjustment,ported
 com.opengamma.strata.basics.value.ValueStepTest,test_of_dateAdjustment,com.opengamma.strata.basics.value.ValueStepSpec,test_of_dateAdjustment,ported
 com.opengamma.strata.basics.value.ValueStepTest,test_builder_invalid,com.opengamma.strata.basics.value.ValueStepSpec,test_builder_invalid,ported
 com.opengamma.strata.basics.value.ValueStepTest,equals,com.opengamma.strata.basics.value.ValueStepSpec,equals,ported
 com.opengamma.strata.basics.value.ValueStepTest,coverage,com.opengamma.strata.basics.value.ValueStepSpec,coverage,ported
-com.opengamma.strata.basics.value.ValueStepTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,ValueStep_test_serialization,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
+com.opengamma.strata.basics.value.ValueStepTest,test_serialization,com.opengamma.strata.basics.json.JsonRoundTripSpec,round-trip: ValueStep,consolidated:com.opengamma.strata.basics.json.JsonRoundTripSpec
 com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_simple_ok,com.opengamma.strata.collect.ArgCheckSpec,isTrue without a message returns quietly for a true expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
 com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_simple_false,com.opengamma.strata.collect.ArgCheckSpec,isTrue without a message reports a false expression with the standard wording,consolidated:com.opengamma.strata.collect.ArgCheckSpec
 com.opengamma.strata.collect.ArgCheckerTest,test_isTrue_ok,com.opengamma.strata.collect.ArgCheckSpec,isTrue with a message returns quietly for a true expression,consolidated:com.opengamma.strata.collect.ArgCheckSpec
