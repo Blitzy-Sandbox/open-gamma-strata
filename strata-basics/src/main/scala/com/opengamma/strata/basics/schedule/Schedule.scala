@@ -86,10 +86,13 @@ import com.opengamma.strata.collect.result.Failure
  *    ([[Frequency.of]]) and the rebuilding of a period ([[SchedulePeriod.of]]) both report failure
  *    as a value, so both methods return `Either[Failure, Schedule]`. [[mergeToTerm]] and
  *    [[toUnadjusted]] stay total, as described on each.
- *  - '''Contract checks remain refusals.''' A group size of zero or less, a pair of regular dates
- *    supplied out of order, and a period index outside the schedule are all broken calls rather
- *    than data the library should report on, so they raise `IllegalArgumentException` through
- *    `ArgCheck`, exactly as the methods being ported did.
+ *  - '''Contract checks remain refusals, except the group size.''' A pair of regular dates
+ *    supplied out of order and a period index outside the schedule are broken calls rather than
+ *    data the library should report on, so they raise `IllegalArgumentException` through
+ *    `ArgCheck`, exactly as the methods being ported did. A group size of zero or less is the one
+ *    condition that moves the other way: Java raised `IllegalArgumentException` for it, and here
+ *    it is a `Left(Failure.Invalid)`, because a group size is ordinarily computed from the same
+ *    data as the dates it accompanies and belongs in the same error channel as them.
  *  - '''No Joda bean, builder or Java serialization.''' The meta-bean, the builder, `ImmutableBean`
  *    and `Serializable` are dropped; [[Schedule.of]] replaces the builder and JSON replaces Java
  *    serialization.
@@ -403,25 +406,23 @@ sealed abstract case class Schedule private (
    * For example, a schedule with an initial stub and five regular periods can be grouped by two if
    * `firstRegularStartDate` equals the end of the first regular period.
    *
-   * Three things are reported as failures rather than raised, carrying the message text of the
-   * schedule exception being ported unchanged: a first regular start date matching no date in the
-   * schedule, a last regular end date matching no date in the schedule, and a number of regular
-   * periods that the group size does not divide. The group size itself and the order of the two
-   * dates are caller contract and are refused.
+   * Four things are reported as failures rather than raised, the middle three carrying the message
+   * text of the schedule exception being ported unchanged: a group size of zero or less, a first
+   * regular start date matching no date in the schedule, a last regular end date matching no date
+   * in the schedule, and a number of regular periods that the group size does not divide. The
+   * order of the two dates is caller contract and is refused.
    *
    * @param groupSize  the group size
    * @param firstRegularStartDate  the unadjusted start date of the first regular payment period
    * @param lastRegularEndDate  the unadjusted end date of the last regular payment period
    * @return the merged schedule, or the failure describing why the dates and the group size
    *   describe no schedule
-   * @throws IllegalArgumentException if the group size is zero or less, or the two dates are out
-   *   of order
+   * @throws IllegalArgumentException if the two dates are out of order
    */
   def merge(
       groupSize: Int,
       firstRegularStartDate: LocalDate,
-      lastRegularEndDate: LocalDate): Either[Failure, Schedule] = {
-    ArgCheck.notNegativeOrZero(groupSize, Schedule.GroupSizeName)
+      lastRegularEndDate: LocalDate): Either[Failure, Schedule] = withGroupSize(groupSize) {
     ArgCheck.inOrderOrEqual(
       firstRegularStartDate,
       lastRegularEndDate,
@@ -481,31 +482,60 @@ sealed abstract case class Schedule private (
    * A group size of one returns this schedule, as does a schedule of a single period, so a term
    * schedule is returned unchanged.
    *
+   * A group size of zero or less is reported as a failure rather than raised, as it is by
+   * [[merge]].
+   *
    * @param groupSize  the group size
    * @param rollForwards  whether to roll forwards (true) or backwards (false)
    * @return the merged schedule, or the failure describing why the group size describes no
    *   schedule
-   * @throws IllegalArgumentException if the group size is zero or less
    */
-  def mergeRegular(groupSize: Int, rollForwards: Boolean): Either[Failure, Schedule] = {
-    ArgCheck.notNegativeOrZero(groupSize, Schedule.GroupSizeName)
-    if (isSinglePeriod || groupSize == 1) {
-      Right(this)
-    } else {
-      val regular = regularPeriods.toVector
-      val regularSize = regular.size
-      val remainder = regularSize % groupSize
-      // a negative start index is what puts the excess group first when rolling backwards; the
-      // bounds of each group are then clamped, exactly as the ported loop clamped them
-      val startIndex = if (rollForwards || remainder == 0) 0 else -(groupSize - remainder)
-      val regularGroups = Range(startIndex, regularSize, groupSize).toList.map { index =>
-        regular.slice(math.max(index, 0), math.min(index + groupSize, regularSize))
+  def mergeRegular(groupSize: Int, rollForwards: Boolean): Either[Failure, Schedule] =
+    withGroupSize(groupSize) {
+      if (isSinglePeriod || groupSize == 1) {
+        Right(this)
+      } else {
+        val regular = regularPeriods.toVector
+        val regularSize = regular.size
+        val remainder = regularSize % groupSize
+        // a negative start index is what puts the excess group first when rolling backwards; the
+        // bounds of each group are then clamped, exactly as the ported loop clamped them
+        val startIndex = if (rollForwards || remainder == 0) 0 else -(groupSize - remainder)
+        val regularGroups = Range(startIndex, regularSize, groupSize).toList.map { index =>
+          regular.slice(math.max(index, 0), math.min(index + groupSize, regularSize))
+        }
+        val leading = initialStub.toList.map(stub => Vector(stub))
+        val trailing = finalStub.toList.map(stub => Vector(stub))
+        regrouped(leading ::: regularGroups ::: trailing, groupSize)
       }
-      val leading = initialStub.toList.map(stub => Vector(stub))
-      val trailing = finalStub.toList.map(stub => Vector(stub))
-      regrouped(leading ::: regularGroups ::: trailing, groupSize)
     }
-  }
+
+  /**
+   * Runs a merge, or reports a group size that describes no merge.
+   *
+   * The two merges share this guard. A group size of zero or less is the one thing they both
+   * refuse before looking at the schedule at all, and it is refused as a '''value''': the Agent
+   * Action Plan places the group-size checks of both methods in the failable surface, so a caller
+   * that computed a group size from data is told what is wrong with it through the same channel as
+   * the dates it supplied alongside it, rather than through an exception.
+   *
+   * The message is the text the argument checker of this port produces for the same condition,
+   * prefixed with what could not be done, so nothing the raised form told a caller is lost.
+   *
+   * @param groupSize  the group size to check
+   * @param merge  the merge to run where the group size is usable, evaluated at most once
+   * @return the merged schedule, or the failure describing the group size
+   */
+  private def withGroupSize(groupSize: Int)(
+      merge: => Either[Failure, Schedule]): Either[Failure, Schedule] =
+    if (groupSize > 0) {
+      merge
+    } else {
+      Left(
+        Failure.Invalid(
+          s"Unable to merge schedule, '${Schedule.GroupSizeName}' must not be negative or zero " +
+            s"but has value $groupSize"))
+    }
 
   //-------------------------------------------------------------------------
   /**
