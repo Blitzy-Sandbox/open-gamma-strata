@@ -28,36 +28,31 @@ Two principles run through everything below:
 
 Sections (a) to (f) are the six the AAP requires, in its order. Section (c) is the one to read before
 depending on the port: it is the complete list of behaviours that are deliberately *not* identical to
-Java. Where a row describes behaviour that is delivered, it was measured on both sides — the port in
-this repository and the Java `2.12.74-SNAPSHOT` jars driven through `jshell` — and the measured values
-are quoted in the row. Rows marked *(pending)* record a decision whose code is a later slice, with the
-Java behaviour it departs from.
+Java. Every row of it was measured on both sides — the port in this repository and the Java
+`2.12.74-SNAPSHOT` jars driven through `jshell` — and the measured values are quoted in the row.
 
 ### Delivery state of the port
 
-The port is delivered in slices. This note describes the whole migration design and is accurate about
-what is in the tree today, because a register that describes absent code as delivered is worse than no
-register. As of this revision:
+Both modules are complete in this tree, and this note describes what is in it rather than a plan: a
+register that describes absent code as delivered is worse than no register, and one that describes
+delivered code as absent is no better.
 
-- **Present**: the `strata-collect` module (validation, `Failure`/result aliases, `NamedEnum`,
-  `TypedString`, `Decimal`/`FixedScaleDecimal`, `DoubleArray`/`DoubleMatrix`/`DoubleArrayMath`,
-  `Collections`, `io.Resources`, `json.Codecs`) and the `strata-basics` root contracts
-  (`ReferenceData`, `ReferenceDataId`, `Resolvable`, `CalculationTarget`, `StandardId`,
-  `StandardSchemes`), currency (`Currency`, `CurrencyPair`, `CurrencyAmount`, `FxRate`,
-  `FxRateProvider`, `FxConvertible` and their data tables), the date surface (the 25 calendar
-  generators, `THBA`, `StandardHolidayCalendars`, `HolidayCalendar`, `HolidayCalendarId`,
-  `HolidaySafeReferenceData`, `BusinessDayConvention`, `BusinessDayAdjustment`, `DateAdjuster`,
-  `DateSequence`, `PeriodAdditionConvention`, `Tenor`, `LocalDateUtils`), `location`,
-  `schedule/Frequency`, the `value` package, `index/FloatingRate*` and the sealed `index/Index`
-  hierarchy, plus the parity baselines, the capture tooling and the Java test mapping.
-- **Pending**: `demo/BasicsDemoApp.scala` (the main class is already registered in `build.sbt`),
-  `scripts/verify-gates.sh`, the root `README.md` Scala-port section, the CircleCI `scala_build21`
-  job, `reference-data-manifest.json` with its spec, the `schedule` types beyond `Frequency`, the
-  `Money`/`BigMoney`/`MultiCurrencyAmount`/`Payment`/`FxMatrix` family, `DayCount`, and the index
-  data tables. The four index families are sealed and published but hold no members yet, so a lookup
-  by name finds nothing until their tables land.
+- **`strata-collect`** — 18 main sources: validation (`ArgCheck`, `Validate`), the `Failure` ADT with
+  `FailureReason` and the result aliases, `NamedEnum`, `Named`, `TypedString`, `Decimal` and
+  `FixedScaleDecimal`, `DoubleArray`/`DoubleMatrix`/`Matrix`/`DoubleArrayMath`, `Collections`,
+  `io.Resources` and `json.Codecs`.
+- **`strata-basics`** — 77 main sources: the root contracts (`ReferenceData`, `ReferenceDataId`,
+  `Resolvable`, `CalculationTarget`, `StandardId`, `StandardSchemes`), `currency` (16), `date` (20,
+  including `DayCount`, the 25 calendar generators, `THBA` and `StandardHolidayCalendars`), `index`
+  (18, the sealed `Index` hierarchy with its four data tables, `FloatingRateName` and the five
+  observations), `location` (2), `schedule` (6), `value` (7) and `demo/BasicsDemoApp.scala`.
+- **Around them** — the six parity baselines, the reference-data manifest, the method-level
+  `java-test-mapping.csv`, the capture tooling under `tools/parity-capture/`, the gate runner
+  `scripts/verify-gates.sh`, and the tests: 22 test sources in `strata-collect` and 93 in
+  `strata-basics`, whose counts the test-scope gate reads from the JUnit XML rather than from here.
 
-Section (f) says exactly which commands work today and which wait on a pending file.
+No reference data, alias table or lenient pattern of the Java modules is left untranscribed, and no
+member of section (a) is left without the replacement its row names. Section (f) gives the commands.
 
 ## (a) Symbol table: every `strata-collect` member `strata-basics` uses
 
@@ -173,10 +168,12 @@ still in the repository.
 | `collect.NumberFormatter` | Unused; `Decimal.format`/`formatAtLeast` cover the ported formatting |
 | `collect.CharMatchers` | Unused; character predicates are ordinary Scala functions |
 | `collect.Version` | Build metadata, not behaviour |
-| `collect.tuple.Triple` and the primitive pair types (`IntDoublePair`, `ObjDoublePair`, `DoublesPair`, …) | `Tuple2`/`Tuple3` replace them; only `Pair` was used and it maps to `Tuple2` |
-| `collect.result.FailureException`, `FailureItemException`, `IllegalArgFailureException`, `ParseFailureException` | **No exception type is introduced in `strata-collect`.** A data failure is an `Either` value; escalation to a thrown error happens only at the `IO` edges (the demo and the parity harness) through `IO.fromEither` |
+| `collect.tuple.Triple`, the `collect.tuple.Tuple` trait itself, and the primitive pair types (`IntDoublePair`, `LongDoublePair`, `ObjDoublePair`, `ObjIntPair`, `DoublesPair`) | `Tuple2`/`Tuple3` replace them, and a Scala tuple needs no common supertype; only `Pair` was used and it maps to `Tuple2` |
+| `collect.result.FailureException`, `FailureItemException`, `IllegalArgFailureException`, `ParseFailureException`, and `collect.UncheckedReflectiveOperationException` with the `Unchecked` wrappers it served | **No exception type is introduced in `strata-collect`.** A data failure is an `Either` value; escalation to a thrown error happens only at the `IO` edges (the demo and the parity harness) through `IO.fromEither` |
 | `collect.named.NamedLookup`, `ExtendedEnum` providers, `CombinedExtendedEnum` | The runtime registry is replaced by closed sealed families and a `NamedEnum` typeclass — see divergence (c)-5 |
 | `collect.io.ResourceConfig`'s `base`/`library`/`application` override chain | Runtime extended-enum extensibility is deliberately dropped |
+| The `[providers]` section of every INI file that has one — `BusinessDayConvention.ini`, `DateSequence.ini`, `DayCount.ini`, `FloatingRateName.ini`, `FxIndex.ini`, `HolidayCalendar.ini`, `IborIndex.ini`, `OvernightIndex.ini`, `PeriodAdditionConvention.ini`, `PriceIndex.ini`, `RollConvention.ini` | A `[providers]` row named the class that supplied a family's instances at run time, which is the mechanism this port removes: the instances now exist only in the family's own companion, so there is no provider to name. The `[alternates]`, `[externals.*]` and `[lenientPatterns]` sections of those same files **are** ported, as Scala data — see divergence (c)-5 |
+| The `[types]` section of `Index.ini`, `RateIndex.ini` and `FloatingRateIndex.ini` | Each declared one `CombinedExtendedEnum` union over other families. Each becomes a `parse`/`tryParse` in the corresponding Scala companion, trying the same families in the same order (section (a), row 53) |
 | `HolidayCalendarIniLookup`, `IborIndexCsvLookup`, `OvernightIndexCsvLookup`, `PriceIndexCsvLookup`, `FxIndexCsvLookup`, `FloatingRateNameIniLookup`, `CurrencyDataLoader`, `GlobalHolidayCalendarLookup` (in `strata-basics`) | Their whole responsibility is met by the `*Data.scala` objects and `NamedEnum`; there is nothing left to load |
 | `ImmutableHolidayCalendarDeserializer`, `META-INF/org/joda/beans/JodaBeans.ini`, `GlobalHolidayCalendars.bin` | Joda-Beans serialization and the generated calendar cache are not carried — see divergence (c)-31 |
 | `java.io.Serializable` / `Externalizable` support on any type | Replaced entirely by circe codecs |
@@ -191,19 +188,18 @@ Of the `Guavate` and `MapStream` surfaces, only the members listed in section (a
 
 Each row is a behaviour that is **not** identical to Java `2.12.74-SNAPSHOT`, deliberately. Measured
 values quoted below were taken from this repository's build and from the Java jars driven through
-`jshell`, on the same day this revision was written. Rows marked *(pending)* describe a decision whose
-code is a later slice; they are recorded here because the decision is already made and the affected
-Java behaviour is already known.
+`jshell`. Every row describes code that is in the tree; row numbers are referenced from sections (a),
+(d), (e) and (f), so they are stable and are never reused.
 
 | # | Area | Java behaviour | Port behaviour | Why |
 |---|------|----------------|----------------|-----|
-| 1 | Error model | A data failure throws — `IllegalArgumentException`, `IllegalStateException`, `ScheduleException`, `ReferenceDataNotFoundException` | The same failure is returned: `Either[Failure, A]`, or `EitherNec[Failure, A]` where several causes accumulate, over a sealed `Failure` ADT with ten reasons. `ScheduleException` becomes `Failure.Invalid` carrying a `definition` attribute *(pending)*; FX failures become `Failure.CurrencyConversion`; a missing calendar becomes `Failure.MissingData` | Explicit, total error handling (Rule 5). A failure that depends on argument *data* belongs in the signature |
-| 2 | Retained throws | Every precondition throws | A caller-contract or numeric-edge precondition still throws `IllegalArgumentException`, through `ArgCheck`, and is documented on the member: array and matrix index/dimension errors; a calendar query outside years 0–9999; a NaN produced by arithmetic on infinite `CurrencyAmount` operands; `Decimal` overflow past 18 digits; `DayCount.yearFraction` with dates out of order or without the schedule information the day count reads *(pending)* | A contract violation is a programming error, not a data outcome; putting it in the signature would tax every correct caller |
+| 1 | Error model | A data failure throws — `IllegalArgumentException`, `IllegalStateException`, `ScheduleException`, `ReferenceDataNotFoundException` | The same failure is returned: `Either[Failure, A]`, or `EitherNec[Failure, A]` where several causes accumulate, over a sealed `Failure` ADT with ten reasons. `ScheduleException` becomes `Failure.Invalid` carrying a `definition` attribute; FX failures become `Failure.CurrencyConversion`; a missing calendar becomes `Failure.MissingData` | Explicit, total error handling (Rule 5). A failure that depends on argument *data* belongs in the signature |
+| 2 | Retained throws | Every precondition throws | A caller-contract or numeric-edge precondition still throws `IllegalArgumentException`, through `ArgCheck`, and is documented on the member: array and matrix index/dimension errors; a calendar query outside years 0–9999; a NaN produced by arithmetic on infinite `CurrencyAmount` operands; `Decimal` overflow past 18 digits; `DayCount.yearFraction` with dates out of order or without the schedule information the day count reads | A contract violation is a programming error, not a data outcome; putting it in the signature would tax every correct caller |
 | 3 | Null arguments | Rejected with `IllegalArgumentException` from `ArgChecker.notNull` (measured: `StandardId.of(null, "v")` → `Argument 'scheme' must not be null`) | **Outside the contract of every public entry point.** `null` is not a value the port accepts, guards or documents; passing one raises `NullPointerException` where the argument is dereferenced, except `Currency.of(null)`, which happens to answer `Left(Failure.Parsing("Currency name not found: null"))` because it is a table lookup. See (c)-3 below | The `ArgChecker.notNull` family is deliberately not ported, and Scala code has `Option` for absence. Guarding `null` in Scala signatures would pay for a Java hazard the port has no Java callers to protect |
 | 4 | Public API shape | Java types: `Optional`, `java.util` collections, Guava `Immutable*`, checked names | Scala-native throughout: `Option`, `scala.collection.immutable`, `cats.data.{NonEmptyList, NonEmptyChain, Validated, Ior, Kleisli}`, cats typeclass instances. No Java-callable façade and no interop shim | Design decision D-3. A façade would constrain every signature to what Java can express |
 | 5 | Named families | `ExtendedEnum` reads INI files off the classpath at class-initialisation time; applications extend a family by adding a provider or an INI override | Each family is a **closed** sealed type whose instances exist only in its companion, with a `NamedEnum[A]` instance. Runtime extensibility is gone. The *behaviour* the INI files encoded is kept as Scala data: alias tables, `[externals.FpML]`/`[externals.SWIFT]` groups and the ordered `[lenientPatterns]` rewrites, so `parse` resolves exactly the names Java resolved | Rule 4, and a closed family is exhaustively checkable by the compiler. `main` sources reference no `.ini`, `.csv` or `.properties` resource |
 | 6 | `Currency` | Any three upper-case letters mint a currency, guessing zero minor units and USD triangulation (measured: `Currency.of("XYZ")` → `XYZ`, `minorUnitDigits=0`, triangulation `USD`) | The closed set of the 74 configured currencies. An unknown code is `Left(Failure.Parsing("Currency name not found: XYZ"))` (measured). `Country`, by contrast, keeps Java's open code space — any `[A-Z][A-Z]` is accepted (measured: `Country.of("ZZ")` → `Right(ZZ)`) | Rule 4 closes the currency family; AAP Conflict 4. A minted currency with guessed conventions is a silent data error, and `Country` is not a named-enum family in the first place |
-| 7 | `FxIndex` | `FxIndex.of(pair)`/`of(name)` mint an index for an unconfigured pair through `createFxIndex`, using the pair's default calendar and a two-day maturity offset (measured: `FxIndex.of("GBP/SEK")` → an index) | The closed set of the 16 configured rows. `of(pair)` answers the configured index with the lowest name, as Java's `min` does, and `Left(Failure.Parsing)` for an unconfigured pair. `createFxIndex` is not ported *(pending: the family is published but its data table is a later slice)* | Rule 4; AAP Conflict 7 |
+| 7 | `FxIndex` | `FxIndex.of(pair)`/`of(name)` mint an index for an unconfigured pair through `createFxIndex`, using the pair's default calendar and a two-day maturity offset (measured: `FxIndex.of("GBP/SEK")` → an index) | The closed set of the 16 configured rows. `of(pair)` answers the configured index with the lowest name, as Java's `min` does, and `Left(Failure.Parsing)` for an unconfigured pair. `createFxIndex` is not ported | Rule 4; AAP Conflict 7 |
 | 8 | `ReferenceDataNotFoundException` | Thrown by `ReferenceData.getValue` and by `resolve` | Not ported. `getValue(id)` is `Either[Failure, T]` with `Failure.MissingData` carrying the id as an attribute; `findValue(id)` is `Option[T]`; `containsValue(id)` is unchanged | Row 1, applied to reference data. The exception type had no other use |
 | 9 | Tolerance comparison at NaN | Two NaNs **are** fuzzy-equal — Guava's third clause `(isNaN(a) && isNaN(b))` (measured: `DoubleMath.fuzzyEquals(NaN, NaN, 0.1)`, `DoubleArrayMath.fuzzyEquals([NaN],[NaN],1e-9)` and `DoubleArray.of(NaN).equalWithTolerance(…)` all `true`) | **No divergence — the authority is reproduced.** The private comparison every public entry point delegates to is Guava's algorithm verbatim, `copySign(a - b, 1.0) <= tolerance \|\| a == b \|\| (isNaN(a) && isNaN(b))`, so the same three expressions are `true` in the port too (measured). Two consequences follow from the clauses rather than from a decision: an **infinite tolerance equalises any two values**, the two infinities included (`fuzzyEquals(+Inf, -Inf, +Inf)` and `fuzzyEquals(0.0, +Inf, +Inf)` are `true`, while `fuzzyEquals(+Inf, -Inf, MAX_VALUE)` is `false`), and the zero-comparing variants are unaffected because the third clause cannot fire against zero (`fuzzyEqualsZero([NaN], 1e-9)` is `false` and `fuzzyEqualsZero([+Inf], +Inf)` is `true`, both sides alike). See (c)-9 below | AAP §0.3.3's operative requirement is to reproduce Guava's semantics, and §0.4.2 states it the same way; the parenthetical gloss "NaN never fuzzy-equal" misdescribes Guava's own implementation, so the operative requirement governs and the gloss is what needs correcting |
 | 10 | Tolerance argument | Guava rejects a NaN tolerance (`tolerance (NaN) must be >= 0`) | Rejected too, through `ArgCheck.notNaN`, with the port's message `Argument 'tolerance' must not be NaN` (measured). The private near-zero test in `ArgCheck`/`Validate` and `DoubleArrayMath`'s zero comparison are the same function of value and tolerance on every input — `abs(x) <= tolerance \|\| x == 0.0`, the both-NaN clause being unable to fire against zero — so an infinity counts as near zero at an *infinite* tolerance on both (measured: `ArgCheck.notZero(+Inf, +Inf, "x")` throws `Argument 'x' must not be zero` and `fuzzyEqualsZero([+Inf], +Inf)` is `true`) and a NaN counts as near zero on neither | The message set is the port's own; the two tests are deliberately kept in separate files rather than one calling the other, because that object checks its own tolerance through this one and calling back would tie the two into a cycle |
@@ -213,13 +209,13 @@ Java behaviour is already known.
 | 14 | `DoubleArrayMath.sortPairs` | An in-place recursive dual-array quicksort (`dualArrayQuickSort`) that **mutates the caller's arrays**, is not stable, and is `O(n²)` in the worst case | Pure: it returns fresh arrays and leaves its arguments untouched, sorting a stable bottom-up merge sort over one `Array[Int]` permutation plus one `Array[Int]` buffer that the passes alternate between rather than copying back over, comparing `java.lang.Double.compare` directly — stable, no boxing, `O(n log n)` worst case, two allocations regardless of length, one for keys already in ascending order (an `O(n)` scan answers with the identity permutation, which is what a stable merge of such an input produces), and the same length-mismatch message (`Arrays cannot be sorted as they differ in length`). The measured cost is about 1.84× the Java constant on random keys at n = 10⁵–10⁶, at roughly 40 bytes per element; the complexity class is unchanged | Immutability (Rule 3) rules out sorting the caller's arrays, stability is what lets a value of any element type follow its key, and the permutation sort is what keeps the operation `var`-free and boxing-free. The constant factor is the accepted price of those properties |
 | 15 | Primitive callbacks | Java uses its own `collect.function.*` interfaces (`DoubleTernaryOperator`, `IntIntDoubleConsumer`, …) | Those interfaces are not ported (section (b)). Where a primitive callback is needed to keep a hot path free of boxing, the type is a single-abstract-method trait declared beside its user: `DoubleArray.DoubleTernaryOperator` (taken by `combineReduce` instead of a three-argument function) and `DoubleMatrix`'s `ElementAction`, `ElementFunction`, `RowArrayFunction`, `RowArrayObjectFunction`. Call sites stay ordinary Scala lambdas | `Function3` and friends are specialised over nothing, so the standard function types cannot satisfy the no-boxing requirement for these methods |
 | 16 | Text loading | `ResourceLocator` decodes leniently, substituting a replacement character for malformed input, and reads a resource of any size | `io.Resources` decodes UTF-8 **strictly** — malformed or unmappable input fails the effect with an `IOException` naming the source — and refuses a source larger than the public `Resources.MaxBytes` ceiling (64 MiB). `readFileText` is an unconfined filesystem reader, exactly as the Java original was: it is a fixture and demo loader, and **callers must not pass it an untrusted path** | A substituted character inside a captured baseline is a silently altered expectation: the measurement still runs, against a value nobody captured |
-| 17 | Equality and ordering | Joda-Beans equality on `double` fields via `doubleToLongBits`; `compareTo` ignores some fields | The same IEEE bit semantics — `NaN` is reflexive, `-0.0 ≠ 0.0` — implemented with `java.lang.Double.compare`/`hashCode` and `java.util.Arrays.equals`/`hashCode`, with one equality-bearing cats instance per type. `Order` additionally tie-breaks on the fields Java's `compareTo` ignored, so `compare == 0` holds exactly when `eqv` does: `FixedScaleDecimal` by decimal then scale, `Tenor`/`MarketTenor` by length then name, `SchedulePeriod` by unadjusted then adjusted dates, `CurrencyAmount`/`Money`/`BigMoney` by currency then amount. `MultiCurrencyAmount`'s `Monoid` laws are stated over finite amounts with a 1e-9 relative `Eq`, because IEEE addition is only approximately associative *(the last three pending)* | A cats `Order` that disagrees with equality breaks every sorted collection built from it |
+| 17 | Equality and ordering | Joda-Beans equality on `double` fields via `doubleToLongBits`; `compareTo` ignores some fields | The same IEEE bit semantics — `NaN` is reflexive, `-0.0 ≠ 0.0` — implemented with `java.lang.Double.compare`/`hashCode` and `java.util.Arrays.equals`/`hashCode`, with one equality-bearing cats instance per type. `Order` additionally tie-breaks on the fields Java's `compareTo` ignored, so `compare == 0` holds exactly when `eqv` does: `FixedScaleDecimal` by decimal then scale, `Tenor`/`MarketTenor` by length then name, `SchedulePeriod` by unadjusted then adjusted dates, `CurrencyAmount`/`Money`/`BigMoney` by currency then amount. `MultiCurrencyAmount`'s `Monoid` laws are stated over finite amounts with a 1e-9 relative `Eq`, because IEEE addition is only approximately associative. These four tie-breaks are the **only** departures from Java comparison; every other `compareTo` is reproduced as it stands | A cats `Order` that disagrees with equality breaks every sorted collection built from it |
 | 18 | `Collections.groupByPreservingOrder` | Guava's `MapStream` grouping | Returns `scala.collection.immutable.VectorMap` — an insertion-ordered immutable map, so iteration order and therefore serialized bytes stay deterministic, with linear assembly | The insertion-ordered `ListMap` that would otherwise express this is quadratic to build |
 | 19 | Parity harness tolerance | — | The harness compares finite expectations within 1e-9 absolute **and** relative, and non-finite expectations by exact IEEE identity: two NaNs match, each infinity matches itself, anything else involving a non-finite value differs | `\|NaN − NaN\| <= 1e-9` is false, so a tolerance comparison would fail every non-finite row in the fixtures |
 | 20 | Composite calendar id inside a linked id | `HolidayCalendarId.of("EUTA+GBLO~USNY").resolve(ReferenceData.standard())` **throws** `ReferenceDataNotFoundException: Reference data not found for 'EUTA+GBLO' of type 'HolidayCalendarId' when finding 'EUTA+GBLO~USNY'` (measured), because each `~` part is looked up raw in the store and a composite part is not stored | Resolves: `Right` of a linked calendar named `EUTA+GBLO~USNY` (measured), because a composite part is resolved by asking it, which tries its own whole name and then its parts. Strictly more permissive — it can only turn a Java failure into a success, never the reverse. See (c)-20 below | AAP §0.6.5 describes resolution as "resolve each component, then `combinedWith`/`linkedWith`", and a part that is itself composite is a component like any other. Java's own `findValue` answers `true` for the same composite id at top level, so its failure inside a linked id is an inconsistency rather than a rule |
-| 21 | `DayCount.ofBus252` | `ofBus252(id)` resolves the calendar against `ReferenceData.standard()` internally, and `"Bus/252 XXXX"` is parsed by loading the calendar from the standard set — an ambient lookup inside a pure calculation | `Bus252` carries the **resolved** calendar, so `yearFraction`/`days` are pure functions of their arguments. It is built by `ofBus252(calendar)` (total) or `ofBus252(id, refData)` (`Either`). `parse(name)` resolves `Bus/252 X` against the built-in constant set, `parse(name, refData)` against supplied data *(pending)* | Reference data is threaded explicitly; no ambient global state |
-| 22 | `RollConvention.IMMCAD`/`IMMAUD`/`TBILL` | Capture `GBLO` + `CATO`/`CAMO`, `AUSY` and `USNY` from `ReferenceData.standard()` at class-initialisation time, with a `SAT_SUN` fallback | Reference the built-in `StandardHolidayCalendars` constants directly — the same fixed calendars, as data rather than as a lookup. `adjust(date)` keeps Java's signature *(pending)* | Same reason as row 21; these calendars were always constants |
-| 23 | `DayCount.ScheduleInfo` | `getStartDate`, `getEndDate`, `getPeriodEndDate`, `getFrequency` throw `UnsupportedOperationException` by default; `Schedule.getPeriodEndDate` throws for a date in no period | The accessors are `Option`-valued and `ScheduleInfo.simple` answers `None` everywhere; `Schedule.periodEndDate(date)` is `None` outside every period. A day count that needs information it was not given still fails fast, per row 2 *(pending)* | Absence is a value, not an exception |
+| 21 | `DayCount.ofBus252` | `ofBus252(id)` resolves the calendar against `ReferenceData.standard()` internally, and `"Bus/252 XXXX"` is parsed by loading the calendar from the standard set — an ambient lookup inside a pure calculation | `Bus252` carries the **resolved** calendar, so `yearFraction`/`days` are pure functions of their arguments. It is built by `ofBus252(calendar)` (total) or `ofBus252(id, refData)` (`Either`). `parse(name)` resolves `Bus/252 X` against the built-in constant set, `parse(name, refData)` against supplied data | Reference data is threaded explicitly; no ambient global state |
+| 22 | `RollConvention.IMMCAD`/`IMMAUD`/`TBILL` | Capture `GBLO` + `CATO`/`CAMO`, `AUSY` and `USNY` from `ReferenceData.standard()` at class-initialisation time, with a `SAT_SUN` fallback | Reference the built-in `StandardHolidayCalendars` constants directly — the same fixed calendars, as data rather than as a lookup, so this is retained fixed-calendar behaviour rather than a lost one. `adjust(date)` keeps Java's signature. `SFE` (second Friday) and `IMMNZD` take part in no calendar on either side | Same reason as row 21; these calendars were always constants |
+| 23 | `DayCount.ScheduleInfo` | `getStartDate`, `getEndDate`, `getPeriodEndDate`, `getFrequency` throw `UnsupportedOperationException` by default; `Schedule.getPeriodEndDate` throws for a date in no period | The accessors are `Option`-valued and `ScheduleInfo.simple` answers `None` everywhere; `Schedule.periodEndDate(date)` is `None` outside every period. A day count that needs information it was not given still fails fast, per row 2 | Absence is a value, not an exception |
 | 24 | `ImmutableHolidayCalendar` | `of` is total for any holiday dates; the Joda-Beans form carries the internal lookup array | `of` is total in signature but has a documented fail-fast precondition: every holiday must fall in years 0–9999, since the year range is what the storage is allocated from. The structural JSON form carries `id`, `weekendDays`, `startYear`, `holidays` and the weekend dates declared working; a decode routes through a private range-preserving factory when `startYear` is declared. A round trip preserves the first year and every reported date, but not a trailing tail of years holding no reported date, so `endYearExclusive` can come back smaller — every date in that tail answers identically either way | An unbounded allocation driven by an argument is a denial-of-service hazard; and a holiday that fell at a weekend is indistinguishable from the weekend once stored, so the end of such a range cannot be recovered from the dates |
 | 25 | `ReferenceData` store | `ImmutableReferenceData.getValues()` publishes the erased `Map<ReferenceDataId<?>, Object>`; each entry's type is checked reflectively at insertion | No `values` accessor exists, and there is no raw-map factory: a store is read through `findValue`/`getValue`/`containsValue`, and built from `Entry[T]`, which binds value type to id type at compile time. One localized cast remains at lookup, closed for every Scala route; it could only be broken by raw-typed Java, which the port has no façade for | Removing the reflective per-entry check (Rule 6, D-5) is only sound if the erased store is not published |
 | 26 | `Frequency` | `ofYears(1)` is `P1Y` and is **not** equal to `P12M`; `ofMonths(30)` renders `P30M`; `normalized()` maps a 12-month frequency to `P1Y` (all measured) | Normalised at construction: a year is held as twelve months, so `ofYears(1)` and `of(P1Y)` both render `P12M` (measured) and equal `P12M`; `ofMonths(30)` renders `P2Y6M` (measured); `normalized` is the identity | The AAP requires a normalised `Period`, the constants are named `P1D`…`P12M`, and every captured Java parity baseline spells the annual frequency `P12M`. Once every value is canonical there is nothing for `normalized` to do, and a length has exactly one name |
@@ -403,8 +399,8 @@ implemented once, in `strata-collect/src/main/scala/com/opengamma/strata/collect
   identifier is the same string Joda-Convert produced: `"GBP"`, `"Following"`, `"GBLO+USNY"`, `"P3M"`,
   `"3M"`.
 - **Open string-typed values** (`CurrencyPair`, `Country`, `HolidayCalendarId`, `Tenor`,
-  `Frequency`, `StandardId`, `Decimal`, `FixedScaleDecimal`, and `MarketTenor` when it lands) use the
-  same string-in/string-out shape through `Codecs.parsedStringCodec`, printing what `toString` prints.
+  `MarketTenor`, `Frequency`, `StandardId`, `Decimal`, `FixedScaleDecimal`) use the same
+  string-in/string-out shape through `Codecs.parsedStringCodec`, printing what `toString` prints.
 - **Products use Java property names as keys**, in declaration order, and `None` fields are omitted:
   every product encoder is wrapped in `Codecs.dropNulls`.
 - **Every `Double` is tagged.** A finite value is a JSON number; `NaN`, `Infinity` and `-Infinity` are
@@ -412,40 +408,56 @@ implemented once, in `strata-collect/src/main/scala/com/opengamma/strata/collect
   strings, and refuses a number that is not finite (divergence (c)-29). Whether a non-finite value is
   *valid* is the type's decision, not the codec's — `CurrencyAmount` rejects `NaN` and accepts the
   infinities, as Java did.
-- **Validated types decode through their smart constructor**, so a payload that violates an invariant
-  fails with a `DecodingFailure` carrying the joined failure messages rather than producing an invalid
-  value.
-- **Byte stability.** Map-like fields are sorted (`Failure.attributes`, multi-currency amounts by
-  currency code, holiday sets by date) or carry their order as part of the value (`FxMatrix`
-  currencies), so two equal values built differently encode to identical bytes.
+- **Sealed families use circe's own wrapper object**, keyed by the constructor name —
+  `{"HalfUp":{…}}`, `{"MissingData":{…}}` — rather than a discriminator field, so no
+  `circe-generic-extras` dependency is needed and none is declared: `build.sbt` asks for
+  `circe-core`, `circe-generic` and `circe-parser` and nothing else.
+- **Validated types decode through their smart constructor**, `Codecs.validatedDecoder` feeding a
+  derived decoder for the constructor fields into the type's own `of`, so a payload that violates an
+  invariant fails with a `DecodingFailure` carrying the joined failure messages rather than producing
+  an invalid value. Their encoders stay derived, because an in-memory value is already valid.
+- **Byte stability.** Map-like fields are `SortedMap`/`SortedSet` (`Failure.attributes`,
+  multi-currency amounts by currency code, holiday sets by date) or carry their order as part of the
+  value (`FxMatrix` currencies), and product fields encode in declaration order, so two equal values
+  built differently encode to identical bytes.
 - **`java.time` values** use circe's ISO-8601 codecs — `2024-01-31`, `Europe/London`, `P3M`,
   `2024-01` — with two additions: `DayOfWeek` encodes as the enum constant name (`"SATURDAY"`), and
   `LocalTime` uses the port's own encoder so a time renders `11:00` rather than `11:00:00`
   (divergence (c)-29).
 
-**Shapes delivered today**
+**Shapes**
+
+The 58 codec-bearing types, grouped by the shape they take. `JsonRoundTripSpec` round-trips every one
+of them through `Arbitraries` and prints the covered list beside the excluded list below, which is
+what Gate 4 compares against this section.
 
 | Type | Shape |
 |---|---|
-| `Currency`, `BusinessDayConvention`, `PeriodAdditionConvention`, `DateSequence`, `FloatingRateType`, `ValueAdjustmentType`, `FailureReason` | Bare canonical-name string |
-| `CurrencyPair`, `Country`, `HolidayCalendarId`, `Tenor`, `Frequency`, `StandardId`, `Decimal`, `FixedScaleDecimal` | Bare string in the Java `toString` form (`"EUR/USD"`, `"GB"`, `"GBLO+USNY"`, `"3M"`, `"P3M"`, `"scheme~value"`) |
+| `Currency`, `BusinessDayConvention`, `RollConvention` (all 45 values, `Day15` and `DayMon` included), `PeriodAdditionConvention`, `DateSequence`, `StubConvention`, `FloatingRateType`, `ValueAdjustmentType`, `FailureReason`, `IborIndex`, `OvernightIndex`, `PriceIndex`, `FxIndex`, `FloatingRateName` | Bare canonical-name string, through `Codecs.namedEnumCodec` — the same string Joda-Convert wrote |
+| `CurrencyPair`, `Country`, `HolidayCalendarId`, `Tenor`, `MarketTenor`, `Frequency`, `StandardId`, `Decimal`, `FixedScaleDecimal` | Bare string in the Java `toString` form (`"EUR/USD"`, `"GB"`, `"GBLO+USNY"`, `"3M"`, `"ON"`, `"P3M"`, `"scheme~value"`), through `Codecs.parsedStringCodec` |
+| `DayCount` | Hand-written. A standard member is its name string (`"Act/365F"`); `Bus252` is structural, so a custom calendar survives the trip — `{"Bus252":{"name":"Bus/252 BRBD","calendar":"BRBD"}}`, the `calendar` field being a whole `HolidayCalendar` document. The decoder takes either form, resolving a `Bus/252 X` string against the built-in set and checking that a structural `name` equals `"Bus/252 " + calendar.id` |
+| `HolidayCalendar` | Hand-written. A built-in value encodes as its identifier string; any other value as a wrapper object — `{"Immutable":{"id":"XCAL","weekendDays":["SATURDAY","SUNDAY"],"startYear":2020,"holidays":["2020-01-01"],"workingWeekendDays":[]}}`, `{"Combined":{"a":"GBLO","b":"USNY"}}`, `{"Linked":{"a":…,"b":…}}`. The internal bitmask never appears. See divergence (c)-24 for what a round trip preserves |
 | `CurrencyAmount` | `{"currency":"GBP","amount":100.0}`, `amount` tagged |
+| `Money`, `BigMoney` | `{"currency":"GBP","amount":"12.34"}` — the amount is a `Decimal`, so it takes the `Decimal` string form |
+| `MultiCurrencyAmount` | `{"amounts":[{"currency":"EUR","amount":500000.0},{"currency":"GBP","amount":1000000.0}]}`, sorted by currency code and decoded through `of`, so a duplicate currency is a `DecodingFailure` |
+| `CurrencyAmountArray` | `{"currency":"GBP","values":[1.0,2.0,"Infinity"]}` |
+| `MultiCurrencyAmountArray` | `{"size":2,"values":{"GBP":[1.0,0.0],"USD":[0.0,"Infinity"]}}` |
 | `FxRate` | `{"pair":"EUR/USD","rate":1.25}` |
+| `FxMatrix` | `{"currencies":["GBP","USD"],"rates":[[1.0,1.6],[0.625,1.0]]}` — currencies in the matrix's own insertion order, rates tagged, decoded through `fromMatrix`, which checks unique currencies, a square matrix of matching size and a unit diagonal |
+| `Payment`, `AdjustablePayment` | `{"value":{"currency":"GBP","amount":1000.0},"date":"2015-06-30"}`, the adjustable form carrying an `AdjustableDate` |
+| `AdjustableDate`, `AdjustableDates` | `{"unadjusted":"2024-01-31","adjustment":{"convention":"Following","calendar":"GBLO"}}`, the plural form over a non-empty date list |
 | `BusinessDayAdjustment` | `{"convention":"Following","calendar":"GBLO"}` |
-| `SequenceDate` | Product form, absent fields omitted |
+| `DaysAdjustment`, `PeriodAdjustment`, `TenorAdjustment` | Product forms over the offset, its convention and its calendars; absent fields omitted |
+| `SequenceDate` | Product form, absent fields omitted (divergence (c)-28) |
+| `PeriodicSchedule`, `SchedulePeriod`, `Schedule` | Product forms with the Java property names; a `Schedule` is `{"periods":[{"startDate":…,"endDate":…,"unadjustedStartDate":…,"unadjustedEndDate":…}, …],"frequency":"P3M","rollConvention":"Day25"}` |
+| `IborIndexObservation`, `OvernightIndexObservation`, `FxIndexObservation` | Product forms whose `index` is the name string and whose derived dates are explicit — `{"index":"GBP/USD-WM","fixingDate":"2016-02-22","maturityDate":"2016-02-24"}` — decoded through `of(index, fixingDate, ReferenceData.standard)` and checked against the payload, so an inconsistent document fails |
+| `PriceIndexObservation` | `{"index":"GB-RPI","fixingMonth":"2024-01"}` |
 | `Rounding` | `{"NoRounding":{}}` / `{"HalfUp":{"decimalPlaces":2,"fraction":0}}`; an unknown field is rejected |
 | `ValueAdjustment`, `ValueDerivatives` | Product forms; `ValueDerivatives.derivatives` is a tagged-double array |
-| `HolidayCalendar` | A built-in value encodes as its identifier string; any other value as a wrapper object — `{"Immutable":{"id":"XCAL","weekendDays":["SATURDAY","SUNDAY"],"startYear":2020,"holidays":["2020-01-01"],"workingWeekendDays":[]}}`, `{"Combined":{"a":"GBLO","b":"USNY"}}`, `{"Linked":{"a":…,"b":…}}`. The internal bitmask never appears. See divergence (c)-24 for what a round trip preserves |
+| `ValueStep`, `ValueSchedule`, `ValueStepSequence` | Product forms; a step is `{"periodIndex":2,"value":{"modifyingValue":-2000.0,"type":"DeltaAmount"}}` or the `date`-keyed alternative, exactly one of the two being present |
 | `DoubleArray`, `DoubleMatrix` | A JSON array of tagged doubles, and an array of row arrays; both bounded on decode. Supplied by `Codecs.doubleArrayCodec`/`doubleMatrixCodec` rather than as companion implicits, so a caller opts in |
 | `Failure` | `{"MissingData":{"message":"…","attributes":{…}}}`, attributes sorted |
 | `Currency`, `HolidayCalendarId` as map **keys** | The same bare strings, through `Codecs.namedKeyCodecs` |
-
-The remaining shapes of the port's design — `Money`, `BigMoney`, `MultiCurrencyAmount`, `Payment`,
-`AdjustablePayment`, `AdjustableDate(s)`, `DaysAdjustment`, `PeriodAdjustment`, `TenorAdjustment`,
-`PeriodicSchedule`, `SchedulePeriod`, `Schedule`, `ValueSchedule`, `ValueStep`, `ValueStepSequence`,
-the four index families, the observations, `FxMatrix`, `CurrencyAmountArray`,
-`MultiCurrencyAmountArray`, `MarketTenor` and the structural `DayCount.Bus252` form — follow the same
-rules and land with their types.
 
 **Excluded from JSON, with the reason**
 
@@ -455,7 +467,7 @@ rules and land with their types.
 | `ReferenceData.Entry[T]` | Same reason — one entry of that store |
 | `ReferenceDataId[T]` other than `HolidayCalendarId` | A behavioural abstraction, not data |
 | `DayCount.ScheduleInfo` | A behavioural interface; its one real implementation, `Schedule`, has a codec |
-| `DateAdjuster`, `FxRateProvider`, `FxConvertible`, `Resolvable`, `ResolvableCalculationTarget`, `CalculationTarget` and therefore `CalculationTargetList` | Function and contract types with no data of their own |
+| `DateAdjuster`, `FxRateProvider`, `LazyFxRateProvider`, `FxConvertible`, `Resolvable`, `ResolvableCalculationTarget`, `CalculationTarget` and therefore `CalculationTargetList` | Function and contract types with no data of their own. `LazyFxRateProvider` is a `FxRateProvider` that defers to a `lazy val`, so it has less data still |
 | `Matrix` | A trait; `DoubleMatrix` is covered |
 | `Named`, `NamedEnum`, `TypedStringCompanion`, `ArgCheck`, `Validate`, `Collections`, `DoubleArrayMath`, `Resources`, `Codecs` | Typeclasses, helpers and effects, not data |
 | `FailureOr`, `ResultNec`, `ValidatedFailures`, `ValueWithFailures` | Generic containers — circe's `Either`/`Validated`/`Ior` instances apply once `Failure` and the value type have codecs |
@@ -480,13 +492,25 @@ scripts/verify-gates.sh                   # the single automated acceptance gate
 Always pass `-batch`: a bare `sbt` shell does not return. On a small host, set
 `SBT_OPTS="-Xmx1200m -Xss8m -XX:MaxMetaspaceSize=512m"` first.
 
-**The demo.** `sbt -batch "strata-basics/run"` runs `com.opengamma.strata.basics.demo.BasicsDemoApp`,
-an `IOApp.Simple` that builds a `PeriodicSchedule`, resolves it against `ReferenceData.standard` with
-a `GBLO` business-day adjustment, converts a `MultiCurrencyAmount` through an `FxMatrix`, serializes
-the result to JSON and prints it. The main class is already registered in `build.sbt`; the app itself
-is one of the pending files listed at the top of this note, so today the command fails with
-`ClassNotFoundException` until it lands. Nothing else is needed to run it — no service, no database,
-no browser.
+**The demo.** `sbt "strata-basics/run"` — `sbt -batch "strata-basics/run"` in a script — runs
+`com.opengamma.strata.basics.demo.BasicsDemoApp`, the `IOApp.Simple` registered as the root project's
+`mainClass`. It performs the four steps of the deliverable in order, and the values below are the run
+in this tree:
+
+1. **Builds a `PeriodicSchedule`** — 2024-03-25 to 2025-03-25, `Frequency.P3M`, `ModifiedFollowing`
+   over `HolidayCalendarIds.GBLO`, `StubConvention.NONE`.
+2. **Adjusts its dates against a built-in `HolidayCalendar` through explicit `ReferenceData`** —
+   `createSchedule(ReferenceData.standard)` yields four periods with the implied roll convention
+   `Day25`, two of whose dates `GBLO` moves (2024-12-25 → 2024-12-27).
+3. **Converts a `MultiCurrencyAmount` via FX** — `[EUR 500000, GBP 1000000]` through an `FxMatrix`
+   built from `GBP/USD 1.27` and `EUR/USD 1.09`, giving `USD 1815000`.
+4. **Serializes to JSON and prints** — the `Schedule`, the `MultiCurrencyAmount` and the converted
+   `CurrencyAmount`, each through its own circe codec:
+   `{"currency":"USD","amount":1815000.0}`.
+
+Every `Either` the demo meets is lifted at the `IO` edge by its own private `raise` helper, which is
+the only place in `strata-basics` that turns a `Failure` into a throwable. Nothing else is needed to
+run it — no service, no database, no browser.
 
 **The gate script.** `scripts/verify-gates.sh` is the one authoritative runner: from a clean checkout
 it executes every automated gate in order, writes `target/gate-report.md` together with the aggregated
@@ -509,14 +533,28 @@ gates it runs are:
 | 10 | No `java.util` collection, `Optional`, stream or function type in either module's public API, in source or in bytecode |
 | — | Test scope at least equal to the Java suites, joined method by method through `java-test-mapping.csv`, and the Maven tree unchanged |
 
-The script is one of the pending files. Until it lands, the gates are runnable individually with the
-commands the AAP §0.10.1 table gives; the two that bear on this note are `test -f SCALA_MIGRATION.md`
-with `grep -c "^## " SCALA_MIGRATION.md` (six sections), and the symbol-table row count against
-`grep -rhoE "\b(ArgChecker|Guavate|MapStream|Messages|Decimal|…)\.[a-zA-Z]+" modules/basics/src |
-sort -u | wc -l`, which is 51 today against the 72 rows of section (a).
+**Gate 7 is this note, and it has two halves.** The automated half is the row above: the script
+checks that `SCALA_MIGRATION.md` exists, that its six sections are present as `## ` headings, and
+that section (a) carries at least as many table rows as there are distinct `strata-collect` members
+referenced from `modules/basics/src` — a count the script computes with the specification's own grep
+rather than hardcoding. Measured on this revision: **51** referenced members against the **72** rows
+of section (a), and six headings. The manual half is an approving pull-request review by a
+[`CODEOWNERS`](.github/CODEOWNERS) owner, confirming this note's content against the six items the
+migration note owes; the script never blocks on a human, and reports that half as "automated checks
+passed; manual approval: see PR review".
 
-Two details the gate script's author needs, both consequences of divergence (c)-32: parse
-`java-test-mapping.csv` with a comma-tolerant CSV reader rather than `awk -F,`, because 80 rows quote
-a test name containing a comma; and allow the one method-level `dropped` row alongside the five
-class-level exclusions. Forked tests write their parity reports to `target/parity-report` and their
-JUnit XML to `target/test-reports`, both under the repository root, whichever project ran them.
+**The Maven tree is untouched, and deliberately so.** This port is *additive*: `build.sbt` adds two
+Scala projects beside the existing Maven reactor and never references it, and every file under
+`modules/**` is byte-identical to what it was. That tree is what later slices port their modules
+from, and it is what the parity baselines and the reference-data manifest are regenerated from —
+`tools/parity-capture/capture-baseline.jsh`, driven by the procedure in
+[`tools/parity-capture/README.md`](tools/parity-capture/README.md), builds the Java jars with Maven
+and re-emits the six fixtures and the manifest. The gate script asserts the tree's cleanliness
+directly: `git status --porcelain -- modules examples eclipse pom.xml src .github` must be empty.
+
+Two details of the test-scope row follow from divergence (c)-32, and the script honours both: it
+reads `java-test-mapping.csv` with a quoting-aware CSV reader (`python3`'s `csv`) rather than
+`awk -F,`, because 80 rows quote a test name containing a comma, and it allows the one method-level
+`dropped` row alongside the five class-level exclusions. Forked tests write their parity reports to
+`target/parity-report` and their JUnit XML to `target/test-reports`, both under the repository root,
+whichever project ran them, because `build.sbt` hands both projects those two absolute paths.
