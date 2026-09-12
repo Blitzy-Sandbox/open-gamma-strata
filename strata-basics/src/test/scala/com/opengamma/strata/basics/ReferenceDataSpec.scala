@@ -298,6 +298,11 @@ final class ReferenceDataSpec extends AnyFunSuite with Matchers {
    * and fails - it is a program that does not compile, and the reference data store needs no
    * reflection to be sound. The valid call is asserted to compile alongside, so the proofs
    * cannot be passing for some unrelated reason.
+   *
+   * Dropping that `Class` token rather than porting it is AAP decision D-5 and its Rule 6, which
+   * hold that nothing on the path that reads or writes data may reflect. The check the token
+   * performed at construction time is not lost by dropping it: it is recovered by the type
+   * parameter of [[ReferenceData.Entry]], and so is discharged by the compiler instead.
    */
   test("test_of_badType") {
     assertDoesNotCompile("""ReferenceData.Entry(ID1, "67")""")

@@ -27,23 +27,26 @@ import org.scalatest.prop.TableFor4
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
+import com.opengamma.strata.collect.testkit.TestHelper.date
 
 /**
  * Test [[PeriodAdditionConvention]].
  *
- * Every method of the Java original is kept, under its own name, so that the method-level
- * traceability of the migration stays one-to-one; the three data providers of the original
- * become the three tables declared at the top of this spec. The original's
- * `test_serialization` is the one method not here: the test mapping manifest consolidates it
- * into `json.JsonRoundTripSpec`, so what this spec pins instead is the per-type JSON
- * representation, in a test of its own at the end.
+ * All twelve methods of the Java original are kept, each under its own name and none merged
+ * with another, so that the method-level traceability of the migration stays one-to-one: the
+ * six methods the original drove from a data provider become one test apiece with the
+ * provider's rows inside it, and the three providers become the three tables declared at the
+ * top of this spec. Cases this port adds are additions to the test whose subject they share
+ * rather than tests of their own, which is why `test_convention` carries the calendar-reading,
+ * day-based-period and month-end rows after the nine rows of the Java matrix.
  *
- * Four of the ported methods asserted machinery this port does not have, and each is ported
+ * Five of the ported methods asserted machinery this port does not have, and each is ported
  * as the assertion of the guarantee that machinery gave rather than dropped. The reasoning is
  * repeated at each of them:
  *
  *  - `test_null` asserted that every convention rejected an absent date, period or calendar by
- *    raising an error. None of those arguments can be absent here, so the case becomes the
+ *    raising an error. None of those arguments can be absent here, so the case becomes a
+ *    compile-time proof that a call omitting one of them is rejected, followed by the
  *    total-ness of `adjust` over the three members and a matrix of real arguments, together
  *    with the observation that the calendar is accepted by all three members and consulted by
  *    exactly one of them.
@@ -51,11 +54,25 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *    from a configuration resource. There is no registry; the name lookup of the family is the
  *    `NamedEnum` instance, and its views are asserted in its place.
  *  - `test_of_lookup_null` asserted that the factory rejected an absent name by raising. The
- *    factories here answer with a value, so the case becomes the two spellings of an absent
- *    name that can actually be supplied - the empty name and a blank one.
+ *    same compile-time proof applies, and what can still be supplied - the empty name and a
+ *    blank one - is answered with a value rather than a raise.
  *  - `coverage` called a reflective sweep over a Java enum and the private constructor of a
  *    constants holder, neither of which a sealed family of case objects offers a target for;
  *    the closed-family properties that sweep stood in for are asserted directly.
+ *  - `test_serialization` round-tripped a convention through platform serialization, which no
+ *    type of this port implements. The JSON codec is what carries a convention between
+ *    processes here, so the test pins its representation - the bare canonical name, never an
+ *    object. The property-based round trip over every codec-bearing type is
+ *    `json.JsonRoundTripSpec`, which is where the test mapping manifest consolidates this
+ *    method; the cross-family alias sweep is `NamedEnumClosedSpec` and table-versus-manifest
+ *    equality is `ReferenceDataManifestSpec`, so none of those duties is repeated here.
+ *
+ * A convention is reached through the [[PeriodAdditionConventions]] constants throughout, which
+ * is how the Java test reached them through its three static imports. The member objects of the
+ * companion are named in one place only - the three identity assertions of `coverage`, where
+ * naming both routes is what the assertion is about - while the lookups `valueOf`, `parse` and
+ * `values`, which the constants holder does not publish, are called on the companion as the
+ * Java test called them on the interface.
  *
  * The expectations that are not the Java provider's own rows were taken from the Java
  * implementation rather than derived by hand: each was evaluated against the published
@@ -72,9 +89,9 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
   private val dataTypes: TableFor1[PeriodAdditionConvention] =
     Table(
       "convention",
-      PeriodAdditionConvention.NONE,
-      PeriodAdditionConvention.LAST_DAY,
-      PeriodAdditionConvention.LAST_BUSINESS_DAY)
+      PeriodAdditionConventions.NONE,
+      PeriodAdditionConventions.LAST_DAY,
+      PeriodAdditionConventions.LAST_BUSINESS_DAY)
 
   /**
    * The rows of the Java `data_convention` provider, transcribed verbatim, including the
@@ -85,17 +102,17 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
     Table(
       ("convention", "input", "months", "expected"),
       // None
-      (PeriodAdditionConvention.NONE, LocalDate.of(2014, 7, 11), 1, LocalDate.of(2014, 8, 11)), // Fri, Mon
-      (PeriodAdditionConvention.NONE, LocalDate.of(2014, 7, 31), 1, LocalDate.of(2014, 8, 31)), // Thu, Sun
-      (PeriodAdditionConvention.NONE, LocalDate.of(2014, 6, 30), 2, LocalDate.of(2014, 8, 30)), // Mon, Sat
+      (PeriodAdditionConventions.NONE, date(2014, 7, 11), 1, date(2014, 8, 11)), // Fri, Mon
+      (PeriodAdditionConventions.NONE, date(2014, 7, 31), 1, date(2014, 8, 31)), // Thu, Sun
+      (PeriodAdditionConventions.NONE, date(2014, 6, 30), 2, date(2014, 8, 30)), // Mon, Sat
       // LastDay
-      (PeriodAdditionConvention.LAST_DAY, LocalDate.of(2014, 7, 11), 1, LocalDate.of(2014, 8, 11)), // Fri, Mon
-      (PeriodAdditionConvention.LAST_DAY, LocalDate.of(2014, 7, 31), 1, LocalDate.of(2014, 8, 31)), // Thu, Sun
-      (PeriodAdditionConvention.LAST_DAY, LocalDate.of(2014, 6, 30), 2, LocalDate.of(2014, 8, 31)), // Mon, Sun
+      (PeriodAdditionConventions.LAST_DAY, date(2014, 7, 11), 1, date(2014, 8, 11)), // Fri, Mon
+      (PeriodAdditionConventions.LAST_DAY, date(2014, 7, 31), 1, date(2014, 8, 31)), // Thu, Sun
+      (PeriodAdditionConventions.LAST_DAY, date(2014, 6, 30), 2, date(2014, 8, 31)), // Mon, Sun
       // LastBusinessDay
-      (PeriodAdditionConvention.LAST_BUSINESS_DAY, LocalDate.of(2014, 7, 11), 1, LocalDate.of(2014, 8, 11)), // Fri, Mon
-      (PeriodAdditionConvention.LAST_BUSINESS_DAY, LocalDate.of(2014, 7, 31), 1, LocalDate.of(2014, 8, 29)), // Thu, Sun to Fri
-      (PeriodAdditionConvention.LAST_BUSINESS_DAY, LocalDate.of(2014, 6, 30), 2, LocalDate.of(2014, 8, 29))) // Mon, Sun to Fri
+      (PeriodAdditionConventions.LAST_BUSINESS_DAY, date(2014, 7, 11), 1, date(2014, 8, 11)), // Fri, Mon
+      (PeriodAdditionConventions.LAST_BUSINESS_DAY, date(2014, 7, 31), 1, date(2014, 8, 29)), // Thu, Sun to Fri
+      (PeriodAdditionConventions.LAST_BUSINESS_DAY, date(2014, 6, 30), 2, date(2014, 8, 29))) // Mon, Sun to Fri
 
   /**
    * The rows of the Java `data_name` provider: each convention with the name it renders as and
@@ -105,24 +122,40 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
   private val dataName: TableFor2[PeriodAdditionConvention, String] =
     Table(
       ("convention", "name"),
-      (PeriodAdditionConvention.NONE, "None"),
-      (PeriodAdditionConvention.LAST_DAY, "LastDay"),
-      (PeriodAdditionConvention.LAST_BUSINESS_DAY, "LastBusinessDay"))
+      (PeriodAdditionConventions.NONE, "None"),
+      (PeriodAdditionConventions.LAST_DAY, "LastDay"),
+      (PeriodAdditionConventions.LAST_BUSINESS_DAY, "LastBusinessDay"))
 
   //-------------------------------------------------------------------------
   test("test_null") {
     // Reinterpretation: the Java method supplied an absent date, an absent period and an
-    // absent calendar in turn and asserted that each raised. This port writes no such value -
-    // all three parameters are values of types that have no absent member - so what is
-    // asserted in its place is that `adjust` is total over real arguments: every member
-    // answers with a date for every combination below, and none of them raises.
+    // absent calendar in turn and asserted that each raised, which it could do because the
+    // argument checks of the type being ported guarded against an absent reference. Those
+    // checks have no target here: an argument of `adjust` is either supplied or the call does
+    // not compile, and nothing in this port hands an absent reference to it, so the case the
+    // Java method covered is unrepresentable rather than unchecked. The first half of this
+    // test is therefore a compile-time proof - a call that omits the argument the Java method
+    // passed as absent is rejected by the compiler, so the absence cannot reach `adjust` in
+    // the first place. No absent reference is written anywhere in this spec.
+    assertDoesNotCompile(
+      "PeriodAdditionConventions.NONE.adjust(date(2014, 7, 11), Period.ofMonths(3))")
+    assertDoesNotCompile("PeriodAdditionConventions.LAST_DAY.adjust(Period.ofMonths(3), HolidayCalendars.SAT_SUN)")
+    assertDoesNotCompile("PeriodAdditionConventions.LAST_BUSINESS_DAY.adjust()")
+    // the same call with every argument supplied does compile, which is what makes the three
+    // rejections above proofs about the missing argument rather than about a misspelt name
+    assertCompiles(
+      "PeriodAdditionConventions.NONE.adjust(date(2014, 7, 11), Period.ofMonths(3), HolidayCalendars.SAT_SUN)")
+
+    // The second half is the guarantee that replaces the raise: `adjust` is total over real
+    // arguments, so every member answers with a date for every combination below, and none of
+    // them raises.
     val dates: List[LocalDate] =
       List(
-        LocalDate.of(2014, 7, 11),
-        LocalDate.of(2014, 7, 31),
-        LocalDate.of(2020, 2, 29),
-        LocalDate.of(1900, 1, 1),
-        LocalDate.of(2099, 12, 31))
+        date(2014, 7, 11),
+        date(2014, 7, 31),
+        date(2020, 2, 29),
+        date(1900, 1, 1),
+        date(2099, 12, 31))
     val periods: List[Period] =
       List(Period.ZERO, Period.ofDays(1), Period.ofMonths(3), Period.ofYears(1), Period.ofMonths(-3))
     val calendars: List[HolidayCalendar] =
@@ -143,26 +176,95 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
     // and the third does not. Two months is what makes the third case visible - 31 August 2014
     // was a Sunday, so the weekend calendar answers with the Friday before it and the calendar
     // with no holidays with the 31st itself, where one month lands on a Thursday both agree on.
-    val monthEnd = LocalDate.of(2014, 6, 30)
+    val monthEnd = date(2014, 6, 30)
     val twoMonths = Period.ofMonths(2)
-    PeriodAdditionConvention.NONE.adjust(monthEnd, twoMonths, HolidayCalendars.SAT_SUN) shouldBe
-      PeriodAdditionConvention.NONE.adjust(monthEnd, twoMonths, HolidayCalendars.NO_HOLIDAYS)
-    PeriodAdditionConvention.LAST_DAY.adjust(monthEnd, twoMonths, HolidayCalendars.SAT_SUN) shouldBe
-      PeriodAdditionConvention.LAST_DAY.adjust(monthEnd, twoMonths, HolidayCalendars.NO_HOLIDAYS)
-    PeriodAdditionConvention.LAST_BUSINESS_DAY.adjust(monthEnd, twoMonths, HolidayCalendars.SAT_SUN) shouldBe
-      LocalDate.of(2014, 8, 29)
-    PeriodAdditionConvention.LAST_BUSINESS_DAY.adjust(monthEnd, twoMonths, HolidayCalendars.NO_HOLIDAYS) shouldBe
-      LocalDate.of(2014, 8, 31)
+    PeriodAdditionConventions.NONE.adjust(monthEnd, twoMonths, HolidayCalendars.SAT_SUN) shouldBe
+      PeriodAdditionConventions.NONE.adjust(monthEnd, twoMonths, HolidayCalendars.NO_HOLIDAYS)
+    PeriodAdditionConventions.LAST_DAY.adjust(monthEnd, twoMonths, HolidayCalendars.SAT_SUN) shouldBe
+      PeriodAdditionConventions.LAST_DAY.adjust(monthEnd, twoMonths, HolidayCalendars.NO_HOLIDAYS)
+    PeriodAdditionConventions.LAST_BUSINESS_DAY.adjust(monthEnd, twoMonths, HolidayCalendars.SAT_SUN) shouldBe
+      date(2014, 8, 29)
+    PeriodAdditionConventions.LAST_BUSINESS_DAY.adjust(monthEnd, twoMonths, HolidayCalendars.NO_HOLIDAYS) shouldBe
+      date(2014, 8, 31)
   }
 
   //-------------------------------------------------------------------------
   test("test_convention") {
+    // The nine rows of the Java provider, each against the Saturday/Sunday calendar the Java
+    // method used.
     forAll(dataConvention) {
       (convention: PeriodAdditionConvention, input: LocalDate, months: Int, expected: LocalDate) =>
         withClue(s"${convention.name} on $input plus $months months: ") {
           convention.adjust(input, Period.ofMonths(months), HolidayCalendars.SAT_SUN) shouldBe expected
         }
     }
+
+    // The cases below are the port's own additions to the same matrix. They pin the parts of
+    // the rule the nine provider rows do not reach - the calendar being consulted on both
+    // sides, a period measured in days, and the month-end and leap-year edges - and every
+    // expectation in them was evaluated against the published Java `strata-basics` jar rather
+    // than derived by hand, which matters most for `LAST_BUSINESS_DAY`, where a
+    // plausible-looking expectation is easy to write and wrong.
+
+    // The rule of LAST_BUSINESS_DAY reads the calendar twice: once to decide whether the base
+    // date is the last business day of its own month, and once to produce the last business day
+    // of the end date's month. Both halves are visible below, and the fourth and fifth rows are
+    // the pair that makes the first half observable - the Friday before a month end is the last
+    // business day of November, the Saturday that ends it is not a business day at all, so the
+    // two dates one day apart give results a month apart.
+    val lastBusinessDayCases: TableFor4[LocalDate, Int, HolidayCalendar, LocalDate] =
+      Table(
+        ("base", "months", "calendar", "expected"),
+        // Fri 28 Jun 2019 was the last business day of June; Wed 31 Jul 2019 is the last of July
+        (date(2019, 6, 28), 1, HolidayCalendars.SAT_SUN, date(2019, 7, 31)),
+        // Sun 30 Jun 2019 is not a business day, so the rule leaves arithmetic alone
+        (date(2019, 6, 30), 1, HolidayCalendars.SAT_SUN, date(2019, 7, 30)),
+        // Fri 30 Aug 2019 was the last business day of August under the London calendar
+        (date(2019, 8, 30), 4, StandardHolidayCalendars.GBLO, date(2019, 12, 31)),
+        // Fri 29 Nov 2019 was the last business day of November
+        (date(2019, 11, 29), 1, StandardHolidayCalendars.GBLO, date(2019, 12, 31)),
+        // Sat 30 Nov 2019 was not, so the end date stays where arithmetic put it
+        (date(2019, 11, 30), 1, StandardHolidayCalendars.GBLO, date(2019, 12, 30)),
+        // 31 Dec 2019 was a business day in London, and the last of its month
+        (date(2019, 12, 31), 1, StandardHolidayCalendars.GBLO, date(2020, 1, 31)),
+        // with no holidays every day is a business day, so the rule reduces to the last day
+        (date(2014, 6, 30), 2, HolidayCalendars.NO_HOLIDAYS, date(2014, 8, 31)))
+
+    forAll(lastBusinessDayCases) { (base: LocalDate, months: Int, calendar: HolidayCalendar, expected: LocalDate) =>
+      withClue(s"$base plus $months months against ${calendar.id.name}: ") {
+        PeriodAdditionConventions.LAST_BUSINESS_DAY.adjust(base, Period.ofMonths(months), calendar) shouldBe expected
+      }
+    }
+
+    // `adjust` does not check that the period it is given is month-based; the adjustment types
+    // that carry a convention do that when they are built. So a day-based period reaches the
+    // end-of-month rules, and they apply as written - the base date being a month end is what
+    // they test, whatever the period was measured in. These are the values the Java
+    // implementation produces, and they are the reason the check exists upstream.
+    val monthEndOfJune2019 = date(2019, 6, 30)
+    val tenDays = Period.ofDays(10)
+    PeriodAdditionConventions.NONE.adjust(monthEndOfJune2019, tenDays, HolidayCalendars.SAT_SUN) shouldBe
+      date(2019, 7, 10)
+    PeriodAdditionConventions.LAST_DAY.adjust(monthEndOfJune2019, tenDays, HolidayCalendars.SAT_SUN) shouldBe
+      date(2019, 7, 31)
+    PeriodAdditionConventions.LAST_BUSINESS_DAY
+      .adjust(date(2019, 6, 28), tenDays, HolidayCalendars.SAT_SUN) shouldBe date(2019, 7, 31)
+
+    // Ordinary arithmetic already shortens a day of month the target month does not have, which
+    // is why the three members agree on 31 January plus one month; the end-of-month rules differ
+    // from it only where the base date is its month's end, and February is where that is worth
+    // asserting.
+    PeriodAdditionConventions.NONE
+      .adjust(date(2019, 1, 31), Period.ofMonths(1), HolidayCalendars.SAT_SUN) shouldBe date(2019, 2, 28)
+    PeriodAdditionConventions.LAST_DAY
+      .adjust(date(2019, 1, 31), Period.ofMonths(1), HolidayCalendars.SAT_SUN) shouldBe date(2019, 2, 28)
+    // November has 30 days and February 2020 had 29, so the rule pulls the end date out to the
+    // 29th where arithmetic would have stopped on the 28th
+    PeriodAdditionConventions.LAST_DAY
+      .adjust(date(2019, 11, 30), Period.ofMonths(3), HolidayCalendars.SAT_SUN) shouldBe date(2020, 2, 29)
+    // and a leap day plus twelve months is the end of a February that has no 29th
+    PeriodAdditionConventions.LAST_DAY
+      .adjust(date(2020, 2, 29), Period.ofMonths(12), HolidayCalendars.SAT_SUN) shouldBe date(2021, 2, 28)
   }
 
   //-------------------------------------------------------------------------
@@ -202,9 +304,13 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
 
     lookup.familyName shouldBe "PeriodAdditionConvention"
     lookup.values.toList shouldBe List(
-      PeriodAdditionConvention.NONE,
-      PeriodAdditionConvention.LAST_DAY,
-      PeriodAdditionConvention.LAST_BUSINESS_DAY)
+      PeriodAdditionConventions.NONE,
+      PeriodAdditionConventions.LAST_DAY,
+      PeriodAdditionConventions.LAST_BUSINESS_DAY)
+    // the registry the original merged from its providers held one entry per member, and the
+    // membership here is the same three values with nothing repeated
+    lookup.values.toList should have size 3
+    lookup.values.toList.distinct should have size 3
 
     forAll(dataName) { (convention: PeriodAdditionConvention, name: String) =>
       withClue(s"$name: ") {
@@ -242,9 +348,19 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
 
   test("test_of_lookup_null") {
     // Reinterpretation: the Java method passed the absent reference to the factory and asserted
-    // that it raised. This port writes no such reference and its factories take a name they
-    // resolve as a value, so the case is asserted as the two spellings of an absent name that
-    // can be supplied - the empty name and a blank one.
+    // that it raised. This port writes no such reference, so - as in `test_null` above - the
+    // absence is proved away at compile time: a factory call that omits the name the Java
+    // method passed as absent does not compile, so no call can reach the lookup without one.
+    assertDoesNotCompile("PeriodAdditionConvention.valueOf()")
+    assertDoesNotCompile("PeriodAdditionConvention.parse()")
+    // and the same calls with a name supplied do compile, so the two rejections above are
+    // about the missing name and nothing else
+    assertCompiles("""PeriodAdditionConvention.valueOf("None")""")
+    assertCompiles("""PeriodAdditionConvention.parse("None")""")
+
+    // What can still be supplied is a name that names nothing, and the factories answer it
+    // with a value rather than a raise. Both spellings of it are asserted - the empty name and
+    // a blank one.
     PeriodAdditionConvention.valueOf("") shouldBe None
     PeriodAdditionConvention.parse("") should beFailureWith(FailureReason.PARSING)
     PeriodAdditionConvention.valueOf("   ") shouldBe None
@@ -262,9 +378,9 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
     val constants: TableFor2[String, PeriodAdditionConvention] =
       Table(
         ("identifier", "convention"),
-        ("NONE", PeriodAdditionConvention.NONE),
-        ("LAST_DAY", PeriodAdditionConvention.LAST_DAY),
-        ("LAST_BUSINESS_DAY", PeriodAdditionConvention.LAST_BUSINESS_DAY))
+        ("NONE", PeriodAdditionConventions.NONE),
+        ("LAST_DAY", PeriodAdditionConventions.LAST_DAY),
+        ("LAST_BUSINESS_DAY", PeriodAdditionConventions.LAST_BUSINESS_DAY))
 
     forAll(constants) { (identifier: String, convention: PeriodAdditionConvention) =>
       withClue(s"$identifier: ") {
@@ -288,14 +404,14 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
 
     // stated for the three rows individually, so the rule above cannot be satisfied by a
     // lookup that resolves everything or nothing
-    PeriodAdditionConvention.valueOf("NONE") shouldBe Some(PeriodAdditionConvention.NONE)
+    PeriodAdditionConvention.valueOf("NONE") shouldBe Some(PeriodAdditionConventions.NONE)
     PeriodAdditionConvention.valueOf("LAST_DAY") shouldBe None
     PeriodAdditionConvention.valueOf("LAST_BUSINESS_DAY") shouldBe None
 
     // A rewrite matches the whole of the text, so the shorter identifier cannot claim the
     // longer one. This is the one pair of rows where that could go wrong.
-    PeriodAdditionConvention.parse("LAST_BUSINESS_DAY") should haveValue(PeriodAdditionConvention.LAST_BUSINESS_DAY)
-    PeriodAdditionConvention.parse("LAST_DAY") should haveValue(PeriodAdditionConvention.LAST_DAY)
+    PeriodAdditionConvention.parse("LAST_BUSINESS_DAY") should haveValue(PeriodAdditionConventions.LAST_BUSINESS_DAY)
+    PeriodAdditionConvention.parse("LAST_DAY") should haveValue(PeriodAdditionConventions.LAST_DAY)
     // and a rewrite is applied to the whole text only, so neither identifier resolves with
     // anything appended to it
     PeriodAdditionConvention.parse("LAST_DAY_X") should beFailureWith(FailureReason.PARSING)
@@ -326,16 +442,24 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
     }
 
     // The constants holder exists so that a call site written against the original reads
-    // unchanged; it publishes the members themselves rather than copies of them.
+    // unchanged; it publishes the members themselves rather than copies of them. These three
+    // assertions are the only place this spec names a member through the companion rather than
+    // through the holder, because naming both is what the assertion is about.
     PeriodAdditionConventions.NONE should be theSameInstanceAs PeriodAdditionConvention.NONE
     PeriodAdditionConventions.LAST_DAY should be theSameInstanceAs PeriodAdditionConvention.LAST_DAY
     PeriodAdditionConventions.LAST_BUSINESS_DAY should be theSameInstanceAs PeriodAdditionConvention.LAST_BUSINESS_DAY
+    // and the three constants of the holder are the whole membership of the family, in the
+    // declaration order `values` publishes
+    List(
+      PeriodAdditionConventions.NONE,
+      PeriodAdditionConventions.LAST_DAY,
+      PeriodAdditionConventions.LAST_BUSINESS_DAY) shouldBe PeriodAdditionConvention.values.toList
 
     // The flag the adjustment types check when they are built: an end-of-month rule is
     // meaningful only for a period measured in months and years.
-    PeriodAdditionConvention.NONE.isMonthBased shouldBe false
-    PeriodAdditionConvention.LAST_DAY.isMonthBased shouldBe true
-    PeriodAdditionConvention.LAST_BUSINESS_DAY.isMonthBased shouldBe true
+    PeriodAdditionConventions.NONE.isMonthBased shouldBe false
+    PeriodAdditionConventions.LAST_DAY.isMonthBased shouldBe true
+    PeriodAdditionConventions.LAST_BUSINESS_DAY.isMonthBased shouldBe true
 
     // The companion publishes one equality-bearing instance - an ordering that is also a
     // hashing - so summoning the equality, the hashing or the ordering yields that one value
@@ -373,97 +497,43 @@ class PeriodAdditionConventionSpec extends AnyFunSuite with Matchers with TableD
         PeriodAdditionConvention.parse(rendered) should haveValue(convention)
       }
     }
+
+    // The Java method named two conventions, and the round trip of each is stated again here
+    // with the name string it renders as, so the two calls it made remain individually visible.
+    Show[PeriodAdditionConvention].show(PeriodAdditionConventions.NONE) shouldBe "None"
+    PeriodAdditionConvention.parse("None") shouldBe Right(PeriodAdditionConventions.NONE)
+    Show[PeriodAdditionConvention].show(PeriodAdditionConventions.LAST_BUSINESS_DAY) shouldBe "LastBusinessDay"
+    PeriodAdditionConvention.parse("LastBusinessDay") shouldBe Right(PeriodAdditionConventions.LAST_BUSINESS_DAY)
   }
 
   //-------------------------------------------------------------------------
-  // The tests below are the port's own. The first three pin behaviour the Java provider rows
-  // do not reach - the calendar-consulting rule, a period measured in days, and the month-end
-  // and leap-year edges - and every expectation in them was evaluated against the published
-  // Java `strata-basics` jar rather than derived by hand. The last pins the JSON
-  // representation, which replaces the platform serialization the consolidated round-trip spec
-  // no longer covers per type.
-
-  test("test_adjust_lastBusinessDay_consultsCalendarOnBothSides") {
-    // The rule of LAST_BUSINESS_DAY reads the calendar twice: once to decide whether the base
-    // date is the last business day of its own month, and once to produce the last business day
-    // of the end date's month. Both halves are visible below, and the fourth and fifth rows are
-    // the pair that makes the first half observable - the Friday before a month end is the last
-    // business day of November, the Saturday that ends it is not a business day at all, so the
-    // two dates one day apart give results a month apart.
-    val cases: TableFor4[LocalDate, Int, HolidayCalendar, LocalDate] =
-      Table(
-        ("base", "months", "calendar", "expected"),
-        // Fri 28 Jun 2019 was the last business day of June; Wed 31 Jul 2019 is the last of July
-        (LocalDate.of(2019, 6, 28), 1, HolidayCalendars.SAT_SUN, LocalDate.of(2019, 7, 31)),
-        // Sun 30 Jun 2019 is not a business day, so the rule leaves arithmetic alone
-        (LocalDate.of(2019, 6, 30), 1, HolidayCalendars.SAT_SUN, LocalDate.of(2019, 7, 30)),
-        // Fri 30 Aug 2019 was the last business day of August under the London calendar
-        (LocalDate.of(2019, 8, 30), 4, StandardHolidayCalendars.GBLO, LocalDate.of(2019, 12, 31)),
-        // Fri 29 Nov 2019 was the last business day of November
-        (LocalDate.of(2019, 11, 29), 1, StandardHolidayCalendars.GBLO, LocalDate.of(2019, 12, 31)),
-        // Sat 30 Nov 2019 was not, so the end date stays where arithmetic put it
-        (LocalDate.of(2019, 11, 30), 1, StandardHolidayCalendars.GBLO, LocalDate.of(2019, 12, 30)),
-        // 31 Dec 2019 was a business day in London, and the last of its month
-        (LocalDate.of(2019, 12, 31), 1, StandardHolidayCalendars.GBLO, LocalDate.of(2020, 1, 31)),
-        // with no holidays every day is a business day, so the rule reduces to the last day
-        (LocalDate.of(2014, 6, 30), 2, HolidayCalendars.NO_HOLIDAYS, LocalDate.of(2014, 8, 31)))
-
-    forAll(cases) { (base: LocalDate, months: Int, calendar: HolidayCalendar, expected: LocalDate) =>
-      withClue(s"$base plus $months months against ${calendar.id.name}: ") {
-        PeriodAdditionConvention.LAST_BUSINESS_DAY.adjust(base, Period.ofMonths(months), calendar) shouldBe expected
-      }
-    }
-  }
-
-  test("test_adjust_dayBasedPeriod") {
-    // `adjust` does not check that the period it is given is month-based; the adjustment types
-    // that carry a convention do that when they are built. So a day-based period reaches the
-    // end-of-month rules, and they apply as written - the base date being a month end is what
-    // they test, whatever the period was measured in. These are the values the Java
-    // implementation produces, and they are the reason the check exists upstream.
-    val monthEnd = LocalDate.of(2019, 6, 30)
-    val tenDays = Period.ofDays(10)
-    PeriodAdditionConvention.NONE.adjust(monthEnd, tenDays, HolidayCalendars.SAT_SUN) shouldBe LocalDate.of(2019, 7, 10)
-    PeriodAdditionConvention.LAST_DAY.adjust(monthEnd, tenDays, HolidayCalendars.SAT_SUN) shouldBe
-      LocalDate.of(2019, 7, 31)
-    PeriodAdditionConvention.LAST_BUSINESS_DAY
-      .adjust(LocalDate.of(2019, 6, 28), tenDays, HolidayCalendars.SAT_SUN) shouldBe LocalDate.of(2019, 7, 31)
-  }
-
-  test("test_adjust_monthEndAndLeapYear") {
-    // Ordinary arithmetic already shortens a day of month the target month does not have, which
-    // is why the three members agree on 31 January plus one month; the end-of-month rules differ
-    // from it only where the base date is its month's end, and February is where that is worth
-    // asserting.
-    PeriodAdditionConvention.NONE.adjust(LocalDate.of(2019, 1, 31), Period.ofMonths(1), HolidayCalendars.SAT_SUN) shouldBe
-      LocalDate.of(2019, 2, 28)
-    PeriodAdditionConvention.LAST_DAY
-      .adjust(LocalDate.of(2019, 1, 31), Period.ofMonths(1), HolidayCalendars.SAT_SUN) shouldBe LocalDate.of(2019, 2, 28)
-    // November has 30 days and February 2020 had 29, so the rule pulls the end date out to the
-    // 29th where arithmetic would have stopped on the 28th
-    PeriodAdditionConvention.LAST_DAY
-      .adjust(LocalDate.of(2019, 11, 30), Period.ofMonths(3), HolidayCalendars.SAT_SUN) shouldBe LocalDate.of(2020, 2, 29)
-    // and a leap day plus twelve months is the end of a February that has no 29th
-    PeriodAdditionConvention.LAST_DAY
-      .adjust(LocalDate.of(2020, 2, 29), Period.ofMonths(12), HolidayCalendars.SAT_SUN) shouldBe LocalDate.of(2021, 2, 28)
-  }
-
-  test("test_codec") {
-    // The representation the consolidated JSON round-trip spec exercises generically is pinned
-    // per type here: a convention is the bare string of its canonical name and never an object,
-    // which is the single-string form the original wrote through its string conversion.
+  test("test_serialization") {
+    // Reinterpretation: the Java method round-tripped a convention through the platform
+    // serialization of the type being ported, which this port does not implement for any type.
+    // What carries a convention between processes here is its JSON codec, so that is what is
+    // asserted, and the property asserted is the one the Java form had: a convention is the
+    // bare string of its canonical name and never an object, so a document written before this
+    // port reads back as the same convention. The property-based round trip over every
+    // codec-bearing type lives in `json.JsonRoundTripSpec`, where the test mapping manifest
+    // consolidates the Java method; this test pins the representation of this one type.
     forAll(dataName) { (convention: PeriodAdditionConvention, name: String) =>
       withClue(s"$name: ") {
-        convention.asJson shouldBe Json.fromString(name)
+        val encoded = convention.asJson
+        encoded shouldBe Json.fromString(name)
+        encoded.isString shouldBe true
+        encoded.asObject shouldBe None
+        encoded.asString shouldBe Some(name)
+        encoded.noSpaces shouldBe s""""$name""""
         Json.fromString(name).as[PeriodAdditionConvention] shouldBe Right(convention)
+        encoded.as[PeriodAdditionConvention] shouldBe Right(convention)
       }
     }
     // decoding goes through `parse`, so a document written with a constant identifier or in
     // another case is accepted, and text naming no convention is a decoding failure rather
     // than an exception
     Json.fromString("LAST_BUSINESS_DAY").as[PeriodAdditionConvention] shouldBe
-      Right(PeriodAdditionConvention.LAST_BUSINESS_DAY)
-    Json.fromString("lastday").as[PeriodAdditionConvention] shouldBe Right(PeriodAdditionConvention.LAST_DAY)
+      Right(PeriodAdditionConventions.LAST_BUSINESS_DAY)
+    Json.fromString("lastday").as[PeriodAdditionConvention] shouldBe Right(PeriodAdditionConventions.LAST_DAY)
     Json.fromString("Rubbish").as[PeriodAdditionConvention].isLeft shouldBe true
     Json.fromInt(1).as[PeriodAdditionConvention].isLeft shouldBe true
   }

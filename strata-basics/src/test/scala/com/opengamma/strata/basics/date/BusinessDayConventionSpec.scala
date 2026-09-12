@@ -30,14 +30,22 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 /**
  * Test [[BusinessDayConvention]], ported from the Java `BusinessDayConventionTest`.
  *
- * Every method of the Java class is kept under the name it had, so the method-level
- * traceability recorded in `manifest/java-test-mapping.csv` stays one-to-one:
- * `test_convention`, `test_nearest`, `test_name`, `test_toString`, `test_of_lookup`,
- * `test_lenientLookup_standardNames`, `test_extendedEnum`, `test_of_lookup_notFound`,
- * `test_of_lookup_null`, `test_lenientLookup_specialNames`, `test_lenientLookup_constants`,
- * `coverage` and `test_jodaConvert`. The Java `test_serialization` is deliberately absent: the
- * manifest consolidates it into `json.JsonRoundTripSpec`, and what belongs here about the text
- * and JSON forms is asserted by `test_jodaConvert`.
+ * Every method of the Java class is kept under the name it had, and this spec holds exactly
+ * those fourteen tests and no others, so the method-level traceability recorded in
+ * `manifest/java-test-mapping.csv` stays one-to-one: `test_convention`, `test_nearest`,
+ * `test_name`, `test_toString`, `test_of_lookup`, `test_lenientLookup_standardNames`,
+ * `test_extendedEnum`, `test_of_lookup_notFound`, `test_of_lookup_null`,
+ * `test_lenientLookup_specialNames`, `test_lenientLookup_constants`, `coverage`,
+ * `test_serialization` and `test_jodaConvert`.
+ *
+ * The roster being closed is why what a reader might expect to be a test of its own is folded
+ * into the test whose subject it belongs to: the convention matrix against a calendar holding a
+ * holiday is part of `test_convention`, and the one SWIFT spelling that no lenient pattern
+ * accepts is part of `test_extendedEnum`, which is where this spec asserts the external tables.
+ * `json.JsonRoundTripSpec` owns the property-based round trip over every codec-bearing type of
+ * the module, which is what the manifest consolidates the Java `test_serialization` methods
+ * into; `test_serialization` here asserts the concrete document this one type writes, which a
+ * property over arbitrary values cannot state.
  *
  * The three Java data providers are transcribed in full rather than sampled, and each becomes
  * one table shared by the tests that were driven from it:
@@ -61,10 +69,12 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     the Java relationship stays visible, and asserts the two external groups and the lenient
  *     table the resource declared, because in this port they are code and a lost row would
  *     otherwise be invisible.
- *   - `test_of_lookup_null` passed the absent reference to the factory and asserted a throw.
- *     There is no null in this API and no factory that throws, so the case is asserted as the
- *     hostile text a caller can actually supply - empty, blank, and several near-misses - each
- *     of which answers `None`/`Left(PARSING)` and never raises.
+ *   - `test_of_lookup_null` passed the absent reference to the factory and asserted a throw. The
+ *     `notNull` guard behind that throw has no target here, because the argument it guarded
+ *     against cannot be expressed: the case is therefore asserted as a compile-time proof that
+ *     the name is required, and then as the hostile text a caller can actually supply - empty,
+ *     blank, and several near-misses - each of which answers `None`/`Left(PARSING)` and never
+ *     raises. No `null` is written.
  *   - `test_lenientLookup_constants` reflected over the public constants of
  *     `BusinessDayConventions` to check that each identifier resolves leniently. This port
  *     performs no reflection, so the seven identifiers are written out as a table; the constants
@@ -74,10 +84,16 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     enum. Neither has a target here, so what they stood for is asserted directly: the seven
  *     constants are the members, `values` is in Java declaration order, and the typeclass
  *     instances agree with each other.
+ *   - `test_serialization` round-tripped a convention through Java serialization and through the
+ *     binary and JSON encodings of the bean library the Java type belonged to, each of which
+ *     read the class back reflectively. None of the three is a dependency of this port and
+ *     neither Java serialization nor compatibility with that library's JSON is in its scope, so
+ *     the round trip is asserted through the circe codec that replaced them, whose document is
+ *     the bare canonical name and never an object.
  *   - `test_jodaConvert` asserted a round trip through the reflective string-conversion library
- *     the Java type was annotated for. That library is not a dependency of this port, so the
- *     guarantee it gave is asserted over the two text forms this port does have: the name, which
- *     `Show` and `toString` agree on, and the JSON codec, which writes the bare canonical name.
+ *     the Java type was annotated for. That library is not a dependency of this port either, and
+ *     its two annotations became `Show` and `parse`, so the guarantee is asserted over those and
+ *     over `toString`, which agrees with them.
  *
  * @see [[BusinessDayAdjustmentSpec]] for the same conventions applied through reference data
  */
@@ -178,9 +194,7 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
         convention.adjust(input, HolidayCalendars.SAT_SUN) shouldBe expected
       }
     }
-  }
 
-  test("test_convention_againstHolidayCalendar") {
     // Beyond the Java provider, which uses a weekend-only calendar throughout: every convention
     // against a calendar that also holds a holiday, so that a run of non-business days has to be
     // walked rather than a single weekend. The expected values are those of the Java rules
@@ -396,20 +410,19 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
         "NoAdjust",
         "NoAdjust")
 
-    // The lookup is the family's own and covers exactly its members.
-    lookup.values.toList shouldBe declarationOrder
-    lookup.toString shouldBe "NamedEnum[BusinessDayConvention]"
-  }
-
-  test("test_lenientLookup_swiftOnlySpelling") {
-    // Beyond the Java methods, and the sharpest statement about the SWIFT group: `MODIFIEDF` is
-    // a spelling no lenient pattern accepts, so the external table is the only route from it to
-    // a convention. Java behaves identically - `findLenient("MODIFIEDF")` is empty there too -
+    // The sharpest statement about the SWIFT group, and the reason the external tables are
+    // asserted here rather than left to the closedness specification alone: `MODIFIEDF` is a
+    // spelling no lenient pattern accepts, so the external table is the only route from it to a
+    // convention. Java behaves identically - `findLenient("MODIFIEDF")` is empty there too -
     // which is why it appears in no lenient row.
     BusinessDayConvention.valueOf("MODIFIEDF") shouldBe None
     BusinessDayConvention.parse("MODIFIEDF") should beFailureWith(FailureReason.PARSING)
-    BusinessDayConvention.namedEnum.externalNames("SWIFT").flatMap(_.get("MODIFIEDF")) shouldBe
+    lookup.externalNames("SWIFT").flatMap(_.get("MODIFIEDF")) shouldBe
       Some(BusinessDayConventions.MODIFIED_FOLLOWING)
+
+    // The lookup is the family's own and covers exactly its members.
+    lookup.values.toList shouldBe declarationOrder
+    lookup.toString shouldBe "NamedEnum[BusinessDayConvention]"
   }
 
   test("test_of_lookup_notFound") {
@@ -425,9 +438,18 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
 
   test("test_of_lookup_null") {
     // Reinterpretation: the Java method passed the absent reference to the factory and asserted
-    // that it raised an error. This port writes no null and its two lookups answer with a value,
-    // so what is asserted is that every spelling of "no usable name" a caller can actually
-    // supply resolves to nothing and raises nothing.
+    // that it raised an error. The check that stood behind that error - the `notNull` guard of
+    // the argument checker - has no target in this port, because the absent argument it guarded
+    // against is not something a Scala caller can express: the name is a required parameter of a
+    // required type, so omitting it or offering something that is not text is rejected when this
+    // spec is compiled rather than when it runs. That is asserted here as a compile-time proof,
+    // which is the strongest form the Java case can take, and no `null` is written anywhere.
+    assertDoesNotCompile("BusinessDayConvention.parse()")
+    assertDoesNotCompile("BusinessDayConvention.valueOf()")
+
+    // What a caller can actually supply is text that names nothing, so the rest of the case is
+    // every spelling of "no usable name" - empty, blank, and several near-misses - each of which
+    // resolves to nothing and raises nothing.
     val hostile: List[String] =
       List(
         "",
@@ -553,32 +575,38 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
       all.map(_.name).sorted
   }
 
-  test("test_jodaConvert") {
-    // The Java method asserted a round trip through the reflective string-conversion library the
-    // type was annotated for. That library is not a dependency of this port, so its guarantee -
-    // a convention renders as one string and that string reads back as the same convention - is
-    // asserted over the two text forms this port has: the name, which `Show` and `toString`
-    // agree on, and the JSON codec, which writes the bare canonical name and never an object.
+  test("test_serialization") {
+    // The Java method was `assertSerialization(NO_ADJUST)`: a round trip through Java
+    // serialization and through the binary and JSON encodings of the bean library the type
+    // belonged to, all three of which read the class back reflectively. None of them is a
+    // dependency of this port, and neither Java serialization nor wire compatibility with that
+    // library's JSON is in its scope. What replaces them is the circe codec the companion
+    // publishes, so the round trip is asserted through that - over the convention the Java
+    // method named and over all seven, since the codec is one instance shared by the family.
+    //
+    // The document is the bare canonical name and never an object: that is the single-string
+    // form the annotated string conversion of the type being ported wrote, so a document from
+    // either side names the same convention.
+    val noAdjust: Json = BusinessDayConventions.NO_ADJUST.asJson
+    noAdjust.isString shouldBe true
+    noAdjust.isObject shouldBe false
+    noAdjust shouldBe Json.fromString("NoAdjust")
+    noAdjust.as[BusinessDayConvention] shouldBe Right(BusinessDayConventions.NO_ADJUST)
+
     forAll(dataName) { (convention: BusinessDayConvention, name: String) =>
       withClue(s"$name: ") {
-        convention.name shouldBe name
-        convention.toString shouldBe name
-        Show[BusinessDayConvention].show(convention) shouldBe name
-        BusinessDayConvention.parse(name) should haveValue(convention)
-
         val encoded: Json = convention.asJson
         encoded shouldBe Json.fromString(name)
         encoded.isString shouldBe true
+        encoded.isObject shouldBe false
+        encoded.noSpaces shouldBe s""""$name""""
         encoded.as[BusinessDayConvention] shouldBe Right(convention)
       }
     }
 
-    // The two conventions the Java method named explicitly, asserted as concrete documents.
-    BusinessDayConventions.NO_ADJUST.asJson.noSpaces shouldBe "\"NoAdjust\""
-    BusinessDayConventions.MODIFIED_FOLLOWING.asJson.noSpaces shouldBe "\"ModifiedFollowing\""
-
     // Text that names no convention is rejected by the reader, as is a document of the wrong
-    // JSON type - the codec reads a string and nothing else.
+    // JSON type - the codec reads a string and nothing else, which is what keeps the failure of
+    // an unrecognised name a decoding failure rather than an exception.
     Json.fromString("Rubbish").as[BusinessDayConvention].isLeft shouldBe true
     Json.fromInt(1).as[BusinessDayConvention].isLeft shouldBe true
     Json.obj("name" -> Json.fromString("NoAdjust")).as[BusinessDayConvention].isLeft shouldBe true
@@ -587,6 +615,32 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
     // the library being ported through one of its external vocabularies, still be read.
     Json.fromString("MODFOLLOWING").as[BusinessDayConvention] shouldBe
       Right(BusinessDayConventions.MODIFIED_FOLLOWING)
+  }
+
+  test("test_jodaConvert") {
+    // The Java method asserted, for two conventions, a round trip through the reflective
+    // string-conversion library the type was annotated for: the annotated renderer produced one
+    // string and the annotated factory read that string back as the same value. That library is
+    // not a dependency of this port, and its two annotations became `Show` and
+    // `BusinessDayConvention.parse`, so the guarantee is asserted over those - for every
+    // convention, and then for the two the Java method named, whose exact text is the contract a
+    // caller, a document and a message all rely on.
+    forAll(dataName) { (convention: BusinessDayConvention, name: String) =>
+      withClue(s"$name: ") {
+        convention.name shouldBe name
+        convention.toString shouldBe name
+        Show[BusinessDayConvention].show(convention) shouldBe name
+        BusinessDayConvention.parse(Show[BusinessDayConvention].show(convention)) should
+          haveValue(convention)
+      }
+    }
+
+    Show[BusinessDayConvention].show(BusinessDayConventions.NO_ADJUST) shouldBe "NoAdjust"
+    BusinessDayConvention.parse("NoAdjust") should haveValue(BusinessDayConventions.NO_ADJUST)
+    Show[BusinessDayConvention].show(BusinessDayConventions.MODIFIED_FOLLOWING) shouldBe
+      "ModifiedFollowing"
+    BusinessDayConvention.parse("ModifiedFollowing") should
+      haveValue(BusinessDayConventions.MODIFIED_FOLLOWING)
   }
 }
 
