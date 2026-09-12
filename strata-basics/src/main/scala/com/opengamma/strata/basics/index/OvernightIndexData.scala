@@ -59,8 +59,16 @@ import com.opengamma.strata.basics.date.StandardHolidayCalendars
  * @param fixedLegDayCount       the day count a fixed leg conventionally uses against this index,
  *                               which is the day count of the index on every row but the Norwegian
  *                               one
+ *
+ * The row is a transcription of one line of the reference data this module was built from, so it
+ * is visible within `com.opengamma.strata.basics` and no further - the same visibility
+ * `PriceIndexRow` has, and for the same reason. It is the shape the table below is written in
+ * rather than a value of the published API: a caller reads this data as the index family the
+ * companion of `Index.scala` builds from it, never as rows, so publishing the row type would add
+ * a type to the module's surface that nothing outside it can use and that the port's construction
+ * and codec inventories would then have to account for.
  */
-final case class OvernightIndexRow(
+private[basics] final case class OvernightIndexRow(
     name: String,
     currency: Currency,
     active: Boolean,
@@ -132,8 +140,12 @@ final case class OvernightIndexRow(
  * reference data, and introducing a new index is outside the scope of the port.
  *
  * All members are immutable values, so this object is thread-safe.
+ *
+ * The table is visible within `com.opengamma.strata.basics` and no further, as `PriceIndexData`
+ * is: it is the transcribed reference data the index family is built from, and the family is what
+ * a caller uses.
  */
-object OvernightIndexData {
+private[basics] object OvernightIndexData {
 
   //-------------------------------------------------------------------------
   // The four day counts and the calendar identifiers the rows below are built from.

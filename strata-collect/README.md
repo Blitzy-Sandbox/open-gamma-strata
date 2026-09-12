@@ -40,11 +40,17 @@ This module provides the data structures, the error model and the codec helpers 
 
 ### Ported subset
 
-The port follows actual use and nothing beyond it: the Java `strata-basics` main sources reference
-29 distinct `com.opengamma.strata.collect` targets and its tests three more - `TestHelper`,
-`CollectProjectAssertions` and `Unchecked` - which are ported or replaced, not reproduced:
+The subset is driven by what `strata-basics` actually uses, plus the shared primitives this module
+carries for the slices that follow: `TypedString` support is here although no `strata-basics` type
+is a typed string today. The Java `strata-basics` main sources reference 29 distinct
+`com.opengamma.strata.collect` targets and its tests three more - `TestHelper`,
+`CollectProjectAssertions` and `Unchecked` - which are ported, replaced or dropped, not reproduced:
 `TestHelper` becomes `testkit.TestHelper`, `CollectProjectAssertions` the `testkit.ResultMatchers`
-matchers, and `Unchecked` gives way to `scala.util.Try`/`Using`. Deliberately absent:
+matchers, and `Unchecked` has no target: its wrapping of checked exceptions went with the reflection
+it served. The one Java use, a reflective sweep of the `Currency` constant fields, became a
+compile-time table of those constants with direct assertions in `CurrencySpec`; where a throw does
+have to become a value the port wraps that expression in `scala.util.Try`, as `Tenor` and
+`Frequency` do around `Period.parse`. Deliberately absent:
 
 * the function, timeseries and concurrent packages, and `IntArray`, `LongArray`, `BasisPoints`,
   `Percentage`, `NumberFormatter`, `CharMatchers` and `Version` - unused by `strata-basics`

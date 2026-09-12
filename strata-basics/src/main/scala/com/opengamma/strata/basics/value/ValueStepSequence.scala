@@ -5,7 +5,10 @@
  */
 package com.opengamma.strata.basics.value
 
+import java.time.DateTimeException
 import java.time.LocalDate
+
+import scala.annotation.tailrec
 
 import cats.Hash
 import cats.Order
@@ -42,7 +45,10 @@ import com.opengamma.strata.collect.result.Failure
  * rule names are worked out only when it is resolved against the roll convention of the schedule
  * it applies to. [[resolve]] performs that expansion, walking the frequency from the first date to
  * the last and pairing each date it lands on with the adjustment, and it is where a sequence that
- * does not in fact line up with its frequency is reported.
+ * does not in fact line up with its frequency, describes more steps than the expansion ceiling
+ * allows, or names a date the calendar cannot reach is reported. All three depend on the data of
+ * the sequence and the convention rather than on any caller contract, so all three are reported
+ * as failure values; nothing about a resolution is raised.
  *
  * ===Construction===
  *
@@ -104,10 +110,39 @@ sealed abstract case class ValueStepSequence private (
    * method of the Java original did, date by date, through the same two operations.
    *
    * The walk is the one place this port differs in shape from that method, and only in shape: the
-   * original maintained a pair of mutable dates and a mutable builder, while this iterates the
-   * `next` operation of the convention from the adjusted first date and stops at the first date
-   * that passes the adjusted last date. The sequence of dates is identical, because `next` always
-   * returns a date strictly after the one handed to it and so the iteration always terminates.
+   * original maintained a pair of mutable dates and a mutable builder, while this recurses over
+   * the `next` operation of the convention from the adjusted first date, in the tail-recursive
+   * [[ValueStepSequence.rolledDates]]. The sequence of dates is identical, because `next` always
+   * returns a date strictly after the one handed to it, so the walk always terminates and the
+   * dates it accepts are exactly those from the adjusted first date up to the adjusted last one.
+   *
+   * That property is also why the walk '''stops at''' the adjusted last date rather than stepping
+   * past it: a date equal to the adjusted last date is the end of the expansion, and because
+   * `next` only ever moves forward, the successor of that date could only be after it and could
+   * only be discarded. Asking for it is therefore pure waste - and, one frequency short of
+   * `LocalDate.MAX`, waste that fails, which is what the guard below is about.
+   *
+   * Terminating is not the same as being small, which is the first of the two behavioural
+   * differences from the original: the walk is '''bounded''' at
+   * [[ValueStepSequence.MaximumStepCount]] steps, and a sequence describing more than that is
+   * reported rather than expanded. The bound is applied to
+   * the walk itself rather than to the list it produces, so a daily frequency over a span of
+   * centuries - which the dates and frequency of a sequence are free to describe, since neither is
+   * checked against any schedule at construction - allocates one date beyond the ceiling instead
+   * of however many its span implies. See the ceiling for why the count is where it is.
+   *
+   * Every piece of date arithmetic the resolution performs is '''guarded''', which is the second
+   * behavioural difference from the original: both endpoint adjustments and every rolling step go
+   * through [[ValueStepSequence.guardedDate]], so the two exceptions `java.time` raises at the
+   * edges of the date range become the failure value this member already answers with. There are
+   * two ways to reach that edge, and both are legal arguments - the two dates of a sequence are
+   * checked against each other and against nothing else, so `LocalDate.MAX` is as valid a last
+   * date as any other. A rolling step from a date within one frequency of the end of the range
+   * leaves it; and an endpoint adjustment can leave it too, because a day-of-week convention
+   * moves a date '''forward''' to the next matching day, which from the last few days of the
+   * range is off the end of it. The ported loop let both raise, so a resolution reached through
+   * the public [[ValueSchedule.resolveValues]] could throw where its signature promises a value;
+   * this port reports them, in the terms it reports everything else.
    *
    * The last date the walk lands on has to '''be''' the adjusted last date of this sequence. Where
    * it is not, the frequency does not divide the span of the sequence - a twelve month frequency
@@ -131,29 +166,126 @@ sealed abstract case class ValueStepSequence private (
    * @param existingSteps  the existing list of steps, which the generated steps are appended to
    * @param rollConv  the roll convention of the schedule this sequence applies to
    * @return the steps supplied followed by the generated steps, or the failure describing why the
-   *   dates and frequency of this sequence describe no sequence of steps under the convention
+   *   dates and frequency of this sequence describe no sequence of steps under the convention,
+   *   describe more steps than [[ValueStepSequence.MaximumStepCount]], or describe a date outside
+   *   the range `java.time` represents
    */
   private[value] def resolve(
       existingSteps: List[ValueStep],
-      rollConv: RollConvention): FailureOr[List[ValueStep]] = {
+      rollConv: RollConvention): FailureOr[List[ValueStep]] =
+    for {
+      start <- guardedDate(rollConv)(rollConv.adjust(firstStepDate))
+      adjustedLastStepDate <- guardedDate(rollConv)(rollConv.adjust(lastStepDate))
+      dates <- rolledDates(start, start, adjustedLastStepDate, rollConv, List.empty, 0)
+      // the last date reached, or the adjusted first date where the walk reached nothing at all,
+      // which is the state the mutable variable of the original was left in by an empty loop
+      prev = dates.lastOption.getOrElse(start)
+      generated <-
+        if (prev == adjustedLastStepDate) {
+          Right(dates.map(date => ValueStep.of(date, adjustment)))
+        } else {
+          Left(
+            Failure.Invalid(
+              ValueStepSequence
+                .frequencyMismatch(frequency, rollConv, adjustedLastStepDate, prev)))
+        }
+    } yield existingSteps ++ generated
 
-    val start = rollConv.adjust(firstStepDate)
-    val adjustedLastStepDate = rollConv.adjust(lastStepDate)
-    val dates = Iterator
-      .iterate(start)(date => rollConv.next(date, frequency))
-      .takeWhile(date => !date.isAfter(adjustedLastStepDate))
-      .toList
-    // the last date reached, or the adjusted first date where the walk reached nothing at all,
-    // which is the state the mutable variable of the original was left in by an empty loop
-    val prev = dates.lastOption.getOrElse(start)
-    if (prev != adjustedLastStepDate) {
+  /**
+   * Walks one expansion, accepting the dates of the steps and refusing an oversized one.
+   *
+   * This is the whole of the walk [[resolve]] performs, written as the tail recursion the Agent
+   * Action Plan requires of this module's generation - no loop and no mutable cursor - and the
+   * recursion is what carries the three things a step of the walk decides between:
+   *
+   *  - '''the walk has finished.''' A date after the adjusted last date is not part of the
+   *    expansion, so the dates accepted so far are the answer. This is the branch a sequence
+   *    whose frequency does not divide its span ends on, and the one an adjusted first date
+   *    already past the adjusted last date ends on immediately, having accepted nothing;
+   *  - '''the walk has reached the end exactly.''' A date equal to the adjusted last date is the
+   *    final step of the expansion, so it is accepted and the walk stops '''without''' asking the
+   *    convention for a successor. The list is the same one a walk that stepped past the end
+   *    would have produced, because `next` always returns a date strictly after its argument and
+   *    that successor could only have been discarded - and not asking is what keeps a sequence
+   *    ending at the last representable date from failing on arithmetic whose result nothing
+   *    would have read;
+   *  - '''the walk continues.''' The next boundary is the convention's, computed through the
+   *    guard, and the recursion carries it with the date just accepted.
+   *
+   * The ceiling is applied '''between''' the first branch and the rest, so acceptance stops at
+   * [[ValueStepSequence.MaximumStepCount]] dates and the date that would be the one after that is
+   * refused. One date beyond the ceiling is therefore the whole of the excess a refused expansion
+   * computes or holds, however wide the span and however short the frequency; see the ceiling for
+   * why the count is where it is.
+   *
+   * The accepted dates are accumulated in reverse and reversed once at each exit, so the walk
+   * costs one cons cell per date rather than the quadratic copying an append-to-the-end
+   * accumulation would cost over the hundred thousand dates the ceiling allows.
+   *
+   * @param current  the date the walk has reached, which is a step of the expansion unless it is
+   *   past the adjusted last date
+   * @param start  the first date of the sequence, adjusted by the convention, carried only so
+   *   that a refusal can name the span it refused
+   * @param adjustedLastStepDate  the last date of the sequence, adjusted by the convention
+   * @param rollConv  the roll convention the walk rolls with
+   * @param accepted  the dates accepted so far, most recent first
+   * @param count  how many dates have been accepted, which is the length of `accepted`
+   * @return the dates of the expansion in schedule order, or the failure describing why the
+   *   expansion is refused
+   */
+  @tailrec
+  private def rolledDates(
+      current: LocalDate,
+      start: LocalDate,
+      adjustedLastStepDate: LocalDate,
+      rollConv: RollConvention,
+      accepted: List[LocalDate],
+      count: Int): FailureOr[List[LocalDate]] =
+    if (current.isAfter(adjustedLastStepDate)) {
+      Right(accepted.reverse)
+    } else if (count >= ValueStepSequence.MaximumStepCount) {
       Left(
         Failure.Invalid(
-          ValueStepSequence.frequencyMismatch(frequency, rollConv, adjustedLastStepDate, prev)))
+          ValueStepSequence
+            .expansionBeyondCeiling(frequency, rollConv, start, adjustedLastStepDate)))
+    } else if (current == adjustedLastStepDate) {
+      Right((current :: accepted).reverse)
     } else {
-      Right(existingSteps ++ dates.map(date => ValueStep.of(date, adjustment)))
+      guardedDate(rollConv)(rollConv.next(current, frequency)) match {
+        case Right(rolled) =>
+          rolledDates(
+            rolled,
+            start,
+            adjustedLastStepDate,
+            rollConv,
+            current :: accepted,
+            count + 1)
+        case Left(overflow) => Left(overflow)
+      }
     }
-  }
+
+  /**
+   * Evaluates one piece of date arithmetic, reporting an overflow instead of raising it.
+   *
+   * The argument is taken by name and evaluated once, here, so that the two exceptions the
+   * `java.time` arithmetic of an adjustment or a roll can raise at the edges of the supported
+   * date range become the failure value [[resolve]] answers with everywhere else. Nothing else is
+   * caught: an exception of any other type is a defect rather than a property of the dates, and
+   * swallowing it would hide it. It is the same guard the schedule package applies to the same
+   * arithmetic while generating a schedule, stated in the terms of this type.
+   *
+   * @param rollConv  the roll convention the arithmetic is performed under, which the failure
+   *   names alongside the frequency because the two of them decide the date being computed
+   * @param compute  the date arithmetic to evaluate
+   * @return the date the arithmetic produced, or the failure describing the overflow
+   */
+  private def guardedDate(rollConv: RollConvention)(compute: => LocalDate): FailureOr[LocalDate] =
+    try {
+      Right(compute)
+    } catch {
+      case _: DateTimeException | _: ArithmeticException =>
+        Left(Failure.Invalid(ValueStepSequence.dateRangeOverflow(frequency, rollConv)))
+    }
 
   //-------------------------------------------------------------------------
   /**
@@ -193,6 +325,32 @@ sealed abstract case class ValueStepSequence private (
 object ValueStepSequence {
 
   //-------------------------------------------------------------------------
+  /**
+   * The greatest number of steps [[ValueStepSequence.resolve]] will expand a sequence into.
+   *
+   * A sequence is a rule rather than a list, and nothing about its two dates or its frequency is
+   * checked against any schedule when it is built - the Java original checked neither either, and
+   * could not, because the schedule is not known until the sequence is resolved. So the span a
+   * caller supplies, divided by the frequency it supplies, is the only thing deciding how many
+   * steps an expansion produces, and a daily frequency over a span of centuries describes millions
+   * of them. Expanding that strictly, as the original did, is unbounded work and unbounded
+   * allocation driven by data (CWE-400), so this port draws a ceiling and reports a sequence that
+   * crosses it.
+   *
+   * The count is where it is for two reasons. A step only means something against a period
+   * boundary of the schedule the sequence is resolved with, and the schedule generation of this
+   * module refuses to produce more than this many periods, so a sequence expanding to more steps
+   * than this could not resolve against any schedule this library builds even if it were
+   * expanded - the work would be spent only to be rejected. And a hundred thousand dates paired
+   * with a hundred thousand steps is a few megabytes, which bounds what a single rejected
+   * expansion can cost before the rejection is reached.
+   *
+   * The limit is a constant rather than a parameter of `resolve`: the operation's signature is the
+   * one [[ValueSchedule]] calls, and widening it to carry a budget would push the choice onto
+   * every caller while giving none of them anything to base it on.
+   */
+  private[value] val MaximumStepCount: Int = 100000
+
   /** The name the first date is reported under, which is the property name of the bean. */
   private val FirstStepDateField: String = "firstStepDate"
 
@@ -309,6 +467,57 @@ object ValueStepSequence {
       prev: LocalDate): String =
     s"ValueStepSequence lastStepDate did not match frequency '${frequency.name}'" +
       s" using roll convention '${rollConv.name}', $adjustedLastStepDate != $prev"
+
+  /**
+   * Describes a sequence whose dates and frequency expand into more steps than the ceiling allows.
+   *
+   * The message names the limit as well as the sequence being expanded, because the limit is the
+   * part a caller cannot see from its own arguments: the two dates and the frequency are what it
+   * supplied, and the count they imply is the thing it has to be told about. It is a message of
+   * this port rather than a transcription - the Java original expanded any span it was given - and
+   * the reason it exists is set out on [[ValueStepSequence.MaximumStepCount]].
+   *
+   * The dates named are the ones the walk actually used, adjusted by the convention, rather than
+   * the two properties of the sequence: they are the endpoints of the expansion being refused, and
+   * where a convention moves either endpoint the adjusted pair is what explains the count.
+   *
+   * @param frequency  the frequency of the sequence being resolved
+   * @param rollConv  the roll convention it was resolved under
+   * @param start  the first date of the sequence, adjusted by the convention
+   * @param adjustedLastStepDate  the last date of the sequence, adjusted by the convention
+   * @return the message describing the refusal
+   */
+  private def expansionBeyondCeiling(
+      frequency: Frequency,
+      rollConv: RollConvention,
+      start: LocalDate,
+      adjustedLastStepDate: LocalDate): String =
+    s"ValueStepSequence frequency '${frequency.name}' from $start to $adjustedLastStepDate" +
+      s" using roll convention '${rollConv.name}' expands to more than the maximum of" +
+      s" $MaximumStepCount steps"
+
+  /**
+   * Describes a resolution whose date arithmetic leaves the range of representable dates.
+   *
+   * The two parts a caller can act on are named: the frequency, which is what a rolling step adds
+   * to a date, and the convention, which is what adjusts the result and is itself able to move a
+   * date forward past the end of the range. The two dates are not named, because either of them
+   * can be the one at fault - a step overflows from the date it steps from, an endpoint
+   * adjustment from the endpoint it adjusts - and naming one of them would point at the wrong one
+   * half of the time; the sequence itself renders all four of its properties.
+   *
+   * This is a message of this port rather than a transcription: the ported implementation
+   * performed the same arithmetic unguarded and let `java.time` raise out of a method that
+   * otherwise reported its outcome. The reason it exists is set out on
+   * [[ValueStepSequence.guardedDate]].
+   *
+   * @param frequency  the frequency of the sequence being resolved
+   * @param rollConv  the roll convention it was resolved under
+   * @return the message describing the overflow
+   */
+  private def dateRangeOverflow(frequency: Frequency, rollConv: RollConvention): String =
+    s"ValueStepSequence frequency '${frequency.name}' using roll convention" +
+      s" '${rollConv.name}' moved outside the range of supported dates"
 
   //-------------------------------------------------------------------------
   /**

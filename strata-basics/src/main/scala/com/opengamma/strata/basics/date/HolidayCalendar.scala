@@ -369,11 +369,11 @@ object HolidayCalendar {
      * The identifier of this combination, composed from the identifiers of its two parts.
      *
      * Composed at most once and then held on the instance. Composing it is not free - the two
-     * names are joined and the joined name is normalised, which parses it and builds an
-     * identifier for each part - while the answer cannot change, because the parts of a
-     * combination are fixed when it is built. Composing it afresh on every read is what made a
-     * composite calendar's `id`, `name`, `toString`, `Show` and JSON form hundreds of times
-     * dearer than a simple calendar's, all of which read the identifier.
+     * names are joined and the joined name is normalised, which parses it, builds an identifier
+     * for each part, and sorts and deduplicates those parts - while the answer cannot change,
+     * because the parts of a combination are fixed when it is built. Holding it therefore takes
+     * that parsing, sorting and allocation off every read after the first, and `id`, `name`,
+     * `toString`, `Show` and the JSON form of a composite calendar are all reads of it.
      *
      * Deferred rather than computed in the constructor because a combination built to answer a
      * run of `isHoliday` questions - which is what [[HolidayCalendar.combinedWith]] is for, and
@@ -752,18 +752,19 @@ object HolidayCalendar {
   /**
    * Checks the first year a document declares its calendar to cover.
    *
-   * The field is the first year of the range the calendar being described covered, and it is
-   * '''used''' rather than merely written: a calendar rebuilt from its dates alone would begin
-   * at its earliest remaining holiday, which can be later than the year it covered, and every
-   * date the document names before that year would then fall outside the rebuilt range and be
-   * dropped. A working day named in such a year - a Saturday its centre works, declared in a
-   * year whose only holiday fell at a weekend and so is no longer reported - is exactly the case
-   * that would be lost.
+   * The field records the first year of the range the calendar being described covered. It is
+   * written for the reader and '''checked''' here rather than used to build anything: the range
+   * of a decoded calendar follows from its holidays, exactly as it does for every calendar this
+   * library builds, so a range that began earlier than every holiday the document still lists is
+   * not recovered from this field and a working day declared in such a year is ignored - the
+   * same treatment [[ImmutableHolidayCalendar.of]] gives a working day outside the years its
+   * holidays span. See [[immutableDecoder]] for why the field is not allowed to widen the range.
    *
-   * Two things are therefore required of it: it names a year a calendar can cover, and it is not
-   * later than the earliest date the document names, since the first year of a range cannot
-   * begin after the dates inside it. The field may be absent, so that a hand-written document
-   * need not work out what to put in it, in which case the range follows from the dates alone.
+   * Two things are therefore required of it, so that a document whose own fields disagree is
+   * refused rather than read: it names a year a calendar can cover, and it is not later than the
+   * earliest date the document names, since the first year of a range cannot begin after the
+   * dates inside it. The field may be absent, so that a hand-written document need not work out
+   * what to put in it.
    *
    * @param declared  the year the document declares, where it declares one
    * @param dates  every date the document names, holidays and working days alike
@@ -795,20 +796,29 @@ object HolidayCalendar {
   /**
    * Reads a calendar that carries its own holiday data.
    *
-   * A document describes a calendar as a caller does: the holidays are sorted and deduplicated,
-   * the weekend dates declared to be business days override both the holidays and the weekend,
-   * and the range of years follows from the dates - except that the document also declares where
-   * that range '''began''', and where it does the calendar is rebuilt over that range rather
-   * than over its dates alone. That matters because a range can begin earlier than every date
-   * the document still names, and any date before the rebuilt range would be dropped: see
-   * [[checkStartYear]]. The weekend overrides and the first year are both optional, because a
-   * calendar with no overrides writes an empty array and a hand-written document may omit either
-   * field.
+   * A document describes a calendar as a caller does, and is read by handing its fields to the
+   * factory a caller uses: the holidays are sorted and deduplicated, the weekend dates declared
+   * to be business days override both the holidays and the weekend, and the range of years
+   * follows from the holidays alone - so a working day the document names outside that range is
+   * ignored here exactly as [[ImmutableHolidayCalendar.of]] ignores one. The weekend overrides
+   * and the first year are both optional, because a calendar with no overrides writes an empty
+   * array and a hand-written document may omit either field.
+   *
+   * The first year the document declares is informational. It says which year the range of the
+   * calendar being described began in, it is checked against the dates beside it by
+   * [[checkStartYear]], and it does not take part in building the calendar. Letting it - or a
+   * working day named outside the holidays - decide the range would let a document reach a
+   * calendar no factory of this library can produce: a range beginning before every holiday it
+   * holds, in which a weekend date named as a working day is a business day while the same
+   * declaration made in code is ignored. The range is part of what a calendar answers with, and
+   * a decoded calendar reaches date adjustments, schedule generation, index observations and
+   * `Bus/252` day counts, so the document is held to the same semantics as the caller. This is
+   * the contract the encoder states as well: see [[encodeImmutable]].
    *
    * The checks come before the calendar is built, which is the point of them: building it
-   * allocates one machine word per month of the range, so the range - every date and the
-   * declared first year alike - is known to lie within the years a calendar may cover before
-   * anything is allocated from it.
+   * allocates one machine word per month of the range, so every date the document names - and
+   * the year it declares - is known to lie within the years a calendar may cover before anything
+   * is allocated from them.
    */
   private val immutableDecoder: Decoder[ImmutableHolidayCalendar] = Decoder.instance { cursor =>
     for {
@@ -820,14 +830,7 @@ object HolidayCalendar {
       _ <- checkSupportedYears(holidays, HolidaysField, cursor)
       _ <- checkSupportedYears(workingDays, WorkingWeekendDaysField, cursor)
       _ <- checkStartYear(declaredStartYear, holidays ::: workingDays, cursor)
-    } yield {
-      val id = HolidayCalendarId.of(name)
-      declaredStartYear match {
-        case Some(startYear) =>
-          ImmutableHolidayCalendar.ofRange(id, startYear, holidays, weekendDays, workingDays)
-        case None => ImmutableHolidayCalendar.of(id, holidays, weekendDays, workingDays)
-      }
-    }
+    } yield ImmutableHolidayCalendar.of(HolidayCalendarId.of(name), holidays, weekendDays, workingDays)
   }
 
   /**
@@ -1099,13 +1102,62 @@ object ThuFri extends HolidayCalendar {
  * out-of-bounds read, and a date the array does not cover falls back to the general
  * implementation of [[HolidayCalendar]], which applies the weekend alone. That is the same
  * two-case behaviour as the library being ported, arrived at by testing instead of by catching.
+ *
+ * ===How construction is closed===
+ *
+ * This is a normalising type in the sense of the port's construction policy - `of` rewrites what
+ * it is given rather than merely accepting it - so it takes the representation every such type
+ * takes: a `sealed abstract case class` with a private constructor. An abstract case class
+ * synthesises neither `apply` nor `copy`, so the factories below are the only way to obtain a
+ * calendar and no caller can produce one that skipped the normalisation; being sealed, the
+ * anonymous-subclass route the factories themselves use is available in this file alone.
+ *
+ * The '''identifier''' is the one case parameter, and the packed months are abstract members the
+ * factories implement. That is not a way around the policy but what the policy asks for here: the
+ * identifier is the whole of this type's equality, exactly as in the library being ported, so
+ * `unapply` hands back precisely the value equality is defined on - `case ImmutableHolidayCalendar(id)`
+ * - while the bit masks stay unreachable, which they would not be if they were case parameters.
+ * The holidays, the weekend and the working days are read back through [[holidays]],
+ * [[weekendDays]] and [[workingDays]], which reconstruct them from those masks.
  */
-final class ImmutableHolidayCalendar private (
-    override val id: HolidayCalendarId,
-    private val weekends: Int,
-    val startYear: Int,
-    private val lookup: Array[Int])
+sealed abstract case class ImmutableHolidayCalendar private (override val id: HolidayCalendarId)
     extends HolidayCalendar {
+
+  /**
+   * The days of the week that are holidays, as the bits this type packs them into.
+   *
+   * One bit per day of the week, set where that day is part of the weekend - the layout the
+   * companion's `weekendBit` defines. It is supplied by the factory that built the
+   * calendar and is visible within this package alone: [[weekendDays]] is how a caller reads the
+   * same information, as a set of days.
+   *
+   * @return the packed weekend days
+   */
+  private[date] def weekends: Int
+
+  /**
+   * The first year the holiday data covers.
+   *
+   * Together with [[endYearExclusive]] this is the range of years within which the calendar
+   * answers from its holiday data; outside it the weekend alone is applied. It is the year of the
+   * earliest holiday the calendar was built with, or zero where it was built with none.
+   *
+   * @return the first year covered by the holiday data
+   */
+  def startYear: Int
+
+  /**
+   * The holiday data, as one `Int` of day-of-month bits per month from January of [[startYear]].
+   *
+   * A set bit is a business day, which is the layout described above. It is supplied by the
+   * factory that built the calendar and is visible within this package alone, so that the array
+   * itself cannot be reached by a caller and cannot be written to; the merge in
+   * [[ImmutableHolidayCalendar.combined]] is the one operation that reads another calendar's
+   * array, and it lives in the companion for that reason.
+   *
+   * @return the packed months of holiday data
+   */
+  private[date] def lookup: Array[Int]
 
   /**
    * The year after the last one the holiday data covers.
@@ -1134,14 +1186,15 @@ final class ImmutableHolidayCalendar private (
    * with, sorted and deduplicated. It is the set a document holds and the set a test compares,
    * and it is what makes the storage an implementation detail rather than part of the contract.
    *
-   * Only the holidays are built: the dates recovered from the months are those that are neither
-   * an ordinary business day nor an ordinary weekend, and the working-day overrides among them
-   * are dropped rather than collected into a second set that this caller did not ask for.
+   * Only the holidays are built: the walk of the stored months tests the two bits that decide
+   * the category of each day and keeps a date only where both say holiday, so a working-day
+   * override is recognised by its bits and is never turned into a date nor given a list cell on
+   * the way to being discarded. See [[datesOfCategory]].
    *
    * @return the holiday dates, in ascending order
    */
   def holidays: SortedSet[LocalDate] =
-    ImmutableHolidayCalendar.sortedDates(exceptionalDates.filter(date => isHoliday(date)))
+    ImmutableHolidayCalendar.sortedDates(datesOfCategory(ImmutableHolidayCalendar.HolidayCategory))
 
   /**
    * The dates that are business days even though they fall at a weekend.
@@ -1149,12 +1202,14 @@ final class ImmutableHolidayCalendar private (
    * These are the working-day overrides the calendar was built with, restricted - as
    * construction restricts them - to the range of years the calendar covers.
    *
-   * Only the overrides are built, for the reason given on [[holidays]].
+   * Only the overrides are built, for the reason given on [[holidays]], and a calendar that
+   * declares none - which is every calendar this library generates - therefore walks its months
+   * without constructing a single date and answers with the empty set.
    *
    * @return the weekend dates that are business days, in ascending order
    */
   def workingDays: SortedSet[LocalDate] =
-    ImmutableHolidayCalendar.sortedDates(exceptionalDates.filter(date => isBusinessDay(date)))
+    ImmutableHolidayCalendar.sortedDates(datesOfCategory(ImmutableHolidayCalendar.WorkingDayCategory))
 
   override def isHoliday(date: LocalDate): Boolean = {
     val index = monthIndex(date)
@@ -1492,11 +1547,12 @@ final class ImmutableHolidayCalendar private (
    *
    * Where the calendar holds no months there is nothing to scan and both sets are empty.
    *
-   * Visible within this package as well as to [[holidays]] and [[workingDays]], because a caller
-   * that needs both sets - writing the calendar out, or merging two calendars whose years do not
-   * meet - should scan the months once rather than twice. The result is deliberately not
-   * retained: the sets are large, and a calendar that is asked for them once should not hold them
-   * for the rest of its life.
+   * Visible within this package because the two callers that need both sets - writing a calendar
+   * out, and merging two calendars whose years do not meet - should scan the months once rather
+   * than read [[holidays]] and [[workingDays]] in turn and scan them twice. Those two accessors
+   * do not go through this, each scanning for its own category alone. The result is deliberately
+   * not retained: the sets are large, and a calendar that is asked for them once should not hold
+   * them for the rest of its life.
    *
    * @return the holiday dates and the working weekend dates, both in ascending order
    */
@@ -1513,17 +1569,16 @@ final class ImmutableHolidayCalendar private (
    * fall at a weekend is a working-day override. A day where the two disagree is an ordinary
    * business day or an ordinary weekend, is carried by the weekend alone, and is not returned.
    * Which of the two kinds a returned date is follows from [[isHoliday]], which reads the same
-   * bit, so a caller that wants one kind filters and a caller that wants both partitions - and
-   * neither pays for the other's set.
+   * bit, so the caller this exists for - [[holidaysAndWorkingDays]], which needs both kinds -
+   * splits one walk in two. A caller that wants one kind alone asks [[datesOfCategory]] for that
+   * kind instead, and so never builds the other.
    *
    * The whole of the stored months is walked once, from the last month to the first and within
    * each month from the last day to the first, prepending each date that is found. Walking
    * backwards is what makes the result ascending without a reversal, and prepending is what makes
-   * the walk allocate one cell per date returned rather than a collection per month: the fold
-   * this replaced copied its accumulator once per month - 1,800 times for a calendar covering
-   * 1950 to 2099 - and allocated a pair for every one of the 54,787 days it looked at, which cost
-   * 2.3 MB to answer with 1,155 dates. Both loops are tail recursive over `Int` indices, so the
-   * walk holds no mutable state and needs no stack however many years the calendar covers.
+   * the walk allocate one list cell per date returned rather than a collection per month. Both
+   * loops are tail recursive over `Int` indices, so the walk holds no mutable state and needs no
+   * stack however many years the calendar covers.
    *
    * Where the calendar holds no months there is nothing to walk and the result is empty.
    *
@@ -1562,17 +1617,93 @@ final class ImmutableHolidayCalendar private (
       }
     loop(firstOfMonth.lengthOfMonth - 1, later)
   }
+
+  /**
+   * Recovers the dates of one exceptional category alone from the stored months.
+   *
+   * Two bits decide the category of a day between them: its bit in its stored month, which is
+   * set for a business day, and the bit of its day of the week in the weekend of the calendar. A
+   * holiday is a day that is neither - both bits clear - and a working-day override is a day
+   * that is both. A day whose two bits disagree is an ordinary business day or an ordinary
+   * weekend, is carried by the weekend alone, and belongs to neither category.
+   *
+   * Both bits are compared against the category asked for, which is what lets this build only
+   * the dates the caller wants: a date of the other category is recognised by its bits and never
+   * becomes a `LocalDate` nor occupies a list cell. A caller that wants both categories reads
+   * [[holidaysAndWorkingDays]] instead, which partitions one walk rather than making two.
+   *
+   * The stored months are walked once, from the last month to the first and within each month
+   * from the last day to the first, prepending each date kept. Walking backwards is what makes
+   * the result ascending without a reversal, and prepending is what makes the walk allocate one
+   * list cell per date returned rather than a collection per month. Both loops are tail
+   * recursive over `Int` indices, so the walk holds no mutable state and needs no stack however
+   * many years the calendar covers.
+   *
+   * Where the calendar holds no months there is nothing to walk and the result is empty.
+   *
+   * @param category  the value both stored bits take for the category wanted, which is
+   *   [[ImmutableHolidayCalendar.HolidayCategory]] for the holidays and
+   *   [[ImmutableHolidayCalendar.WorkingDayCategory]] for the working-day overrides
+   * @return the dates of that category, in ascending order
+   */
+  private def datesOfCategory(category: Boolean): List[LocalDate] = {
+    @tailrec
+    def loop(index: Int, found: List[LocalDate]): List[LocalDate] =
+      if (index < 0) found else loop(index - 1, datesOfCategoryInMonth(index, category, found))
+    loop(lookup.length - 1, Nil)
+  }
+
+  /**
+   * Prepends the dates of one exceptional category found in one stored month to the dates
+   * already found.
+   *
+   * @param index  the index of the month to scan
+   * @param category  the value both stored bits take for the category wanted
+   * @param later  the dates found in the months after this one, in ascending order
+   * @return the dates of that category in this month followed by those dates, in ascending order
+   */
+  private def datesOfCategoryInMonth(
+      index: Int,
+      category: Boolean,
+      later: List[LocalDate]): List[LocalDate] = {
+
+    // the month of an index, worked out arithmetically rather than by adding months to the first
+    // day of the first year, which allocated a date per month more than this does
+    val firstOfMonth = LocalDate.of(startYear + index / 12, index % 12 + 1, 1)
+    val monthData = lookup(index)
+    val firstBitOfWeek = firstOfMonth.getDayOfWeek.getValue - 1
+    @tailrec
+    def loop(dayOffset: Int, found: List[LocalDate]): List[LocalDate] =
+      if (dayOffset < 0) {
+        found
+      } else {
+        val businessDay = (monthData & (1 << dayOffset)) != 0
+        val weekendDay = (weekends & (1 << ((firstBitOfWeek + dayOffset) % 7))) != 0
+        // the date is constructed only where it is kept: both bits have to be the category asked
+        // for, so a day of the other category costs the two tests and nothing else
+        val next =
+          if (businessDay == category && weekendDay == category) firstOfMonth.withDayOfMonth(dayOffset + 1) :: found
+          else found
+        loop(dayOffset - 1, next)
+      }
+    loop(firstOfMonth.lengthOfMonth - 1, later)
+  }
 }
 
 
 /**
- * Builds calendars from published holiday dates.
+ * Builds calendars from published holiday dates, and carries their typeclass instances.
  *
  * Every factory here is total: a list of dates and a weekend always describe a calendar, so
  * there is nothing to reject and no error channel is needed. What the factories do instead is
  * normalise - sort and deduplicate the dates, derive the range of years they span, and apply the
  * working-day overrides last - which is why two calendars built from the same dates in different
  * orders are identical rather than merely equal.
+ *
+ * The `Hash` and `Show` declared below the builders are the family's instances restated at the
+ * type of this member, which the invariance of those typeclasses requires; [[HolidayCalendar]]
+ * keeps its own pair for a value typed as the family, and both pairs read the same `equals` and
+ * the same `toString`.
  */
 object ImmutableHolidayCalendar {
 
@@ -1586,6 +1717,24 @@ object ImmutableHolidayCalendar {
    * no binary literals.
    */
   private val WeekendPattern: Int = 0x10204081
+
+  /**
+   * The value both stored bits of a day take where that day is a holiday.
+   *
+   * A holiday is a day the calendar does not call a business day and does not call a weekend
+   * day, so neither its bit in its stored month nor the bit of its day of the week in the
+   * weekend is set. Named rather than written as a bare boolean so that the recovery of one
+   * category reads as the category it asks for.
+   */
+  private val HolidayCategory: Boolean = false
+
+  /**
+   * The value both stored bits of a day take where that day is a working-day override.
+   *
+   * An override is a day the calendar calls a business day and also calls a weekend day, so both
+   * bits are set. The counterpart of [[HolidayCategory]].
+   */
+  private val WorkingDayCategory: Boolean = true
 
   /**
    * The ordering of dates used to sort the holidays of a calendar.
@@ -1605,6 +1754,39 @@ object ImmutableHolidayCalendar {
    * written to it and every calendar built this way applies its weekend alone.
    */
   private val emptyLookup: Array[Int] = Array.emptyIntArray
+
+  /**
+   * Builds a calendar over its packed representation, which is the one route into the type.
+   *
+   * [[ImmutableHolidayCalendar]] is a sealed abstract case class whose only case parameter is the
+   * identifier, so an instance is an anonymous subclass supplying the three members the class
+   * leaves abstract - the packed weekend, the first year covered and the packed months. Being
+   * sealed, that route exists in this file alone, and every published factory ends here, so
+   * there is exactly one place where a calendar comes into being and exactly one place that has
+   * to be read to know what a calendar holds.
+   *
+   * The array is taken as it is rather than copied: every caller is one of the factories of this
+   * companion, each of which has just built the array and retains no reference to it, and the
+   * instance never hands it out. That is what keeps construction free of a defensive copy of the
+   * data whose cheapness is the whole reason for the packed layout.
+   *
+   * @param id  the identifier of the calendar
+   * @param packedWeekends  the days of the week that are holidays, packed one bit per day
+   * @param firstYear  the first year the holiday data covers, zero where there is none
+   * @param packedMonths  the holiday data, one `Int` of day-of-month bits per month from January
+   *   of `firstYear`, a set bit meaning business day
+   * @return the calendar over that representation
+   */
+  private def create(
+      id: HolidayCalendarId,
+      packedWeekends: Int,
+      firstYear: Int,
+      packedMonths: Array[Int]): ImmutableHolidayCalendar =
+    new ImmutableHolidayCalendar(id) {
+      private[date] val weekends: Int = packedWeekends
+      val startYear: Int = firstYear
+      private[date] val lookup: Array[Int] = packedMonths
+    }
 
   /** The month index that says a year and month fall outside the stored months of a calendar. */
   private val OutsideStoredMonths: Int = -1
@@ -1749,61 +1931,14 @@ object ImmutableHolidayCalendar {
     val weekendSet = weekendDays.toSet
     val weekends = weekendSet.foldLeft(0)((mask, day) => mask | weekendBit(day))
     if (holidays.isEmpty) {
-      new ImmutableHolidayCalendar(id, weekends, 0, emptyLookup)
+      create(id, weekends, 0, emptyLookup)
     } else {
       val startYear = holidays.head.getYear
       val endYearExclusive = holidays.last.getYear + 1
       checkSupportedYears(id, startYear, holidays.last.getYear)
       val lookup = buildLookup(holidays, weekendSet, startYear, endYearExclusive, workingDays)
-      new ImmutableHolidayCalendar(id, weekends, startYear, lookup)
+      create(id, weekends, startYear, lookup)
     }
-  }
-
-  /**
-   * Obtains a calendar that covers a range of years beginning where it is told to.
-   *
-   * This is [[of]] for a caller that knows the first year of the range the calendar covered and
-   * not only the dates inside it - which is the JSON decoder, and only the JSON decoder. The
-   * range covered is the first year given, extended to hold every date supplied: a date earlier
-   * than that year widens the range downwards and a date later than it widens the range upwards,
-   * so no date supplied is ever outside the range and therefore none is ignored.
-   *
-   * That is what [[of]] cannot do, and why this exists. `of` derives the range from the holidays
-   * alone, so it begins at the earliest '''holiday''' - and a calendar's range can begin earlier
-   * than that, because a holiday that falls at a weekend is indistinguishable from the weekend
-   * once stored and so is not among the dates the calendar reports. Rebuilding such a calendar
-   * through `of` would begin the range at its first remaining holiday and silently drop every
-   * working-day override declared before it. Beginning where the calendar began keeps them.
-   *
-   * The range is bounded as everywhere else: every year it spans must be one a calendar may hold
-   * data for, so the storage is at most 120,000 months.
-   *
-   * @param id  the identifier of the calendar
-   * @param startYear  the first year of the range the calendar covers
-   * @param holidays  the holiday dates, in any order and with any duplicates
-   * @param weekendDays  the days of the week that are holidays, which may be empty
-   * @param workingDays  the dates that are business days whatever the holidays and weekend say
-   * @return the calendar
-   * @throws IllegalArgumentException where the range would fall outside the years 0 to 9999
-   */
-  private[date] def ofRange(
-      id: HolidayCalendarId,
-      startYear: Int,
-      holidays: Iterable[LocalDate],
-      weekendDays: Iterable[DayOfWeek],
-      workingDays: Iterable[LocalDate]): ImmutableHolidayCalendar = {
-
-    val weekendSet = weekendDays.toSet
-    val weekends = weekendSet.foldLeft(0)((mask, day) => mask | weekendBit(day))
-    val (firstYear, lastYear) =
-      (holidays.iterator ++ workingDays.iterator)
-        .map(date => date.getYear)
-        .foldLeft((startYear, startYear)) {
-          case ((first, last), year) => (Math.min(first, year), Math.max(last, year))
-        }
-    checkSupportedYears(id, firstYear, lastYear)
-    val lookup = buildLookup(sortedDates(holidays), weekendSet, firstYear, lastYear + 1, workingDays)
-    new ImmutableHolidayCalendar(id, weekends, firstYear, lookup)
   }
 
   /**
@@ -1886,7 +2021,7 @@ object ImmutableHolidayCalendar {
         }
         // unioned, because a set bit here is a weekend day and either weekend closes the day
         val weekends = calendar1.weekends | calendar2.weekends
-        new ImmutableHolidayCalendar(combinedId, weekends, base.startYear, merged)
+        create(combinedId, weekends, base.startYear, merged)
       }
     }
 
@@ -1967,7 +2102,45 @@ object ImmutableHolidayCalendar {
 
   //-------------------------------------------------------------------------
   /**
-   * The JSON form of a calendar built from holiday dates.
+   * The hashing and equality of calendars built from holiday dates.
+   *
+   * Taken from the `equals` and `hashCode` of the class, which compare and hash the `id` and
+   * '''nothing else''': two calendars of one identifier are equal however their holidays differ,
+   * because a calendar is identified by what it claims to be rather than by the dates it happens
+   * to hold. That is the comparison the implementation being ported made, and this instance
+   * therefore agrees with it exactly - as it does with [[HolidayCalendar.hash]], which reads the
+   * same `equals` for a value typed as the family.
+   *
+   * It is declared here as well as on the family because `cats.Hash` is '''invariant''':
+   * `Hash[HolidayCalendar]` is not a `Hash[ImmutableHolidayCalendar]`, so a caller holding a value
+   * typed as this member - which every factory of this object returns - could not summon one from
+   * the family's instance. The two declarations cannot be ambiguous with each other, a summon at
+   * each type being answerable only by the instance declared at it.
+   *
+   * A calendar built from holiday dates is a normalising value type in its own right in the port's
+   * construction inventory, where every `[R]`, `[V]`, `[N]`, `[S]` and `[T]` type carries `Hash`
+   * and `Show`; it is named there as an `[N]` type beside the `[S]` family itself.
+   *
+   * @return the hashing of calendars built from holiday dates
+   */
+  implicit val hash: Hash[ImmutableHolidayCalendar] =
+    Hash.fromUniversalHashCode[ImmutableHolidayCalendar]
+
+  /**
+   * The rendering of calendars built from holiday dates as text.
+   *
+   * Renders what `toString` renders, which is the form of the library being ported -
+   * `HolidayCalendar[GBLO]` - so the two ways of putting a calendar into a message agree whether
+   * the value is typed as the member or as the family. Declared here for the same reason the
+   * hashing above is: `cats.Show` is invariant as well.
+   *
+   * @return the rendering of a calendar built from holiday dates
+   */
+  implicit val show: Show[ImmutableHolidayCalendar] = Show.show(calendar => calendar.toString)
+
+  //-------------------------------------------------------------------------
+  /**
+   * The JSON form of a calendar built from holiday dates, visible within this package only.
    *
    * This is the codec of the whole family narrowed to this one member, so a calendar written
    * through it is written exactly as it would be as a [[HolidayCalendar]] - as its name where it
@@ -1977,9 +2150,25 @@ object ImmutableHolidayCalendar {
    * Computed on first use, because it reads the codec of the family and the two objects must not
    * depend on the order in which they are initialised.
    *
+   * ===What the visibility means, and why it is what it is===
+   *
+   * The published codec of this family is [[HolidayCalendar]]'s. This one is that same codec
+   * narrowed to one member of the family, and it exists for the tests in this package that pin
+   * the '''member's''' document form - they read and write an `ImmutableHolidayCalendar` under
+   * its own type rather than widened to the family, so that the form being asserted is the form
+   * of the member. It is deliberately not part of this module's API: the serialization contract
+   * of this port is a closed inventory of codec-bearing types, that inventory names the family
+   * and not its members, and a public instance here would add a fifty-ninth target to a list of
+   * fifty-eight without adding anything a caller cannot already do through the family. Outside
+   * this package the narrowing is therefore not summonable at all, which is asserted by a
+   * compile-time proof in the serialization suite of this module.
+   *
+   * `private[date]` rather than `private` for exactly that reason: the proof is about what the
+   * module publishes, and the tests that need the narrowing sit in this package beside it.
+   *
    * @return the codec for calendars built from holiday dates
    */
-  implicit lazy val codec: Codec[ImmutableHolidayCalendar] = {
+  private[date] implicit lazy val codec: Codec[ImmutableHolidayCalendar] = {
     val encoder: Encoder[ImmutableHolidayCalendar] =
       Encoder.instance(calendar => HolidayCalendar.codec(calendar))
     val decoder: Decoder[ImmutableHolidayCalendar] = Decoder.instance { cursor =>
@@ -2035,8 +2224,29 @@ object HolidayCalendars {
    * supply its own holidays. This method is the short cut for a demonstration, a test, or a
    * program that has decided to use the built-in data.
    *
+   * The failure reports the name it was handed as that name stands, whole and unaltered, both in
+   * its message `HolidayCalendar name not found: <name>` and in its `name` attribute. Two reasons
+   * hold that in place. The wording is the one the library being ported raised for a calendar
+   * name it did not know and the one every named family of this port produces, so a caller that
+   * matched on it there matches on it here. And the name arrives from outside this library,
+   * because `of` accepts whatever text a caller has, so the caller correcting it needs the whole
+   * of what was refused rather than a shortened or rewritten account of it.
+   *
+   * Nothing constrains that text, and bounding it and escaping what it may hold belong to the
+   * writing of a failure rather than to the reporting of one. That is where this port performs
+   * both: [[Failure.show]] and the text form of a failure render the message and the key and
+   * value of every attribute through one bounded, single-line rendering, so a name carrying a
+   * line break, a control character or ten thousand characters can neither forge nor inflate a
+   * line of a log that holds this failure, while code reading [[Failure.message]] or
+   * [[Failure.attributes]] to act on the failure still receives the name exactly as supplied.
+   *
+   * The property is per part of a composite name, because each part is resolved by this same
+   * method and a part's failure is returned as it stands: `GBLO+NOSUCH` fails with the failure
+   * raised for `NOSUCH`, naming that part alone and never the parts that resolved.
+   *
    * @param uniqueName  the name of the calendar, optionally several joined with `'+'`
-   * @return the calendar of that name, or the failure naming the part that is unknown
+   * @return the calendar of that name, or the failure naming the unknown part in the text it was
+   *   given, which is bounded and made single-line when the failure is written out
    */
   def of(uniqueName: String): Either[Failure, HolidayCalendar] =
     if (uniqueName.contains(CombineSeparator)) {

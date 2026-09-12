@@ -73,11 +73,17 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     `coverage` and `serialization` keep their names and assert the properties those two
  *     helpers stood for; each test says which, and why, at the point it does so.
  *
- * Each of the three tests keeps the name of the Java method it comes from - `test_combination`,
- * `coverage` and `serialization` - which is what keeps the method-level traceability of the
- * migration exact.
+ * Each of the three ported tests keeps the name of the Java method it comes from -
+ * `test_combination`, `coverage` and `serialization` - which is what keeps the method-level
+ * traceability of the migration exact. A fourth, `test_combination_wrongValueType`, is added:
+ * it asserts a property of this port that the Java original could not have had, since the case
+ * it describes - two sides of a combination holding values of different types under one key -
+ * is checked at retrieval here and was checked reflectively at construction there.
  */
 class CombinedReferenceDataSpec extends AnyFunSuite with Matchers {
+
+  import GenericTestingReferenceDataId.count
+  import GenericTestingReferenceDataId.text
 
   /** An identifier held by both fixtures, under a different value in each. */
   private val ID1: TestingReferenceDataId = TestingReferenceDataId("1")
@@ -219,6 +225,131 @@ class CombinedReferenceDataSpec extends AnyFunSuite with Matchers {
     // is a calendar of `ReferenceData.standard` and is absent here.
     layered.containsValue(HolidayCalendarIds.GBLO) shouldBe false
     layered.getValue(HolidayCalendarIds.GBLO) should beFailureWith(FailureReason.MISSING_DATA)
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * Asserts what a combination does when its two sides hold values of different types under
+   * one key.
+   *
+   * This is the case that only combining can produce, and it is why the retrieval check of
+   * `ReferenceDataId.valueType` is asserted here as well as in `ReferenceDataSpec`. A store is
+   * keyed by an identifier whose type argument is erased, so the two instantiations of the
+   * generic identifier family [[GenericTestingReferenceDataId]] are one key; a combination
+   * consults two stores in order, and each may hold a value of a different type under that
+   * key. Precedence alone would then decide the '''type''' a caller received, which is not
+   * something precedence is entitled to decide.
+   *
+   * It does not, and the two orderings below are the assertion: each instantiation is answered
+   * with the value of its own type, from whichever side holds one, because the side that holds
+   * the other type reports an absence and the combination goes on to ask the next. So the rule
+   * this spec exists for - the first side asked wins - is a rule about values of the requested
+   * type, and a preferred side holding data of another type does not shadow the side that can
+   * answer.
+   */
+  test("test_combination_wrongValueType") {
+    val textId: GenericTestingReferenceDataId[String] =
+      GenericTestingReferenceDataId[String]("shared")
+    val countId: GenericTestingReferenceDataId[Int] =
+      GenericTestingReferenceDataId[Int]("shared")
+
+    // one key, two value types: the store cannot tell the identifiers apart, and the witness
+    // each carries is what the lookup tells them apart by
+    (textId: ReferenceDataId[_]) shouldBe (countId: ReferenceDataId[_])
+
+    val textData: ImmutableReferenceData = store(ReferenceData.Entry(textId, "a value"))
+    val countData: ImmutableReferenceData = store(ReferenceData.Entry(countId, 42))
+
+    val textFirst = CombinedReferenceData(textData, countData)
+    textFirst.findValue(textId) shouldBe Some("a value")
+    textFirst.findValue(countId) shouldBe Some(42)
+    textFirst.getValue(textId) should haveValue("a value")
+    textFirst.getValue(countId) should haveValue(42)
+
+    // reversed, and the answers are the same: which side is preferred decides nothing here,
+    // because the preferred side holds nothing of the type that was asked for
+    val countFirst = CombinedReferenceData(countData, textData)
+    countFirst.findValue(textId) shouldBe Some("a value")
+    countFirst.findValue(countId) shouldBe Some(42)
+
+    // a third instantiation, held by neither side, is absent from the combination rather than
+    // answered with either value - the membership test agreeing with retrieval as ever. Its
+    // witness is declared inline, which is what a host does for data of a type this library
+    // knows nothing about; the bound name is `flag` rather than `value`, which the matcher
+    // vocabulary this suite mixes in already binds in this scope.
+    val flagId: GenericTestingReferenceDataId[Boolean] =
+      GenericTestingReferenceDataId[Boolean]("shared")(
+        ReferenceDataType.of("Boolean") { case flag: Boolean => flag })
+    textFirst.containsValue(flagId) shouldBe false
+    textFirst.findValue(flagId) shouldBe None
+    textFirst.getValue(flagId) should beFailureWith(FailureReason.MISSING_DATA)
+  }
+
+  /**
+   * Asserts the same over the route a caller actually takes, which is `combinedWith` rather
+   * than this constructor.
+   *
+   * `ImmutableReferenceData.combinedWith` merges two materialised stores into one where it can,
+   * so that a lookup stays a single map lookup. A merge is keyed by the identifier and an
+   * identifier's type argument is erased, so the two instantiations below are one key: merging
+   * would keep one value and drop the other, and the lookup for the dropped one would report
+   * nothing although its value had been supplied. The store declines to merge for exactly that
+   * reason, and this asserts the consequence rather than the reason - that the combination
+   * answers for '''both''' identifiers, through every route a caller has, in either order.
+   *
+   * The last group is the other half of the condition: two stores whose shared key refers to
+   * data of the same type still merge, so the assertion above is a statement about erased
+   * disagreement and not the abandonment of the optimisation.
+   */
+  test("test_combinedWith_wrongValueType") {
+    val textId: GenericTestingReferenceDataId[String] =
+      GenericTestingReferenceDataId[String]("shared")
+    val countId: GenericTestingReferenceDataId[Int] =
+      GenericTestingReferenceDataId[Int]("shared")
+    (textId: ReferenceDataId[_]) shouldBe (countId: ReferenceDataId[_])
+
+    val textData: ImmutableReferenceData = store(ReferenceData.Entry(textId, "a value"))
+    val countData: ImmutableReferenceData = store(ReferenceData.Entry(countId, 42))
+
+    // the public route, preferring the text store: the two identifiers disagree about the type
+    // of the data they name, so the combination is a chain and neither value is lost
+    val textFirst: ReferenceData = textData.combinedWith(countData)
+    textFirst should not be an[ImmutableReferenceData]
+    textFirst.findValue(textId) shouldBe Some("a value")
+    textFirst.findValue(countId) shouldBe Some(42)
+    textFirst.containsValue(textId) shouldBe true
+    textFirst.containsValue(countId) shouldBe true
+    textFirst.getValue(textId) should haveValue("a value")
+    textFirst.getValue(countId) should haveValue(42)
+    textId.resolve(textFirst) should haveValue("a value")
+    countId.resolve(textFirst) should haveValue(42)
+    textId.toReader.run(textFirst) should haveValue("a value")
+    countId.toReader.run(textFirst) should haveValue(42)
+
+    // and preferring the count store, which answers the same: the preferred side holds nothing
+    // of the type the other identifier asks for, so preference decides nothing here
+    val countFirst: ReferenceData = countData.combinedWith(textData)
+    countFirst should not be an[ImmutableReferenceData]
+    countFirst.findValue(textId) shouldBe Some("a value")
+    countFirst.findValue(countId) shouldBe Some(42)
+    countFirst.containsValue(textId) shouldBe true
+    countFirst.containsValue(countId) shouldBe true
+    countFirst.getValue(textId) should haveValue("a value")
+    countFirst.getValue(countId) should haveValue(42)
+    textId.resolve(countFirst) should haveValue("a value")
+    countId.resolve(countFirst) should haveValue(42)
+    textId.toReader.run(countFirst) should haveValue("a value")
+    countId.toReader.run(countFirst) should haveValue(42)
+
+    // the agreeing case, which does merge: one key, one value type, so the store that is asked
+    // first wins it and a single map answers for both
+    val otherTextId: GenericTestingReferenceDataId[String] =
+      GenericTestingReferenceDataId[String]("shared")
+    val otherTextData: ImmutableReferenceData =
+      store(ReferenceData.Entry(otherTextId, "another value"))
+    val merged: ReferenceData = textData.combinedWith(otherTextData)
+    merged shouldBe an[ImmutableReferenceData]
+    merged.findValue(textId) shouldBe Some("a value")
   }
 
   //-------------------------------------------------------------------------

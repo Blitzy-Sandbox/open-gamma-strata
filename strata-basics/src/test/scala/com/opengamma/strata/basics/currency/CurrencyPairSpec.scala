@@ -363,33 +363,36 @@ final class CurrencyPairSpec extends AnyFunSuite with Matchers with TableDrivenP
   }
 
   /**
-   * Asserts that rejected text is quoted back bounded and on one line.
+   * Asserts that rejected text is named in full and rendered bounded and on one line.
    *
-   * No counterpart in the Java test class, and none was possible: the original interpolated the
-   * text it was handed into the exception it threw, as it stood, so the size of the message was
-   * the size of the input and a line break in the input was a line break in the message. This
-   * port reports the rejection as a value, and the text it names is rendered rather than
-   * reproduced.
+   * No counterpart in the Java test class: the original interpolated the text it was handed into
+   * the exception it threw, as it stood, and this port names it the same way in the failure it
+   * returns. What the port adds is the boundary at which a failure is written out, where every
+   * part is bounded and anything that could forge a line is escaped.
    */
-  test("parsing rejects text of any size without echoing it unbounded or across lines") {
+  test("parsing names rejected text in full, and the failure renders bounded and on one line") {
     val payload = "H" * 10000
     val bounded = CurrencyPair.parse(payload)
     bounded should beFailureWith(FailureReason.PARSING)
-    // The echo is the rendering the message is built from, so the message is the fixed wording
-    // plus at most `MaxDescribedInput + 3` characters of the text, whatever its size - where it
-    // was once the whole ten thousand.
-    val message = bounded.left.toOption.map(failure => failure.message).getOrElse("")
-    message.length should be <= "Invalid currency pair: ".length + Failure.MaxDescribedInput + 3
-    message shouldBe s"Invalid currency pair: ${"H" * Failure.MaxDescribedInput}..."
+    val failure = bounded.left.toOption.getOrElse(fail("expected a failure"))
+    failure.message shouldBe s"Invalid currency pair: $payload"
+    // The rendering is where the size stops, and it marks what it left out.
+    val rendered = Show[Failure].show(failure)
+    rendered.length should be < 1000
+    rendered should startWith("PARSING: Invalid currency pair: HHH")
+    rendered should endWith("...")
 
-    // Text holding a line break cannot put one in the message, so a line-oriented consumer of
-    // the message cannot be made to record a line the library did not report.
+    // Text holding a line break is named as it stands and rendered on one line, so a
+    // line-oriented consumer of the rendering cannot be made to record a line the library did
+    // not report.
     val injected = CurrencyPair.parse("EUR\nUSD")
     injected should beFailureWith(FailureReason.PARSING)
-    val injectedMessage = injected.left.toOption.map(failure => failure.message).getOrElse("")
-    injectedMessage should not include "\n"
-    injectedMessage should not include "\r"
-    injectedMessage shouldBe "Invalid currency pair: EUR\\nUSD"
+    val injectedFailure = injected.left.toOption.getOrElse(fail("expected a failure"))
+    injectedFailure.message shouldBe "Invalid currency pair: EUR\nUSD"
+    val injectedRendering = Show[Failure].show(injectedFailure)
+    injectedRendering should not include "\n"
+    injectedRendering should not include "\r"
+    injectedRendering shouldBe "PARSING: Invalid currency pair: EUR\\nUSD"
 
     // And the message for ordinary rejected text is unchanged, character for character, which is
     // what makes the bound invisible to every caller but the adversarial one.

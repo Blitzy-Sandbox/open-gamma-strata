@@ -425,14 +425,11 @@ object CurrencyPair {
    * The wording of the rejection is that of the implementation being ported, and it names the
    * text as it was supplied rather than as it was folded, so a user sees back what they wrote.
    *
-   * What it names is the rendering of that text through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
-   * and its control characters are escaped. A message reaches a log or a report, and the text
-   * handed to this method came from outside the library, so it must not be able to forge a
-   * line of that log or to make the message as large as the input. Text within the bound and
-   * free of control characters - every spelling of a pair among them - is quoted exactly as it
-   * was given, so the wording of an ordinary rejection is unchanged; only a longer or a
-   * line-breaking input is now described rather than reproduced.
+   * It names the whole of that text. The text came from outside the library, so bounding it and
+   * escaping what it may hold belong to the writing of a failure, which
+   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure perform
+   * for every part they write - a message reaching a log is therefore a bounded single line
+   * whatever spelling arrived here.
    *
    * @param pairStr  the pair as text, in the form `AAA/BBB`, in any case
    * @return the pair the text names, or the failure describing why it names none
@@ -447,7 +444,7 @@ object CurrencyPair {
       case _ =>
         // the text is rendered rather than interpolated as it stands, which bounds the message
         // and keeps it to one line while leaving an in-bound spelling quoted as it was given
-        Left(Failure.Parsing(s"Invalid currency pair: ${Failure.describeInput(pairStr)}"))
+        Left(Failure.Parsing(s"Invalid currency pair: $pairStr"))
     }
 
   //-------------------------------------------------------------------------

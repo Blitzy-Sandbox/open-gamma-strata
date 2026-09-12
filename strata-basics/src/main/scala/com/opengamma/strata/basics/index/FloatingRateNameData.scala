@@ -40,8 +40,16 @@ import com.opengamma.strata.basics.currency.Currency
  *   family converts to
  * @param fixingDateOffsetDays  the number of days of the non-standard fixing date offset the row
  *   declares, or nothing when the row declares none and the offset of the index applies
+ *
+ * The row is a transcription of one line of the reference data this module was built from, so it
+ * is visible within `com.opengamma.strata.basics` and no further - the same visibility
+ * `PriceIndexRow` has, and for the same reason. It is the shape the table below is written in
+ * rather than a value of the published API: a caller reads this data as the index family the
+ * companion of `Index.scala` builds from it, never as rows, so publishing the row type would add
+ * a type to the module's surface that nothing outside it can use and that the port's construction
+ * and codec inventories would then have to account for.
  */
-final case class FloatingRateNameRow(
+private[basics] final case class FloatingRateNameRow(
     externalName: String,
     indexName: String,
     rateType: FloatingRateType,
@@ -110,11 +118,10 @@ final case class FloatingRateNameRow(
  * dependency runs in that direction only, so that neither object can be caught part-initialised by
  * the other. For the same reason the currency default tables map a [[Currency]] to the external
  * name of a rate rather than to a rate, leaving the resolution to the consumer that owns the
- * members. The lookup routes it does offer - [[fixingDateOffsetOf]],
- * [[defaultIborExternalNameOf]] and [[defaultOvernightExternalNameOf]], all three visible to this
- * package alone - construct nothing either: each answers a key with the published text of a row,
- * and each exists because the table published beside it is ordered for the manifest comparison and
- * an ordered map answers a key by walking to it.
+ * members. The lookup route it does offer - [[fixingDateOffsetOf]], visible to this package alone
+ * - constructs nothing either: it answers a name with the published value of a row, and it exists
+ * because the table published beside it is ordered for the manifest comparison and an ordered map
+ * answers a key by walking to it, while the 159 Ibor rows assembled here each ask it a question.
  *
  * There is also no table of alternate, lenient or external-group names here, and that is not an
  * omission: the configuration of the Java implementation declares none for this family. Its 404
@@ -123,8 +130,12 @@ final case class FloatingRateNameRow(
  * through a table transcribed here.
  *
  * All members are immutable values, and this object is therefore thread-safe.
+ *
+ * The table is visible within `com.opengamma.strata.basics` and no further, as `PriceIndexData`
+ * is: it is the transcribed reference data the index family is built from, and the family is what
+ * a caller uses.
  */
-object FloatingRateNameData {
+private[basics] object FloatingRateNameData {
 
   // The name sections are transcribed in several methods rather than one. The split has to be
   // into methods to have any effect on the generated code: the initialiser of every `val` of an
@@ -1010,43 +1021,11 @@ object FloatingRateNameData {
    *
    * The order is the published order and stays that way because the reference data manifest
    * compares the section in order, which also means that answering one currency from here walks
-   * the insertion chain as far as that currency sits along it. Ask [[defaultIborExternalNameOf]]
-   * for a single currency; read this table when the ordered section itself is what is wanted.
+   * the insertion chain as far as that currency sits along it. That cost is paid once rather than
+   * per lookup: the consumer that answers a currency, `FloatingRateName`, resolves the whole of
+   * this table into a map of its own members while it initialises and answers from there.
    */
   val currencyDefaultIbor: Map[Currency, String] = ListMap.from(currencyDefaultIborPairs)
-
-  /**
-   * The 23 rows of [[currencyDefaultIbor]], keyed the same way but held in a plain map.
-   *
-   * This is the table [[defaultIborExternalNameOf]] reads, and it exists for the same reason
-   * `iborFixingDateOffsetsByUpperCaseName` exists: the published table is ordered, and an ordered
-   * map answers a key by walking its insertion chain, so the cost of a lookup there is the
-   * position of the key rather than the size of the table. It is derived from the
-   * already-initialised [[currencyDefaultIbor]] rather than from a second transcription of the 23
-   * rows, so the published table and the lookup table cannot disagree, and it is derived through
-   * `iterator` because `toMap` on an ordered map answers with that same ordered map and would
-   * leave the chain in place. Being private, it is invisible to the reference data manifest
-   * comparison, which reads [[currencyDefaultIbor]].
-   *
-   * This value is declared after [[currencyDefaultIbor]], which it is derived from: the vals of an
-   * object initialise in textual order, so a declaration moved above its table would silently
-   * leave this one empty.
-   */
-  private val currencyDefaultIborByCurrency: Map[Currency, String] =
-    currencyDefaultIbor.iterator.toMap
-
-  /**
-   * Finds the external name of the published default Ibor rate of a currency.
-   *
-   * The answer is an external name and not an index name, as [[currencyDefaultIbor]] explains, so
-   * resolve it through [[byExternalName]] to reach the row it names.
-   *
-   * @param currency  the currency to find the default Ibor rate of
-   * @return the external name of the default Ibor rate of that currency, or nothing when the
-   *   published data declares none for it
-   */
-  private[index] def defaultIborExternalNameOf(currency: Currency): Option[String] =
-    currencyDefaultIborByCurrency.get(currency)
 
   /**
    * The default Overnight rate of each of 27 currencies, as the external name of a row of [[rows]],
@@ -1055,35 +1034,8 @@ object FloatingRateNameData {
    * As with [[currencyDefaultIbor]], the value is an external name to be resolved through
    * [[byExternalName]], and a currency absent from the table has no published default Overnight
    * rate. The order is the published order for the same reason, and a single currency is likewise
-   * answered by [[defaultOvernightExternalNameOf]] rather than from here.
+   * answered from the resolved map `FloatingRateName` builds out of this table rather than from
+   * here.
    */
   val currencyDefaultOvernight: Map[Currency, String] = ListMap.from(currencyDefaultOvernightPairs)
-
-  /**
-   * The 27 rows of [[currencyDefaultOvernight]], keyed the same way but held in a plain map.
-   *
-   * This is the table [[defaultOvernightExternalNameOf]] reads, and it stands to
-   * [[currencyDefaultOvernight]] exactly as `currencyDefaultIborByCurrency` stands to
-   * [[currencyDefaultIbor]]: derived from the published table through `iterator`, so that the two
-   * cannot disagree and so that the insertion chain of the ordered map is not carried over, and
-   * private, so that the reference data manifest comparison continues to read the published table.
-   *
-   * This value is declared after [[currencyDefaultOvernight]], which it is derived from, for the
-   * initialisation-order reason given on `currencyDefaultIborByCurrency`.
-   */
-  private val currencyDefaultOvernightByCurrency: Map[Currency, String] =
-    currencyDefaultOvernight.iterator.toMap
-
-  /**
-   * Finds the external name of the published default Overnight rate of a currency.
-   *
-   * The answer is an external name and not an index name, so resolve it through
-   * [[byExternalName]] to reach the row it names.
-   *
-   * @param currency  the currency to find the default Overnight rate of
-   * @return the external name of the default Overnight rate of that currency, or nothing when the
-   *   published data declares none for it
-   */
-  private[index] def defaultOvernightExternalNameOf(currency: Currency): Option[String] =
-    currencyDefaultOvernightByCurrency.get(currency)
 }

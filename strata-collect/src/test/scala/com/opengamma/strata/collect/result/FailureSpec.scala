@@ -618,7 +618,9 @@ final class FailureSpec
     val test: Failure = Failure.Parsing(message)
     test.message shouldBe message
     test.message should include("\n")
-    Show[Failure].show(test) shouldBe s"PARSING: $message"
+    // The value keeps the line break; the rendering of the value does not, because a rendering
+    // is read where a line means something. The cases under "the rendering" below pin that.
+    Show[Failure].show(test) shouldBe "PARSING: Error on line 23: \\n Bad value 'foo'"
   }
 
   test("an attribute key given twice keeps the last value, so no key is ever renamed") {
@@ -703,9 +705,11 @@ final class FailureSpec
     // rendering counterpart of the byte stability asserted for the JSON form below.
     Show[Failure].show(Failure.Other("m", SortedMap("b" -> "2", "a" -> "1"))) shouldBe
       "OTHER: m [a=1, b=2]"
-    // The rendering is the instance, not `toString`: each member keeps the generated form of
-    // its class so that a failure inspected while debugging still shows its fields.
-    Failure.Invalid("m").toString should startWith("Invalid(m,")
+    // There is one rendering and the text form of a failure is it, so a failure written out by
+    // a logger, by interpolation or by a debugger reads the same way and is neutralised the
+    // same way. The bounding and escaping this brings with it are asserted further below.
+    Failure.Invalid("m").toString shouldBe "INVALID: m"
+    Failure.Other("m", SortedMap("b" -> "2", "a" -> "1")).toString shouldBe "OTHER: m [a=1, b=2]"
   }
 
   // ===========================================================================
@@ -1115,16 +1119,21 @@ final class FailureSpec
   }
 
   // ===========================================================================
-  // Failure.describeInput
+  // Failure - the rendering
   //
-  // The rendering a reporter puts caller-supplied text through before it
-  // interpolates it into a message. A message is read where lines carry meaning
-  // and where size costs something, so its contract is two properties of what
-  // it returns rather than of what it was given: the result is at most
-  // `MaxDescribedInput + 3` characters long, and it holds no character that a
-  // line-oriented reader could act on. Everything else is rendered as it
-  // stands, which is what lets the parse paths of this port apply it without
-  // changing the message that any reasonable input produces.
+  // A failure carries the text it was built with, whole: the message names the
+  // value that was rejected as that value stands, exactly as the library being
+  // ported did, and `message` and `attributes` hand it back unchanged to code
+  // that acts on a failure rather than reads one.
+  //
+  // Writing a failure out is therefore where text that reached the library from
+  // outside it is made safe, and these cases pin that boundary. Every part of a
+  // rendering - the message, and the key and the value of each attribute - is
+  // bounded in length and holds no character a line-oriented reader could act
+  // on, so a value supplied from outside can neither forge a line of a log that
+  // holds the failure (CWE-117) nor make that line as large as itself. There is
+  // one rendering, and the text form of a failure is it, so no path writes a
+  // failure out unneutralised.
   // ===========================================================================
 
   /** U+2028 LINE SEPARATOR, held by its code point so that no escape appears in this source. */
@@ -1134,11 +1143,22 @@ final class FailureSpec
   private val paragraphSeparator: Char = 0x2029.toChar
 
   /**
+   * The bound the rendering applies to one part of a failure.
+   *
+   * The constant itself is private to [[Failure]], as the rendering is: a caller neither
+   * renders nor bounds anything, so nothing outside that file has a use for the number. It is
+   * restated here because the two cases below pin the behaviour at the boundary - a part of
+   * exactly this length written whole, one character more truncated and marked - which is what
+   * makes the bound a contract rather than an implementation detail that may drift.
+   */
+  private val MaxRenderedPart: Int = 512
+
+  /**
    * The surrogates of the text that are not one half of a pair.
    *
    * A character outside the basic multilingual plane is two chars in a Java string, so text
    * truncated a char at a time could be cut through the middle of one, leaving half a
-   * character in a message. This is how the cases below state that the rendering never does
+   * character in a rendering. This is how the cases below state that the rendering never does
    * that: the list is empty for text in which every surrogate has its partner.
    *
    * @param text  the text to examine
@@ -1155,51 +1175,28 @@ final class FailureSpec
         character
     }
 
-  test("describeInput renders text within the bound unchanged and unmarked") {
-    // The property that keeps every message this is applied to reading as it did: text that
-    // fits and holds nothing to escape is returned as it was given, character for character.
-    Failure.describeInput("Rubbish") shouldBe "Rubbish"
-    Failure.describeInput("GBP-LIBOR-3M") shouldBe "GBP-LIBOR-3M"
-    // Punctuation, accented letters and CJK are characters like any other and are left alone,
-    // so a message quoting text from a document in any language still quotes it.
-    Failure.describeInput("café, 東京 - 3M/6M (P1Y)") shouldBe "café, 東京 - 3M/6M (P1Y)"
-    // The bound is inclusive: text of exactly its length is carried whole and unmarked, so
-    // nothing about a message that fits reveals that a bound exists at all.
-    val atBound = "A" * Failure.MaxDescribedInput
-    Failure.describeInput(atBound) shouldBe atBound
-    Failure.describeInput(atBound).length shouldBe Failure.MaxDescribedInput
-    Failure.describeInput(atBound) should not include "..."
+  test("a failure carries the message it was built with, whole and unrendered") {
+    // The property the messages of this library rest on: a rejected value is named as it
+    // stands, so a caller correcting its input is handed back exactly what was refused, and a
+    // test or a decoder comparing failures compares the values rather than renderings of them.
+    val payload = "H" * 10000
+    val large: Failure = Failure.Parsing(s"Unable to parse tenor: '$payload'")
+    large.message shouldBe s"Unable to parse tenor: '$payload'"
+    large.message.length shouldBe "Unable to parse tenor: ''".length + 10000
+
+    val textWithALineBreak = "Error on line 23: \n Bad value 'foo'"
+    val verbatim: Failure = Failure.Parsing(textWithALineBreak)
+    verbatim.message shouldBe textWithALineBreak
+    verbatim.message should include("\n")
+
+    // Attributes are carried the same way, whatever they hold, and adding one leaves the
+    // message alone.
+    val attributed = verbatim.withAttribute("definition", s"P3M\n$payload")
+    attributed.attributes shouldBe SortedMap("definition" -> s"P3M\n$payload")
+    attributed.message shouldBe textWithALineBreak
   }
 
-  test("describeInput truncates text one character past the bound and marks what it left out") {
-    val pastBound = "A" * (Failure.MaxDescribedInput + 1)
-    Failure.describeInput(pastBound) shouldBe "A" * Failure.MaxDescribedInput + "..."
-    Failure.describeInput(pastBound).length shouldBe Failure.MaxDescribedInput + 3
-    // What survives is the beginning of the text, which is the part that identifies it to
-    // whoever has to correct it, and the marker states that there was more.
-    Failure.describeInput(pastBound).take(Failure.MaxDescribedInput) shouldBe
-      pastBound.take(Failure.MaxDescribedInput)
-    Failure.describeInput(pastBound) should endWith("...")
-  }
-
-  test("describeInput bounds the payload a parse message used to reproduce in full") {
-    // The finding this case pins: parsing ten thousand characters of rubbish produced a
-    // message of 10,025 characters, the input echoed at roughly one to one, where the library
-    // being ported echoed none of it. The rendering is 67 characters however large the input
-    // is, so that amplification is gone - a ten-kilobyte parse attempt cannot produce a
-    // ten-kilobyte message.
-    val payload = "A" * 10000
-    val rendered = Failure.describeInput(payload)
-    rendered.length should be <= Failure.MaxDescribedInput + 3
-    rendered shouldBe "A" * Failure.MaxDescribedInput + "..."
-    // A message built from the rendering is bounded by the same amount plus its own fixed
-    // text, which is the shape the parse paths of this port report.
-    val message = Failure.Parsing(s"Unable to parse tenor: '$rendered'")
-    message.message.length shouldBe "Unable to parse tenor: ''".length + Failure.MaxDescribedInput + 3
-    message.message should startWith("Unable to parse tenor: 'AAA")
-  }
-
-  test("describeInput escapes every character that could forge a line") {
+  test("the rendering escapes every character of a message that could forge a line") {
     // The characters with no short escape are written by code point rather than as source
     // escapes, so that this file holds no escape sequence of its own to misread.
     val nul = 0x0000.toChar
@@ -1217,61 +1214,131 @@ final class FailureSpec
       ("a paragraph separator", s"3M${paragraphSeparator}INJECTED", "3M\\u2029INJECTED"))
     forAll(escaped) { (description: String, text: String, rendering: String) =>
       withClue(s"$description: ") {
-        Failure.describeInput(text) shouldBe rendering
-        // The character is gone from the rendering, which is the property that matters:
-        // whatever a reader of the message does with lines, the echoed text is one line, so
-        // it cannot be made to record a line the library did not report.
-        Failure.describeInput(text).exists(character =>
+        val failure: Failure = Failure.Parsing(s"Tenor name not found: $text")
+        // The failure holds the character; the rendering does not, which is the property that
+        // matters: whatever a reader of the rendering does with lines, it is handed one line,
+        // so it cannot be made to record a line the library did not report.
+        failure.message should include(text)
+        Show[Failure].show(failure) shouldBe s"PARSING: Tenor name not found: $rendering"
+        Show[Failure].show(failure).exists(character =>
           character.isControl ||
             character == lineSeparator ||
             character == paragraphSeparator) shouldBe false
       }
     }
     // Only the characters a reader could act on are escaped. A backslash the caller supplied
-    // is carried as it stands and is not doubled, which is why the rendering is written to be
+    // is carried as it stands and is not doubled, which is why a rendering is written to be
     // read rather than to be parsed back: text holding the two characters of an escape renders
     // the same way the character it names does.
-    Failure.describeInput("C:\\rates\\3M") shouldBe "C:\\rates\\3M"
+    Show[Failure].show(Failure.Parsing("C:\\rates\\3M")) shouldBe "PARSING: C:\\rates\\3M"
   }
 
-  test("describeInput keeps a surrogate pair whole, so truncation leaves no half character") {
+  test("the rendering escapes the key and the value of every attribute") {
+    // The other half of a rendering, and the one a schedule, a calendar or a reference-data
+    // identifier reaches: the definition of a rejected schedule and the name of a missing
+    // calendar are attached as attributes, and both are built from text a caller supplied.
+    val injected = Failure
+      .Invalid("Schedule is invalid")
+      .withAttribute("definition", "startDate=2024-01-15\nINVALID: forged")
+      .withAttribute("id\nkey", "GBLO\rUSNY")
+    injected.attributes shouldBe
+      SortedMap(
+        "definition" -> "startDate=2024-01-15\nINVALID: forged",
+        "id\nkey" -> "GBLO\rUSNY")
+    Show[Failure].show(injected) shouldBe
+      "INVALID: Schedule is invalid " +
+        "[definition=startDate=2024-01-15\\nINVALID: forged, id\\nkey=GBLO\\rUSNY]"
+    Show[Failure].show(injected).exists(_.isControl) shouldBe false
+  }
+
+  test("the rendering writes a part of the bounded length whole and unmarked") {
+    // The bound is inclusive, so nothing about a failure whose parts fit reveals that a bound
+    // exists at all - which is what keeps every ordinary rendering the text its reporter wrote.
+    val atBound = "A" * MaxRenderedPart
+    Show[Failure].show(Failure.Parsing(atBound)) shouldBe s"PARSING: $atBound"
+    Show[Failure].show(Failure.Parsing(atBound)) should not include "..."
+    val attributed = Failure.Invalid("m").withAttribute("definition", atBound)
+    Show[Failure].show(attributed) shouldBe s"INVALID: m [definition=$atBound]"
+    attributed.attributes("definition").length shouldBe MaxRenderedPart
+  }
+
+  test("the rendering truncates a part one character past the bound and marks what it left out") {
+    val pastBound = "A" * (MaxRenderedPart + 1)
+    val rendered = Show[Failure].show(Failure.Parsing(pastBound))
+    rendered shouldBe s"PARSING: ${"A" * MaxRenderedPart}..."
+    rendered should endWith("...")
+    // What survives is the beginning of the part, which is what identifies it to whoever has
+    // to correct it, and the marker states that there was more.
+    rendered.drop("PARSING: ".length).take(MaxRenderedPart) shouldBe pastBound.take(MaxRenderedPart)
+    // The failure itself is unchanged: truncation is an act of writing it out.
+    Failure.Parsing(pastBound).message shouldBe pastBound
+  }
+
+  test("no value a caller supplies can make a rendered failure large") {
+    // The finding this case pins: a ten-thousand-character value reaching a message once
+    // reached a log line of the same size, in the message and again in the attribute. Each
+    // part of the rendering is now bounded, so the line is bounded whatever arrives.
+    val payload = "A" * 10000
+    val failure = Failure
+      .Parsing(s"Unable to parse tenor: '$payload'")
+      .withAttribute("definition", payload)
+      .withAttribute(payload, "value")
+    val rendered = Show[Failure].show(failure)
+    // Three parts are rendered, each bounded by the same amount, plus the fixed text of the
+    // rendering itself - where the failure holds thirty thousand characters of payload.
+    val fixedText = "PARSING: Unable to parse tenor: '' [definition=, =value]"
+    rendered.length should be <= 3 * (MaxRenderedPart + 3) + fixedText.length
+    rendered.length should be < 2000
+    val quoted = "Unable to parse tenor: '"
+    rendered should include(s"$quoted${"A" * (MaxRenderedPart - quoted.length)}...")
+    failure.message.length should be > 10000
+    failure.attributes("definition").length shouldBe 10000
+  }
+
+  test("the rendering keeps a surrogate pair whole, so truncation leaves no half character") {
     // A character outside the basic plane, held as the surrogate pair a Java string represents
     // it with, and built from its code point so that this file holds no escape of its own.
     val emoji: String = new String(Character.toChars(0x1f600))
     emoji.length shouldBe 2
-    Failure.describeInput(emoji * 3) shouldBe emoji * 3
-    unpairedSurrogates(Failure.describeInput(emoji * 3)) shouldBe empty
+    Show[Failure].show(Failure.Parsing(emoji * 3)) shouldBe s"PARSING: ${emoji * 3}"
+    unpairedSurrogates(Show[Failure].show(Failure.Parsing(emoji * 3))) shouldBe empty
     // A run of emoji past the bound is cut between two of them and never through one, because
     // the pair is taken as a single unit.
-    val truncated = Failure.describeInput(emoji * 100)
-    truncated shouldBe emoji * (Failure.MaxDescribedInput / 2) + "..."
-    truncated.length shouldBe Failure.MaxDescribedInput + 3
+    val truncated = Show[Failure].show(Failure.Parsing(emoji * (MaxRenderedPart + 100)))
+    truncated shouldBe s"PARSING: ${emoji * (MaxRenderedPart / 2)}..."
     unpairedSurrogates(truncated) shouldBe empty
-    // A pair that would straddle the bound is left out entirely rather than halved, so the
+    // A pair that would straddle the bound is left out entirely rather than halved, so a
     // rendering can stop one character short of the bound; that is the cost of never
     // producing half a character.
-    val straddling = Failure.describeInput("A" * (Failure.MaxDescribedInput - 1) + emoji)
-    straddling shouldBe "A" * (Failure.MaxDescribedInput - 1) + "..."
+    val straddling = Show[Failure].show(Failure.Parsing("A" * (MaxRenderedPart - 1) + emoji))
+    straddling shouldBe s"PARSING: ${"A" * (MaxRenderedPart - 1)}..."
     unpairedSurrogates(straddling) shouldBe empty
     // A surrogate that arrived on its own is half a character and names no text, so it is
     // escaped like any other character a reader cannot be handed.
-    Failure.describeInput(s"3M${0xd83d.toChar}") shouldBe "3M\\ud83d"
-    Failure.describeInput(s"${0xde00.toChar}3M") shouldBe "\\ude003M"
-    unpairedSurrogates(Failure.describeInput(s"3M${0xd83d.toChar}")) shouldBe empty
+    Show[Failure].show(Failure.Parsing(s"3M${0xd83d.toChar}")) shouldBe "PARSING: 3M\\ud83d"
+    Show[Failure].show(Failure.Parsing(s"${0xde00.toChar}3M")) shouldBe "PARSING: \\ude003M"
   }
 
-  test("describeInput renders empty text as empty") {
-    Failure.describeInput("") shouldBe ""
-    // Blank text is text: it is carried through rather than trimmed, so a message quoting it
-    // shows that something blank arrived rather than that nothing did.
-    Failure.describeInput("   ") shouldBe "   "
+  test("an ordinary failure renders as the text its reporter wrote, character for character") {
+    // Punctuation, accented letters and CJK are characters like any other and are left alone,
+    // so a failure quoting text from a document in any language still quotes it; and this is
+    // why applying the rendering cost the wording of no message in this port.
+    Show[Failure].show(Failure.Parsing("Currency name not found: Rubbish")) shouldBe
+      "PARSING: Currency name not found: Rubbish"
+    Show[Failure].show(Failure.Parsing("café, 東京 - 3M/6M (P1Y)")) shouldBe
+      "PARSING: café, 東京 - 3M/6M (P1Y)"
+    // Empty and blank text are text: they are carried through rather than trimmed, so a
+    // rendering shows that something blank arrived rather than that nothing did.
+    Show[Failure].show(Failure.Parsing("")) shouldBe "PARSING: "
+    Show[Failure].show(Failure.Invalid("m").withAttribute("definition", "   ")) shouldBe
+      "INVALID: m [definition=   ]"
   }
 
-  test("the rendering of any text is bounded, single-line and never half a character") {
+  test("the rendering of any failure is bounded, single-line and never half a character") {
     // The generator draws from what a payload actually holds - letters, the punctuation of a
     // tenor or an index name, every kind of control character, the two Unicode separators and
     // lone surrogates - and from lengths on both sides of the bound, so the property covers
-    // text that is truncated as well as text carried whole.
+    // parts that are truncated as well as parts carried whole.
     val genCharacter: Gen[Char] = Gen.frequency(
       (6, Gen.alphaNumChar),
       (2, Gen.oneOf(' ', '-', '\'', '/', ':', '.', '\\')),
@@ -1280,42 +1347,60 @@ final class FailureSpec
       (1, Gen.choose(0xd800, 0xdfff).map(_.toChar)),
       (1, Gen.choose(0x0080, 0xffff).map(_.toChar)))
     val genText: Gen[String] = Gen
-      .choose(0, 3 * Failure.MaxDescribedInput)
+      .choose(0, 2 * MaxRenderedPart)
       .flatMap(length => Gen.listOfN(length, genCharacter).map(_.mkString))
-    forAll(genText) { (text: String) =>
-      val rendered = Failure.describeInput(text)
-      rendered.length should be <= Failure.MaxDescribedInput + 3
+    forAll(genText, genText) { (message: String, attribute: String) =>
+      val failure = Failure.Parsing(message).withAttribute("definition", attribute)
+      val rendered = Show[Failure].show(failure)
+      rendered.length should be <= "PARSING: ".length + (MaxRenderedPart + 3) +
+        " [definition=]".length + (MaxRenderedPart + 3)
       rendered.find(_.isControl) shouldBe None
       rendered.find(character => character == lineSeparator || character == paragraphSeparator) shouldBe None
       unpairedSurrogates(rendered) shouldBe empty
+      // And the failure still holds what it was built with, however it rendered.
+      failure.message shouldBe message
+      failure.attributes("definition") shouldBe attribute
     }
-    // The same three properties over the strings the shared generators produce, which are
-    // arbitrary rather than drawn from a payload alphabet.
-    forAll { (text: String) =>
-      val rendered = Failure.describeInput(text)
-      rendered.length should be <= Failure.MaxDescribedInput + 3
+    // The same properties over the failures the shared generators produce, whose messages and
+    // attributes are arbitrary rather than drawn from a payload alphabet.
+    forAll { (failure: Failure) =>
+      val rendered = Show[Failure].show(failure)
       rendered.find(_.isControl) shouldBe None
-      rendered.find(character => character == lineSeparator || character == paragraphSeparator) shouldBe None
       unpairedSurrogates(rendered) shouldBe empty
     }
   }
 
-  test("a failure carries text the reporter did not render, so the rendering is opt-in") {
-    // Nothing about this type applies the rendering. A failure carries the message it was
-    // built with, so the case above - "a message is whatever the reporter interpolated, line
-    // breaks and all" - remains true, and bounding and escaping text that came from outside
-    // the library is an act of the code that reports the failure, at the point it interpolates
-    // that text.
-    val textWithALineBreak = "Error on line 23: \n Bad value 'foo'"
-    val verbatim: Failure = Failure.Parsing(textWithALineBreak)
-    verbatim.message shouldBe textWithALineBreak
-    verbatim.message should include("\n")
-    Show[Failure].show(verbatim) shouldBe s"PARSING: $textWithALineBreak"
-    // The same text rendered first, which is what a reporter echoing text from outside does.
-    val rendered: Failure = Failure.Parsing(Failure.describeInput(textWithALineBreak))
-    rendered.reason shouldBe FailureReason.PARSING
-    rendered.message shouldBe "Error on line 23: \\n Bad value 'foo'"
-    rendered.message should not include "\n"
+  test("the text form of a failure is the rendering, so writing one out cannot bypass it") {
+    // Interpolating a failure, handing one to a logger that calls `toString`, or printing one
+    // all go through the same neutralised form, which is what makes the property above hold of
+    // every path rather than of the instance alone.
+    val injected = Failure
+      .MissingData("No holiday calendar: GBXX\nINJECTED")
+      .withAttribute("id", "GBXX\nINJECTED")
+    injected.toString shouldBe Show[Failure].show(injected)
+    s"$injected" shouldBe Show[Failure].show(injected)
+    String.valueOf(injected: Any) shouldBe Show[Failure].show(injected)
+    injected.toString should not include "\n"
+    injected.toString shouldBe
+      "MISSING_DATA: No holiday calendar: GBXX\\nINJECTED [id=GBXX\\nINJECTED]"
+    // The fields are what a caller reads when it wants the value rather than the reading of it.
+    injected.message shouldBe "No holiday calendar: GBXX\nINJECTED"
+    injected.attributes("id") shouldBe "GBXX\nINJECTED"
+  }
+
+  test("the JSON form carries the text whole, escaped as the JSON grammar requires") {
+    // The other way a failure leaves the program, and the reason the model keeps the value
+    // rather than a rendering of it: the encoding is machine-readable, so it writes the whole
+    // of the text and neutralises a control character by the grammar of the format instead.
+    val payload = "A" * 10000
+    val failure: Failure = Failure
+      .Parsing(s"Unable to parse tenor: 'P3M\n$payload'")
+      .withAttribute("definition", "GBLO\nUSNY")
+    val json = failure.asJson.noSpaces
+    json should include("\\n")
+    json should not include "\n"
+    decode[Failure](json) shouldBe Right(failure)
+    decode[Failure](json).toOption.map(_.message) shouldBe Some(failure.message)
   }
 }
 
@@ -1496,11 +1581,11 @@ final class FailureSpec
 // These pin behaviour the port introduces or that the original specified in its
 // main sources rather than in these test classes - chiefly the collapse contract
 // of the aggregating factory of the original, and the JSON forms, which are the
-// only serialization this port supports. The last eight cover
-// `Failure.describeInput`, which the original had no counterpart for at all: the
-// parse paths of the library being ported echoed the text they were handed
-// unbounded, or echoed none of it, and this port renders it bounded and on a
-// single line instead.
+// only serialization this port supports. The last ten cover the rendering of a
+// failure, which the original had no counterpart for at all: the messages of the
+// library being ported echoed the text they were handed and were written out as
+// they stood, and this port writes every part of a failure bounded and on a
+// single line while the failure itself keeps the whole of that text.
 //
 //   "parse also resolves a mixed-case reason name the original would have rejected"
 //   "each of the ten failures is built from a message alone and reports its matching reason"
@@ -1519,15 +1604,21 @@ final class FailureSpec
 //   "collapsing a one-failure chain is the identity, for any failure"
 //   "collapsing a chain whose failures agree on a reason preserves that reason"
 //   "collapsing any chain reports MULTIPLE exactly when its failures disagree"
-//   "describeInput renders text within the bound unchanged and unmarked"
-//   "describeInput truncates text one character past the bound and marks what it
-//      left out"
-//   "describeInput bounds the payload a parse message used to reproduce in full"
-//   "describeInput escapes every character that could forge a line"
-//   "describeInput keeps a surrogate pair whole, so truncation leaves no half
+//   "a failure carries the message it was built with, whole and unrendered"
+//   "the rendering escapes every character of a message that could forge a line"
+//   "the rendering escapes the key and the value of every attribute"
+//   "the rendering writes a part of the bounded length whole and unmarked"
+//   "the rendering truncates a part one character past the bound and marks what
+//      it left out"
+//   "no value a caller supplies can make a rendered failure large"
+//   "the rendering keeps a surrogate pair whole, so truncation leaves no half
 //      character"
-//   "describeInput renders empty text as empty"
-//   "the rendering of any text is bounded, single-line and never half a character"
-//   "a failure carries text the reporter did not render, so the rendering is opt-in"
+//   "an ordinary failure renders as the text its reporter wrote, character for
+//      character"
+//   "the rendering of any failure is bounded, single-line and never half a
+//      character"
+//   "the text form of a failure is the rendering, so writing one out cannot
+//      bypass it"
+//   "the JSON form carries the text whole, escaped as the JSON grammar requires"
 //
 // ---------------------------------------------------------------------------

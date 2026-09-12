@@ -54,10 +54,14 @@ import com.opengamma.strata.collect.result.Failure
  * Which form to use is worth a thought where the calendar is '''composite''' - `GBLO+USNY`, say.
  * Resolving such an identifier looks each of its parts up and reads the results together, so
  * [[adjust]] repeats that assembly for every date it is given, while [[resolve]] and `toReader`
- * do it once and hand back an adjuster that costs the same per date as a single calendar's. The
- * difference is a few times the cost of an adjustment for a simple calendar and an order of
- * magnitude for a composite one; a schedule of dates should therefore resolve once, and
- * [[adjust]] is for the single date and for the caller who holds no resolved calendar.
+ * do it once and hand back an adjuster whose per-date cost is that of an already-resolved
+ * calendar. What that saves is stated here as structure and not as a ratio, because a ratio
+ * would hold only for the workload it was measured on: how much a resolution costs depends on
+ * the [[com.opengamma.strata.basics.ReferenceData]] implementation it goes through, on how many
+ * parts a composite name has, on what kind of calendar each part is and on where the dates
+ * fall. The structure is the same in every case - one resolution per call of [[adjust]] against
+ * one resolution for a whole run - so a run of dates should resolve once, and [[adjust]] is for
+ * the single date and for the caller who holds no resolved calendar.
  *
  * A resolved adjuster is bound to the calendar it was resolved against and does not follow later
  * changes to the reference data, which is the caveat [[com.opengamma.strata.basics.Resolvable]]

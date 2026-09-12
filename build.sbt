@@ -12,9 +12,6 @@
 // referenced by this build.
 // ---------------------------------------------------------------------------
 
-import sbt.internal.{AppenderSupplier, LogManager}
-import sbt.internal.util.{Appender, ConsoleAppender, ConsoleOut}
-
 ThisBuild / scalaVersion := "2.13.18"
 ThisBuild / organization := "com.opengamma.strata"
 ThisBuild / version := "2.12.74-SNAPSHOT"
@@ -38,57 +35,6 @@ ThisBuild / version := "2.12.74-SNAPSHOT"
 def parityReportDirectory(buildRoot: File): File = buildRoot / "target" / "parity-report"
 
 def testReportDirectory(buildRoot: File): File = buildRoot / "target" / "test-reports"
-
-// ---------------------------------------------------------------------------
-// Durable capture of a test task's log.
-//
-// A ScalaCheck property failure is reported through an exception that carries the
-// falsifying values, and those values are this port's own types, which are
-// deliberately not java.io.Serializable. When tests are forked, ScalaTest cannot
-// send such an exception over the socket that links the forked JVM to sbt, so it
-// substitutes an empty NotSerializableWrapperException before transmitting the
-// event. Every reporter configured through `testOptions` - the JUnit XML writer
-// and the file reporter alike - is built on the sbt side of that socket and
-// therefore sees only the substitute: the falsifying values, the failure location
-// and the `Init Seed` that reproduces the run are absent from those files.
-//
-// The one place the original text survives is the log channel: ScalaTest's
-// sbt-log reporter runs inside the forked JVM and logs the full failure block,
-// which is why the console shows it. Attaching an appender to the test tasks'
-// loggers copies exactly that text into a file, so a property failure stays
-// reproducible from the persisted reports rather than from a console scrollback
-// nobody kept.
-//
-// The appender is built inside the supplier, which sbt calls when it creates the
-// logger for a test task - that is, after any `clean` in the same session - so
-// the file is (re)created per run and holds that run's log.
-// ---------------------------------------------------------------------------
-def testLogAppender(logFile: File): Appender = {
-  IO.createDirectory(logFile.getParentFile)
-  val stream = new java.io.PrintStream(new java.io.FileOutputStream(logFile, false), true)
-  ConsoleAppender(logFile.getName, ConsoleOut.printStreamOut(stream), false)
-}
-
-def capturingLogManager(logFile: File): LogManager =
-  LogManager.withLoggers(extra = new AppenderSupplier {
-    override def apply(key: Def.ScopedKey[_]): Seq[Appender] = Seq(testLogAppender(logFile))
-  })
-
-// The captured log of one project's tests, beside that project's JUnit XML. The
-// name carries the project id, so the two projects of an aggregated run keep
-// their logs apart, and it is not of the form the test-count gate globs
-// (`TEST-*.xml`), so it cannot be mistaken for a suite report.
-lazy val testLogFile = Def.setting(
-  testReportDirectory((ThisBuild / baseDirectory).value) / s"test-log-${name.value}.txt"
-)
-
-// `logManager` is read by sbt when it builds a task's logger rather than by
-// another setting or task, so sbt's unused-key lint cannot see the three
-// definitions below being consumed and reports them as unused. They are
-// consumed - the captured log files prove it - so the key is excluded from that
-// one check, and from that check only: nothing about compiler warnings, which
-// remain errors, is affected.
-Global / excludeLintKeys += logManager
 
 lazy val catsVersion = "2.13.0"
 lazy val catsEffectVersion = "3.7.1"
@@ -154,58 +100,17 @@ lazy val commonSettings = Seq(
   Test / javaOptions ++= Seq(
     s"-Dparity.report.dir=${parityReportDirectory((ThisBuild / baseDirectory).value).getAbsolutePath}"
   ),
-  // Exactly one writer of JUnit XML. The default value of this setting is sbt's
-  // own JUnitXmlTestsListener, which writes a second copy of every suite's XML
-  // into each project's target/test-reports - so the same suite exists twice on
-  // disk and a recursive read of the tree counts every test twice. The ScalaTest
-  // `-u` reporter configured below is the single writer, into the one
-  // build-root-anchored directory. Clearing this setting drops only that
-  // listener: the task-scoped value of `testListeners` keeps sbt's console
-  // TestLogger and the TestStatusReporter that `testQuick` relies on.
-  Test / testListeners := Nil,
-  // The log capture described above, on each task that runs tests. It is scoped
-  // per task rather than globally, so it touches the logging of nothing else in
-  // the build.
-  Test / test / logManager := capturingLogManager(testLogFile.value),
-  Test / testOnly / logManager := capturingLogManager(testLogFile.value),
-  Test / testQuick / logManager := capturingLogManager(testLogFile.value),
-  Test / testOptions ++= {
-    val reports = testReportDirectory((ThisBuild / baseDirectory).value)
-    // The `-u` reporter creates its directory itself, but the file reporter
-    // below opens its file without creating parent directories, and `clean`
-    // deletes this directory (it is registered with `cleanFiles`). Creating it
-    // here - in the sbt JVM, while the test task's options are computed, before
-    // the forked test JVM starts - makes each reporter independent of the
-    // other's side effects and of the order the arguments are parsed in.
-    IO.createDirectory(reports)
-    Seq(
-      // One JUnit XML file per suite: the machine-readable artifact whose
-      // `tests` attributes the test-count gate sums.
-      Tests.Argument(
-        TestFrameworks.ScalaTest,
-        "-u",
-        reports.getAbsolutePath
-      ),
-      // ScalaTest's own run log as a file: every suite and test name with its
-      // verdict, each ordinary failure's message and source location, and the
-      // run summary. It makes a run readable without parsing the per-suite XML
-      // and without a terminal scrollback, and it is published with the XML because
-      // CI stores the whole target/test-reports directory. The file name carries
-      // the project id, so the two projects of an aggregated run never write to
-      // the same file, and the `W` drops the terminal colour codes, which a file
-      // has no use for and which would otherwise sit between every line and the
-      // text a reader or a grep is looking for.
-      //
-      // This reporter is built on the sbt side of the socket described above, so
-      // a ScalaCheck property failure reaches it already substituted: its
-      // counterexample is in the captured log next to it, not here.
-      Tests.Argument(
-        TestFrameworks.ScalaTest,
-        "-fW",
-        (reports / s"scalatest-${name.value}.txt").getAbsolutePath
-      )
-    )
-  }
+  // The one test-report setting: ScalaTest's `-u` reporter writes one JUnit XML
+  // file per suite, which is the machine-readable artifact whose `tests`
+  // attributes the test-count gate sums. The path is absolute and anchored at
+  // the build root because tests are forked and the gate reads a single
+  // directory for both projects. The reporter creates that directory itself, so
+  // this setting performs no filesystem work while it is evaluated.
+  Test / testOptions += Tests.Argument(
+    TestFrameworks.ScalaTest,
+    "-u",
+    testReportDirectory((ThisBuild / baseDirectory).value).getAbsolutePath
+  )
 )
 
 lazy val `strata-collect` = Project("strata-collect", file("strata-collect"))

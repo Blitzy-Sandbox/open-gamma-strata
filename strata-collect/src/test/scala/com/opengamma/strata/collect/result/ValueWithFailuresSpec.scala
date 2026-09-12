@@ -8,7 +8,6 @@ package com.opengamma.strata.collect.result
 import scala.collection.immutable.List
 import scala.collection.immutable.Map
 import scala.collection.immutable.Set
-import scala.util.Try
 
 import cats.data.Ior
 import cats.data.NonEmptyChain
@@ -239,31 +238,6 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCh
     failuresOf(outcome).map(failure => failure.reason)
 
   /**
-   * Runs a computation that reports what stopped it by raising, keeping a fallback value if
-   * it does.
-   *
-   * This stands in for the factory of the class being ported that took a fallback value and
-   * a block to run: it returned what the block produced, or the fallback together with one
-   * failure, if the block raised. Nothing in this port reports a failure that way - a
-   * failure is returned - so the factory has no counterpart and this helper lives here, in
-   * the spec, for the two cases that pin its contract. The bridge from a raised error to a
-   * value is the standard library's, and it is used here only because the contract being
-   * described is about a raised error; a domain failure is never reached this way.
-   *
-   * @param fallback  the value to keep if the computation does not produce one
-   * @param computation  the computation to run
-   * @return what the computation produced, or the fallback with the one failure it raised
-   */
-  private def attempt[A](fallback: A, computation: () => A): ValueWithFailures[A] =
-    Try(computation()).toEither.fold(
-      error => ValueWithFailures.of(fallback, List(Failure.Error(describe(error)))),
-      value => ValueWithFailures.of(value))
-
-  /** Describes a raised error for the message of the failure that records it. */
-  private def describe(error: Throwable): String =
-    Option(error.getMessage).getOrElse(error.getClass.getSimpleName)
-
-  /**
    * Parses every element it is given, reporting one failure for each that is not a number.
    *
    * This is the function the chaining case applies. It reports what it could not parse
@@ -366,18 +340,32 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCh
     outcome should beFailureWith(FailureReason.MISSING_DATA)
   }
 
-  test("a computation that produces a value reports no failure and discards the fallback") {
-    val outcome: ValueWithFailures[String] = attempt("", () => "A")
+  test("a computation written to report its own failures gives a value and reports none") {
+    // The factory being ported ran a block and caught what it raised. Nothing in this port
+    // raises to report a failure: a computation that can fail returns its failures, which
+    // is what `parseAll` above does, and it ends at `of`. This run has nothing to report,
+    // so the outcome is the plain success `of` builds from a value alone and the fallback
+    // the caller was holding is never needed.
+    val fallback: List[Int] = List.empty[Int]
+    val outcome: ValueWithFailures[List[Int]] = parseAll(List("1", "2"))
 
     ValueWithFailures.hasFailures(outcome) shouldBe false
-    valueOf(outcome) shouldBe Some("A")
+    valueOf(outcome) shouldBe Some(List(1, 2))
+    valueOf(outcome) should not be Some(fallback)
     failuresOf(outcome) shouldBe NoFailures
     outcome should beSuccess
-    outcome should haveValue("A")
+    outcome should haveValue(List(1, 2))
+    outcome shouldBe ValueWithFailures.of(List(1, 2))
   }
 
-  test("a computation that fails keeps the fallback value and reports one ERROR failure") {
-    val outcome: ValueWithFailures[String] = attempt("", () => throw new IllegalArgumentException("boom"))
+  test("a computation that cannot produce a value keeps the fallback it was given and reports one ERROR failure") {
+    // Where the computation cannot produce a value it reports that and hands back the
+    // fallback with it, which is the behaviour of the factory being ported - reached here
+    // by returning the failure rather than by raising it, so `of` is the whole of the
+    // machinery involved.
+    val fallback: String = ""
+    val outcome: ValueWithFailures[String] =
+      ValueWithFailures.of(fallback, List(Failure.Error("boom")))
 
     ValueWithFailures.hasFailures(outcome) shouldBe true
     // Keeping the fallback is the point of the factory being ported: the caller is left
@@ -388,6 +376,13 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCh
     messagesOf(outcome) shouldBe List("boom")
     outcome should beFailureWith(FailureReason.ERROR)
     outcome should haveFailureMessageMatching("boom")
+
+    // The same shape arrives from a computation that reports its own failures: what it
+    // could not use is reported and what it could is kept, with its own reason.
+    val reported: ValueWithFailures[List[Int]] = parseAll(List("a"))
+    ValueWithFailures.hasFailures(reported) shouldBe true
+    valueOf(reported) shouldBe Some(List.empty[Int])
+    messagesOf(reported) shouldBe List("Not a number: a")
   }
 
   test("an outcome can report failures and carry no value at all") {
@@ -529,6 +524,47 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCh
 
     valueOf(kept) shouldBe Some(List("a"))
     failuresOf(kept) shouldBe List(FAILURE1, FAILURE2)
+    kept.isBoth shouldBe true
+
+    // The remaining combinations of the three shapes, each asserted for the shape it
+    // produces as well as for its value and the order of its failures.
+    def combining(
+        first: ValueWithFailures[List[String]],
+        second: ValueWithFailures[List[String]]): ValueWithFailures[List[String]] =
+      ValueWithFailures.combiningValues[List[String]](_ ++ _)(first, second)
+
+    // Neither side carries a value: there is nothing for the combining function to be
+    // applied to, so the outcome is the two chains in the order they were reported and it
+    // holds no value at all.
+    val alsoWithoutValue: ValueWithFailures[List[String]] = Ior.left(NonEmptyChain.one(FAILURE1))
+    val neither: ValueWithFailures[List[String]] = combining(withoutValue, alsoWithoutValue)
+
+    neither.isLeft shouldBe true
+    neither.isRight shouldBe false
+    neither.isBoth shouldBe false
+    valueOf(neither) shouldBe None
+    failuresOf(neither) shouldBe List(FAILURE2, FAILURE1)
+
+    // A side with no value on the left of a side that reports nothing: the value survives
+    // and the failures of the first side are all that is reported.
+    val plainValue: ValueWithFailures[List[String]] = ValueWithFailures.of(List("b"))
+    val noValueThenValue: ValueWithFailures[List[String]] = combining(withoutValue, plainValue)
+
+    noValueThenValue.isBoth shouldBe true
+    noValueThenValue.isLeft shouldBe false
+    noValueThenValue.isRight shouldBe false
+    valueOf(noValueThenValue) shouldBe Some(List("b"))
+    failuresOf(noValueThenValue) shouldBe List(FAILURE2)
+
+    // The same pair the other way round: the value that is present still survives, and the
+    // failures are still those of the side that reported them.
+    val valueThenNoValue: ValueWithFailures[List[String]] = combining(plainValue, withoutValue)
+
+    valueThenNoValue.isBoth shouldBe true
+    valueThenNoValue.isLeft shouldBe false
+    valueThenNoValue.isRight shouldBe false
+    valueOf(valueThenNoValue) shouldBe Some(List("b"))
+    failuresOf(valueThenNoValue) shouldBe List(FAILURE2)
   }
 
 
@@ -582,6 +618,31 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCh
       ValueWithFailures.withValue(ValueWithFailures.of(List("a")), other)
     fromClean shouldBe other
     failuresOf(fromClean) shouldBe List(FAILURE2)
+
+    // The other outcome may carry no value, in which case there is no value to take and
+    // the outcome is the two sets of failures - the first's before the second's - with no
+    // value at all. The shape is asserted as well as the order.
+    val otherWithoutValue: ValueWithFailures[String] = Ior.left(NonEmptyChain.one(FAILURE2))
+    val noValueTaken: ValueWithFailures[String] =
+      ValueWithFailures.withValue(base, otherWithoutValue)
+
+    noValueTaken.isLeft shouldBe true
+    noValueTaken.isRight shouldBe false
+    noValueTaken.isBoth shouldBe false
+    valueOf(noValueTaken) shouldBe None
+    failuresOf(noValueTaken) shouldBe List(FAILURE1, FAILURE2)
+
+    // Or it may report nothing, in which case its value is taken and the failures already
+    // reported are all there are, so a plain success becomes a partial one.
+    val otherReportingNothing: ValueWithFailures[String] = ValueWithFailures.of("combined")
+    val nothingAdded: ValueWithFailures[String] =
+      ValueWithFailures.withValue(base, otherReportingNothing)
+
+    nothingAdded.isBoth shouldBe true
+    nothingAdded.isLeft shouldBe false
+    nothingAdded.isRight shouldBe false
+    valueOf(nothingAdded) shouldBe Some("combined")
+    failuresOf(nothingAdded) shouldBe List(FAILURE1)
   }
 
   test("withAdditionalFailures appends the supplied failures after the existing ones") {
@@ -1029,14 +1090,16 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCh
  *       -> "of takes its failures from a set and reports every one of them"
  *       ported - membership is asserted rather than order, as in the original
  *  5. test_of_supplier_success
- *       -> "a computation that produces a value reports no failure and discards the fallback"
- *       ported - the factory that ran a supplied block has no counterpart, because nothing
- *       in this port reports a failure by raising; the contract is pinned through the
- *       bridge declared in this spec
+ *       -> "a computation written to report its own failures gives a value and reports none"
+ *       ported - the factory that ran a supplied block has no counterpart and none is
+ *       supplied, because nothing in this port reports a failure by raising: a computation
+ *       that can fail returns its failures and ends at `of`, and that is the contract this
+ *       case asserts, over the production factory and the reporting computation of this file
  *  6. test_of_supplier_failure
- *       -> "a computation that fails keeps the fallback value and reports one ERROR failure"
- *       ported - same subject as row 5; retaining the fallback value is the behaviour the
- *       Java case existed to assert and it is asserted here
+ *       -> "a computation that cannot produce a value keeps the fallback it was given and reports one ERROR failure"
+ *       ported - same subject as row 5; retaining the fallback value alongside the one
+ *       reported failure is the behaviour the Java case existed to assert, and it is
+ *       asserted here of `of(value, failures)` rather than of anything that catches
  *  7. test_map
  *       -> "map transforms the value and preserves the failures"
  *       ported - through the functor of the alias rather than a declared member

@@ -144,6 +144,26 @@ final case class TestTarget(value: Int) extends CalculationTarget
  * and accepts the infinities, so its generator produces an infinity but never a `NaN`, and
  * produces a negative zero so that the normalisation to positive zero is observed.
  *
+ * Three types keep '''two''' generators for that reason, following the split `strata-collect`
+ * makes between its finite `arbDoubleArray` and its edge-bearing `genDoubleArray`: the implicit
+ * arbitrary holds the well-behaved values the arithmetic properties are written over, and a named
+ * generator beside it reaches the edges the equality, hashing, rendering and document form turn
+ * on. Those pairs are `genFxRate` with [[genEdgeFxRate]], `genFxMatrix` with [[genEdgeFxMatrix]],
+ * and the two array generators re-exported above. The edge generators are passed by hand to the
+ * audits that need them, which is what keeps them out of the properties that do not.
+ *
+ * Every type generated here carries a '''`Shrink`''' as well, declared in the shrinking section
+ * at the foot of this object, so a property that fails reports the smallest counterexample it can
+ * reach rather than the value it happened to draw - without one ScalaCheck falls back on
+ * `shrinkAny`, which offers no candidate at all and leaves a failing schedule of six periods
+ * reported with all six. Those instances follow the three rules `strata-collect`'s generator
+ * source states and implements - a candidate built by the same validated factory, a candidate
+ * keeping the invariant its generator promises, and a candidate strictly smaller under a measure
+ * the instance names - and each one states its own measure and the floor it terminates at. The
+ * one generated type without a shrinking is [[FailureReason]], whose family and generator belong
+ * to `strata-collect`: an instance for it belongs beside that generator, where the six shrinkings
+ * re-exported above are declared.
+ *
  * The generators of `strata-collect` are re-exported rather than restated, so a spec of this
  * module needs one import. Importing both this object and the one it re-exports from would
  * make every re-exported instance ambiguous; import this one alone.
@@ -418,6 +438,9 @@ object Arbitraries {
 
   /** The perturbation of the sample named family of `strata-collect`. */
   implicit val cogenSampleNamed: Cogen[SampleNamed] = CollectArbitraries.cogenSampleNamed
+
+  /** The shrinking of the sample named family of `strata-collect`. */
+  implicit val shrinkSampleNamed: Shrink[SampleNamed] = CollectArbitraries.shrinkSampleNamed
 
   //-------------------------------------------------------------------------
   // The shared primitives: dates, months, periods and the double ranges the domain
@@ -798,14 +821,22 @@ object Arbitraries {
     Gen.listOfN(length, genDouble).map(elements => DoubleArray.copyOf(elements))
 
   /**
-   * Generates a run of amounts in one currency.
+   * Generates a run of amounts in one currency, of any length the type admits.
    *
-   * @return a generator of runs of single-currency amounts
+   * The length starts at '''zero'''. The direct factory of this type is total - a currency and an
+   * array of values always describe a run of amounts, and an array of no values is one - so a run
+   * of length zero is a value the type holds, a document carries and every operation over a run
+   * has to answer for; only the factory that derives the currency from a collection of amounts
+   * needs one amount to read it from, and that factory is not this one. Leaving zero out of the
+   * range would have left the empty run outside every property written over this generator, which
+   * is what `CurrencyAmountArraySpec` now covers by example as well.
+   *
+   * @return a generator of runs of single-currency amounts, one of them occasionally empty
    */
   val genCurrencyAmountArray: Gen[CurrencyAmountArray] =
     for {
       currency <- genCurrency
-      length <- Gen.choose(1, MaxRunLength)
+      length <- Gen.choose(0, MaxRunLength)
       values <- genDoubleArrayOfLength(length)
     } yield CurrencyAmountArray.of(currency, values)
 
@@ -887,6 +918,49 @@ object Arbitraries {
   implicit val cogenFxRate: Cogen[FxRate] = cogenBy[FxRate](_.toString)
 
   /**
+   * Generates a rate a [[FxRate]] accepts, including the two non-finite ones.
+   *
+   * The check the factory applies is `!(rate <= 0.0)`, which is documented to '''pass''' a value
+   * that is not a number: `NaN <= 0.0` is false, so the negation holds. A rate of `+∞` passes for
+   * the plain reason that it is greater than zero. The three values the check rejects - both
+   * zeroes and `-∞` - are therefore deliberately absent, since a generator producing one would
+   * fail the draw rather than produce an edge value.
+   *
+   * @return a generator of positive finite rates, of `+∞` and of `NaN`
+   */
+  val genEdgeRate: Gen[Double] = Gen.frequency(
+    4 -> genPositiveRate,
+    1 -> Gen.const(Double.PositiveInfinity),
+    1 -> Gen.const(Double.NaN))
+
+  /**
+   * Generates an exchange rate whose rate reaches the edges of the IEEE-754 values it admits.
+   *
+   * This is [[genFxRate]] over [[genEdgeRate]], and it exists for the same reason
+   * `genDoubleArray` exists beside the finite `arbDoubleArray` of `strata-collect`: the equality
+   * of this type compares the rate by its bit pattern, so the values that decide it are `+∞` and
+   * `NaN`, and no generator of ordinary rates will produce one. The finite generator stays the
+   * implicit arbitrary, because the arithmetic properties of the type - conversion, the cross
+   * rate, the reciprocal - are written over rates whose products are numbers; this one is passed
+   * by hand to the audits that are about equality, hashing, rendering and the document form.
+   *
+   * The identity-pair case is drawn here as well, at the same weight [[genFxRate]] draws it, so
+   * the two generators cover the same shapes of value and differ only in the rates they reach.
+   *
+   * @return a generator of exchange rates, one draw in three of them non-finite
+   */
+  val genEdgeFxRate: Gen[FxRate] = Gen.frequency(
+    6 -> (for {
+      pair <- genDistinctCurrencyPair
+      rate <- genEdgeRate
+      value <- fromEither("FxRate.of", FxRate.of(pair, rate))
+    } yield value),
+    1 -> (for {
+      currency <- genCurrency
+      value <- fromEither("FxRate.of", FxRate.of(CurrencyPair.of(currency, currency), 1.0d))
+    } yield value))
+
+  /**
    * Generates a rate to place into a matrix, including the zero rate.
    *
    * The builder being ported accepted any `double` rate, and a zero rate is the case worth
@@ -945,6 +1019,97 @@ object Arbitraries {
 
   /** The perturbation of matrices of exchange rates, by their rendering. */
   implicit val cogenFxMatrix: Cogen[FxMatrix] = cogenBy[FxMatrix](_.toString)
+
+  /**
+   * Generates an off-diagonal entry of an edge-bearing matrix.
+   *
+   * [[FxMatrix.fromMatrix]] checks three things and no more - the currencies are distinct, the
+   * matrix is square and of their number, and the diagonal is one - so every `Double` there is
+   * may stand off the diagonal: the two infinities, `NaN` and both signed zeroes included. Those
+   * are the entries the equality of the type turns on and the entries its document form has to
+   * tag, so they are drawn here at a third of the draws.
+   *
+   * @return a generator of matrix entries, finite in two draws of three
+   */
+  private val genEdgeMatrixRate: Gen[Double] = Gen.frequency(
+    4 -> genPositiveRate,
+    1 -> genEdgeDouble,
+    1 -> Gen.oneOf(0.0d, -0.0d))
+
+  /**
+   * Builds the rates of a matrix of the size given, with a unit diagonal.
+   *
+   * The diagonal is one, which [[FxMatrix.fromMatrix]] requires of every matrix; each off-diagonal
+   * entry is taken from the entries drawn, read by position, and '''independently of the entry
+   * opposite it''', so a generated matrix is generally not reciprocal. That is a state the type
+   * holds: a matrix built by placing rates one at a time can be updated in one direction only, as
+   * `FxMatrixSpec` pins, so a generator that forced reciprocity would cover less than the type
+   * admits.
+   *
+   * @param size  the number of currencies, which is the number of rows and of columns
+   * @param entries  the entries to read the off-diagonal positions from, `size * size` of them
+   * @return the square matrix of those entries with a unit diagonal
+   */
+  private def edgeRatesOf(size: Int, entries: List[Double]): DoubleMatrix =
+    DoubleMatrix.tabulate(size, size)((row, column) =>
+      if (row == column) 1.0d else entries(row * size + column))
+
+  /** The currencies of the matrix that pins the edge states, in the order they occupy. */
+  private val PinnedEdgeCurrencies: Vector[Currency] =
+    Vector(Currency.GBP, Currency.USD, Currency.EUR)
+
+  /**
+   * The rates of the matrix that pins the edge states, in the orientation of [[FxMatrix]].
+   *
+   * Every state a generated matrix reaches only by chance is present here at once, so that a
+   * property run over this generator sees all of them however the draws fall: a '''non-reciprocal
+   * pair''' - 2.0 one way and 5.0 the other, where reciprocity would require 0.5 - a
+   * '''negative zero''', a '''not-a-number''' entry and '''both infinities'''. The diagonal is one,
+   * which is the single structural requirement.
+   */
+  private val PinnedEdgeRates: DoubleMatrix = DoubleMatrix.of(
+    3,
+    3,
+    1.0d,
+    2.0d,
+    Double.NaN,
+    5.0d,
+    1.0d,
+    Double.PositiveInfinity,
+    -0.0d,
+    Double.NegativeInfinity,
+    1.0d)
+
+  /**
+   * Generates a structurally valid matrix whose entries reach the edges of the values it admits.
+   *
+   * This is [[genFxMatrix]] over [[genEdgeMatrixRate]], and it stands to that generator as
+   * `genDoubleMatrix` stands to the finite `arbDoubleMatrix` of `strata-collect`: the equality of
+   * this type compares its entries by bit pattern and its document form tags the three values
+   * JSON has no number for, so the values that decide both have to be generated. The finite
+   * generator stays the implicit arbitrary, because the arithmetic properties of the type -
+   * conversion, triangulation, merging - are written over rates whose products are numbers.
+   *
+   * Every matrix is built through [[FxMatrix.fromMatrix]], the factory a decoded document arrives
+   * at, rather than by placing rates one at a time: placing a rate computes the reciprocal of it
+   * for the opposite position, which is exactly what a non-reciprocal matrix does not hold. One
+   * draw in eight is the pinned matrix above, so the non-reciprocal pair, the signed zero, the
+   * not-a-number entry and the two infinities are all reached within a handful of draws; the
+   * empty matrix is drawn as well, as it is by [[genFxMatrix]], since it is a value the type holds.
+   *
+   * @return a generator of matrices holding up to four currencies and entries at the IEEE edges
+   */
+  val genEdgeFxMatrix: Gen[FxMatrix] = Gen.frequency(
+    6 -> (for {
+      size <- Gen.choose(2, MaxCurrencies)
+      currencies <- Gen.pick(size, Currency.values.toList)
+      entries <- Gen.listOfN(size * size, genEdgeMatrixRate)
+      value <- fromEither(
+        "FxMatrix.fromMatrix",
+        FxMatrix.fromMatrix(currencies.toVector, edgeRatesOf(size, entries)))
+    } yield value),
+    1 -> fromEither("FxMatrix.fromMatrix", FxMatrix.fromMatrix(PinnedEdgeCurrencies, PinnedEdgeRates)),
+    1 -> Gen.const(FxMatrix.empty))
 
   //-------------------------------------------------------------------------
   // The date package.
@@ -1050,17 +1215,54 @@ object Arbitraries {
   val genStandardDayCount: Gen[DayCount] = Gen.oneOf(DayCount.values.toList)
 
   /**
-   * Generates a business day count over one of the built-in calendars.
+   * Generates a business day count over one of the built-in calendars, at the type of the member.
    *
    * This is the one day count carrying data, and the one with a structural document form
    * rather than a name, so it is generated separately and drawn alongside the standard members
    * by [[genDayCount]]. The calendar is built in, so the name form of the document - which
    * resolves a calendar by name against the built-in set - reads it back as well.
    *
-   * @return a generator of `Bus/252` day counts
+   * The value is produced by [[DayCount.ofBus252]], the one factory of the type, which answers at
+   * the type of the '''family'''; the type test below narrows it to the member without bypassing
+   * that factory. It cannot fail - the factory returns `new Bus252(calendar)` and nothing else -
+   * and the branch that would report it fails the draw with a label rather than being assumed
+   * away, exactly as [[fromEither]] does for a factory that rejects its input.
+   *
+   * The narrow type is generated because the member carries `Hash` and `Show` instances of its
+   * own, which the invariance of those typeclasses requires and which the law suites check at
+   * this type; a `Gen[DayCount]` could not feed them.
+   *
+   * @return a generator of `Bus/252` day counts, typed as the member
+   */
+  val genCalendarBearingDayCount: Gen[DayCount.Bus252] =
+    Gen.oneOf(builtInCalendars).flatMap { calendar =>
+      DayCount.ofBus252(calendar) match {
+        case bus252: DayCount.Bus252 => Gen.const(bus252)
+        case other =>
+          Gen.fail[DayCount.Bus252].label(s"DayCount.ofBus252 produced $other rather than a Bus252")
+      }
+    }
+
+  /** The arbitrary `Bus/252` day count, typed as the member of the family that carries data. */
+  implicit val arbCalendarBearingDayCount: Arbitrary[DayCount.Bus252] =
+    Arbitrary(genCalendarBearingDayCount)
+
+  /** The perturbation of `Bus/252` day counts, by their name, which carries their calendar. */
+  implicit val cogenCalendarBearingDayCount: Cogen[DayCount.Bus252] =
+    cogenBy[DayCount.Bus252](_.name)
+
+  /**
+   * Generates a business day count over one of the built-in calendars.
+   *
+   * This is [[genCalendarBearingDayCount]] widened to the type of the family, which is what
+   * [[genDayCount]] and the specs drawing a day count of either kind need. It is expressed in
+   * terms of that generator rather than drawing a calendar a second time, so the two cannot drift
+   * apart in the set of calendars they cover.
+   *
+   * @return a generator of `Bus/252` day counts, typed as the family
    */
   val genBus252DayCount: Gen[DayCount] =
-    Gen.oneOf(builtInCalendars).map(calendar => DayCount.ofBus252(calendar))
+    genCalendarBearingDayCount.map(dayCount => dayCount: DayCount)
 
   /**
    * Generates a day count.
@@ -1222,6 +1424,18 @@ object Arbitraries {
    * equality of the type.
    */
   implicit val cogenHolidayCalendar: Cogen[HolidayCalendar] = cogenBy[HolidayCalendar](_.name)
+
+  /**
+   * The perturbation of custom calendars, by their name.
+   *
+   * The same rendering as the family's perturbation above, and sound for the same reason: the
+   * `equals` of this member compares the identifier alone, and its name ''is'' that identifier.
+   * It is declared at the type of the member because the law suites of this member ask for a
+   * `Cogen[ImmutableHolidayCalendar]`, which a `Cogen[HolidayCalendar]` is not - `Cogen` is
+   * invariant, as the `Hash` and `Show` of the member are.
+   */
+  implicit val cogenImmutableHolidayCalendar: Cogen[ImmutableHolidayCalendar] =
+    cogenBy[ImmutableHolidayCalendar](_.name)
 
   /**
    * Generates a business day adjustment.
@@ -2056,6 +2270,18 @@ object Arbitraries {
   implicit val arbHalfUp: Arbitrary[HalfUp] = Arbitrary(genHalfUpRounding)
 
   /**
+   * The perturbation of half-up roundings, by their rendering.
+   *
+   * The rendering names both fields of the value - the number of decimal places always, and the
+   * fraction where there is one - which are exactly the two fields its equality compares, so it
+   * agrees with that equality. It is declared at the type of the member as well as at the type of
+   * the family because the law suites of this member ask for a `Cogen[HalfUp]`, and a
+   * `Cogen[Rounding]` is not one: `Cogen` is invariant in its type, exactly as the `Hash` and
+   * `Show` of the member are.
+   */
+  implicit val cogenHalfUp: Cogen[HalfUp] = cogenBy[HalfUp](_.toString)
+
+  /**
    * Generates a rounding convention.
    *
    * @return a generator of the rounding that does nothing and of half-up roundings
@@ -2131,9 +2357,11 @@ object Arbitraries {
   /**
    * Generates a schedule of values.
    *
-   * Construction is total - a schedule of values places no constraint between its initial
-   * value, its steps and its sequence, because whether a step lines up with a period boundary
-   * is a question about the schedule it is resolved against - so all three are drawn freely.
+   * The initial value, the steps and the sequence are drawn independently, because a schedule of
+   * values places almost no constraint between them - whether a step lines up with a period
+   * boundary is a question about the schedule it is resolved against, not about the definition.
+   * The one constraint it does place is that two steps must not name the same position with
+   * different adjustments, which the drawn steps are thinned to satisfy.
    *
    * @return a generator of value schedules
    */
@@ -2141,9 +2369,16 @@ object Arbitraries {
     for {
       initialValue <- genDouble
       stepCount <- Gen.choose(0, MaxSteps)
-      steps <- Gen.listOfN(stepCount, genValueStep)
+      drawn <- Gen.listOfN(stepCount, genValueStep)
+      // the one condition construction decides is that no position is named twice with different
+      // adjustments, so the drawn steps are thinned to one per position - keeping the first, so
+      // the list stays in the order it was drawn in - and the factory then accepts every draw
+      steps = drawn.distinctBy(step => step.periodIndex.toLeft(step.date))
       stepSequence <- Gen.option(genValueStepSequence)
-    } yield ValueSchedule.of(initialValue, steps, stepSequence)
+      value <- fromEither(
+        "ValueSchedule.of",
+        ValueSchedule.of(initialValue, steps, stepSequence))
+    } yield value
 
   /** The arbitrary schedule of values. */
   implicit val arbValueSchedule: Arbitrary[ValueSchedule] = Arbitrary(genValueSchedule)
@@ -2171,4 +2406,1965 @@ object Arbitraries {
   /** The perturbation of adjustable payments, by their rendering. */
   implicit val cogenAdjustablePayment: Cogen[AdjustablePayment] =
     cogenBy[AdjustablePayment](_.toString)
+
+  //-------------------------------------------------------------------------
+  // The shrinkings.
+  //
+  // A `Shrink` is what ScalaCheck minimises a failing case with. Without one it falls back on
+  // `shrinkAny`, which offers no candidate at all, so a property that fails on a schedule of six
+  // periods reports all six, and one that fails on a matrix of four currencies reports all
+  // sixteen rates. Every instance below obeys the three rules `strata-collect`'s generator source
+  // states and implements, and each rule is there because breaking it would turn minimising a
+  // real failure into reporting a spurious one:
+  //
+  //   - a candidate is built by the '''same validated factory the generator uses''', and an
+  //     outcome that factory rejects contributes no candidate rather than being unwrapped by
+  //     force - which is what `candidateOf` below is for, exactly as `fromEither` is for the
+  //     generators;
+  //   - a candidate '''keeps the invariant its generator promises'''. A member of a closed family
+  //     shrinks only to another member of that family; a calendar-bearing day count shrinks only
+  //     to another calendar-bearing one, never to a standard member, because a spec drawing from
+  //     `genBus252DayCount` is about that kind of day count; a month-based adjustment keeps a
+  //     month-based period; a run of multi-currency amounts keeps its runs the same length as one
+  //     another; a custom calendar keeps its own identifier, so its document form stays the
+  //     structural one; and the dates of a schedule period, of a run of dates and of a step
+  //     sequence stay in the order their factories require. A candidate that broke one of those
+  //     would be minimised into an input the operation under test rejects, and the minimised case
+  //     would fail for a reason the original never had;
+  //   - every candidate is '''strictly smaller''' than its input under a measure named in the
+  //     scaladoc of the instance, and every measure is a non-negative whole number, so repeated
+  //     shrinking terminates at a value with no candidates - the documented floor of the type.
+  //     The measures are built from five primitive ones: the position of a member in its family's
+  //     declaration order, the number of fields not already at their floor (positive zero for a
+  //     number, the first date or month of the generated window for a date, one character for a
+  //     text, none for an optional field), the size of a collection, the magnitude of a whole
+  //     number, and the number of units a period holds in its own unit.
+  //-------------------------------------------------------------------------
+  /**
+   * Turns the outcome of a validated factory into a shrink candidate.
+   *
+   * This is [[fromEither]] in the shape shrinking needs. A `Right` contributes the one candidate
+   * it holds; a `Left` contributes none, so an outcome the factory rejected is dropped rather
+   * than forced into a value. Every call site below hands its factory a smaller version of parts
+   * the input already carried, so the dropping branch is reached only where a reduction happens
+   * to break a constraint of the type - a pairing rule between two fields, say - and dropping it
+   * there is exactly right: the candidate would not have been a value of the type.
+   *
+   * @param outcome  the outcome of a validated factory
+   * @tparam E  the type describing why the factory rejected its input
+   * @tparam A  the type of the value produced
+   * @return the single candidate, or no candidate at all
+   */
+  private def candidateOf[E, A](outcome: Either[E, A]): LazyList[A] =
+    outcome match {
+      case Right(value) => LazyList(value)
+      case Left(_) => LazyList.empty
+    }
+
+  /** The bit pattern of positive zero, which is the floor every generated number shrinks to. */
+  private val PositiveZeroBits: Long = java.lang.Double.doubleToLongBits(0.0d)
+
+  /**
+   * Returns whether a number is already the positive zero shrinking simplifies towards.
+   *
+   * The comparison is on bit patterns rather than with `==`, for the reason the equality of every
+   * double-bearing type of this port compares bit patterns: `-0.0 == 0.0` holds while the two are
+   * different values here, and `NaN == NaN` fails while it is one value. This is what makes the
+   * measure fall by exactly one for each number a shrinking simplifies.
+   *
+   * @param value  the number to test
+   * @return true where the number is positive zero
+   */
+  private def isSimplifiedNumber(value: Double): Boolean =
+    java.lang.Double.doubleToLongBits(value) == PositiveZeroBits
+
+  /**
+   * The numbers a generated number shrinks to: positive zero, and nothing else.
+   *
+   * One step rather than a sequence of halvings, which is the shape `strata-collect` uses for the
+   * elements of an array and for the same reason: the numbers these types carry are compared by
+   * bit pattern, so a property that depends on a particular number is not made easier to read by
+   * a number half the size, while a property that depends on none at all is reported with zeroes.
+   *
+   * @param value  the number to simplify
+   * @return positive zero, or nothing where the number is already that
+   */
+  private def simplerNumbers(value: Double): LazyList[Double] =
+    if (isSimplifiedNumber(value)) LazyList.empty else LazyList(0.0d)
+
+  /** The first date of the window every generated date falls in, and the floor dates shrink to. */
+  private val FirstDate: LocalDate = LocalDate.of(MinYear, 1, 1)
+
+  /** The first month of the window every generated month falls in. */
+  private val FirstYearMonth: YearMonth = YearMonth.of(MinYear, 1)
+
+  /**
+   * The dates a generated date shrinks to: the first date of the generated window.
+   *
+   * Every date this file produces falls in that window, so the floor is inside it and a candidate
+   * is a date the generators themselves could have drawn.
+   *
+   * @param date  the date to simplify
+   * @return the first date of the window, or nothing where the date is already that
+   */
+  private def simplerDates(date: LocalDate): LazyList[LocalDate] =
+    if (date == FirstDate) LazyList.empty else LazyList(FirstDate)
+
+  /**
+   * The months a generated month shrinks to: the first month of the generated window.
+   *
+   * @param month  the month to simplify
+   * @return the first month of the window, or nothing where the month is already that
+   */
+  private def simplerMonths(month: YearMonth): LazyList[YearMonth] =
+    if (month == FirstYearMonth) LazyList.empty else LazyList(FirstYearMonth)
+
+  /**
+   * The whole numbers a generated whole number shrinks to, towards zero.
+   *
+   * Zero first, so a property that fails for every count reports zero immediately, then half the
+   * magnitude, which is what keeps the path short where zero is not itself a counterexample, then
+   * the magnitude of a negative number, which drops the sign. Every candidate is strictly nearer
+   * zero than the input, so the magnitude falls at every step and zero has no candidates.
+   *
+   * @param value  the number to simplify
+   * @return the candidates, nearest zero first
+   */
+  private def simplerIntegers(value: Int): LazyList[Int] =
+    LazyList(0, value / 2, math.abs(value)).distinct.filter(candidate =>
+      math.abs(candidate) < math.abs(value))
+
+  /**
+   * The positive whole numbers a generated one-based position shrinks to, towards one.
+   *
+   * The floor is one rather than zero, because the factories that take a position - the index of
+   * a schedule period a step falls at - reject zero, so a candidate of zero would be dropped by
+   * the factory and the shrinking would stall one step early.
+   *
+   * @param value  the position to simplify
+   * @return the candidates, nearest one first
+   */
+  private def simplerPositions(value: Int): LazyList[Int] =
+    LazyList(1, value / 2).distinct.filter(candidate => candidate >= 1 && candidate < value)
+
+  /**
+   * The texts a generated text shrinks to: its first character.
+   *
+   * Every text this file generates is a scheme, a value or an identifier of at least one
+   * character, and each of the factories taking one accepts a text of one character, so the floor
+   * is a value of the type rather than a candidate the factory would reject.
+   *
+   * @param text  the text to simplify
+   * @return the first character of the text, or nothing where the text is one character already
+   */
+  private def shorterTexts(text: String): LazyList[String] =
+    if (text.length > 1) LazyList(text.take(1)) else LazyList.empty
+
+  /**
+   * The members of a closed family a member shrinks to: the ones declared before it.
+   *
+   * This is the shape `strata-collect` uses for its sample family, and it carries over to the
+   * fifteen closed families of this module: the candidates of a member are the members that
+   * precede it in the family's own declaration order, so the measure is the position of the
+   * member in that order and the floor is the first member declared, which has none.
+   *
+   * A value that is not in the list - which a sealed family makes impossible - is reported as
+   * absent by `indexOf` and offers no candidate at all, rather than offering every member as
+   * `take` on a negative index would.
+   *
+   * @param members  the members of the family, in declaration order
+   * @param value  the member to simplify
+   * @tparam A  the type of the family
+   * @return the members declared before the one given
+   */
+  private def earlierMembers[A](members: List[A])(value: A): LazyList[A] =
+    LazyList.from(members.take(math.max(members.indexOf(value), 0)))
+
+  /**
+   * The periods a generated period shrinks to, reduced in the unit the period is stated in.
+   *
+   * A period of months shrinks to a period of fewer months, a period of years to fewer years and
+   * a period of days to fewer days - and a period of a whole number of weeks, which is a period
+   * of a multiple of seven days, to fewer whole weeks. The unit is never changed, because the
+   * month-based addition conventions reject a period holding days and the canonical name of a
+   * tenor or a frequency is decided by the unit it is stated in, so a candidate in another unit
+   * would be a value of a different kind from the one that failed.
+   *
+   * The measure is the number of units the period holds, which falls at every step, and the floor
+   * is one unit of whichever kind the period is - a period of zero is rejected by every factory
+   * that takes one here.
+   *
+   * @param period  the period to simplify
+   * @return the candidates, the smallest first
+   */
+  private def simplerPeriods(period: Period): LazyList[Period] = {
+    val years = period.getYears
+    val months = period.getMonths
+    val days = period.getDays
+    if (years > 1 && months == 0 && days == 0) {
+      LazyList(1, years / 2).distinct.filter(count => count >= 1 && count < years).map(Period.ofYears)
+    } else if (years == 0 && months > 1 && days == 0) {
+      LazyList(1, months / 2).distinct.filter(count => count >= 1 && count < months).map(Period.ofMonths)
+    } else if (years == 0 && months == 0 && days > 7 && days % 7 == 0) {
+      val weeks = days / 7
+      LazyList(1, weeks / 2).distinct.filter(count => count >= 1 && count < weeks).map(Period.ofWeeks)
+    } else if (years == 0 && months == 0 && days > 1) {
+      LazyList(1, days / 2).distinct.filter(count => count >= 1 && count < days).map(Period.ofDays)
+    } else {
+      LazyList.empty
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  // The shrinkings of the root package.
+  //-------------------------------------------------------------------------
+  /**
+   * Shrinks an identifier by shortening its scheme and its value.
+   *
+   * The measure is the length of the scheme plus the length of the value, and both candidates cut
+   * one of the two to a single character, so the measure falls at every step and the floor is an
+   * identifier of one character in each part, which has none. Both candidates are built by
+   * [[StandardId.of]], the factory the generator uses, so a candidate is checked against the
+   * scheme and value rules rather than assumed to satisfy them.
+   *
+   * @return the shrinking of standard identifiers
+   */
+  implicit val shrinkStandardId: Shrink[StandardId] = Shrink.withLazyList(standardIdCandidates)
+
+  /** The candidates an identifier shrinks to, the shorter scheme before the shorter value. */
+  private def standardIdCandidates(identifier: StandardId): LazyList[StandardId] = {
+    val schemes = shorterTexts(identifier.scheme)
+      .flatMap(scheme => candidateOf(StandardId.of(scheme, identifier.value)))
+    val values = shorterTexts(identifier.value)
+      .flatMap(value => candidateOf(StandardId.of(identifier.scheme, value)))
+    (schemes #::: values).distinct.filterNot(candidate => candidate == identifier)
+  }
+
+  /**
+   * Shrinks a calculation target towards the one carrying zero.
+   *
+   * The measure is the magnitude of the number the target carries, which [[simplerIntegers]]
+   * reduces, and the floor is the target carrying zero.
+   *
+   * @return the shrinking of test targets
+   */
+  implicit val shrinkTestTarget: Shrink[TestTarget] = Shrink.withLazyList(testTargetCandidates)
+
+  /** The candidates a test target shrinks to, nearest zero first. */
+  private def testTargetCandidates(target: TestTarget): LazyList[TestTarget] =
+    simplerIntegers(target.value).map(value => TestTarget(value))
+
+  /**
+   * Shrinks a list of calculation targets by dropping its trailing target.
+   *
+   * The measure is the number of targets and the floor is the empty list, which the type accepts
+   * and the generator draws, so shrinking is free to reach it: unlike an array of doubles, whose
+   * operations are undefined when it is empty, a list of targets holds nothing that depends on
+   * there being an element.
+   *
+   * @return the shrinking of lists of calculation targets
+   */
+  implicit val shrinkCalculationTargetList: Shrink[CalculationTargetList] =
+    Shrink.withLazyList(calculationTargetListCandidates)
+
+  /** The candidates a list of targets shrinks to, which is the list without its last element. */
+  private def calculationTargetListCandidates(
+      list: CalculationTargetList): LazyList[CalculationTargetList] =
+
+    if (list.targets.isEmpty) LazyList.empty
+    else LazyList(CalculationTargetList.of(list.targets.init))
+
+  //-------------------------------------------------------------------------
+  // The shrinkings of the currency package.
+  //-------------------------------------------------------------------------
+  /**
+   * Shrinks a currency to the currencies declared before it in the closed family.
+   *
+   * The measure is the position of the currency in [[Currency.values]] and the floor is the first
+   * currency the family declares.
+   *
+   * @return the shrinking of currencies
+   */
+  implicit val shrinkCurrency: Shrink[Currency] =
+    Shrink.withLazyList(earlierMembers(Currency.values.toList))
+
+  /**
+   * Shrinks a currency pair by moving each of its currencies earlier in the family.
+   *
+   * The measure is the position of the base plus the position of the counter, and every candidate
+   * moves one of the two earlier, so the sum falls at every step. The floor is a pair of the two
+   * first currencies of the family.
+   *
+   * '''A pair of two different currencies never shrinks to a pair of one currency twice, and a
+   * pair of one currency twice never shrinks to a pair of two.''' The rate-bearing types need a
+   * pair of distinct currencies - [[FxRate.of]] accepts a pair of identical ones only at a rate
+   * of exactly one - so a candidate that collapsed the two would be minimised into an input those
+   * types reject, and a candidate that split them would be a value of the other kind.
+   *
+   * @return the shrinking of currency pairs
+   */
+  implicit val shrinkCurrencyPair: Shrink[CurrencyPair] =
+    Shrink.withLazyList(currencyPairCandidates)
+
+  /** The candidates a currency pair shrinks to, the earlier base before the earlier counter. */
+  private def currencyPairCandidates(pair: CurrencyPair): LazyList[CurrencyPair] = {
+    val members = Currency.values.toList
+    if (pair.base == pair.counter) {
+      earlierMembers(members)(pair.base).map(currency => CurrencyPair.of(currency, currency))
+    } else {
+      val bases = earlierMembers(members)(pair.base)
+        .filterNot(currency => currency == pair.counter)
+        .map(currency => CurrencyPair.of(currency, pair.counter))
+      val counters = earlierMembers(members)(pair.counter)
+        .filterNot(currency => currency == pair.base)
+        .map(currency => CurrencyPair.of(pair.base, currency))
+      (bases #::: counters).distinct
+    }
+  }
+
+  /**
+   * Shrinks an amount towards zero and towards the first currency of the family.
+   *
+   * The measure is the position of the currency plus one where the amount is not already positive
+   * zero, and the floor is zero of the first currency the family declares. Both candidates go
+   * through [[CurrencyAmount.of]], which rejects a value that is not a number and normalises a
+   * negative zero, so a candidate is an amount on exactly the terms a generated one is.
+   *
+   * @return the shrinking of currency amounts
+   */
+  implicit val shrinkCurrencyAmount: Shrink[CurrencyAmount] =
+    Shrink.withLazyList(currencyAmountCandidates)
+
+  /** The candidates an amount shrinks to, the zero amount before the earlier currencies. */
+  private def currencyAmountCandidates(amount: CurrencyAmount): LazyList[CurrencyAmount] = {
+    val zeroed = simplerNumbers(amount.amount)
+      .flatMap(value => candidateOf(CurrencyAmount.of(amount.currency, value)))
+    val currencies = earlierMembers(Currency.values.toList)(amount.currency)
+      .flatMap(currency => candidateOf(CurrencyAmount.of(currency, amount.amount)))
+    (zeroed #::: currencies).distinct.filterNot(candidate => candidate == amount)
+  }
+
+  /**
+   * Shrinks a money value towards zero and towards the first currency of the family.
+   *
+   * The measure is the position of the currency plus one where the amount is not already zero,
+   * and the floor is zero of the first currency. The candidates are built by the total
+   * [[Money.of]] overload taking a decimal, which rounds to the minor units of the currency it is
+   * given - and zero and a rounded amount are unchanged by that rounding, so no candidate is the
+   * value it came from by a different route.
+   *
+   * @return the shrinking of money values
+   */
+  implicit val shrinkMoney: Shrink[Money] = Shrink.withLazyList(moneyCandidates)
+
+  /** The candidates a money value shrinks to, the zero amount before the earlier currencies. */
+  private def moneyCandidates(money: Money): LazyList[Money] = {
+    val zeroed =
+      if (money.amount.isZero) LazyList.empty else LazyList(Money.of(money.currency, Decimal.ZERO))
+    val currencies = earlierMembers(Currency.values.toList)(money.currency)
+      .map(currency => Money.of(currency, money.amount))
+    (zeroed #::: currencies).distinct.filterNot(candidate => candidate == money)
+  }
+
+  /**
+   * Shrinks a big money value towards zero and towards the first currency of the family.
+   *
+   * The measure and the floor are those of [[shrinkMoney]]; this type differs only in the scale
+   * it rounds to, which is twelve places for every currency rather than the currency's own.
+   *
+   * @return the shrinking of big money values
+   */
+  implicit val shrinkBigMoney: Shrink[BigMoney] = Shrink.withLazyList(bigMoneyCandidates)
+
+  /** The candidates a big money value shrinks to, the zero amount first. */
+  private def bigMoneyCandidates(money: BigMoney): LazyList[BigMoney] = {
+    val zeroed =
+      if (money.amount.isZero) LazyList.empty
+      else LazyList(BigMoney.of(money.currency, Decimal.ZERO))
+    val currencies = earlierMembers(Currency.values.toList)(money.currency)
+      .map(currency => BigMoney.of(currency, money.amount))
+    (zeroed #::: currencies).distinct.filterNot(candidate => candidate == money)
+  }
+
+  /**
+   * Shrinks a multi-currency amount by dropping a currency and by zeroing an amount.
+   *
+   * The measure is the number of currencies held plus the number of amounts that are not already
+   * positive zero, and the floor is the empty amount - the identity of the type's `Monoid`, which
+   * the generator draws, so shrinking may reach it. Every candidate is built by the map overload
+   * of [[MultiCurrencyAmount.of]], so the rejection of a duplicate currency is checked rather
+   * than assumed; a map keyed by currency cannot hold one twice, so that branch is never taken.
+   *
+   * @return the shrinking of multi-currency amounts
+   */
+  implicit val shrinkMultiCurrencyAmount: Shrink[MultiCurrencyAmount] =
+    Shrink.withLazyList(multiCurrencyAmountCandidates)
+
+  /** The candidates a multi-currency amount shrinks to, the dropped currencies first. */
+  private def multiCurrencyAmountCandidates(
+      amount: MultiCurrencyAmount): LazyList[MultiCurrencyAmount] = {
+
+    val entries = amount.amounts
+    val fewerCurrencies = LazyList
+      .from(entries.keys)
+      .flatMap(currency => candidateOf(MultiCurrencyAmount.of(entries - currency)))
+    val zeroed = LazyList
+      .from(entries.toList)
+      .filterNot { case (_, value) => isSimplifiedNumber(value) }
+      .flatMap { case (currency, _) =>
+        candidateOf(MultiCurrencyAmount.of(entries.updated(currency, 0.0d)))
+      }
+    (fewerCurrencies #::: zeroed).distinct.filterNot(candidate => candidate == amount)
+  }
+
+  /** Copies an array of values with the element at the index replaced by positive zero. */
+  private def zeroedElement(values: DoubleArray, index: Int): DoubleArray =
+    DoubleArray.tabulate(values.size)(position =>
+      if (position == index) 0.0d else values.get(position))
+
+  /**
+   * Shrinks a run of amounts by shortening it, by zeroing an element and by moving its currency.
+   *
+   * The measure is the length of the run plus the number of elements that are not already positive
+   * zero plus the position of the currency in the family, and the floor is the '''empty''' run of
+   * the first currency. An empty run is reachable here, unlike in the array shrinking of
+   * `strata-collect`, because the factory of this type is total and the generator draws a run of
+   * length zero: no operation of the type is undefined on one.
+   *
+   * @return the shrinking of runs of single-currency amounts
+   */
+  implicit val shrinkCurrencyAmountArray: Shrink[CurrencyAmountArray] =
+    Shrink.withLazyList(currencyAmountArrayCandidates)
+
+  /** The candidates a run of amounts shrinks to, the shorter run first. */
+  private def currencyAmountArrayCandidates(
+      run: CurrencyAmountArray): LazyList[CurrencyAmountArray] = {
+
+    val shorter =
+      if (run.size > 0) {
+        LazyList(CurrencyAmountArray.of(run.currency, run.values.subArray(0, run.size - 1)))
+      } else {
+        LazyList.empty
+      }
+    val zeroed = LazyList
+      .range(0, run.size)
+      .filterNot(index => isSimplifiedNumber(run.values.get(index)))
+      .map(index => CurrencyAmountArray.of(run.currency, zeroedElement(run.values, index)))
+    val currencies = earlierMembers(Currency.values.toList)(run.currency)
+      .map(currency => CurrencyAmountArray.of(currency, run.values))
+    (shorter #::: zeroed #::: currencies).distinct.filterNot(candidate => candidate == run)
+  }
+
+  /**
+   * Shrinks a run of multi-currency amounts by dropping a currency, shortening every run in
+   * lockstep, and zeroing an element.
+   *
+   * The measure is the number of currencies plus the length of the runs plus the number of
+   * elements that are not already positive zero. The floor is one currency holding one zero
+   * element: the currencies stop at one and the length stops at one, because the factory requires
+   * every run to be the same length and the generator promises at least one of each, and a
+   * candidate that dropped the last currency or emptied the runs would be minimised into a value
+   * the element-wise operations of the type - which report a caller supplying runs of different
+   * sizes - were never given. Every run is shortened together for that same reason.
+   *
+   * @return the shrinking of runs of multi-currency amounts
+   */
+  implicit val shrinkMultiCurrencyAmountArray: Shrink[MultiCurrencyAmountArray] =
+    Shrink.withLazyList(multiCurrencyAmountArrayCandidates)
+
+  /** The candidates a run of multi-currency amounts shrinks to, the dropped currencies first. */
+  private def multiCurrencyAmountArrayCandidates(
+      run: MultiCurrencyAmountArray): LazyList[MultiCurrencyAmountArray] = {
+
+    val entries = run.values
+    val fewerCurrencies =
+      if (entries.sizeIs > 1) {
+        LazyList
+          .from(entries.keys)
+          .flatMap(currency => candidateOf(MultiCurrencyAmountArray.of(entries - currency)))
+      } else {
+        LazyList.empty
+      }
+    val shorter =
+      if (run.size > 1) {
+        candidateOf(
+          MultiCurrencyAmountArray.of(entries.unsorted.map { case (currency, values) =>
+            (currency, values.subArray(0, run.size - 1))
+          }))
+      } else {
+        LazyList.empty
+      }
+    val zeroed = LazyList
+      .from(entries.toList)
+      .flatMap { case (currency, values) =>
+        LazyList
+          .range(0, values.size)
+          .filterNot(index => isSimplifiedNumber(values.get(index)))
+          .flatMap(index =>
+            candidateOf(
+              MultiCurrencyAmountArray.of(entries.updated(currency, zeroedElement(values, index)))))
+      }
+    (fewerCurrencies #::: shorter #::: zeroed).distinct.filterNot(candidate => candidate == run)
+  }
+
+  /**
+   * Shrinks a payment by simplifying its amount and its date.
+   *
+   * The measure is the measure of the amount, as [[shrinkCurrencyAmount]] defines it, plus one
+   * where the date is not already the first date of the generated window. The floor is a payment
+   * of zero of the first currency on that date. The factory is total, so no candidate is dropped.
+   *
+   * @return the shrinking of payments
+   */
+  implicit val shrinkPayment: Shrink[Payment] = Shrink.withLazyList(paymentCandidates)
+
+  /** The candidates a payment shrinks to, the simpler amounts before the earlier date. */
+  private def paymentCandidates(payment: Payment): LazyList[Payment] = {
+    val amounts = currencyAmountCandidates(payment.value)
+      .map(amount => Payment.of(amount, payment.date))
+    val dates = simplerDates(payment.date).map(date => Payment.of(payment.value, date))
+    (amounts #::: dates).distinct.filterNot(candidate => candidate == payment)
+  }
+
+  /**
+   * Shrinks an exchange rate towards a rate of one and towards the earlier currencies.
+   *
+   * The measure is one where the rate is not already exactly one, plus the measure of the pair as
+   * [[shrinkCurrencyPair]] defines it. The floor is the pair of the two first currencies of the
+   * family at a rate of one. '''The floor is one rather than zero''' because the factory rejects a
+   * rate of zero, and a rate of one is the only rate an identity pair may carry, so this floor is
+   * a value both kinds of generated rate can reach.
+   *
+   * Every candidate is built by [[FxRate.of]], which checks both constraints of the type, so a
+   * reduction of the pair that would need a rate of one - the collapse to an identity pair, which
+   * the pair shrinking does not offer anyway - could not slip through as a value.
+   *
+   * @return the shrinking of exchange rates
+   */
+  implicit val shrinkFxRate: Shrink[FxRate] = Shrink.withLazyList(fxRateCandidates)
+
+  /** The candidates an exchange rate shrinks to, the unit rate before the earlier pairs. */
+  private def fxRateCandidates(rate: FxRate): LazyList[FxRate] = {
+    val unitRate =
+      if (java.lang.Double.compare(rate.rate, 1.0d) == 0) LazyList.empty
+      else candidateOf(FxRate.of(rate.pair, 1.0d))
+    val pairs = currencyPairCandidates(rate.pair)
+      .flatMap(pair => candidateOf(FxRate.of(pair, rate.rate)))
+    (unitRate #::: pairs).distinct.filterNot(candidate => candidate == rate)
+  }
+
+  /** Copies a matrix of rates with the entry at the position replaced by positive zero. */
+  private def zeroedEntry(rates: DoubleMatrix, row: Int, column: Int): DoubleMatrix =
+    DoubleMatrix.tabulate(rates.rowCount, rates.columnCount)((atRow, atColumn) =>
+      if (atRow == row && atColumn == column) 0.0d else rates.get(atRow, atColumn))
+
+  /** The leading square submatrix of the size given, which keeps the unit diagonal. */
+  private def leadingSubmatrix(rates: DoubleMatrix, size: Int): DoubleMatrix =
+    DoubleMatrix.tabulate(size, size)((row, column) => rates.get(row, column))
+
+  /**
+   * Shrinks a matrix of rates by dropping its last currency and by zeroing an off-diagonal rate.
+   *
+   * The measure is the number of currencies plus the number of off-diagonal entries that are not
+   * already positive zero, and the floor is the '''empty''' matrix, which the type holds and the
+   * generators draw. Dropping the last currency takes the leading square submatrix, so the
+   * diagonal stays a unit diagonal and the currencies stay distinct; zeroing touches off-diagonal
+   * entries only, for the same reason - a rate of a currency against itself has to be one, and a
+   * rate of zero elsewhere is legal, its reciprocal being the infinity the type also holds.
+   *
+   * Every candidate is built by [[FxMatrix.fromMatrix]], the factory a decoded document arrives
+   * at, so the three structural checks are applied to it rather than assumed.
+   *
+   * @return the shrinking of matrices of exchange rates
+   */
+  implicit val shrinkFxMatrix: Shrink[FxMatrix] = Shrink.withLazyList(fxMatrixCandidates)
+
+  /** The candidates a matrix shrinks to, the smaller matrix before the simpler rates. */
+  private def fxMatrixCandidates(matrix: FxMatrix): LazyList[FxMatrix] = {
+    val size = matrix.currencies.size
+    val smaller =
+      if (size > 0) {
+        candidateOf(
+          FxMatrix.fromMatrix(matrix.currencies.init, leadingSubmatrix(matrix.rates, size - 1)))
+      } else {
+        LazyList.empty
+      }
+    val zeroed = LazyList
+      .range(0, size)
+      .flatMap(row => LazyList.range(0, size).map(column => (row, column)))
+      .filter { case (row, column) =>
+        row != column && !isSimplifiedNumber(matrix.rates.get(row, column))
+      }
+      .flatMap { case (row, column) =>
+        candidateOf(
+          FxMatrix.fromMatrix(matrix.currencies, zeroedEntry(matrix.rates, row, column)))
+      }
+    (smaller #::: zeroed).distinct.filterNot(candidate => candidate == matrix)
+  }
+
+  //-------------------------------------------------------------------------
+  // The shrinkings of the date package.
+  //-------------------------------------------------------------------------
+  /**
+   * Shrinks a business day convention to the conventions declared before it.
+   *
+   * The measure is the position of the convention in the family's declaration order, and the
+   * floor is the first convention declared.
+   *
+   * @return the shrinking of business day conventions
+   */
+  implicit val shrinkBusinessDayConvention: Shrink[BusinessDayConvention] =
+    Shrink.withLazyList(earlierMembers(BusinessDayConvention.values.toList))
+
+  /**
+   * Shrinks a holiday calendar identifier within the kind of identifier it is.
+   *
+   * The three kinds the generator draws shrink in three ways, and '''none of them shrinks into
+   * another kind''', because the kind is what an identifier is for: a built-in identifier is one
+   * the standard reference data resolves, a custom one is deliberately not, and a composite one
+   * is the form whose name carries a separator.
+   *
+   *   - a built-in identifier shrinks to the built-in identifiers declared before it, so it stays
+   *     resolvable;
+   *   - a composite identifier - one whose name holds either separator - shrinks to the two
+   *     identifiers it composes, which is the reduction that tells a reader which half of a
+   *     combination a failure needs;
+   *   - any other identifier, which is the custom kind, shrinks by cutting its name to its first
+   *     character. The generated custom names begin with `X`, so the floor keeps that leading
+   *     character and stays a name no built-in calendar holds and no separator appears in.
+   *
+   * The measure is the pair of the number of names composed - two for a composite and one
+   * otherwise - and then, within the kind, the position among the built-in identifiers or the
+   * length of the name. The pair is ordered lexicographically, which is well-founded on two
+   * non-negative whole numbers, and the kind is preserved wherever the first element does not
+   * fall, so repeated shrinking terminates: at the first built-in identifier, or at a custom
+   * identifier of one character.
+   *
+   * Every candidate is built by [[HolidayCalendarId.of]], the factory the generator uses, so a
+   * candidate is normalised exactly as a generated identifier is.
+   *
+   * @return the shrinking of holiday calendar identifiers
+   */
+  implicit val shrinkHolidayCalendarId: Shrink[HolidayCalendarId] =
+    Shrink.withLazyList(holidayCalendarIdCandidates)
+
+  /** The separators the two composition forms of an identifier are written with. */
+  private val CalendarIdSeparators: Set[Char] = Set('+', '~')
+
+  /** The candidates an identifier shrinks to, within its own kind. */
+  private def holidayCalendarIdCandidates(id: HolidayCalendarId): LazyList[HolidayCalendarId] = {
+    val name = id.name
+    val separator = name.indexWhere(character => CalendarIdSeparators.contains(character))
+    val candidates =
+      if (builtInCalendarIds.contains(id)) {
+        earlierMembers(builtInCalendarIds)(id)
+      } else if (separator > 0) {
+        LazyList(
+          HolidayCalendarId.of(name.take(separator)),
+          HolidayCalendarId.of(name.drop(separator + 1)))
+      } else {
+        shorterTexts(name).map(text => HolidayCalendarId.of(text))
+      }
+    candidates.distinct.filterNot(candidate => candidate == id)
+  }
+
+  /**
+   * Shrinks a calendar-bearing day count to the day counts of the earlier built-in calendars.
+   *
+   * The measure is the position of the calendar among the built-in ones, and the floor is the
+   * day count of the first built-in calendar. The candidates are drawn from the built-in set
+   * alone, which is the set [[genCalendarBearingDayCount]] draws from, so a candidate stays a day
+   * count whose calendar the name form of its document reads back.
+   *
+   * Every candidate is built by [[DayCount.ofBus252]], the one factory of the type, and narrowed
+   * by the type test that generator uses; the factory answers at the type of the family and
+   * cannot answer with anything else, so the branch dropping a value that is not a `Bus252`
+   * contributes no candidate rather than being assumed away.
+   *
+   * @return the shrinking of calendar-bearing day counts
+   */
+  implicit val shrinkCalendarBearingDayCount: Shrink[DayCount.Bus252] =
+    Shrink.withLazyList(calendarBearingDayCountCandidates)
+
+  /** The candidates a calendar-bearing day count shrinks to, by the calendar it counts over. */
+  private def calendarBearingDayCountCandidates(
+      dayCount: DayCount.Bus252): LazyList[DayCount.Bus252] =
+
+    earlierMembers(builtInCalendars)(dayCount.calendar)
+      .flatMap(calendar =>
+        DayCount.ofBus252(calendar) match {
+          case bus252: DayCount.Bus252 => LazyList(bus252)
+          case _ => LazyList.empty
+        })
+      .filterNot(candidate => candidate == dayCount)
+
+  /**
+   * Shrinks a day count within its kind: a standard member to an earlier standard member, and a
+   * calendar-bearing one to the day count of an earlier built-in calendar.
+   *
+   * '''A calendar-bearing day count never shrinks to a standard member.''' The two kinds differ
+   * in the document form they take - a name for a standard member, an object naming a calendar
+   * for a calendar-bearing one - and in the data they carry, so a spec drawing from
+   * [[genBus252DayCount]] is about that kind; a candidate of the other kind would minimise a
+   * failure of the calendar-bearing form into a value of the form that never had it.
+   *
+   * The measure is the position of the member among the standard ones for a standard member, and
+   * the position of its calendar among the built-in ones for a calendar-bearing one; the kind is
+   * preserved, so the measure is well defined at every step. The floors are the first standard
+   * member declared and the day count of the first built-in calendar.
+   *
+   * @return the shrinking of day counts
+   */
+  implicit val shrinkDayCount: Shrink[DayCount] = Shrink.withLazyList(dayCountCandidates)
+
+  /** The candidates a day count shrinks to, within the kind of day count it is. */
+  private def dayCountCandidates(dayCount: DayCount): LazyList[DayCount] =
+    dayCount match {
+      case bus252: DayCount.Bus252 =>
+        calendarBearingDayCountCandidates(bus252).map(candidate => candidate: DayCount)
+      case standard => earlierMembers(DayCount.values.toList)(standard)
+    }
+
+  /**
+   * Shrinks a custom calendar by dropping its working days and then its last holiday.
+   *
+   * The two candidates are offered in that order - the working days go first, and a holiday is
+   * dropped only once none is left - because a working day is ignored outside the range of years
+   * the holidays span, so shortening the holidays first could drop a working day silently and
+   * leave a candidate that is not the value the reduction described. The '''last''' holiday is the
+   * one dropped rather than the first, for the same reason: the first holiday is where the range
+   * of the calendar starts, and moving that start is the other way a working day disappears.
+   *
+   * The measure is the number of holidays plus the number of working days, which falls at every
+   * step, and the floor is a calendar of one holiday and no working days. A calendar that is one
+   * of the built-in set has '''no''' candidates at all: its document form is its name, so a
+   * calendar holding a built-in identifier with different holidays would not read back as
+   * itself. The generator of this type draws custom calendars only, whose names begin with `X`,
+   * so that branch guards a calendar a spec built by hand rather than one that was drawn.
+   *
+   * Note that the candidates are '''not''' compared with the value they came from, as every other
+   * shrinking here compares them: the `equals` of this type compares the identifier alone, so
+   * every candidate is equal to its input and filtering by equality would drop all of them. The
+   * measure is what establishes that a candidate is a reduction, and it falls by construction.
+   *
+   * @return the shrinking of custom holiday calendars
+   */
+  implicit val shrinkImmutableHolidayCalendar: Shrink[ImmutableHolidayCalendar] =
+    Shrink.withLazyList(immutableHolidayCalendarCandidates)
+
+  /** The candidates a custom calendar shrinks to, the working days before the holidays. */
+  private def immutableHolidayCalendarCandidates(
+      calendar: ImmutableHolidayCalendar): LazyList[ImmutableHolidayCalendar] = {
+
+    val holidays = calendar.holidays.toList
+    val workingDays = calendar.workingDays.toList
+    if (builtInCalendarIds.contains(calendar.id)) {
+      LazyList.empty
+    } else if (workingDays.nonEmpty) {
+      LazyList(
+        ImmutableHolidayCalendar.of(calendar.id, holidays, calendar.weekendDays, List.empty))
+    } else if (holidays.sizeIs > 1) {
+      LazyList(
+        ImmutableHolidayCalendar.of(calendar.id, holidays.init, calendar.weekendDays, List.empty))
+    } else {
+      LazyList.empty
+    }
+  }
+
+  /**
+   * Shrinks a holiday calendar within the shape it has.
+   *
+   * The four shapes the generator draws shrink in three ways, and each keeps its own shape:
+   *
+   *   - a composite - a combination or a link - shrinks to the two calendars it composes, which
+   *     is the reduction saying which half of the composition a failure needs;
+   *   - a built-in calendar shrinks to the built-in calendars declared before it, so it stays a
+   *     calendar carried in a document as its name;
+   *   - a custom calendar shrinks as [[shrinkImmutableHolidayCalendar]] describes, keeping its own
+   *     identifier so its document form stays the structural one.
+   *
+   * The measure is defined over all four shapes at once: one plus the measures of both halves for
+   * a composite, the number of holidays plus working days for a custom calendar, and the position
+   * among the built-in calendars for a built-in one. A composite is strictly larger than either
+   * half because both measures are non-negative, and the other two reductions fall within their
+   * own shape, so repeated shrinking terminates - at the first built-in calendar, or at a custom
+   * calendar of one holiday.
+   *
+   * A calendar of none of these shapes, which a spec could build by hand, offers no candidate
+   * rather than being reduced by a rule written for another shape.
+   *
+   * @return the shrinking of holiday calendars
+   */
+  implicit val shrinkHolidayCalendar: Shrink[HolidayCalendar] =
+    Shrink.withLazyList(holidayCalendarCandidates)
+
+  /** The candidates a calendar shrinks to, within the shape of calendar it is. */
+  private def holidayCalendarCandidates(calendar: HolidayCalendar): LazyList[HolidayCalendar] =
+    if (builtInCalendars.contains(calendar)) {
+      earlierMembers(builtInCalendars)(calendar)
+    } else {
+      calendar match {
+        case HolidayCalendar.Combined(first, second) => LazyList(first, second)
+        case HolidayCalendar.Linked(first, second) => LazyList(first, second)
+        case custom: ImmutableHolidayCalendar =>
+          immutableHolidayCalendarCandidates(custom).map(candidate => candidate: HolidayCalendar)
+        case _ => LazyList.empty
+      }
+    }
+
+  /**
+   * Shrinks a business day adjustment towards the first convention over the first calendar.
+   *
+   * The measure is the position of the convention in its family plus the position of the calendar
+   * among the built-in identifiers, and the floor is the first convention over the first built-in
+   * calendar. The calendar is moved within the built-in set rather than shortened, because the
+   * generator promises an adjustment that '''can be applied''' against the standard reference
+   * data and a name outside that set resolves to nothing; an adjustment naming a calendar outside
+   * it - which a spec could build by hand - keeps its calendar and shrinks its convention alone.
+   *
+   * @return the shrinking of business day adjustments
+   */
+  implicit val shrinkBusinessDayAdjustment: Shrink[BusinessDayAdjustment] =
+    Shrink.withLazyList(businessDayAdjustmentCandidates)
+
+  /** The candidates an adjustment shrinks to, the earlier convention before the earlier calendar. */
+  private def businessDayAdjustmentCandidates(
+      adjustment: BusinessDayAdjustment): LazyList[BusinessDayAdjustment] = {
+
+    val conventions = earlierMembers(BusinessDayConvention.values.toList)(adjustment.convention)
+      .map(convention => BusinessDayAdjustment.of(convention, adjustment.calendar))
+    val calendars =
+      if (builtInCalendarIds.contains(adjustment.calendar)) {
+        earlierMembers(builtInCalendarIds)(adjustment.calendar)
+          .map(calendar => BusinessDayAdjustment.of(adjustment.convention, calendar))
+      } else {
+        LazyList.empty
+      }
+    (conventions #::: calendars).distinct.filterNot(candidate => candidate == adjustment)
+  }
+
+  /**
+   * Shrinks an adjustable date towards the first date of the generated window.
+   *
+   * The measure is one where the date is not already that first date, plus the measure of the
+   * adjustment as [[shrinkBusinessDayAdjustment]] defines it. The floor is the first date of the
+   * window under the floor adjustment. The factory is total, so no candidate is dropped.
+   *
+   * @return the shrinking of adjustable dates
+   */
+  implicit val shrinkAdjustableDate: Shrink[AdjustableDate] =
+    Shrink.withLazyList(adjustableDateCandidates)
+
+  /** The candidates an adjustable date shrinks to, the earlier date before the simpler adjustment. */
+  private def adjustableDateCandidates(date: AdjustableDate): LazyList[AdjustableDate] = {
+    val dates = simplerDates(date.unadjusted).map(day => AdjustableDate.of(day, date.adjustment))
+    val adjustments = businessDayAdjustmentCandidates(date.adjustment)
+      .map(adjustment => AdjustableDate.of(date.unadjusted, adjustment))
+    (dates #::: adjustments).distinct.filterNot(candidate => candidate == date)
+  }
+
+  /**
+   * Shrinks a run of adjustable dates by dropping its last date and by moving the run earlier.
+   *
+   * Three candidates, in the order a reader needs them: the run without its last date, the run
+   * translated so that its first date is the first date of the generated window, and the run
+   * under a simpler adjustment. '''The dates keep the order and the gaps the factory requires''' -
+   * dropping the last of a strictly increasing run leaves it strictly increasing, and translating
+   * every date by the same number of days moves the run without changing a single gap - so a
+   * candidate is never a run [[AdjustableDates.of]] rejects. The translation is offered only
+   * where the first date is after the start of the window, so no candidate walks off the calendar.
+   *
+   * The measure is the number of dates plus one where the first date is not already the start of
+   * the window plus the measure of the adjustment, and the floor is one date at the start of the
+   * window under the floor adjustment.
+   *
+   * @return the shrinking of runs of adjustable dates
+   */
+  implicit val shrinkAdjustableDates: Shrink[AdjustableDates] =
+    Shrink.withLazyList(adjustableDatesCandidates)
+
+  /** The candidates a run of dates shrinks to, the shorter run first. */
+  private def adjustableDatesCandidates(run: AdjustableDates): LazyList[AdjustableDates] = {
+    val dates = run.unadjusted
+    val shorter =
+      if (dates.tail.nonEmpty) {
+        candidateOf(
+          AdjustableDates.of(run.adjustment, NonEmptyList(dates.head, dates.tail.init)))
+      } else {
+        LazyList.empty
+      }
+    val moved =
+      if (dates.head.isAfter(FirstDate)) {
+        val offset = dates.head.toEpochDay - FirstDate.toEpochDay
+        candidateOf(
+          AdjustableDates.of(run.adjustment, dates.map(date => date.minusDays(offset))))
+      } else {
+        LazyList.empty
+      }
+    val adjustments = businessDayAdjustmentCandidates(run.adjustment)
+      .flatMap(adjustment => candidateOf(AdjustableDates.of(adjustment, dates)))
+    (shorter #::: moved #::: adjustments).distinct.filterNot(candidate => candidate == run)
+  }
+
+  /** The identifier naming no calendar, which is the calendar field of an addition of calendar days. */
+  private val NoHolidaysCalendarId: HolidayCalendarId = StandardHolidayCalendars.NO_HOLIDAYS.id
+
+  /**
+   * Shrinks a days adjustment towards no days at all under a simpler trailing adjustment.
+   *
+   * '''An addition of business days stays one and an addition of calendar days stays one.''' The
+   * two are rebuilt through their own factories - the three-argument
+   * [[DaysAdjustment.ofBusinessDays]], which the type documents as the way to rebuild an
+   * adjustment from the fields of an existing one, and [[DaysAdjustment.ofCalendarDays]] - so a
+   * candidate holds the addition calendar its input held and walks the days the same way. A
+   * candidate of the other kind would minimise a failure of the business-day walk into a value
+   * that never walked one.
+   *
+   * The measure is the magnitude of the day count plus the measure of the trailing adjustment,
+   * and the floor is no days at all under the floor adjustment - which is the adjustment that
+   * adjusts nothing, the constant the generator draws.
+   *
+   * @return the shrinking of days adjustments
+   */
+  implicit val shrinkDaysAdjustment: Shrink[DaysAdjustment] =
+    Shrink.withLazyList(daysAdjustmentCandidates)
+
+  /** The candidates a days adjustment shrinks to, the fewer days before the simpler adjustment. */
+  private def daysAdjustmentCandidates(adjustment: DaysAdjustment): LazyList[DaysAdjustment] = {
+    def rebuild(days: Int, trailing: BusinessDayAdjustment): DaysAdjustment =
+      if (adjustment.calendar == NoHolidaysCalendarId) {
+        DaysAdjustment.ofCalendarDays(days, trailing)
+      } else {
+        DaysAdjustment.ofBusinessDays(days, adjustment.calendar, trailing)
+      }
+    val fewerDays = simplerIntegers(adjustment.days).map(days => rebuild(days, adjustment.adjustment))
+    val trailing = businessDayAdjustmentCandidates(adjustment.adjustment)
+      .map(candidate => rebuild(adjustment.days, candidate))
+    (fewerDays #::: trailing).distinct.filterNot(candidate => candidate == adjustment)
+  }
+
+  /**
+   * Shrinks a period addition convention to the conventions declared before it.
+   *
+   * The measure is the position of the convention in the family's declaration order, and the
+   * floor is the first convention declared.
+   *
+   * @return the shrinking of period addition conventions
+   */
+  implicit val shrinkPeriodAdditionConvention: Shrink[PeriodAdditionConvention] =
+    Shrink.withLazyList(earlierMembers(PeriodAdditionConvention.values.toList))
+
+  /**
+   * Shrinks a period adjustment by reducing its period, its convention and its adjustment.
+   *
+   * The period is reduced within the unit it is stated in, as [[simplerPeriods]] describes, which
+   * is what keeps a month-based convention paired with a month-based period: the pairing rule the
+   * generator follows is preserved by construction rather than by a check. A candidate moving the
+   * convention earlier is built by [[PeriodAdjustment.of]] all the same, so the one reduction that
+   * can break the pairing - a convention that is month-based over a period holding days - is
+   * rejected by the factory and contributes no candidate.
+   *
+   * The measure is the number of units the period holds plus the position of the convention plus
+   * the measure of the business day adjustment, and the floor is one unit of the period's own kind
+   * under the first convention and the floor adjustment.
+   *
+   * @return the shrinking of period adjustments
+   */
+  implicit val shrinkPeriodAdjustment: Shrink[PeriodAdjustment] =
+    Shrink.withLazyList(periodAdjustmentCandidates)
+
+  /** The candidates a period adjustment shrinks to, the shorter period first. */
+  private def periodAdjustmentCandidates(
+      adjustment: PeriodAdjustment): LazyList[PeriodAdjustment] = {
+
+    val periods = simplerPeriods(adjustment.period)
+      .flatMap(period =>
+        candidateOf(
+          PeriodAdjustment.of(period, adjustment.additionConvention, adjustment.adjustment)))
+    val conventions =
+      earlierMembers(PeriodAdditionConvention.values.toList)(adjustment.additionConvention)
+        .flatMap(convention =>
+          candidateOf(
+            PeriodAdjustment.of(adjustment.period, convention, adjustment.adjustment)))
+    val trailing = businessDayAdjustmentCandidates(adjustment.adjustment)
+      .flatMap(candidate =>
+        candidateOf(
+          PeriodAdjustment.of(adjustment.period, adjustment.additionConvention, candidate)))
+    (periods #::: conventions #::: trailing).distinct.filterNot(candidate => candidate == adjustment)
+  }
+
+  /**
+   * Shrinks a tenor by reducing its period in the unit the tenor is stated in.
+   *
+   * The measure is the number of units the period holds and the floor is one unit of that kind -
+   * one day, one week, one month or one year - because [[Tenor.of]] rejects a period of zero and
+   * the canonical name of a tenor is decided by the unit it holds, as [[simplerPeriods]]
+   * describes. Every candidate goes through that factory, so a candidate is a tenor on the terms
+   * a generated one is.
+   *
+   * @return the shrinking of tenors
+   */
+  implicit val shrinkTenor: Shrink[Tenor] = Shrink.withLazyList(tenorCandidates)
+
+  /** The candidates a tenor shrinks to, the shortest period first. */
+  private def tenorCandidates(tenor: Tenor): LazyList[Tenor] =
+    simplerPeriods(tenor.period)
+      .flatMap(period => candidateOf(Tenor.of(period)))
+      .distinct
+      .filterNot(candidate => candidate == tenor)
+
+  /**
+   * Shrinks a tenor adjustment by reducing its tenor, its convention and its adjustment.
+   *
+   * The measure, the floor and the pairing rule are those of [[shrinkPeriodAdjustment]]; this type
+   * differs only in holding a tenor where that one holds a period.
+   *
+   * @return the shrinking of tenor adjustments
+   */
+  implicit val shrinkTenorAdjustment: Shrink[TenorAdjustment] =
+    Shrink.withLazyList(tenorAdjustmentCandidates)
+
+  /** The candidates a tenor adjustment shrinks to, the shorter tenor first. */
+  private def tenorAdjustmentCandidates(
+      adjustment: TenorAdjustment): LazyList[TenorAdjustment] = {
+
+    val tenors = tenorCandidates(adjustment.tenor)
+      .flatMap(tenor =>
+        candidateOf(
+          TenorAdjustment.of(tenor, adjustment.additionConvention, adjustment.adjustment)))
+    val conventions =
+      earlierMembers(PeriodAdditionConvention.values.toList)(adjustment.additionConvention)
+        .flatMap(convention =>
+          candidateOf(TenorAdjustment.of(adjustment.tenor, convention, adjustment.adjustment)))
+    val trailing = businessDayAdjustmentCandidates(adjustment.adjustment)
+      .flatMap(candidate =>
+        candidateOf(
+          TenorAdjustment.of(adjustment.tenor, adjustment.additionConvention, candidate)))
+    (tenors #::: conventions #::: trailing).distinct.filterNot(candidate => candidate == adjustment)
+  }
+
+  /** The four market tenors whose codes are not the code of a tenor, in declaration order. */
+  private val MarketTenorConstants: List[MarketTenor] =
+    List(MarketTenor.ON, MarketTenor.TN, MarketTenor.SN, MarketTenor.SW)
+
+  /**
+   * Shrinks a market tenor towards the overnight tenor.
+   *
+   * A market tenor that is one of the four constants - overnight, tomorrow-next, spot-next and
+   * spot-week - shrinks to the constants declared before it; any other one is spot-starting, and
+   * shrinks by reducing the tenor it starts from through [[MarketTenor.ofSpot]], the factory the
+   * generator uses. That factory answers with spot-next for a tenor of one day and with spot-week
+   * for a tenor of one week, so a spot-starting tenor may shrink into one of the constants - which
+   * is no change of kind at all, those two constants being exactly what a spot-starting tenor of
+   * that length is.
+   *
+   * The measure is the position among the four constants for a constant, and four plus the number
+   * of units its tenor holds for any other; every candidate of a spot-starting tenor either holds
+   * fewer units or is a constant, whose measure is at most three, so the measure falls at every
+   * step. The floor is the overnight tenor.
+   *
+   * @return the shrinking of market tenors
+   */
+  implicit val shrinkMarketTenor: Shrink[MarketTenor] =
+    Shrink.withLazyList(marketTenorCandidates)
+
+  /** The candidates a market tenor shrinks to, within the kind of market tenor it is. */
+  private def marketTenorCandidates(marketTenor: MarketTenor): LazyList[MarketTenor] = {
+    val candidates =
+      if (MarketTenorConstants.contains(marketTenor)) {
+        earlierMembers(MarketTenorConstants)(marketTenor)
+      } else {
+        tenorCandidates(marketTenor.tenor).flatMap(tenor => candidateOf(MarketTenor.ofSpot(tenor)))
+      }
+    candidates.distinct.filterNot(candidate => candidate == marketTenor)
+  }
+
+  /**
+   * Shrinks a date sequence to the sequences declared before it.
+   *
+   * The measure is the position of the sequence in the family's declaration order, and the floor
+   * is the first sequence declared.
+   *
+   * @return the shrinking of date sequences
+   */
+  implicit val shrinkDateSequence: Shrink[DateSequence] =
+    Shrink.withLazyList(earlierMembers(DateSequence.values.toList))
+
+  /**
+   * Shrinks a sequence date instruction towards the first date of the base sequence.
+   *
+   * Four candidates, each dropping one thing the instruction says: the starting month moves to the
+   * first month of the generated window and then goes away entirely, the minimum period goes away,
+   * the sequence number moves towards one, and counting over the full sequence becomes counting
+   * over the base sequence. '''The two starting points are never introduced, only removed''', which
+   * is what keeps a candidate inside the rule the factory enforces - a month and a minimum period
+   * are mutually exclusive - rather than relying on the factory to reject a candidate that named
+   * both.
+   *
+   * The measure is the number of starting points named, plus the sequence number less one, plus
+   * one where the month is not already the first of the window, plus one where the full sequence
+   * is counted over. The floor is the first date of the base sequence counted from the input date:
+   * no starting point, sequence number one, base sequence. Every candidate is built by
+   * [[SequenceDate.of]], which reports all three of its rejections, so a reduction it refuses
+   * contributes no candidate.
+   *
+   * @return the shrinking of sequence date instructions
+   */
+  implicit val shrinkSequenceDate: Shrink[SequenceDate] =
+    Shrink.withLazyList(sequenceDateCandidates)
+
+  /** The candidates an instruction shrinks to, the simpler starting point first. */
+  private def sequenceDateCandidates(date: SequenceDate): LazyList[SequenceDate] = {
+    val earlierMonths = LazyList
+      .from(date.yearMonth.toList)
+      .flatMap(month => simplerMonths(month))
+      .flatMap(month =>
+        candidateOf(
+          SequenceDate.of(Some(month), None, date.sequenceNumber, date.fullSequence)))
+    val withoutStartingPoint =
+      if (date.yearMonth.isDefined || date.minimumPeriod.isDefined) {
+        candidateOf(SequenceDate.of(None, None, date.sequenceNumber, date.fullSequence))
+      } else {
+        LazyList.empty
+      }
+    val positions = simplerPositions(date.sequenceNumber)
+      .flatMap(position =>
+        candidateOf(
+          SequenceDate.of(date.yearMonth, date.minimumPeriod, position, date.fullSequence)))
+    val baseSequence =
+      if (date.fullSequence) {
+        candidateOf(
+          SequenceDate.of(
+            date.yearMonth,
+            date.minimumPeriod,
+            date.sequenceNumber,
+            fullSequence = false))
+      } else {
+        LazyList.empty
+      }
+    (earlierMonths #::: withoutStartingPoint #::: positions #::: baseSequence).distinct
+      .filterNot(candidate => candidate == date)
+  }
+
+  //-------------------------------------------------------------------------
+  // The shrinkings of the index package.
+  //-------------------------------------------------------------------------
+  /**
+   * Shrinks an Ibor index to the indices declared before it.
+   *
+   * The measure is the position of the index in the family's declaration order, and the floor is
+   * the first index declared.
+   *
+   * @return the shrinking of Ibor indices
+   */
+  implicit val shrinkIborIndex: Shrink[IborIndex] =
+    Shrink.withLazyList(earlierMembers(IborIndex.values.toList))
+
+  /**
+   * Shrinks an overnight index to the indices declared before it.
+   *
+   * The measure and the floor are those of [[shrinkIborIndex]], over this family's own members.
+   *
+   * @return the shrinking of overnight indices
+   */
+  implicit val shrinkOvernightIndex: Shrink[OvernightIndex] =
+    Shrink.withLazyList(earlierMembers(OvernightIndex.values.toList))
+
+  /**
+   * Shrinks a price index to the indices declared before it.
+   *
+   * The measure and the floor are those of [[shrinkIborIndex]], over this family's own members.
+   *
+   * @return the shrinking of price indices
+   */
+  implicit val shrinkPriceIndex: Shrink[PriceIndex] =
+    Shrink.withLazyList(earlierMembers(PriceIndex.values.toList))
+
+  /**
+   * Shrinks an FX index to the indices declared before it.
+   *
+   * The measure and the floor are those of [[shrinkIborIndex]], over this family's own members.
+   *
+   * @return the shrinking of FX indices
+   */
+  implicit val shrinkFxIndex: Shrink[FxIndex] =
+    Shrink.withLazyList(earlierMembers(FxIndex.values.toList))
+
+  /**
+   * Shrinks a floating rate type to the types declared before it.
+   *
+   * The measure is the position of the type in the family's declaration order, and the floor is
+   * the first type declared.
+   *
+   * @return the shrinking of floating rate types
+   */
+  implicit val shrinkFloatingRateType: Shrink[FloatingRateType] =
+    Shrink.withLazyList(earlierMembers(FloatingRateType.values.toList))
+
+  /**
+   * Shrinks a floating rate name to the names declared before it.
+   *
+   * The measure is the position of the name in the family's declaration order, and the floor is
+   * the first name declared.
+   *
+   * @return the shrinking of floating rate names
+   */
+  implicit val shrinkFloatingRateName: Shrink[FloatingRateName] =
+    Shrink.withLazyList(earlierMembers(FloatingRateName.values.toList))
+
+  /**
+   * Shrinks an observation of an Ibor index fixing towards the start of the generated window.
+   *
+   * An observation is derived rather than given - its effective date, maturity date and year
+   * fraction come from the index and the fixing date - so both candidates go back through
+   * [[IborIndexObservation.of]] against the standard reference data, which is what
+   * [[genIborIndexObservation]] does. A candidate assembled field by field could hold dates the
+   * index does not derive, and no reduction of it would then mean anything.
+   *
+   * The index is moved within the '''observable''' indices alone - the ones whose calendars the
+   * standard data resolves, which is the set the generator draws from - so a candidate is an
+   * observation that can be built rather than one whose calendars are missing.
+   *
+   * The measure is one where the fixing date is not already the first date of the generated
+   * window, plus the position of the index among the observable ones; the floor is the first
+   * observable index fixing on the first date of the window.
+   *
+   * @return the shrinking of Ibor index observations
+   */
+  implicit val shrinkIborIndexObservation: Shrink[IborIndexObservation] =
+    Shrink.withLazyList(iborIndexObservationCandidates)
+
+  /** The candidates an Ibor observation shrinks to, the earlier date before the earlier index. */
+  private def iborIndexObservationCandidates(
+      observation: IborIndexObservation): LazyList[IborIndexObservation] = {
+
+    val dates = simplerDates(observation.fixingDate)
+      .flatMap(date =>
+        candidateOf(IborIndexObservation.of(observation.index, date, ReferenceData.standard)))
+    val indices = earlierMembers(observableIborIndices)(observation.index)
+      .flatMap(index =>
+        candidateOf(
+          IborIndexObservation.of(index, observation.fixingDate, ReferenceData.standard)))
+    (dates #::: indices).distinct.filterNot(candidate => candidate == observation)
+  }
+
+  /**
+   * Shrinks an observation of an overnight index fixing towards the start of the window.
+   *
+   * The measure, the floor and the reason for going back through the factory are those of
+   * [[shrinkIborIndexObservation]]; this observation derives a publication date as well, which
+   * the factory supplies for the same reason.
+   *
+   * @return the shrinking of overnight index observations
+   */
+  implicit val shrinkOvernightIndexObservation: Shrink[OvernightIndexObservation] =
+    Shrink.withLazyList(overnightIndexObservationCandidates)
+
+  /** The candidates an overnight observation shrinks to, the earlier date first. */
+  private def overnightIndexObservationCandidates(
+      observation: OvernightIndexObservation): LazyList[OvernightIndexObservation] = {
+
+    val dates = simplerDates(observation.fixingDate)
+      .flatMap(date =>
+        candidateOf(OvernightIndexObservation.of(observation.index, date, ReferenceData.standard)))
+    val indices = earlierMembers(observableOvernightIndices)(observation.index)
+      .flatMap(index =>
+        candidateOf(
+          OvernightIndexObservation.of(index, observation.fixingDate, ReferenceData.standard)))
+    (dates #::: indices).distinct.filterNot(candidate => candidate == observation)
+  }
+
+  /**
+   * Shrinks an observation of an FX index fixing towards the start of the window.
+   *
+   * The measure, the floor and the reason for going back through the factory are those of
+   * [[shrinkIborIndexObservation]].
+   *
+   * @return the shrinking of FX index observations
+   */
+  implicit val shrinkFxIndexObservation: Shrink[FxIndexObservation] =
+    Shrink.withLazyList(fxIndexObservationCandidates)
+
+  /** The candidates an FX observation shrinks to, the earlier date before the earlier index. */
+  private def fxIndexObservationCandidates(
+      observation: FxIndexObservation): LazyList[FxIndexObservation] = {
+
+    val dates = simplerDates(observation.fixingDate)
+      .flatMap(date =>
+        candidateOf(FxIndexObservation.of(observation.index, date, ReferenceData.standard)))
+    val indices = earlierMembers(observableFxIndices)(observation.index)
+      .flatMap(index =>
+        candidateOf(FxIndexObservation.of(index, observation.fixingDate, ReferenceData.standard)))
+    (dates #::: indices).distinct.filterNot(candidate => candidate == observation)
+  }
+
+  /**
+   * Shrinks an observation of a price index fixing towards the first month of the window.
+   *
+   * This one needs no reference data and derives nothing: a price index is fixed for a month, so
+   * the observation holds exactly the index and the month it is given. The measure is one where
+   * the month is not already the first month of the generated window plus the position of the
+   * index in its family, and the floor is the first index fixing in that first month.
+   *
+   * @return the shrinking of price index observations
+   */
+  implicit val shrinkPriceIndexObservation: Shrink[PriceIndexObservation] =
+    Shrink.withLazyList(priceIndexObservationCandidates)
+
+  /** The candidates a price observation shrinks to, the earlier month before the earlier index. */
+  private def priceIndexObservationCandidates(
+      observation: PriceIndexObservation): LazyList[PriceIndexObservation] = {
+
+    val months = simplerMonths(observation.fixingMonth)
+      .map(month => PriceIndexObservation.of(observation.index, month))
+    val indices = earlierMembers(PriceIndex.values.toList)(observation.index)
+      .map(index => PriceIndexObservation.of(index, observation.fixingMonth))
+    (months #::: indices).distinct.filterNot(candidate => candidate == observation)
+  }
+
+  //-------------------------------------------------------------------------
+  // The shrinkings of the location package.
+  //-------------------------------------------------------------------------
+  /**
+   * Shrinks a country towards the first country a constant names, or towards the code `AA`.
+   *
+   * The type is an open value rather than a closed family, so the two kinds the generator draws
+   * shrink in two ways: a country a constant names shrinks to the countries the constants declare
+   * before it, and any other code shrinks by moving one of its two letters to `A`. A code may
+   * shrink into a country a constant names, which is no change of kind - the constants are codes
+   * like any other - and the measure accounts for it: it is the position among the named countries
+   * for a named one, and the number of the named countries plus the distance of the two letters
+   * from `A` for any other, so a candidate that lands on a named country is strictly smaller than
+   * the code it came from. The floors are the first constant declared and the code `AA`.
+   *
+   * Every candidate is built by [[Country.of]], which accepts two upper-case letters and nothing
+   * else, so a candidate is a country on exactly the terms a generated one is.
+   *
+   * @return the shrinking of countries
+   */
+  implicit val shrinkCountry: Shrink[Country] = Shrink.withLazyList(countryCandidates)
+
+  /** The candidates a country shrinks to, within the kind of code it is. */
+  private def countryCandidates(country: Country): LazyList[Country] = {
+    val candidates =
+      if (namedCountries.contains(country)) {
+        earlierMembers(namedCountries)(country)
+      } else {
+        val code = country.code
+        LazyList(s"A${code.drop(1)}", s"${code.take(1)}A")
+          .filterNot(candidate => candidate == code)
+          .flatMap(candidate => candidateOf(Country.of(candidate)))
+      }
+    candidates.distinct.filterNot(candidate => candidate == country)
+  }
+
+  //-------------------------------------------------------------------------
+  // The shrinkings of the schedule package.
+  //-------------------------------------------------------------------------
+  /**
+   * Shrinks a frequency by reducing its length in the unit it is stated in.
+   *
+   * The measure is the number of units the length holds, as [[simplerPeriods]] defines it, and the
+   * floor is one unit of that kind - one day, one week, one month or one year - because
+   * [[Frequency.of]] rejects a length of zero and the canonical name of a frequency is decided by
+   * the unit it is stated in.
+   *
+   * '''The term frequency is its own floor and shrinks to nothing.''' It is the frequency of a
+   * single period covering the whole schedule, its name is a word rather than a period, and a
+   * schedule at a regular frequency is a different shape of value entirely, so reducing it to one
+   * would minimise a failure of the term case into a value that never had it.
+   *
+   * @return the shrinking of frequencies
+   */
+  implicit val shrinkFrequency: Shrink[Frequency] = Shrink.withLazyList(frequencyCandidates)
+
+  /** The candidates a frequency shrinks to, the shortest length first. */
+  private def frequencyCandidates(frequency: Frequency): LazyList[Frequency] =
+    if (frequency == Frequency.TERM) {
+      LazyList.empty
+    } else {
+      simplerPeriods(frequency.period)
+        .flatMap(period => candidateOf(Frequency.of(period)))
+        .distinct
+        .filterNot(candidate => candidate == frequency)
+    }
+
+  /**
+   * Shrinks a stub convention to the conventions declared before it.
+   *
+   * The measure is the position of the convention in the family's declaration order, and the floor
+   * is the first convention declared.
+   *
+   * @return the shrinking of stub conventions
+   */
+  implicit val shrinkStubConvention: Shrink[StubConvention] =
+    Shrink.withLazyList(earlierMembers(StubConvention.values.toList))
+
+  /**
+   * Shrinks a roll convention to the conventions declared before it.
+   *
+   * The family publishes its forty-five members in one order - the standard conventions, then the
+   * day-of-month ones, then the day-of-week ones - so the measure is the position in that order and
+   * the floor is the first standard convention.
+   *
+   * @return the shrinking of roll conventions
+   */
+  implicit val shrinkRollConvention: Shrink[RollConvention] =
+    Shrink.withLazyList(earlierMembers(RollConvention.values.toList))
+
+  /** The shortest unadjusted length a generated schedule period holds, in days. */
+  private val MinimumPeriodLength: Long = 10L
+
+  /**
+   * Shrinks a schedule period by removing its shifts, shortening it and moving it to the window.
+   *
+   * Three candidates, each reducing one thing about the period: the period with each adjusted date
+   * equal to the unadjusted one it belongs to, the period cut to the shortest unadjusted length the
+   * generator draws while both shifts are kept, and the period translated so that its unadjusted
+   * start is the first date of the generated window.
+   *
+   * '''Both pairs of dates stay in the order the factory checks.''' Removing the shifts leaves the
+   * adjusted pair equal to the unadjusted pair, which is ordered because the unadjusted pair is;
+   * translating moves all four dates by the same number of days, which changes no gap at all; and
+   * cutting the length keeps the shifts, which the generator draws within three days of a length
+   * of at least ten. A cut that did cross the dates - which a period built by hand with larger
+   * shifts could - is rejected by [[SchedulePeriod.of]] and contributes no candidate.
+   *
+   * The measure is the number of adjusted dates that differ from their unadjusted date, plus the
+   * unadjusted length in days beyond the shortest generated one, plus one where the unadjusted
+   * start is not the first date of the window. The floor is a ten-day period at the start of the
+   * window whose adjusted dates are its unadjusted ones.
+   *
+   * @return the shrinking of schedule periods
+   */
+  implicit val shrinkSchedulePeriod: Shrink[SchedulePeriod] =
+    Shrink.withLazyList(schedulePeriodCandidates)
+
+  /** The candidates a period shrinks to, the unshifted period first. */
+  private def schedulePeriodCandidates(period: SchedulePeriod): LazyList[SchedulePeriod] = {
+    val startShift = period.startDate.toEpochDay - period.unadjustedStartDate.toEpochDay
+    val endShift = period.endDate.toEpochDay - period.unadjustedEndDate.toEpochDay
+    val length = period.unadjustedEndDate.toEpochDay - period.unadjustedStartDate.toEpochDay
+    val unshifted =
+      if (startShift == 0L && endShift == 0L) {
+        LazyList.empty
+      } else {
+        candidateOf(
+          SchedulePeriod.of(
+            period.unadjustedStartDate,
+            period.unadjustedEndDate,
+            period.unadjustedStartDate,
+            period.unadjustedEndDate))
+      }
+    val shorter =
+      if (length > MinimumPeriodLength) {
+        val unadjustedEnd = period.unadjustedStartDate.plusDays(MinimumPeriodLength)
+        candidateOf(
+          SchedulePeriod.of(
+            period.startDate,
+            unadjustedEnd.plusDays(endShift),
+            period.unadjustedStartDate,
+            unadjustedEnd))
+      } else {
+        LazyList.empty
+      }
+    val moved =
+      if (period.unadjustedStartDate.isAfter(FirstDate)) {
+        val offset = period.unadjustedStartDate.toEpochDay - FirstDate.toEpochDay
+        candidateOf(
+          SchedulePeriod.of(
+            period.startDate.minusDays(offset),
+            period.endDate.minusDays(offset),
+            period.unadjustedStartDate.minusDays(offset),
+            period.unadjustedEndDate.minusDays(offset)))
+      } else {
+        LazyList.empty
+      }
+    (unshifted #::: shorter #::: moved).distinct.filterNot(candidate => candidate == period)
+  }
+
+  /**
+   * Shrinks a schedule by dropping its last period and by moving its roll convention earlier.
+   *
+   * '''A period is never reduced in place.''' The periods of a generated schedule run end to end
+   * at the frequency the schedule reports, and a period made shorter or moved would leave a gap
+   * between itself and its neighbour - a schedule no generation could produce and the specs
+   * reading periods off a schedule are not written against. Dropping the '''last''' period is the
+   * one reduction that keeps the run contiguous from the start date it began at, and it is the
+   * reduction a reader needs: it says how few periods the failure needs.
+   *
+   * The frequency is left alone for the same reason, since it is the frequency those periods run
+   * at. The measure is the number of periods plus the position of the roll convention, and the
+   * floor is a schedule of one period under the first roll convention. Every candidate is built by
+   * [[Schedule.of]], which is the factory the generator uses.
+   *
+   * @return the shrinking of schedules
+   */
+  implicit val shrinkSchedule: Shrink[Schedule] = Shrink.withLazyList(scheduleCandidates)
+
+  /** The candidates a schedule shrinks to, the shorter schedule before the earlier convention. */
+  private def scheduleCandidates(schedule: Schedule): LazyList[Schedule] = {
+    val periods = schedule.periods
+    val shorter =
+      if (periods.tail.nonEmpty) {
+        candidateOf(
+          Schedule.of(
+            NonEmptyList(periods.head, periods.tail.init),
+            schedule.periodicFrequency,
+            schedule.rollConvention))
+      } else {
+        LazyList.empty
+      }
+    val conventions = earlierMembers(RollConvention.values.toList)(schedule.rollConvention)
+      .flatMap(convention =>
+        candidateOf(Schedule.of(periods, schedule.periodicFrequency, convention)))
+    (shorter #::: conventions).distinct.filterNot(candidate => candidate == schedule)
+  }
+
+  /**
+   * Shrinks a periodic schedule definition by dropping what it says beyond its four required
+   * fields.
+   *
+   * Seven candidates, one for each optional field the definition holds: the two overriding
+   * business day adjustments, the stub convention, the roll convention, the two regular period
+   * boundaries and the overriding start date. '''An optional field is only ever emptied, never
+   * introduced or moved''', because the seven order invariants the type checks hold between the
+   * date-bearing ones - a regular boundary falls on a period boundary, an overriding start date
+   * falls before the start date - and emptying a field can only remove a constraint, while
+   * changing one would break it. The four required fields, which carry the shape of the schedule,
+   * are left exactly as they are for that same reason.
+   *
+   * The measure is the number of optional fields the definition names, and the floor is the
+   * definition of its four required fields alone. Every candidate is built by
+   * [[PeriodicSchedule.of]], the factory the generator uses, so a combination it refuses
+   * contributes no candidate.
+   *
+   * @return the shrinking of periodic schedule definitions
+   */
+  implicit val shrinkPeriodicSchedule: Shrink[PeriodicSchedule] =
+    Shrink.withLazyList(periodicScheduleCandidates)
+
+  /** The candidates a definition shrinks to, one for each optional field it names. */
+  private def periodicScheduleCandidates(
+      schedule: PeriodicSchedule): LazyList[PeriodicSchedule] = {
+
+    def withoutField(
+        startAdjustment: Option[BusinessDayAdjustment],
+        endAdjustment: Option[BusinessDayAdjustment],
+        stubConvention: Option[StubConvention],
+        rollConvention: Option[RollConvention],
+        firstRegular: Option[LocalDate],
+        lastRegular: Option[LocalDate],
+        overrideStart: Option[AdjustableDate]): LazyList[PeriodicSchedule] =
+
+      candidateOf(
+        PeriodicSchedule.of(
+          schedule.startDate,
+          schedule.endDate,
+          schedule.frequency,
+          schedule.businessDayAdjustment,
+          startAdjustment,
+          endAdjustment,
+          stubConvention,
+          rollConvention,
+          firstRegular,
+          lastRegular,
+          overrideStart))
+
+    val candidates =
+      withoutField(
+        None,
+        schedule.endDateBusinessDayAdjustment,
+        schedule.stubConvention,
+        schedule.rollConvention,
+        schedule.firstRegularStartDate,
+        schedule.lastRegularEndDate,
+        schedule.overrideStartDate) #:::
+        withoutField(
+          schedule.startDateBusinessDayAdjustment,
+          None,
+          schedule.stubConvention,
+          schedule.rollConvention,
+          schedule.firstRegularStartDate,
+          schedule.lastRegularEndDate,
+          schedule.overrideStartDate) #:::
+        withoutField(
+          schedule.startDateBusinessDayAdjustment,
+          schedule.endDateBusinessDayAdjustment,
+          None,
+          schedule.rollConvention,
+          schedule.firstRegularStartDate,
+          schedule.lastRegularEndDate,
+          schedule.overrideStartDate) #:::
+        withoutField(
+          schedule.startDateBusinessDayAdjustment,
+          schedule.endDateBusinessDayAdjustment,
+          schedule.stubConvention,
+          None,
+          schedule.firstRegularStartDate,
+          schedule.lastRegularEndDate,
+          schedule.overrideStartDate) #:::
+        withoutField(
+          schedule.startDateBusinessDayAdjustment,
+          schedule.endDateBusinessDayAdjustment,
+          schedule.stubConvention,
+          schedule.rollConvention,
+          None,
+          schedule.lastRegularEndDate,
+          schedule.overrideStartDate) #:::
+        withoutField(
+          schedule.startDateBusinessDayAdjustment,
+          schedule.endDateBusinessDayAdjustment,
+          schedule.stubConvention,
+          schedule.rollConvention,
+          schedule.firstRegularStartDate,
+          None,
+          schedule.overrideStartDate) #:::
+        withoutField(
+          schedule.startDateBusinessDayAdjustment,
+          schedule.endDateBusinessDayAdjustment,
+          schedule.stubConvention,
+          schedule.rollConvention,
+          schedule.firstRegularStartDate,
+          schedule.lastRegularEndDate,
+          None)
+    candidates.distinct.filterNot(candidate => candidate == schedule)
+  }
+
+  //-------------------------------------------------------------------------
+  // The shrinkings of the value package.
+  //-------------------------------------------------------------------------
+  /**
+   * Shrinks a value adjustment type to the types declared before it.
+   *
+   * The measure is the position of the type in the family's declaration order, and the floor is
+   * the first type declared.
+   *
+   * @return the shrinking of value adjustment types
+   */
+  implicit val shrinkValueAdjustmentType: Shrink[ValueAdjustmentType] =
+    Shrink.withLazyList(earlierMembers(ValueAdjustmentType.values.toList))
+
+  /** Rebuilds an adjustment of the kind given, through the factory that names that kind. */
+  private def rebuiltValueAdjustment(
+      value: Double,
+      adjustmentType: ValueAdjustmentType): ValueAdjustment =
+
+    adjustmentType match {
+      case ValueAdjustmentType.Replace => ValueAdjustment.ofReplace(value)
+      case ValueAdjustmentType.DeltaAmount => ValueAdjustment.ofDeltaAmount(value)
+      case ValueAdjustmentType.DeltaMultiplier => ValueAdjustment.ofDeltaMultiplier(value)
+      case ValueAdjustmentType.Multiplier => ValueAdjustment.ofMultiplier(value)
+    }
+
+  /**
+   * Shrinks a value adjustment towards adjusting by positive zero, keeping the kind it is.
+   *
+   * '''The kind of adjustment is never changed.''' Replacing a value, adding a delta, adding a
+   * proportion and multiplying are four different operations, and a step sequence accepts three of
+   * them and refuses the fourth, so a candidate of another kind would minimise a failure of one
+   * operation into a value describing another - the rule `strata-collect` states for the reason of
+   * a failure, which its shrinking also never changes. Each candidate is rebuilt through the
+   * factory naming its own kind.
+   *
+   * The measure is one where the number carried is not already positive zero, and the floor is an
+   * adjustment of positive zero of the same kind.
+   *
+   * @return the shrinking of value adjustments
+   */
+  implicit val shrinkValueAdjustment: Shrink[ValueAdjustment] =
+    Shrink.withLazyList(valueAdjustmentCandidates)
+
+  /** The candidates an adjustment shrinks to: the same kind adjusting by positive zero. */
+  private def valueAdjustmentCandidates(
+      adjustment: ValueAdjustment): LazyList[ValueAdjustment] =
+
+    simplerNumbers(adjustment.modifyingValue)
+      .map(value => rebuiltValueAdjustment(value, adjustment.`type`))
+      .distinct
+      .filterNot(candidate => candidate == adjustment)
+
+  /**
+   * Shrinks a value with its derivatives towards zero with one zero derivative.
+   *
+   * The derivatives shrink exactly as an array does in `strata-collect` - the trailing element is
+   * dropped while more than one is left, and an element that is not already positive zero is
+   * simplified to it - and the floor keeps one derivative for the reason that shrinking does: the
+   * array generator draws at least one element, so an empty array is not a value that was drawn.
+   *
+   * The measure is one where the value is not already positive zero, plus the number of
+   * derivatives, plus the number of derivatives that are not already positive zero. The floor is a
+   * value of positive zero with one derivative of positive zero.
+   *
+   * @return the shrinking of values with derivatives
+   */
+  implicit val shrinkValueDerivatives: Shrink[ValueDerivatives] =
+    Shrink.withLazyList(valueDerivativesCandidates)
+
+  /** The candidates a value with derivatives shrinks to, the zeroed value first. */
+  private def valueDerivativesCandidates(
+      derivatives: ValueDerivatives): LazyList[ValueDerivatives] = {
+
+    val values = simplerNumbers(derivatives.value)
+      .map(value => ValueDerivatives.of(value, derivatives.derivatives))
+    val shorter =
+      if (derivatives.derivatives.size > 1) {
+        LazyList(
+          ValueDerivatives.of(
+            derivatives.value,
+            derivatives.derivatives.subArray(0, derivatives.derivatives.size - 1)))
+      } else {
+        LazyList.empty
+      }
+    val zeroed = LazyList
+      .range(0, derivatives.derivatives.size)
+      .filterNot(index => isSimplifiedNumber(derivatives.derivatives.get(index)))
+      .map(index =>
+        ValueDerivatives.of(derivatives.value, zeroedElement(derivatives.derivatives, index)))
+    (values #::: shorter #::: zeroed).distinct.filterNot(candidate => candidate == derivatives)
+  }
+
+  /**
+   * Shrinks a half-up rounding towards rounding to no decimal places at all.
+   *
+   * Two candidates: the rounding without its fraction of the last place, and the rounding to fewer
+   * decimal places. Both stay half-up roundings, and both are within the image of
+   * [[genHalfUpRounding]], which draws a fraction of zero as one of its fractions.
+   *
+   * The measure is the number of decimal places plus the fraction of the last place, and the floor
+   * is rounding to zero decimal places with no fraction. Both candidates are built by the factories
+   * the generator uses, which check the ranges of both fields, so a candidate is a rounding on
+   * exactly the terms a generated one is.
+   *
+   * @return the shrinking of half-up roundings
+   */
+  implicit val shrinkHalfUp: Shrink[HalfUp] = Shrink.withLazyList(halfUpCandidates)
+
+  /** The candidates a half-up rounding shrinks to, the dropped fraction before fewer places. */
+  private def halfUpCandidates(rounding: HalfUp): LazyList[HalfUp] = {
+    val withoutFraction =
+      if (rounding.fraction > 0) {
+        candidateOf(HalfUp.ofDecimalPlaces(rounding.decimalPlaces))
+      } else {
+        LazyList.empty
+      }
+    val fewerPlaces = simplerIntegers(rounding.decimalPlaces)
+      .flatMap(places =>
+        if (rounding.fraction > 0) {
+          candidateOf(HalfUp.ofFractionalDecimalPlaces(places, rounding.fraction))
+        } else {
+          candidateOf(HalfUp.ofDecimalPlaces(places))
+        })
+    (withoutFraction #::: fewerPlaces).distinct.filterNot(candidate => candidate == rounding)
+  }
+
+  /**
+   * Shrinks a rounding convention within the kind of rounding it is.
+   *
+   * A half-up rounding shrinks as [[shrinkHalfUp]] describes and '''never shrinks to the rounding
+   * that does nothing''': that one is a different member of the family, with its own document form
+   * and its own behaviour of returning every value unaltered, so a candidate of it would minimise
+   * a failure of rounding into a value that never rounded. The rounding that does nothing carries
+   * no field and is its own floor.
+   *
+   * The measure is that of [[shrinkHalfUp]] for a half-up rounding and zero for the rounding that
+   * does nothing.
+   *
+   * @return the shrinking of rounding conventions
+   */
+  implicit val shrinkRounding: Shrink[Rounding] = Shrink.withLazyList(roundingCandidates)
+
+  /** The candidates a rounding shrinks to, within the kind of rounding it is. */
+  private def roundingCandidates(rounding: Rounding): LazyList[Rounding] =
+    rounding match {
+      case halfUp: HalfUp => halfUpCandidates(halfUp).map(candidate => candidate: Rounding)
+      case _ => LazyList.empty
+    }
+
+  /**
+   * Shrinks a step changing a value, keeping the way the step is positioned.
+   *
+   * '''A step positioned by an index stays positioned by an index, and a step positioned by a date
+   * stays positioned by a date.''' Exactly one of the two positions is named - the factory rejects
+   * a step naming both and a step naming neither - and the two are resolved against a schedule in
+   * different ways, so a candidate of the other shape would be a step of a different kind from the
+   * one that failed. An index shrinks towards one, which is the smallest index the factory accepts,
+   * and a date towards the first date of the generated window.
+   *
+   * The measure is the index less one, or one where the date is not already the start of the
+   * window, plus the measure of the adjustment as [[shrinkValueAdjustment]] defines it. The floors
+   * are a step at the first period index and a step on the first date of the window, each adjusting
+   * by positive zero of its own kind.
+   *
+   * @return the shrinking of steps changing a value
+   */
+  implicit val shrinkValueStep: Shrink[ValueStep] = Shrink.withLazyList(valueStepCandidates)
+
+  /** The candidates a step shrinks to, the simpler position before the simpler adjustment. */
+  private def valueStepCandidates(step: ValueStep): LazyList[ValueStep] = {
+    val positions = step.periodIndex match {
+      case Some(index) =>
+        simplerPositions(index)
+          .flatMap(position => candidateOf(ValueStep.of(position, step.value)))
+      case None =>
+        LazyList
+          .from(step.date.toList)
+          .flatMap(date => simplerDates(date))
+          .map(date => ValueStep.of(date, step.value))
+    }
+    val adjustments = valueAdjustmentCandidates(step.value)
+      .flatMap(adjustment =>
+        candidateOf(ValueStep.of(step.periodIndex, step.date, adjustment)))
+    (positions #::: adjustments).distinct.filterNot(candidate => candidate == step)
+  }
+
+  /**
+   * Shrinks a sequence of steps towards a single step at the start of the generated window.
+   *
+   * Four candidates: the sequence whose last step date is its first, the sequence translated so
+   * that its first step date is the start of the window, the sequence at a shorter frequency, and
+   * the sequence under a simpler adjustment. '''The first date stays on or before the last''',
+   * which the factory requires: collapsing the two makes them equal, and translating moves both by
+   * the same number of days. The adjustment keeps its kind, so an adjustment the factory accepts -
+   * it refuses one that replaces the value - stays one it accepts.
+   *
+   * The measure is one where the last step date is not the first, plus one where the first is not
+   * the start of the window, plus the number of units the frequency holds, plus the measure of the
+   * adjustment. The floor is a sequence whose two dates are both the start of the window, at one
+   * unit of its frequency's kind, adjusting by positive zero.
+   *
+   * @return the shrinking of sequences of steps
+   */
+  implicit val shrinkValueStepSequence: Shrink[ValueStepSequence] =
+    Shrink.withLazyList(valueStepSequenceCandidates)
+
+  /** The candidates a sequence shrinks to, the collapsed span first. */
+  private def valueStepSequenceCandidates(
+      sequence: ValueStepSequence): LazyList[ValueStepSequence] = {
+
+    val collapsed =
+      if (sequence.lastStepDate == sequence.firstStepDate) {
+        LazyList.empty
+      } else {
+        candidateOf(
+          ValueStepSequence.of(
+            sequence.firstStepDate,
+            sequence.firstStepDate,
+            sequence.frequency,
+            sequence.adjustment))
+      }
+    val moved =
+      if (sequence.firstStepDate.isAfter(FirstDate)) {
+        val offset = sequence.firstStepDate.toEpochDay - FirstDate.toEpochDay
+        candidateOf(
+          ValueStepSequence.of(
+            sequence.firstStepDate.minusDays(offset),
+            sequence.lastStepDate.minusDays(offset),
+            sequence.frequency,
+            sequence.adjustment))
+      } else {
+        LazyList.empty
+      }
+    val frequencies = frequencyCandidates(sequence.frequency)
+      .flatMap(frequency =>
+        candidateOf(
+          ValueStepSequence.of(
+            sequence.firstStepDate,
+            sequence.lastStepDate,
+            frequency,
+            sequence.adjustment)))
+    val adjustments = valueAdjustmentCandidates(sequence.adjustment)
+      .flatMap(adjustment =>
+        candidateOf(
+          ValueStepSequence.of(
+            sequence.firstStepDate,
+            sequence.lastStepDate,
+            sequence.frequency,
+            adjustment)))
+    (collapsed #::: moved #::: frequencies #::: adjustments).distinct
+      .filterNot(candidate => candidate == sequence)
+  }
+
+  /**
+   * Shrinks a schedule of values towards the initial value alone.
+   *
+   * Construction places no constraint between the three fields - whether a step lines up with a
+   * period boundary is a question about the schedule it is resolved against, not about this value -
+   * so all three shrink freely and the factory rejects nothing: the initial value goes to positive
+   * zero, the last step is dropped, a step that is kept is replaced by one of its own candidates,
+   * and the sequence of steps is dropped or replaced by one of its candidates.
+   *
+   * The measure is one where the initial value is not already positive zero, plus the number of
+   * steps and the sum of their measures, plus one where a sequence is named and its measure. The
+   * floor is a schedule of positive zero with no steps and no sequence.
+   *
+   * @return the shrinking of schedules of values
+   */
+  implicit val shrinkValueSchedule: Shrink[ValueSchedule] =
+    Shrink.withLazyList(valueScheduleCandidates)
+
+  /**
+   * The candidates a schedule of values shrinks to, the zeroed initial value first.
+   *
+   * Construction reports its outcome, so a candidate the factory refuses is simply not offered:
+   * a shrinking may only produce values of the type, and the smaller fields a shrinking proposes
+   * are not guaranteed to satisfy the factory's own conditions together.
+   */
+  private def valueScheduleCandidates(schedule: ValueSchedule): LazyList[ValueSchedule] = {
+    val values = simplerNumbers(schedule.initialValue)
+      .flatMap(value => ValueSchedule.of(value, schedule.steps, schedule.stepSequence).toOption)
+    val shorter =
+      if (schedule.steps.nonEmpty) {
+        LazyList.from(
+          ValueSchedule.of(schedule.initialValue, schedule.steps.init, schedule.stepSequence).toOption)
+      } else {
+        LazyList.empty
+      }
+    val simplerSteps = LazyList
+      .range(0, schedule.steps.size)
+      .flatMap(index =>
+        valueStepCandidates(schedule.steps(index)).flatMap(step =>
+          ValueSchedule
+            .of(schedule.initialValue, schedule.steps.updated(index, step), schedule.stepSequence)
+            .toOption))
+    val withoutSequence = schedule.stepSequence match {
+      case Some(_) =>
+        LazyList.from(ValueSchedule.of(schedule.initialValue, schedule.steps, None).toOption)
+      case None => LazyList.empty
+    }
+    val simplerSequences = LazyList
+      .from(schedule.stepSequence.toList)
+      .flatMap(sequence => valueStepSequenceCandidates(sequence))
+      .flatMap(sequence =>
+        ValueSchedule.of(schedule.initialValue, schedule.steps, Some(sequence)).toOption)
+    (values #::: shorter #::: simplerSteps #::: withoutSequence #::: simplerSequences).distinct
+      .filterNot(candidate => candidate == schedule)
+  }
+
+  //-------------------------------------------------------------------------
+  // The shrinkings of the currency package, continued: the adjustable payment.
+  //-------------------------------------------------------------------------
+  /**
+   * Shrinks an adjustable payment by simplifying its amount and its date.
+   *
+   * The measure is the measure of the amount, as [[shrinkCurrencyAmount]] defines it, plus the
+   * measure of the adjustable date, as [[shrinkAdjustableDate]] defines it. The floor is a payment
+   * of zero of the first currency on the first date of the generated window under the floor
+   * adjustment. The factory is total, so no candidate is dropped.
+   *
+   * @return the shrinking of adjustable payments
+   */
+  implicit val shrinkAdjustablePayment: Shrink[AdjustablePayment] =
+    Shrink.withLazyList(adjustablePaymentCandidates)
+
+  /** The candidates a payment shrinks to, the simpler amount before the simpler date. */
+  private def adjustablePaymentCandidates(
+      payment: AdjustablePayment): LazyList[AdjustablePayment] = {
+
+    val amounts = currencyAmountCandidates(payment.value)
+      .map(amount => AdjustablePayment.of(amount, payment.date))
+    val dates = adjustableDateCandidates(payment.date)
+      .map(date => AdjustablePayment.of(payment.value, date))
+    (amounts #::: dates).distinct.filterNot(candidate => candidate == payment)
+  }
 }

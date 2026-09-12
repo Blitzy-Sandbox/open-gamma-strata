@@ -10,11 +10,11 @@ import java.util.Arrays
 import scala.annotation.tailrec
 import scala.collection.immutable.ListSet
 import scala.collection.immutable.Set
+import scala.collection.immutable.VectorMap
 
 import cats.Hash
 import cats.Show
 import cats.syntax.apply._
-import cats.syntax.traverse._
 
 import io.circe.Decoder
 import io.circe.Encoder
@@ -108,6 +108,20 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    */
   private lazy val indexByCurrency: Map[Currency, Int] = currencies.zipWithIndex.toMap
 
+  /**
+   * The currencies of this matrix as an insertion-ordered set, which is what [[getCurrencies]]
+   * answers with.
+   *
+   * This is derived from [[currencies]] and held for the same reasons the lookup above is held: a
+   * matrix cannot change, so the set derived from it cannot either, and the implementation being
+   * ported answered this question with a set it already held rather than with one built for the
+   * caller. It is built on first use, so a matrix built as one step of a fold pays nothing for a
+   * set no caller reads, and every caller thereafter reads the same value. Being derived, it takes
+   * no part in equality, in hashing or in the JSON form - those read the currencies in order,
+   * which is the value this set is a projection of.
+   */
+  private lazy val currencySet: Set[Currency] = ListSet.from(currencies)
+
   //-------------------------------------------------------------------------
   /**
    * Returns the set of currencies held within this matrix.
@@ -119,9 +133,14 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * it holds. Where the order is what a caller needs, [[currencies]] states it in a type that
    * cannot lose it.
    *
+   * The value answered is the one held on this matrix rather than one built per call, so repeated
+   * calls answer the same set and reading the currencies of a matrix allocates nothing - see
+   * [[currencySet]], which also records that a derived value takes no part in equality, in hashing
+   * or in the JSON form.
+   *
    * @return the currencies in this matrix, iterating in matrix order
    */
-  def getCurrencies: Set[Currency] = ListSet.from(currencies)
+  def getCurrencies: Set[Currency] = currencySet
 
   //-------------------------------------------------------------------------
   /**
@@ -204,19 +223,43 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * yielded them in. Floating-point addition is order-sensitive, so stating the order is what
    * makes this total reproducible and what lets it be compared against a captured baseline.
    *
+   * The total is accumulated as a number, in one pass over the amounts held: the running total is
+   * a parameter of the loop below, so it stays a primitive and neither the amounts converted nor
+   * the total are collected into anything. That is the shape the implementation being ported
+   * used, and its reason - it recorded that it worked in numbers to avoid creating extra objects -
+   * applies here, where a pass that collected the converted numbers first would box every one of
+   * them.
+   *
    * A single unavailable rate fails the whole conversion, carrying the failure the lookup
-   * reported: a total assembled from some of the amounts would be a number with no meaning.
+   * reported: a total assembled from some of the amounts would be a number with no meaning. The
+   * pass therefore ends at the first amount whose rate is missing and no later amount is looked
+   * up, which is the failure a caller is told about and is why offering amounts in several
+   * unavailable currencies reports the first of them in currency order.
    *
    * @param amount  the multi-currency amount to be converted
    * @param targetCurrency  the currency to convert all entries to
    * @return the total amount in the requested currency, or the failure describing why the
    *   conversion could not be performed
    */
-  def convert(amount: MultiCurrencyAmount, targetCurrency: Currency): FailureOr[CurrencyAmount] =
-    amount.amounts.toList
-      .traverse { case (currency, value) => convert(value, currency, targetCurrency) }
-      .flatMap(converted =>
-        CurrencyAmount.of(targetCurrency, converted.foldLeft(0d)((total, next) => total + next)))
+  def convert(amount: MultiCurrencyAmount, targetCurrency: Currency): FailureOr[CurrencyAmount] = {
+    // The amounts are walked through their iterator, which yields them in the currency order the
+    // value holds them in, and the total is threaded as a parameter rather than accumulated into
+    // a collection. The recursion is in tail position, so it compiles to a loop over a primitive.
+    @tailrec
+    def totalled(entries: Iterator[(Currency, Double)], total: Double): FailureOr[Double] =
+      if (entries.hasNext) {
+        val (currency, value) = entries.next()
+        convert(value, currency, targetCurrency) match {
+          case Right(converted) => totalled(entries, total + converted)
+          case Left(failure) => Left(failure)
+        }
+      } else {
+        Right(total)
+      }
+
+    totalled(amount.amounts.iterator, 0d)
+      .flatMap(total => CurrencyAmount.of(targetCurrency, total))
+  }
 
   //-------------------------------------------------------------------------
   /**
@@ -486,7 +529,11 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
  * [[FxMatrix.ofRates]] rather than [[FxMatrix.of]] is the factory for a collection whose rates are
  * not all greater than zero: a rate of zero is one a matrix accepts but not one [[FxRate]] admits,
  * so such a collection cannot be expressed as [[FxRate]] values. The two collection factories are
- * otherwise the same factory, the rate form being defined in terms of the pair form.
+ * otherwise one factory stated twice: each folds the placement below over its own collection, in
+ * the order that collection yields, so they answer with the same matrix for the same pairs and
+ * rates. Neither is written in terms of the other, because a collection of [[FxRate]] values
+ * projected onto pairs and rates is a second collection of the same length that placing the values
+ * as they are read does not need.
  *
  * The `Collector` factories of the implementation being ported, which collected a stream of
  * entries or of pairs into a matrix, are not ported: a collection is placed by these factories
@@ -507,19 +554,25 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
 object FxMatrix {
 
   /**
-   * The rates offered to a fold that could not be placed when they were offered, in the order
-   * they were offered in.
+   * The rates offered to a fold that could not be placed when they were offered, keyed by their
+   * currency pair and iterating in the order they were offered in.
    *
-   * The implementation being ported held these in a hashed map keyed by currency pair, and a rate
-   * offered twice for one pair therefore replaced the earlier one. That is reproduced here -
-   * [[parked]] replaces the rate of a pair already held back and keeps its position - with the
-   * one difference that the order here is the order the rates were offered in rather than the
-   * order of a hash table, which is what makes a fold over a collection of rates reproducible.
+   * The implementation being ported held these in a map keyed by currency pair, so a rate offered
+   * twice for one pair replaced the earlier one at the cost of a single keyed write. Both
+   * properties are needed here - the replacement, because a caller may restate a rate that is
+   * still held back, and the constant cost, because how many rates are held back is the caller's
+   * choice and a scan per offer would make a collection of disconnected rates cost time
+   * proportional to the square of its size. `VectorMap` is the structure of the standard library
+   * that has both: a write for a key it already holds keeps that key's position, a write for a
+   * new key appends, and iteration is in that order. The order differs from the order of the hash
+   * table that implementation used, and the difference is deliberate - offer order is what makes
+   * a fold over a collection of rates reproducible, and it is the order the failure listing them
+   * reads in.
    */
-  private type PendingRates = Vector[(CurrencyPair, Double)]
+  private type PendingRates = VectorMap[CurrencyPair, Double]
 
   /** No rates held back, the state every fold starts from. */
-  private val NoPendingRates: PendingRates = Vector.empty
+  private val NoPendingRates: PendingRates = VectorMap.empty
 
   /**
    * The greatest number of rates held back that the failure reporting them lists individually.
@@ -596,12 +649,23 @@ object FxMatrix {
    * holds one cannot be expressed here; [[FxMatrix.ofRates]] takes pairs and rates directly and
    * places such a collection.
    *
+   * The pair and rate each value holds are read as the rate is placed, rather than the collection
+   * being projected onto pairs and rates and that projection placed. The two describe the same
+   * placement - this is the same fold over the same rates in the same order, so the result is the
+   * result [[FxMatrix.ofRates]] answers for the pairs and rates of these values - and reading them
+   * one at a time is what keeps a collection of rates from being copied into a second collection
+   * of one tuple per rate, each holding a number that would have to be boxed to live in it. The
+   * collection is traversed exactly once, so a collection that admits only one traversal is a
+   * collection this factory accepts.
+   *
    * @param fxRates  the rates to place, in the order to place them
    * @return the matrix holding those rates, or the failure listing the rates that could never be
    *   placed
    */
   def of(fxRates: Iterable[FxRate]): FailureOr[FxMatrix] =
-    ofRates(fxRates.map(rate => (rate.pair, rate.rate)))
+    placed(fxRates.foldLeft((empty, NoPendingRates)) { case ((matrix, pending), fxRate) =>
+      stepped(matrix, pending, fxRate.pair.base, fxRate.pair.counter, fxRate.rate)
+    })
 
   /**
    * Obtains an instance containing the specified rates, stated as currency pairs and rates.
@@ -797,7 +861,11 @@ object FxMatrix {
    *
    * This is the dispatch of the four outcomes described on [[FxMatrix.withRate]], and it is the
    * single step every factory and every placement of a rate is built from. It does not retry the
-   * rates already held back; [[retried]] does that, and [[stepped]] is the two together.
+   * rates already held back; [[retried]] does that, and [[stepped]] is this offer followed by
+   * that retry in the one case that can make a rate held back placeable - an offer that brought a
+   * currency into the matrix. Of the four outcomes only the initial pair and the addition of a
+   * new currency do so: an update returns a matrix of the same currencies, and a rate held back
+   * returns the matrix it was offered to.
    *
    * @param matrix  the matrix to offer the rate to
    * @param pending  the rates already held back
@@ -869,21 +937,30 @@ object FxMatrix {
   }
 
   /**
-   * Offers one rate to a matrix and then places every rate held back that has become placeable.
+   * Offers one rate to a matrix and then, where the offer brought a currency in, places every
+   * rate held back that has become placeable.
    *
    * This is the whole of placing a rate, and it is what the corresponding method of the builder
-   * being ported did: the rate is offered, and the rates held back are retried afterwards. That
-   * implementation retried them only after a rate that brought in a new currency, which is the
-   * only case that can make one placeable; retrying after every offer reaches the same state,
-   * because a pass over rates held back against an unchanged set of currencies places nothing,
-   * and it keeps this member to one description of what happens.
+   * being ported did: the rate is offered, and the rates held back are retried exactly when a
+   * currency arrived, which is the only thing that can make a held-back rate placeable. A rate
+   * held back is held back because the matrix contains neither of its currencies, so a pass over
+   * the rates held back against a set of currencies that has not changed since the previous pass
+   * places nothing; performing that pass after every offer would therefore reach the same state
+   * while examining every rate held back once per offer, which is time proportional to the square
+   * of the number of rates a caller offered - the amplification this member exists to avoid.
+   *
+   * Whether a currency arrived is read from the number of currencies, which is the whole of the
+   * test: of the four outcomes of an offer only the initial pair and the addition of a new
+   * currency change [[FxMatrix.currencies]], an update leaves it as it stands, and a rate held
+   * back leaves the matrix itself untouched. The retry is also skipped when nothing is held back,
+   * which is the common case of a collection whose rates connect in the order they are offered.
    *
    * @param matrix  the matrix to offer the rate to
    * @param pending  the rates already held back
    * @param ccy1  the first currency of the pair, the reference currency of an update
    * @param ccy2  the second currency of the pair, the currency restated by an update
    * @param rate  the rate of the first currency in terms of the second
-   * @return the matrix after the offer and the retry, and the rates still held back
+   * @return the matrix after the offer and any retry, and the rates still held back
    */
   private def stepped(
       matrix: FxMatrix,
@@ -892,24 +969,32 @@ object FxMatrix {
       ccy2: Currency,
       rate: Double): (FxMatrix, PendingRates) = {
     val (advanced, offeredPending) = offered(matrix, pending, ccy1, ccy2, rate)
-    retried(advanced, offeredPending)
+    val currencyArrived = advanced.currencies.size > matrix.currencies.size
+    if (currencyArrived && offeredPending.nonEmpty) {
+      retried(advanced, offeredPending)
+    } else {
+      (advanced, offeredPending)
+    }
   }
 
   /**
    * Holds a rate back, to be retried when a later rate connects it.
    *
-   * A rate offered for a pair already held back replaces it and keeps its position, which is what
-   * the hashed map of the implementation being ported did for a repeated key.
+   * This is one keyed write, which is what the map keyed by currency pair of the implementation
+   * being ported performed: a rate offered for a pair already held back replaces the rate held
+   * for it and keeps that pair's position in the offer order, and a rate for a pair not held back
+   * is appended after the rates already held. Neither case examines the rates already held back,
+   * so offering a rate that cannot be placed costs the same whether one rate is held back or
+   * thousands - which is what bounds the work a collection of mutually disconnected rates can
+   * demand.
    *
    * @param pending  the rates already held back
    * @param pair  the currency pair of the rate to hold back
    * @param rate  the rate of the base currency of that pair in terms of its counter currency
    * @return the rates held back, including this one
    */
-  private def parked(pending: PendingRates, pair: CurrencyPair, rate: Double): PendingRates = {
-    val at = pending.indexWhere { case (parkedPair, _) => parkedPair == pair }
-    if (at < 0) pending :+ (pair -> rate) else pending.updated(at, pair -> rate)
-  }
+  private def parked(pending: PendingRates, pair: CurrencyPair, rate: Double): PendingRates =
+    pending.updated(pair, rate)
 
   /**
    * Answers with the matrix a fold reached, or with the failure listing the rates it could never
@@ -1062,11 +1147,17 @@ object FxMatrix {
    * case is identical to what it wrote. Beyond [[MaxListedRates]] rates the listing states how
    * many it left out rather than growing with the collection it was given.
    *
+   * The rates are read in the order they were offered in, which is the order the rates held back
+   * iterate in, and only as far as the bound: the rendering walks an iterator rather than taking
+   * a prefix of the rates held back, so describing a large collection of rates that could never
+   * be placed builds the bounded listing and nothing else.
+   *
    * @param pending  the rates to render
    * @return the bounded rendering of those rates
    */
   private def renderRates(pending: PendingRates): String = {
-    val listed = pending.take(MaxListedRates).map { case (pair, rate) => s"$pair=$rate" }
+    val listed =
+      pending.iterator.take(MaxListedRates).map { case (pair, rate) => s"$pair=$rate" }.toVector
     val omitted = pending.size - listed.size
     val marker = if (omitted > 0) s", and $omitted more" else ""
     listed.mkString("{", ", ", marker + "}")
@@ -1173,4 +1264,3 @@ object FxMatrix {
   implicit val decoder: Decoder[FxMatrix] =
     Codecs.validatedDecoder[Raw, FxMatrix](raw => fromMatrix(raw.currencies, raw.rates))(rawDecoder)
 }
-

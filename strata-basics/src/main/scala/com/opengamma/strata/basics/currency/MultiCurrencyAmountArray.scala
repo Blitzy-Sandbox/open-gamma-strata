@@ -5,13 +5,13 @@
  */
 package com.opengamma.strata.basics.currency
 
+import scala.annotation.tailrec
 import scala.collection.immutable.SortedMap
 import scala.collection.immutable.SortedSet
 
 import cats.Hash
 import cats.Order
 import cats.Show
-import cats.syntax.traverse._
 
 import io.circe.Decoder
 import io.circe.Encoder
@@ -173,6 +173,22 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * behaviour of the implementation being ported, whose own `get` raised it too. A run holding no
    * currency answers with an empty amount for any index, as it did there, since no array is read.
    *
+   * ===What reconstructing an index costs===
+   *
+   * The currencies of the run are already distinct and already in code order, and each of their
+   * values at the index is already a number, so there is nothing here to merge and nothing to
+   * decide beyond the invariant of an amount. The raw pairs are therefore handed to the
+   * package-private checked-map constructor of [[MultiCurrencyAmount]], which normalises and
+   * checks each number as it goes into the one map the returned value holds: reading an index
+   * builds the value it answers with and nothing else. Routing the pairs through the aggregating
+   * factory instead - as this once did - would allocate a [[CurrencyAmount]] per currency for
+   * that factory to unwrap again, and would re-merge entries that cannot collide, building a
+   * second map to reach a value the first one already described.
+   *
+   * The invariant of an amount is applied by exactly the same computation either way, so a value
+   * that is not a number is refused as it is read and with the same message, and a negative zero
+   * held in an array is normalised to a positive zero in the amount, as they were before.
+   *
    * @param index  the zero-based index to retrieve
    * @return the amount at that index, naming every currency of the run
    * @throws java.lang.IndexOutOfBoundsException if the index is outside the run and the run holds
@@ -180,12 +196,13 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * @throws java.lang.IllegalArgumentException if a value at that index is not a number
    */
   def get(index: Int): MultiCurrencyAmount =
-    MultiCurrencyAmount.total(values.iterator.map { case (currency, currencyValues) =>
-      // the total route into an amount: the value has already been decided, so the checking
-      // factory of `CurrencyAmount` is not used - it would widen reading an index into a failure
-      // channel the implementation being ported did not have
-      CurrencyAmount.zero(currency).mapAmount(_ => currencyValues.get(index))
-    }.toList)
+    MultiCurrencyAmount.create(values.iterator.map { case (currency, currencyValues) =>
+      // the numbers are read straight out of the arrays and the currencies are distinct and
+      // sorted already, so the checked-map constructor of the amount is handed exactly the
+      // entries of the value it returns: no amount object is built for it to unwrap, and no
+      // merge is performed over entries that cannot collide
+      (currency, currencyValues.get(index))
+    })
 
   /**
    * Returns the amounts of this run, one at a time.
@@ -271,11 +288,13 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * currency dimension, so what is left is one array of values in one currency, exactly as
    * converting a [[MultiCurrencyAmount]] leaves one [[CurrencyAmount]].
    *
-   * The arithmetic is the arithmetic of the implementation being ported, in its order: the result
-   * starts as zeroes, and each currency's values, multiplied by that currency's rate, are added
-   * to it, the currencies taken in the order of their codes. Floating point addition is
-   * order-sensitive, so stating the order is what makes the result reproducible and what lets it
-   * be compared against a captured baseline.
+   * The arithmetic is the arithmetic of the implementation being ported, in its order: the value
+   * at an index starts at zero, and each currency's value at that index, multiplied by that
+   * currency's rate, is added to it, the currencies taken in the order of their codes. Floating
+   * point addition is order-sensitive, so stating the order is what makes the result reproducible
+   * and what lets it be compared against a captured baseline. That is also why the starting zero
+   * is stated: it is what turns a product of `-0.0` into the positive zero the implementation
+   * being ported produced by adding into a zeroed buffer.
    *
    * The rate of a currency is asked for exactly once and applied to that currency's whole array,
    * where the implementation being ported asked once per element. For a provider whose answers
@@ -288,6 +307,16 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * The rate is asked for even when a currency of the run is the result currency, as it was
    * there, and the providers of this port answer that with one.
    *
+   * ===What a conversion allocates===
+   *
+   * Exactly one full-length array, the one the result is made of. The rates are collected first,
+   * one per currency, and the sum is then computed index by index into that single array - so a
+   * run of a hundred thousand scenarios in five currencies writes a hundred thousand values once
+   * rather than the six hundred thousand that scaling each currency's array and folding the
+   * results onto a zeroed array costs, and nothing full-length is allocated only to be added into
+   * something else and dropped. What is held between the two halves is one small structure per
+   * currency of the run, holding that currency's rate beside the array the run already holds.
+   *
    * @param resultCurrency  the currency of the result
    * @param rateProvider  the provider of FX rates
    * @return this run expressed in the result currency, or the failure the provider reported for
@@ -296,14 +325,8 @@ sealed abstract case class MultiCurrencyAmountArray private (
   override def convertedTo(
       resultCurrency: Currency,
       rateProvider: FxRateProvider): FailureOr[CurrencyAmountArray] =
-    values.toList
-      .traverse { case (currency, currencyValues) =>
-        rateProvider.fxRate(currency, resultCurrency).map(rate => currencyValues.multipliedBy(rate))
-      }
-      .map(scaled =>
-        CurrencyAmountArray.of(
-          resultCurrency,
-          scaled.foldLeft(DoubleArray.filled(size))((total, next) => total.plus(next))))
+    ratesOf(values.iterator, resultCurrency, rateProvider, Vector.empty)
+      .map(prepared => CurrencyAmountArray.of(resultCurrency, converted(prepared)))
 
   //-------------------------------------------------------------------------
   /**
@@ -434,6 +457,110 @@ sealed abstract case class MultiCurrencyAmountArray private (
       SortedMap.from(values.iterator.map { case (currency, currencyValues) =>
         (currency, operation(currencyValues))
       })(MultiCurrencyAmountArray.currencyOrdering))
+
+  /**
+   * Collects the rate of each currency of this run, stopping at the first one that is refused.
+   *
+   * This is the first half of [[convertedTo]], and it is where every question is put to the
+   * provider: each currency of the run is asked for exactly once, in the order of the currency
+   * codes, and the rate is kept beside the array the run already holds for that currency so that
+   * the second half needs no further lookup. Nothing full-length is built here - an entry is a
+   * rate and a reference to an array this run holds - so the whole of what a conversion holds
+   * between its two halves is one small entry per currency.
+   *
+   * A refused rate returns immediately and no currency after it is asked about, which is the
+   * promise [[convertedTo]] makes: asking for rates that a decided outcome does not need would
+   * make the number of lookups a failing conversion costs depend on how many currencies happened
+   * to follow the one that failed. Writing it as a recursion over the entries rather than as a
+   * traversal of them is what makes that unconditional, since a traversal decides for itself how
+   * much of its input it reads.
+   *
+   * The recursion is in tail position and compiles to a loop, so a run of any number of
+   * currencies is prepared without consuming stack.
+   *
+   * @param remaining  the currencies of this run still to be asked about, in code order
+   * @param resultCurrency  the currency every value is to be converted into
+   * @param rateProvider  the provider of FX rates, asked once per currency
+   * @param prepared  the rate and values of each currency asked about so far, in code order
+   * @return the rate and values of every currency in code order, or the failure the provider
+   *   reported for the first rate it could not supply
+   */
+  @tailrec
+  private def ratesOf(
+      remaining: Iterator[(Currency, DoubleArray)],
+      resultCurrency: Currency,
+      rateProvider: FxRateProvider,
+      prepared: Vector[(Double, DoubleArray)]): FailureOr[Vector[(Double, DoubleArray)]] =
+    if (!remaining.hasNext) {
+      Right(prepared)
+    } else {
+      val (currency, currencyValues) = remaining.next()
+      rateProvider.fxRate(currency, resultCurrency) match {
+        case Right(rate) =>
+          ratesOf(remaining, resultCurrency, rateProvider, prepared :+ ((rate, currencyValues)))
+        case Left(failure) => Left(failure)
+      }
+    }
+
+  /**
+   * Computes the converted values of the whole run into one array.
+   *
+   * This is the second half of [[convertedTo]], and it allocates exactly one full-length array:
+   * the values of the result are produced index by index, each as the sum over the currencies at
+   * that index, so no currency's contribution is ever materialised as an array of its own. The
+   * two small buffers are the rates and the arrays of the entries prepared by [[ratesOf]], laid
+   * out by position so that the loop over the currencies of an index reads them primitively;
+   * they are locals of this method, they hold no value of the result, and neither they nor any
+   * backing array of a [[DoubleArray]] leaves it.
+   *
+   * @param prepared  the rate and values of every currency of this run, in code order
+   * @return the values of this run converted and added together, one per index
+   */
+  private def converted(prepared: Vector[(Double, DoubleArray)]): DoubleArray = {
+    val rates: Array[Double] = Array.tabulate(prepared.size)(position => prepared(position)._1)
+    val arrays: Array[DoubleArray] =
+      Array.tabulate(prepared.size)(position => prepared(position)._2)
+    DoubleArray.tabulate(size)(index => convertedAt(rates, arrays, index, 0, 0d))
+  }
+
+  /**
+   * Adds up the converted values of every currency at one index of the run.
+   *
+   * The accumulation is the one the implementation being ported performed, in its order and with
+   * its operands: it starts at zero, it takes the currencies by position - which is the order of
+   * their codes - and each term is that currency's value at the index multiplied by that
+   * currency's rate, in that operand order. Floating point addition and multiplication both round,
+   * so each of those three things is part of the number this produces and none of them is
+   * incidental: the captured parity baseline of this port records the numbers this order gives.
+   *
+   * The recursion is in tail position and compiles to a loop over two primitive-indexed buffers,
+   * so an index costs no allocation at all and a run of any number of currencies converts without
+   * consuming stack.
+   *
+   * @param rates  the rate of each currency, by position in code order
+   * @param arrays  the values of each currency, by position in code order
+   * @param index  the index of the run being converted
+   * @param position  the position of the currency whose term is added next
+   * @param accumulated  the sum of the terms of the currencies before that position
+   * @return the converted value of the run at that index
+   */
+  @tailrec
+  private def convertedAt(
+      rates: Array[Double],
+      arrays: Array[DoubleArray],
+      index: Int,
+      position: Int,
+      accumulated: Double): Double =
+    if (position == rates.length) {
+      accumulated
+    } else {
+      convertedAt(
+        rates,
+        arrays,
+        index,
+        position + 1,
+        accumulated + arrays(position).get(index) * rates(position))
+    }
 
   /**
    * Combines the values of this run with those of another run, currency by currency.
@@ -650,13 +777,13 @@ object MultiCurrencyAmountArray {
   private val currencyOrdering: Ordering[Currency] = Order[Currency].toOrdering
 
   /**
-   * The empty set of totals, which is where [[total]] starts.
+   * The empty grouping of runs by currency, which is where [[total]] starts.
    *
    * It is held once rather than built per call, and its ordering is the ordering above so that
    * the aggregation is performed and reported in currency order.
    */
-  private val noTotals: FailureOr[SortedMap[Currency, CurrencyAmountArray]] =
-    Right(SortedMap.empty[Currency, CurrencyAmountArray](currencyOrdering))
+  private val noGroups: SortedMap[Currency, Vector[CurrencyAmountArray]] =
+    SortedMap.empty[Currency, Vector[CurrencyAmountArray]](currencyOrdering)
 
   //-------------------------------------------------------------------------
   /**
@@ -803,27 +930,152 @@ object MultiCurrencyAmountArray {
    *
    * All the runs have to have the same length: two runs of one currency cannot be added
    * element-wise if they differ, and runs of different currencies cannot be held together in one
-   * value of this type if they differ. The first is reported by [[CurrencyAmountArray.plus]] and
-   * the second by the checking factory above, so a mixture of lengths is reported whichever pair
-   * meets first. An empty input describes the run of size zero.
+   * value of this type if they differ. The two are reported differently, and which of them a
+   * mixture of lengths meets first is decided by the currencies involved rather than by the
+   * order of the input:
+   *
+   *   - two runs of the '''same''' currency whose lengths differ are the first reason, reported
+   *     in the wording [[CurrencyAmountArray]] reports for that disagreement - which names the
+   *     length of the first run of that currency and the length of the one that arrived - as the
+   *     single reason the whole call fails with, ahead of any comparison across currencies;
+   *   - runs of '''different''' currencies whose lengths differ are the second, reported by the
+   *     checking factory above, one reason per run that disagrees with the length of the first
+   *     run in currency order, in currency order.
+   *
+   * An empty input describes the run of size zero.
+   *
+   * ===How the total is computed===
+   *
+   * The input is read once, and it is read only as far as the outcome needs. The runs of each
+   * currency are collected by reference as they arrive, in input order, and the length of each is
+   * compared with the length of the first run of its currency as it is collected, so a
+   * disagreement returns at once and nothing after it is read - which is what keeps a very large
+   * or lazily generated input from being consumed in full after its first reason has already
+   * decided the answer.
+   *
+   * Each currency's values are then added up once, element by element and left to right in input
+   * order, into the one array that currency contributes to the result. That is where the order of
+   * the addition is settled - floating point addition is order-sensitive, so stating it is what
+   * makes the total reproducible - and it is why a currency offered M runs costs one array and
+   * not M-1 transient ones: adding the runs pairwise as they arrive would allocate a complete
+   * array for every arrival after the first, each one read once and dropped. A currency offered a
+   * single run contributes that run's values as they stand, with nothing computed at all.
+   *
+   * The result is assembled in currency order as it is computed, so the map handed to the
+   * checking factory is already the map of the run: it is passed there directly rather than being
+   * iterated into an unordered map for that factory to sort again.
    *
    * @param arrays  the runs to total, in any number and any order
    * @return the total of those runs, or the failures describing the lengths that disagree
    */
-  def total(arrays: Iterable[CurrencyAmountArray]): ResultNec[MultiCurrencyAmountArray] = {
-    val totalled = arrays.foldLeft(noTotals) { (accumulated, next) =>
-      accumulated.flatMap { totals =>
-        totals.get(next.currency) match {
-          case Some(existing) =>
-            existing.plus(next).map(summed => totals.updated(next.currency, summed))
-          case None =>
-            Right(totals.updated(next.currency, next))
-        }
+  def total(arrays: Iterable[CurrencyAmountArray]): ResultNec[MultiCurrencyAmountArray] =
+    toNec(grouped(arrays.iterator, noGroups)).flatMap { groups =>
+      val totals = SortedMap.from(groups.iterator.map { case (currency, runs) =>
+        (currency, summedValues(runs))
+      })(currencyOrdering)
+      // the size of the first array in currency order, and zero when there is no array at all,
+      // which is the size the factory that reads a map of values settles on for the same input
+      checked(totals.headOption.fold(0) { case (_, currencyValues) => currencyValues.size }, totals)
+    }
+
+  /**
+   * Collects the runs offered to [[total]] by currency, stopping at the first length that differs.
+   *
+   * Nothing is added up here: a run is kept as the reference it arrived as, appended to what its
+   * currency has been offered so far, so a pass over the input costs one small entry per currency
+   * and one per run rather than a full-length array per arrival. The runs of a currency are kept
+   * in the order the input presented them, which is the order they are added up in, and the
+   * currencies are kept in code order, which is the order the reasons of a rejection and the
+   * currencies of the result appear in.
+   *
+   * The length of an arriving run is compared with the length of the first run of its currency,
+   * and a disagreement returns immediately with the reason [[CurrencyAmountArray.plus]] reports
+   * for it, in its wording: the comparison is the one that member performs, made here so that it
+   * can be made without adding anything up. Returning at once is what the promise of [[total]]
+   * rests on - the outcome is already decided, so no further element of the input is pulled.
+   *
+   * The recursion is in tail position and compiles to a loop, so an input of any length is
+   * collected without consuming stack.
+   *
+   * @param remaining  the runs still to be collected, pulled one at a time
+   * @param accumulated  the runs collected so far, by currency in code order and in input order
+   * @return the runs of every currency, or the failure describing the first length that differs
+   *   from the length of the first run of its currency
+   */
+  @tailrec
+  private def grouped(
+      remaining: Iterator[CurrencyAmountArray],
+      accumulated: SortedMap[Currency, Vector[CurrencyAmountArray]])
+      : FailureOr[SortedMap[Currency, Vector[CurrencyAmountArray]]] =
+    if (!remaining.hasNext) {
+      Right(accumulated)
+    } else {
+      val next = remaining.next()
+      accumulated.get(next.currency) match {
+        case Some(runs) if runs.head.size != next.size =>
+          // the size check of `CurrencyAmountArray.plus`, performed without the addition: the
+          // first run of the currency is the one the sum would have accumulated into, so it is
+          // its size that is named first, exactly as that member names it
+          Left(differentSizes(runs.head.size, next.size))
+        case Some(runs) => grouped(remaining, accumulated.updated(next.currency, runs :+ next))
+        case None => grouped(remaining, accumulated.updated(next.currency, Vector(next)))
       }
     }
-    toNec(totalled).flatMap(totals =>
-      of(totals.iterator.map { case (currency, array) => (currency, array.values) }.toMap))
-  }
+
+  /**
+   * Adds up the runs of one currency into the one array that currency contributes.
+   *
+   * A single run contributes the values it already holds, with nothing computed and nothing
+   * allocated - which is what the aggregation of a currency offered once has always produced.
+   * Several runs are added element by element in one pass per index, so the currency costs
+   * exactly one array however many runs it was offered.
+   *
+   * The addition starts at the first run's value rather than at zero and takes the runs in input
+   * order, which is the accumulation the pairwise addition of the implementation being ported
+   * performed: both are part of the number produced, since floating point addition rounds and
+   * adding into a zero would normalise a negative zero away.
+   *
+   * @param runs  the runs of one currency, in input order, all of the same length
+   * @return the values of that currency in the total
+   */
+  private def summedValues(runs: Vector[CurrencyAmountArray]): DoubleArray =
+    if (runs.size == 1) {
+      runs.head.values
+    } else {
+      val values: Array[DoubleArray] =
+        Array.tabulate(runs.size)(position => runs(position).values)
+      DoubleArray.tabulate(values(0).size)(index =>
+        summedAt(values, index, 1, values(0).get(index)))
+    }
+
+  /**
+   * Adds up the values of several runs of one currency at one index.
+   *
+   * The runs are taken by position, which is the order the input presented them, and each value
+   * is added to what has accumulated - `accumulated + arriving`, in that operand order, which is
+   * the order the pairwise addition of the implementation being ported performed and the order
+   * the captured parity baseline of this port records.
+   *
+   * The recursion is in tail position and compiles to a loop over a primitive-indexed buffer, so
+   * an index costs no allocation at all.
+   *
+   * @param values  the values of each run of the currency, by position in input order
+   * @param index  the index being added up
+   * @param position  the position of the run whose value is added next
+   * @param accumulated  the sum of the values of the runs before that position
+   * @return the total of the runs at that index
+   */
+  @tailrec
+  private def summedAt(
+      values: Array[DoubleArray],
+      index: Int,
+      position: Int,
+      accumulated: Double): Double =
+    if (position == values.length) {
+      accumulated
+    } else {
+      summedAt(values, index, position + 1, accumulated + values(position).get(index))
+    }
 
   //-------------------------------------------------------------------------
   /**
@@ -845,9 +1097,16 @@ object MultiCurrencyAmountArray {
    * This is the zero padding of the three total factories, written as the pure counterpart of the
    * buffer the implementation being ported allocated per currency and wrote into: the currencies
    * of all the amounts are collected first, and then each currency's array is produced from the
-   * amounts by index. `getAmountOrZero` is what makes it faithful - it is the accessor of
-   * [[MultiCurrencyAmount]] that reads an absent currency as zero of it, which is exactly what an
-   * untouched element of that buffer held.
+   * amounts by index. Reading an absent currency as `0.0` is what makes it faithful - that is
+   * exactly what an untouched element of that buffer held.
+   *
+   * The number of each cell is read straight out of the map the amount holds, which
+   * [[MultiCurrencyAmount.toMap]] hands back without copying, and which holds numbers that are
+   * already normalised amounts. That is what keeps the transposition to the arrays it produces:
+   * asking the amount for a [[CurrencyAmount]] per cell - as this once did - would allocate one
+   * domain object for every currency and every index, C×N of them for C currencies and N
+   * amounts, each built only to have its number read back out and then discarded, where the
+   * implementation being ported wrote the number into a primitive buffer.
    *
    * Each array is built in one pass over the amounts with no buffer being handed out, which is
    * what the copy-safe construction of [[DoubleArray]] requires: the escape hatches the
@@ -863,7 +1122,9 @@ object MultiCurrencyAmountArray {
       (
         currency,
         DoubleArray.tabulate(amounts.size)(index =>
-          amounts(index).getAmountOrZero(currency).amount))))(currencyOrdering)
+          // the padded read, performed on the map itself: an amount that does not name the
+          // currency contributes zero, and nothing is allocated to find that out
+          amounts(index).toMap.getOrElse(currency, 0d)))))(currencyOrdering)
   }
 
   /**

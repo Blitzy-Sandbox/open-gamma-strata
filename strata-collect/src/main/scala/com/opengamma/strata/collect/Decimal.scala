@@ -917,13 +917,12 @@ object Decimal {
    *     numeral is input rather than an exceptional condition, and building an exception to
    *     catch it cost more than reading the text does.
    *
-   * The text an unreadable-numeral failure quotes back is rendered through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so its control characters
-   * are escaped and a line break in the text cannot put one in the message; the length of the
-   * message was already bounded by the guard above, which rejects text longer than the type
-   * reads before any numeral is quoted. Text within that bound and free of control characters
-   * is quoted exactly as it was given, so the wording of an ordinary malformed numeral is the
-   * one the ported type reported, character for character.
+   * An unreadable-numeral failure quotes the text back as it was given, so the wording is the
+   * one the ported type reported, character for character, and the caller is handed exactly
+   * the numeral that was refused. The length of such a message is bounded by the guard above,
+   * which rejects text longer than the type reads before any numeral is quoted; escaping what
+   * the text may hold belongs to the writing of a failure, which the text form of one and
+   * [[com.opengamma.strata.collect.result.Failure.show]] perform for every part they write.
    *
    * @param str  the text to read
    * @return the decimal the text names, or the failure describing why it names none
@@ -1107,26 +1106,66 @@ object Decimal {
     }
 
   // reports text that names no number, in the one wording every unreadable text is reported
-  // by; the text is rendered through `Failure.describeInput` rather than interpolated as it
-  // stands. The length of the message was already bounded here - `of(String)` rejects text
-  // longer than `MAX_TEXT_LENGTH` before this branch is reachable - so what the rendering
-  // closes is the other facet: a line break in the text can no longer put one in the message,
-  // and a numeral that is merely unreadable is quoted exactly as it was given
+  // by; the text is quoted as it stands, which is the wording of the ported type, and the
+  // length of the message is bounded here already - `of(String)` rejects text longer than
+  // `MAX_TEXT_LENGTH` before this branch is reachable
   private def invalidText(str: String): Either[Failure, Decimal] =
-    Left(Failure.Parsing(s"Decimal string is invalid: '${Failure.describeInput(str)}'"))
+    Left(Failure.Parsing(s"Decimal string is invalid: '$str'"))
 
   //-------------------------------------------------------------------------
-  // creates from a value already truncated to the supported precision
+  // creates from a value already truncated to the supported precision.
+  //
+  // A `BigDecimal` of negative scale holds its trailing zeroes in the scale rather than in
+  // the digits - `1E+500000000` is one digit and a scale of minus five hundred million - so
+  // bringing it to scale zero materialises every one of those zeroes. That expansion is
+  // performed by the platform through `BigInteger.TEN.pow`, and its cost is proportional to
+  // the exponent the caller named rather than to the text or the value the caller supplied:
+  // a twelve-character numeral reaching this factory through `of(String)`, through the JSON
+  // decoder or through `of(BigDecimal)` can ask for hundreds of millions of digits, which
+  // exhausts the heap or the processor rather than answering. The digit count is therefore
+  // computed before it is reached.
+  //
+  // The count is exact rather than approximate: for a non-zero `BigDecimal` the number of
+  // digits the value has at scale zero is its precision less its scale, because the scale is
+  // exactly the number of places the point is to be moved. So the guard below and the check
+  // that follows the expansion decide the same values - a value the guard rejects is one whose
+  // expansion would have had more than `MAX_PRECISION` digits, and a value it admits expands
+  // to at most `MAX_PRECISION` digits, which is a bounded amount of work. The subtraction is
+  // done in `Long` because the scale reaches `Int.MinValue` for text such as `1e2147483648`,
+  // where negating it in `Int` would overflow and admit the very value being excluded.
+  //
+  // Zero is answered before the arithmetic and not through it. `stripTrailingZeros` already
+  // brings a zero to scale zero whatever scale it arrived with, so the branch is not reached
+  // by any zero today; it is written because the precision of a zero is one while its scale
+  // may be anything, and a zero that did arrive with a large negative scale must be the value
+  // zero rather than a rejection.
   private def ofRounded(value: BigDecimal): Either[Failure, Decimal] = {
     val stripped = value.stripTrailingZeros
-    val adjusted = if (stripped.scale < 0) stripped.setScale(0) else stripped
-    if (adjusted.precision > MAX_PRECISION) {
+    if (stripped.signum == 0) {
+      // zero is held at scale zero, which is the normalisation every factory applies
+      Right(ZERO)
+    } else if (exceedsPrecisionAtScaleZero(stripped)) {
       Left(precisionAtScaleZeroFailure(value.toString))
     } else {
-      // the precision checked above bounds the unscaled value, so this conversion is exact
-      ofScaled(adjusted.unscaledValue.longValueExact, adjusted.scale)
+      val adjusted = if (stripped.scale < 0) stripped.setScale(0) else stripped
+      if (adjusted.precision > MAX_PRECISION) {
+        Left(precisionAtScaleZeroFailure(value.toString))
+      } else {
+        // the precision checked above bounds the unscaled value, so this conversion is exact
+        ofScaled(adjusted.unscaledValue.longValueExact, adjusted.scale)
+      }
     }
   }
+
+  // true when a non-zero value of negative scale holds more digits at scale zero than the type
+  // supports, decided by counting those digits rather than by producing them.
+  //
+  // The value is the one `stripTrailingZeros` produced, so its precision counts only the digits
+  // it actually holds and its scale counts the places the point is to move. The count in `Long`
+  // therefore needs no expansion and cannot overflow at the extreme scales `BigDecimal` reads.
+  private def exceedsPrecisionAtScaleZero(stripped: BigDecimal): Boolean =
+    stripped.scale < 0 &&
+      stripped.precision.toLong - stripped.scale.toLong > MAX_PRECISION.toLong
 
   // true when an unscaled value and a scale are held as they stand, so that the pair needs no
   // adjustment and cannot be rejected; shared by the factory and by the arithmetic, which

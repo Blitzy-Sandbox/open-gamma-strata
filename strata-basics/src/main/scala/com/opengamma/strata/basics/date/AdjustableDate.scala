@@ -298,4 +298,3 @@ object AdjustableDate {
    */
   implicit val decoder: Decoder[AdjustableDate] = deriveDecoder[AdjustableDate]
 }
-

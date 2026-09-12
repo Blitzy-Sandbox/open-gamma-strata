@@ -297,7 +297,7 @@ jobs:
             mkdir -p "$HOME/tools"
             tar -xzf sbt.tgz -C "$HOME/tools"
             rm -f sbt.tgz
-            echo 'export PATH="$HOME/tools/sbt/bin:$PATH"' >> $BASH_ENV
+            echo 'export PATH="$HOME/tools/sbt/bin:$PATH"' >> "$BASH_ENV"
       - run:
           name: Checking sbt version
           command: sbt --script-version | grep -qx 1.13.0

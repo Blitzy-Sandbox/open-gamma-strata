@@ -6,6 +6,7 @@
 package com.opengamma.strata.basics.currency
 
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 import scala.util.matching.Regex
 
@@ -32,10 +33,17 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 /**
  * Test [[CurrencyAmountArray]], ported from the Java `CurrencyAmountArrayTest`.
  *
- * The original holds twelve test methods and so does this suite, each under the name the
- * original gave it, so that a Java test method and a test of this suite stay in one-to-one
- * correspondence in the migration manifest. Three of the twelve keep their name and change what
- * they assert, and each says so at the test itself:
+ * The original holds twelve test methods, and this suite holds those twelve ported methods -
+ * each under the name the original gave it, so that a Java test method and a test of this suite
+ * stay in one-to-one correspondence in the migration manifest - plus one case of this port's own.
+ * That thirteenth test covers the '''empty''' run: the direct factory of this type is total and
+ * admits an array of no values, the Java test built runs of three elements only, and no other
+ * suite of the module reached the boundary, so a regression that rejected an empty run or
+ * mis-sized it would have failed nothing. It carries a descriptive name rather than a Java one
+ * because there is no Java method it corresponds to.
+ *
+ * Three of the twelve keep their name and change what they assert, and each says so at the test
+ * itself:
  *
  *   - `test_plus` had a body that never called `plus`: it was a verbatim duplicate of
  *     `test_of_function_mixedCurrency`, so the member it names was covered nowhere. The name is
@@ -45,6 +53,13 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     sweep, over the same two values the original built.
  *   - `test_serialization` round-tripped through Java serialization, which no type of this port
  *     supports. It asserts one concrete round trip through the codec that replaced it.
+ *
+ * Four further tests follow those twelve, under names of their own so that the correspondence
+ * stays one-to-one. They pin the boundary between the amounts a caller holds and the single
+ * primitive array their values are kept in, which the ported twelve exercise only for a three
+ * element run of finite values: the order and the number of times a factory reads its input, the
+ * agreement of `iterator`, `toList` and `get`, the point at which each amount is built, and the
+ * normalisation an amount built from a value goes through.
  *
  * ===Failure is a value, so the fixtures are unwrapped===
  *
@@ -122,6 +137,55 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
     // the stream of the original is an iterator here, and the eager form of it is `toList`
     test.iterator.toList shouldBe gbpAmounts
     test.toList shouldBe gbpAmounts
+  }
+
+  /**
+   * Asserts the empty run, which is the boundary of the total factory and was covered nowhere.
+   *
+   * The three-element fixture above is the only run the Java test built through this factory, and
+   * a run of '''no''' amounts is the other end of what the factory admits: the direct factory is
+   * total, an array of no values is a `DoubleArray`, and nothing in the type rejects one. It is
+   * the collection-based factory that needs an amount - it reads the currency from the amounts it
+   * is given, so an empty collection names no currency and is reported, which
+   * `test_of_CurrencyList_mixedCurrency` asserts. The two must not be confused, and this test is
+   * where the difference is stated.
+   *
+   * Every member whose answer could plausibly depend on there being an element is asserted: the
+   * currency is carried, the size is zero, the values are the empty array, both iteration forms
+   * produce nothing, the same-currency conversion answers with the instance itself without
+   * consulting the rate, a conversion that needs a rate applies it to no elements, and the codec
+   * round trip carries the empty run back as the value it started as. A regression that rejected
+   * an empty array, that assigned it the wrong size, that lost its currency or that broke its
+   * document form would fail here.
+   */
+  test("an empty run of amounts is a value the total factory builds and the codec carries") {
+    val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, DoubleArray.EMPTY)
+    test.currency shouldBe GBP
+    test.size shouldBe 0
+    test.values shouldBe DoubleArray.EMPTY
+    test.values.isEmpty shouldBe true
+    test.iterator.toList shouldBe List.empty[CurrencyAmount]
+    test.toList shouldBe List.empty[CurrencyAmount]
+
+    // the run is a value of the type, so it is equal to another built the same way and to no run
+    // of another currency or length
+    test shouldBe CurrencyAmountArray.of(GBP, DoubleArray.EMPTY)
+    test.hashCode shouldBe CurrencyAmountArray.of(GBP, DoubleArray.EMPTY).hashCode
+    Eq[CurrencyAmountArray].eqv(test, CurrencyAmountArray.of(GBP, DoubleArray.EMPTY)) shouldBe true
+    Eq[CurrencyAmountArray].eqv(test, CurrencyAmountArray.of(USD, DoubleArray.EMPTY)) shouldBe false
+    Eq[CurrencyAmountArray].eqv(test, CurrencyAmountArray.of(GBP, Values)) shouldBe false
+
+    // the conversion into its own currency answers with the instance and consults no rate, and a
+    // conversion that does need one applies it to no elements
+    val fxRate: FxRate = unwrap(FxRate.of(GBP, USD, Rate))
+    test.convertedTo(GBP, fxRate) should haveValue(test)
+    test.convertedTo(USD, fxRate) should haveValue(CurrencyAmountArray.of(USD, DoubleArray.EMPTY))
+
+    // and the document form of an empty run is the currency and an empty array of values, which
+    // reads back as the run it was written from
+    val encoded: Json = test.asJson
+    encoded.noSpaces shouldBe """{"currency":"GBP","values":[]}"""
+    encoded.as[CurrencyAmountArray] shouldBe Right(test)
   }
 
   test("test_of_List") {
@@ -356,9 +420,190 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  // The four tests below are additions to the ported set rather than ports of Java test
+  // methods, so each carries a name of its own and none of the names above changes: the
+  // migration manifest joins a Java test method to a test of this suite by name. They pin the
+  // boundary between the amounts a caller holds and the single primitive array this type keeps
+  // their values in - the order and the number of times a factory reads its input, the
+  // agreement of the three ways of reading amounts back, when each amount is built, and the
+  // normalisation every amount built from a value goes through. The tests above exercise that
+  // boundary only for a three element run of finite values.
+
+  /**
+   * Asserts that the function form reads each index exactly once, in index order.
+   *
+   * `test_of_function` counts the evaluations; this records the indices themselves, which is the
+   * other half of the promise the factory documents - a function that reads a sequence of inputs
+   * sees index zero first and every index exactly once, so neither the amounts nor their values
+   * may be gathered by a second pass over the function. The indices are recorded in an atomic
+   * reference over an immutable vector, which is how the suites of this port record a sequence
+   * of calls: the writes happen inside a function the factory calls and the sequence is read
+   * after it returns, and neither a mutable field nor a mutable collection is involved.
+   *
+   * The run is two hundred elements rather than three so that the order is pinned well beyond
+   * the length at which a hand-written list of expected calls stays readable.
+   */
+  test("of_function reads each index exactly once, in index order") {
+    val length: Int = 200
+    // the indices the function has been passed, newest last
+    val seen: AtomicReference[Vector[Int]] = new AtomicReference(Vector.empty[Int])
+    val recorded: Int => CurrencyAmount = index => {
+      // bound to a wildcard because the new sequence is of no interest here; the assertions
+      // below read it back from the reference
+      val _ = seen.updateAndGet(indices => indices :+ index)
+      amountOf(GBP, index.toDouble)
+    }
+    val test: CurrencyAmountArray = unwrap(CurrencyAmountArray.of(length, recorded))
+    seen.get() shouldBe Vector.range(0, length)
+    test.size shouldBe length
+    test.values shouldBe DoubleArray.tabulate(length)(index => index.toDouble)
+  }
+
+  /**
+   * Asserts that `iterator`, `toList` and `get` agree element by element with the values.
+   *
+   * The three are one behaviour reading the values of the array by index, so they agree with
+   * each other and with the array itself, in index order, for every value this type admits -
+   * the two infinities included, which are values [[CurrencyAmount]] holds.
+   *
+   * A value that is not a number is the one value [[CurrencyAmount]] does not hold, and it is
+   * refused as the amount for that element is built rather than earlier: obtaining the iterator
+   * reads no element and raises nothing, while reading the element raises whichever of the three
+   * routes reads it.
+   */
+  test("iterator, toList and get agree element by element with the values") {
+    val values: DoubleArray =
+      DoubleArray.of(1d, -2.5d, 0d, Double.PositiveInfinity, Double.NegativeInfinity)
+    val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, values)
+    val byIndex: List[CurrencyAmount] = List.range(0, test.size).map(index => test.get(index))
+    byIndex.map(amount => amount.currency) shouldBe List.fill(test.size)(GBP)
+    byIndex.map(amount => amount.amount) shouldBe values.toList
+    test.iterator.toList shouldBe byIndex
+    test.toList shouldBe byIndex
+
+    val withNotANumber: CurrencyAmountArray =
+      CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.NaN))
+    // obtaining the iterator reads no element, so nothing is raised by the call itself
+    noException should be thrownBy withNotANumber.iterator
+    an[IllegalArgumentException] should be thrownBy withNotANumber.get(1)
+    an[IllegalArgumentException] should be thrownBy withNotANumber.iterator.toList
+    an[IllegalArgumentException] should be thrownBy withNotANumber.toList
+  }
+
+  /**
+   * Asserts that the iterator builds an amount only when it is read.
+   *
+   * The element that is not a number sits at index one, so an iterator that built every amount
+   * when it was obtained, or read ahead of the caller, would raise the invariant of
+   * [[CurrencyAmount]] before the first amount could be taken. Taking the first amount and
+   * stopping therefore both succeeds and proves that a caller which stops early never pays for
+   * the rest of the run - which is what the member documents and what makes it the counterpart
+   * of the stream of the implementation being ported rather than of its list.
+   */
+  test("the iterator builds an amount only when it is read") {
+    val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.NaN))
+    test.iterator.take(1).toList shouldBe List(amountOf(GBP, 1d))
+  }
+
+  /**
+   * Asserts that an amount built from a negative zero value is normalised.
+   *
+   * The array holds the value it was given, negative zero and all, because it neither examines
+   * nor changes the numbers handed to the total factory. Every amount read back out of it,
+   * however, is built through the construction path of [[CurrencyAmount]] and therefore carries
+   * that type's normalisation of the sign of zero - so the array keeps a negative zero while
+   * every route that reads it answers with a positive one.
+   *
+   * That difference is the assertion worth having here: it is observable only because both are
+   * compared on their bit patterns, and it is what shows that reading an element still performs
+   * the whole invariant of [[CurrencyAmount]] rather than pairing a number with a currency.
+   */
+  test("an amount built from a negative zero value is normalised") {
+    val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, DoubleArray.of(-0d, 1d))
+    // the array keeps the value it was given: compared on bit patterns, -0.0 is not 0.0
+    java.lang.Double.compare(test.values.get(0), -0d) shouldBe 0
+    java.lang.Double.compare(test.values.get(0), 0d) should not be 0
+    // every route that builds an amount from that value normalises the sign
+    java.lang.Double.compare(test.get(0).amount, 0d) shouldBe 0
+    java.lang.Double.compare(test.toList.head.amount, 0d) shouldBe 0
+    java.lang.Double.compare(test.iterator.toList.head.amount, 0d) shouldBe 0
+    // and the amounts are consequently equal to the amount the checking factory builds from a
+    // positive zero, equality of an amount being on the bit pattern of its number too
+    test.get(0) shouldBe amountOf(GBP, 0d)
+    test.iterator.toList shouldBe List(amountOf(GBP, 0d), amountOf(GBP, 1d))
+  }
+
+  /**
+   * Asserts that traversing the amounts crosses no boxing adapter, element by element.
+   *
+   * The representation of this type exists to hold a run of amounts as one currency and one
+   * primitive array rather than as an object per element, and a traversal that boxed something
+   * per element would give back a share of what that buys - the numbers on their way out, or the
+   * indices on their way in. The property is therefore about the compiled form rather than about
+   * an answer, and it is asserted here on the compiled form directly, which is the only place it
+   * is visible: a behavioural test cannot distinguish a boxed traversal from an unboxed one.
+   *
+   * Three things are read, and together they cover both operands:
+   *
+   *   - the traversal has '''no mapping function''' left on the type at all. A traversal written
+   *     as a mapped range of indices compiles to a synthetic `$anonfun$iterator$…` method taking
+   *     its index as an object, and it is that method which unboxes per element; no method of
+   *     that name exists;
+   *   - the element accessor of the view the traversal reads takes its index as a
+   *     '''primitive''' `int` and answers with a [[CurrencyAmount]], so an index reaches the
+   *     array without being boxed and an amount leaves without being wrapped;
+   *   - the compiled view names '''no primitive adapter''' of the runtime at all, which is read
+   *     from its class file rather than inferred: no `BoxesRunTime` and no `valueOf` of a boxed
+   *     primitive appears anywhere in it.
+   *
+   * The class file is read from the class path as a resource and searched as bytes, so the
+   * assertion is on what the compiler actually emitted for this run of the suite.
+   */
+  test("traversing the amounts crosses no boxing adapter") {
+    val traversal: Class[_] =
+      Class.forName("com.opengamma.strata.basics.currency.CurrencyAmountArray$Amounts")
+
+    // no mapping function over the indices survives on the type
+    val mappers: Array[String] =
+      classOf[CurrencyAmountArray].getDeclaredMethods.map(_.getName).filter(_.contains("iterator"))
+    mappers.filter(_.startsWith("$anonfun")) shouldBe empty
+
+    // the element accessor takes the index as a primitive and answers with an amount
+    val accessors: Array[java.lang.reflect.Method] = traversal.getDeclaredMethods
+      .filter(method => method.getName == "apply" && method.getParameterTypes.toList == List(classOf[Int]))
+    accessors.map(_.getReturnType).toList should contain(classOf[CurrencyAmount])
+
+    // and nothing in the compiled view adapts a primitive
+    val compiled: String = compiledFormOf(traversal)
+    compiled should not include "BoxesRunTime"
+    compiled should not include "java/lang/Integer.valueOf"
+    compiled should not include "java/lang/Double.valueOf"
+  }
+
+  //-------------------------------------------------------------------------
   /** The three GBP amounts of the fixture, in index order. */
   private def gbpAmounts: List[CurrencyAmount] =
     List(amountOf(GBP, 1d), amountOf(GBP, 2d), amountOf(GBP, 3d))
+
+  /**
+   * Reads the compiled form of a class as text, for an assertion about what was emitted.
+   *
+   * The class file is taken from the class path the suite is running against, so what is searched
+   * is the form produced by the compilation under test rather than a rebuild of it. The bytes are
+   * read as `ISO-8859-1` because that maps every byte to exactly one character: the names of the
+   * methods a class refers to are plain ASCII in its constant pool, so searching the text for one
+   * finds the reference and nothing else can be lost in the decoding.
+   *
+   * @param target  the class whose compiled form is wanted
+   * @return the bytes of its class file, one byte per character
+   */
+  private def compiledFormOf(target: Class[_]): String = {
+    val resource: String = target.getName.replace('.', '/') + ".class"
+    val stream: java.io.InputStream = Option(getClass.getClassLoader.getResourceAsStream(resource))
+      .getOrElse(fail(s"the compiled form of ${target.getName} is not on the class path"))
+    try new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.ISO_8859_1)
+    finally stream.close()
+  }
 
   /**
    * Reads the value out of an outcome that is expected to have produced one.

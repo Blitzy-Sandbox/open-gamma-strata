@@ -13,7 +13,6 @@ import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.prop.TableFor2
 
 import com.opengamma.strata.basics.date.Tenor
-import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
@@ -54,16 +53,16 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *    what `test_of_lookup`, `test_of_convert`, `test_of_lookup_notFound` and
  *    `test_of_lookup_null` exercise, and all thirteen rows of the shared table carry a full
  *    tenor-bearing name, so no tenor defaulting takes part in them.
- *  - `parse(String[, Tenor])` and `tryParse(String[, Tenor])` were the ''wider'' resolution:
- *    they searched the three index families and then the floating rate ''families'', and
- *    converted a family into one of its indices, which needs a tenor because a family says
- *    nothing about the period a rate covers. The port states that search rule once, in
- *    [[FloatingRateIndex.parseWith]] and [[FloatingRateIndex.tryParseWith]], and takes the
- *    conversion as an argument, so the tenor-defaulting policy stays the property of the family
- *    that owns it - [[FloatingRateName.toFloatingRateIndex]], which uses the family's own
- *    default tenor, and `toFloatingRateIndex(tenor)`, which uses a supplied one. The four Java
- *    arities are therefore the four combinations of channel and tenor, and each is named by one
- *    of the four helpers below so that the tests read as the Java tests read.
+ *  - `parse(String[, Tenor])` and `tryParse(String[, Tenor])` are the ''wider'' resolution: they
+ *    search the three index families and then the floating rate ''families'', and convert a
+ *    family into one of its indices, which needs a tenor because a family says nothing about the
+ *    period a rate covers. The port publishes all four of those arities under their Java names,
+ *    and the four tests below call them directly, so what is asserted is the surface a caller
+ *    holds rather than a composition assembled by this suite. The search rule behind them is
+ *    stated once, package-privately, over the conversion rather than over any particular one, so
+ *    the tenor-defaulting policy stays the property of the family that owns it -
+ *    [[FloatingRateName.toFloatingRateIndex]], which uses the family's own default tenor, and
+ *    `toFloatingRateIndex(tenor)`, which uses a supplied one.
  *
  * The tenor rule is easy to state backwards, so both `withTenor` tests keep the contrast that
  * pins it: a supplied default is used '''only''' where the text carries no tenor of its own.
@@ -89,62 +88,6 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * not be resolved are the contract, while the diagnostic prose around them is free to change.
  */
 class FloatingRateIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
-
-  /**
-   * The wider resolution with no tenor supplied, which is Java's `parse(String)`.
-   *
-   * The conversion handed to the search is the family's own, so a family reached by this route
-   * contributes its default tenor - `3M` for an Ibor family that publishes an active
-   * three-month index. A failure of the conversion is reported the same way as text that named
-   * nothing, exactly as the ported method raised for both.
-   *
-   * @param indexStr  the text to resolve, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
-   * @return the index the text names, or the failure describing text that named none
-   */
-  private def parseDefaultingTenor(indexStr: String): Either[Failure, FloatingRateIndex] =
-    FloatingRateIndex.parseWith(indexStr, family => family.toFloatingRateIndex.toOption)
-
-  /**
-   * The wider resolution with a default Ibor tenor supplied, which is Java's
-   * `parse(String, Tenor)`.
-   *
-   * @param indexStr  the text to resolve, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
-   * @param defaultIborTenor  the tenor to use where the text names an Ibor family rather than
-   *   an index
-   * @return the index the text names, or the failure describing text that named none
-   */
-  private def parseDefaultingTenor(
-      indexStr: String,
-      defaultIborTenor: Tenor): Either[Failure, FloatingRateIndex] =
-    FloatingRateIndex.parseWith(indexStr, family => family.toFloatingRateIndex(defaultIborTenor).toOption)
-
-  /**
-   * The wider resolution with no tenor supplied, answering with an absent value, which is
-   * Java's `tryParse(String)`.
-   *
-   * This is the other channel of the same rule and is kept distinct from the `parse` helpers
-   * throughout: text naming nothing is an absent value here and a reported failure there, and
-   * an assertion of one must never be routed through the matchers of the other.
-   *
-   * @param indexStr  the text to resolve, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
-   * @return the index the text names, or nothing where it names none
-   */
-  private def tryParseDefaultingTenor(indexStr: String): Option[FloatingRateIndex] =
-    FloatingRateIndex.tryParseWith(indexStr, family => family.toFloatingRateIndex.toOption)
-
-  /**
-   * The wider resolution with a default Ibor tenor supplied, answering with an absent value,
-   * which is Java's `tryParse(String, Tenor)`.
-   *
-   * @param indexStr  the text to resolve, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
-   * @param defaultIborTenor  the tenor to use where the text names an Ibor family rather than
-   *   an index
-   * @return the index the text names, or nothing where it names none
-   */
-  private def tryParseDefaultingTenor(
-      indexStr: String,
-      defaultIborTenor: Tenor): Option[FloatingRateIndex] =
-    FloatingRateIndex.tryParseWith(indexStr, family => family.toFloatingRateIndex(defaultIborTenor).toOption)
 
   /**
    * Renders a member of the union as text, through the `Show` instance of the family that
@@ -200,79 +143,86 @@ class FloatingRateIndexSpec extends AnyFunSuite with Matchers with TableDrivenPr
     // A bare family name carries no tenor, and no tenor is supplied by this form, so the
     // family's own default tenor decides which member is meant. The sterling Libor family
     // defaults to 3M, which is why `GBP-LIBOR` alone resolves to the three-month index.
-    parseDefaultingTenor("GBP-LIBOR") should haveValue(IborIndices.GBP_LIBOR_3M)
+    FloatingRateIndex.parse("GBP-LIBOR") should haveValue(IborIndices.GBP_LIBOR_3M)
 
     // Text that names an index outright is resolved by the index families, so the family
     // conversion is never reached and the tenor of the text is the tenor of the answer.
-    parseDefaultingTenor("GBP-LIBOR-1M") should haveValue(IborIndices.GBP_LIBOR_1M)
-    parseDefaultingTenor("GBP-LIBOR-3M") should haveValue(IborIndices.GBP_LIBOR_3M)
+    FloatingRateIndex.parse("GBP-LIBOR-1M") should haveValue(IborIndices.GBP_LIBOR_1M)
+    FloatingRateIndex.parse("GBP-LIBOR-3M") should haveValue(IborIndices.GBP_LIBOR_3M)
 
     // Neither of the other two families has a tenor to choose, so both resolve directly.
-    parseDefaultingTenor("GBP-SONIA") should haveValue(OvernightIndices.GBP_SONIA)
-    parseDefaultingTenor("GB-RPI") should haveValue(PriceIndices.GB_RPI)
+    FloatingRateIndex.parse("GBP-SONIA") should haveValue(OvernightIndices.GBP_SONIA)
+    FloatingRateIndex.parse("GB-RPI") should haveValue(PriceIndices.GB_RPI)
 
     // Reinterpretation of the Java assertion that the absent reference was rejected: this port
     // writes no such reference, so the case is asserted as the absent name a caller can supply.
-    parseDefaultingTenor("") should beFailureWith(FailureReason.PARSING)
-    parseDefaultingTenor("   ") should beFailureWith(FailureReason.PARSING)
+    FloatingRateIndex.parse("") should beFailureWith(FailureReason.PARSING)
+    FloatingRateIndex.parse("   ") should beFailureWith(FailureReason.PARSING)
 
     // Text naming neither an index nor a family is reported rather than raised.
-    parseDefaultingTenor("NotAnIndex") should beFailureWith(FailureReason.PARSING)
+    FloatingRateIndex.parse("NotAnIndex") should beFailureWith(FailureReason.PARSING)
   }
 
   test("test_parse_withTenor") {
     // The supplied default is used because the text carries no tenor of its own.
-    parseDefaultingTenor("GBP-LIBOR", Tenor.TENOR_6M) should haveValue(IborIndices.GBP_LIBOR_6M)
+    FloatingRateIndex.parse("GBP-LIBOR", Tenor.TENOR_6M) should haveValue(IborIndices.GBP_LIBOR_6M)
 
     // The tenor of the text wins and the supplied default is ignored: the contrast between
     // this row and the one above it is the whole semantics of the tenor argument, so both
     // rows stay, as they did in the Java method.
-    parseDefaultingTenor("GBP-LIBOR-1M", Tenor.TENOR_6M) should haveValue(IborIndices.GBP_LIBOR_1M)
-    parseDefaultingTenor("GBP-LIBOR-3M", Tenor.TENOR_6M) should haveValue(IborIndices.GBP_LIBOR_3M)
+    FloatingRateIndex.parse("GBP-LIBOR-1M", Tenor.TENOR_6M) should haveValue(
+      IborIndices.GBP_LIBOR_1M)
+    FloatingRateIndex.parse("GBP-LIBOR-3M", Tenor.TENOR_6M) should haveValue(
+      IborIndices.GBP_LIBOR_3M)
 
     // An Overnight and a Price name have no tenor to choose, so the supplied one is irrelevant.
-    parseDefaultingTenor("GBP-SONIA", Tenor.TENOR_6M) should haveValue(OvernightIndices.GBP_SONIA)
-    parseDefaultingTenor("GB-RPI", Tenor.TENOR_6M) should haveValue(PriceIndices.GB_RPI)
+    FloatingRateIndex.parse("GBP-SONIA", Tenor.TENOR_6M) should haveValue(
+      OvernightIndices.GBP_SONIA)
+    FloatingRateIndex.parse("GB-RPI", Tenor.TENOR_6M) should haveValue(PriceIndices.GB_RPI)
 
     // Reinterpretation of the Java absent-reference assertion, as in `test_parse_noTenor`.
-    parseDefaultingTenor("", Tenor.TENOR_6M) should beFailureWith(FailureReason.PARSING)
-    parseDefaultingTenor("   ", Tenor.TENOR_6M) should beFailureWith(FailureReason.PARSING)
+    FloatingRateIndex.parse("", Tenor.TENOR_6M) should beFailureWith(FailureReason.PARSING)
+    FloatingRateIndex.parse("   ", Tenor.TENOR_6M) should beFailureWith(FailureReason.PARSING)
 
     // A tenor cannot rescue text that names nothing.
-    parseDefaultingTenor("NotAnIndex", Tenor.TENOR_6M) should beFailureWith(FailureReason.PARSING)
+    FloatingRateIndex.parse("NotAnIndex", Tenor.TENOR_6M) should beFailureWith(
+      FailureReason.PARSING)
   }
 
   test("test_tryParse_noTenor") {
     // The same five inputs as `test_parse_noTenor` through the other channel: this resolution
     // answers with an absent value rather than a reported failure, which is the distinction the
     // Java pair of methods drew with `Optional` and is asserted here with `Option`.
-    tryParseDefaultingTenor("GBP-LIBOR") shouldBe Some(IborIndices.GBP_LIBOR_3M)
-    tryParseDefaultingTenor("GBP-LIBOR-1M") shouldBe Some(IborIndices.GBP_LIBOR_1M)
-    tryParseDefaultingTenor("GBP-LIBOR-3M") shouldBe Some(IborIndices.GBP_LIBOR_3M)
-    tryParseDefaultingTenor("GBP-SONIA") shouldBe Some(OvernightIndices.GBP_SONIA)
-    tryParseDefaultingTenor("GB-RPI") shouldBe Some(PriceIndices.GB_RPI)
+    FloatingRateIndex.tryParse("GBP-LIBOR") shouldBe Some(IborIndices.GBP_LIBOR_3M)
+    FloatingRateIndex.tryParse("GBP-LIBOR-1M") shouldBe Some(IborIndices.GBP_LIBOR_1M)
+    FloatingRateIndex.tryParse("GBP-LIBOR-3M") shouldBe Some(IborIndices.GBP_LIBOR_3M)
+    FloatingRateIndex.tryParse("GBP-SONIA") shouldBe Some(OvernightIndices.GBP_SONIA)
+    FloatingRateIndex.tryParse("GB-RPI") shouldBe Some(PriceIndices.GB_RPI)
 
     // Reinterpretation of the Java row that passed the absent reference and expected an empty
     // answer: the absent name a caller can supply, answered with nothing.
-    tryParseDefaultingTenor("") shouldBe None
-    tryParseDefaultingTenor("   ") shouldBe None
+    FloatingRateIndex.tryParse("") shouldBe None
+    FloatingRateIndex.tryParse("   ") shouldBe None
 
-    tryParseDefaultingTenor("NotAnIndex") shouldBe None
+    FloatingRateIndex.tryParse("NotAnIndex") shouldBe None
   }
 
   test("test_tryParse_withTenor") {
     // The expectations of `test_parse_withTenor`, in the absent-value channel. The contrast
     // that pins the tenor rule is kept here too: the supplied default applies to the bare
     // family name and is ignored by the name that carries its own tenor.
-    tryParseDefaultingTenor("GBP-LIBOR", Tenor.TENOR_6M) shouldBe Some(IborIndices.GBP_LIBOR_6M)
-    tryParseDefaultingTenor("GBP-LIBOR-1M", Tenor.TENOR_6M) shouldBe Some(IborIndices.GBP_LIBOR_1M)
-    tryParseDefaultingTenor("GBP-LIBOR-3M", Tenor.TENOR_6M) shouldBe Some(IborIndices.GBP_LIBOR_3M)
-    tryParseDefaultingTenor("GBP-SONIA", Tenor.TENOR_6M) shouldBe Some(OvernightIndices.GBP_SONIA)
-    tryParseDefaultingTenor("GB-RPI", Tenor.TENOR_6M) shouldBe Some(PriceIndices.GB_RPI)
+    FloatingRateIndex.tryParse("GBP-LIBOR", Tenor.TENOR_6M) shouldBe Some(IborIndices.GBP_LIBOR_6M)
+    FloatingRateIndex.tryParse("GBP-LIBOR-1M", Tenor.TENOR_6M) shouldBe Some(
+      IborIndices.GBP_LIBOR_1M)
+    FloatingRateIndex.tryParse("GBP-LIBOR-3M", Tenor.TENOR_6M) shouldBe Some(
+      IborIndices.GBP_LIBOR_3M)
+    FloatingRateIndex.tryParse("GBP-SONIA", Tenor.TENOR_6M) shouldBe Some(
+      OvernightIndices.GBP_SONIA)
+    FloatingRateIndex.tryParse("GB-RPI", Tenor.TENOR_6M) shouldBe Some(PriceIndices.GB_RPI)
 
-    tryParseDefaultingTenor("", Tenor.TENOR_6M) shouldBe None
-    tryParseDefaultingTenor("   ", Tenor.TENOR_6M) shouldBe None
-    tryParseDefaultingTenor("NotAnIndex", Tenor.TENOR_6M) shouldBe None
+    FloatingRateIndex.tryParse("", Tenor.TENOR_6M) shouldBe None
+    FloatingRateIndex.tryParse("   ", Tenor.TENOR_6M) shouldBe None
+    FloatingRateIndex.tryParse("NotAnIndex", Tenor.TENOR_6M) shouldBe None
   }
 
   //-------------------------------------------------------------------------
@@ -376,5 +326,51 @@ class FloatingRateIndexSpec extends AnyFunSuite with Matchers with TableDrivenPr
     FloatingRateIndex.parse("") should beFailureWith(FailureReason.PARSING)
     FloatingRateIndex.valueOf("   ") shouldBe None
     FloatingRateIndex.parse("   ") should beFailureWith(FailureReason.PARSING)
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_standardLookups_probeOrder") {
+    // The three families this union searches, in the order it searches them, asserted against
+    // the composition the production lookup uses rather than inferred from names. The three name
+    // spaces are disjoint, so no published name distinguishes one probe order from another; what
+    // is asserted is that the composition holds the Ibor, Overnight and price families at those
+    // three positions, that the family outside the union is claimed by no probe, and that the
+    // lookup searches this composition and nothing else. The search rule - first hit wins, later
+    // probes unreached - is asserted over supplied probes in `IndexSpec`.
+    val probes: List[FloatingRateIndex.Lookup] = FloatingRateIndex.standardLookups.toList
+    probes should have size 3
+
+    val samples: TableFor2[String, Int] =
+      Table(
+        ("name", "position"),
+        (IborIndices.GBP_LIBOR_3M.name, 0),
+        (OvernightIndices.GBP_SONIA.name, 1),
+        (PriceIndices.GB_RPI.name, 2))
+    forEvery(samples) { (name: String, position: Int) =>
+      withClue(s"$name: ") {
+        probes.map(probe => probe(name).isDefined) shouldBe List.tabulate(3)(_ == position)
+        probes(position)(name) shouldBe FloatingRateIndex.valueOf(name)
+      }
+    }
+
+    // The exchange-rate family is outside the composition, not merely refused by the entry point,
+    // and every probe is exact, so text naming no member is answered by all three with nothing.
+    (FxIndex.values.toList.map(_.name) ::: List("Rubbish", "GBP-LIBOR")).foreach { name =>
+      withClue(s"$name: ")(probes.flatMap(probe => probe(name)) shouldBe empty)
+    }
+
+    // The lookup searches that composition, for every published name of the three families and
+    // for text naming none. Note that this binds `valueOf`, the exact union lookup; the two
+    // `parse` overloads deliberately reach further, converting a family name, which is what
+    // `test_parse_noTenor` and `test_parse_withTenor` assert.
+    val everyName: List[String] =
+      (IborIndex.values.toList ::: OvernightIndex.values.toList ::: PriceIndex.values.toList)
+        .map(_.name) ::: List("GBP-LIBOR", "Rubbish", "")
+    everyName.foreach { name =>
+      withClue(s"$name: ") {
+        FloatingRateIndex.valueOf(name) shouldBe
+          Index.firstMatch(name, FloatingRateIndex.standardLookups)
+      }
+    }
   }
 }

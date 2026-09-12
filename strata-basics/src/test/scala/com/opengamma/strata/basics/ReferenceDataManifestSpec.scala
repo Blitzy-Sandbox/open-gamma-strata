@@ -5,21 +5,26 @@
  */
 package com.opengamma.strata.basics
 
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import java.time.DayOfWeek
+import java.time.LocalDate
 import java.time.MonthDay
 import java.util.Locale
 
+import scala.util.Try
+import scala.util.Using
 import scala.util.matching.Regex
 
-import cats.effect.unsafe.implicits.global
-
 import io.circe.Decoder
-import io.circe.DecodingFailure
 import io.circe.Json
 import io.circe.JsonObject
+import io.circe.KeyDecoder
 import io.circe.generic.semiauto.deriveDecoder
 import io.circe.parser.parse
 
+import org.scalatest.Assertions
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
@@ -57,10 +62,11 @@ import com.opengamma.strata.basics.index.PriceIndex
 import com.opengamma.strata.basics.index.PriceIndexData
 import com.opengamma.strata.basics.index.PriceIndices
 import com.opengamma.strata.basics.location.CountryData
+import com.opengamma.strata.basics.parity.KeySchema
+import com.opengamma.strata.basics.parity.ParityHarness
 import com.opengamma.strata.basics.schedule.RollConvention
 import com.opengamma.strata.basics.schedule.RollConventions
 import com.opengamma.strata.basics.schedule.StubConvention
-import com.opengamma.strata.collect.io.Resources
 
 /**
  * The transcription guard over the reference data of the port.
@@ -95,6 +101,28 @@ import com.opengamma.strata.collect.io.Resources
  * section 7 of `tools/parity-capture/README.md`; strict JSON admits no comments, so the shape each
  * test relies on is restated at that test.
  *
+ * ===A key nobody reads is a column nobody compares===
+ *
+ * A derived JSON decoder reads the fields its model declares and ignores every other key of the
+ * object it is given, which for a transcription guard is the one failure mode that cannot be seen
+ * from the outside: a field the capture starts emitting inside a table or a row - a new column, a
+ * renamed one - would be dropped in silence, every table would still equal the manifest, and this
+ * suite would report a pass over data it was no longer comparing in full. So every fixed-shape
+ * object of the document is checked against its declared key set '''before''' it is decoded, in
+ * the one place where the keys are still visible, through the same
+ * [[com.opengamma.strata.basics.parity.ParityHarness.strictObject]] the parity suites beside this
+ * file decode their fixtures with - one strictness rule for the whole module, with one message.
+ * Each shape's key set is declared as a [[com.opengamma.strata.basics.parity.KeySchema]] beside
+ * the model it describes, and `every declared object schema is the key set the committed manifest
+ * carries` holds those declarations against the document itself, so a schema cannot drift from the
+ * artefact it describes any more than a count can.
+ *
+ * The shapes whose keys are '''data''' are not records and are not treated as any: a row of an
+ * index table is keyed by that table's own column headers, and the families of `externalNames`,
+ * `lenientPatterns`, `alternateNames` and `floatingRateNames.sections` are keyed by the name of
+ * the family. Each of those key sets is asserted where it belongs - against the table's header
+ * list, or against the documented family set - by the count and coverage tests above.
+ *
  * ===What is covered===
  *
  * '''All twenty nine top-level keys''', and every nested shape of each, are asserted against the
@@ -122,30 +150,48 @@ import com.opengamma.strata.collect.io.Resources
  *
  * ===How the document is read===
  *
- * Once, for the whole suite. [[com.opengamma.strata.collect.io.Resources.readClasspathText]] is the
- * module's single reader of class path text and is what the parity harness beside this file uses;
- * the text is parsed and each key decoded into the typed view the tests assert from, so no test
- * re-reads or re-parses a quarter of a megabyte of JSON. The top level is kept both as the parsed
- * [[io.circe.Json]] and as a [[io.circe.JsonObject]] rather than decoded into a case class of
- * twenty nine fields, because the key set itself is something this suite asserts - at the top level
- * and recursively - and a case class would silently ignore a key it had no field for.
+ * Once, for the whole suite, on first use, and without an effect type. The read is a bounded, total
+ * class path lookup - `getResourceAsStream` under [[scala.util.Using]], capped at
+ * [[ReferenceDataManifestSpec.ManifestByteCeiling]] bytes and decoded as UTF-8 explicitly - whose
+ * result is an `Either` carrying either the document or the reason it could not be obtained. The
+ * text is parsed and each key decoded into the typed view the tests assert from, so no test
+ * re-reads or re-parses a quarter of a megabyte of JSON. The top level is kept as a
+ * [[io.circe.JsonObject]] rather than decoded into a case class of twenty nine fields, because the
+ * key set itself is something this suite asserts - at the top level and recursively - and a case
+ * class would silently ignore a key it had no field for.
  *
- * That reader answers with `IO`, which this suite runs exactly once, at the point the document is
- * read, and never again. The effect type is therefore not threaded through a single test, no test
- * is written in `IO` and nothing here is asynchronous: reading one class path resource is the whole
- * of the effect and it is discharged at the edge, which is the posture the AAP's Rule 7 asks for
- * and the reason `IO` may appear in a file outside the `parity` package. `Resources` publishes no
- * synchronous reader - both of its methods answer with `IO` - and reaching around it to the class
- * loader directly would give this module a second way of reading a resource, which is worse than
- * one `unsafeRunSync` in an initialiser that runs once per run of the suite.
+ * No effect type appears here, deliberately. AAP section 0.3.3 confines the effect monad of the
+ * port to `collect.io.Resources`, the parity harness and `BasicsDemoApp`, and this suite is none of
+ * the three; discharging an effect in it would add a boundary outside that posture, which is what
+ * the Rule 7 gate exists to prevent. Reading one committed resource is not an effect this suite
+ * needs to sequence: it needs the bytes, and it needs the failure to be reportable.
+ *
+ * Reportable is the second half of it. Nothing is read while this class or its companion
+ * initialises - the document sits behind a `lazy val` - so a resource that is absent, empty,
+ * unparseable or not an object fails `the manifest resource is present on the class path, is
+ * non-empty and parses as a JSON object` with the reason, instead of aborting the suite with an
+ * `ExceptionInInitializerError` before any test can report anything at all.
  *
  * ===Scope===
  *
- * This suite asserts '''data fidelity''' and nothing else. That a family is closed and that every
- * name round trips is `NamedEnumClosedSpec`; the behaviour built on these tables - the conventional
- * pair decision, the lenient rewrite chain, calendar resolution - belongs to the spec of the type
- * that owns it. Numerical parity is the business of the `parity` package. None of that is repeated
- * here.
+ * This suite asserts '''data fidelity''', and beyond it only the THBA invariants recorded below.
+ * That a family is closed and that every name round trips is `NamedEnumClosedSpec`; the behaviour
+ * built on these tables - the conventional pair decision, the lenient rewrite chain, calendar
+ * resolution - belongs to the spec of the type that owns it. Numerical parity is the business
+ * of the `parity` package. None of that is repeated here.
+ *
+ * The one addition is the section `The THBA table's own invariants` below. The Thai bank
+ * calendar is the only calendar of the port whose dates are published rather than derived from
+ * rules, and [[com.opengamma.strata.basics.date.HolidayCalendarData]] is the only data object
+ * whose subject has no spec of its own: the AAP's frozen test inventory (section 0.3.1) gives
+ * the `date` package twenty-two specs, one per retained Java test class, and the Java
+ * implementation's only test over this table tested the INI parser this port does not have. So
+ * the invariants the manifest comparison cannot state - that every row is non-empty, ascending
+ * and free of duplicates, that every month-day is valid for the year it is filed under, that the
+ * one published holiday falling at a weekend is kept rather than filtered, and that this table
+ * is the whole content of the built-in `THBA` calendar - are asserted here, next to the
+ * comparison that establishes the rows themselves. The transcription of the rows is not restated
+ * by them; that is the manifest's business, and the case the section sits beside is what does it.
  */
 final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
@@ -154,6 +200,43 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   // Document identity and coverage.
   //-------------------------------------------------------------------------
+
+  test("the manifest resource is present on the class path, is non-empty and parses as a JSON object") {
+    // The load of the document is a test rather than an initialiser. Every other test here reads
+    // the document, so a resource that is absent, truncated to nothing, not JSON or JSON that is
+    // not an object would fail all of them with the same message and no test would be reporting the
+    // thing that is actually wrong; read eagerly while the companion initialised, as this file once
+    // did, it would abort the suite before any test reported at all. The four failures are
+    // distinguished by the diagnostic, which names the resource and the script that writes it,
+    // because the next step differs: a resource absent from the class path is a build or a path
+    // problem, and a document that does not parse is a capture problem.
+    withClue(documentOrFailure.swap.getOrElse("the manifest loaded and is a JSON object")) {
+      documentOrFailure.isRight shouldBe true
+    }
+    // Reading the loaded document proves the accessor the rest of the suite goes through, and its
+    // key count is the shape every coverage assertion below is stated over.
+    documentKeys should not be empty
+    // The four refusals of the load, asserted over input chosen for the purpose. Reading the
+    // committed resource exercises only the success path, so without these the guards that stand
+    // between a corrupt resource and a comparison stated over it would never have been observed
+    // to refuse anything.
+    withClue("strict UTF-8 decoding: ") {
+      // A lead byte of a two-byte sequence with its continuation byte missing. `new String(bytes,
+      // UTF_8)` answers "\uFFFD" for this; a strict decoder refuses it, which is what keeps a
+      // corrupted capture from reaching the JSON parser as text that differs from the bytes.
+      decodeUtf8(Array[Byte](0xc3.toByte)).isLeft shouldBe true
+      decodeUtf8(Array[Byte](0x41, 0xc3.toByte, 0xa9.toByte)) shouldBe Right("A\u00e9")
+      decodeUtf8("{}".getBytes(StandardCharsets.UTF_8)) shouldBe Right("{}")
+    }
+    withClue("the three ways text is not the document: ") {
+      documentOf("").swap.getOrElse("") should include("read as empty text")
+      documentOf("   \n ").swap.getOrElse("") should include("read as empty text")
+      documentOf("schemaVersion,generator").swap.getOrElse("") should include("is not valid JSON")
+      documentOf("[1, 2, 3]").swap.getOrElse("") should include("is not a JSON object")
+      documentOf("""{"schemaVersion":1}""").map(_.keys.toVector) shouldBe Right(
+        Vector("schemaVersion"))
+    }
+  }
 
   test("the document under assertion is the manifest the pinned capture script writes") {
     // These three keys are the document's identity. Asserting them is what stops another
@@ -351,6 +434,143 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  // The strict schema layer: no key of a decoded object goes unread.
+  //
+  // These five tests are about the reading of the document rather than about the port, and they
+  // are here because everything below them is only as strong as the decoding underneath it. A
+  // derived decoder ignores a key its model has no field for, so without them a column the capture
+  // added would be dropped in silence and every comparison in this file would still pass over the
+  // columns it did read. Each test exercises every documented shape, and the specimen it works
+  // from is taken out of the committed document, so a schema that has drifted from the artefact
+  // fails the first of them rather than quietly admitting the wrong key set everywhere else.
+  //-------------------------------------------------------------------------
+
+  test("every declared object schema is the key set the committed manifest carries") {
+    // The declaration cannot rot. Every schema is matched against a specimen of its own shape
+    // taken from the document, so a key the capture starts writing inside a table or a row is
+    // reported here - with the shape and the path the specimen came from - and not merely wherever
+    // that shape next happens to be decoded. Every schema is uniform, which is asserted rather
+    // than assumed: the captured document holds one key set per shape, so a documented shape is
+    // exact equality of key sets, with no variant to choose between and no optional key.
+    StrictShapes.foreach { shape =>
+      withClue(
+        s"${shape.schema.shape} at '${shape.path}', declared as ${shape.schema.describe}: ") {
+        shape.schema.variants.size shouldBe 1
+        shape.schema.optional shouldBe empty
+        shape.specimenKeys shouldBe shape.schema.known
+        shape.schema.matching(shape.specimenKeys) shouldBe Some(shape.schema.shape)
+      }
+      ()
+    }
+    withClue(s"${StrictShapes.size} shapes declared: ") {
+      StrictShapes.size shouldBe DocumentedObjectShapeCount
+      StrictShapes.map(_.schema.shape).distinct.size shouldBe StrictShapes.size
+      StrictShapes.map(_.path).distinct.size shouldBe StrictShapes.size
+    }
+  }
+
+  test("every declared object shape decodes the specimen the manifest carries") {
+    // The acceptance half of the strictness tests, and the reason the refusals below are evidence
+    // of anything: a check that refused every object would pass the three tests after this one
+    // while making the suite unable to read its own document.
+    StrictShapes.foreach { shape =>
+      val outcome = shape.decode(Json.fromJsonObject(shape.specimen))
+      val refusal = outcome.swap.toOption.map(_.getMessage).getOrElse("")
+      withClue(s"${shape.schema.shape} at '${shape.path}' was refused: $refusal: ") {
+        outcome.isRight shouldBe true
+      }
+      ()
+    }
+    succeed
+  }
+
+  test("an object shape carrying a key no schema knows is refused, naming the key") {
+    // The case the finding this layer answers describes: a later capture adds a field to a table
+    // or a row, the model has no counterpart for it, and the derived decoder would read the rest
+    // of the object and report a clean row - leaving whatever the new key carried uncompared.
+    StrictShapes.foreach { shape =>
+      val perturbed =
+        shape.specimen.add(UncapturedKey, Json.fromString("a value no comparison here reads"))
+      val refusal =
+        refusalOf(shape, perturbed, s"a specimen carrying the extra key '$UncapturedKey'")
+      withClue(s"${shape.schema.shape} was refused with: $refusal: ") {
+        refusal should include(UncapturedKey)
+        refusal should include(shape.schema.shape)
+      }
+      ()
+    }
+    succeed
+  }
+
+  test("an object shape missing a documented key is refused, naming the key") {
+    // Every documented key of every shape, one at a time, because a key set is only as enforced as
+    // its least enforced member: a model whose field was made optional, or a schema that named a
+    // key the objects do not have to carry, would leave exactly one of these unrefused.
+    StrictShapes.foreach { shape =>
+      shape.schema.known.toVector.sorted.foreach { key =>
+        val refusal =
+          refusalOf(
+            shape,
+            shape.specimen.remove(key),
+            s"a specimen without the documented key '$key'")
+        withClue(s"${shape.schema.shape} without '$key' was refused with: $refusal: ") {
+          refusal should include(key)
+        }
+        ()
+      }
+    }
+    succeed
+  }
+
+  test("an object shape whose documented key is renamed is refused, naming both spellings") {
+    // A rename is the perturbation a key-set check has to catch in both directions at once, and it
+    // is the one a decoder of optional fields cannot catch at all: the old key is gone, so the
+    // field reads as absent, and the new key is unknown, so its value is dropped. The message has
+    // to name the spelling that arrived as well as the one that left, since a reader given only
+    // half of that learns that the document changed and not into what.
+    StrictShapes.foreach { shape =>
+      shape.schema.known.toVector.sorted.foreach { key =>
+        val renamed = s"capturedAs${key.capitalize}"
+        val value =
+          shape.specimen(key).getOrElse(fail(s"${shape.schema.shape} has no key '$key' to rename"))
+        val refusal =
+          refusalOf(
+            shape,
+            shape.specimen.remove(key).add(renamed, value),
+            s"a specimen with '$key' renamed to '$renamed'")
+        withClue(s"${shape.schema.shape} with '$renamed' was refused with: $refusal: ") {
+          refusal should include(key)
+          refusal should include(renamed)
+        }
+        ()
+      }
+    }
+    succeed
+  }
+
+  /**
+   * Decodes a perturbed specimen that must be refused, and answers the refusal's message.
+   *
+   * The decoder under test is the one this suite reads that shape with, not a copy of it, so a
+   * shape whose strictness was removed fails here rather than being tested in a form nothing uses.
+   *
+   * @param shape  the documented shape being perturbed
+   * @param perturbed  the object the decoder must refuse
+   * @param what  how the perturbation is named in the failure message
+   * @return the message the decoder refused with
+   */
+  private def refusalOf(shape: StrictShape, perturbed: JsonObject, what: String): String =
+    shape.decode(Json.fromJsonObject(perturbed)) match {
+      case Left(failure) => failure.getMessage
+      case Right(decoded) =>
+        fail(
+          s"${shape.schema.shape}: $what decoded as '$decoded' instead of being refused. The " +
+            s"shape's specimen is the manifest object at '${shape.path}' and its documented key " +
+            s"set is ${shape.schema.describe}; a decoder that accepts an object whose keys are " +
+            "not the documented ones leaves whatever the undocumented key carries unmeasured")
+    }
+
+  //-------------------------------------------------------------------------
   // Currencies, the market convention ordering and currency pairs.
   //-------------------------------------------------------------------------
 
@@ -448,6 +668,52 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   // The four published index tables.
   //-------------------------------------------------------------------------
 
+  test("the captured cell normalisations are the Java forms, transcribed rather than looked up") {
+    // The two index tables are compared through `dayCountCell` and `calendarCell`, which bring a
+    // captured cell to the form the Java parser held it in. Neither may call the production type
+    // whose behaviour the comparison judges - see the note in the Ibor index test - so each is
+    // transcribed from the Java source instead, and a transcription is only worth what a test of it
+    // is worth: a helper that quietly became the identity function would retire the normalisation
+    // and leave the two index tests reporting normalisations as differences, or worse, agreeing for
+    // the wrong reason. The expectations below are literals read off the two Java sources named in
+    // the scaladoc of the helpers, chosen to cover every branch of each.
+    withClue(s"manifest key '$DayCountsKey' yields ${CapturedDayCountNames.size} spellings: ") {
+      // Twenty-one canonical names and the ten upper case forms that differ from them.
+      CapturedDayCountNames.size shouldBe 31
+      nameGroup(DayCountsKey).names.foreach { name =>
+        dayCountCell(name) shouldBe name
+        ()
+      }
+      // The Czech koruna spelling of the fixed leg day count, and the spelling of every other row.
+      dayCountCell("ACT/360") shouldBe "Act/360"
+      dayCountCell("Act/360") shouldBe "Act/360"
+      dayCountCell("ACT/ACT ISDA") shouldBe "Act/Act ISDA"
+      // A day count that carries a calendar has no constant and so no captured spelling; it is
+      // passed through, which is the text the port's member renders. So is text that names nothing.
+      dayCountCell("Bus/252 BRBD") shouldBe "Bus/252 BRBD"
+      dayCountCell("Act/366") shouldBe "Act/366"
+      // The fold is English, not the default locale of the host.
+      dayCountCell("act/360") shouldBe "act/360"
+    }
+    withClue("the composite calendar normalisation of HolidayCalendarId.java:87-120: ") {
+      // A simple name is its own normal form; a combined name is deduplicated and sorted.
+      calendarCell("GBLO") shouldBe "GBLO"
+      calendarCell("SGSI+GBLO") shouldBe "GBLO+SGSI"
+      calendarCell("USNY+EUTA") shouldBe "EUTA+USNY"
+      calendarCell("GBLO+USNY") shouldBe "GBLO+USNY"
+      calendarCell("USNY+GBLO+EUTA") shouldBe "EUTA+GBLO+USNY"
+      calendarCell("GBLO+GBLO") shouldBe "GBLO"
+      // `NoHolidays` contributes nothing to a combination and absorbs a link.
+      calendarCell(s"GBLO+$NoHolidaysCalendarName") shouldBe "GBLO"
+      calendarCell(s"$NoHolidaysCalendarName+GBLO") shouldBe "GBLO"
+      calendarCell("USNY~GBLO") shouldBe "GBLO~USNY"
+      calendarCell(s"GBLO~$NoHolidaysCalendarName") shouldBe NoHolidaysCalendarName
+      // `~` is tested before `+`, and the parts of a link are normalised by the same rule, so the
+      // combination inside this link is sorted before the link itself is.
+      calendarCell("GBLO~USNY+EUTA") shouldBe "EUTA+USNY~GBLO"
+    }
+  }
+
   test("IborIndexData.rows equals the manifest Ibor indices, column by column and in order") {
     // Shape: {count, headers[], rows[{<header>: value}]}, every value the raw text of the CSV cell
     // the Java loader read. This is the largest table of the port - 271 rows of thirteen columns -
@@ -458,15 +724,28 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
     // Three kinds of column are normalised before the comparison, and each normalisation is the
     // one the Java parser itself performed on the column:
     //
-    //  - A day count column is resolved through the family's own lookup, because the fixed leg day
-    //    count is spelled `ACT/360` on the Czech rows and `Act/360` on the rest, and the registry
-    //    being ported held both keys for one convention. Unresolvable text is left as it stands so
-    //    that the comparison reports it against the port's canonical name.
-    //  - A calendar column is put through the identifier factory, because a composite name is
-    //    normalised by deduplicating and sorting its parts: the column text `SGSI+GBLO` reaches the
-    //    port as `GBLO+SGSI`, which is a normalisation rather than a mistranscription.
+    //  - A day count column is mapped through the spellings the captured `dayCounts` names imply,
+    //    because the fixed leg day count is spelled `ACT/360` on the Czech rows and `Act/360` on
+    //    the rest, and the registry being ported held both keys for one convention. Text no
+    //    captured spelling covers is left as it stands so that the comparison reports it against
+    //    the port's canonical name.
+    //  - A calendar column is put through the composite normalisation the Java factory performs,
+    //    because a composite name is normalised by deduplicating and sorting its parts: the column
+    //    text `SGSI+GBLO` reaches the port as `GBLO+SGSI`, which is a normalisation rather than a
+    //    mistranscription.
     //  - The active column is a boolean spelled in upper case here and in lower case in the price
     //    index table, and the case of a boolean literal is not data.
+    //
+    // None of the three consults a production type, and that is deliberate rather than incidental.
+    // The expected side of a comparison may not be computed by the subject the comparison judges:
+    // a lookup or a normalisation applied to the captured text as well as to the port's value
+    // cancels out of the comparison, so a wrong lookup would rewrite both sides identically and
+    // the rows would still agree - which is exactly the self-round-trip AAP section 0.6.1 requires
+    // this suite to be independent of. `dayCountCell` therefore reads an index built from the
+    // manifest's own names and the registration rule of `ExtendedEnum.java:225-236`, and
+    // `calendarCell` applies the normalisation transcribed from `HolidayCalendarId.java:87-120`;
+    // both are local to this file and are pinned by `the captured cell normalisations are the Java
+    // forms, transcribed rather than looked up`.
     //
     // Everything else is compared as text exactly as captured, including the tenor convention
     // column, which the port carries verbatim because it names a business day convention on some
@@ -489,9 +768,11 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   test("OvernightIndexData.rows equals the manifest overnight indices, column by column") {
     // The same shape and the same three normalisations as the Ibor table; this table has eight
     // columns and two of them are day counts, one of which is `Bus/252 BRBD` - a day count that
-    // carries a calendar and so is not one of the twenty-one standard members. The family's lookup
-    // resolves it, which is what makes the column comparable at all, and the resolution is exactly
-    // what the Java loader did with the same text.
+    // carries a calendar and so is not one of the twenty-one standard members. No captured spelling
+    // covers it, so `dayCountCell` passes it through unchanged and it is compared against the text
+    // the port's member renders, which is the same text: the cell is comparable without anything
+    // resolving it, and nothing here resolves it, because the family whose lookup would do so is a
+    // subject of this suite rather than an authority for it.
     withClue("manifest key 'overnightIndices': ") {
       overnightIndices.headers shouldBe OvernightIndexHeaders
       overnightIndices.count shouldBe overnightIndices.rows.size
@@ -537,11 +818,17 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   test("FxIndexData.rows equals the manifest FX indices, row for row and in order") {
     // Same shape as the price index table. Two columns need a word. `Maturity Days` is CSV text and
     // is compared as the text of the port's integer. And a calendar column holds the text the CSV
-    // declared - `EUTA+CHZU` - while a `HolidayCalendarId` normalises a composite name by
-    // deduplicating and sorting its parts, so the same column reaches the port as `CHZU+EUTA`. The
-    // column is therefore put through the identifier factory before it is compared, which is
-    // exactly what the Java parser did with it; comparing the raw text would report a difference
-    // that is normalisation rather than a mistranscription.
+    // declared - `EUTA+CHZU` - while a composite identifier is normalised by deduplicating and
+    // sorting its parts, so the same column reaches the port as `CHZU+EUTA`. The captured text is
+    // therefore brought to that normal form by `calendarCell` before it is compared; comparing the
+    // raw text would report a normalisation as a mistranscription.
+    //
+    // That normalisation is transcribed from the Java factory and computed here, not obtained by
+    // calling `HolidayCalendarId.of` on the captured text. The identifier's normalisation is itself
+    // part of what this suite checks, and a factory applied to both sides of a comparison cancels
+    // out of it: a port that sorted composite parts wrongly would rewrite the expectation in the
+    // same wrong way and the rows would still be equal. The expected side of every comparison in
+    // this suite is therefore built from the manifest and from code local to this file only.
     withClue("manifest key 'fxIndices': ") {
       fxIndices.headers shouldBe FxIndexHeaders
       fxIndices.count shouldBe fxIndices.rows.size
@@ -550,9 +837,9 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       (
         row(FxIndexNameHeader),
         s"${row(FxIndexBaseCurrencyHeader)}/${row(FxIndexCounterCurrencyHeader)}",
-        HolidayCalendarId.of(row(FxIndexFixingCalendarHeader)).name,
+        calendarCell(row(FxIndexFixingCalendarHeader)),
         row(FxIndexMaturityDaysHeader),
-        HolidayCalendarId.of(row(FxIndexMaturityCalendarHeader)).name))
+        calendarCell(row(FxIndexMaturityCalendarHeader))))
     val actual = FxIndexData.rows.map(row =>
       (
         row.name,
@@ -1079,6 +1366,133 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  // The THBA table's own invariants.
+  //
+  // The rows themselves are established by the manifest comparison above, and nothing here
+  // restates them. What follows is what a row-for-row comparison cannot state and a consumer of
+  // the table nevertheless relies on - the shape of every row, the resolution of a month-day
+  // against the year it is filed under, the weekend, and the fact that this table is the whole
+  // content of the built-in calendar assembled from it. It is asserted in this suite because the
+  // AAP's frozen test inventory (section 0.3.1) gives the `date` package one spec per retained
+  // Java test class and the only Java test over this data tested the INI parser the port does not
+  // have, so the table's subject has no spec of its own; the reasoning behind folding it here is
+  // recorded in the scaladoc of this suite.
+  //-------------------------------------------------------------------------
+
+  test("every THBA year row is non-empty, strictly ascending and free of duplicates") {
+    HolidayCalendarData.thba.foreach {
+      case (year, monthDays) =>
+        withClue(s"$year: ") {
+          monthDays should not be empty
+          monthDays.distinct.size shouldBe monthDays.size
+          // Strictly ascending within the row, which is the order the captured section
+          // publishes and the reason the resolved dates need no sorting on the way out.
+          monthDays.sliding(2).foreach {
+            case List(earlier, later) => earlier.isBefore(later) shouldBe true
+            case _ => succeed
+          }
+        }
+    }
+
+    // The shortest published year holds 13 dates and the longest 19, so a row that lost or gained a
+    // date en bloc is reported here even if the total happened to be preserved.
+    val rowSizes = HolidayCalendarData.thba.values.map(monthDays => monthDays.size).toList
+    rowSizes.min shouldBe DocumentedThbaShortestYearRowSize
+    rowSizes.max shouldBe DocumentedThbaLongestYearRowSize
+    rowSizes.sum shouldBe DocumentedThbaDateCount
+  }
+
+  test("HolidayCalendarData.thbaHolidays is the THBA table resolved into ascending dates") {
+    HolidayCalendarData.thbaHolidays.size shouldBe DocumentedThbaDateCount
+    HolidayCalendarData.thbaHolidays.distinct.size shouldBe DocumentedThbaDateCount
+
+    // Strictly ascending overall, which follows from the map being sorted by year and every row
+    // being ascending - and is asserted directly, because it is the property a consumer relies on
+    // when it builds a calendar from the list without sorting it.
+    HolidayCalendarData.thbaHolidays.sliding(2).foreach {
+      case List(earlier, later) =>
+        withClue(s"$earlier then $later: ")(earlier.isBefore(later) shouldBe true)
+      case _ => succeed
+    }
+
+    // Consistent with the table it is derived from: the same number of dates, each one the
+    // month-day of its row resolved against the year that row is filed under, in that order. The
+    // years the resolved dates fall in are compared with the years the capture recorded, so the
+    // accessor is held to the same rows as the table.
+    val resolved: List[LocalDate] =
+      HolidayCalendarData.thba.toList.flatMap {
+        case (year, monthDays) => monthDays.map(monthDay => monthDay.atYear(year))
+      }
+    HolidayCalendarData.thbaHolidays shouldBe resolved
+    HolidayCalendarData.thbaHolidays.map(date => date.getYear).distinct shouldBe
+      thbaRows.map(row => row._1).toList
+
+    // The accessor is a method over a value computed once, so asking twice gives the same list.
+    HolidayCalendarData.thbaHolidays shouldBe HolidayCalendarData.thbaHolidays
+  }
+
+  test("every THBA month-day is valid for the year it is filed under") {
+    // A month-day is resolved against its year on the way out, and that resolution '''adjusts'''
+    // the 29th of February in a year that is not a leap year rather than failing. One published
+    // row holds a leap day - 2056 - so this assertion is what distinguishes correct data from a
+    // leap day filed under the wrong year, which would otherwise become the 28th in silence.
+    HolidayCalendarData.thba.foreach {
+      case (year, monthDays) =>
+        monthDays.foreach { monthDay =>
+          val resolved = monthDay.atYear(year)
+          withClue(s"$year-$monthDay resolved to $resolved: ") {
+            resolved.getYear shouldBe year
+            resolved.getMonthValue shouldBe monthDay.getMonthValue
+            resolved.getDayOfMonth shouldBe monthDay.getDayOfMonth
+          }
+        }
+    }
+
+    // The one leap day the section publishes, asserted concretely.
+    HolidayCalendarData.thba(2056) should contain(MonthDay.of(2, 29))
+    HolidayCalendarData.thbaHolidays should contain(LocalDate.of(2056, 2, 29))
+  }
+
+  test("the published THBA holiday that falls at a weekend is kept, with the Sat,Sun weekend") {
+    // The published rows are not filtered against the weekend, unlike the rule-generated calendars,
+    // and exactly one row exercises that: the 4th of May 2031 is a Sunday and stays in the table.
+    // Asserted as an exhaustive scan rather than as a single date, so that filtering the table - or
+    // adding a second such date - fails here.
+    val weekendHolidays: List[LocalDate] =
+      HolidayCalendarData.thbaHolidays.filter(date =>
+        HolidayCalendarData.thbaWeekendDays.contains(date.getDayOfWeek))
+
+    weekendHolidays shouldBe List(LocalDate.of(2031, 5, 4))
+    LocalDate.of(2031, 5, 4).getDayOfWeek shouldBe DayOfWeek.SUNDAY
+
+    // The captured weekend and the port's are compared by the manifest case above; the two days
+    // are named here as well, because outside the published years the calendar applies its
+    // weekend alone and nothing else in this suite states which days those are.
+    HolidayCalendarData.thbaWeekendDays shouldBe Set(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
+  }
+
+  test("HolidayCalendarData.thba is the data the built-in THBA calendar is assembled from") {
+    // The purpose of this table: it is the whole content of the built-in Thai bank calendar, so
+    // every published date is a holiday of that calendar and the weekend it declares is the one
+    // the calendar applies. `StandardHolidayCalendars` is the assembler - the data object never
+    // builds a calendar itself, which is what keeps the two free of an initialisation cycle.
+    val calendar = StandardHolidayCalendars.THBA
+    calendar.id shouldBe HolidayCalendarIds.THBA
+    calendar.weekendDays shouldBe HolidayCalendarData.thbaWeekendDays
+
+    HolidayCalendarData.thbaHolidays.foreach { date =>
+      withClue(s"$date: ")(calendar.isHoliday(date) shouldBe true)
+    }
+
+    // And a year outside the published range is answered by the weekend rule alone, which is the
+    // documented fallback of a calendar asked about a date its data does not cover.
+    calendar.isHoliday(LocalDate.of(2004, 1, 1)) shouldBe false
+    calendar.isBusinessDay(LocalDate.of(2004, 1, 1)) shouldBe true
+    calendar.isHoliday(LocalDate.of(2080, 12, 31)) shouldBe false
+    calendar.isHoliday(LocalDate.of(2080, 12, 28)) shouldBe true
+  }
+
+  //-------------------------------------------------------------------------
   // Element-wise comparison with a failure that names the offending row.
   //-------------------------------------------------------------------------
 
@@ -1300,17 +1714,19 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 /**
  * The manifest document, read and decoded once, and the declaration of what this suite covers.
  *
- * The resource is read and parsed while this object initialises, which happens once per run of the
- * suite, so a resource that is missing or is not JSON stops everything at once and says so - there
- * is nothing this suite can assert without it. Each key is then decoded into the typed view the
- * tests read, and those views are lazy: decoding still happens once, but it happens inside the test
- * that reads the view, so a document whose shape has changed under one key fails the tests of that
- * key, naming the key and the JSON path, and leaves the remaining twenty-eight still asserted
- * rather than reporting one initialiser error for the suite.
+ * '''Nothing here runs while this object initialises.''' The resource is read on first use, behind a
+ * `lazy val`, and the read answers with an `Either` rather than throwing, so a resource that is
+ * missing, empty, unparseable or not an object is reported by the test whose subject that is and
+ * through the diagnostic of every accessor that cannot proceed without it - never as an
+ * `ExceptionInInitializerError` that aborts the suite before it reports anything. Each key is then
+ * decoded into the typed view the tests read, and those views are lazy for the same reason:
+ * decoding still happens once, but it happens inside the test that reads the view, so a document
+ * whose shape has changed under one key fails the tests of that key, naming the key and the JSON
+ * path, and leaves the remaining twenty-eight still asserted.
  *
  * Members are declared in dependency order - the key names first, then the document, then the typed
- * views derived from both - which is how the file reads even though the views being lazy means the
- * order no longer decides whether one of them sees another as `null`.
+ * views derived from both - which is how the file reads even though everything derived from the
+ * document being lazy means the order no longer decides whether one of them sees another as `null`.
  */
 private object ReferenceDataManifestSpec {
 
@@ -1458,6 +1874,19 @@ private object ReferenceDataManifestSpec {
 
   /** The documented number of `THBA` year rows, one per year from 2005 to 2079. */
   val DocumentedThbaYearRowCount: Int = 75
+
+  /**
+   * The documented `THBA` date figures: the total number of published dates, and the sizes of the
+   * shortest and the longest year row.
+   *
+   * The manifest comparison establishes that the port holds the rows the capture recorded; these are
+   * the published totals of the section those rows were captured from
+   * (`HolidayCalendarData.ini:32-106`), and they are what reports a row that lost or gained a date
+   * en bloc on both sides of that comparison at once.
+   */
+  val DocumentedThbaDateCount: Int = 1220
+  val DocumentedThbaShortestYearRowSize: Int = 13
+  val DocumentedThbaLongestYearRowSize: Int = 19
 
   /**
    * The documented size of every named-constant group of the document.
@@ -1648,7 +2077,15 @@ private object ReferenceDataManifestSpec {
       "alternateNames" -> Set(IborIndexFamily, OvernightIndexFamily, FxIndexFamily))
 
   //-------------------------------------------------------------------------
-  // Row models. Every field name is the JSON key the capture writes.
+  // Row models, each with the key set of the object it decodes. Every field name is the JSON key
+  // the capture writes, and every key set here is `uniform` - one documented shape, no optional
+  // key - because the captured manifest is a uniform document: a table carries the same keys in
+  // every one of its rows, present rather than omitted. A uniform schema is therefore exact
+  // equality of key sets, and `ParityHarness.strictObject` applies it to the object before the
+  // derived decoder reads it, so an unknown, a missing or a renamed key is refused with the key
+  // named rather than ignored. Each schema's key set is held against the committed document by
+  // `every declared object schema is the key set the committed manifest carries`, so none of them
+  // can drift from the artefact it describes.
   //-------------------------------------------------------------------------
 
   /** One currency row: `{code, minorUnitDigits, triangulationCurrency, historic}`. */
@@ -1658,6 +2095,12 @@ private object ReferenceDataManifestSpec {
       triangulationCurrency: String,
       historic: Boolean)
 
+  /** The key set of one row of `currencies.rows`. */
+  val CurrencyRowSchema: KeySchema =
+    KeySchema.uniform(
+      "manifest currency row",
+      Set("code", "minorUnitDigits", "triangulationCurrency", "historic"))
+
   /** The currency table: `{count, historicCount, activeCount, rows[]}`. */
   final case class CurrencyManifestTable(
       count: Int,
@@ -1665,35 +2108,104 @@ private object ReferenceDataManifestSpec {
       activeCount: Int,
       rows: Vector[CurrencyManifestRow])
 
+  /** The key set of the `currencies` table. */
+  val CurrencyTableSchema: KeySchema =
+    KeySchema.uniform(
+      "manifest currency table",
+      Set("count", "historicCount", "activeCount", "rows"))
+
   /** One conventional currency pair: `{pair, rateDigits}`. */
   final case class CurrencyPairManifestRow(pair: String, rateDigits: Int)
+
+  /** The key set of one row of `currencyPairs.rows`. */
+  val CurrencyPairRowSchema: KeySchema =
+    KeySchema.uniform("manifest currency pair row", Set("pair", "rateDigits"))
 
   /** The currency pair table: `{count, rows[]}`. */
   final case class CurrencyPairManifestTable(count: Int, rows: Vector[CurrencyPairManifestRow])
 
+  /** The key set of the `currencyPairs` table. */
+  val CurrencyPairTableSchema: KeySchema =
+    KeySchema.uniform("manifest currency pair table", Set("count", "rows"))
+
   /** One country row: `{alpha3, alpha2}`. */
   final case class CountryManifestRow(alpha3: String, alpha2: String)
+
+  /** The key set of one row of `countries.rows`. */
+  val CountryRowSchema: KeySchema =
+    KeySchema.uniform("manifest country row", Set("alpha3", "alpha2"))
 
   /** The country table: `{count, rows[]}`. */
   final case class CountryManifestTable(count: Int, rows: Vector[CountryManifestRow])
 
+  /** The key set of the `countries` table. */
+  val CountryTableSchema: KeySchema =
+    KeySchema.uniform("manifest country table", Set("count", "rows"))
+
   /** A named-constant group: `{count, names[]}`, the names in name order. */
   final case class NameGroup(count: Int, names: Vector[String])
+
+  /**
+   * The key set of a named-constant group.
+   *
+   * The shape of the twelve constant-holder keys of the document - `iborIndexConstants`,
+   * `overnightIndexConstants`, `priceIndexConstants`, `fxIndexConstants`, `dayCounts`,
+   * `businessDayConventions`, `rollConventions`, `periodAdditionConventions`, `dateSequences`,
+   * `stubConventions`, `holidayCalendarIds` and `builtInHolidayCalendars` - and of
+   * `floatingRateNames.constants`.
+   */
+  val NameGroupSchema: KeySchema =
+    KeySchema.uniform("manifest named-constant group", Set("count", "names"))
 
   /** One key/value row of a configuration section: `{key, value}`, in file order. */
   final case class KeyValueRow(key: String, value: String)
 
+  /**
+   * The key set of one key/value row.
+   *
+   * The shape of a row of every `floatingRateNames.sections.<section>.rows` and of every
+   * `lenientPatterns.<family>.rows`.
+   */
+  val KeyValueRowSchema: KeySchema =
+    KeySchema.uniform("manifest key/value row", Set("key", "value"))
+
   /** One configuration section: `{count, rows[]}`. */
   final case class KeyValueSection(count: Int, rows: Vector[KeyValueRow])
+
+  /**
+   * The key set of one configuration section.
+   *
+   * The shape of every `floatingRateNames.sections.<section>` and of every
+   * `lenientPatterns.<family>`.
+   */
+  val KeyValueSectionSchema: KeySchema =
+    KeySchema.uniform("manifest key/value section", Set("count", "rows"))
 
   /** One external name row: `{externalName, standardName}`. */
   final case class ExternalNameRow(externalName: String, standardName: String)
 
+  /** The key set of one row of `externalNames.<family>.<group>.rows`. */
+  val ExternalNameRowSchema: KeySchema =
+    KeySchema.uniform("manifest external name row", Set("externalName", "standardName"))
+
   /** One external name group: `{count, rows[]}`. */
   final case class ExternalNameGroup(count: Int, rows: Vector[ExternalNameRow])
 
+  /** The key set of one `externalNames.<family>.<group>` group. */
+  val ExternalNameGroupSchema: KeySchema =
+    KeySchema.uniform("manifest external name group", Set("count", "rows"))
+
   /** One alternate name row: `{alternateName, standardName}`. */
   final case class AlternateNameRow(alternateName: String, standardName: String)
+
+  /**
+   * The key set of one alternate name row.
+   *
+   * The shape of a row of every `alternateNames.<family>.iniRows` and of every
+   * `alternateNames.<family>.apiExpandedRows`, which the capture writes in the same shape.
+   */
+  val AlternateNameRowSchema: KeySchema =
+    KeySchema.uniform("manifest alternate name row", Set("alternateName", "standardName"))
 
   /** The alternate names of one family, as INI rows and as the expanded runtime view. */
   final case class AlternateNameTable(
@@ -1702,11 +2214,31 @@ private object ReferenceDataManifestSpec {
       apiExpandedRowCount: Int,
       apiExpandedRows: Vector[AlternateNameRow])
 
+  /** The key set of one `alternateNames.<family>` table. */
+  val AlternateNameTableSchema: KeySchema =
+    KeySchema.uniform(
+      "manifest alternate name table",
+      Set("iniRowCount", "iniRows", "apiExpandedRowCount", "apiExpandedRows"))
+
   /** An index table: `{count, headers[], rows[{<header>: value}]}`, values as raw text. */
   final case class IndexManifestTable(
       count: Int,
       headers: Vector[String],
       rows: Vector[Map[String, String]])
+
+  /**
+   * The key set of an index table.
+   *
+   * The shape of `iborIndices`, `overnightIndices`, `priceIndices` and `fxIndices`. The schema
+   * governs the three keys of the table itself and stops there: a '''row''' of one of these tables
+   * is keyed by the table's own column headers, so its keys are data rather than a record shape,
+   * and they are asserted against `headers` - for every row of every index table - by `every table
+   * of the manifest carries the row count the schema of record documents`. Turning a row into a
+   * fixed record would pin four wide tables to one spelling of thirteen, eight, five and six
+   * column names apiece and would still say nothing the header comparison does not already say.
+   */
+  val IndexTableSchema: KeySchema =
+    KeySchema.uniform("manifest index table", Set("count", "headers", "rows"))
 
   /** The floating rate name table: the constants, the total alias row count, and the sections. */
   final case class FloatingRateNameManifestTable(
@@ -1714,11 +2246,31 @@ private object ReferenceDataManifestSpec {
       aliasRowCount: Int,
       sections: Map[String, KeyValueSection])
 
+  /**
+   * The key set of the `floatingRateNames` table.
+   *
+   * The `sections` key holds a map from section name to section, not a record: the seven section
+   * names are the division of the published alias space and are asserted as a set by `the manifest
+   * floating rate name sections account for every transcribed row`, which is also where the
+   * declared alias row count is reconciled with the sections it totals. Each section itself is a
+   * fixed shape and is decoded through [[KeyValueSectionSchema]].
+   */
+  val FloatingRateNameTableSchema: KeySchema =
+    KeySchema.uniform(
+      "manifest floating rate name table",
+      Set("constants", "aliasRowCount", "sections"))
+
   /** One default calendar row: `{currency, calendarId, resolvableAgainstStandardReferenceData}`. */
   final case class HolidayCalendarDefaultRow(
       currency: String,
       calendarId: String,
       resolvableAgainstStandardReferenceData: Boolean)
+
+  /** The key set of one row of `holidayCalendarDefaultByCurrency.rows`. */
+  val HolidayCalendarDefaultRowSchema: KeySchema =
+    KeySchema.uniform(
+      "manifest default calendar row",
+      Set("currency", "calendarId", "resolvableAgainstStandardReferenceData"))
 
   /** The default calendar table: `{count, resolvableCount, unresolvableCount, rows[]}`. */
   final case class HolidayCalendarDefaultTable(
@@ -1727,84 +2279,304 @@ private object ReferenceDataManifestSpec {
       unresolvableCount: Int,
       rows: Vector[HolidayCalendarDefaultRow])
 
+  /** The key set of the `holidayCalendarDefaultByCurrency` table. */
+  val HolidayCalendarDefaultTableSchema: KeySchema =
+    KeySchema.uniform(
+      "manifest default calendar table",
+      Set("count", "resolvableCount", "unresolvableCount", "rows"))
+
   /** One THBA year row: `{year, dates}`, the dates as `MMMdd` text separated by commas. */
   final case class ThbaYearRow(year: String, dates: String)
+
+  /** The key set of one row of `holidayCalendarData.THBA.rows`. */
+  val ThbaYearRowSchema: KeySchema =
+    KeySchema.uniform("manifest THBA year row", Set("year", "dates"))
 
   /** The THBA table: `{yearRowCount, weekend, rows[]}`. */
   final case class ThbaTable(yearRowCount: Int, weekend: String, rows: Vector[ThbaYearRow])
 
+  /**
+   * The key set of one table of `holidayCalendarData`, of which the document carries one: `THBA`.
+   *
+   * The schema is of the table, not of the key it hangs under; the object that holds the keys has
+   * a schema of its own, immediately below.
+   */
+  val ThbaTableSchema: KeySchema =
+    KeySchema.uniform("manifest THBA table", Set("yearRowCount", "weekend", "rows"))
+
+  /**
+   * The key set of `holidayCalendarData` itself: the one calendar the capture emits table data
+   * for.
+   *
+   * This object looks like the map-shaped parts of the manifest, whose keys are '''data''' and
+   * are therefore asserted as sets rather than declared, but it is not one of them: only `THBA`
+   * is read out of it and compared with the port, so a second calendar added by a later capture
+   * would decode into the map, sit there unread, and leave that whole table unmeasured while
+   * every other check of this suite still passed. Declaring the key set is what refuses it
+   * instead - a calendar the capture starts emitting has to be read here before this suite can
+   * report on the manifest again, which is precisely the intent.
+   *
+   * `Map[String, ThbaTable]` remains the decoded type: the name is still the key of a table, and
+   * nothing about the shape of a table changes. What is declared is which keys may appear.
+   */
+  val HolidayCalendarDataSchema: KeySchema =
+    KeySchema.uniform("manifest holiday calendar data", Set(ThbaCalendarName))
+
   // Declared in dependency order: a table's decoder captures the row decoder it needs while it is
-  // itself initialised, so a row decoder below its table would be read as `null`.
-  implicit val currencyRowDecoder: Decoder[CurrencyManifestRow] = deriveDecoder
-  implicit val currencyTableDecoder: Decoder[CurrencyManifestTable] = deriveDecoder
-  implicit val currencyPairRowDecoder: Decoder[CurrencyPairManifestRow] = deriveDecoder
-  implicit val currencyPairTableDecoder: Decoder[CurrencyPairManifestTable] = deriveDecoder
-  implicit val countryRowDecoder: Decoder[CountryManifestRow] = deriveDecoder
-  implicit val countryTableDecoder: Decoder[CountryManifestTable] = deriveDecoder
-  implicit val nameGroupDecoder: Decoder[NameGroup] = deriveDecoder
-  implicit val keyValueRowDecoder: Decoder[KeyValueRow] = deriveDecoder
-  implicit val keyValueSectionDecoder: Decoder[KeyValueSection] = deriveDecoder
-  implicit val externalNameRowDecoder: Decoder[ExternalNameRow] = deriveDecoder
-  implicit val externalNameGroupDecoder: Decoder[ExternalNameGroup] = deriveDecoder
-  implicit val alternateNameRowDecoder: Decoder[AlternateNameRow] = deriveDecoder
-  implicit val alternateNameTableDecoder: Decoder[AlternateNameTable] = deriveDecoder
-  implicit val indexTableDecoder: Decoder[IndexManifestTable] = deriveDecoder
-  implicit val floatingRateNameTableDecoder: Decoder[FloatingRateNameManifestTable] = deriveDecoder
-  implicit val holidayCalendarDefaultRowDecoder: Decoder[HolidayCalendarDefaultRow] = deriveDecoder
+  // itself initialised, so a row decoder below its table would be read as `null`. Each one is the
+  // derived decoder of its model behind the key check of its schema, so the keys of an object are
+  // settled before any field of it is read; wrapping does not change what a field decodes to, and
+  // it leaves the order above exactly as load-bearing as it was.
+  implicit val currencyRowDecoder: Decoder[CurrencyManifestRow] =
+    ParityHarness.strictObject(CurrencyRowSchema)(deriveDecoder[CurrencyManifestRow])
+
+  implicit val currencyTableDecoder: Decoder[CurrencyManifestTable] =
+    ParityHarness.strictObject(CurrencyTableSchema)(deriveDecoder[CurrencyManifestTable])
+
+  implicit val currencyPairRowDecoder: Decoder[CurrencyPairManifestRow] =
+    ParityHarness.strictObject(CurrencyPairRowSchema)(deriveDecoder[CurrencyPairManifestRow])
+
+  implicit val currencyPairTableDecoder: Decoder[CurrencyPairManifestTable] =
+    ParityHarness.strictObject(CurrencyPairTableSchema)(deriveDecoder[CurrencyPairManifestTable])
+
+  implicit val countryRowDecoder: Decoder[CountryManifestRow] =
+    ParityHarness.strictObject(CountryRowSchema)(deriveDecoder[CountryManifestRow])
+
+  implicit val countryTableDecoder: Decoder[CountryManifestTable] =
+    ParityHarness.strictObject(CountryTableSchema)(deriveDecoder[CountryManifestTable])
+
+  implicit val nameGroupDecoder: Decoder[NameGroup] =
+    ParityHarness.strictObject(NameGroupSchema)(deriveDecoder[NameGroup])
+
+  implicit val keyValueRowDecoder: Decoder[KeyValueRow] =
+    ParityHarness.strictObject(KeyValueRowSchema)(deriveDecoder[KeyValueRow])
+
+  implicit val keyValueSectionDecoder: Decoder[KeyValueSection] =
+    ParityHarness.strictObject(KeyValueSectionSchema)(deriveDecoder[KeyValueSection])
+
+  implicit val externalNameRowDecoder: Decoder[ExternalNameRow] =
+    ParityHarness.strictObject(ExternalNameRowSchema)(deriveDecoder[ExternalNameRow])
+
+  implicit val externalNameGroupDecoder: Decoder[ExternalNameGroup] =
+    ParityHarness.strictObject(ExternalNameGroupSchema)(deriveDecoder[ExternalNameGroup])
+
+  implicit val alternateNameRowDecoder: Decoder[AlternateNameRow] =
+    ParityHarness.strictObject(AlternateNameRowSchema)(deriveDecoder[AlternateNameRow])
+
+  implicit val alternateNameTableDecoder: Decoder[AlternateNameTable] =
+    ParityHarness.strictObject(AlternateNameTableSchema)(deriveDecoder[AlternateNameTable])
+
+  implicit val indexTableDecoder: Decoder[IndexManifestTable] =
+    ParityHarness.strictObject(IndexTableSchema)(deriveDecoder[IndexManifestTable])
+
+  implicit val floatingRateNameTableDecoder: Decoder[FloatingRateNameManifestTable] =
+    ParityHarness.strictObject(FloatingRateNameTableSchema)(
+      deriveDecoder[FloatingRateNameManifestTable])
+
+  implicit val holidayCalendarDefaultRowDecoder: Decoder[HolidayCalendarDefaultRow] =
+    ParityHarness.strictObject(HolidayCalendarDefaultRowSchema)(
+      deriveDecoder[HolidayCalendarDefaultRow])
+
   implicit val holidayCalendarDefaultTableDecoder: Decoder[HolidayCalendarDefaultTable] =
-    deriveDecoder
-  implicit val thbaYearRowDecoder: Decoder[ThbaYearRow] = deriveDecoder
-  implicit val thbaTableDecoder: Decoder[ThbaTable] = deriveDecoder
+    ParityHarness.strictObject(HolidayCalendarDefaultTableSchema)(
+      deriveDecoder[HolidayCalendarDefaultTable])
+
+  implicit val thbaYearRowDecoder: Decoder[ThbaYearRow] =
+    ParityHarness.strictObject(ThbaYearRowSchema)(deriveDecoder[ThbaYearRow])
+
+  implicit val thbaTableDecoder: Decoder[ThbaTable] =
+    ParityHarness.strictObject(ThbaTableSchema)(deriveDecoder[ThbaTable])
+
+  /**
+   * The decoder of `holidayCalendarData`: a map of calendar name to table, behind the key check
+   * of [[HolidayCalendarDataSchema]].
+   *
+   * Declared implicitly so that the one place the document reads that key picks it up rather than
+   * the library's own map decoder, which would accept a calendar this suite never reads.
+   */
+  implicit val holidayCalendarDataDecoder: Decoder[Map[String, ThbaTable]] =
+    ParityHarness.strictObject(HolidayCalendarDataSchema)(
+      Decoder.decodeMap[String, ThbaTable](KeyDecoder.decodeKeyString, thbaTableDecoder))
 
   //-------------------------------------------------------------------------
-  // The document, read and parsed once.
+  // The document, read and parsed once, on first use.
   //-------------------------------------------------------------------------
 
   /**
-   * The manifest, parsed.
+   * The largest manifest this suite will read, in bytes.
    *
-   * Reading the text goes through the module's own class path reader, the same one the parity
-   * harness beside this file uses, so this suite has no second way of reading a resource; the `IO`
-   * that reader answers with is run once, here, and nowhere else in this file. The text is checked
-   * for emptiness before it is parsed, because the one plausible mistake in a class path lookup is
-   * a path that names nothing, and a decoder given an empty document reports a parse error that
-   * says nothing about the resource it came from.
+   * The committed document is a quarter of a megabyte, so eight megabytes is four orders of
+   * magnitude of room for a table to grow in and still a ceiling: the read below is given a bound
+   * so that a resource which is not the manifest at all - a truncated stream that never ends, an
+   * archive that resolved under the same name - is reported as being too large rather than
+   * exhausting the heap of the forked test JVM. A capture that genuinely outgrew this ceiling fails
+   * the load test with a message naming the figure.
    */
-  private val documentJson: Json = {
-    val text = Resources.readClasspathText(ManifestResource).unsafeRunSync()
-    if (text.trim.isEmpty) {
-      throw new IllegalStateException(
-        s"the reference data manifest '$ManifestResource' read as empty text; the resource is " +
-          "written by tools/parity-capture/capture-baseline.jsh and committed under " +
-          "strata-basics/src/test/resources")
-    }
-    parse(text)
-      .fold(
-        failure =>
-          throw new IllegalStateException(
-            s"the reference data manifest '$ManifestResource' is not valid JSON: " +
-              failure.getMessage,
-            failure),
-        identity)
+  val ManifestByteCeiling: Int = 8 * 1024 * 1024
+
+  /**
+   * Reads the committed manifest resource as UTF-8 text, without an effect and without throwing.
+   *
+   * '''Why this is not the module's effectful reader.''' AAP section 0.3.3 confines the effect monad
+   * of the port to `collect.io.Resources`, the parity harness and `BasicsDemoApp`, and this suite is
+   * none of the three: discharging that reader's effect here would add a boundary the Rule 7 posture
+   * does not have, and discharging it in an eagerly initialised `val`, as this file once did, turned
+   * a missing or malformed resource into an `ExceptionInInitializerError` that aborted the suite
+   * before a single test could report anything. Reading one committed class path resource needs no
+   * effect type at all: it is done here with the class loader, bounded, total, and decoded
+   * explicitly, and the outcome is a value that the load test asserts and every other accessor
+   * reports through.
+   *
+   * '''The alternative, and why it is not taken here.''' The other way to keep this suite free of an
+   * effect boundary is for the read to happen in one of the three places that may hold one - the
+   * natural candidate being the parity harness beside this file, which already loads classpath
+   * fixtures through `Resources.readClasspathText` - and for an `Either` to be handed to this suite
+   * already read. That is a better home for it if the module ever wants one reader and one only,
+   * and it is a small change: a method there returning `Either[String, String]` and this file
+   * calling it in place of [[readManifestText]]. It is not done here because the harness is not
+   * this file's concern to change, and because the guarantees that make the choice matter - a
+   * ceiling, a close on every outcome, and strict UTF-8 - are each stated and asserted below rather
+   * than assumed.
+   *
+   * The read carries the same three guarantees as the reader it stands in for, because a weaker
+   * read of this document would be a defect of this suite rather than a convenience: it is bounded
+   * by [[ManifestByteCeiling]] - one byte beyond it is requested, so a document at the ceiling is
+   * distinguishable from one over it - it is closed by [[scala.util.Using]] whether it completes or
+   * fails, and it is decoded as '''strict''' UTF-8 by [[decodeUtf8]], which refuses a malformed
+   * byte sequence instead of substituting a replacement character for it. That last one is the one
+   * worth stating: this suite exists to prove a captured document was transcribed faithfully, so a
+   * decoder that silently rewrote a byte before the JSON was parsed could turn a corrupt capture
+   * into a passing comparison.
+   *
+   * A leading `/` on the resource name is tolerated because `ClassLoader.getResourceAsStream`
+   * rejects it where `Class.getResourceAsStream` requires it, and the constant is written in the
+   * class loader's form.
+   *
+   * @return the text of the resource, or the reason it could not be read, naming the resource
+   */
+  private def readManifestText(): Either[String, String] = {
+    val loader = Option(getClass.getClassLoader).getOrElse(ClassLoader.getPlatformClassLoader)
+    val path = if (ManifestResource.startsWith("/")) ManifestResource.drop(1) else ManifestResource
+    Option(loader.getResourceAsStream(path))
+      .toRight(
+        s"the reference data manifest '$ManifestResource' was not found on the test class path; " +
+          "the resource is written by tools/parity-capture/capture-baseline.jsh and committed " +
+          "under strata-basics/src/test/resources")
+      .flatMap { stream =>
+        Using(stream) { open =>
+          val bytes = open.readNBytes(ManifestByteCeiling + 1)
+          if (bytes.length > ManifestByteCeiling) {
+            Left(
+              s"the reference data manifest '$ManifestResource' is larger than the " +
+                s"$ManifestByteCeiling byte ceiling this suite reads; the committed document is a " +
+                "quarter of a megabyte, so the resource on the class path is not the one " +
+                "tools/parity-capture/capture-baseline.jsh writes")
+          } else {
+            decodeUtf8(bytes)
+          }
+        }.toEither.left
+          .map(failure =>
+            s"the reference data manifest '$ManifestResource' could not be read: " +
+              s"${failure.getClass.getName}: ${failure.getMessage}")
+          .flatten
+      }
   }
 
   /**
-   * The top level of the manifest, as an object rather than as a case class.
+   * Decodes bytes as strict UTF-8, refusing a sequence that is not valid UTF-8.
    *
-   * The key set is something this suite asserts - the coverage check reads it - and a case class
-   * would discard a key it had no field for, which is precisely the change that check exists to
-   * catch.
+   * `new String(bytes, UTF_8)` is not this: its decoder is configured to '''replace''' a malformed
+   * or unmappable sequence with `U+FFFD` and carry on, so a corrupted capture would reach the JSON
+   * parser as text that differs from the bytes on disk. A decoder obtained from the charset and set
+   * to [[java.nio.charset.CodingErrorAction#REPORT]] raises
+   * [[java.nio.charset.CharacterCodingException]] instead, which is what the module's own class
+   * path reader does with the same input and what this suite needs: the document it reads is the
+   * evidence every other test in the file is stated against, so the bytes must survive the read
+   * unaltered or the read must say so.
+   *
+   * Kept separate from [[readManifestText]], and visible to the suite, so that the guarantee is
+   * asserted by a test over bytes chosen for the purpose rather than inferred from a document that
+   * happens to be well formed.
+   *
+   * @param bytes  the bytes read from the resource
+   * @return the decoded text, or the reason the bytes are not UTF-8, naming the resource
    */
-  private val document: JsonObject =
-    documentJson.asObject
-      .toRight(
-        DecodingFailure(
-          s"the reference data manifest '$ManifestResource' is not a JSON object",
-          Nil))
-      .fold(failure => throw new IllegalStateException(failure.getMessage, failure), identity)
+  def decodeUtf8(bytes: Array[Byte]): Either[String, String] =
+    Try {
+      StandardCharsets.UTF_8
+        .newDecoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+        .decode(ByteBuffer.wrap(bytes))
+        .toString
+    }.toEither.left
+      .map(failure =>
+        s"the reference data manifest '$ManifestResource' is not valid UTF-8 text: " +
+          s"${failure.getClass.getName}: ${failure.getMessage}")
+
+  /**
+   * The top level of the manifest, or the reason the document could not be obtained.
+   *
+   * Held as an `Either` rather than read into a member that throws, so that the one test whose
+   * subject is the resource itself can assert the outcome and print the reason, and so that nothing
+   * at all happens while this object initialises. The four distinguishable failures - the resource
+   * is absent, it read as empty text, it is not JSON, it is JSON but not an object - each name the
+   * resource and the script that writes it, because the useful next step differs in each case.
+   *
+   * The top level is kept as a [[io.circe.JsonObject]] rather than decoded into a case class of
+   * twenty nine fields: the key set itself is something this suite asserts, at the top level and
+   * recursively, and a case class would silently ignore a key it had no field for - precisely the
+   * change those assertions exist to catch.
+   */
+  lazy val documentOrFailure: Either[String, JsonObject] =
+    readManifestText().flatMap(documentOf)
+
+  /**
+   * Turns the text of the resource into the top level of the document, or into the reason it is not
+   * one.
+   *
+   * Separated from the read, and visible to the suite, for the same reason [[decodeUtf8]] is: the
+   * three ways a document can be text and still not be the manifest are each asserted by a test
+   * over text chosen for the purpose. Reading the committed resource exercises the success path
+   * only, and a guard whose failure path has never been observed is a guard that may not report
+   * what it claims to.
+   *
+   * @param text  the text read from the resource
+   * @return the top level of the document, or the reason the text is not a JSON object
+   */
+  def documentOf(text: String): Either[String, JsonObject] =
+    if (text.trim.isEmpty) {
+      Left(
+        s"the reference data manifest '$ManifestResource' read as empty text; the resource is " +
+          "written by tools/parity-capture/capture-baseline.jsh and committed under " +
+          "strata-basics/src/test/resources")
+    } else {
+      parse(text)
+        .left
+        .map(failure =>
+          s"the reference data manifest '$ManifestResource' is not valid JSON: " +
+            failure.getMessage)
+        .flatMap(json =>
+          json.asObject.toRight(
+            s"the reference data manifest '$ManifestResource' is not a JSON object; the schema " +
+              "of record is section 7 of tools/parity-capture/README.md"))
+    }
+
+  /**
+   * The manifest document, for the tests that assert its content.
+   *
+   * A document that could not be obtained is reported as a '''failed test''' carrying the
+   * diagnostic, through [[org.scalatest.Assertions#fail]], rather than as an exception out of an
+   * initialiser: the accessor is reached from inside a test, so the test that reads the manifest is
+   * the test that reports the manifest being unreadable. `the manifest resource is present on the
+   * class path, is non-empty and parses as a JSON object` asserts the same outcome on its own, so
+   * the reason is reported once by a test whose subject it is rather than repeated by all of them.
+   */
+  private lazy val document: JsonObject =
+    documentOrFailure.fold(diagnostic => Assertions.fail(diagnostic), identity)
 
   /** The top-level keys, in the order the capture wrote them. */
-  val documentKeys: Vector[String] = document.keys.toVector
+  lazy val documentKeys: Vector[String] = document.keys.toVector
 
   /**
    * Collects the key names of a JSON value and of everything nested inside it.
@@ -1838,7 +2610,7 @@ private object ReferenceDataManifestSpec {
    * compared by the tests that own them - and a name is recorded once however many times it occurs,
    * since the question asked of this set is whether a name is present at all.
    */
-  val documentKeyNames: Set[String] = keyNamesOf(documentJson)
+  lazy val documentKeyNames: Set[String] = keyNamesOf(Json.fromJsonObject(document))
 
   /**
    * Decodes one key of the document, failing with the key named when its shape is not the
@@ -1924,6 +2696,176 @@ private object ReferenceDataManifestSpec {
 
   /** The rows of one lenient pattern table, in file order. */
   def lenientPatternRows(family: String): Vector[KeyValueRow] = lenientPatterns(family).rows
+
+  //-------------------------------------------------------------------------
+  // The documented object shapes, each with a specimen of it taken from the document.
+  //
+  // This is the inventory the strictness tests read. It exists so that the key sets declared
+  // beside the row models are statements about the committed artefact rather than about what
+  // somebody believed the capture wrote: every schema is matched against a real object of its
+  // shape, and the accept-and-refuse tests perturb that same object rather than a hand-written
+  // stand-in that could agree with the schema and disagree with the document.
+  //-------------------------------------------------------------------------
+
+  /**
+   * One fixed-shape object of the manifest: its declared key set, where the document carries an
+   * instance of it, and the decoder this suite reads that shape through.
+   *
+   * `decode` answers `Decoder.Result[Any]` because the two questions the strictness tests ask of
+   * it - whether it accepted the object, and what it said when it refused - are the same for every
+   * shape and neither depends on the type the shape decodes to.
+   *
+   * @param schema  the declared key set of the shape
+   * @param path  where the document carries an instance, as [[specimenAt]] reads a path
+   * @param decode  the decoder under test, exactly as this suite decodes that shape
+   */
+  final case class StrictShape(
+      schema: KeySchema,
+      path: String,
+      decode: Json => Decoder.Result[Any]) {
+
+    /** The instance of this shape the committed document carries. */
+    def specimen: JsonObject = specimenAt(path)
+
+    /** The keys that instance carries. */
+    def specimenKeys: Set[String] = specimen.keys.toSet
+  }
+
+  /**
+   * The instance of an object shape the document carries at a path.
+   *
+   * The path is read left to right, each step naming a key of the object reached so far, and a
+   * step suffixed `[]` meaning the '''first''' element of the array that key holds - so
+   * `currencies.rows[]` is the first row of the currency table. Each step is checked as it is
+   * taken and one that cannot be taken throws, naming the whole path and the step that failed: a
+   * path into this document that no longer resolves is a change in the capture, and reporting it
+   * as a missing specimen says so, where a decode failure somewhere else would not.
+   *
+   * @param path  the dotted path, any step of which may end `[]`
+   * @return the object the path names
+   */
+  private def specimenAt(path: String): JsonObject = {
+    val reached = path.split('.').toVector.foldLeft(Json.fromJsonObject(document)) { (json, step) =>
+      val indexed = step.endsWith("[]")
+      val key = if (indexed) step.dropRight(2) else step
+      val field =
+        json.asObject.flatMap(_(key)).getOrElse(specimenFailure(path, step, "names no key"))
+      if (indexed) {
+        field.asArray.flatMap(_.headOption).getOrElse(specimenFailure(path, step, "holds no row"))
+      } else {
+        field
+      }
+    }
+    reached.asObject.getOrElse(specimenFailure(path, path, "does not name an object"))
+  }
+
+  /**
+   * Reports a declared specimen path that the document does not answer.
+   *
+   * @param path  the whole path, as declared in [[StrictShapes]]
+   * @param step  the step that could not be taken
+   * @param what  what is wrong with that step
+   * @return never; the call throws
+   */
+  private def specimenFailure(path: String, step: String, what: String): Nothing =
+    throw new IllegalStateException(
+      s"the reference data manifest '$ManifestResource' carries no object at the specimen path " +
+        s"'$path': the step '$step' $what. The strictness tests take a specimen of every " +
+        "documented object shape from the document itself, so a path that no longer resolves is " +
+        "a change in the capture and the schema declared beside that shape needs revisiting; " +
+        "the schema of record is section 7 of tools/parity-capture/README.md")
+
+  /**
+   * The number of fixed-shape objects the document carries, one per row model of this suite.
+   *
+   * Asserted against [[StrictShapes]] so that the inventory cannot lose an entry: a shape dropped
+   * from that vector would take its schema out of the drift check and its decoder out of the
+   * accept-and-refuse tests while every remaining shape still passed them.
+   */
+  val DocumentedObjectShapeCount: Int = 20
+
+  /** The key a later capture is imagined to have added, for the refusal tests. */
+  val UncapturedKey: String = "addedByALaterCapture"
+
+  /**
+   * Every fixed-shape object of the manifest, each with a specimen of it.
+   *
+   * Twenty: one per row model, plus `holidayCalendarData`, whose keys name calendars but of which
+   * only `THBA` is ever read - so its key set is declared rather than asserted as data, because a
+   * calendar a later capture added would otherwise sit in the map unmeasured. That is every object
+   * shape of the document except the two kinds whose keys are genuinely '''data''' and whose whole
+   * content is asserted elsewhere, each of which is checked where it belongs instead:
+   *
+   *  - the top level, whose twenty-nine keys are compared with the covered and pending sets by
+   *    `every top-level key of the manifest is either asserted against the port or declared
+   *    pending`, and whose order is asserted by the identity test;
+   *  - the maps keyed by a name - a row of an index table, keyed by that table's column headers,
+   *    and the families of `externalNames`, `lenientPatterns`, `alternateNames` and
+   *    `floatingRateNames.sections` - whose key sets are asserted as sets against the headers
+   *    list and against the documented family sets by the count and coverage tests.
+   *
+   * A shape carried at more than one path is listed once, at the path of the first instance the
+   * document holds of it: the shape of a key/value section does not depend on whether it is a
+   * lenient pattern table or an alias section, and asserting it twice would assert nothing twice.
+   */
+  val StrictShapes: Vector[StrictShape] =
+    Vector(
+      StrictShape(CurrencyTableSchema, "currencies", _.as[CurrencyManifestTable]),
+      StrictShape(CurrencyRowSchema, "currencies.rows[]", _.as[CurrencyManifestRow]),
+      StrictShape(CurrencyPairTableSchema, "currencyPairs", _.as[CurrencyPairManifestTable]),
+      StrictShape(CurrencyPairRowSchema, "currencyPairs.rows[]", _.as[CurrencyPairManifestRow]),
+      StrictShape(CountryTableSchema, "countries", _.as[CountryManifestTable]),
+      StrictShape(CountryRowSchema, "countries.rows[]", _.as[CountryManifestRow]),
+      StrictShape(NameGroupSchema, DayCountsKey, _.as[NameGroup]),
+      StrictShape(IndexTableSchema, IborIndicesKey, _.as[IndexManifestTable]),
+      StrictShape(
+        FloatingRateNameTableSchema,
+        FloatingRateNamesKey,
+        _.as[FloatingRateNameManifestTable]),
+      StrictShape(
+        KeyValueSectionSchema,
+        s"$FloatingRateNamesKey.sections.$IborSection",
+        _.as[KeyValueSection]),
+      StrictShape(
+        KeyValueRowSchema,
+        s"$FloatingRateNamesKey.sections.$IborSection.rows[]",
+        _.as[KeyValueRow]),
+      StrictShape(
+        ExternalNameGroupSchema,
+        s"externalNames.$DayCountFamily.FpML",
+        _.as[ExternalNameGroup]),
+      StrictShape(
+        ExternalNameRowSchema,
+        s"externalNames.$DayCountFamily.FpML.rows[]",
+        _.as[ExternalNameRow]),
+      StrictShape(
+        AlternateNameTableSchema,
+        s"alternateNames.$IborIndexFamily",
+        _.as[AlternateNameTable]),
+      StrictShape(
+        AlternateNameRowSchema,
+        s"alternateNames.$IborIndexFamily.iniRows[]",
+        _.as[AlternateNameRow]),
+      StrictShape(
+        HolidayCalendarDefaultTableSchema,
+        HolidayCalendarDefaultKey,
+        _.as[HolidayCalendarDefaultTable]),
+      StrictShape(
+        HolidayCalendarDefaultRowSchema,
+        s"$HolidayCalendarDefaultKey.rows[]",
+        _.as[HolidayCalendarDefaultRow]),
+      StrictShape(
+        HolidayCalendarDataSchema,
+        HolidayCalendarDataKey,
+        _.as[Map[String, ThbaTable]]),
+      StrictShape(
+        ThbaTableSchema,
+        s"$HolidayCalendarDataKey.$ThbaCalendarName",
+        _.as[ThbaTable]),
+      StrictShape(
+        ThbaYearRowSchema,
+        s"$HolidayCalendarDataKey.$ThbaCalendarName.rows[]",
+        _.as[ThbaYearRow]))
 
   //-------------------------------------------------------------------------
   // The THBA rows, parsed from the captured text.
@@ -2012,33 +2954,131 @@ private object ReferenceDataManifestSpec {
   def booleanCell(value: Boolean): String = if (value) "TRUE" else "FALSE"
 
   /**
-   * Renders a captured day count cell as the canonical name of the convention it names.
+   * The canonical day count name of every spelling the Java registry resolved, from the manifest.
    *
    * The reference data spelled a day count in two ways in the same column - `ACT/360` on the Czech
-   * koruna rows and `Act/360` everywhere else - and the registry being ported resolved both,
-   * because it registered every member under its canonical name and under the upper case of that
-   * name. The port resolved the column once, when it transcribed it, so the captured text is
-   * resolved through the same lookup before the comparison. Text the family does not know is
-   * returned unchanged, so the comparison reports it.
+   * koruna rows and `Act/360` everywhere else - so the captured text has to be brought to one
+   * spelling before it can be compared. The index that does it is built from the '''manifest's own'''
+   * `dayCounts` names and from the registration rule of the registry being ported, and from nothing
+   * else: [[com.opengamma.strata.basics.date.DayCount]] is a subject of this suite, so resolving a
+   * captured cell through it would let a wrong lookup rewrite the expectation and the port's answer
+   * in the same wrong way and still compare equal.
+   *
+   * The rule is transcribed from `modules/collect/src/main/java/com/opengamma/strata/collect/named/`
+   * `ExtendedEnum.java:225-236`, which registers every constant twice - under its canonical name and
+   * under the English upper case of that name - with the first registration of a key winning:
+   *
+   * {{{
+   * instances.putIfAbsent(instance.getName(), instance);
+   * instances.putIfAbsent(instance.getName().toUpperCase(Locale.ENGLISH), instance);
+   * }}}
+   *
+   * The canonical names are registered here before the upper case forms, because Java iterates the
+   * declared fields of the constants holder in an order the reflection API does not define: an upper
+   * case form that collided with the canonical name of a '''different''' member would make the Java
+   * outcome depend on that order, and the twenty-one captured names contain no such collision - ten
+   * of them differ from their upper case form, giving an index of thirty-one keys. The case fold is
+   * [[java.util.Locale#ENGLISH]] rather than the default locale, so the index does not depend on the
+   * host that runs the suite.
+   */
+  lazy val CapturedDayCountNames: Map[String, String] = {
+    val canonical = nameGroup(DayCountsKey).names
+    canonical.foldLeft(canonical.map(name => name -> name).toMap) { (index, name) =>
+      val upperCase = name.toUpperCase(Locale.ENGLISH)
+      if (index.contains(upperCase)) index else index.updated(upperCase, name)
+    }
+  }
+
+  /**
+   * Renders a captured day count cell as the canonical name of the convention it names.
+   *
+   * The captured text is mapped through [[CapturedDayCountNames]], which is the manifest's own name
+   * list read through the registration rule of the registry being ported - no production type is
+   * consulted. Text the index does not hold is returned unchanged, so the comparison reports it
+   * against the name the port renders: that is what happens to `Bus/252 BRBD`, a day count that
+   * carries a calendar and so is not one of the twenty-one standard names, and the port renders it
+   * with exactly that text.
    *
    * @param captured  the captured cell text
-   * @return the canonical name of the day count, or the text when it names none
+   * @return the canonical name of the day count, or the text when the captured names hold no
+   *         spelling of it
    */
-  def dayCountCell(captured: String): String =
-    DayCount.valueOf(captured).map(_.name).getOrElse(captured)
+  def dayCountCell(captured: String): String = CapturedDayCountNames.getOrElse(captured, captured)
+
+  /** The one calendar identifier whose presence absorbs the others it is composed with. */
+  val NoHolidaysCalendarName: String = "NoHolidays"
+
+  /**
+   * Splits a composite calendar name on one separator, keeping empty parts.
+   *
+   * Guava's `Splitter.on(char)` neither trims nor omits empty results, and the Java code this
+   * normalisation is transcribed from uses it bare, so `split` is given a limit of `-1`: Scala's
+   * one-argument `split` drops trailing empty strings, which would quietly make `GBLO+` normalise to
+   * `GBLO` here and to the empty-part composite there.
+   *
+   * @param name  the composite name
+   * @param separator  the separator to split on
+   * @return the parts, in order, including any empty ones
+   */
+  private def splitCalendarName(name: String, separator: Char): Vector[String] =
+    name.split(Regex.quote(separator.toString), -1).toVector
+
+  /**
+   * The name a composite calendar identifier is normalised to, transcribed from the Java factory.
+   *
+   * This is the expected side of the comparison, so it may not call
+   * [[com.opengamma.strata.basics.date.HolidayCalendarId]]: the identifier's normalisation is part
+   * of what the manifest exists to check, and putting the captured text through the port's factory
+   * would report a wrong normalisation as agreement, because the same wrong normalisation would be
+   * applied to the port's own name as well. The rule is therefore transcribed from
+   * `modules/basics/src/main/java/com/opengamma/strata/basics/date/HolidayCalendarId.java:87-120`
+   * (`of` and `create`), which is the code that produced the names the Java parser held:
+   *
+   *  - a name containing `~` is a linked identifier: its parts are normalised by this same rule,
+   *    deduplicated, sorted by name and rejoined with `~`, and a part naming `NoHolidays` absorbs
+   *    the whole identifier, because a link with a calendar that has no holidays has none either.
+   *    The absorption is decided on the normalised parts, as in Java;
+   *  - a name containing `+` is a combined identifier: parts whose '''raw''' text is `NoHolidays` are
+   *    dropped before anything else - Java filters on the raw text, so a part that only normalises
+   *    to `NoHolidays` survives the filter and is kept - and the rest are normalised, deduplicated,
+   *    sorted by name and rejoined with `+`;
+   *  - any other name is its own normal form.
+   *
+   * The sort is the plain lexicographic order of [[java.lang.String]], which is what Java's
+   * `comparing(HolidayCalendarId::getName)` compares with. `~` is tested before `+` here because
+   * `create` tests it first.
+   *
+   * @param name  the captured composite or simple name
+   * @return the name the Java factory normalises it to
+   */
+  private def normalisedCalendarName(name: String): String =
+    if (name.indexOf('~') >= 0) {
+      val parts = splitCalendarName(name, '~').map(normalisedCalendarName).distinct.sorted
+      if (parts.contains(NoHolidaysCalendarName)) NoHolidaysCalendarName else parts.mkString("~")
+    } else if (name.indexOf('+') >= 0) {
+      splitCalendarName(name, '+')
+        .filterNot(_ == NoHolidaysCalendarName)
+        .map(normalisedCalendarName)
+        .distinct
+        .sorted
+        .mkString("+")
+    } else {
+      name
+    }
 
   /**
    * Renders a captured calendar cell as the name of the identifier it denotes.
    *
    * A composite identifier is normalised by deduplicating and sorting its parts, so the column text
-   * `SGSI+GBLO` denotes the identifier named `GBLO+SGSI`. The port holds the identifier, so the
-   * captured text is put through the same factory the Java parser used on it; comparing the raw
-   * text would report a normalisation as a difference.
+   * `SGSI+GBLO` denotes the identifier named `GBLO+SGSI`; comparing the raw text would report that
+   * normalisation as a difference. The normalisation applied here is [[normalisedCalendarName]],
+   * transcribed from the Java factory rather than obtained by calling the port's, so a port that
+   * normalised a composite name wrongly fails this comparison instead of surviving it.
    *
    * @param captured  the captured cell text
    * @return the name of the identifier the text denotes
    */
-  def calendarCell(captured: String): String = HolidayCalendarId.of(captured).name
+  def calendarCell(captured: String): String = normalisedCalendarName(captured)
 
   /**
    * Renders one captured Ibor index row as cells, in [[IborIndexHeaders]] order.

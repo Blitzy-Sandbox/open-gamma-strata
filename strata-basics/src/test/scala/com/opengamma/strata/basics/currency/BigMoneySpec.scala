@@ -516,14 +516,16 @@ final class BigMoneySpec extends AnyFunSuite with Matchers {
   /**
    * Asserts the conversion to a [[CurrencyAmount]] and the round trip back.
    *
-   * The original wrote the return leg as `toCurrencyAmount().toBigMoney()`. That method does not
-   * exist on the amount type of this port - widening is the business of the type being widened
-   * to, so it is [[BigMoney.of]] - and the identity asserted is the same one: an amount whose
-   * value is within twelve places survives the trip through the `Double`-valued type unchanged.
+   * The original wrote the return leg as `toCurrencyAmount().toBigMoney()`, and so does this test.
+   * That method answers with an outcome here - an amount may be infinite and no decimal is - so it
+   * is read with `haveValue`, and `BigMoney.of(amount)` is asserted beside it because the two are
+   * one conversion under two names. The identity is the original's: an amount whose value is
+   * within twelve places survives the trip through the `Double`-valued type unchanged.
    */
   test("testToCurrencyAmount") {
     val base: BigMoney = bigMoneyOf(GBP, 200.23d)
     base.toCurrencyAmount shouldBe unwrap(CurrencyAmount.of(GBP, 200.23d))
+    base.toCurrencyAmount.toBigMoney should haveValue(base)
     BigMoney.of(base.toCurrencyAmount) should haveValue(base)
   }
 
@@ -622,20 +624,28 @@ final class BigMoneySpec extends AnyFunSuite with Matchers {
    * Asserts the narrowing to [[Money]].
    *
    * The original's row is the round trip of a whole amount, which narrows and widens without
-   * changing. That row alone would be satisfied by a port that ignored the currency's minor
-   * units entirely, so the narrowing is asserted where it has a decision to make: `GBP 1.005`
-   * is an exact tie at the second decimal place and rounds '''half up''' to `GBP 1.01`. That
-   * answer depends on the amount being held exactly: the same rounding performed in binary
-   * floating point - scaling by a hundred and rounding the result - answers `1.00` instead,
-   * because the nearest `Double` to `1.005` lies below the tie at `1.00499999999999989…`.
+   * changing, and it is written in the original's form - `toMoney().toBigMoney()` - with the two
+   * factories that name the same two conversions, [[BigMoney.of]] and `Money.of(bigMoney)`,
+   * asserted to agree with them value for value. That row alone would be satisfied by a port that
+   * ignored the currency's minor units entirely, so the narrowing is asserted where it has a
+   * decision to make: `GBP 1.005` is an exact tie at the second decimal place and rounds
+   * '''half up''' to `GBP 1.01`. That answer depends on the amount being held exactly: the same
+   * rounding performed in binary floating point - scaling by a hundred and rounding the result -
+   * answers `1.00` instead, because the nearest `Double` to `1.005` lies below the tie at
+   * `1.00499999999999989…`.
    *
    * Two further rows narrow to the widths other currencies quote: three digits for the Bahraini
    * dinar and none for the yen. Those are the rows a port that had carried this type's own
    * twelve places into the narrower type would fail.
    */
   test("testTo") {
-    BigMoney.of(MONEY_100_AUD.toMoney) shouldBe MONEY_100_AUD
-    BigMoney.of(MONEY_200_AUD.toMoney) shouldBe MONEY_200_AUD
+    MONEY_100_AUD.toMoney.toBigMoney shouldBe MONEY_100_AUD
+    MONEY_200_AUD.toMoney.toBigMoney shouldBe MONEY_200_AUD
+
+    // the narrowing and the widening are each one conversion under two names, and the four
+    // members of the graph that name them agree value for value
+    BigMoney.of(MONEY_100_AUD.toMoney) shouldBe MONEY_100_AUD.toMoney.toBigMoney
+    Money.of(MONEY_100_AUD) shouldBe MONEY_100_AUD.toMoney
 
     // a genuine narrowing: the tie at the minor unit rounds away from zero
     val tie: BigMoney = BigMoney.of(GBP, decimalOf("1.005"))

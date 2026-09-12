@@ -8,21 +8,20 @@
  *  A JShell script (JDK 21) that runs against the Maven-built *Java* Strata
  *  jars and emits the six numerical parity baseline fixtures plus the
  *  reference-data manifest that pin the behaviour of the Scala port of
- *  `strata-collect` / `strata-basics`, and - from the Java TEST sources -
- *  the `java-test-mapping.csv` traceability document that pins its test
- *  scope.
+ *  `strata-collect` / `strata-basics`.
  *
- *  The eight documents are the deliverable: seven JSON documents and one CSV.
- *  This script is retained so that they can be regenerated and audited by a
- *  third party.
+ *  Those SEVEN JSON documents are the deliverable, and they are the whole of
+ *  it. This script is retained so that they can be regenerated and audited by
+ *  a third party.
  *
- *  The CSV is the one document that is also an INPUT. Its first two columns,
- *  its row order and its format are derived from the Java test sources under
- *  `modules/**` on every run, while its three mapping columns are human
- *  decisions that are read back from the committed file and re-emitted
- *  verbatim, so a capture re-verifies the whole document and refuses to
- *  publish one it cannot reproduce byte for byte. Section 14 states the
- *  derivation rules and the taxonomy it enforces.
+ *  WHAT THIS SCRIPT DOES NOT PRODUCE. `manifest/java-test-mapping.csv`, the
+ *  method-level test-traceability document, is NOT an output of this capture.
+ *  It records mapping decisions a scanner cannot derive - which Scala spec
+ *  absorbed a consolidated Java test, why a test was dropped - so it is
+ *  authored and owned alongside the Scala test suite and verified by the
+ *  test-scope gate that consumes it, not by this producer. Keeping it out
+ *  means a numerical capture neither depends on a human-authored committed
+ *  document nor republishes one.
  *
  *  This is a developer / audit tool. It lives OUTSIDE both sbt modules and is
  *  on no sbt source root, so it is compiled by nothing and shipped in nothing.
@@ -43,14 +42,28 @@
  *  -------------------
  *  This script READS `modules/**` (through the classpath and the classpath
  *  resources inside the jars) and NEVER writes there. Writes are confined to
- *  the eight output paths listed in `OUTPUT_*` below, and that is enforced at
+ *  the seven output paths listed in `OUTPUT_*` below, and that is enforced at
  *  run time rather than by convention: `outputRoot` REFUSES A ROOT THAT SITS
  *  INSIDE A CHECKOUT WITHOUT BEING ITS ROOT BEFORE IT CREATES ANYTHING (so
  *  `-Dparity.out.dir=modules` is rejected, not obeyed, and leaves no
  *  directory behind), refuses a symbolic link at ANY component of it, and
  *  re-asserts the placement after canonicalisation; `guardedOutputTarget`
- *  then requires each path to be one of the eight declared literals, to stay
+ *  then requires each path to be one of the seven declared literals, to stay
  *  under the canonical root, and to have no symbolic link at any component.
+ *  Every directory actually written to is then reached through a HANDLE opened
+ *  component by component from the filesystem root, never by name a second
+ *  time, so the directory the bytes land in is the directory that was
+ *  validated (see `OutputDirectory` and `openOrCreateNoFollowDirectory`).
+ *  Every write, rename and delete goes through that handle, and a filesystem
+ *  that cannot provide one refuses the run rather than falling back to
+ *  pathnames.
+ *
+ *  CONCURRENCY
+ *  -----------
+ *  One capture at a time per output root. The run takes an exclusive lock
+ *  keyed on the canonical root before it validates or creates anything and
+ *  holds it through publication and cleanup, so two captures cannot interleave
+ *  their publish moves and leave a mixed generation behind (`acquireOutputLock`).
  *
  *  HOW TO RUN
  *  ----------
@@ -105,7 +118,7 @@
  *     expansion would break the moment one appeared.
  *
  *     Either route prints a per-fixture summary and exits 0 only when every
- *     check passed AND all eight documents were written; see the FAIL-FAST
+ *     check passed AND all seven documents were written; see the FAIL-FAST
  *     CONTRACT below.
  *
  *  3. Optional: choose where the documents are written (default: the current
@@ -113,15 +126,9 @@
  *
  *       jshell ... -R-Dparity.out.dir=/tmp/parity-out ...
  *
- *  4. Optional: choose the checkout the Java test sources and the committed
- *     `java-test-mapping.csv` are READ from (default: the current directory,
- *     which must be a checkout root - it is validated, so a capture launched
- *     from the wrong place says so instead of scanning nothing):
- *
- *       jshell ... -R-Dparity.repo.dir=/path/to/checkout ...
- *
- *     It is independent of `parity.out.dir`, which is why a dry run into a
- *     scratch directory still verifies the committed mapping.
+ *     A dry run into a scratch directory needs nothing else: the capture reads
+ *     the Java implementation from the classpath, never from the checkout, so
+ *     the output root is the only location it has to be told about.
  *
  *  See `tools/parity-capture/README.md` for the full procedure, the fixture
  *  schemas and the manifest schema.
@@ -333,16 +340,19 @@ import com.opengamma.strata.collect.named.Named;
 
 // --- JDK -------------------------------------------------------------------
 import java.io.IOException;
-import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.RoundingMode;
 import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
@@ -350,9 +360,13 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SecureDirectoryStream;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.DateTimeException;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
@@ -1055,7 +1069,6 @@ String OUTPUT_CURRENCY_MATH = "strata-basics/src/test/resources/parity/currency-
 String OUTPUT_HOLIDAY = "strata-basics/src/test/resources/parity/holiday-baseline.json";
 String OUTPUT_DOUBLE_ARRAY = "strata-collect/src/test/resources/parity/double-array-baseline.json";
 String OUTPUT_MANIFEST = "strata-basics/src/test/resources/manifest/reference-data-manifest.json";
-String OUTPUT_JAVA_TEST_MAPPING = "strata-basics/src/test/resources/manifest/java-test-mapping.csv";
 
 /**
  * Directories this script must never write into. The repository boundary is
@@ -1086,7 +1099,7 @@ boolean isCheckoutRoot(Path directory) {
 /**
  * Rejects an output root that sits INSIDE a checkout without being its root.
  *
- * The eight output paths are relative, so a root of `modules` would write to
+ * The seven output paths are relative, so a root of `modules` would write to
  * `modules/strata-basics/src/test/resources/...` - inside a tree this project
  * must leave untouched, and creating directories there breaks the repository
  * boundary check (`git status --porcelain -- modules examples eclipse pom.xml
@@ -1132,14 +1145,14 @@ void requireOutputRootPlacement(Path root) {
  *     (see `requireOutputRootPlacement`), so nothing is lost by doing it on
  *     the declared path;
  *  2. every component of the declared root, from the filesystem root down, is
- *     rejected if it is a symbolic link - including the root's own last
- *     component, and including ancestors, which is the case canonicalisation
- *     hides. The walk stops at the first component that does not exist yet,
- *     because what does not exist cannot be a link, and the components created
- *     below are created one at a time and re-checked;
- *  3. the missing components are created individually, never through
- *     `createDirectories`, which would traverse a link that appeared during
- *     the walk;
+ *     opened RELATIVE TO ITS PARENT'S HANDLE and rejected if it is a symbolic
+ *     link - including the root's own last component, and including ancestors,
+ *     which is the case canonicalisation hides;
+ *  3. a missing component is created individually, never through
+ *     `createDirectories`, and the creation is then verified through the
+ *     parent's handle, so a component created outside the validated parent
+ *     refuses the run instead of being written under
+ *     (`openOrCreateNoFollowDirectory`);
  *  4. the result must equal its own canonical form, which after 2 it does -
  *     the equality is asserted rather than assumed, so a filesystem that
  *     aliases paths some other way (a case-insensitive mount, a bind mount)
@@ -1158,31 +1171,15 @@ Path outputRoot() throws IOException {
   Path declared = Paths.get(OUT_ROOT).toAbsolutePath().normalize();
   // Step 1: before a single directory is created.
   requireOutputRootPlacement(declared);
-  Path cursor = declared.getRoot();
-  if (cursor == null) {
+  if (declared.getRoot() == null) {
     throw new IllegalStateException("parity.out.dir has no filesystem root: " + declared);
   }
-  List<Path> missing = new ArrayList<>();
-  for (Path element : declared) {
-    cursor = cursor.resolve(element);
-    if (Files.isSymbolicLink(cursor)) {
-      throw new IllegalStateException("Refusing to write under a symbolic link: " + cursor
-          + " (component of parity.out.dir = " + declared + ")");
-    }
-    if (!Files.exists(cursor, LinkOption.NOFOLLOW_LINKS)) {
-      missing.add(cursor);
-    } else if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) {
-      throw new IllegalStateException("Component of parity.out.dir is not a directory: " + cursor);
-    }
-  }
-  for (Path directory : missing) {
-    if (Files.isSymbolicLink(directory)) {
-      throw new IllegalStateException("Refusing to write under a symbolic link: " + directory);
-    }
-    if (!Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
-      Files.createDirectory(directory);
-    }
-  }
+  // Steps 2 and 3: descend from the filesystem root through trusted handles,
+  // creating the missing components and VERIFYING each one through its
+  // parent's handle. A component that is a link, or that is not a directory,
+  // or that was created anywhere other than inside the parent this descent is
+  // holding, refuses the run rather than being written under.
+  openOrCreateNoFollowDirectory(declared).close();
   Path canonical = declared.toRealPath();
   if (!canonical.equals(declared)) {
     throw new IllegalStateException("parity.out.dir is not canonical: " + declared
@@ -1203,7 +1200,7 @@ Path outputRoot() throws IOException {
  *  1. the relative string must be plain - no absolute prefix, no `..`, no
  *     backslash - and its first component must not be a repository area this
  *     script must never write into;
- *  2. it must be one of the eight declared output literals, so a typo cannot
+ *  2. it must be one of the seven declared output literals, so a typo cannot
  *     invent a ninth destination;
  *  3. resolved against the CANONICAL root and normalised, it must still start
  *     with that root, so no combination of root and relative path can escape;
@@ -1212,8 +1209,10 @@ Path outputRoot() throws IOException {
  *     while the write lands wherever the link points - the resolved path never
  *     leaves the root, but the bytes do.
  *
- * Nothing here writes: directory creation happens in `createOutputParents`,
- * which re-applies check 4 to every directory it creates.
+ * Nothing here writes, and nothing here is relied on for containment at write
+ * time: these are the cheap early diagnostics on the DECLARED path, and the
+ * write itself goes through the directory handle that
+ * `openOrCreateNoFollowDirectory` descends to.
  */
 Path guardedOutputTarget(String relativePath) throws IOException {
   if (relativePath.startsWith("/") || relativePath.contains("..") || relativePath.contains("\\")) {
@@ -1231,8 +1230,7 @@ Path guardedOutputTarget(String relativePath) throws IOException {
       || relativePath.equals(OUTPUT_CURRENCY_MATH)
       || relativePath.equals(OUTPUT_HOLIDAY)
       || relativePath.equals(OUTPUT_DOUBLE_ARRAY)
-      || relativePath.equals(OUTPUT_MANIFEST)
-      || relativePath.equals(OUTPUT_JAVA_TEST_MAPPING);
+      || relativePath.equals(OUTPUT_MANIFEST);
   if (!declared) {
     throw new IllegalStateException("Not a declared output path: " + relativePath);
   }
@@ -1261,30 +1259,6 @@ Path guardedOutputTarget(String relativePath) throws IOException {
 }
 
 /**
- * Creates the missing parent directories of a validated target, one component
- * at a time, rejecting a symbolic link at every step.
- *
- * `Files.createDirectories` on its own would happily traverse a link that
- * appeared between validation and the write, which is exactly the window
- * check 4 above closes.
- */
-void createOutputParents(Path root, Path target) throws IOException {
-  Path cursor = root;
-  Path relative = root.relativize(target);
-  for (int i = 0; i < relative.getNameCount() - 1; i++) {
-    cursor = cursor.resolve(relative.getName(i));
-    if (Files.isSymbolicLink(cursor)) {
-      throw new IllegalStateException("Refusing to write through a symbolic link: " + cursor);
-    }
-    if (!Files.exists(cursor, LinkOption.NOFOLLOW_LINKS)) {
-      Files.createDirectory(cursor);
-    } else if (!Files.isDirectory(cursor, LinkOption.NOFOLLOW_LINKS)) {
-      throw new IllegalStateException("Output parent is not a directory: " + cursor);
-    }
-  }
-}
-
-/**
  * Documents are accumulated here and flushed only after every check has
  * passed, so a failed run cannot leave a partially written fixture behind.
  * LinkedHashMap, so they are written in a fixed order.
@@ -1303,29 +1277,229 @@ void stageRowsPerLineDocument(String relativePath, JArray rows) throws IOExcepti
 }
 
 /**
- * Stages an already-rendered text document.
- *
- * Used by the one document that is not JSON - `java-test-mapping.csv`, built
- * in Section 14 - so that it travels through the SAME validation, staging and
- * publication transaction as the seven JSON documents rather than being
- * written by a second, weaker path. The text is rendered by its builder, which
- * owns its format (US-ASCII, LF endings, RFC-4180 quoting); this method adds
- * no formatting of its own.
- */
-void stageTextDocument(String relativePath, String text) throws IOException {
-  guardedOutputTarget(relativePath);
-  PENDING_DOCUMENTS.put(relativePath, text);
-}
-
-/**
  * The suffix of every temporary this run creates. The pid keeps two capture
  * runs in one output tree from colliding; no temporary name ever reaches a
  * deliverable, so this does not weaken the determinism contract.
  */
 String FLUSH_TEMP_SUFFIX = ".capture-tmp-" + ProcessHandle.current().pid();
 
-/** Finds a temporary or a backup left behind by ANY capture run, not just this one. */
-String FLUSH_ARTEFACT_GLOB = "*.capture-tmp-*";
+/**
+ * Marks a temporary or a backup left behind by ANY capture run, not just this
+ * one: every name this script creates under an output directory carries it.
+ */
+String FLUSH_ARTEFACT_MARKER = ".capture-tmp-";
+
+/* ---------------------------------------------------------------------------
+ * ONE CAPTURE AT A TIME PER OUTPUT ROOT.
+ *
+ * A pid-suffixed temporary keeps two runs from colliding on a FILENAME; it
+ * does not serialise the two TRANSACTIONS. Without a lock, two captures over
+ * one output root both pass the stale-artefact check (neither has staged
+ * anything yet), then interleave their publish moves: each file ends up whole,
+ * each run exits 0, and the tree holds documents from two generations with
+ * nothing on disk to say so. Because both runs succeed, no `.new`/`.old`
+ * leftover is there for the next run to refuse - which is the one way this
+ * mixed state would otherwise be detected.
+ *
+ * So the run holds an exclusive OS-level lock for the whole of validation,
+ * staging, publication and cleanup, and a second capture over the same root is
+ * REFUSED rather than queued: a capture takes minutes, and a caller who
+ * launched two by mistake needs to be told, not made to wait.
+ *
+ * WHERE THE LOCK LIVES, AND WHY NOT IN THE OUTPUT ROOT. The lock file is kept
+ * in a private directory of this user's under the JVM temporary directory,
+ * named for the canonical output root, for two reasons. First, the output root
+ * is normally the repository checkout, and a lock file there would be an
+ * untracked artefact in the deliverable tree. Second, a lock file that is
+ * deleted after use is not a lock: a process that opened it before the delete
+ * and locked it afterwards would hold a lock on an unlinked inode while the
+ * next process locked a fresh one, and both would believe they owned the root.
+ * The file is therefore created once and never removed, and it carries NO
+ * CONTENT at all - the lock is the file lock, so there is nothing to write and
+ * nothing to truncate. The OS releases the lock if a capture is killed, so a
+ * leftover file blocks nothing.
+ *
+ * THE LOCK PATH IS ITSELF A WRITE, SO IT IS GUARDED LIKE ONE. A predictable
+ * name in a world-writable temporary directory is a place another local
+ * process can plant a symbolic link, and an open that followed it would point
+ * this run's file operations at whatever it named (CWE-59). So the lock lives
+ * one level down, in `parity-capture-locks`, which this run creates with owner
+ * -only permissions and then REQUIRES to be a directory, owned by this user
+ * and writable by nobody else - a planted link or a directory somebody else
+ * controls refuses the run. The lock file inside it is additionally opened
+ * NOFOLLOW, so even there a link is refused rather than followed.
+ *
+ * The key is the DECLARED absolute, normalised root rather than the
+ * canonicalised one, because the lock has to be held before `outputRoot`
+ * creates anything. That is not a weaker key: `outputRoot` REFUSES any root
+ * whose canonical form differs from its declared form, so every run that gets
+ * past it had declared == canonical, and two spellings of one root cannot both
+ * proceed.
+ * ------------------------------------------------------------------------- */
+
+/** The lock file, its channel and the lock itself; all null until acquired. */
+Path OUTPUT_LOCK_PATH = null;
+FileChannel OUTPUT_LOCK_CHANNEL = null;
+FileLock OUTPUT_LOCK = null;
+
+/** Lower-case hex of the SHA-256 of `text`; the lock file name is built from it. */
+String sha256Hex(String text) {
+  try {
+    byte[] digest = MessageDigest.getInstance("SHA-256")
+        .digest(text.getBytes(StandardCharsets.UTF_8));
+    StringBuilder hex = new StringBuilder(digest.length * 2);
+    for (byte b : digest) {
+      hex.append(Character.forDigit((b >> 4) & 0xf, 16)).append(Character.forDigit(b & 0xf, 16));
+    }
+    return hex.toString();
+  } catch (NoSuchAlgorithmException impossible) {
+    // Every JDK is required to provide SHA-256; a JVM without it cannot be
+    // reasoned about, so this is fatal rather than degraded.
+    throw new IllegalStateException("this JVM provides no SHA-256 digest", impossible);
+  }
+}
+
+/**
+ * Resolves the private directory the lock files live in, creating it owner-only
+ * and refusing anything at that name this user does not exclusively control.
+ *
+ * The three requirements are what make a predictable name in a shared
+ * temporary directory safe to open: it must be a DIRECTORY (so a planted
+ * symbolic link, for which a no-follow attribute read reports no directory, is
+ * refused), it must be OWNED by this user, and it must be writable by NOBODY
+ * ELSE (so no other account can plant a lock file, or a link, inside it).
+ */
+Path outputLockDirectory() throws IOException {
+  Path directory =
+      Paths.get(System.getProperty("java.io.tmpdir")).resolve("parity-capture-locks");
+  if (!Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
+    try {
+      Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(
+          PosixFilePermissions.fromString("rwx------")));
+    } catch (FileAlreadyExistsException raced) {
+      // Another capture created it first; the checks below decide either way.
+    } catch (UnsupportedOperationException noPosixPermissions) {
+      Files.createDirectory(directory);
+    }
+  }
+  BasicFileAttributes attributes =
+      Files.readAttributes(directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+  if (!attributes.isDirectory()) {
+    throw new IllegalStateException("Refusing to use " + directory
+        + " for the capture lock: it exists and is not a directory (a symbolic link planted at"
+        + " that name would be followed by the open, so the run stops instead). Remove it and"
+        + " re-run.");
+  }
+  String user = System.getProperty("user.name");
+  String owner = Files.getOwner(directory, LinkOption.NOFOLLOW_LINKS).getName();
+  if (!owner.equals(user)) {
+    throw new IllegalStateException("Refusing to use " + directory + " for the capture lock: it"
+        + " is owned by " + owner + " rather than " + user + ", so its contents are not under"
+        + " this run's control.");
+  }
+  try {
+    Set<PosixFilePermission> permissions =
+        Files.getPosixFilePermissions(directory, LinkOption.NOFOLLOW_LINKS);
+    if (permissions.contains(PosixFilePermission.GROUP_WRITE)
+        || permissions.contains(PosixFilePermission.OTHERS_WRITE)) {
+      throw new IllegalStateException("Refusing to use " + directory + " for the capture lock:"
+          + " it is writable by others (" + PosixFilePermissions.toString(permissions)
+          + "), so another account could plant the lock file. chmod 700 it and re-run.");
+    }
+  } catch (UnsupportedOperationException noPosixPermissions) {
+    // A filesystem without POSIX permissions cannot answer the question; the
+    // ownership check above is what stands, and the open below is no-follow.
+  }
+  return directory;
+}
+
+/**
+ * Takes the exclusive lock for the output root, or fails saying who holds it.
+ *
+ * FAIL-CLOSED in both directions: a lock already held by another capture and a
+ * lock that cannot be created at all both stop the run. The second case
+ * matters - a capture that silently proceeded unlocked because the temporary
+ * directory was unwritable would be exactly the unserialised run this guards
+ * against, so the message names the file and the root instead.
+ *
+ * Nothing is ever written to or truncated in the lock file: the lock is the
+ * file lock. That is deliberate, so that an operation on this path can never
+ * destroy anything even if the guards above were somehow bypassed.
+ */
+void acquireOutputLock() throws IOException {
+  Path root = Paths.get(OUT_ROOT).toAbsolutePath().normalize();
+  Path lockFile = outputLockDirectory()
+      .resolve("parity-capture-baseline-" + sha256Hex(root.toString()) + ".lock");
+  FileChannel channel;
+  try {
+    // CREATE plus NOFOLLOW_LINKS: create it if it is absent, and refuse it
+    // rather than follow it if what is there is a symbolic link.
+    Set<OpenOption> options = new LinkedHashSet<>();
+    options.add(StandardOpenOption.CREATE);
+    options.add(StandardOpenOption.WRITE);
+    options.add(LinkOption.NOFOLLOW_LINKS);
+    channel = FileChannel.open(lockFile, options);
+  } catch (IOException failed) {
+    throw new IllegalStateException("cannot create the capture lock " + lockFile + " for output"
+        + " root " + root + " - the capture will not run unserialised: " + errorMessage(failed),
+        failed);
+  }
+  FileLock lock;
+  String contention;
+  try {
+    lock = channel.tryLock();
+    contention = "another capture holds the exclusive lock " + lockFile;
+  } catch (OverlappingFileLockException alreadyHeldHere) {
+    // Not another process: this JVM holds it, which can only mean the driver
+    // was entered twice. Reported distinctly, because the remedy differs.
+    lock = null;
+    contention = "this JVM already holds " + lockFile + ", so the capture driver ran twice";
+  } catch (IOException failed) {
+    closeQuietly(channel, lockFile);
+    throw new IllegalStateException("cannot lock " + lockFile + " for output root " + root + ": "
+        + errorMessage(failed), failed);
+  }
+  if (lock == null) {
+    closeQuietly(channel, lockFile);
+    throw new IllegalStateException("another capture is writing to " + root + " (" + contention
+        + "). Two captures over one output root can interleave their publish moves and leave a"
+        + " mixed generation, so this run stops. Wait for the other capture to finish, or pass a"
+        + " different -Dparity.out.dir.");
+  }
+  OUTPUT_LOCK_PATH = lockFile;
+  OUTPUT_LOCK_CHANNEL = channel;
+  OUTPUT_LOCK = lock;
+  System.out.println("  output lock     = " + lockFile);
+}
+
+/** Closes a channel without masking the failure that is already being reported. */
+void closeQuietly(FileChannel channel, Path what) {
+  try {
+    channel.close();
+  } catch (IOException failed) {
+    System.out.println("NOTE: could not close " + what + " - " + errorMessage(failed));
+  }
+}
+
+/**
+ * Releases the lock. Idempotent, and never throws: it runs in the `finally` of
+ * the driver, where a failure of its own would hide the failure being reported.
+ */
+void releaseOutputLock() {
+  if (OUTPUT_LOCK != null) {
+    try {
+      OUTPUT_LOCK.release();
+    } catch (IOException failed) {
+      System.out.println("NOTE: could not release the capture lock " + OUTPUT_LOCK_PATH + " - "
+          + errorMessage(failed));
+    }
+    OUTPUT_LOCK = null;
+  }
+  if (OUTPUT_LOCK_CHANNEL != null) {
+    closeQuietly(OUTPUT_LOCK_CHANNEL, OUTPUT_LOCK_PATH);
+    OUTPUT_LOCK_CHANNEL = null;
+  }
+}
 
 /**
  * A VALIDATED OUTPUT DIRECTORY, OPERATED THROUGH A HANDLE RATHER THAN A NAME.
@@ -1340,30 +1514,157 @@ String FLUSH_ARTEFACT_GLOB = "*.capture-tmp-*";
  *
  * That is what `SecureDirectoryStream` provides, and the JDK implements it on
  * every platform this capture runs on (Linux, macOS, Solaris - anywhere
- * `openat` exists). Where it is absent the operations fall back to path-based
- * equivalents with NOFOLLOW_LINKS, which is what this script did before and
- * which still refuses to follow a link at the final component; the weaker
- * guarantee is printed as a NOTE rather than assumed, so it is visible in the
- * log of the run that relied on it.
+ * `openat` exists). WHERE IT IS ABSENT THE RUN REFUSES. There is no path-based
+ * fallback, deliberately: `NOFOLLOW_LINKS` on a path-based write only refuses
+ * a link at the FINAL component, so a parent exchanged after validation still
+ * redirects the bytes - a fallback that looks safe and is not. Refusing keeps
+ * the guarantee absolute: every byte this script writes, every rename and
+ * every delete is performed relative to a directory handle, and no I/O
+ * operation resolves a pathname at all.
+ *
+ * THE HANDLE IS ACQUIRED BY DESCENT, NOT BY NAME. Opening the directory by
+ * pathname would reopen the very window the handle exists to close: the
+ * validation walked the components, and `Files.newDirectoryStream(path)`
+ * resolves them AGAIN, following any link that appeared in between (CWE-367
+ * and CWE-59 together - the check and the use look at different objects). So
+ * `openChild` opens each component RELATIVE TO ITS PARENT'S HANDLE with
+ * NOFOLLOW_LINKS, and `openOrCreateNoFollowDirectory` chains that from the filesystem
+ * root - the one directory no descent can reach any other way, and the one
+ * that cannot be a symbolic link. A component swapped after validation is then
+ * not followed but REFUSED, and once the handle is held no name is resolved
+ * again at all.
+ *
+ * The ONE by-name open left is the filesystem root, which no descent can
+ * reach any other way and which cannot be a symbolic link; `openVerified`
+ * still brackets it with a NOFOLLOW identity read - `fileKey` before and after
+ * - so even that open refuses if the object under the name changed.
  *
  * Names passed here are single-element file names, never paths: a handle has
  * no notion of `..`, which is the point.
  */
 final class OutputDirectory implements AutoCloseable {
   final Path path;
-  private final DirectoryStream<Path> stream;
   private final SecureDirectoryStream<Path> secure;
 
-  OutputDirectory(Path path) throws IOException {
+  private OutputDirectory(Path path, SecureDirectoryStream<Path> secure) {
     this.path = path;
-    this.stream = Files.newDirectoryStream(path);
-    this.secure = stream instanceof SecureDirectoryStream
-        ? (SecureDirectoryStream<Path>) stream
-        : null;
+    this.secure = secure;
   }
 
-  boolean isSecure() {
-    return secure != null;
+  /**
+   * Wraps a freshly opened stream, refusing it unless it is secure.
+   *
+   * This is the single place the guarantee is enforced, so no operation below
+   * has to ask whether it holds: if a handle exists, it is handle-relative.
+   */
+  private static OutputDirectory of(Path directory, DirectoryStream<Path> opened)
+      throws IOException {
+    if (!(opened instanceof SecureDirectoryStream)) {
+      opened.close();
+      throw new IllegalStateException("Refusing to publish into " + directory
+          + ": this filesystem does not support SecureDirectoryStream, so a write cannot be"
+          + " bound to the directory that was validated. Point -Dparity.out.dir at a filesystem"
+          + " that does (any local POSIX filesystem on Linux, macOS or Solaris) and re-run.");
+    }
+    return new OutputDirectory(directory, (SecureDirectoryStream<Path>) opened);
+  }
+
+  /**
+   * Opens `directory` by pathname, bracketed by a no-follow identity read.
+   *
+   * Used for the filesystem root, which every descent starts from. The two
+   * `fileKey` reads are what makes a by-name open defensible: the object that
+   * carried the name before the open must be the object that carries it after,
+   * or the run refuses rather than writing to whatever took its place.
+   */
+  static OutputDirectory openVerified(Path directory) throws IOException {
+    BasicFileAttributes before =
+        Files.readAttributes(directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    if (!before.isDirectory()) {
+      throw new IllegalStateException(
+          "Refusing to open an output component that is not a directory: " + directory);
+    }
+    Object key = before.fileKey();
+    if (key == null) {
+      throw new IllegalStateException("Refusing to open " + directory
+          + " by name: this filesystem reports no file key, so it cannot be proved that the"
+          + " directory opened is the directory that was validated. Run the capture on a"
+          + " filesystem that supports secure directory streams or file keys.");
+    }
+    DirectoryStream<Path> opened = Files.newDirectoryStream(directory);
+    boolean keep = false;
+    try {
+      BasicFileAttributes after =
+          Files.readAttributes(directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+      if (!after.isDirectory() || !key.equals(after.fileKey())) {
+        throw new IllegalStateException("Refusing to write to " + directory
+            + ": it was replaced while it was being opened");
+      }
+      keep = true;
+      return of(directory, opened);
+    } finally {
+      if (!keep) {
+        opened.close();
+      }
+    }
+  }
+
+  /**
+   * Opens the single-element `name` as a subdirectory of this handle, without
+   * following a symbolic link at that name.
+   */
+  OutputDirectory openChild(Path name) throws IOException {
+    return of(path.resolve(name), secure.newDirectoryStream(name, LinkOption.NOFOLLOW_LINKS));
+  }
+
+  /**
+   * Creates the single-element `name` as a subdirectory and returns the handle
+   * on what was created, or refuses.
+   *
+   * `SecureDirectoryStream` cannot create a directory, so this is the one
+   * operation that has to name a path. What makes it safe is the verification
+   * rather than the creation: the new directory is then opened THROUGH THIS
+   * HANDLE, so a creation that landed anywhere other than inside the directory
+   * this handle holds - because the name was exchanged for a link on the way -
+   * cannot be found here and refuses the run. A racing capture or a
+   * concurrently created directory is not an error: the name already existing
+   * simply means the open decides what is there.
+   */
+  OutputDirectory createChild(Path name) throws IOException {
+    try {
+      Files.createDirectory(path.resolve(name));
+    } catch (FileAlreadyExistsException raced) {
+      // Someone else created it between the open that failed and this call;
+      // the open below is what decides whether what is there is usable.
+    }
+    try {
+      return openChild(name);
+    } catch (NoSuchFileException notWhereItWasAsked) {
+      throw new IllegalStateException("Refusing to write under " + path.resolve(name)
+          + ": the directory was created but is not present inside the directory this run"
+          + " validated, so the name was redirected while it was being created",
+          notWhereItWasAsked);
+    }
+  }
+
+  /**
+   * The names in THIS directory that carry `marker`, sorted.
+   *
+   * Reads the stream this handle already holds, so the scan looks at the
+   * directory that was opened rather than resolving its name a second time.
+   * A `DirectoryStream` may be iterated once, and this is the only iteration
+   * any handle is subjected to.
+   */
+  List<String> namesContaining(String marker) throws IOException {
+    List<String> found = new ArrayList<>();
+    for (Path entry : secure) {
+      String name = entry.getFileName().toString();
+      if (name.contains(marker)) {
+        found.add(name);
+      }
+    }
+    Collections.sort(found);
+    return found;
   }
 
   private Set<OpenOption> options(OpenOption... requested) {
@@ -1379,21 +1680,13 @@ final class OutputDirectory implements AutoCloseable {
 
   /** Creates `name` and writes `bytes`; fails if anything already exists there. */
   void writeNew(Path name, byte[] bytes) throws IOException {
-    Set<OpenOption> options =
-        options(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-    if (secure != null) {
-      try (SeekableByteChannel channel = secure.newByteChannel(name, options)) {
-        ByteBuffer buffer = ByteBuffer.wrap(bytes);
-        while (buffer.hasRemaining()) {
-          channel.write(buffer);
-        }
+    try (SeekableByteChannel channel =
+        secure.newByteChannel(name, options(StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE))) {
+      ByteBuffer buffer = ByteBuffer.wrap(bytes);
+      while (buffer.hasRemaining()) {
+        channel.write(buffer);
       }
-      return;
-    }
-    try (OutputStream out =
-        Files.newOutputStream(path.resolve(name), options.toArray(new OpenOption[0]))) {
-      out.write(bytes);
-      out.flush();
     }
   }
 
@@ -1406,19 +1699,10 @@ final class OutputDirectory implements AutoCloseable {
    */
   byte[] readBack(Path name, int limit) throws IOException {
     ByteBuffer buffer = ByteBuffer.allocate(limit + 1);
-    if (secure != null) {
-      try (SeekableByteChannel channel =
-          secure.newByteChannel(name, options(StandardOpenOption.READ))) {
-        while (buffer.hasRemaining() && channel.read(buffer) > 0) {
-          // read until the buffer is full or the file ends
-        }
-      }
-    } else {
-      try (SeekableByteChannel channel = Files.newByteChannel(path.resolve(name),
-          options(StandardOpenOption.READ).toArray(new OpenOption[0]))) {
-        while (buffer.hasRemaining() && channel.read(buffer) > 0) {
-          // read until the buffer is full or the file ends
-        }
+    try (SeekableByteChannel channel =
+        secure.newByteChannel(name, options(StandardOpenOption.READ))) {
+      while (buffer.hasRemaining() && channel.read(buffer) > 0) {
+        // read until the buffer is full or the file ends
       }
     }
     buffer.flip();
@@ -1429,9 +1713,6 @@ final class OutputDirectory implements AutoCloseable {
 
   /** True when `name` exists, without following a link at that name. */
   boolean exists(Path name) throws IOException {
-    if (secure == null) {
-      return Files.exists(path.resolve(name), LinkOption.NOFOLLOW_LINKS);
-    }
     try {
       secure.getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
           .readAttributes();
@@ -1443,9 +1724,6 @@ final class OutputDirectory implements AutoCloseable {
 
   /** True when `name` is a regular file - not a directory, not a link. */
   boolean isRegularFile(Path name) throws IOException {
-    if (secure == null) {
-      return Files.isRegularFile(path.resolve(name), LinkOption.NOFOLLOW_LINKS);
-    }
     try {
       return secure
           .getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
@@ -1458,18 +1736,10 @@ final class OutputDirectory implements AutoCloseable {
 
   /** Renames within this directory, atomically. */
   void move(Path from, Path to) throws IOException {
-    if (secure != null) {
-      secure.move(from, secure, to);
-      return;
-    }
-    Files.move(path.resolve(from), path.resolve(to), StandardCopyOption.ATOMIC_MOVE);
+    secure.move(from, secure, to);
   }
 
   void deleteIfExists(Path name) throws IOException {
-    if (secure == null) {
-      Files.deleteIfExists(path.resolve(name));
-      return;
-    }
     try {
       secure.deleteFile(name);
     } catch (NoSuchFileException absent) {
@@ -1478,7 +1748,60 @@ final class OutputDirectory implements AutoCloseable {
   }
 
   public void close() throws IOException {
-    stream.close();
+    secure.close();
+  }
+}
+
+/**
+ * Acquires a handle on `directory` by descending from the filesystem root, one
+ * component at a time, creating what is missing and never following a symbolic
+ * link.
+ *
+ * `directory` must be absolute. Each component is opened RELATIVE TO THE
+ * HANDLE ON ITS PARENT, so the only name this resolves is the filesystem root:
+ * a component replaced between validation and this call is refused rather than
+ * followed, and once the handle exists no name is resolved again.
+ *
+ * A component that does not exist yet is created through `createChild`, which
+ * verifies the creation through the parent's handle - the one operation the
+ * NIO API cannot perform handle-relative, made safe by checking the result
+ * where it must have landed rather than by trusting the name. This is why the
+ * function both creates and opens: splitting them would put a window back
+ * between the two.
+ *
+ * The intermediate handles are closed on the way out; only the handle on
+ * `directory` itself is returned, and the caller owns it.
+ */
+OutputDirectory openOrCreateNoFollowDirectory(Path directory) throws IOException {
+  Path filesystemRoot = directory.getRoot();
+  if (filesystemRoot == null) {
+    throw new IllegalStateException("Output directory is not absolute: " + directory);
+  }
+  List<OutputDirectory> chain = new ArrayList<>();
+  try {
+    OutputDirectory current = OutputDirectory.openVerified(filesystemRoot);
+    chain.add(current);
+    for (Path element : filesystemRoot.relativize(directory)) {
+      OutputDirectory child;
+      try {
+        child = current.openChild(element);
+      } catch (NoSuchFileException absent) {
+        child = current.createChild(element);
+      }
+      current = child;
+      chain.add(current);
+    }
+    // The last handle is the caller's; everything above it is closed below.
+    return chain.remove(chain.size() - 1);
+  } finally {
+    for (OutputDirectory intermediate : chain) {
+      try {
+        intermediate.close();
+      } catch (IOException failed) {
+        System.out.println("NOTE: could not close the handle on " + intermediate.path + " - "
+            + errorMessage(failed));
+      }
+    }
   }
 }
 
@@ -1528,18 +1851,15 @@ final class FlushEntry {
  * transaction cannot detect from the published files alone. Overwriting it
  * would erase the evidence and the operator's only copy of the previous
  * generation, so the run stops and says what is there instead.
+ *
+ * The scan runs through the directory's own HANDLE rather than its name, so it
+ * reads the directory that will be published into - a name-based scan could
+ * report a clean directory and then publish into a different one.
  */
-void requireNoStaleFlushArtefacts(Path directory) throws IOException {
-  List<String> stale = new ArrayList<>();
-  try (DirectoryStream<Path> entries =
-      Files.newDirectoryStream(directory, FLUSH_ARTEFACT_GLOB)) {
-    for (Path entry : entries) {
-      stale.add(entry.getFileName().toString());
-    }
-  }
+void requireNoStaleFlushArtefacts(OutputDirectory directory) throws IOException {
+  List<String> stale = directory.namesContaining(FLUSH_ARTEFACT_MARKER);
   if (!stale.isEmpty()) {
-    Collections.sort(stale);
-    throw new IllegalStateException("Refusing to publish into " + directory
+    throw new IllegalStateException("Refusing to publish into " + directory.path
         + ": a previous capture left " + stale
         + ". A `.new` file was staged but never published and can be deleted; a `.old` file IS the"
         + " previous generation of the target named before the suffix and must be moved back onto"
@@ -1599,16 +1919,17 @@ void rollbackFlush(List<FlushEntry> entries) {
  * was.
  *
  * `Files.writeString` straight onto each target cannot do that: it truncates
- * before it writes, so an I/O error or an interrupt half way through the eight
+ * before it writes, so an I/O error or an interrupt half way through the seven
  * files leaves earlier files new, later files old, and the file being written
  * truncated - a tree that looks like a baseline and is not one.
  *
- * The five phases below are the transaction:
+ * The phases below are the transaction, and phase 3 ends at the COMMIT
+ * BOUNDARY:
  *
- *  1. validate all eight destinations before a single byte is written, create
+ *  1. validate all seven destinations before a single byte is written, create
  *     their parents one link-checked component at a time, take a no-follow
- *     handle on each directory, and refuse to proceed if an earlier run left
- *     artefacts there;
+ *     handle on each directory by descending to it, and refuse to proceed if
+ *     an earlier run left artefacts there;
  *  2. write each document to `<target>.capture-tmp-<pid>.new` through that
  *     handle with CREATE_NEW (so an existing file or link at that name is
  *     never followed or reused), then verify it by reading the bytes back
@@ -1617,13 +1938,23 @@ void rollbackFlush(List<FlushEntry> entries) {
  *     before the next move - then move the verified temporary into place. Both
  *     moves are renames within one directory, so both are atomic, and a reader
  *     sees either the whole old file or the whole new one, never a truncated
- *     one;
- *  4. only once every target is published, delete the `.old` backups;
- *  5. any failure in 2, 3 or 4 rolls back to the previous generation and
+ *     one. Any failure in 2 or 3 rolls back to the previous generation and
  *     rethrows, so the driver records a failure and the exit status is
- *     non-zero.
+ *     non-zero;
+ *  ---- the commit boundary: after 3, the new generation IS the generation ----
+ *  4. with every target published, delete the `.old` backups. THIS CANNOT ROLL
+ *     BACK, and the structure is what guarantees it: phase 4 sits outside the
+ *     block whose `catch` calls `rollbackFlush`, because phase 4 CLEARS the
+ *     `backedUp` journal flag as each backup is deleted. A rollback entered
+ *     from here would find the flag already cleared for the backups it had
+ *     removed, delete the published target it was meant to restore, and have
+ *     nothing to put back - it would destroy the very generation the run had
+ *     just verified. So a cleanup failure keeps the published documents,
+ *     names every backup it could not remove, and fails the run without
+ *     touching a published target; the next run refuses to publish until
+ *     those leftovers are resolved.
  *
- * WHAT THIS DOES NOT CLAIM. Eight files in three directories cannot be
+ * WHAT THIS DOES NOT CLAIM. Seven files in three directories cannot be
  * replaced in one filesystem operation: a directory swap is the only primitive
  * that would, and it is unavailable here because the three directories are
  * separate trees in two sbt modules - no single swap reaches all of them - and
@@ -1636,24 +1967,21 @@ void rollbackFlush(List<FlushEntry> entries) {
  * and because the fixtures are tracked, `git status` shows the same thing.
  */
 void flushDocuments() throws Exception {
-  Path root = outputRoot();
   List<FlushEntry> entries = new ArrayList<>();
   Map<Path, OutputDirectory> handles = new LinkedHashMap<>();
   try {
-    // Phase 1: validate, create parents, take handles, refuse stale artefacts.
+    // Phase 1: validate, descend to each directory creating what is missing,
+    // and refuse stale artefacts.
     for (Map.Entry<String, String> document : PENDING_DOCUMENTS.entrySet()) {
       Path target = guardedOutputTarget(document.getKey());
-      createOutputParents(root, target);
       Path directory = target.getParent();
       OutputDirectory handle = handles.get(directory);
       if (handle == null) {
-        requireNoStaleFlushArtefacts(directory);
-        handle = new OutputDirectory(directory);
+        // Descended to and created on the way, never opened by name: see
+        // `openOrCreateNoFollowDirectory`.
+        handle = openOrCreateNoFollowDirectory(directory);
         handles.put(directory, handle);
-        if (!handle.isSecure()) {
-          System.out.println("NOTE: " + directory + " does not support SecureDirectoryStream;"
-              + " publishing by path with NOFOLLOW_LINKS instead");
-        }
+        requireNoStaleFlushArtefacts(handle);
       }
       if (handle.exists(target.getFileName()) && !handle.isRegularFile(target.getFileName())) {
         throw new IllegalStateException("Output target is not a regular file: " + target);
@@ -1687,31 +2015,11 @@ void flushDocuments() throws Exception {
         entry.published = true;
         System.out.println("wrote " + entry.target() + "  (" + entry.bytes.length + " bytes)");
       }
-      // Phase 4: the generation is published; the previous one can go.
-      List<String> undeleted = new ArrayList<>();
-      for (FlushEntry entry : entries) {
-        if (entry.backedUp) {
-          try {
-            entry.directory.deleteIfExists(entry.backupName);
-            entry.backedUp = false;
-          } catch (IOException failed) {
-            undeleted.add(entry.directory.path.resolve(entry.backupName) + " - "
-                + errorMessage(failed));
-          }
-        }
-      }
-      if (!undeleted.isEmpty()) {
-        // The new generation IS published, so this is not rolled back - but the
-        // tree holds leftovers that the next run will refuse to publish over,
-        // so the operator has to hear about it and the run fails.
-        throw new IllegalStateException("every document was published, but the previous"
-            + " generation could not be removed: " + undeleted);
-      }
     } catch (Throwable thrown) {
-      // Phase 5. Deliberately everything: a publication that fails half way
-      // through must be undone whatever failed it, and the original failure is
-      // rethrown afterwards so the driver reports it and the exit status is
-      // non-zero.
+      // The rollback arm, and it guards phases 2 and 3 ONLY. Deliberately
+      // everything: a publication that fails half way through must be undone
+      // whatever failed it, and the original failure is rethrown afterwards so
+      // the driver reports it and the exit status is non-zero.
       try {
         rollbackFlush(entries);
       } catch (Throwable rollbackFailed) {
@@ -1722,6 +2030,39 @@ void flushDocuments() throws Exception {
         thrown.addSuppressed(rollbackFailed);
       }
       throw thrown;
+    }
+    // ----------------------------- COMMIT -----------------------------------
+    // Every document is published and every one of them was verified before it
+    // moved. From here the new generation is the generation, and NOTHING below
+    // may roll back: phase 4 is deliberately outside the block above, because
+    // rolling back from here would delete published targets whose backups this
+    // phase had already removed. See the phase 4 note in the banner.
+    List<String> undeleted = new ArrayList<>();
+    for (FlushEntry entry : entries) {
+      if (entry.backedUp) {
+        try {
+          entry.directory.deleteIfExists(entry.backupName);
+          entry.backedUp = false;
+        } catch (IOException failed) {
+          undeleted.add(entry.directory.path.resolve(entry.backupName) + " - "
+              + errorMessage(failed));
+        }
+      }
+    }
+    if (!undeleted.isEmpty()) {
+      // The published generation stays exactly as it is - complete and
+      // verified. What is wrong is only that the PREVIOUS generation is still
+      // beside it under `.old` names, which the next run will refuse to
+      // publish over, so the operator has to hear about it and the run fails.
+      System.out.println("PUBLISHED, BUT NOT CLEANED UP: every document was written and is"
+          + " intact; the previous generation could not be removed and is still on disk.");
+      for (String leftover : undeleted) {
+        System.out.println("    " + leftover);
+      }
+      throw new IllegalStateException("every document was published and left in place, but "
+          + undeleted.size() + " backup(s) of the previous generation could not be removed: "
+          + undeleted + ". Delete them by hand - the published documents are the new baseline"
+          + " and must NOT be reverted - then the next capture will run.");
     }
   } finally {
     for (OutputDirectory handle : handles.values()) {
@@ -7695,11 +8036,32 @@ Jn buildMultiCurrencyAmountArrayResults() {
           CurrencyAmountArray.of(Currency.GBP, DoubleArray.of(1d, 2d, 3d)),
           CurrencyAmountArray.of(Currency.USD, DoubleArray.of(10d, 20d, 30d))))),
       MUST_SUCCEED);
+  // The rate is captured ON THE OPERATION and registered in the row's `rates`
+  // list, exactly as `MultiCurrencyAmount.convertedTo` does. Without it the
+  // row would state a converted result whose provider appears nowhere in the
+  // document, and the only way to replay it would be to borrow a rate from an
+  // unrelated row - which is not a replay of what Java was given here.
+  //
+  // No Java test states this combination, so the expectation is tied to the
+  // captured rate here instead: converting GBP[1,2,3] + USD[10,20,30] into USD
+  // at GBP/USD 1.6 is the GBP leg scaled by the rate plus the USD leg
+  // unchanged, element by element. A rate that did not produce the numbers
+  // beside it would therefore fail the capture rather than be published.
+  DoubleArray convertedAtOneSix = base
+      .convertedTo(Currency.USD, FxRate.of(Currency.GBP, Currency.USD, 1.6))
+      .getValues();
+  for (int i = 0; i < 3; i++) {
+    CHECK.checkClose(FX_CURRENCY_MATH,
+        "MultiCurrencyAmountArray.convertedTo at GBP/USD 1.6 [" + i + "]",
+        (i + 1) * 1.6 + (i + 1) * 10d, convertedAtOneSix.get(i), 1e-12,
+        "GBP leg at the captured rate plus the USD leg");
+  }
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.convertedTo",
       opEntry("convertedTo").set("left", jMultiCurrencyAmountArray(base))
-          .set("target", jName(Currency.USD)),
-      () -> jCurrencyAmountArray(
-          base.convertedTo(Currency.USD, FxRate.of(Currency.GBP, Currency.USD, 1.6))),
+          .set("target", jName(Currency.USD))
+          .set("rates", jRateEntries(rateEntries(Currency.GBP, Currency.USD, 1.6))),
+      () -> jCurrencyAmountArray(base.convertedTo(Currency.USD,
+          MATH_IN.rate(FxRate.of(Currency.GBP, Currency.USD, 1.6)))),
       MUST_SUCCEED);
   // Composed, exactly as for CurrencyAmountArray.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.multipliedBy (composed)",
@@ -10133,1013 +10495,15 @@ Jn buildManifest() {
 }
 
 /* ===========================================================================
- * SECTION 14 - DOCUMENT 8 OF 8: java-test-mapping.csv
+ * SECTION 14 - THE DRIVER
  *
- * The method-level traceability document the test-scope gate reads: one row
- * per `@Test` / `@ParameterizedTest` method of every Java test class the port
- * is held against, carrying the Scala spec and test name that replaced it and
- * the status of that decision.
- *
- * WHAT "CAPTURED" MEANS FOR THIS DOCUMENT
- * ---------------------------------------
- * Columns 1-2 (`java_test_class`, `java_test_method`), the row order and the
- * format are FACTS ABOUT THE JAVA SOURCES, so they are derived here from
- * `modules/**` on every run, exactly as the six fixtures are derived from the
- * Java implementation. Columns 3-5 (`scala_spec`, `scala_test_name`,
- * `status`) are MAPPING DECISIONS no scanner can derive - which spec absorbed
- * a consolidated test, why a test was dropped - so they are read from the
- * committed document, keyed by (class, method), and re-emitted verbatim.
- *
- * The document is therefore a FIXED POINT rather than a generated file: this
- * script owns the inventory, the ordering, the format and the taxonomy; a
- * human owns the mapping. A capture rebuilds the whole document and aborts
- * unless the result is byte-identical to the committed one, so a Java test
- * method added, renamed or removed under the port, a row naming no Java
- * method, a duplicate row, a status outside the taxonomy and a mistranscribed
- * row are all caught by the run that produces the fixtures - which is what
- * makes a 1,876-row artefact auditable rather than merely present.
- *
- * It follows that the committed document is an INPUT as well as an output: on
- * a checkout where it is absent the capture stops and says so, because
- * columns 3-5 cannot be invented. That is deliberate; the alternative is a
- * capture that silently publishes 1,876 rows of empty mapping decisions.
- *
- * WHAT IS SCANNED
- * ---------------
- *   * every `*Test.java` under `modules/basics/src/test/java` - 72 classes
- *     with 1,223 test methods, the anchor counts asserted below;
- *   * the 24 `com.opengamma.strata.collect` test classes the port maps,
- *     declared as a literal list here rather than inferred from the document
- *     being verified, so that the document cannot certify its own class set.
- *
- * DETERMINISM
- * -----------
- * Classes are emitted in ascending fully-qualified-name order and methods in
- * Java source order, so no directory-iteration order can reach the output:
- * the recursive source walk sorts each directory's entries explicitly, and
- * the inventory is a TreeMap.
- * ===========================================================================
- */
-
-String FX_TEST_MAPPING = "test-mapping";
-
-/**
- * The checkout the Java test sources and the committed mapping are read from.
- *
- * Defaults to the current directory, which is where both documented routes
- * run the capture from; `-Dparity.repo.dir=<checkout root>` covers a capture
- * launched from elsewhere. It is NOT `parity.out.dir`: the mapping is read
- * from the repository and written to the output root, which is what lets a
- * dry run into a scratch directory still verify the committed document.
- */
-String REPO_DIR = System.getProperty("parity.repo.dir", ".");
-
-/** The checkout root, resolved and validated once. `null` until first use. */
-Path REPO_ROOT_PATH = null;
-
-/**
- * Resolves `parity.repo.dir` to an absolute checkout root.
- *
- * Validated with the same two-marker `isCheckoutRoot` test the output-root
- * guard uses, so a capture launched from the wrong working directory fails
- * with one clear message instead of scanning an empty tree and then reporting
- * 1,223 test methods as missing - a diagnostic that would send the reader
- * looking for a mapping defect that is not there.
- */
-Path repositoryRoot() {
-  if (REPO_ROOT_PATH != null) {
-    return REPO_ROOT_PATH;
-  }
-  Path declared = Paths.get(REPO_DIR).toAbsolutePath().normalize();
-  if (!isCheckoutRoot(declared)) {
-    throw new IllegalStateException("parity.repo.dir is not a Strata checkout root: " + declared
-        + " (a checkout root holds both build.sbt and modules/) - run the capture from the"
-        + " repository root, or pass -Dparity.repo.dir=<checkout root>");
-  }
-  REPO_ROOT_PATH = declared;
-  return REPO_ROOT_PATH;
-}
-
-/** The Java test trees the mapping covers, relative to the checkout root. */
-String MAPPING_BASICS_TEST_ROOT = "modules/basics/src/test/java";
-String MAPPING_COLLECT_TEST_ROOT = "modules/collect/src/test/java";
-
-/** The package every mapped collect test class sits in or under. */
-String MAPPING_COLLECT_PACKAGE = "com.opengamma.strata.collect";
-
-/**
- * The collect test classes the port maps, as names relative to
- * `com.opengamma.strata.collect`.
- *
- * A LITERAL rather than a scan: `modules/collect/src/test/java` holds tests
- * for the collect symbols the port deliberately leaves behind (0.2.2 -
- * `timeseries`, `concurrent`, `function`, `IntArray`, ...), so "every
- * `*Test.java`" is the wrong set here. It is equally not read from the
- * document being verified: a document that supplied its own class set could
- * lose a class silently, which is the one failure this check exists to catch.
- */
-String[] MAPPED_COLLECT_TEST_CLASSES = {
-    "ArgCheckerTest",
-    "DecimalTest",
-    "DoubleArrayMathTest",
-    "FixedScaleDecimalTest",
-    "GuavateTest",
-    "MapStreamTest",
-    "TestHelperTest",
-    "TypedStringTest",
-    "array.DoubleArrayTest",
-    "array.DoubleMatrixTest",
-    "io.ResourceLocatorTest",
-    "named.CombinedExtendedEnumTest",
-    "named.EnumNamesTest",
-    "named.ExtendedEnumTest",
-    "named.NamedTest",
-    "result.FailureExceptionTest",
-    "result.FailureItemExceptionTest",
-    "result.FailureItemTest",
-    "result.FailureItemsTest",
-    "result.FailureReasonTest",
-    "result.IllegalArgFailureExceptionTest",
-    "result.ParseFailureExceptionTest",
-    "result.ResultTest",
-    "result.ValueWithFailuresTest",
-};
-
-/** The document's header line, which is part of its contract. */
-String MAPPING_HEADER = "java_test_class,java_test_method,scala_spec,scala_test_name,status";
-
-/** The five columns, named for the diagnostics below. */
-String[] MAPPING_COLUMNS =
-    {"java_test_class", "java_test_method", "scala_spec", "scala_test_name", "status"};
-
-// --- The independently verified expectations. Every one of them is asserted,
-// --- so a drift in the Java tests or in the mapping aborts the capture rather
-// --- than reshaping the document.
-int MAPPING_EXPECTED_BASICS_CLASSES = 72;      // AAP 0.1.1 anchor
-int MAPPING_EXPECTED_BASICS_METHODS = 1223;    // AAP 0.1.1 anchor
-int MAPPING_EXPECTED_COLLECT_CLASSES = 24;     // the mapped collect subset
-int MAPPING_EXPECTED_COLLECT_METHODS = 653;    // the 1,876 rows less the 1,223
-int MAPPING_EXPECTED_ROWS = 1876;
-int MAPPING_EXPECTED_PORTED = 1446;
-int MAPPING_EXPECTED_CONSOLIDATED = 293;
-int MAPPING_EXPECTED_PARTIAL = 118;
-int MAPPING_EXPECTED_DROPPED = 19;
-int MAPPING_EXPECTED_UNMAPPED_ROWS = 137;      // partial + dropped, both columns empty
-int MAPPING_EXPECTED_DISTINCT_SPECS = 86;      // distinct NON-EMPTY scala_spec values
-int MAPPING_EXPECTED_SPEC_VALUES = 87;         // the same set counting "" as a value
-int MAPPING_EXPECTED_CONSOLIDATION_TARGETS = 9;
-
-/** The four statuses, as bare names; three of them carry a `:<reason>` tail. */
-String MAPPING_STATUS_PORTED = "ported";
-String MAPPING_STATUS_CONSOLIDATED = "consolidated";
-String MAPPING_STATUS_PARTIAL = "partial";
-String MAPPING_STATUS_DROPPED = "dropped";
-
-/**
- * The only classes a `partial` row may belong to.
- *
- * `partial` means "a member of a collect helper that strata-basics does not
- * use", which is true of exactly these two classes and of nothing else; a
- * `partial` anywhere else is a test quietly written off.
- */
-String[] MAPPING_PARTIAL_CLASSES = {
-    "com.opengamma.strata.collect.GuavateTest",
-    "com.opengamma.strata.collect.MapStreamTest",
-};
-
-/**
- * The only classes a `dropped` row may belong to: the five Java test classes
- * excluded with their subjects in 0.2.2.
- */
-String[] MAPPING_DROPPED_CLASSES = {
-    "com.opengamma.strata.basics.date.HolidayCalendarIniLookupTest",
-    "com.opengamma.strata.collect.result.FailureExceptionTest",
-    "com.opengamma.strata.collect.result.FailureItemExceptionTest",
-    "com.opengamma.strata.collect.result.IllegalArgFailureExceptionTest",
-    "com.opengamma.strata.collect.result.ParseFailureExceptionTest",
-};
-
-/**
- * The one further `dropped` row 0.2.2 allows: the single method of a RETAINED
- * class that exercises the legacy `ImmutableHolidayCalendar-Old.json` wire
- * format, which the port does not reproduce. Named method by method rather
- * than class by class, so that the rest of that class stays covered.
- */
-String MAPPING_DROPPED_LEGACY_CLASS =
-    "com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest";
-String MAPPING_DROPPED_LEGACY_METHOD = "test_readOldJodaFormat";
-
-/**
- * One `@Test` / `@ParameterizedTest` method, as the scanner found it.
- *
- * The parameter types are carried for every method, not only the overloaded
- * ones, because whether a name is overloaded is a property of the class and is
- * not known until it has been scanned whole.
- */
-final class JavaTestMethod {
-  final String name;
-  final List<String> parameterTypes;
-
-  JavaTestMethod(String name, List<String> parameterTypes) {
-    this.name = name;
-    this.parameterTypes = parameterTypes;
-  }
-
-  /** `name(Type;Type)` - the form an overloaded method is recorded under. */
-  String signature() {
-    StringBuilder sb = new StringBuilder(name).append('(');
-    for (int i = 0; i < parameterTypes.size(); i++) {
-      if (i > 0) {
-        sb.append(';');
-      }
-      sb.append(parameterTypes.get(i));
-    }
-    return sb.append(')').toString();
-  }
-}
-
-/** End of the Java identifier starting at `from`, or `from` if there is none. */
-int identifierEnd(String text, int from) {
-  int i = from;
-  if (i < text.length() && Character.isJavaIdentifierStart(text.charAt(i))) {
-    i++;
-    while (i < text.length() && Character.isJavaIdentifierPart(text.charAt(i))) {
-      i++;
-    }
-  }
-  return i;
-}
-
-/** First position at or after `from` that is not whitespace. */
-int skipWhitespace(String text, int from) {
-  int i = from;
-  while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
-    i++;
-  }
-  return i;
-}
-
-/**
- * Position just past the bracket that closes the one at `from`.
- *
- * Nesting is counted, so a nested generic argument list such as
- * `<Map<String, List<X>>>` and an annotation's own argument list are skipped
- * whole rather than at their first closing bracket.
- */
-int skipBalanced(String text, int from, char open, char close) {
-  int depth = 0;
-  int i = from;
-  while (i < text.length()) {
-    char c = text.charAt(i);
-    if (c == open) {
-      depth++;
-    } else if (c == close) {
-      depth--;
-      if (depth == 0) {
-        return i + 1;
-      }
-    }
-    i++;
-  }
-  throw new IllegalStateException("unbalanced '" + open + "' at offset " + from);
-}
-
-/**
- * Replaces every comment and every string / character literal BODY with
- * spaces, preserving offsets and line structure.
- *
- * This is what stops an annotation that is only MENTIONED - in a Javadoc
- * comment, in a commented-out method, in a string that documents an
- * annotation - from being counted as a test method. Offsets are preserved
- * (one space per removed character, newlines kept) so that a diagnostic can
- * still quote a line number.
- *
- * Handles every form JDK 21 has: the line comment, the block comment, the
- * text block, the double-quoted string and the single-quoted character
- * literal, the last two including their backslash escapes. An unterminated
- * one is a source file this scanner must not guess about, so it throws.
- */
-String stripCommentsAndLiterals(String source) {
-  StringBuilder out = new StringBuilder(source.length());
-  int i = 0;
-  int n = source.length();
-  while (i < n) {
-    char c = source.charAt(i);
-    if (c == '/' && i + 1 < n && source.charAt(i + 1) == '/') {
-      while (i < n && source.charAt(i) != '\n') {
-        out.append(' ');
-        i++;
-      }
-    } else if (c == '/' && i + 1 < n && source.charAt(i + 1) == '*') {
-      out.append("  ");
-      i += 2;
-      while (i + 1 < n && !(source.charAt(i) == '*' && source.charAt(i + 1) == '/')) {
-        out.append(source.charAt(i) == '\n' ? '\n' : ' ');
-        i++;
-      }
-      if (i + 1 >= n) {
-        throw new IllegalStateException("unterminated block comment at offset " + i);
-      }
-      out.append("  ");
-      i += 2;
-    } else if (c == '"' && source.startsWith("\"\"\"", i)) {
-      out.append("   ");
-      i += 3;
-      while (i < n && !source.startsWith("\"\"\"", i)) {
-        out.append(source.charAt(i) == '\n' ? '\n' : ' ');
-        i++;
-      }
-      if (i >= n) {
-        throw new IllegalStateException("unterminated text block at offset " + i);
-      }
-      out.append("   ");
-      i += 3;
-    } else if (c == '"' || c == '\'') {
-      // The quotes themselves are kept - nothing downstream reads them, and
-      // keeping them makes the stripped text still look like Java.
-      out.append(c);
-      i++;
-      boolean closed = false;
-      while (i < n) {
-        char inner = source.charAt(i);
-        if (inner == '\\' && i + 1 < n) {
-          out.append("  ");
-          i += 2;
-          continue;
-        }
-        if (inner == c) {
-          out.append(c);
-          i++;
-          closed = true;
-          break;
-        }
-        if (inner == '\n') {
-          throw new IllegalStateException("unterminated literal at offset " + i);
-        }
-        out.append(' ');
-        i++;
-      }
-      if (!closed) {
-        throw new IllegalStateException("unterminated literal at offset " + i);
-      }
-    } else {
-      out.append(c);
-      i++;
-    }
-  }
-  return out.toString();
-}
-
-/**
- * The erased simple type names of one Java parameter list.
- *
- * Erased the way a signature is read by a human rather than by the JVM:
- * generic arguments are dropped, a package qualifier is dropped, an array
- * dimension is kept as `[]` whichever side of the parameter name it was
- * written on, and a varargs `...` counts as one dimension. This is the form
- * the document records an overload under, so it has to be stable against
- * whitespace, `final` and parameter annotations.
- */
-List<String> erasedParameterTypes(String parameterList) {
-  List<String> types = new ArrayList<>();
-  for (String parameter : splitTopLevel(parameterList, ',')) {
-    String declaration = parameter.trim();
-    if (declaration.isEmpty()) {
-      continue;
-    }
-    StringBuilder plain = new StringBuilder();
-    int i = 0;
-    while (i < declaration.length()) {
-      char c = declaration.charAt(i);
-      if (c == '@') {
-        int end = identifierEnd(declaration, i + 1);
-        int after = skipWhitespace(declaration, end);
-        i = after < declaration.length() && declaration.charAt(after) == '('
-            ? skipBalanced(declaration, after, '(', ')')
-            : end;
-        plain.append(' ');
-      } else if (c == '<') {
-        i = skipBalanced(declaration, i, '<', '>');
-      } else {
-        plain.append(c);
-        i++;
-      }
-    }
-    String cleaned = plain.toString();
-    boolean varargs = cleaned.contains("...");
-    cleaned = cleaned.replace("...", " ");
-    List<String> tokens = new ArrayList<>();
-    for (String token : cleaned.trim().split("\\s+")) {
-      // `final` is a modifier, never part of the type.
-      if (!token.isEmpty() && !token.equals("final")) {
-        tokens.add(token);
-      }
-    }
-    if (tokens.isEmpty()) {
-      throw new IllegalStateException("cannot read a parameter type from: " + parameter);
-    }
-    // The last token is the parameter name, unless the declaration names no
-    // parameter at all (a bare type, which a declaration cannot have but a
-    // caller of this helper might pass).
-    StringBuilder typeText = new StringBuilder();
-    int typeTokens = tokens.size() > 1 ? tokens.size() - 1 : 1;
-    for (int t = 0; t < typeTokens; t++) {
-      typeText.append(tokens.get(t));
-    }
-    int dimensions = varargs ? 1 : 0;
-    if (tokens.size() > 1) {
-      // C-style dimensions written after the parameter name: `int x[]`.
-      dimensions += countOccurrences(tokens.get(tokens.size() - 1), "[]");
-    }
-    String type = typeText.toString();
-    dimensions += countOccurrences(type, "[]");
-    type = type.replace("[]", "");
-    String simple = type.substring(type.lastIndexOf('.') + 1);
-    StringBuilder erased = new StringBuilder(simple);
-    for (int d = 0; d < dimensions; d++) {
-      erased.append("[]");
-    }
-    types.add(erased.toString());
-  }
-  return types;
-}
-
-/** Splits on `separator` at bracket depth zero, keeping empty parts. */
-List<String> splitTopLevel(String text, char separator) {
-  List<String> parts = new ArrayList<>();
-  StringBuilder current = new StringBuilder();
-  int depth = 0;
-  for (int i = 0; i < text.length(); i++) {
-    char c = text.charAt(i);
-    if (c == '<' || c == '(' || c == '[') {
-      depth++;
-      current.append(c);
-    } else if (c == '>' || c == ')' || c == ']') {
-      depth--;
-      current.append(c);
-    } else if (c == separator && depth == 0) {
-      parts.add(current.toString());
-      current.setLength(0);
-    } else {
-      current.append(c);
-    }
-  }
-  parts.add(current.toString());
-  return parts;
-}
-
-/** Occurrences of `what` in `text`, non-overlapping. */
-int countOccurrences(String text, String what) {
-  int count = 0;
-  int from = 0;
-  while (true) {
-    int at = text.indexOf(what, from);
-    if (at < 0) {
-      return count;
-    }
-    count++;
-    from = at + what.length();
-  }
-}
-
-/**
- * The method declaration that follows an annotation, as the JLS orders one.
- *
- * `from` sits just past the `@Test` / `@ParameterizedTest` name. A declaration
- * may carry further annotations (`@Disabled`, `@MethodSource("x")`), modifiers,
- * type parameters and a qualified or generic return type before its own name,
- * so the walk crosses all of them and remembers the LAST identifier it saw:
- * at the `(` that opens the parameter list, that identifier is the method
- * name. An annotation's own name is deliberately forgotten again, so
- * `@MethodSource("x") void f()` yields `f` and never `MethodSource`.
- */
-JavaTestMethod declaredMethodAfter(String className, String text, int from) {
-  int i = from;
-  String name = null;
-  while (i < text.length()) {
-    char c = text.charAt(i);
-    if (c == '(') {
-      if (name != null) {
-        break;
-      }
-      i = skipBalanced(text, i, '(', ')');
-    } else if (c == '@') {
-      int end = identifierEnd(text, i + 1);
-      int after = skipWhitespace(text, end);
-      i = after < text.length() && text.charAt(after) == '('
-          ? skipBalanced(text, after, '(', ')')
-          : end;
-      name = null;
-    } else if (c == '<') {
-      i = skipBalanced(text, i, '<', '>');
-    } else if (Character.isJavaIdentifierStart(c)) {
-      int end = identifierEnd(text, i);
-      name = text.substring(i, end);
-      i = end;
-    } else if (c == ';' || c == '{' || c == '}' || c == '=') {
-      throw new IllegalStateException("a @Test annotation in " + className
-          + " is not followed by a method declaration (stopped at '" + c + "')");
-    } else {
-      i++;
-    }
-  }
-  if (name == null || i >= text.length()) {
-    throw new IllegalStateException("a @Test annotation in " + className
-        + " is not followed by a method declaration");
-  }
-  int end = skipBalanced(text, i, '(', ')');
-  return new JavaTestMethod(name, erasedParameterTypes(text.substring(i + 1, end - 1)));
-}
-
-/**
- * Every `@Test` / `@ParameterizedTest` method of one class, in SOURCE ORDER.
- *
- * The annotation name is matched on its whole token, so `@TestInstance` and
- * `@TestFactory` are not mistaken for `@Test`, and the scan runs over the
- * stripped text, so a mention in a comment or a string is not counted.
- */
-List<JavaTestMethod> javaTestMethods(String className, String source) {
-  String text = stripCommentsAndLiterals(source);
-  List<JavaTestMethod> found = new ArrayList<>();
-  int i = 0;
-  while (i < text.length()) {
-    int at = text.indexOf('@', i);
-    if (at < 0) {
-      break;
-    }
-    int end = identifierEnd(text, at + 1);
-    String annotation = text.substring(at + 1, end);
-    i = end > at + 1 ? end : at + 1;
-    if (annotation.equals("Test") || annotation.equals("ParameterizedTest")) {
-      found.add(declaredMethodAfter(className, text, end));
-    }
-  }
-  return found;
-}
-
-/**
- * Reads a Java source file as bytes decoded one-byte-per-character.
- *
- * ISO-8859-1 rather than UTF-8 on purpose: every character this scanner acts
- * on is ASCII, and a byte-preserving decode can neither throw on a file that
- * is not valid UTF-8 nor shift an offset, so a stray non-ASCII byte in a
- * comment or a string literal cannot change what is found.
- */
-String readSourceFile(Path path) throws IOException {
-  return new String(Files.readAllBytes(path), StandardCharsets.ISO_8859_1);
-}
-
-/**
- * Collects `*Test.java` under `directory`, recursively, in EXPLICIT order.
- *
- * `Files.newDirectoryStream` is specified to return entries in no particular
- * order, so every directory's entries are sorted before they are descended
- * into. The final inventory is sorted by class name anyway; doing it here as
- * well means the walk itself is reproducible, which is what the determinism
- * contract in the header promises.
- */
-void collectJavaTestSources(Path directory, List<Path> into) throws IOException {
-  List<Path> entries = new ArrayList<>();
-  try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
-    for (Path entry : stream) {
-      entries.add(entry);
-    }
-  }
-  entries.sort(new Comparator<Path>() {
-    public int compare(Path left, Path right) {
-      return left.getFileName().toString().compareTo(right.getFileName().toString());
-    }
-  });
-  for (Path entry : entries) {
-    if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) {
-      collectJavaTestSources(entry, into);
-    } else if (Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS)
-        && entry.getFileName().toString().endsWith("Test.java")) {
-      into.add(entry);
-    }
-  }
-}
-
-/**
- * The class inventory: fully-qualified test class name -> source file.
- *
- * A TreeMap, so the document's row order - classes by ascending
- * fully-qualified name - is a property of the data structure rather than of
- * the order the files happened to be read in.
- */
-Map<String, Path> javaTestClassInventory() throws IOException {
-  Path repository = repositoryRoot();
-  Map<String, Path> inventory = new TreeMap<>();
-  Path basicsRoot = repository.resolve(MAPPING_BASICS_TEST_ROOT);
-  if (!Files.isDirectory(basicsRoot, LinkOption.NOFOLLOW_LINKS)) {
-    throw new IllegalStateException("the Java basics test tree is missing: " + basicsRoot);
-  }
-  List<Path> basicsSources = new ArrayList<>();
-  collectJavaTestSources(basicsRoot, basicsSources);
-  for (Path source : basicsSources) {
-    String relative = basicsRoot.relativize(source).toString();
-    String className = relative.substring(0, relative.length() - ".java".length())
-        .replace(source.getFileSystem().getSeparator(), ".");
-    inventory.put(className, source);
-  }
-  int basicsClasses = inventory.size();
-  CHECK.checkCount(FX_TEST_MAPPING, "basics *Test.java classes under " + MAPPING_BASICS_TEST_ROOT,
-      MAPPING_EXPECTED_BASICS_CLASSES, basicsClasses);
-  Path collectRoot = repository.resolve(MAPPING_COLLECT_TEST_ROOT);
-  for (String relative : MAPPED_COLLECT_TEST_CLASSES) {
-    String className = MAPPING_COLLECT_PACKAGE + "." + relative;
-    Path source = collectRoot.resolve(className.replace('.', '/') + ".java");
-    if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
-      throw new IllegalStateException("a mapped collect test class is missing its source: "
-          + source + " - the literal list in this section names it");
-    }
-    inventory.put(className, source);
-  }
-  CHECK.checkCount(FX_TEST_MAPPING, "mapped collect test classes",
-      MAPPING_EXPECTED_COLLECT_CLASSES, inventory.size() - basicsClasses);
-  return inventory;
-}
-
-/**
- * Renders one CSV field per RFC 4180, quoting ONLY when it has to.
- *
- * A field is quoted when it contains a comma or a quote, and a contained
- * quote is doubled. Nothing else is quoted, because "quote only what needs
- * it" is what makes the document byte-stable: a writer that quoted
- * defensively would produce a second valid rendering of the same data and the
- * byte comparison against the committed document would fail for no reason.
- */
-String csvField(String value) {
-  if (value.indexOf(',') < 0 && value.indexOf('"') < 0) {
-    return value;
-  }
-  StringBuilder sb = new StringBuilder(value.length() + 2);
-  sb.append('"');
-  for (int i = 0; i < value.length(); i++) {
-    char c = value.charAt(i);
-    if (c == '"') {
-      sb.append("\"\"");
-    } else {
-      sb.append(c);
-    }
-  }
-  return sb.append('"').toString();
-}
-
-/**
- * Parses the committed document as RFC 4180, LF-terminated and US-ASCII.
- *
- * Strict on purpose - a CR, a quote inside an unquoted field, an unterminated
- * quoted field or a missing final newline is a malformed traceability document
- * and is reported as such, rather than being repaired into rows that would
- * then be compared against the Java sources and blamed on the mapping.
- */
-List<List<String>> parseMappingCsv(String text, Path path) {
-  List<List<String>> rows = new ArrayList<>();
-  List<String> row = new ArrayList<>();
-  StringBuilder field = new StringBuilder();
-  boolean inQuotes = false;
-  int line = 1;
-  for (int i = 0; i < text.length(); i++) {
-    char c = text.charAt(i);
-    if (inQuotes) {
-      if (c == '"') {
-        if (i + 1 < text.length() && text.charAt(i + 1) == '"') {
-          field.append('"');
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        if (c == '\n') {
-          line++;
-        }
-        field.append(c);
-      }
-    } else if (c == '"') {
-      if (field.length() != 0) {
-        throw new IllegalStateException(path + ":" + line
-            + ": a quote may only open a field, and this one does not");
-      }
-      inQuotes = true;
-    } else if (c == ',') {
-      row.add(field.toString());
-      field.setLength(0);
-    } else if (c == '\n') {
-      row.add(field.toString());
-      field.setLength(0);
-      rows.add(row);
-      row = new ArrayList<>();
-      line++;
-    } else if (c == '\r') {
-      throw new IllegalStateException(path + ":" + line
-          + ": carriage return - the document is LF-terminated");
-    } else {
-      field.append(c);
-    }
-  }
-  if (inQuotes) {
-    throw new IllegalStateException(path + ":" + line + ": unterminated quoted field");
-  }
-  if (field.length() != 0 || !row.isEmpty()) {
-    throw new IllegalStateException(path + ":" + line
-        + ": the last line has no terminating newline");
-  }
-  return rows;
-}
-
-/**
- * Reads the committed document, refusing anything that is not US-ASCII.
- *
- * The document is an INPUT here (see the section banner): columns 3-5 are
- * human decisions, so an absent file is a stop rather than a reason to emit
- * empty mappings, and the message says how to get it back.
- */
-String readCommittedMapping(Path path) throws IOException {
-  if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-    throw new IllegalStateException("the committed test mapping is missing: " + path
-        + " - its scala_spec / scala_test_name / status columns are mapping decisions that cannot"
-        + " be derived from the Java sources, so a capture cannot rebuild the document without"
-        + " them; restore the file (git checkout -- " + OUTPUT_JAVA_TEST_MAPPING + ") and re-run");
-  }
-  byte[] bytes = Files.readAllBytes(path);
-  for (int i = 0; i < bytes.length; i++) {
-    if (bytes[i] < 0) {
-      throw new IllegalStateException(path + ": byte " + (bytes[i] & 0xff) + " at offset " + i
-          + " is not US-ASCII, which this document is required to be");
-    }
-  }
-  return new String(bytes, StandardCharsets.US_ASCII);
-}
-
-/** The (class, method) key columns 3-5 are looked up under. */
-String mappingKey(String className, String methodKey) {
-  return className + "\u0000" + methodKey;
-}
-
-/** The first line at which two documents differ, 1-based, or 0 if they agree. */
-int firstDifferingLine(String left, String right) {
-  String[] leftLines = left.split("\n", -1);
-  String[] rightLines = right.split("\n", -1);
-  int lines = Math.min(leftLines.length, rightLines.length);
-  for (int i = 0; i < lines; i++) {
-    if (!leftLines[i].equals(rightLines[i])) {
-      return i + 1;
-    }
-  }
-  return leftLines.length == rightLines.length ? 0 : lines + 1;
-}
-
-/** True when no field holds a line break. */
-boolean noNewlineInAnyField(List<String> fields) {
-  for (String field : fields) {
-    if (field.indexOf('\n') >= 0 || field.indexOf('\r') >= 0) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** One 1-based line of a document, for a diagnostic; "" past the end. */
-String documentLine(String document, int line) {
-  if (line <= 0) {
-    return "";
-  }
-  String[] lines = document.split("\n", -1);
-  return line <= lines.length ? lines[line - 1] : "";
-}
-
-/** True when `values` holds `value`. */
-boolean contains(String[] values, String value) {
-  for (String candidate : values) {
-    if (candidate.equals(value)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Rebuilds `java-test-mapping.csv` from the Java sources and the committed
- * mapping decisions, checking both against each other on the way.
- *
- * The order of work matters for the diagnostics: the committed document is
- * parsed and its rows are checked for shape and taxonomy FIRST, so that a
- * malformed status is reported as itself rather than as a downstream document
- * difference; then the Java sources are scanned and each scanned method is
- * paired with its row; then what is left over on either side is reported row
- * by row; then the aggregate counts; and only last the byte comparison, which
- * is the check that catches anything the specific ones do not.
- */
-String buildJavaTestMapping() throws IOException {
-  Path repository = repositoryRoot();
-  Path committedPath = repository.resolve(OUTPUT_JAVA_TEST_MAPPING);
-  String committed = readCommittedMapping(committedPath);
-  List<List<String>> parsed = parseMappingCsv(committed, committedPath);
-  if (parsed.isEmpty()) {
-    throw new IllegalStateException(committedPath + " is empty");
-  }
-  CHECK.checkEquals(FX_TEST_MAPPING, "header", MAPPING_HEADER, String.join(",", parsed.get(0)));
-
-  // --- The committed rows: shape, taxonomy, and the decisions to re-emit.
-  Map<String, String[]> decisions = new LinkedHashMap<>();
-  Map<String, Integer> decisionLines = new LinkedHashMap<>();
-  Set<String> unusedKeys = new LinkedHashSet<>();
-  int ported = 0;
-  int consolidated = 0;
-  int partial = 0;
-  int dropped = 0;
-  int unmappedRows = 0;
-  int duplicates = 0;
-  Set<String> specs = new TreeSet<>();
-  Set<String> consolidationTargets = new TreeSet<>();
-  for (int i = 1; i < parsed.size(); i++) {
-    List<String> fields = parsed.get(i);
-    // Row index and physical line coincide because no field may hold a line
-    // break - which is itself checked below, so the diagnostics cannot drift.
-    int line = i + 1;
-    String where = "line " + line;
-    if (fields.size() != MAPPING_COLUMNS.length) {
-      CHECK.fail(FX_TEST_MAPPING, where, "expected " + MAPPING_COLUMNS.length + " fields ("
-          + MAPPING_HEADER + "), found " + fields.size());
-      continue;
-    }
-    CHECK.checkTrue(FX_TEST_MAPPING, where, noNewlineInAnyField(fields),
-        "a field contains a line break, which this document's one-row-per-line form forbids");
-    String className = fields.get(0);
-    String methodKey = fields.get(1);
-    String spec = fields.get(2);
-    String testName = fields.get(3);
-    String status = fields.get(4);
-    String key = mappingKey(className, methodKey);
-    if (decisions.containsKey(key)) {
-      duplicates++;
-      CHECK.fail(FX_TEST_MAPPING, where, "duplicate row for " + className + "." + methodKey
-          + ", first seen at line " + decisionLines.get(key));
-      continue;
-    }
-    decisions.put(key, new String[] {spec, testName, status});
-    decisionLines.put(key, Integer.valueOf(line));
-    unusedKeys.add(key);
-    specs.add(spec);
-    String statusName = status.contains(":") ? status.substring(0, status.indexOf(':')) : status;
-    String reason = status.contains(":") ? status.substring(status.indexOf(':') + 1) : "";
-    boolean mappedStatus = statusName.equals(MAPPING_STATUS_PORTED)
-        || statusName.equals(MAPPING_STATUS_CONSOLIDATED);
-    boolean knownStatus = mappedStatus
-        || statusName.equals(MAPPING_STATUS_PARTIAL)
-        || statusName.equals(MAPPING_STATUS_DROPPED);
-    boolean reasonRequired = !statusName.equals(MAPPING_STATUS_PORTED);
-    CHECK.checkTrue(FX_TEST_MAPPING, where,
-        knownStatus && (reasonRequired ? !reason.isEmpty() : !status.contains(":")),
-        "status `" + status + "` is outside the taxonomy (ported, consolidated:<target>,"
-            + " partial:<reason>, dropped:<reason>)");
-    if (mappedStatus) {
-      CHECK.checkTrue(FX_TEST_MAPPING, where, !spec.isEmpty() && !testName.isEmpty(),
-          "a `" + statusName + "` row must name both a scala_spec and a scala_test_name, and this"
-              + " one has scala_spec=`" + spec + "` scala_test_name=`" + testName + "`");
-    } else if (knownStatus) {
-      CHECK.checkTrue(FX_TEST_MAPPING, where, spec.isEmpty() && testName.isEmpty(),
-          "a `" + statusName + "` row must leave scala_spec and scala_test_name empty, and this"
-              + " one has scala_spec=`" + spec + "` scala_test_name=`" + testName + "`");
-    }
-    if (statusName.equals(MAPPING_STATUS_PORTED)) {
-      ported++;
-    } else if (statusName.equals(MAPPING_STATUS_CONSOLIDATED)) {
-      consolidated++;
-      consolidationTargets.add(reason);
-    } else if (statusName.equals(MAPPING_STATUS_PARTIAL)) {
-      partial++;
-      CHECK.checkTrue(FX_TEST_MAPPING, where, contains(MAPPING_PARTIAL_CLASSES, className),
-          "`partial` is reserved for the collect helpers strata-basics does not use ("
-              + String.join(", ", MAPPING_PARTIAL_CLASSES) + "), so " + className + " may not use"
-              + " it");
-    } else if (statusName.equals(MAPPING_STATUS_DROPPED)) {
-      dropped++;
-      boolean allowed = contains(MAPPING_DROPPED_CLASSES, className)
-          || (className.equals(MAPPING_DROPPED_LEGACY_CLASS)
-              && methodKey.equals(MAPPING_DROPPED_LEGACY_METHOD));
-      CHECK.checkTrue(FX_TEST_MAPPING, where, allowed,
-          "`dropped` is reserved for the tests excluded with their subjects in 0.2.2 ("
-              + String.join(", ", MAPPING_DROPPED_CLASSES) + ", plus "
-              + MAPPING_DROPPED_LEGACY_CLASS + "." + MAPPING_DROPPED_LEGACY_METHOD + "), so "
-              + className + "." + methodKey + " may not use it");
-    }
-    if (spec.isEmpty() && testName.isEmpty()) {
-      unmappedRows++;
-    }
-  }
-
-  // --- The Java sources: the inventory, the methods, and the document.
-  Map<String, Path> inventory = javaTestClassInventory();
-  StringBuilder document = new StringBuilder(MAPPING_HEADER).append('\n');
-  int rows = 0;
-  int basicsMethods = 0;
-  int collectMethods = 0;
-  int missingRows = 0;
-  for (Map.Entry<String, Path> classEntry : inventory.entrySet()) {
-    String className = classEntry.getKey();
-    List<JavaTestMethod> methods =
-        javaTestMethods(className, readSourceFile(classEntry.getValue()));
-    // A name that occurs twice in one class is an overload, and BOTH of its
-    // rows carry the signature - a bare name would be ambiguous for either.
-    Map<String, Integer> nameCounts = new LinkedHashMap<>();
-    for (JavaTestMethod method : methods) {
-      Integer seen = nameCounts.get(method.name);
-      nameCounts.put(method.name, Integer.valueOf(seen == null ? 1 : seen.intValue() + 1));
-    }
-    for (JavaTestMethod method : methods) {
-      String methodKey =
-          nameCounts.get(method.name).intValue() == 1 ? method.name : method.signature();
-      String key = mappingKey(className, methodKey);
-      String[] decision = decisions.get(key);
-      unusedKeys.remove(key);
-      CHECK.countRow(FX_TEST_MAPPING);
-      rows++;
-      if (className.startsWith(MAPPING_COLLECT_PACKAGE + ".")) {
-        collectMethods++;
-      } else {
-        basicsMethods++;
-      }
-      CHECK.checkTrue(FX_TEST_MAPPING, className + "." + methodKey, decision != null,
-          "this Java test method has no row in " + OUTPUT_JAVA_TEST_MAPPING + ", so it is outside"
-              + " the port's traceability - add a row for it with the decision that covers it");
-      if (decision == null) {
-        missingRows++;
-        continue;
-      }
-      document.append(csvField(className)).append(',')
-          .append(csvField(methodKey)).append(',')
-          .append(csvField(decision[0])).append(',')
-          .append(csvField(decision[1])).append(',')
-          .append(csvField(decision[2])).append('\n');
-    }
-  }
-  for (String orphan : unusedKeys) {
-    int separator = orphan.indexOf('\u0000');
-    CHECK.fail(FX_TEST_MAPPING, "line " + decisionLines.get(orphan),
-        "no Java test method matches " + orphan.substring(0, separator) + "."
-            + orphan.substring(separator + 1) + " - the row names a method that no longer exists"
-            + " (a rename needs the row renamed, a deletion needs the row deleted)");
-  }
-
-  // --- The counts, every one of them independently verified.
-  CHECK.checkCount(FX_TEST_MAPPING, "Java test methods with no mapping row", 0, missingRows);
-  CHECK.checkCount(FX_TEST_MAPPING, "mapping rows with no Java test method", 0, unusedKeys.size());
-  CHECK.checkCount(FX_TEST_MAPPING, "duplicate (class, method) rows", 0, duplicates);
-  CHECK.checkCount(FX_TEST_MAPPING, "basics test methods", MAPPING_EXPECTED_BASICS_METHODS,
-      basicsMethods);
-  CHECK.checkCount(FX_TEST_MAPPING, "mapped collect test methods",
-      MAPPING_EXPECTED_COLLECT_METHODS, collectMethods);
-  CHECK.checkCount(FX_TEST_MAPPING, "mapping rows", MAPPING_EXPECTED_ROWS, rows);
-  CHECK.checkCount(FX_TEST_MAPPING, "committed mapping rows", MAPPING_EXPECTED_ROWS,
-      parsed.size() - 1);
-  CHECK.checkCount(FX_TEST_MAPPING, "`ported` rows", MAPPING_EXPECTED_PORTED, ported);
-  CHECK.checkCount(FX_TEST_MAPPING, "`consolidated` rows", MAPPING_EXPECTED_CONSOLIDATED,
-      consolidated);
-  CHECK.checkCount(FX_TEST_MAPPING, "`partial` rows", MAPPING_EXPECTED_PARTIAL, partial);
-  CHECK.checkCount(FX_TEST_MAPPING, "`dropped` rows", MAPPING_EXPECTED_DROPPED, dropped);
-  CHECK.checkCount(FX_TEST_MAPPING, "rows with both mapping columns empty",
-      MAPPING_EXPECTED_UNMAPPED_ROWS, unmappedRows);
-  // Two readings of one set, because both are quoted in the audit trail: the
-  // distinct spec NAMES, and the number of distinct values the column takes
-  // (the same set plus the empty string the 137 unmapped rows carry).
-  CHECK.checkCount(FX_TEST_MAPPING, "distinct non-empty scala_spec values",
-      MAPPING_EXPECTED_DISTINCT_SPECS, specs.contains("") ? specs.size() - 1 : specs.size());
-  CHECK.checkCount(FX_TEST_MAPPING, "distinct scala_spec values including the empty one",
-      MAPPING_EXPECTED_SPEC_VALUES, specs.size());
-  CHECK.checkCount(FX_TEST_MAPPING, "consolidation target specs",
-      MAPPING_EXPECTED_CONSOLIDATION_TARGETS, consolidationTargets.size());
-
-  // --- The document itself. This is the check that catches what the specific
-  // --- ones cannot: a transposed row, an edited spec name, a lost quote.
-  String rebuilt = document.toString();
-  int differingLine = firstDifferingLine(rebuilt, committed);
-  boolean identical = differingLine == 0;
-  // The diagnostic is built only when it is needed: quoting a line of a
-  // 316 KB document means splitting it, and a passing run should not pay for
-  // a message nobody reads.
-  CHECK.checkTrue(FX_TEST_MAPPING, "document", identical, identical ? ""
-      : "the document rebuilt from the Java sources differs from the committed "
-          + OUTPUT_JAVA_TEST_MAPPING + " at line " + differingLine + ": rebuilt `"
-          + documentLine(rebuilt, differingLine) + "` committed `"
-          + documentLine(committed, differingLine) + "`");
-  for (int i = 0; i < rebuilt.length(); i++) {
-    if (rebuilt.charAt(i) > 127) {
-      CHECK.fail(FX_TEST_MAPPING, "document", "character " + (int) rebuilt.charAt(i)
-          + " at offset " + i + " is not US-ASCII, which this document is required to be");
-      break;
-    }
-  }
-  return rebuilt;
-}
-
-/* ===========================================================================
- * SECTION 15 - THE DRIVER
- *
- * All eight documents are built in memory, every self-check runs, and only
+ * All seven documents are built in memory, every self-check runs, and only
  * then is anything written - so a failed run cannot leave a half-valid fixture
  * on disk.
+ *
+ * The whole capture runs under ONE EXCLUSIVE LOCK on the output root, taken
+ * before the first path is validated and released only after publication and
+ * cleanup have finished; see `acquireOutputLock` and the `finally` of `capture`.
  *
  * `CAPTURE_COMPLETED` is not redundant with `CHECK.ok()`. A JShell snippet
  * that fails to COMPILE is reported and skipped, and calling the method it
@@ -11160,54 +10524,51 @@ void capture() throws Throwable {
   System.out.println("capture-baseline.jsh - Java parity baseline capture");
   System.out.println("  java.version    = " + System.getProperty("java.version"));
   System.out.println("  output root     = " + Paths.get(OUT_ROOT).toAbsolutePath().normalize());
-  // Resolved HERE rather than where Section 14 first needs it, which is after
-  // every fixture has been built: `parity.repo.dir` is an input precondition,
-  // and a wrong working directory has to be reported in the second before the
-  // work rather than in the minute after it.
-  System.out.println("  repository      = " + repositoryRoot());
   System.out.println("  random seed     = " + RANDOM_SEED);
   System.out.println();
 
-  System.out.println("building daycount-baseline.json ...");
-  stageDocument(OUTPUT_DAYCOUNT, buildDayCountFixture());
-  System.out.println("building schedule-baseline.json ...");
-  stageDocument(OUTPUT_SCHEDULE, buildScheduleFixture());
-  System.out.println("building fx-baseline.json ...");
-  stageDocument(OUTPUT_FX, buildFxFixture());
-  System.out.println("building currency-math-baseline.json ...");
-  stageDocument(OUTPUT_CURRENCY_MATH, buildCurrencyMathFixture());
-  System.out.println("building holiday-baseline.json ...");
-  // One row per line: see Jn.writeCompact for why this document alone.
-  stageRowsPerLineDocument(OUTPUT_HOLIDAY, buildHolidayFixture());
-  System.out.println("building double-array-baseline.json ...");
-  stageDocument(OUTPUT_DOUBLE_ARRAY, buildDoubleArrayFixture());
-  System.out.println("building reference-data-manifest.json ...");
-  stageDocument(OUTPUT_MANIFEST, buildManifest());
-  // The manifest is one document rather than a row array, so it contributes a
-  // single row to the summary - reporting 0 would read like a failure.
-  CHECK.countRow(FX_MANIFEST);
-  System.out.println("building java-test-mapping.csv ...");
-  // The eighth document is derived from the Java TEST sources rather than
-  // from the Java implementation, and it counts its own rows as it emits
-  // them; see Section 14 for why its mapping columns are read back from the
-  // committed document rather than generated.
-  stageTextDocument(OUTPUT_JAVA_TEST_MAPPING, buildJavaTestMapping());
+  // The lock is taken HERE, before the first `stageDocument` - which is the
+  // first call that validates a path and creates a directory under the output
+  // root - and released in this method's `finally` after publication and cleanup.
+  acquireOutputLock();
+  try {
+    System.out.println("building daycount-baseline.json ...");
+    stageDocument(OUTPUT_DAYCOUNT, buildDayCountFixture());
+    System.out.println("building schedule-baseline.json ...");
+    stageDocument(OUTPUT_SCHEDULE, buildScheduleFixture());
+    System.out.println("building fx-baseline.json ...");
+    stageDocument(OUTPUT_FX, buildFxFixture());
+    System.out.println("building currency-math-baseline.json ...");
+    stageDocument(OUTPUT_CURRENCY_MATH, buildCurrencyMathFixture());
+    System.out.println("building holiday-baseline.json ...");
+    // One row per line: see Jn.writeCompact for why this document alone.
+    stageRowsPerLineDocument(OUTPUT_HOLIDAY, buildHolidayFixture());
+    System.out.println("building double-array-baseline.json ...");
+    stageDocument(OUTPUT_DOUBLE_ARRAY, buildDoubleArrayFixture());
+    System.out.println("building reference-data-manifest.json ...");
+    stageDocument(OUTPUT_MANIFEST, buildManifest());
+    // The manifest is one document rather than a row array, so it contributes a
+    // single row to the summary - reporting 0 would read like a failure.
+    CHECK.countRow(FX_MANIFEST);
 
-  CHECK.printSummary();
+    CHECK.printSummary();
 
-  if (!CHECK.ok()) {
-    CHECK.printFailures();
+    if (!CHECK.ok()) {
+      CHECK.printFailures();
+      System.out.println();
+      System.out.println("ABORTED: " + CHECK.failures.size()
+          + " check(s) failed, so no file was written.");
+      return;
+    }
     System.out.println();
-    System.out.println("ABORTED: " + CHECK.failures.size()
-        + " check(s) failed, so no file was written.");
-    return;
+    System.out.println("all checks passed - writing " + PENDING_DOCUMENTS.size() + " document(s):");
+    flushDocuments();
+    CAPTURE_COMPLETED = true;
+    System.out.println();
+    System.out.println("capture complete.");
+  } finally {
+    releaseOutputLock();
   }
-  System.out.println();
-  System.out.println("all checks passed - writing " + PENDING_DOCUMENTS.size() + " document(s):");
-  flushDocuments();
-  CAPTURE_COMPLETED = true;
-  System.out.println();
-  System.out.println("capture complete.");
 }
 
 try {

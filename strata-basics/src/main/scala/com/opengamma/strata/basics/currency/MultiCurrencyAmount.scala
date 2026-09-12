@@ -20,7 +20,6 @@ import io.circe.Encoder
 import io.circe.generic.semiauto.deriveDecoder
 import io.circe.generic.semiauto.deriveEncoder
 
-import com.opengamma.strata.collect.Collections
 import com.opengamma.strata.collect.FailureOr
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
@@ -209,7 +208,7 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
   def getAmount(currency: Currency): FailureOr[CurrencyAmount] =
     amounts
       .get(currency)
-      .map(amount => MultiCurrencyAmount.currencyAmount(currency, amount))
+      .map(amount => CurrencyAmount.create(currency, amount))
       .toRight(MultiCurrencyAmount.unknownCurrency(currency))
 
   /**
@@ -225,8 +224,7 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
   def getAmountOrZero(currency: Currency): CurrencyAmount =
     amounts
       .get(currency)
-      .fold(CurrencyAmount.zero(currency))(amount =>
-        MultiCurrencyAmount.currencyAmount(currency, amount))
+      .fold(CurrencyAmount.zero(currency))(amount => CurrencyAmount.create(currency, amount))
 
   //-------------------------------------------------------------------------
   /**
@@ -249,7 +247,7 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    *   sum is not one, which requires infinite operands of opposite sign
    */
   def plus(currency: Currency, amountToAdd: Double): MultiCurrencyAmount =
-    plus(MultiCurrencyAmount.currencyAmount(currency, amountToAdd))
+    plus(CurrencyAmount.create(currency, amountToAdd))
 
   /**
    * Returns a copy of this value with the specified amount added.
@@ -257,13 +255,18 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * This is [[plus]] of a currency and a number with the two carried together, and it behaves
    * identically: the currency of the amount is added to or inserted into what this value holds.
    *
+   * One amount arriving changes at most one entry, so this is a single merge into the map this
+   * value holds rather than a traversal of it: the other entries are carried over by the sharing
+   * of the immutable map, and no amount is built for any of them.
+   *
    * @param amountToAdd  the amount to add
    * @return this value with the amount added
    * @throws java.lang.IllegalArgumentException if the sum is not a number, which requires
    *   infinite operands of opposite sign
    */
   def plus(amountToAdd: CurrencyAmount): MultiCurrencyAmount =
-    MultiCurrencyAmount.merged(iterator ++ Iterator.single(amountToAdd))
+    MultiCurrencyAmount.instantiate(
+      MultiCurrencyAmount.mergedAmount(amounts, amountToAdd.currency, amountToAdd.amount))
 
   /**
    * Returns a copy of this value with every amount of the specified value added.
@@ -278,13 +281,19 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * // is [EUR 75, GBP 100, USD 250]
    * }}}
    *
+   * The map this value holds is the accumulator the other value's entries are merged into, which
+   * is what makes each sum `what is held plus what arrives` - the order the implementation being
+   * ported added in - and what keeps the amounts of a currency only one of the two values holds
+   * exactly the numbers they were, since nothing is added to them.
+   *
    * @param amountToAdd  the value whose amounts are to be added
    * @return this value with the other value's amounts added
    * @throws java.lang.IllegalArgumentException if any sum is not a number, which requires
    *   infinite operands of opposite sign
    */
   def plus(amountToAdd: MultiCurrencyAmount): MultiCurrencyAmount =
-    MultiCurrencyAmount.merged(iterator ++ amountToAdd.iterator)
+    MultiCurrencyAmount.instantiate(
+      MultiCurrencyAmount.mergedEntries(amountToAdd.amounts.iterator, amounts))
 
   //-------------------------------------------------------------------------
   /**
@@ -309,7 +318,7 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    *   difference is not one, which requires infinite operands of the same sign
    */
   def minus(currency: Currency, amountToAdd: Double): MultiCurrencyAmount =
-    plus(MultiCurrencyAmount.currencyAmount(currency, -amountToAdd))
+    plus(CurrencyAmount.create(currency, -amountToAdd))
 
   /**
    * Returns a copy of this value with the specified amount subtracted.
@@ -427,11 +436,18 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * The iterator reads the map this value holds, which no operation ever modifies, so it cannot
    * observe a change part-way through a traversal.
    *
+   * Each amount is built as the traversal reaches it, through the construction path
+   * [[CurrencyAmount]] publishes to this package, which performs the very same normalisation and
+   * check as its public factories and allocates exactly the amount it returns. A traversal
+   * therefore allocates one object per amount handed out and nothing besides. The members of this
+   * type that aggregate do not traverse this way at all - they read the numbers of the map
+   * directly, since an amount they would build would only be unwrapped again.
+   *
    * @return the amounts held, in the alphabetical order of their currency codes
    */
   def iterator: Iterator[CurrencyAmount] =
     amounts.iterator.map { case (currency, amount) =>
-      MultiCurrencyAmount.currencyAmount(currency, amount)
+      CurrencyAmount.create(currency, amount)
     }
 
   //-------------------------------------------------------------------------
@@ -460,8 +476,18 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * Floating point addition is order-sensitive, so stating the order is what makes this total
    * reproducible and what lets it be compared against a captured baseline.
    *
+   * The second branch is a single traversal of the map, carrying the total as a number from one
+   * amount to the next: each amount is converted and added where it is read, so nothing between
+   * the map and the result is held - neither a collection of the entries nor one of the converted
+   * numbers, which is what the implementation being ported also avoided by keeping a running
+   * total. The total is the number an amount is finally built from through
+   * [[CurrencyAmount.of]], so a total that is not a number is reported rather than raised: it can
+   * only arise from rates and amounts a caller supplied.
+   *
    * A single unavailable rate fails the whole conversion, carrying the failure the provider
    * reported, and no later rate is asked for - a partial total would be a number with no meaning.
+   * The traversal returns at the amount whose rate was refused, so the number of lookups a failing
+   * conversion costs is the number of amounts up to and including that one.
    *
    * @param resultCurrency  the currency to convert every amount into
    * @param rateProvider  the provider of FX rates
@@ -473,14 +499,9 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
       rateProvider: FxRateProvider): FailureOr[CurrencyAmount] =
     if (amounts.size == 1) {
       val (currency, amount) = amounts.head
-      MultiCurrencyAmount.currencyAmount(currency, amount).convertedTo(resultCurrency, rateProvider)
+      CurrencyAmount.create(currency, amount).convertedTo(resultCurrency, rateProvider)
     } else {
-      amounts.toList
-        .traverse { case (currency, amount) =>
-          rateProvider.convert(amount, currency, resultCurrency)
-        }
-        .flatMap(converted =>
-          CurrencyAmount.of(resultCurrency, converted.foldLeft(0d)((total, next) => total + next)))
+      MultiCurrencyAmount.totalConverted(amounts.iterator, resultCurrency, rateProvider, 0d)
     }
 
   //-------------------------------------------------------------------------
@@ -567,6 +588,12 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
  * generated `apply` or `copy` is available, and the type is sealed, so a value holding the same
  * currency twice, an amount that is not a number, or a negative zero cannot be built.
  *
+ * One route is visible to the currency package rather than to this file alone - [[create]], which
+ * builds a value from a map of currency to number and applies the invariant of an amount to every
+ * number it is given. It is what [[MultiCurrencyAmountArray]] reconstructs a single scenario
+ * through, and it is not part of the published API of the module. The trusted instantiation behind
+ * it stays private to this file, so the checks cannot be stepped around from anywhere.
+ *
  * @see [[MultiCurrencyAmount]] for the type itself, the difference between [[of]] and [[total]],
  *   and the two documented limitations of [[monoid]]
  */
@@ -591,6 +618,18 @@ object MultiCurrencyAmount {
    */
   private val currencyAmountOrdering: Ordering[CurrencyAmount] = Order[CurrencyAmount].toOrdering
 
+  /**
+   * The empty map every assembly in this file starts from.
+   *
+   * It is held rather than built at each use for the reason any empty immutable collection is:
+   * there is exactly one of it, it is shared by every accumulation, and building it again would
+   * only construct the same value. It also fixes the ordering of every map this type holds at one
+   * place - the ordering above - so an accumulator and the map it grows into cannot be ordered
+   * differently.
+   */
+  private val noAmounts: SortedMap[Currency, Double] =
+    SortedMap.empty[Currency, Double](currencyOrdering)
+
   //-------------------------------------------------------------------------
   /**
    * The value that holds no amount at all.
@@ -601,7 +640,7 @@ object MultiCurrencyAmount {
    *
    * @return the value holding no amounts
    */
-  val empty: MultiCurrencyAmount = create(List.empty[(Currency, Double)])
+  val empty: MultiCurrencyAmount = instantiate(noAmounts)
 
   //-------------------------------------------------------------------------
   /**
@@ -625,7 +664,9 @@ object MultiCurrencyAmount {
    *   an amount
    */
   def of(currency: Currency, amount: Double): FailureOr[MultiCurrencyAmount] =
-    CurrencyAmount.of(currency, amount).map(checked => create(List((checked.currency, checked.amount))))
+    CurrencyAmount
+      .of(currency, amount)
+      .map(checked => instantiate(noAmounts.updated(checked.currency, checked.amount)))
 
   /**
    * Obtains a value from the specified amounts, rejecting a repeated currency.
@@ -672,7 +713,7 @@ object MultiCurrencyAmount {
    *   appeared twice
    */
   def of(amounts: Iterable[CurrencyAmount]): FailureOr[MultiCurrencyAmount] =
-    distinct(amounts.iterator, SortedMap.empty[Currency, Double](currencyOrdering))
+    distinct(amounts.iterator, noAmounts)
 
   /**
    * Obtains a value from the specified map of currency to number.
@@ -748,7 +789,10 @@ object MultiCurrencyAmount {
    * traversed without consuming stack, and the map it threads is an immutable value passed from
    * one step to the next rather than a mutable accumulator. The map is small by nature - it holds
    * at most one entry per currency this library defines - so the path copied by each insertion
-   * costs a constant that no realistic input makes matter.
+   * costs a constant that no realistic input makes matter. That map is the map of the value
+   * returned, handed to [[instantiate]] as it stands: every number in it came out of a
+   * [[CurrencyAmount]], so it is already normalised and already within the invariant, and
+   * re-deciding it would only build a second map to arrive at the same one.
    *
    * @param remaining  the amounts still to be examined
    * @param accumulated  the amounts accepted so far, keyed by currency
@@ -759,7 +803,7 @@ object MultiCurrencyAmount {
       remaining: Iterator[CurrencyAmount],
       accumulated: SortedMap[Currency, Double]): FailureOr[MultiCurrencyAmount] =
     if (!remaining.hasNext) {
-      Right(create(accumulated))
+      Right(instantiate(accumulated))
     } else {
       val next = remaining.next()
       if (accumulated.contains(next.currency)) {
@@ -772,87 +816,239 @@ object MultiCurrencyAmount {
   /**
    * Assembles a value from amounts of any currencies, adding up those of the same currency.
    *
-   * This is the merging aggregation that [[total]], the three [[MultiCurrencyAmount.plus]]
-   * members, the two [[MultiCurrencyAmount.minus]] members that delegate to them and
-   * [[MultiCurrencyAmount.mapCurrencyAmounts]] are all written in terms of, so the way amounts
-   * combine is stated once. It is the collector of the implementation being ported expressed as a
-   * fold: the grouping helper of `strata-collect` is given the currency as the key, the number as
-   * the value, and addition as the combination, and it adds the amount arriving to the amount
-   * accumulated in that order - which is the order that implementation's merge function used and
-   * therefore the order that reproduces its rounding.
+   * This is the merging aggregation that [[total]] and
+   * [[MultiCurrencyAmount.mapCurrencyAmounts]] are written in terms of, so the way a collection of
+   * amounts combines is stated once. It is the collector of the implementation being ported
+   * expressed as a fold: [[mergedAmounts]] threads one map through the collection and
+   * [[instantiate]] takes that very map as the map of the value returned, so an aggregation of any
+   * number of amounts builds exactly one map and no intermediate amount.
    *
    * @param amounts  the amounts to combine, of any currencies, consumed once
    * @return the value holding the total per currency
    * @throws java.lang.IllegalArgumentException if any total is not a number
    */
   private def merged(amounts: IterableOnce[CurrencyAmount]): MultiCurrencyAmount =
-    create(
-      Collections.toSortedMap[CurrencyAmount, Currency, Double](
-        amounts,
-        amount => amount.currency,
-        amount => amount.amount,
-        // the parameter types are written out because the member is overloaded on its arity, and
-        // an overloaded call is resolved before the types of its function arguments are inferred
-        (accumulated: Double, arriving: Double) => accumulated + arriving))
+    instantiate(mergedAmounts(amounts.iterator, noAmounts))
 
   /**
-   * Creates a value, normalising and checking every amount, which every route funnels through.
+   * Merges the amounts of a collection into an accumulated map, adding up a repeated currency.
    *
-   * This is the only instantiation of the type and it is private, so the factories above and the
-   * arithmetic of the type are the only ways into it. It is what keeps that arithmetic total in
-   * signature while the invariant of an amount still holds: a caller adding ordinary amounts
-   * cannot reach the check, and a caller combining infinities reaches it and is told so.
+   * The amounts arrive as an iterator and are pulled one at a time into [[mergedAmount]], which
+   * is where the combination and the invariant live. The recursion is in tail position and
+   * compiles to a loop, so a collection of any size is aggregated without consuming stack, and
+   * the map it threads is an immutable value handed from one step to the next - the same shape
+   * [[distinct]] uses, for the same reason: the map holds at most one entry per currency this
+   * library defines, so the path each insertion copies is a constant no realistic input makes
+   * matter, and nothing mutable appears in any signature of this type.
    *
-   * The normalisation and the check are not restated here. Each number is routed through
-   * [[currencyAmount]], which is [[CurrencyAmount]] normalising and checking it, so the invariant
-   * of an amount is defined in exactly one place in this library and a value of this type holds
-   * exactly the amounts a collection of [[CurrencyAmount]] could hold. A number that is not an
-   * amount consequently fails here with the message that type reports for it,
+   * @param remaining  the amounts still to be merged
+   * @param accumulated  the total per currency so far
+   * @return the total per currency once the collection is exhausted
+   * @throws java.lang.IllegalArgumentException if any total is not a number
+   */
+  @tailrec
+  private def mergedAmounts(
+      remaining: Iterator[CurrencyAmount],
+      accumulated: SortedMap[Currency, Double]): SortedMap[Currency, Double] =
+    if (!remaining.hasNext) {
+      accumulated
+    } else {
+      val arriving = remaining.next()
+      mergedAmounts(remaining, mergedAmount(accumulated, arriving.currency, arriving.amount))
+    }
+
+  /**
+   * Merges the entries of a map of currency to number into an accumulated map.
+   *
+   * This is [[mergedAmounts]] over the raw entries of a value of this type rather than over
+   * amounts, and it exists so that aggregating whole values - [[MultiCurrencyAmount.plus]] of a
+   * value, and `combineAll` of the additive instance - reads the numbers those values hold
+   * directly. Building a [[CurrencyAmount]] per entry only to unwrap it again would allocate two
+   * objects for every entry of every input before any addition happened, which is what the
+   * flattening of this type's aggregate used to do.
+   *
+   * The entries are expected to come from a value of this type, so each number is already an
+   * amount and each map already names its currencies once; what a repeated currency across
+   * several inputs means is decided by [[mergedAmount]], exactly as it is for a collection of
+   * amounts.
+   *
+   * @param remaining  the entries still to be merged
+   * @param accumulated  the total per currency so far
+   * @return the total per currency once the entries are exhausted
+   * @throws java.lang.IllegalArgumentException if any total is not a number
+   */
+  @tailrec
+  private def mergedEntries(
+      remaining: Iterator[(Currency, Double)],
+      accumulated: SortedMap[Currency, Double]): SortedMap[Currency, Double] =
+    if (!remaining.hasNext) {
+      accumulated
+    } else {
+      val (currency, amount) = remaining.next()
+      mergedEntries(remaining, mergedAmount(accumulated, currency, amount))
+    }
+
+  /**
+   * Merges one currency and number into an accumulated map, adding to what is held for it.
+   *
+   * This is the single step every merging route of this type is built from - the two loops above,
+   * and [[MultiCurrencyAmount.plus]] of a single amount, which is one step and nothing else - so
+   * the way two amounts of one currency combine is written once:
+   *
+   *   - a currency the map does not hold is inserted with the number as it stands. The number
+   *     arrived as the amount of a [[CurrencyAmount]] or out of the map of a value of this type,
+   *     so it has already been normalised and already satisfies the invariant, and deciding it
+   *     again would change nothing;
+   *   - a currency the map holds is given `accumulated + arriving`, in that operand order. It is
+   *     the order the merge function of the implementation being ported used, and the order
+   *     matters: floating point addition rounds, so the reverse order can differ in the last bit,
+   *     and the captured parity baseline of this port records the numbers this order produces.
+   *
+   * The sum is the one number here that has not been decided yet - two infinities of opposite sign
+   * add to a value that is not a number - so it is routed through the number-level form of the
+   * invariant that [[CurrencyAmount]] publishes to this package, which normalises the number and
+   * refuses one that is not an amount without building an amount around it. That keeps the
+   * invariant of an amount defined in exactly one place in this library rather than restated here,
+   * which is the whole reason the sum is not simply written into the map: an amount that could not
+   * exist must not be reachable through an aggregate either. Nothing is allocated for the check,
+   * so a step of this aggregation costs the entry of the map and nothing else.
+   *
+   * @param accumulated  the total per currency so far
+   * @param currency  the currency of the number arriving
+   * @param amount  the number arriving, already normalised and within the invariant
+   * @return the map with the number merged into it
+   * @throws java.lang.IllegalArgumentException if the total is not a number
+   */
+  private def mergedAmount(
+      accumulated: SortedMap[Currency, Double],
+      currency: Currency,
+      amount: Double): SortedMap[Currency, Double] =
+    accumulated.updated(
+      currency,
+      accumulated
+        .get(currency)
+        // the sum is the one number here that has not been decided yet, so it is the one the
+        // invariant is applied to - through the number-level form of it, which decides the
+        // number without building an amount around it only to read the number back out
+        .fold(amount)(held => CurrencyAmount.checkedAmount(held + amount)))
+
+  /**
+   * Creates a value from a map of currency to number, normalising and checking every number.
+   *
+   * This is the route into the type for numbers that have not been decided yet, and it is the one
+   * the currency package may call. [[MultiCurrencyAmount.mapAmounts]] reaches it because the
+   * operation it applies may produce a value that is no amount, and
+   * [[MultiCurrencyAmountArray]] reaches it because reconstructing one scenario of a run means
+   * building a value from numbers it holds in primitive arrays - which it can do without
+   * assembling a [[CurrencyAmount]] per currency only to have this method unwrap it again.
+   *
+   * The contract a caller takes on is that the entries name '''distinct''' currencies, and that
+   * the numbers are meant as amounts. Neither is weakened here: two entries of one currency would
+   * silently lose the first, which is why the requirement is stated rather than checked - a
+   * caller reading a map, transposing a run, or mapping the amounts of an existing value has each
+   * established it by construction - and the invariant of an amount is still applied to every
+   * number, so a caller cannot smuggle a value that is not a number past it. A number that is not
+   * an amount fails here with the message [[CurrencyAmount]] reports for it,
    * `Argument 'amount' must not be NaN`, which is the message the implementation being ported
    * reported from the same check.
    *
-   * The entries must name distinct currencies. Each caller establishes that in its own way -
-   * [[distinct]] by refusing a repeat, [[merged]] by adding repeats together, and
-   * [[MultiCurrencyAmount.mapAmounts]] by leaving the currencies of an existing value untouched -
-   * and nothing outside this file can call this method, so the requirement cannot be violated
-   * from elsewhere.
+   * Exactly one map is built: the entries are normalised as they are read and the result is the
+   * map of the value returned. The normalisation and the check are not restated - each number goes
+   * through the number-level form of the invariant that [[CurrencyAmount]] publishes to this
+   * package, so the invariant of an amount is defined in one place in this library and a value of
+   * this type holds exactly the amounts a collection of [[CurrencyAmount]] could hold, while
+   * nothing is allocated per entry beyond the entry itself.
    *
    * @param entries  the amount per currency, naming each currency at most once
    * @return the value holding those amounts, normalised
    * @throws java.lang.IllegalArgumentException if any amount is not a number
    */
-  private def create(entries: IterableOnce[(Currency, Double)]): MultiCurrencyAmount =
-    new MultiCurrencyAmount(
+  private[currency] def create(entries: IterableOnce[(Currency, Double)]): MultiCurrencyAmount =
+    instantiate(
+      // one map is built, and each number is decided as it goes into it by the number-level form
+      // of the invariant of an amount: building an amount per entry and reading its number back
+      // would allocate an object per entry that nothing keeps
       SortedMap.from(entries.iterator.map { case (currency, amount) =>
-        (currency, currencyAmount(currency, amount).amount)
-      })(currencyOrdering)) {}
+        (currency, CurrencyAmount.checkedAmount(amount))
+      })(currencyOrdering))
 
   /**
-   * Turns a currency and a number into the amount of that currency, normalising and checking it.
+   * Instantiates the type from a map that already holds what a value of it holds.
    *
-   * This is [[CurrencyAmount]] doing both jobs rather than this file doing either: adding the
-   * number to a zero amount of the currency applies the normalisation of that type - `-0.0` loses
-   * its sign while every other value, the infinities included, is left exactly as it was - and
-   * reaches its check, which refuses a value that is not a number. The implementation being ported
-   * normalised and checked with the same addition, in the constructor of that type, and this
-   * routes through that constructor instead of restating it.
+   * This is the only instantiation of the type, and it is the trusted one: it performs no
+   * normalisation and no check, because its argument is required to be a map that a value of this
+   * type could already hold - each currency once, ordered by [[currencyOrdering]], and every
+   * number an amount, which is to say normalised and not a value that is not a number.
    *
-   * It is used for both directions, and neither use needs anything else. [[create]] uses it to
-   * decide a number arriving from outside, and the members that read the map of an existing value -
-   * [[MultiCurrencyAmount.iterator]], [[MultiCurrencyAmount.getAmount]] and
-   * [[MultiCurrencyAmount.getAmountOrZero]] - use it to rebuild an amount that has already been
-   * decided, where it cannot fail and changes nothing. That second use is written through the
-   * total arithmetic of that type rather than through its reporting factory for exactly that
-   * reason: there is nothing left to decide, so there is no failure to report and no caller that
-   * would have to unwrap one.
+   * Every route into the type reaches it, and each establishes that contract in its own way and
+   * says so at its own declaration: [[create]] by normalising and checking each number as it
+   * builds the map, [[distinct]] by accumulating numbers that were already amounts, [[merged]]
+   * and [[mergedAmount]] by doing the same and checking the one number that is new - a sum - as
+   * it is computed, and [[MultiCurrencyAmount.plus]] by merging into the map a value of this type
+   * already holds. The split exists so that an aggregation is one pass: the map it produced is the
+   * map
+   * of the value returned, where routing it through [[create]] would iterate it into a second map
+   * to reach a value it already had. It is private to this file, so no caller outside it can take
+   * the trusted route by mistake - the currency package is offered [[create]], which decides the
+   * numbers it is given.
    *
-   * @param currency  the currency of the amount
-   * @param amount  the number of that currency, normalised and checked here
-   * @return the amount of that currency
-   * @throws java.lang.IllegalArgumentException if the number is not an amount
+   * @param amounts  the amount per currency, each currency once, ordered by currency code, every
+   *   number already an amount
+   * @return the value holding exactly those amounts
    */
-  private def currencyAmount(currency: Currency, amount: Double): CurrencyAmount =
-    CurrencyAmount.zero(currency).plus(amount)
+  private def instantiate(amounts: SortedMap[Currency, Double]): MultiCurrencyAmount =
+    new MultiCurrencyAmount(amounts) {}
+
+  /**
+   * Converts the entries of a value one at a time and totals them, stopping at the first refusal.
+   *
+   * This is the traversal behind the second branch of [[MultiCurrencyAmount.convertedTo]]. It is
+   * written as a recursion over the entries of the map because the two things that decide whether
+   * a conversion is faithful - what the total is added from, and how far the traversal runs before
+   * an unavailable rate settles the outcome - are both properties of the traversal itself.
+   *
+   * The total is carried as a number from one entry to the next, which is what the implementation
+   * being ported did with a running total: the entries arrive in the order the map holds them, the
+   * alphabetical order of the currency codes, and each converted number is added where it is read.
+   * Nothing between the map and the result is built - no collection of the entries, and none of
+   * the converted numbers - and the addition is `what has accumulated plus what arrives`, from
+   * zero, which is the order and the starting point that reproduce the rounding of that
+   * implementation and the numbers of the captured parity baseline.
+   *
+   * A rate the provider cannot supply returns its failure immediately, so no rate after it is
+   * asked for. That is not only a saving: asking for rates a decided outcome does not need would
+   * make the number of lookups a failing conversion costs depend on how many amounts happened to
+   * follow the one that failed.
+   *
+   * The recursion is in tail position and compiles to a loop, so a value holding any number of
+   * currencies converts without consuming stack, and the number it threads is an ordinary
+   * argument rather than a mutable accumulator.
+   *
+   * @param remaining  the entries still to be converted, pulled one at a time
+   * @param resultCurrency  the currency every amount is converted into
+   * @param rateProvider  the provider of FX rates, asked once per entry
+   * @param accumulated  the total of the entries converted so far
+   * @return the total of the converted amounts as an amount of the requested currency, or the
+   *   failure the provider reported for the first rate it could not supply
+   */
+  @tailrec
+  private def totalConverted(
+      remaining: Iterator[(Currency, Double)],
+      resultCurrency: Currency,
+      rateProvider: FxRateProvider,
+      accumulated: Double): FailureOr[CurrencyAmount] =
+    if (!remaining.hasNext) {
+      // the total is decided by CurrencyAmount rather than here: it is built from rates and
+      // amounts a caller supplied, so a total that is no amount is reported and not raised
+      CurrencyAmount.of(resultCurrency, accumulated)
+    } else {
+      val (currency, amount) = remaining.next()
+      rateProvider.convert(amount, currency, resultCurrency) match {
+        case Right(converted) =>
+          totalConverted(remaining, resultCurrency, rateProvider, accumulated + converted)
+        case Left(failure) => Left(failure)
+      }
+    }
 
   /**
    * The failure reported when a collection names one currency twice.
@@ -897,6 +1093,12 @@ object MultiCurrencyAmount {
    * amounts in the order the values arrive - and the pass allocates one result rather than one
    * per value combined.
    *
+   * The pass reads the numbers the values hold, through the raw entries of their maps, rather than
+   * the amounts they would hand out: an amount built per entry would be unwrapped again by the
+   * addition, so aggregating `V` values of `E` entries each would allocate `V × E` objects before
+   * the first addition happened. Nothing about the result changes - the same entries arrive in the
+   * same order - and what reaches the accumulator is exactly what a traversal would have carried.
+   *
    * ===The two documented limitations of its laws===
    *
    * The law suite for this instance restricts its generators to '''finite amounts''' and compares
@@ -927,7 +1129,8 @@ object MultiCurrencyAmount {
       x.plus(y)
 
     override def combineAll(as: IterableOnce[MultiCurrencyAmount]): MultiCurrencyAmount =
-      merged(as.iterator.flatMap(value => value.iterator))
+      instantiate(
+        mergedEntries(as.iterator.flatMap(value => value.amounts.iterator), noAmounts))
   }
 
   /**
@@ -1031,4 +1234,3 @@ object MultiCurrencyAmount {
   implicit val decoder: Decoder[MultiCurrencyAmount] =
     Codecs.checkedDecoder[Raw, MultiCurrencyAmount](raw => of(raw.amounts))(rawDecoder)
 }
-

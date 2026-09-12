@@ -212,15 +212,12 @@ object FloatingRate {
    * interface used for the error it raised in the same situation. The returned type is the
    * same as `collect.FailureOr[FloatingRate]`, spelled out here for readability.
    *
-   * The text the failure names is rendered through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
-   * and its control characters are escaped. A message reaches a log or a report, and the text
-   * handed to this method came from outside the library, so it must not be able to forge a
-   * line of that log or to make the message as large as the input. This narrows the ported
-   * behaviour, which echoed the text unbounded: for any text within the bound and free of
-   * control characters - every name of a floating rate among them - the message is the one the
-   * ported interface produced, character for character, and it is only a longer or a
-   * line-breaking input that is now described rather than reproduced.
+   * The failure names the text as it stands, so the message is the one the ported interface
+   * produced, character for character, and a caller correcting its input is handed the whole of
+   * what was refused. The text came from outside the library, so making it safe to write out
+   * belongs to the writing: the text form of a failure and
+   * [[com.opengamma.strata.collect.result.Failure.show]] bound every part they write and escape
+   * anything a line-oriented reader could act on.
    *
    * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR-BBA`
    * @return the floating rate that the text names, or a failure describing the text that
@@ -228,7 +225,7 @@ object FloatingRate {
    */
   def parse(indexStr: String): Either[Failure, FloatingRate] =
     tryParse(indexStr).toRight(
-      Failure.Parsing(s"Floating rate index not known: ${Failure.describeInput(indexStr)}"))
+      Failure.Parsing(s"Floating rate index not known: $indexStr"))
 
   /**
    * Tries to parse text naming a floating rate, of either kind, answering with nothing when
@@ -267,13 +264,18 @@ object FloatingRate {
    * FloatingRate.tryParseWith(text, FloatingRate.standardLookups.take(3))
    * }}}
    *
+   * The rule is written once for the whole package, in `Index.firstMatch`, and this is the entry
+   * point to it for a caller composing probes of floating rates; the unions of the index
+   * hierarchy - `Index`, `RateIndex` and `FloatingRateIndex`, each over its own
+   * `standardLookups` - reach the same code.
+   *
    * @tparam A  the type of value the probes answer with
    * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR-BBA`
    * @param lookups  the probes to search, in the order they are to be tried
    * @return the value the first matching probe found, or nothing if none of them matched
    */
   def tryParseWith[A](indexStr: String, lookups: Seq[String => Option[A]]): Option[A] =
-    lookups.iterator.map(lookup => lookup(indexStr)).find(_.isDefined).flatten
+    Index.firstMatch(indexStr, lookups)
 
   /**
    * The composition of family probes this library searches, in the order documented above:

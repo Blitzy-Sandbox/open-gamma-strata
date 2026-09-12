@@ -50,10 +50,12 @@ import com.opengamma.strata.basics.date.DayCount
 import com.opengamma.strata.basics.date.DaysAdjustment
 import com.opengamma.strata.basics.date.HolidayCalendar
 import com.opengamma.strata.basics.date.HolidayCalendarId
+import com.opengamma.strata.basics.date.ImmutableHolidayCalendar
 import com.opengamma.strata.basics.date.MarketTenor
 import com.opengamma.strata.basics.date.PeriodAdditionConvention
 import com.opengamma.strata.basics.date.PeriodAdjustment
 import com.opengamma.strata.basics.date.SequenceDate
+import com.opengamma.strata.basics.date.StandardHolidayCalendars
 import com.opengamma.strata.basics.date.Tenor
 import com.opengamma.strata.basics.date.TenorAdjustment
 import com.opengamma.strata.basics.index.FloatingRateName
@@ -73,6 +75,7 @@ import com.opengamma.strata.basics.schedule.RollConvention
 import com.opengamma.strata.basics.schedule.Schedule
 import com.opengamma.strata.basics.schedule.SchedulePeriod
 import com.opengamma.strata.basics.schedule.StubConvention
+import com.opengamma.strata.basics.value.HalfUp
 import com.opengamma.strata.basics.value.Rounding
 import com.opengamma.strata.basics.value.ValueAdjustment
 import com.opengamma.strata.basics.value.ValueAdjustmentType
@@ -82,8 +85,10 @@ import com.opengamma.strata.basics.value.ValueStep
 import com.opengamma.strata.basics.value.ValueStepSequence
 import com.opengamma.strata.collect.Decimal
 import com.opengamma.strata.collect.FixedScaleDecimal
+import com.opengamma.strata.collect.Named
 import com.opengamma.strata.collect.array.DoubleArray
 import com.opengamma.strata.collect.array.DoubleMatrix
+import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 
@@ -119,18 +124,29 @@ import com.opengamma.strata.collect.result.FailureReason
  * ===Coverage===
  *
  * The entries are the complete set of types in `strata-basics` and in the ported subset of
- * `strata-collect` that carry an instance: 28 ordered types, 32 unordered ones and the single
- * additive instance of [[MultiCurrencyAmount]], for 209 instances in all. The counts are
+ * `strata-collect` that carry an instance: 28 ordered types, 35 unordered ones and the single
+ * additive instance of [[MultiCurrencyAmount]], for 218 instances in all. The counts are
  * printed by [[InstanceInventory.report]] and asserted in [[TypeclassLawsSpec]], so a type added
  * to one list and forgotten in the other cannot pass unnoticed.
  *
- * Members of the sealed families do not appear, and cannot: `Hash` and `Show` are invariant, so
- * `Hash[HalfUp]` is not `Hash[Rounding]` and could only be summoned if the member declared an
- * instance of its own. The port declares instances on the family - `Rounding`, `HolidayCalendar`,
- * `DayCount`, `Failure` - which is what "one implicit per type" means for a closed sum, and the
- * generators of [[Arbitraries]] draw the members, so `HalfUp`, `NoRounding`,
- * `ImmutableHolidayCalendar`, the three weekend calendars, `DayCount.Bus252` and every `Failure`
- * case are covered by the family's law suites rather than by suites of their own.
+ * ===Which members of the sealed families appear===
+ *
+ * `Hash` and `Show` are '''invariant''', so `Hash[HalfUp]` is not `Hash[Rounding]`: a member is
+ * served by the family's instance only for a value typed as the family, and a value typed as the
+ * member needs an instance declared at that type. Three members are value types in their own
+ * right in the port's construction inventory - `Rounding.HalfUp` and `DayCount.Bus252` are
+ * validated types and `ImmutableHolidayCalendar` a normalising one - and the inventory requires
+ * `Hash` and `Show` of every validated, normalising, registry-backed, sealed-family and total
+ * type, so each of the three declares the pair at its own type and appears here in its own right.
+ * That is where the 35 unordered types come from: the 32 families and plain products, plus those
+ * three members.
+ *
+ * The other members declare nothing of their own and appear nowhere here, which is equally
+ * deliberate: `NoRounding`, the three weekend calendars, the two calendar compositions and the
+ * ten `Failure` cases are not separate types of the construction inventory - it lists `Rounding`,
+ * `HolidayCalendar` and `Failure` as sealed families and names no member of them beyond the three
+ * above - so each is covered by the law suites of its family, which the generators of
+ * [[Arbitraries]] feed with the members.
  *
  * The types with no instance at all are the ones with no data to compare: the contract and
  * function types (`ReferenceData`, `ReferenceDataId`, `DateAdjuster`, `FxRateProvider`,
@@ -280,6 +296,14 @@ object InstanceInventory {
    * None of these was comparable in the library being ported and no ordering of them means
    * anything - neither of two payments in different currencies is the greater, and two holiday
    * calendars are not ranked - so each carries hashing, equality and a rendering and no more.
+   *
+   * Three of the entries are members of a sealed family rather than a family or a plain product:
+   * `DayCount.Bus252`, `ImmutableHolidayCalendar` and `HalfUp`, each of which is a value type of
+   * the construction inventory in its own right and each of which therefore declares the pair of
+   * instances at its own type, as the invariance of those typeclasses requires. None of the three
+   * is ordered: the ordering their families have is by name for the day counts and absent for the
+   * other two, and a member that is one value among many of its kind - a rounding to four places,
+   * a calendar of one centre - is no more comparable than the family it belongs to.
    */
   val unorderedTypes: List[Summoned] =
     // the root package
@@ -296,7 +320,10 @@ object InstanceInventory {
       hashed[FxRate]("com.opengamma.strata.basics.currency.FxRate") :::
       hashed[FxMatrix]("com.opengamma.strata.basics.currency.FxMatrix") :::
       // date
+      hashed[DayCount.Bus252]("com.opengamma.strata.basics.date.DayCount.Bus252") :::
       hashed[HolidayCalendar]("com.opengamma.strata.basics.date.HolidayCalendar") :::
+      hashed[ImmutableHolidayCalendar](
+        "com.opengamma.strata.basics.date.ImmutableHolidayCalendar") :::
       hashed[BusinessDayAdjustment]("com.opengamma.strata.basics.date.BusinessDayAdjustment") :::
       hashed[AdjustableDate]("com.opengamma.strata.basics.date.AdjustableDate") :::
       hashed[AdjustableDates]("com.opengamma.strata.basics.date.AdjustableDates") :::
@@ -315,6 +342,7 @@ object InstanceInventory {
       hashed[PeriodicSchedule]("com.opengamma.strata.basics.schedule.PeriodicSchedule") :::
       // value
       hashed[Rounding]("com.opengamma.strata.basics.value.Rounding") :::
+      hashed[HalfUp]("com.opengamma.strata.basics.value.HalfUp") :::
       hashed[ValueAdjustment]("com.opengamma.strata.basics.value.ValueAdjustment") :::
       hashed[ValueDerivatives]("com.opengamma.strata.basics.value.ValueDerivatives") :::
       hashed[ValueStep]("com.opengamma.strata.basics.value.ValueStep") :::
@@ -421,7 +449,7 @@ class TypeclassLawsSpec
   /**
    * The property configuration of every rule set and property in this suite.
    *
-   * The inventory is sixty types and the rule sets over them are more than a thousand
+   * The inventory is sixty-three types and the rule sets over them are more than a thousand
    * properties, several of which generate a function as well as its arguments, so the number of
    * cases each property is run at is the one thing in this suite worth choosing carefully. A
    * hundred is ten times the ScalaTest default and was settled by measurement: the whole suite
@@ -546,6 +574,101 @@ class TypeclassLawsSpec
         math.max(math.abs(left), math.abs(right)),
         1.0d)
 
+  /**
+   * The text the `Show` of a [[Failure]] has to begin with, taken from the Java source.
+   *
+   * The Java type being ported rendered a failure as its reason, a colon, a space and its
+   * message, and then a summary of the stack trace it held where it held one
+   * [modules/collect/src/main/java/com/opengamma/strata/collect/result/FailureItem.java:388-389].
+   * This port carries no stack trace, so that third part has no source and cannot appear, which
+   * leaves the reason and the message as the whole of the Java rendering - and this is it,
+   * written from that source and from nothing else.
+   *
+   * @param failure  the failure whose Java rendering is wanted
+   * @return the reason, a colon and the message
+   */
+  private def javaFailureForm(failure: Failure): String =
+    s"${failure.reason.name}: ${failure.message}"
+
+  /**
+   * Asserts the rendering of a [[Failure]], which is the one exception to the `toString` contract.
+   *
+   * Every other type of the inventory renders through `Show` exactly what its own `toString`
+   * renders, so the property registered below compares the two. This type deliberately does not:
+   * the `toString` of each Scala member stays the generated product rendering so that a failure
+   * inspected in a debugger still shows its class and its fields, and its `Show` renders the Java
+   * form instead [strata-collect `result/Failure.scala`, the scaladoc of its `show`].
+   *
+   * '''The rendering of a failure carrying attributes goes beyond the Java form.''' The Java
+   * `toString` above never wrote attributes - in the library being ported the values they hold
+   * were already substituted into the message by the formatter that produced both - while this
+   * port appends them so that a log line holding failures of several kinds stays readable. That
+   * is a divergence of the `strata-collect` instance rather than of this suite, it is recorded in
+   * the resolution report of this checkpoint for the owner of that file, and it is why the
+   * assertions below are split in two: the Java part is asserted '''exactly''', and the appended
+   * part is asserted by its structure.
+   *
+   * The structure is checked by reading the rendering rather than by rebuilding it, which is the
+   * point of writing it this way: an oracle that recomputed the same expression as the instance
+   * would agree with the instance whatever either of them did. What is asserted instead is that
+   * the rendering begins with the Java form; that a failure holding no attributes renders as that
+   * form and nothing more; that every attribute appears once as `key=value`; that the keys appear
+   * in ascending order, which is what makes the rendering a function of the value rather than of
+   * the order attributes were added in; and that the appended part is exactly as long as those
+   * pairs, their separators and the brackets - so a rendering carrying anything further fails.
+   *
+   * @param failure  the failure that was rendered
+   * @param rendered  what the instance under test produced for it
+   * @return the assertion that the rendering is the one the type promises
+   */
+  private def assertFailureRendering(failure: Failure, rendered: String): Assertion = {
+    val javaForm = javaFailureForm(failure)
+    rendered should startWith(javaForm)
+    if (failure.attributes.isEmpty) {
+      rendered shouldBe javaForm
+    } else {
+      val appended = rendered.substring(javaForm.length)
+      appended should startWith(" [")
+      appended should endWith("]")
+      val pairs = failure.attributes.toList.map { case (key, value) => s"$key=$value" }
+      pairs.foreach { pair =>
+        withClue(s"the attribute $pair of $failure is rendered once in $appended: ") {
+          appended.sliding(pair.length).count(window => window == pair) shouldBe 1
+        }
+      }
+      val positions = failure.attributes.keysIterator.map(key => appended.indexOf(s"$key=")).toList
+      withClue(s"the attributes of $failure are rendered in key order in $appended: ") {
+        positions shouldBe positions.sorted
+        positions.distinct.size shouldBe positions.size
+      }
+      // `" ["`, the pairs, `", "` between each two of them, and `"]"`, and nothing else
+      appended.length shouldBe pairs.map(pair => pair.length).sum + 2 * (pairs.size - 1) + 3
+    }
+  }
+
+  /**
+   * The rendering [[CalculationTargetList]] promises, the second exception to `toString`.
+   *
+   * The instance of this type reproduces the rendering of the '''Java''' bean it replaces -
+   * `CalculationTargetList{targets=[a, b]}`, the form Joda-Beans generated from the bean's one
+   * property - while the `toString` of the Scala case class is the generated product rendering
+   * `CalculationTargetList(List(a, b))`. Reproducing the Java text is what the instance inventory
+   * of the port requires of a `Show`, and the instance says so in its own scaladoc
+   * [strata-basics `CalculationTarget.scala`, the `show` of `object CalculationTargetList`].
+   *
+   * The shape is stated here from the Java bean rendering rather than taken from the instance
+   * under test, for the same reason [[assertFailureRendering]] reads its rendering rather than
+   * rebuilding it: an oracle agreeing with the instance by construction asserts nothing. Unlike
+   * that one this shape is the whole of the Java rendering
+   * [modules/basics/src/main/java/com/opengamma/strata/basics/CalculationTargetList.java:128-133],
+   * so it is stated as the text it must equal.
+   *
+   * @param list  the list whose promised rendering is wanted
+   * @return the bean rendering of the list, its targets in order
+   */
+  private def renderedTargetList(list: CalculationTargetList): String =
+    s"CalculationTargetList{targets=[${list.targets.mkString(", ")}]}"
+
   //-------------------------------------------------------------------------
   // the registration of the law suites
   //-------------------------------------------------------------------------
@@ -570,19 +693,34 @@ class TypeclassLawsSpec
    * Registers the law suites of an unordered type, over the generator given.
    *
    * The generator is a parameter rather than an implicit so that a type whose implicit generator
-   * is the wrong one for this suite - [[DoubleArray]] and [[DoubleMatrix]], whose implicit
-   * arbitraries hold finite values only - can be checked over the right one without a second
-   * implicit of the same type being brought into scope, where it would be ambiguous with the
-   * first rather than replacing it.
+   * is the wrong one for this suite - [[DoubleArray]], [[DoubleMatrix]], [[FxRate]] and
+   * [[FxMatrix]], whose implicit arbitraries hold the well-behaved values - can be checked over
+   * the right one without a second implicit of the same type being brought into scope, where it
+   * would be ambiguous with the first rather than replacing it.
+   *
+   * The rendering check is a parameter for the same reason and defaults to comparing against
+   * `toString`, which is the contract of every type of the inventory but two. [[Failure]] and
+   * [[CalculationTargetList]] are those two: each reproduces the rendering of the '''Java''' type
+   * it replaces, which is what the instance inventory of the port asks of a `Show`, while its own
+   * `toString` stays the generated product rendering. Both are registered below with the check
+   * their rendering actually has to pass, stated there with the sources that decide it - a text
+   * to equal where the Java rendering is the whole of it, and a set of properties read off the
+   * rendering where this port appends to it.
    *
    * @param typeName  the name the rule sets and tests are labelled with
    * @param arb  the generator of values
+   * @param rendersAs  the check the rendering of a value has to pass, taking the value and what
+   *   the instance produced for it; by default the rendering must equal `toString`
    * @param cogen  the perturbation of values, needed to generate the functions the laws use
    * @param hash  the hashing and equality instance under test
    * @param show  the rendering instance under test
    * @tparam A  the type whose laws are checked
    */
-  private def unorderedLawsOf[A](typeName: String, arb: Arbitrary[A])(implicit
+  private def unorderedLawsOf[A](
+      typeName: String,
+      arb: Arbitrary[A],
+      rendersAs: (A, String) => Assertion = (value: A, rendered: String) =>
+        rendered shouldBe value.toString)(implicit
       cogen: Cogen[A],
       hash: Hash[A],
       show: Show[A]): Unit = {
@@ -592,14 +730,17 @@ class TypeclassLawsSpec
     test(s"Show renders every $typeName and agrees with its equality") {
       forAll(arb.arbitrary, arb.arbitrary) { (left: A, right: A) =>
         // `cats` states no laws for `Show`, so these are the two properties the port needs of
-        // one: that it renders every value of its type, and that two values its `Eq` calls equal
+        // one: that it renders what the type renders, and that two values its `Eq` calls equal
         // render alike - without which a message about a value would depend on which of two
-        // equal values reached it. Non-emptiness is deliberately not asserted: the empty matrix
-        // renders as the empty string, as the Java original did, which the test at the foot of
-        // this file pins.
-        val rendered = show.show(left)
-        rendered should not be null
-        (!hash.eqv(left, right) || rendered == show.show(right)) shouldBe true
+        // equal values reached it. The first is the contract the port actually promises: the
+        // rendering of a value is the rendering the type being ported wrote, which for all but
+        // two types of this inventory is what `toString` produces, so the check is `rendersAs`
+        // and defaults to that comparison. An instance rendering a constant, or the name of its
+        // class, or one field of two, fails here rather than passing a non-emptiness check.
+        // Non-emptiness is deliberately not what is asserted: the empty matrix renders as the
+        // empty string, as the Java original did, which the test at the foot of this file pins.
+        rendersAs(left, show.show(left))
+        (!hash.eqv(left, right) || show.show(left) == show.show(right)) shouldBe true
       }
     }
   }
@@ -677,7 +818,14 @@ class TypeclassLawsSpec
   //-------------------------------------------------------------------------
   // the law suites of the unordered types, in the order of the inventory
   //-------------------------------------------------------------------------
-  unorderedLaws[CalculationTargetList]("CalculationTargetList")
+  // The first of the two types whose `Show` is deliberately not its `toString`: it reproduces the
+  // rendering of the Java bean, which is what the instance inventory asks of a `Show`, while the
+  // `toString` of the case class stays the generated product rendering. `renderedTargetList`
+  // above states the promised shape and names where the instance documents it.
+  unorderedLawsOf[CalculationTargetList](
+    "CalculationTargetList",
+    arbCalculationTargetList,
+    (list: CalculationTargetList, rendered: String) => rendered shouldBe renderedTargetList(list))
   unorderedLawsOf[ReferenceData.Entry[HolidayCalendar]]("ReferenceData.Entry", arbEntry)
 
   unorderedLaws[CurrencyAmountArray]("CurrencyAmountArray")
@@ -685,10 +833,25 @@ class TypeclassLawsSpec
   unorderedLaws[MultiCurrencyAmountArray]("MultiCurrencyAmountArray")
   unorderedLaws[Payment]("Payment")
   unorderedLaws[AdjustablePayment]("AdjustablePayment")
-  unorderedLaws[FxRate]("FxRate")
-  unorderedLaws[FxMatrix]("FxMatrix")
+  // The two FX types are checked over the edge-value generators rather than over their implicit
+  // arbitraries, which hold strictly positive finite rates: the equality of both is the
+  // bit-pattern equality this file exists to check, and both domains admit values an ordinary
+  // rate generator never reaches. `FxRate.of` passes a rate that is not a number - its check is
+  // `!(rate <= 0.0)` - and accepts a positive infinity, and `FxMatrix.fromMatrix` checks only
+  // distinct currencies, a square shape and a unit diagonal, so a matrix may hold `NaN`, either
+  // infinity, a signed zero and an off-diagonal pair that are not reciprocals of one another.
+  // Those are the values that decide whether these two instances are lawful, so they are the
+  // values the rule sets see.
+  unorderedLawsOf[FxRate]("FxRate", Arbitrary(genEdgeFxRate))
+  unorderedLawsOf[FxMatrix]("FxMatrix", Arbitrary(genEdgeFxMatrix))
 
+  // Two of the three members that declare instances of their own are registered here, each after
+  // the family whose instances it restates at its own type: the calendar-bearing day count, whose
+  // family is ordered and so appears among the ordered rule sets above, and the calendar built
+  // from holiday dates. The third, `HalfUp`, is registered with the value package below.
+  unorderedLaws[DayCount.Bus252]("DayCount.Bus252")
   unorderedLaws[HolidayCalendar]("HolidayCalendar")
+  unorderedLaws[ImmutableHolidayCalendar]("ImmutableHolidayCalendar")
   unorderedLaws[BusinessDayAdjustment]("BusinessDayAdjustment")
   unorderedLaws[AdjustableDate]("AdjustableDate")
   unorderedLaws[AdjustableDates]("AdjustableDates")
@@ -706,6 +869,7 @@ class TypeclassLawsSpec
   unorderedLaws[PeriodicSchedule]("PeriodicSchedule")
 
   unorderedLaws[Rounding]("Rounding")
+  unorderedLaws[HalfUp]("HalfUp")
   unorderedLaws[ValueAdjustment]("ValueAdjustment")
   unorderedLaws[ValueDerivatives]("ValueDerivatives")
   unorderedLaws[ValueStep]("ValueStep")
@@ -719,7 +883,12 @@ class TypeclassLawsSpec
   unorderedLawsOf[DoubleArray]("DoubleArray", Arbitrary(genDoubleArray))
   unorderedLawsOf[DoubleMatrix]("DoubleMatrix", Arbitrary(genDoubleMatrix))
 
-  unorderedLaws[Failure]("Failure")
+  // The second type whose `Show` is not its `toString`, and the one whose rendering this port
+  // extends beyond the Java form: `assertFailureRendering` above asserts the Java part exactly
+  // and reads the appended attributes off the rendering rather than rebuilding them, so the check
+  // cannot agree with the instance by construction. The concrete text of both shapes is pinned by
+  // the test at the foot of this file.
+  unorderedLawsOf[Failure]("Failure", arbFailure, assertFailureRendering)
 
   //-------------------------------------------------------------------------
   // the additive laws of the one type that has them
@@ -753,10 +922,10 @@ class TypeclassLawsSpec
     val allNames = InstanceInventory.summoned.map(_.typeName).distinct
     // the three counts of the inventory, which are the counts the gate reports
     orderedNames should have size 28
-    unorderedNames should have size 32
-    allNames should have size 60
+    unorderedNames should have size 35
+    allNames should have size 63
     // four instances per ordered type, three per unordered one, and the single additive instance
-    InstanceInventory.summoned should have size 209
+    InstanceInventory.summoned should have size 218
     InstanceInventory.additiveTypes should have size 1
     orderedNames.intersect(unorderedNames) shouldBe empty
     // every summon produced an initialised instance. A companion of this port refers to the
@@ -773,15 +942,117 @@ class TypeclassLawsSpec
     } shouldBe empty
     // the report is what the gate copies, so it must not vary between runs
     InstanceInventory.report shouldBe InstanceInventory.report
-    InstanceInventory.report should have size 210
+    InstanceInventory.report should have size 219
     InstanceInventory.report.init.map(_.takeWhile(_ != ' ')).distinct shouldBe
       List(InstanceInventory.LinePrefix)
     InstanceInventory.report.last should startWith(InstanceInventory.SummaryPrefix)
     InstanceInventory.report.init shouldBe InstanceInventory.report.init.sorted
     InstanceInventory.report.foreach(println)
     InstanceInventory.report.last shouldBe
-      s"${InstanceInventory.SummaryPrefix} types=60 instances=209 " +
-      "cats.Eq=60 cats.Hash=60 cats.Monoid=1 cats.Order=28 cats.Show=60"
+      s"${InstanceInventory.SummaryPrefix} types=63 instances=218 " +
+      "cats.Eq=63 cats.Hash=63 cats.Monoid=1 cats.Order=28 cats.Show=63"
+  }
+
+  /**
+   * Asserts that every member of one closed named family renders as its canonical name.
+   *
+   * The rendering of a named type is its name, which is the contract the whole port rests on: a
+   * name is the identity of a member, the key of its JSON form and the text a caller parses back,
+   * so an instance rendering anything else would make the two ways of writing a member disagree.
+   * A family is closed and its members are enumerable, so this is asserted over '''every''' one of
+   * them rather than over the values a generator happens to draw, which costs nothing and leaves
+   * no member unchecked.
+   *
+   * @param typeName  the name of the family, used to say which member failed
+   * @param named  the closed family, which is what makes the members enumerable
+   * @param show  the rendering instance under test
+   * @tparam A  the named family being checked
+   * @return the names of the members checked, so that the caller can count the families
+   */
+  private def namesRenderedBy[A <: Named](typeName: String)(implicit
+      named: NamedEnum[A],
+      show: Show[A]): List[String] = {
+    val members = named.values.toList
+    members.foreach { member =>
+      withClue(s"the $typeName member ${member.name} renders as ${show.show(member)}: ") {
+        show.show(member) shouldBe member.name
+      }
+    }
+    members.map(member => member.name)
+  }
+
+  test("every member of every closed named family renders as its canonical name") {
+    // The property registered for each type above compares its rendering against its `toString`,
+    // which is the contract of a plain product. For the fifteen closed families the contract is
+    // stronger and is stated here: the rendering is the canonical `name`, the form the library
+    // being ported wrote and parsed, and it holds for every member of every family rather than
+    // for the members a generator reached. The families are exactly the ones that publish a
+    // `NamedEnum`, which is what makes their members enumerable; the count is asserted so that a
+    // family added to the port and not added here is a failure rather than a silent omission.
+    val families: List[List[String]] = List(
+      namesRenderedBy[Currency]("Currency"),
+      namesRenderedBy[DayCount]("DayCount"),
+      namesRenderedBy[BusinessDayConvention]("BusinessDayConvention"),
+      namesRenderedBy[PeriodAdditionConvention]("PeriodAdditionConvention"),
+      namesRenderedBy[DateSequence]("DateSequence"),
+      namesRenderedBy[IborIndex]("IborIndex"),
+      namesRenderedBy[OvernightIndex]("OvernightIndex"),
+      namesRenderedBy[PriceIndex]("PriceIndex"),
+      namesRenderedBy[FxIndex]("FxIndex"),
+      namesRenderedBy[FloatingRateType]("FloatingRateType"),
+      namesRenderedBy[FloatingRateName]("FloatingRateName"),
+      namesRenderedBy[StubConvention]("StubConvention"),
+      namesRenderedBy[RollConvention]("RollConvention"),
+      namesRenderedBy[ValueAdjustmentType]("ValueAdjustmentType"),
+      namesRenderedBy[FailureReason]("FailureReason"))
+    families should have size 15
+    families.filter(members => members.isEmpty) shouldBe empty
+    // and a member the calendar-bearing day count adds outside `DayCount.values`, which the
+    // family's own list does not hold: it is named for its calendar, and its rendering is that
+    // name, which is what the law suite registered for the member checks over generated values
+    val bus252: DayCount = DayCount.ofBus252(StandardHolidayCalendars.GBLO)
+    implicitly[Show[DayCount]].show(bus252) shouldBe bus252.name
+    bus252.name shouldBe "Bus/252 GBLO"
+  }
+
+  test("every type of the inventory has its law suites registered, and only the ones it claims") {
+    // What the summons above cannot say. The inventory records which instances exist, and the law
+    // suites are registered separately by the calls further up this file, so a registration that
+    // was deleted or never written leaves the inventory intact and still claiming a type whose
+    // laws nothing checks. This ties the two together by comparing the inventory's names with
+    // the names ScalaTest actually holds.
+    //
+    // Discipline names every law after the suite it came from - `Order[Tenor].order.totality` -
+    // so the presence of a suite for a type is the presence of a test whose name begins with the
+    // family and the type. The inventory names a type by its qualified name and the law suites by
+    // its declared name, which is the qualified name with its package dropped; the leading
+    // segments of a package are lower case and the segments of a type are not, which is what
+    // `declaredName` reads it by, so a nested type such as `ReferenceData.Entry` keeps both parts.
+    def declaredName(typeName: String): String =
+      typeName.takeWhile(character => character != '[').split('.').iterator
+        .dropWhile(segment => segment.headOption.exists(character => character.isLower))
+        .mkString(".")
+
+    def hasSuite(family: String, typeName: String): Boolean =
+      testNames.exists(name => name.startsWith(s"$family[${declaredName(typeName)}]."))
+
+    val orderedNames = InstanceInventory.orderedTypes.map(_.typeName).distinct
+    val unorderedNames = InstanceInventory.unorderedTypes.map(_.typeName).distinct
+    val additiveNames = InstanceInventory.additiveTypes.map(_.typeName).distinct
+
+    withClue("every ordered type has its equality, hashing and ordering laws registered: ")(
+      orderedNames.filterNot(typeName =>
+        hasSuite("Eq", typeName) && hasSuite("Hash", typeName) &&
+          hasSuite("Order", typeName)) shouldBe empty)
+    withClue("every unordered type has its equality and hashing laws registered: ")(
+      unorderedNames.filterNot(typeName =>
+        hasSuite("Eq", typeName) && hasSuite("Hash", typeName)) shouldBe empty)
+    // and the other direction, which is the point of the split: a type the port leaves unordered
+    // has no ordering laws registered, so an ordering added without being inventoried fails here
+    withClue("no unordered type has ordering laws registered: ")(
+      unorderedNames.filter(typeName => hasSuite("Order", typeName)) shouldBe empty)
+    withClue("the additive type has its monoid laws registered: ")(
+      additiveNames.filterNot(typeName => hasSuite("Monoid", typeName)) shouldBe empty)
   }
 
   //-------------------------------------------------------------------------
@@ -850,6 +1121,62 @@ class TypeclassLawsSpec
     // every other empty value of the inventory renders as something a reader can see
     implicitly[Show[DoubleArray]].show(DoubleArray.of()) shouldBe "[]"
     implicitly[Show[MultiCurrencyAmount]].show(MultiCurrencyAmount.empty) shouldBe "[]"
+  }
+
+  /**
+   * Pins the two rendering shapes of a [[Failure]] as the text they produce.
+   *
+   * The property registered for this type reads the rendering it is given and asserts the Java
+   * part exactly and the appended part by its structure, deliberately without rebuilding it. This
+   * test states the other half of that argument: the '''literal''' text of both shapes, written
+   * here by hand, so that the format itself is pinned by something no change to the instance can
+   * move with it.
+   *
+   * The first shape is the rendering of the Java type being ported, to the character: the reason,
+   * a colon, a space and the message
+   * [modules/collect/src/main/java/com/opengamma/strata/collect/result/FailureItem.java:388-389].
+   * That method also appended a summary of the stack trace where the failure held one, which this
+   * port has no field for, so no part of the Java rendering is missing from the first assertion
+   * below.
+   *
+   * The second shape is this port's extension and a '''divergence''' from that Java rendering,
+   * which never wrote attributes - the formatter of the library being ported substituted their
+   * values into the message itself and returned both, so the attributes were a structured copy of
+   * text the message already carried. This port keeps the message as it was given and appends the
+   * attributes in key order, so that a log line holding failures of several kinds stays readable;
+   * the instance documents that choice, and the resolution report of this checkpoint records it
+   * for the owner of `strata-collect`, whose file declares it. The ascending key order is asserted
+   * with a failure whose attributes are built in the opposite order, which is what makes the
+   * rendering a function of the value rather than of the order the attributes arrived in.
+   *
+   * The text form of a failure is that same rendering - `toString` delegates to it - so a failure
+   * written out by interpolation or by a library reads as it does through the instance, and the
+   * bounding and escaping the rendering performs cannot be bypassed.
+   */
+  test("a failure renders as the Java form, and as that form and its attributes in key order") {
+    val rendering = implicitly[Show[Failure]]
+    // the Java form, to the character, for a failure holding no attributes
+    rendering.show(Failure.Invalid("Schedule is invalid")) shouldBe "INVALID: Schedule is invalid"
+    rendering.show(Failure.MissingData("No holiday calendar")) shouldBe
+      "MISSING_DATA: No holiday calendar"
+    // and the extension, for a failure holding one attribute and for one holding two, whose keys
+    // are given in descending order and rendered in ascending order
+    rendering.show(
+      Failure.Invalid("Schedule is invalid", SortedMap("definition" -> "P3M"))) shouldBe
+      "INVALID: Schedule is invalid [definition=P3M]"
+    rendering.show(
+      Failure.Parsing("Unknown currency", SortedMap("value" -> "XYZ", "scale" -> "2"))) shouldBe
+      "PARSING: Unknown currency [scale=2, value=XYZ]"
+    // The `toString` of a member is that rendering and deliberately so: a failure is written out
+    // in one form whichever path writes it - the instance, interpolation, or a library calling
+    // `toString` - so text that arrived from outside cannot reach a log in a form that has not
+    // been bounded and neutralised. It is why this type is one of the two the property above
+    // checks against a rendering of its own: `toString` is the rendering rather than the product
+    // form, so comparing the two would say nothing.
+    Failure.Invalid("Schedule is invalid").toString shouldBe
+      rendering.show(Failure.Invalid("Schedule is invalid"))
+    Failure.Parsing("Unknown currency", SortedMap("value" -> "XYZ", "scale" -> "2")).toString shouldBe
+      "PARSING: Unknown currency [scale=2, value=XYZ]"
   }
 
   test("one implicit answers for equality, ordering and hashing alike") {
@@ -933,7 +1260,7 @@ class TypeclassLawsSpec
     assertEqualByBits(
       valueOf(ValueStep.of(1, ValueAdjustment.ofReplace(Double.NaN))),
       valueOf(ValueStep.of(1, ValueAdjustment.ofReplace(Double.NaN))))
-    assertEqualByBits(ValueSchedule.of(Double.NaN), ValueSchedule.of(Double.NaN))
+    assertEqualByBits(valueOf(ValueSchedule.of(Double.NaN)), valueOf(ValueSchedule.of(Double.NaN)))
     assertEqualByBits(
       CurrencyAmountArray.of(gbp, DoubleArray.of(Double.NaN)),
       CurrencyAmountArray.of(gbp, DoubleArray.of(Double.NaN)))
@@ -972,7 +1299,7 @@ class TypeclassLawsSpec
     assertDistinctByBits(
       valueOf(ValueStep.of(1, ValueAdjustment.ofReplace(-0.0d))),
       valueOf(ValueStep.of(1, ValueAdjustment.ofReplace(0.0d))))
-    assertDistinctByBits(ValueSchedule.of(-0.0d), ValueSchedule.of(0.0d))
+    assertDistinctByBits(valueOf(ValueSchedule.of(-0.0d)), valueOf(ValueSchedule.of(0.0d)))
     assertDistinctByBits(
       CurrencyAmountArray.of(gbp, DoubleArray.of(-0.0d)),
       CurrencyAmountArray.of(gbp, DoubleArray.of(0.0d)))
@@ -1182,4 +1509,3 @@ class TypeclassLawsSpec
     an[IllegalArgumentException] should be thrownBy positive.plus(negative)
   }
 }
-

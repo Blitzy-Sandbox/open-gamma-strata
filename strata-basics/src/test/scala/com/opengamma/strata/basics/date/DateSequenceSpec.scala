@@ -17,7 +17,7 @@ import io.circe.syntax.EncoderOps
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
-import org.scalatest.prop.{TableDrivenPropertyChecks, TableFor1, TableFor4}
+import org.scalatest.prop.{TableDrivenPropertyChecks, TableFor1, TableFor2, TableFor4}
 
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.FailureReason
@@ -47,8 +47,11 @@ import com.opengamma.strata.collect.testkit.TestHelper._
  *    [[DateSequence.parse]] answers `EitherNec[Failure, DateSequence]`, so the six
  *    lookup tests assert the value on the right through the `haveValue` matcher, and
  *    the one name that belongs to no member is asserted as a `PARSING` failure by value
- *    rather than as a thrown error. Nothing in this spec expects an exception, which
- *    matches the original: it contained no exception assertion of any kind.
+ *    rather than as a thrown error. No test transcribed from the original expects an
+ *    exception, which matches it: it contained no exception assertion of any kind. The one
+ *    test here that does is `test_nth_sequenceNumberNotPositive`, which asserts the
+ *    caller-contract precondition of `nth` and `nthOrSame` that the original left
+ *    unasserted; the reasoning is set out at that test.
  *  - '''There is no run-time registry to interrogate.''' The original asked the registry
  *    that had assembled the family from a configuration resource for the complete map of
  *    names it had loaded. The family is closed at compile time here, so `test_extendedEnum`
@@ -592,6 +595,82 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
           sequence.nthOrSame(probe, 2) shouldBe sequence.next(sequence.nextOrSame(probe))
           sequence.nthOrSame(probe, 3) shouldBe
             sequence.next(sequence.next(sequence.nextOrSame(probe)))
+        }
+      }
+    }
+    succeed
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * The two sequence numbers that name no date, each with the message the guard reports.
+   *
+   * A sequence number is 1-based, so zero and every negative number describe no date of any
+   * sequence. Both rejected values are carried here with the exact text
+   * `ArgCheck.notNegativeOrZero` builds for them - the argument name followed by the value it
+   * was given - so the message is asserted character for character rather than by a fragment
+   * that a differently-worded refusal would still satisfy. The negative value is -1 because it
+   * sits immediately below the boundary: a guard written with the wrong comparison - `< 0`
+   * where `<= 0` was meant - refuses -1 and admits zero, so the two rows together tell a
+   * mis-written guard apart from a missing one.
+   */
+  private val data_rejectedSequenceNumbers: TableFor2[Int, String] = Table(
+    ("sequenceNumber", "message"),
+    (0, "Argument 'sequenceNumber' must not be negative or zero but has value 0"),
+    (-1, "Argument 'sequenceNumber' must not be negative or zero but has value -1")
+  )
+
+  /**
+   * The public precondition of `nth` and `nthOrSame`, over every member of the family.
+   *
+   * Neither method can answer for a sequence number that is not positive, and both document
+   * that as a precondition of the call rather than as a property of the data: a caller that
+   * asks for the zeroth date of a sequence is wrong, whatever dates the sequence holds. That
+   * is the classification rule of AAP section 0.3.3, and it is why this is a fail-fast
+   * `IllegalArgumentException` raised through `ArgCheck` rather than a `Failure` returned as a
+   * value - unlike [[SequenceDate.of]], which validates a sequence number that arrived as
+   * data and reports it through `EitherNec`.
+   *
+   * The guard is not written once. Every one of the six members overrides both methods with a
+   * direct calculation and restates the check itself, so it exists twelve times over, and the
+   * two methods inherited from [[DateSequence]] that hold the general form are never reached
+   * for any member. Nothing else in this spec supplies a sequence number that is not positive,
+   * so without this test any one of those twelve guards could be deleted and the suite would
+   * stay green while the member answered with a date computed from a negative count.
+   *
+   * Every member is therefore driven through both methods with both rejected numbers, on each
+   * of the probe dates `test_dummy` uses, and the message is asserted exactly. The positive
+   * controls that follow are what make the assertion two-sided: a guard that rejected every
+   * sequence number rather than the non-positive ones would satisfy the refusals above and
+   * fail the controls below.
+   */
+  test("test_nth_sequenceNumberNotPositive") {
+    forAll(data_rejectedSequenceNumbers) { (sequenceNumber: Int, message: String) =>
+      DateSequence.values.toList.foreach { sequence =>
+        dummyProbeDates.foreach { probe =>
+          withClue(s"$sequence nth from $probe with $sequenceNumber: ") {
+            val thrownByNth =
+              intercept[IllegalArgumentException](sequence.nth(probe, sequenceNumber))
+            thrownByNth.getMessage shouldBe message
+          }
+          withClue(s"$sequence nthOrSame from $probe with $sequenceNumber: ") {
+            val thrownByNthOrSame =
+              intercept[IllegalArgumentException](sequence.nthOrSame(probe, sequenceNumber))
+            thrownByNthOrSame.getMessage shouldBe message
+          }
+        }
+      }
+      succeed
+    }
+    // the positive controls: the smallest sequence number the guard admits, and the one after
+    // it, answer with the dates the two stepping methods reach on every member and every probe
+    DateSequence.values.toList.foreach { sequence =>
+      dummyProbeDates.foreach { probe =>
+        withClue(s"$sequence from $probe with a positive sequence number: ") {
+          sequence.nth(probe, 1) shouldBe sequence.next(probe)
+          sequence.nthOrSame(probe, 1) shouldBe sequence.nextOrSame(probe)
+          sequence.nth(probe, 2) shouldBe sequence.next(sequence.next(probe))
+          sequence.nthOrSame(probe, 2) shouldBe sequence.next(sequence.nextOrSame(probe))
         }
       }
     }

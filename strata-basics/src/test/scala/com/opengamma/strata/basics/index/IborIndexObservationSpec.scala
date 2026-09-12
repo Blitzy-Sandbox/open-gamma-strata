@@ -217,6 +217,48 @@ final class IborIndexObservationSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  test("test_resolve") {
+    // The batch route into the type, which the index being ported published as `resolve`: the
+    // fixing calendar and both date offsets are resolved once and the function that comes back
+    // observes any fixing without consulting reference data again. Two entry points reach it -
+    // `IborIndexObservation.resolve`, where this port implements it, and `IborIndex.resolve`,
+    // where the original declared it - and both are asserted to produce what the per-fixing
+    // factory produces, field by field, because the equality of an observation reads the index
+    // and the fixing date alone and would hide a wrongly derived date.
+    val index = IborIndices.USD_LIBOR_3M
+    val observe = unwrap(IborIndexObservation.resolve(index, RefData))
+    val observeFromIndex = unwrap(index.resolve(RefData))
+
+    List(UsdFixingDate, UsdFixingDate.plusDays(1L), UsdFixingDate.plusDays(2L), UsdFixingDate.plusMonths(1L))
+      .foreach { fixingDate =>
+        withClue(s"$fixingDate: ") {
+          val direct = unwrap(IborIndexObservation.of(index, fixingDate, RefData))
+          List(observe(fixingDate), observeFromIndex(fixingDate)).foreach { resolved =>
+            resolved shouldBe direct
+            resolved.index shouldBe index
+            resolved.fixingDate shouldBe fixingDate
+            resolved.effectiveDate shouldBe direct.effectiveDate
+            resolved.maturityDate shouldBe direct.maturityDate
+            resolved.yearFraction shouldBe direct.yearFraction
+          }
+        }
+      }
+
+    // A fixing date that is not a fixing date of the index is carried as given while the derived
+    // dates follow from the fixing date the index would use - the same treatment the per-fixing
+    // factory gives it, here through the resolved function.
+    val saturday = UsdFixingDate.`with`(java.time.DayOfWeek.SATURDAY)
+    saturday.getDayOfWeek shouldBe java.time.DayOfWeek.SATURDAY
+    observe(saturday).fixingDate shouldBe saturday
+    observe(saturday) shouldBe unwrap(IborIndexObservation.of(index, saturday, RefData))
+
+    // Reference data that cannot supply the calendar is reported once, by the resolution itself,
+    // rather than by each fixing - which is the reason the operation exists.
+    IborIndexObservation.resolve(index, NoRefData) should beFailureWith(FailureReason.MISSING_DATA)
+    index.resolve(NoRefData) should beFailureWith(FailureReason.MISSING_DATA)
+  }
+
+  //-------------------------------------------------------------------------
   test("coverage") {
     val first: Either[Failure, IborIndexObservation] =
       IborIndexObservation.of(IborIndices.GBP_LIBOR_3M, GbpFixingDate, RefData)

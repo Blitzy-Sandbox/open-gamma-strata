@@ -38,7 +38,7 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * choice: it is a sequence whose full form interleaves three serial monthly IMM dates with the
  * quarterly ones, so `base` and `full` instructions give measurably different answers over it.
  *
- * ===What the two date ladders pin down===
+ * ===What the date ladders pin down===
  *
  * Counted from 1 January 2020, the base sequence answers 2020-03-18, 2020-06-17, 2020-09-16 -
  * the quarterly IMM dates alone - while the full sequence answers 2020-01-15, 2020-02-19,
@@ -52,6 +52,14 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * date ahead, three, four or five months push the answer out to June, and six or seven months
  * push it to September. Seven rows collapsing onto three distinct dates looks redundant and is
  * not - it is where the boundaries of the interaction are.
+ *
+ * The fourth ladder, in `test_full_YearMonth_int`, is the only coverage of the remaining
+ * combination: a year-month counted over the full sequence. From February 2020 it answers
+ * 2020-02-19, 2020-03-18, 2020-04-15 - three consecutive serial IMM dates - where the same
+ * month counted over the base sequence answers 2020-03-18, 2020-06-17, 2020-09-16, so the two
+ * ladders side by side are what makes the choice of sequence observable. That test also pins
+ * the two properties the selection has for a year-month and for no other starting point: the
+ * input date is not consulted, and the two selection methods therefore agree.
  *
  * ===Failure is a value here===
  *
@@ -228,6 +236,41 @@ class SequenceDateSpec extends AnyFunSuite with Matchers with EitherValues {
     test.minimumPeriod shouldBe None
     test.sequenceNumber shouldBe 2
     test.fullSequence shouldBe true
+
+    // The fourth ladder, and the one combination the stored fields above cannot show: a
+    // year-month and the full sequence together. The count runs over the three-serial sequence
+    // from the first day of February, so it answers with February's own serial IMM date and the
+    // serial dates of the two months after it.
+    selected(INPUT_2020_01_01, SequenceDate.full(YM_2020_02, 1)) shouldBe date(2020, 2, 19)
+    selected(INPUT_2020_01_01, SequenceDate.full(YM_2020_02, 2)) shouldBe date(2020, 3, 18)
+    selected(INPUT_2020_01_01, SequenceDate.full(YM_2020_02, 3)) shouldBe date(2020, 4, 15)
+
+    // The same three sequence numbers counted from the same month over the base sequence. This
+    // contrast is the assertion: were a full-sequence instruction with a year-month to count
+    // over the base sequence, every date of the ladder above would become a date of the ladder
+    // below - February's serial IMM date would silently become March's quarterly one - and the
+    // stored-field assertions would not notice.
+    selected(INPUT_2020_01_01, SequenceDate.base(YM_2020_02, 1)) shouldBe date(2020, 3, 18)
+    selected(INPUT_2020_01_01, SequenceDate.base(YM_2020_02, 2)) shouldBe date(2020, 6, 17)
+    selected(INPUT_2020_01_01, SequenceDate.base(YM_2020_02, 3)) shouldBe date(2020, 9, 16)
+
+    // A year-month replaces the input date rather than moving it, so the input date is not
+    // consulted at all. The three dates below are those of the full ladder, selected from input
+    // dates two decades apart on either side of the month named and from one that is itself a
+    // sequence date, so an implementation that let the input date into the count would move at
+    // least one of them.
+    selected(date(1999, 7, 9), SequenceDate.full(YM_2020_02, 1)) shouldBe date(2020, 2, 19)
+    selected(date(2035, 12, 31), SequenceDate.full(YM_2020_02, 1)) shouldBe date(2020, 2, 19)
+    selected(INPUT_2020_03_18, SequenceDate.full(YM_2020_02, 2)) shouldBe date(2020, 3, 18)
+    selected(date(2035, 12, 31), SequenceDate.full(YM_2020_02, 3)) shouldBe date(2020, 4, 15)
+
+    // The count from a year-month always admits the first day of the month named, so the two
+    // selection methods cannot part company over such an instruction - unlike the ladders of
+    // `test_full_int` and `test_base_int`, where the input date is what decides between them.
+    selectedOrSame(INPUT_2020_01_01, SequenceDate.full(YM_2020_02, 1)) shouldBe date(2020, 2, 19)
+    selectedOrSame(INPUT_2020_03_18, SequenceDate.full(YM_2020_02, 2)) shouldBe date(2020, 3, 18)
+    selectedOrSame(INPUT_2020_01_01, SequenceDate.full(YM_2020_02, 3)) shouldBe date(2020, 4, 15)
+    selectedOrSame(INPUT_2020_01_01, SequenceDate.base(YM_2020_02, 1)) shouldBe date(2020, 3, 18)
   }
 
   test("test_full_int") {

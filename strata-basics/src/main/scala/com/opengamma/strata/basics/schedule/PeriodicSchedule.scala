@@ -5,7 +5,10 @@
  */
 package com.opengamma.strata.basics.schedule
 
+import java.time.DateTimeException
 import java.time.LocalDate
+import java.time.Period
+import java.time.temporal.ChronoUnit
 
 import scala.annotation.tailrec
 
@@ -128,6 +131,29 @@ import com.opengamma.strata.collect.result.ValidatedFailures
  *  - The `BackwardsList` of the ported implementation - a hand-rolled `AbstractList` over a mutable
  *    index and an array - and the `estimateNumberPeriods` helper that sized it are '''dropped'''.
  *    Prepending onto a `List` costs the same and mutates nothing.
+ *  - '''Date generation is bounded.''' The ported walks materialised as many boundaries as the
+ *    dates and frequency implied, with no ceiling, so a caller-chosen daily frequency over a span
+ *    of centuries could exhaust time and heap. Here the limit is `MaximumPeriodCount` periods, and
+ *    a definition asking for more is reported as a failure naming it, through three checks: a span
+ *    whose width makes the limit unreachable is refused in constant time before either walk
+ *    begins, and only where it is '''provably''' unreachable, so nothing a generation would have
+ *    completed is refused; each walk then stops at the ceiling's worth of boundaries, so nothing
+ *    beyond it is ever materialised; and the assembled date list - the schedule's two ends, any
+ *    dated stub and the rolled boundaries together, one period fewer than there are dates - is
+ *    checked against the limit exactly.
+ *  - '''The business day adjustment of the interior dates is resolved once.''' The ported loop
+ *    called `businessDayAdjustment.adjust(date, refData)` for every date between the two ends,
+ *    which resolves the holiday calendar - and recombines a composite one - on every iteration.
+ *    This port binds the calendar once per generation through
+ *    [[com.opengamma.strata.basics.date.BusinessDayAdjustment.resolve]] and applies the resulting
+ *    adjuster to each date, and it does so only where there is an interior date, so the schedules
+ *    that resolved nothing through that adjustment still resolve nothing.
+ *  - '''Date arithmetic at the edges of the calendar is reported, not raised.''' A roll that steps
+ *    outside the range `java.time` can represent raised `DateTimeException` or
+ *    `ArithmeticException` out of the ported generation, and out of this port's `Either`-returning
+ *    members with it. Those two exceptions - and no others - are caught around the stepping and
+ *    reported as `Failure.Invalid`, because a failure that depends on the data of a definition
+ *    belongs in the same channel as every other such failure (AAP 0.3.3).
  *  - There is no Joda bean and no Java serialization. The JSON codec below is the one text form
  *    of a definition besides [[toString]].
  *
@@ -229,7 +255,7 @@ sealed abstract case class PeriodicSchedule private (
       combinePeriodsIfNecessary: Boolean): Either[Failure, Schedule] =
     unadjustedSchedule(refData).flatMap { case (unadj, rollConv) =>
       applyBusinessDayAdjustment(unadj, refData).flatMap { adj =>
-        assembled(unadj, adj, rollConv, combinePeriodsIfNecessary)
+        assembled(unadj, adj, rollConv, combinePeriodsIfNecessary, refData)
       }
     }
 
@@ -344,13 +370,21 @@ sealed abstract case class PeriodicSchedule private (
    * periods. [[SchedulePeriod.of]] rejects a pair that is degenerate or out of order, and it is the
    * only thing that can go wrong here.
    *
-   * Where it does go wrong, the failure reported is chosen exactly as the ported implementation
-   * chose it: the specific message of duplicated unadjusted dates first, then that of duplicated
-   * adjusted dates, and only if neither applies the general message that the calculation produced
-   * an invalid period. The ported implementation obtained those messages by re-running
-   * `createUnadjustedDates` and `createAdjustedDates`; the two lists passed here are exactly what
-   * those two members compute - the '''uncombined''' lists, before any merging - so the checks are
-   * performed on them directly rather than by generating the schedule a second time.
+   * Where it does go wrong, the failure reported is the failure the ported implementation reported,
+   * obtained the way it obtained it: its recovery block re-ran `createUnadjustedDates()` - the
+   * '''no-argument''' form, which generates from the declared start and end dates and recovers no
+   * pre-adjusted date from reference data - then `createAdjustedDates(refData)`, and only if both
+   * of those returned normally did it report that the calculation produced an invalid period
+   * [modules/basics/src/main/java/com/opengamma/strata/basics/schedule/
+   * PeriodicSchedule.java:466-473].
+   * Those two members are replayed here in that order, through the public members themselves, so
+   * that a caller sees whichever failure the ported code would have raised. That matters beyond the
+   * duplicate-date messages this branch is usually reached by: the no-argument generation works
+   * from different dates than the generation that produced the lists passed here, so it can report
+   * a roll convention that the declared start date does not match, a stub the convention disallows
+   * or the 'Term' explicit-stubs message, and a definition whose dates are pre-adjusted is exactly
+   * the definition on which the two generations differ. Checking the two lists directly would
+   * report a different branch, and a different message, for those definitions.
    *
    * A schedule with no periods at all is possible only when combining merged every boundary into
    * one, which requires the adjusted dates to have held duplicates, so it reports through the same
@@ -360,13 +394,15 @@ sealed abstract case class PeriodicSchedule private (
    * @param adj  the adjusted dates, before any combining
    * @param rollConv  the roll convention the dates were generated with
    * @param combinePeriodsIfNecessary  whether runs of coincident adjusted dates merge into one
+   * @param refData  the reference data, used to replay the adjusted-date generation
    * @return the schedule, or the failure describing why the dates describe none
    */
   private def assembled(
       unadj: List[LocalDate],
       adj: List[LocalDate],
       rollConv: RollConvention,
-      combinePeriodsIfNecessary: Boolean): Either[Failure, Schedule] = {
+      combinePeriodsIfNecessary: Boolean,
+      refData: ReferenceData): Either[Failure, Schedule] = {
     val (keptUnadj, keptAdj) =
       if (combinePeriodsIfNecessary) combineCoincident(unadj.zip(adj), Nil, Nil) else (unadj, adj)
     val built = keptAdj
@@ -380,7 +416,14 @@ sealed abstract case class PeriodicSchedule private (
       case Some(periods) =>
         Schedule.of(periods, frequency, rollConv).left.map(Failure.collapse)
       case None =>
-        Left(invalidPeriodFailure(unadj, adj))
+        createUnadjustedDates() match {
+          case Left(reported) => Left(reported)
+          case Right(_) =>
+            createAdjustedDates(refData) match {
+              case Left(reported) => Left(reported)
+              case Right(_) => Left(failure(InvalidPeriodMessage))
+            }
+        }
     }
   }
 
@@ -392,6 +435,14 @@ sealed abstract case class PeriodicSchedule private (
    * end of the whole schedule, the unadjusted start and end of its regular part, and the roll
    * convention to roll with. Where the regular part differs from the whole, the difference is an
    * explicitly dated stub.
+   *
+   * Whichever of the four branches below produces the dates, the list they produce is passed
+   * through [[boundedDates]], which is where the period ceiling is made exact: the walks bound the
+   * boundaries they roll, but the dates a branch answers with also include the schedule's two ends
+   * and the date of each explicitly dated stub, and it is the assembled list that decides how many
+   * periods the schedule has. This is the single place every route into generation passes through -
+   * both forms of `createUnadjustedDates`, `createAdjustedDates` and `createSchedule` reach the
+   * dates through here - so applying the ceiling here applies it to all of them.
    *
    * @param start  the calculated unadjusted start date of the schedule
    * @param regStart  the calculated unadjusted start date of the regular part
@@ -409,50 +460,52 @@ sealed abstract case class PeriodicSchedule private (
     val overrideStart = overrideStartDate.map(_.unadjusted).getOrElse(start)
     val explicitInitStub = start != regStart
     val explicitFinalStub = end != regEnd
-    if (regStart == end || regEnd == start) {
-      // the whole schedule is one stub, so there is nothing to roll
-      Right(List(overrideStart, end))
-    } else if (frequency.isTerm) {
-      // a 'Term' schedule is one period by definition, and a dated stub would contradict it
-      if (explicitInitStub || explicitFinalStub) {
-        Left(failure(TermExplicitStubsMessage))
-      } else {
+    val generated: Either[Failure, List[LocalDate]] =
+      if (regStart == end || regEnd == start) {
+        // the whole schedule is one stub, so there is nothing to roll
         Right(List(overrideStart, end))
-      }
-    } else {
-      generateImplicitStubConvention(explicitInitStub, explicitFinalStub, regStart, regEnd)
-        .flatMap { stubConv =>
-          // special fallback if there is an override start date with a specified roll convention:
-          // the override, not the regular start, is the date that matches the convention
-          val fallbackToOverride =
-            overrideStartDate.isDefined &&
-              rollConvention.isDefined &&
-              firstRegularStartDate.isEmpty &&
-              !rollConv.matches(regStart) &&
-              rollConv.matches(overrideStart)
-          val calcStart = if (fallbackToOverride) overrideStart else regStart
-          if (stubConv.isCalculateBackwards) {
-            generateBackwards(
-              calcStart,
-              regEnd,
-              rollConv,
-              stubConv,
-              overrideStart,
-              explicitFinalStub,
-              end)
-          } else {
-            generateForwards(
-              calcStart,
-              regEnd,
-              rollConv,
-              stubConv,
-              explicitInitStub,
-              overrideStart,
-              explicitFinalStub,
-              end)
-          }
+      } else if (frequency.isTerm) {
+        // a 'Term' schedule is one period by definition, and a dated stub would contradict it
+        if (explicitInitStub || explicitFinalStub) {
+          Left(failure(TermExplicitStubsMessage))
+        } else {
+          Right(List(overrideStart, end))
         }
-    }
+      } else {
+        generateImplicitStubConvention(explicitInitStub, explicitFinalStub, regStart, regEnd)
+          .flatMap { stubConv =>
+            // special fallback if there is an override start date with a specified roll convention:
+            // the override, not the regular start, is the date that matches the convention
+            val fallbackToOverride =
+              overrideStartDate.isDefined &&
+                rollConvention.isDefined &&
+                firstRegularStartDate.isEmpty &&
+                !rollConv.matches(regStart) &&
+                rollConv.matches(overrideStart)
+            val calcStart = if (fallbackToOverride) overrideStart else regStart
+            if (stubConv.isCalculateBackwards) {
+              generateBackwards(
+                calcStart,
+                regEnd,
+                rollConv,
+                stubConv,
+                overrideStart,
+                explicitFinalStub,
+                end)
+            } else {
+              generateForwards(
+                calcStart,
+                regEnd,
+                rollConv,
+                stubConv,
+                explicitInitStub,
+                overrideStart,
+                explicitFinalStub,
+                end)
+            }
+          }
+      }
+    generated.flatMap(boundedDates)
   }
 
   /**
@@ -512,6 +565,16 @@ sealed abstract case class PeriodicSchedule private (
    * recovered by stepping once more from the earliest boundary kept, or from the end date where the
    * walk kept none; the two are the same date.
    *
+   * Both the walk and that extra boundary step go through [[rolledDates]] and [[guardedStep]], so
+   * a definition whose dates and frequency would roll outside the range `java.time` represents, or
+   * would ask for more boundaries than [[PeriodicSchedule.MaximumPeriodCount]] allows, is reported
+   * rather than raised. Before either of them runs, the span this walk is about to traverse - the
+   * two dates below, not the whole schedule's - is put to
+   * [[PeriodicSchedule.provablyExceedsPeriodCount]], so a span that cannot possibly be walked
+   * within the ceiling is refused without stepping at all. It is placed after the roll-convention
+   * check above deliberately: the order in which a definition's failures are reported is part of
+   * what a caller reads, and a mismatched roll convention is still reported first.
+   *
    * @param start  the unadjusted start date of the regular part, where the walk stops
    * @param end  the unadjusted end date of the regular part, where the walk starts
    * @param rollConv  the roll convention to roll with
@@ -533,22 +596,25 @@ sealed abstract case class PeriodicSchedule private (
       explicitEndDate: LocalDate): Either[Failure, List[LocalDate]] =
     if (!rollConv.matches(end)) {
       Left(failure(rollMismatchMessage(end, rollConv, rollingBackwards = true)))
+    } else if (provablyExceedsPeriodCount(start, end, frequency)) {
+      Left(failure(TooManyPeriodsMessage))
     } else {
       val tail = if (explicitFinalStub) List(end, explicitEndDate) else List(end)
-      val descending = Iterator
-        .iterate(rollConv.previous(end, frequency))(date => rollConv.previous(date, frequency))
-        .takeWhile(_.isAfter(start))
-        .toList
-      val exhausted = rollConv.previous(descending.lastOption.getOrElse(end), frequency)
-      val stub = exhausted != start
-      val rolled = descending.reverse ::: tail
-      val absorbed =
-        if (stub && rolled.sizeIs > 1 && stubConv.isStubLong(start, rolled.head)) {
-          rolled.drop(1)
-        } else {
-          rolled
-        }
-      Right(explicitStartDate :: absorbed)
+      val step: LocalDate => LocalDate = date => rollConv.previous(date, frequency)
+      for {
+        descending <- rolledDates(end, step, _.isAfter(start))
+        exhausted <- guardedStep(step(descending.lastOption.getOrElse(end)))
+      } yield {
+        val stub = exhausted != start
+        val rolled = descending.reverse ::: tail
+        val absorbed =
+          if (stub && rolled.sizeIs > 1 && stubConv.isStubLong(start, rolled.head)) {
+            rolled.drop(1)
+          } else {
+            rolled
+          }
+        explicitStartDate :: absorbed
+      }
     }
 
   /**
@@ -563,6 +629,12 @@ sealed abstract case class PeriodicSchedule private (
    * is preserved: the regular end date is appended '''inside''' the branch that rolls, so a regular
    * part whose two ends coincide contributes no end date at all, while the date of a dated final
    * stub is appended outside it either way.
+   *
+   * The walk and its extra boundary step are guarded and bounded exactly as the backwards walk's
+   * are, by [[PeriodicSchedule.provablyExceedsPeriodCount]] before the walk and by
+   * [[rolledDates]] and [[guardedStep]] within it, and the order in which failures are reported is
+   * unchanged: the roll mismatch first, then a span provably beyond the period ceiling, then a step
+   * outside the date range or beyond that ceiling, then a remainder the stub convention disallows.
    *
    * @param start  the unadjusted start date of the regular part, where the walk starts
    * @param end  the unadjusted end date of the regular part, where the walk stops
@@ -588,32 +660,133 @@ sealed abstract case class PeriodicSchedule private (
       explicitEndDate: LocalDate): Either[Failure, List[LocalDate]] =
     if (!rollConv.matches(start)) {
       Left(failure(rollMismatchMessage(start, rollConv, rollingBackwards = false)))
+    } else if (provablyExceedsPeriodCount(start, end, frequency)) {
+      Left(failure(TooManyPeriodsMessage))
     } else {
       val head =
         if (explicitInitialStub) List(explicitStartDate, start) else List(explicitStartDate)
+      val step: LocalDate => LocalDate = date => rollConv.next(date, frequency)
       val regular: Either[Failure, List[LocalDate]] =
         if (start == end) {
           Right(head)
         } else {
-          val interior = Iterator
-            .iterate(rollConv.next(start, frequency))(date => rollConv.next(date, frequency))
-            .takeWhile(_.isBefore(end))
-            .toList
-          val exhausted = rollConv.next(interior.lastOption.getOrElse(start), frequency)
-          val stub = exhausted != end
-          val rolled = head ::: interior
-          val absorbed: Either[Failure, List[LocalDate]] =
-            if (stub && rolled.sizeIs > 1) {
-              applicableStubConvention(stubConv, rollConv, start, end, explicitFinalStub).map {
-                applicable =>
-                  if (applicable.isStubLong(rolled.last, end)) rolled.dropRight(1) else rolled
+          for {
+            interior <- rolledDates(start, step, _.isBefore(end))
+            exhausted <- guardedStep(step(interior.lastOption.getOrElse(start)))
+            rolled = head ::: interior
+            absorbed <-
+              if (exhausted != end && rolled.sizeIs > 1) {
+                applicableStubConvention(stubConv, rollConv, start, end, explicitFinalStub).map {
+                  applicable =>
+                    if (applicable.isStubLong(rolled.last, end)) rolled.dropRight(1) else rolled
+                }
+              } else {
+                Right(rolled)
               }
-            } else {
-              Right(rolled)
-            }
-          absorbed.map(_ :+ end)
+          } yield absorbed :+ end
         }
       regular.map(dates => if (explicitFinalStub) dates :+ explicitEndDate else dates)
+    }
+
+  /**
+   * Rolls the boundary dates of one walk, refusing an overflow and refusing an oversized schedule.
+   *
+   * This is the stepping both walks perform, written once. The walk is the `Iterator.iterate` the
+   * Agent Action Plan requires of this generation - no loop, no mutable cursor - with two
+   * containments the ported implementation did not have:
+   *
+   *  - '''the date arithmetic is guarded.''' A step that leaves the range `java.time` represents
+   *    raises `DateTimeException`, and one whose epoch-day arithmetic overflows raises
+   *    `ArithmeticException`; both are data-dependent failures of a member that answers with
+   *    `Either`, so they are caught here - and only they are - and reported as the failure value
+   *    the rest of this type reports, carrying the `definition` attribute.
+   *  - '''the iteration itself is bounded.''' The iterator is taken to one boundary beyond
+   *    [[PeriodicSchedule.MaximumPeriodCount]] before `takeWhile` is applied, so materialisation
+   *    can never exceed the ceiling however wide the dates and however short the frequency, and a
+   *    walk that reaches the bound is reported as a failure naming the limit. The extra boundary
+   *    is what distinguishes "stopped because the walk ended" from "stopped because the bound was
+   *    reached".
+   *
+   * This is the middle of the three containments the ceiling has, and the one that makes
+   * over-materialisation impossible rather than merely unlikely. Ahead of it,
+   * [[PeriodicSchedule.provablyExceedsPeriodCount]] has already refused, in constant time, any
+   * span that is provably above the ceiling - conservatively, so it refuses nothing this walk
+   * would have completed. Behind it, [[boundedDates]] applies the ceiling to the assembled date
+   * list, which is the count the message names. The bound here is what covers everything in
+   * between: a span the preflight could prove nothing about still cannot roll more than the
+   * ceiling's worth of boundaries, because the iterator is never asked for more.
+   *
+   * Note that the bound here is stated over the boundaries of '''one''' walk, which is why it is
+   * not the whole of the ceiling: a walk that rolls more boundaries than the ceiling always implies
+   * more periods than the ceiling, so refusing here is sound, but the converse does not hold and
+   * the exact count is therefore taken once the dates are assembled.
+   *
+   * @param from  the date the walk steps from, which is not itself a boundary of the result
+   * @param step  the rolling step, which is one application of the roll convention and frequency
+   * @param keep  the test each rolled boundary must satisfy to be part of the walk
+   * @return the boundaries the walk produced, in the order the walk produced them, or the failure
+   *   describing why the walk produced none
+   */
+  private def rolledDates(
+      from: LocalDate,
+      step: LocalDate => LocalDate,
+      keep: LocalDate => Boolean): Either[Failure, List[LocalDate]] =
+    guardedStep(
+      Iterator
+        .iterate(step(from))(step)
+        .take(MaximumPeriodCount + 1)
+        .takeWhile(keep)
+        .toList).flatMap { rolled =>
+      if (rolled.sizeIs > MaximumPeriodCount) {
+        Left(failure(TooManyPeriodsMessage))
+      } else {
+        Right(rolled)
+      }
+    }
+
+  /**
+   * Refuses a generated date list that describes more periods than the ceiling allows.
+   *
+   * This is the ceiling applied '''exactly''', to the number of periods the dates describe rather
+   * than to the boundaries one walk rolled. The periods of a schedule are built pairwise from its
+   * dates, so a list of `n` dates is a schedule of `n - 1` periods, and a list of more than
+   * `MaximumPeriodCount + 1` dates is therefore a schedule of more periods than
+   * [[PeriodicSchedule.MaximumPeriodCount]] - which is precisely what
+   * [[PeriodicSchedule.TooManyPeriodsMessage]] says cannot be generated.
+   *
+   * The distinction matters because the dates of a schedule are not only the boundaries a walk
+   * rolled: the schedule's own start and end dates are there too, and so is the date of each
+   * explicitly dated stub, each of which adds a period the walk never counted. Applying this to
+   * the result of [[generateUnadjustedDates]] counts all of them, whichever branch produced them.
+   *
+   * @param dates  the generated unadjusted dates, in order
+   * @return the dates, or the failure reporting that they describe too many periods
+   */
+  private def boundedDates(dates: List[LocalDate]): Either[Failure, List[LocalDate]] =
+    if (dates.sizeIs > MaximumPeriodCount + 1) {
+      Left(failure(TooManyPeriodsMessage))
+    } else {
+      Right(dates)
+    }
+
+  /**
+   * Evaluates one piece of schedule date arithmetic, reporting an overflow instead of raising it.
+   *
+   * The argument is taken by name and evaluated once, here, so that the two exceptions the
+   * `java.time` arithmetic of a roll can raise at the edges of the supported date range become the
+   * failure value this type reports everywhere else. Nothing else is caught: an exception of any
+   * other type is a defect rather than a property of the dates, and swallowing it would hide it.
+   *
+   * @param compute  the date arithmetic to evaluate
+   * @tparam A  the type the arithmetic produces
+   * @return the value the arithmetic produced, or the failure describing the overflow
+   */
+  private def guardedStep[A](compute: => A): Either[Failure, A] =
+    try {
+      Right(compute)
+    } catch {
+      case _: DateTimeException | _: ArithmeticException =>
+        Left(failure(DateRangeMessage))
     }
 
   /**
@@ -665,6 +838,23 @@ sealed abstract case class PeriodicSchedule private (
    * `businessDayAdjustment`. Adjusting the two ends with the plain adjustment instead would
    * silently ignore the two optional ones.
    *
+   * The interior adjustment is '''resolved once''' per generation, through
+   * [[BusinessDayAdjustment.resolve]], and the resulting
+   * [[com.opengamma.strata.basics.date.DateAdjuster]] is applied to every interior date.
+   * Adjusting date by date instead - which is what the ported loop did, having the reference data
+   * to hand on every iteration - looks the calendar up again for each date, and for a composite
+   * identifier recombines its components each time, so a long schedule paid for its calendar once
+   * per boundary.
+   *
+   * The resolution is also '''lazy''': it happens only where there is an interior date to adjust.
+   * A schedule of two dates puts nothing through `businessDayAdjustment` - the ported loop, which
+   * ran from the second date to the second-to-last, had no iterations for such a schedule - so a
+   * definition whose plain adjustment names a calendar the reference data does not supply still
+   * produces its schedule as long as the two ends can be adjusted, exactly as before.
+   *
+   * The order in which failures are reported is the order of the three positions: the start date's
+   * adjustment first, then the interior one, then the end date's.
+   *
    * @param unadj  the unadjusted dates
    * @param refData  the reference data, used to find the holiday calendars
    * @return the adjusted dates, in the order of the dates supplied, or the failure of whichever
@@ -672,15 +862,21 @@ sealed abstract case class PeriodicSchedule private (
    */
   private def applyBusinessDayAdjustment(
       unadj: List[LocalDate],
-      refData: ReferenceData): Either[Failure, List[LocalDate]] =
+      refData: ReferenceData): Either[Failure, List[LocalDate]] = {
+    val interiorDates = unadj.drop(1).dropRight(1)
     for {
       first <- calculatedStartDate.adjusted(refData)
-      interior <- unadj
-        .drop(1)
-        .dropRight(1)
-        .traverse(date => businessDayAdjustment.adjust(date, refData))
+      interior <-
+        if (interiorDates.isEmpty) {
+          Right(List.empty[LocalDate])
+        } else {
+          businessDayAdjustment
+            .resolve(refData)
+            .map(adjuster => interiorDates.map(date => adjuster.adjust(date)))
+        }
       last <- calculatedEndDate.adjusted(refData)
     } yield (first :: interior) :+ last
+  }
 
   //-------------------------------------------------------------------------
   /**
@@ -1117,6 +1313,33 @@ sealed abstract case class PeriodicSchedule private (
    * so that a report could name it without the message having to embed it. The attribute is that
    * field, and every rejection of this type carries it.
    *
+   * ===Why the definition is attached exactly as it renders===
+   *
+   * The attribute holds the text of [[toString]] as it stands, with nothing dropped, shortened or
+   * escaped, and the message is the text of the ported exception with the values it quotes
+   * interpolated the same way. That is what the attribute is for: it replaces a field a caller
+   * could read, so a report has to be able to name the definition that was rejected and a test has
+   * to be able to compare it with the definition it supplied. Either of those reads a summary
+   * rather than the definition if this method alters the text, which is why it does not.
+   *
+   * Part of that text is nevertheless outside this library's control. A definition embeds a
+   * [[BusinessDayAdjustment]], which names a
+   * [[com.opengamma.strata.basics.date.HolidayCalendarId]], and that identifier is total in its
+   * name: `HolidayCalendarId.of` accepts any text at all, so a calendar name arriving from a
+   * document, a configuration file or a caller may hold a line feed, a control character, or
+   * several thousand characters of anything.
+   *
+   * Making such text safe to write out therefore belongs to the writing of a failure rather than
+   * to the reporting of one, and that is where this port performs it. The
+   * [[com.opengamma.strata.collect.result.Failure.show]] instance, which is also the text form of
+   * every failure, bounds each part it writes - the message and the key and the value of every
+   * attribute - and escapes every character that a line-oriented reader could act on. A definition
+   * carried here consequently cannot forge a line of a log or a report that holds the failure
+   * (CWE-117), and cannot make that line as large as the calendar name it embeds, however the
+   * failure came to be built. The JSON encoding of a failure carries the text whole, escaped as
+   * the JSON grammar requires, because a document is read by a parser rather than by a reader of
+   * lines.
+   *
    * @param message  the message of the ported exception, verbatim
    * @return the failure
    */
@@ -1133,19 +1356,46 @@ sealed abstract case class PeriodicSchedule private (
       s"when starting to roll $direction"
   }
 
-  /** Reports duplicated unadjusted dates, naming the list as it was before deduplication. */
+  /**
+   * Renders a list of dates as the message formatter being ported rendered one.
+   *
+   * The messages of the ported exceptions were assembled by substituting each argument's text form
+   * into a template, and the text form of a Java list is its elements between square brackets and
+   * separated by a comma and a space - `[2014-01-01, 2014-02-01]`. Interpolating a Scala `List`
+   * instead produces `List(2014-01-01, 2014-02-01)`, which is not the text a caller reading a
+   * rejected schedule has always seen, so the two messages that name a date list render it through
+   * this member. `Schedule.merge` renders the dates of its own messages the same way.
+   *
+   * @param dates  the dates to render, in the order they are to appear
+   * @return the dates as the ported message rendered them
+   */
+  private def dateList(dates: List[LocalDate]): String = dates.mkString("[", ", ", "]")
+
+  /**
+   * Reports duplicated unadjusted dates, naming the list as it was before deduplication.
+   *
+   * Every date in that list was generated by this definition, so the message quotes nothing that
+   * reached the library from outside it; the definition the failure carries is attached by
+   * [[failure]], under the policy described there.
+   */
   private def duplicateUnadjusted(unadj: List[LocalDate]): Option[Failure] =
     Option.when(unadj.distinct.sizeIs < unadj.size)(
-      failure(s"Schedule calculation resulted in duplicate unadjusted dates $unadj"))
+      failure(s"Schedule calculation resulted in duplicate unadjusted dates ${dateList(unadj)}"))
 
-  /** Reports duplicated adjusted dates, naming both lists and the adjustment that produced them. */
+  /**
+   * Reports duplicated adjusted dates, naming both lists and the adjustment that produced them.
+   *
+   * The adjustment is quoted as it renders, which embeds an unconstrained holiday calendar name,
+   * for the reason [[failure]] gives: the message states what was rejected, and the neutralising
+   * of text that arrived from outside happens where a failure is written out.
+   */
   private def duplicateAdjusted(
       unadj: List[LocalDate],
       adj: List[LocalDate]): Option[Failure] =
     Option.when(adj.distinct.sizeIs < adj.size)(
       failure(
-        s"Schedule calculation resulted in duplicate adjusted dates $adj " +
-          s"from unadjusted dates $unadj using adjustment '$businessDayAdjustment'"))
+        s"Schedule calculation resulted in duplicate adjusted dates ${dateList(adj)} " +
+          s"from unadjusted dates ${dateList(unadj)} using adjustment '$businessDayAdjustment'"))
 
   /**
    * Answers with the unadjusted dates, or with the failure that they contain duplicates.
@@ -1167,17 +1417,6 @@ sealed abstract case class PeriodicSchedule private (
       case None => Right(adj)
     }
 
-  /**
-   * Chooses the failure to report for dates that describe no valid period.
-   *
-   * The order is the order of the ported implementation: the specific reason, where there is one,
-   * and the general one only where there is not.
-   */
-  private def invalidPeriodFailure(unadj: List[LocalDate], adj: List[LocalDate]): Failure =
-    duplicateUnadjusted(unadj)
-      .orElse(duplicateAdjusted(unadj, adj))
-      .getOrElse(failure(InvalidPeriodMessage))
-
   //-------------------------------------------------------------------------
   /**
    * Returns a string describing this definition.
@@ -1190,6 +1429,12 @@ sealed abstract case class PeriodicSchedule private (
    * The rendering is deterministic - the properties appear in their declaration order and an absent
    * property contributes nothing - because this is the text that every failure of this type carries
    * under its `definition` attribute.
+   *
+   * It is a faithful rendering rather than a safe one: the business day adjustments it names embed
+   * a holiday calendar name that nothing constrains, so this text can be of any length and can
+   * hold any character. That is deliberate, and [[failure]] states why - a caller reads the
+   * definition it supplied, and the bounding and escaping of such text happens where a failure is
+   * written out, not here.
    *
    * @return the text form of this definition
    */
@@ -1259,6 +1504,121 @@ object PeriodicSchedule {
 
   /** The message reporting dates that describe no valid period, for no more specific reason. */
   private val InvalidPeriodMessage: String = "Schedule calculation resulted in invalid period"
+
+  /**
+   * The greatest number of periods a single schedule generation will produce.
+   *
+   * Every property of a definition is chosen by its caller, including the frequency and the two
+   * dates, so the number of periods a generation is asked for is caller-controlled and was
+   * unbounded in the library being ported: a one-day frequency over a span of centuries would walk
+   * and materialise every boundary in it, spending time and heap in proportion to a number the
+   * caller supplied. One hundred thousand periods is roughly two hundred and seventy-four years
+   * of daily periods - far beyond the longest schedule this library is ever asked to build, and
+   * further still beyond anything expressible at the monthly and quarterly frequencies that
+   * dominate its use - while bounding the list a generation can materialise to a few megabytes.
+   *
+   * The ceiling is enforced in three places, which together answer "refused before the work is
+   * done", "no more than this is ever materialised" and "the number the message names is the
+   * number that is checked":
+   *
+   *  - [[provablyExceedsPeriodCount]] refuses a span that is '''provably''' above the ceiling
+   *    before either walk begins, in constant time and without materialising anything. It refuses
+   *    nothing else: the quotient it compares is a lower bound on the steps the walk must take, so
+   *    a definition it refuses could not have been generated within the ceiling.
+   *  - [[rolledDates]] bounds the walk itself, so however wide the dates and however short the
+   *    frequency, the list a walk materialises cannot exceed the ceiling even where the preflight
+   *    could prove nothing.
+   *  - [[boundedDates]] applies the ceiling to the assembled date list, which is the count this
+   *    message is about: `n` dates are `n - 1` periods, and the dates include the schedule's ends
+   *    and any dated stub as well as the boundaries the walk rolled.
+   */
+  private val MaximumPeriodCount: Int = 100000
+
+  /** The message reporting a generation that asks for more periods than the maximum. */
+  private val TooManyPeriodsMessage: String =
+    s"Schedule calculation resulted in more than $MaximumPeriodCount periods, which is the " +
+      "maximum number of periods that can be generated"
+
+  /**
+   * The greatest number of days the roll convention's adjustment can add to a stepped date.
+   *
+   * One generated step is `date.plus(period)` followed by the adjustment of the roll convention,
+   * and that adjustment can only move the stepped date '''within its own month''' - the numeric
+   * day-of-month conventions, `EOM`, and the IMM-family conventions all answer with a date in the
+   * month of the date they were given - or at most six days forward, which is what the
+   * day-of-week conventions do [schedule/RollConvention.scala:495,514]. Thirty-one days is
+   * therefore an upper bound on the adjustment in either direction, and adding it to the length of
+   * the frequency's period gives an upper bound on the distance one step covers.
+   */
+  private val MaxRollAdjustmentDays: Long = 31L
+
+  /**
+   * The greatest number of days the fallback step of a roll convention can cover.
+   *
+   * Where adding the frequency and adjusting the result lands on or before the date stepped from -
+   * which happens when the frequency is shorter than the granularity of the convention, such as a
+   * daily frequency rolling on the third Wednesday - the convention steps by one month instead
+   * [schedule/RollConvention.scala:159-162,175-178]. That substituted step spans at most
+   * thirty-one days, so the date being adjusted is at most the greater of this and the period's own
+   * length away from the date stepped from, and the bound below takes that greater value.
+   */
+  private val MaxFallbackStepDays: Long = 31L
+
+  /**
+   * Decides whether a walk over the given span is provably asking for more than the maximum.
+   *
+   * This is the preflight of both walks: a constant-time refusal of a span so wide that no walk
+   * over it can stay within [[MaximumPeriodCount]], computed before anything is materialised. It
+   * is deliberately '''conservative''' - it answers true only for spans that are provably above
+   * the ceiling, and therefore refuses nothing a generation would have accepted:
+   *
+   *  - `spanDays` is the exact number of days between the two ends of the walk, which is safe over
+   *    the whole range of `LocalDate` in a `Long`.
+   *  - `maxStepDays` is an upper bound on the distance one generated step can cover: a year spans
+   *    at most 366 days and a month at most 31, the fallback step of a convention spans at most
+   *    [[MaxFallbackStepDays]], and the adjustment applied afterwards adds at most
+   *    [[MaxRollAdjustmentDays]]. The `1` guards a frequency whose components sum to zero, which a
+   *    validated [[Frequency]] cannot have but which costs nothing to exclude.
+   *  - because every step advances at most `maxStepDays` days, the integer quotient
+   *    `spanDays / maxStepDays` is a true '''lower''' bound on the number of steps the walk must
+   *    take to cross the span. When that lower bound is itself above the ceiling, the walk would
+   *    produce more boundaries than the ceiling allows whatever the roll convention does, so the
+   *    definition could not have been generated and is refused here instead of walking.
+   *
+   * A span whose end is not after its start yields a quotient that is zero or negative, so it is
+   * never refused by this: an inverted or empty span is a matter for the checks that own it.
+   *
+   * It is `private[schedule]` rather than private so that the specs of this package can assert the
+   * predicate itself, in both directions. A refusal from here and a refusal from the walk carry the
+   * same message, so nothing else distinguishes them from outside.
+   *
+   * @param walkStart  the earlier end of the span the walk traverses
+   * @param walkEnd  the later end of the span the walk traverses
+   * @param frequency  the periodic frequency each step of the walk applies
+   * @return true if no walk over this span with this frequency can stay within the maximum
+   */
+  private[schedule] def provablyExceedsPeriodCount(
+      walkStart: LocalDate,
+      walkEnd: LocalDate,
+      frequency: Frequency): Boolean = {
+    val spanDays: Long = ChronoUnit.DAYS.between(walkStart, walkEnd)
+    val period: Period = frequency.period
+    val periodDays: Long =
+      period.getYears.toLong * 366L + period.getMonths.toLong * 31L + period.getDays.toLong
+    val maxStepDays: Long =
+      math.max(math.max(1L, periodDays), MaxFallbackStepDays) + MaxRollAdjustmentDays
+    spanDays / maxStepDays > MaximumPeriodCount.toLong
+  }
+
+  /**
+   * The message reporting date arithmetic that leaves the range of representable dates.
+   *
+   * The arithmetic of a roll is total over almost the whole of `LocalDate`, and fails only within
+   * one frequency of the two extremes, so this reports a definition whose dates sit at the very
+   * edge of what `java.time` can represent rather than anything about the schedule's shape.
+   */
+  private val DateRangeMessage: String =
+    "Schedule calculation moved outside the range of supported dates"
 
   /** The message reporting a replacement start date that falls after the end date. */
   private val StartDateAfterEndDateMessage: String =

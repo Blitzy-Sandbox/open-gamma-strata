@@ -280,6 +280,15 @@ object StandardSchemes {
    * StandardSchemes.createTicMic("ULVR", "LSE")  // Left(one failure: the MIC is not four characters)
    * }}}
    *
+   * The failure over the market identifier code names the code it refused as that code stands,
+   * which is the wording the method being ported produced. A code reaches this method from
+   * outside the library and nothing bounds it, so bounding it and escaping what it may hold
+   * belong to the writing of the failure and not to the building of one:
+   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure do
+   * that for every part they write, here as in [[splitTicMic]]. The message is built only on
+   * the failing path, `Validate.isTrue` taking it by name, so a code of the right length is
+   * never quoted at all.
+   *
    * @param ticker  the ticker, as defined by the exchange
    * @param exchangeMic  the MIC code of the exchange, four characters
    * @return the TICMIC identifier, or the failures describing why the parts name none
@@ -319,13 +328,11 @@ object StandardSchemes {
    * method being ported: a value of the right shape is split whatever scheme it was filed
    * under.
    *
-   * The identifier the failure quotes back is rendered through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
-   * and its control characters are escaped. A message reaches a log or a report, and the value
-   * part of an identifier is text a caller supplied and is bounded by nothing, so it must not
-   * be able to make the message as large as itself. An identifier whose rendering is within
-   * the bound is quoted exactly as [[StandardId.toString]] writes it, which is every
-   * identifier of a realistic size, so the wording of an ordinary rejection is unchanged.
+   * The failure quotes the identifier back exactly as [[StandardId.toString]] writes it, which
+   * is the wording the method being ported produced. The value part of an identifier is text a
+   * caller supplied and nothing bounds it, so writing the failure out is where it is bounded:
+   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure bound
+   * every part they write and escape anything a line-oriented reader could act on.
    *
    * @param ticMic  the TICMIC identifier
    * @return the Ticker and the MIC, or the failure describing why the identifier is not a
@@ -337,9 +344,9 @@ object StandardSchemes {
     if (splitPos < 0 ||
       value.length < MinimumTicMicLength ||
       splitPos != value.length - (MicLength + 1)) {
-      // the rendering of the identifier is bounded rather than interpolated as it stands, the
-      // value part of an identifier being caller-supplied text of unbounded length
-      Left(Failure.Parsing(s"Invalid TICMIC identifier: ${Failure.describeInput(ticMic.toString)}"))
+      // the identifier is quoted as it stands, which is the wording being ported; bounding it
+      // for a reader is the business of writing the failure out, as the note above sets out
+      Left(Failure.Parsing(s"Invalid TICMIC identifier: $ticMic"))
     } else {
       Right((value.substring(0, splitPos), value.substring(splitPos + 1)))
     }

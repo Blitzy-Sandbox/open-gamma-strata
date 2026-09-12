@@ -115,11 +115,21 @@ import com.opengamma.strata.collect.result.Failure
  * ===Names that collide===
  *
  * Two members of one family can only collide over a key if one of their names is the
- * upper-case form of the other, and a collision is not reported: the member earlier in
- * declaration order keeps the key, exactly as the merge of the previous registry did. The
- * later member is then unreachable by name, and absent from `byCanonicalName`. Rather than
- * being validated here, this is ruled out for every family by the closedness specification,
- * which asserts that each member resolves to itself.
+ * upper-case form of the other, and the canonical name wins: every member is registered
+ * under its own name unconditionally, and the folded keys are added afterwards only where
+ * the name space still has room for them. So each member of such a pair resolves to itself
+ * by the name it publishes, `byCanonicalName` holds every member of every family, and the
+ * only view that can be narrower than the member list is `byUpperName`, where the two
+ * members of a pair genuinely share one folded key and the earlier of them keeps it.
+ *
+ * That is the precedence of the loader of the type being ported that read a family from
+ * configuration, which registered each row under its own name with an unconditional put and
+ * under the folded spelling only where the spelling was free. The other loader of the ported
+ * library, the one that read a family from its own constants, made both registrations
+ * conditional; the two agree for every family whose names are distinct once case is
+ * discounted, and the first is the one that keeps a member resolvable by its own name when
+ * they are not. One family of this library has such a pair, and it is the reason this order
+ * is the one implemented here rather than the other.
  *
  * ===Instances===
  *
@@ -184,43 +194,34 @@ trait NamedEnum[A <: Named] {
    * carries no attributes, so that two failures from the same family over the same text are
    * equal and can be compared directly.
    *
-   * ===The length the lenient stage accepts===
+   * ===Every length of text is rewritten===
    *
-   * The rewrites are applied only to text no longer than the family's own data warrants:
-   * the longest lookup key it registers, the longest alternate spelling it holds and the
-   * longest expression it declares, whichever of those is longest, plus a margin. Text
-   * beyond that is reported with the same failure the rewrites would have produced for it,
-   * without being folded to upper case and without any expression being applied. The exact
-   * lookup is not bounded at all, so text of any length still resolves when it is a
-   * canonical name, the upper-case form of one or an alternate spelling - the bound being at
-   * least the longest such key plus the margin, no text that could resolve exactly is ever
-   * affected by it, and a family with longer names is given a proportionally longer bound.
+   * The four steps above are applied to text of whatever length arrives, which is what the
+   * lenient lookup of the type being ported did and what the specification of this port
+   * requires: no text is refused for its size, so a family whose expression accepts text of
+   * an unbounded shape - a composite calendar name, say - resolves it however long it is.
    *
-   * The narrowing this leaves is one case: an expression that consumes text of arbitrary
-   * length and rewrites it to the name of a member, offered text longer than the bound. Such
-   * an expression is what makes the cost of a rewrite grow with the length of the text
-   * rather than with the size of the family, and bounding the text is what keeps the cost of
-   * rejecting a name a constant of the family. Three things place the case. The rewrites are
-   * reached only once the exact lookup has missed, so no resolvable spelling depends on them.
-   * The type being ported bounded its input no more than this one did, so the exposure is
-   * inherited rather than introduced here. And no table this library transcribes declares
-   * such an expression - every one of them is anchored to a literal shape of a fixed
-   * size - so the bound closes the case before a family realises it rather than after.
+   * What the length of the text may not do is cost more than the text is worth, and that is
+   * settled where the expressions are handed over rather than where the text is: each
+   * expression is examined once, when the family declares it, for the character every full
+   * match of it must end with, and an expression whose character the text does not end with
+   * is a match that cannot happen and is not attempted. The condition is a consequence of
+   * the expression - it is derived only where the shape of the expression proves it, and no
+   * condition at all otherwise - so it decides nothing about which text resolves, and leaves
+   * one pass over the expressions costing what a pass over the text costs.
    *
    * ===The text the failure quotes back===
    *
-   * The text the failure names is rendered through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
-   * and its control characters are escaped. A message reaches a log or a report, and the text
-   * handed to this method came from outside the library, so it must not be able to forge a
-   * line of that log or to make the message as large as the input. This narrows the ported
-   * behaviour, which echoed the text unbounded: for any text within the bound and free of
-   * control characters - every name of every family among them - the message is the one the
-   * ported lookup produced, character for character, and it is only a longer or a
-   * line-breaking input that is now described rather than reproduced.
+   * The failure names the text it was handed as that text stands, which is the message the
+   * ported lookup produced, character for character: a caller correcting its input is given
+   * back exactly what was refused. Text that came from outside the library is consequently
+   * inside the failure, and making it safe to write out belongs to the writing: the text form
+   * of a failure and [[com.opengamma.strata.collect.result.Failure.show]] bound every part
+   * they write and escape anything a line-oriented reader could act on, so a name from
+   * outside cannot forge a line of a log or make that line as large as itself.
    *
-   * Every family resolves its names through this one operation, so the property holds of each
-   * of them rather than of some of them, and a family added later inherits it.
+   * Every family resolves its names through this one operation, so the message is the same
+   * shape for each of them rather than for some of them, and a family added later inherits it.
    *
    * @param name  the text to parse
    * @return the member the text names, or the failure describing why it names none
@@ -249,6 +250,10 @@ trait NamedEnum[A <: Named] {
    * case. A member whose canonical name is already upper case is registered under that one
    * key and appears here under it.
    *
+   * This is the one view that can hold fewer entries than the family has members: where two
+   * members' names differ in case alone they fold to a single key, which the earlier of them
+   * keeps unless it is the canonical name of the other, in which case that other holds it.
+   *
    * @return the members keyed by upper-case name
    */
   def byUpperName: Map[String, A]
@@ -258,7 +263,9 @@ trait NamedEnum[A <: Named] {
    *
    * This is the normalised view of the family: every key is a name exactly as its member
    * renders it, which is what makes the map usable for writing a name out as well as for
-   * reading one in. A member that lost both of its keys to an earlier member is absent.
+   * reading one in. Every member appears, because a canonical name is registered
+   * unconditionally and so cannot be taken by another member; the map therefore always holds
+   * as many entries as the family has members.
    *
    * @return the members keyed by canonical name
    */
@@ -275,11 +282,15 @@ trait NamedEnum[A <: Named] {
    * Obtains the members that the specified group of external spellings identifies.
    *
    * The group is the name the family gave the table. The map returned is keyed by the
-   * external spelling, and each spelling is mapped to the member that its canonical name
-   * identifies, resolved through the same alias-aware exact lookup as `valueOf`. A row
-   * whose canonical name identifies no member is omitted, so this map can be smaller than
-   * the table `externalNamesRaw` returns; comparing the two key sets is how the closedness
-   * specification detects a row that names a member the family does not have.
+   * external spelling, and each spelling is mapped to the value that its canonical name
+   * identifies. The name is resolved through the alias-aware exact lookup of `valueOf`,
+   * unless the family supplied a resolution of its own when it built this lookup, in which
+   * case that one is used: a family that layers a second provider over its closed members -
+   * a convention parameterised by a calendar, say - carries external rows naming values that
+   * `values` does not hold, and the family's own lookup is the only thing that can reach
+   * them. A row that resolves either way to nothing is omitted, so this map can be smaller
+   * than the table `externalNamesRaw` returns; comparing the two key sets is how the
+   * closedness specification detects a row that names a value nothing can reach.
    *
    * @param group  the name of the group of external spellings
    * @return the members keyed by their external spelling, or `None` when the family
@@ -301,15 +312,53 @@ trait NamedEnum[A <: Named] {
   def externalNamesRaw(group: String): Option[Map[String, String]]
 
   /**
-   * The lenient rewrites of the family, in the order they are applied.
+   * The lenient rewrites of the family as text, in the order they are applied.
    *
-   * The list is the one the family supplied, so that it can be compared against the table
-   * the family declares. The expressions actually used by `parse` are copies of these
-   * made insensitive to case, which is how the previous mechanism compiled them.
+   * This is the raw table: the source of each expression exactly as the family declared it,
+   * beside its replacement, which is what a caller comparing the table against the resource
+   * it was transcribed from needs. Reading it compiles nothing.
+   *
+   * @return the lenient rewrites, each the source of an expression and the replacement for it
+   */
+  def lenientSources: List[(String, String)]
+
+  /**
+   * The lenient rewrites of the family as expressions, in the order they are applied.
+   *
+   * The compiled projection of `lenientSources`, for a caller that wants to examine or apply
+   * an expression rather than read its text; the source of each expression here is the row as
+   * the family declared it. It is neither the table the family handed over nor the expressions
+   * `parse` applies - those are compiled once, from the same sources, to be insensitive to
+   * case, which is how the mechanism being ported compiled them - so a caller that only needs
+   * the rows should read `lenientSources` and compile nothing.
    *
    * @return the lenient rewrites, each an expression and the replacement for it
    */
   def lenientPatterns: List[(Regex, String)]
+
+  /**
+   * Applies every lenient rewrite of the family to the specified text, in order.
+   *
+   * This is the third step of `parse`, exposed on its own. An expression whose match covers
+   * the whole of the current text replaces that text with its replacement, which may refer
+   * back to the groups the expression captured, and the expression after it is applied to
+   * what the one before it produced, so the rewrites chain. Text that no expression matches
+   * comes back unchanged, and a family that declares no expression is the identity.
+   *
+   * The text is expected to have been folded to upper case already, as `parse` folds it: the
+   * expressions are applied without regard to case, but a rewrite that produces a canonical
+   * name does so from the folded shape of a spelling rather than from any shape of it.
+   *
+   * It is public for one reason: a family whose name space is wider than its closed members -
+   * a convention parameterised by a calendar, say - has to run the chain itself, between its
+   * own exact lookup and its own repeat lookup, and running the family's own copy of the
+   * table instead would be a second implementation of this algorithm and a second set of
+   * compiled expressions to keep in step with it.
+   *
+   * @param name  the text to rewrite, folded to upper case
+   * @return the text that survives every rewrite
+   */
+  def rewriteLeniently(name: String): String
 
   /**
    * Renders this lookup as the family it belongs to.
@@ -332,20 +381,45 @@ object NamedEnum {
   private val CaseInsensitiveFlag: String = "(?i)"
 
   /**
-   * The room allowed above the longest text a family knows, bounding its lenient stage.
+   * The characters of an expression that stand for something other than themselves.
    *
-   * The bound a family applies before rewriting text is derived from its own data - the
-   * longest lookup key, alternate spelling and expression source it holds - and this margin
-   * is added to it, so that a spelling longer than anything the family declares is still
-   * rewritten as long as it is within reach of one. The tables this library transcribes
-   * size the margin: the longest expression source any of them declares is fifty characters
-   * and the longest name or alternate spelling any of them realises is under sixty, while
-   * the longest spelling a caller can sensibly offer one of those rows - a screaming-snake
-   * or spaced form of a name - runs a handful of characters beyond the name itself. Thirty-two
-   * characters of room therefore admits every declared row and every spelling of one with
-   * room to spare, while leaving the bound of every family a small constant.
+   * Used only to decide whether the tail of an expression source is a plain literal, which
+   * is a question about the text of the expression rather than about the language it
+   * matches; anything in this set, and anything after a backslash, ends the enquiry with no
+   * answer rather than with a guess.
    */
-  private val LenientLengthMargin: Int = 32
+  private val Metacharacters: Set[Char] = Set('.', '\\', '+', '*', '?', '[', ']', '^', '$', '(', ')', '{', '}', '|')
+
+  /** Opens a character class, the one construct whose single-character form is read here. */
+  private val ClassOpen: Char = '['
+
+  /** Closes a character class. */
+  private val ClassClose: Char = ']'
+
+  /** Negates a character class, which makes its single-character form say nothing useful. */
+  private val ClassNegate: Char = '^'
+
+  /** Escapes the character after it, which is therefore not the character it spells. */
+  private val Escape: Char = '\\'
+
+  /** Separates the alternatives of an expression, either of which a match may take. */
+  private val Alternation: Char = '|'
+
+  /**
+   * Opens a construct that can change how the rest of an expression is read.
+   *
+   * Every inline flag group, every non-capturing and every look-around group begins this way,
+   * and one of those flags - the one that turns comments on - makes the tail of a source stop
+   * being part of the expression at all. A source holding any of them is therefore not read
+   * further.
+   */
+  private val GroupWithMeaning: String = "(?"
+
+  /** Opens a quoted run, inside which no character means what it would otherwise mean. */
+  private val QuoteOpen: String = "\\Q"
+
+  /** The number of characters of a character class holding exactly one character. */
+  private val SingleCharacterClassLength: Int = 3
 
   /**
    * Summons the name lookup of a family.
@@ -393,7 +467,55 @@ object NamedEnum {
       lenient: List[(Regex, String)] = Nil,
       externals: Map[String, Map[String, String]] = Map.empty,
       familyName: String = ""): NamedEnum[A] =
-    new Impl[A](values, alternates, lenient, externals, familyName)
+
+    new Impl[A](
+      values,
+      alternates,
+      lenient.map { case (expression, replacement) => (expression.pattern.pattern(), replacement) },
+      externals,
+      familyName,
+      None)
+
+  /**
+   * Obtains the name lookup of a family whose lenient rewrites are handed over as text.
+   *
+   * The same lookup as [[of]] in every respect but two, and the form a family of this library
+   * uses.
+   *
+   * The rewrites arrive as the '''source''' of each expression rather than as a compiled
+   * expression. An expression has to be compiled insensitively to case to be applied, so a
+   * family that compiles its own table hands over a compiled expression that is then compiled
+   * a second time; handing over the source leaves exactly one compiled expression per rule in
+   * the program, made when the family first parses a name and not before, so a family whose
+   * callers only ever do arithmetic with its members compiles nothing at all.
+   *
+   * A resolution for the external tables may be supplied. External rows are resolved through
+   * the exact lookup of the family by default, which is right for a family whose name space
+   * is exactly its members; a family that layers a second provider over them - a convention
+   * parameterised by a calendar, say - passes its own lookup here, so that a row naming a
+   * value outside `values` resolves rather than being dropped.
+   *
+   * @param values  the members of the family, in declaration order
+   * @param alternates  the alternate spellings, each mapped to a canonical name
+   * @param lenient  the lenient rewrites, in the order they are applied, each the source of
+   *   an expression matched against the whole of the text and the replacement for it
+   * @param externals  the groups of external spellings, each group mapping an external
+   *   spelling to a canonical name
+   * @param familyName  the name of the family as it appears when the family rejects text,
+   *   defaulting to a generic label
+   * @param externalTargets  resolves the canonical name of an external row, where the family
+   *   needs a wider resolution than its own exact lookup
+   * @tparam A  the type of the named values of the family
+   * @return the name lookup of the family
+   */
+  def ofSources[A <: Named](
+      values: NonEmptyList[A],
+      alternates: Map[String, String] = Map.empty,
+      lenient: List[(String, String)] = Nil,
+      externals: Map[String, Map[String, String]] = Map.empty,
+      familyName: String = "",
+      externalTargets: Option[String => Option[A]] = None): NamedEnum[A] =
+    new Impl[A](values, alternates, lenient, externals, familyName, externalTargets)
 
   /**
    * The ordering of named values by name, which is also their hashing and their equality.
@@ -455,38 +577,58 @@ object NamedEnum {
    *
    * @param values  the members of the family, in declaration order
    * @param alternates  the alternate spellings as supplied, before expansion
-   * @param lenientPatterns  the lenient rewrites as supplied, before they are copied
+   * @param suppliedSources  the lenient rewrites as supplied, each the source of an
+   *   expression and the replacement for it
    * @param externals  the groups of external spellings, held verbatim
    * @param suppliedFamilyName  the label supplied for the family, possibly empty
+   * @param externalTargets  resolves the canonical name of an external row, where the family
+   *   supplied a wider resolution than the exact lookup of this one
    * @tparam A  the type of the named values of the family
    */
   private final class Impl[A <: Named](
       val values: NonEmptyList[A],
       alternates: Map[String, String],
-      val lenientPatterns: List[(Regex, String)],
+      suppliedSources: List[(String, String)],
       externals: Map[String, Map[String, String]],
-      suppliedFamilyName: String) extends NamedEnum[A] {
+      suppliedFamilyName: String,
+      externalTargets: Option[String => Option[A]]) extends NamedEnum[A] {
 
     override val familyName: String =
       if (suppliedFamilyName.isEmpty) DefaultFamilyName else suppliedFamilyName
 
     /**
-     * The lookup keys of the members, first claimant of each key winning.
+     * The members keyed by the name each of them publishes.
      *
-     * Each member offers two keys in turn - its canonical name, then that name folded to
-     * upper case - and the pairs are formed member by member rather than key by key, so
-     * that a member claims both of its keys before the next member claims any. Keeping the
-     * first pair for each key then reproduces the registration of the type being ported
-     * exactly, including the case where a member named in mixed case shadows a later member
-     * named in upper case.
+     * A canonical name is claimed unconditionally, which is the registration the loader of
+     * the type being ported performed for a family read from configuration and the property
+     * every member of every family depends on: the name a member renders is the name that
+     * reaches it, whatever the other members of the family are called. Two members sharing
+     * one canonical name would be a family with two identities for one name, which the
+     * closedness specification rules out; were it to happen the earlier would keep the name,
+     * and this fold rather than a conversion to a map is what makes that so.
      */
-    private lazy val entries: List[(String, A)] =
-      values.toList.flatMap { value =>
-        List(value.name -> value, value.name.toUpperCase(Locale.ENGLISH) -> value)
-      }.distinctBy { case (key, _) => key }
+    private lazy val canonicalEntries: Map[String, A] =
+      values.toList.foldLeft(Map.empty[String, A]) {
+        case (claimed, value) =>
+          if (claimed.contains(value.name)) claimed else claimed.updated(value.name, value)
+      }
 
-    /** The members keyed by every key they are registered under. */
-    private lazy val byName: Map[String, A] = entries.toMap
+    /**
+     * The members keyed by every key they are registered under.
+     *
+     * The canonical names above, and then the folded spelling of each member's name added
+     * only where the name space has room for it - so a folded key is taken by the member
+     * whose canonical name it is if there is one, and otherwise by the first member to offer
+     * it. That is the order of the ported loader's two registrations, the first
+     * unconditional and the second conditional, and the reason a member can lose its folded
+     * key but never its own name.
+     */
+    private lazy val byName: Map[String, A] =
+      values.toList.foldLeft(canonicalEntries) {
+        case (claimed, value) =>
+          val folded = value.name.toUpperCase(Locale.ENGLISH)
+          if (claimed.contains(folded)) claimed else claimed.updated(folded, value)
+      }
 
     /**
      * The alternate spellings, expanded with their upper-case forms.
@@ -506,97 +648,69 @@ object NamedEnum {
           if (expanded.contains(upper)) expanded else expanded.updated(upper, canonicalName)
       }
 
-    /** The registered keys that are already upper case, which are the folded ones. */
+    /**
+     * The registered keys that are already upper case, which are the folded ones.
+     *
+     * A folded key is held by the member whose canonical name it is where the family has
+     * one, and by the first member to offer it otherwise, so this view has one entry per
+     * distinct folded name and can therefore be smaller than the member list.
+     */
     override lazy val byUpperName: Map[String, A] =
-      entries.foldLeft(Map.empty[String, A]) { case (acc, (key, value)) =>
-        if (key == key.toUpperCase(Locale.ENGLISH)) acc.updated(key, value) else acc
-      }
+      byName.filter { case (key, _) => key == key.toUpperCase(Locale.ENGLISH) }
 
     /**
      * The members keyed by canonical name.
      *
-     * The registered keys are split into those that are already a canonical name and those
-     * that are not. The first group is taken as it stands, and only then does a member from
-     * the second group contribute its canonical name, and only if that name is still free.
-     * A member keyed canonically therefore wins over one that is not, which matters when a
-     * member's canonical name was claimed by an earlier member: that earlier member holds
-     * the name here, and the later one is absent.
+     * This is the canonical registration exactly: a name is claimed by its own member and by
+     * nothing else, so every member of the family appears here under the name it renders.
      */
-    override lazy val byCanonicalName: Map[String, A] = {
-      val (canonicallyKeyed, others) = entries.partition { case (key, value) => key == value.name }
-      val fromCanonical = canonicallyKeyed.foldLeft(Map.empty[String, A]) {
-        case (acc, (key, value)) => acc.updated(key, value)
-      }
-      others.foldLeft(fromCanonical) { case (acc, (_, value)) =>
-        if (acc.contains(value.name)) acc else acc.updated(value.name, value)
-      }
-    }
+    override lazy val byCanonicalName: Map[String, A] = canonicalEntries
 
     /**
-     * The lenient expressions, copied to be insensitive to case.
+     * The lenient rewrites, each compiled once and examined once.
      *
-     * The previous mechanism compiled every lenient expression insensitively, and the
-     * expressions depend on it: `parse` has already folded its input to upper case by the
-     * time they are applied, so an expression written in mixed case could never match
-     * otherwise, and a class of characters written as upper case would never match a lower
-     * case letter. The copy is made by prefixing the inline flag to the source of the
-     * supplied expression, and is skipped where the source already begins with it.
+     * The compiled expression of a rule is made insensitive to case, as the mechanism being
+     * ported made it: `parse` has folded its input to upper case by the time a rule is
+     * applied, so an expression written in the mixed case of its original row could never
+     * match otherwise, and a class of characters written as upper case would never match a
+     * lower-case letter. One expression per rule exists in the program, made here from the
+     * source the family handed over and used by every parse thereafter.
      */
-    private lazy val lenientMatchers: List[(Regex, String)] =
-      lenientPatterns.map { case (expression, replacement) =>
-        val source = expression.pattern.pattern()
-        val insensitive =
-          if (source.startsWith(CaseInsensitiveFlag)) source else CaseInsensitiveFlag + source
-        (insensitive.r, replacement)
-      }
+    private lazy val lenientRules: List[LenientRule] =
+      suppliedSources.map { case (source, replacement) => new LenientRule(source, replacement) }
+
+    override def lenientSources: List[(String, String)] = suppliedSources
 
     /**
-     * The greatest length of text this family hands to its lenient rewrites.
+     * The lenient rewrites as expressions, for a caller that wants to apply one.
      *
-     * This is the longest text the family could plausibly be asked to rewrite, taken from
-     * the family's own data and nothing else: the longest key a member is registered under -
-     * canonical names and their upper-case forms alike - the longest spelling and target of
-     * the expanded alternate-name table, and the longest expression source the family
-     * declared, plus [[NamedEnum.LenientLengthMargin]]. A family with longer names therefore
-     * gets a longer bound, and one whose expressions are written out at length gets a bound
-     * that covers them.
-     *
-     * Both sides of the alternate-name table count, because the text that survives the
-     * rewrites is looked up through that table as well: a rewrite may produce an alternate
-     * spelling, and a table row may name a member the family does not have, in which case
-     * its target is longer than any key. Taking the greatest length of all three sources
-     * therefore bounds the text that any of the two lookups could still resolve, which is
-     * what makes the bound safe to apply before the rewrites rather than after them.
-     *
-     * Computed once, like every other table derived here: the value is a constant of the
-     * family and is read on the miss path of every parse.
+     * Compiled from the same sources as the rules and without the inline flag the rules
+     * carry, so that the source of each expression here is the row as the family declared
+     * it. Nothing in the resolution path reads this and neither does the raw view above,
+     * which is why it is derived lazily: a caller that reads the rows rather than the
+     * expressions - every table comparison in this library - compiles nothing at all.
      */
-    private lazy val maxLenientLength: Int = {
-      val keyLengths = entries.iterator.map { case (key, _) => key.length }
-      val aliasLengths = alternateNames.iterator.flatMap { case (spelling, canonicalName) =>
-        Iterator(spelling.length, canonicalName.length)
-      }
-      val sourceLengths = lenientPatterns.iterator.map { case (expression, _) =>
-        expression.pattern.pattern().length
-      }
-      val longest = (keyLengths ++ aliasLengths ++ sourceLengths)
-        .foldLeft(0)((widest, length) => math.max(widest, length))
-      longest + LenientLengthMargin
-    }
+    override lazy val lenientPatterns: List[(Regex, String)] =
+      suppliedSources.map { case (source, replacement) => (source.r, replacement) }
 
     /**
-     * The external groups with their rows resolved to members.
+     * The external groups with their rows resolved to values.
      *
-     * Each row's canonical name is resolved through the exact lookup, so a row may point at
-     * an alternate spelling as well as at a canonical name. A row that resolves to no
-     * member is dropped, which leaves the group smaller than the table it came from.
+     * Each row's canonical name is resolved through the resolution the family supplied, or
+     * through the exact lookup of this one where it supplied none - so a row may point at an
+     * alternate spelling as well as at a canonical name, and a family whose own lookup is
+     * wider than its closed members resolves a row naming one of those wider values. A row
+     * that resolves to nothing is dropped, which leaves the group smaller than the table it
+     * came from.
      */
-    private lazy val resolvedExternals: Map[String, Map[String, A]] =
+    private lazy val resolvedExternals: Map[String, Map[String, A]] = {
+      val resolve: String => Option[A] = externalTargets.getOrElse(canonicalName => valueOf(canonicalName))
       externals.map { case (group, rows) =>
         group -> rows.flatMap { case (externalSpelling, canonicalName) =>
-          valueOf(canonicalName).map(value => externalSpelling -> value)
+          resolve(canonicalName).map(value => externalSpelling -> value)
         }
       }
+    }
 
     override def valueOf(name: String): Option[A] =
       byName.get(alternateNames.getOrElse(name, name))
@@ -604,98 +718,43 @@ object NamedEnum {
     /**
      * Parses text into a member, applying the leniency the family declares.
      *
-     * The exact lookup runs first and unbounded, so an alternate spelling and a name of any
-     * length resolve exactly as they always did. Only when it misses is the lenient stage
-     * reached, and the lenient stage is bounded: text longer than [[maxLenientLength]] is
-     * reported with the failure the rewrites would have reported for it, without the fold to
-     * upper case that would copy it and without a single expression being applied to it.
+     * The exact lookup runs first, so an alternate spelling and a canonical name resolve as
+     * they always did. Only when it misses is the lenient stage reached: the text is folded
+     * to upper case, every rewrite is applied to it in the order the family declared them,
+     * and the exact lookup is tried once more on what survives. This is the lenient lookup
+     * of the type being ported, step for step, and it is applied to text of every length -
+     * nothing is refused for its size, at either stage.
      *
-     * ===Why the lenient stage is bounded and the lookup is not===
-     *
-     * The rewrites are the only part of this algorithm whose cost is a function of the
-     * length of the text rather than of the size of the family, and an expression that
-     * consumes text of unbounded length - a greedy or repeated group followed by a literal,
-     * say - can make that cost grow faster than the text does. Bounding the text the
-     * rewrites see makes the cost of rejecting a name a constant of the family, and bounding
-     * it here, where the fold to upper case would otherwise copy the whole of it, removes
-     * the copy as well.
-     *
-     * The bound is derived from the family's own data - its longest key, its longest
-     * alternate spelling, its longest expression source, plus a margin - so a family with
-     * longer names is given a longer bound, and no text that either exact lookup could
-     * resolve is ever beyond it. What it narrows is therefore one deliberate case: an
-     * expression that rewrites arbitrarily long text into the name of a member, handed text
-     * longer than the family's bound, now reports that text instead of rewriting it.
-     *
-     * Three facts place that narrowing. The rewrites are reached only after the alias-aware
-     * exact lookup has missed, so nothing a family resolves exactly depends on them. The
-     * lenient lookup of the type being ported applied its configured expressions to text of
-     * any length in exactly the same way, so the exposure is inherited here rather than
-     * introduced. And no table this library transcribes declares such an expression: every
-     * source in them is anchored to a literal shape of a fixed size, which is why the bound
-     * closes the case while it is still unrealised rather than after a family realises it.
-     *
-     * A full pass over the expressions for text within the bound is not narrowed and is not
-     * meant to be: it is the cost the ported algorithm has, and the order of the pass is
-     * behaviour.
-     *
-     * The comparison is written into the lookup rather than into a method of its own, and
-     * deliberately so: measured here, moving it into a private method cost the miss path of
-     * a family with no expression some fifty nanoseconds and one allocation per call, the
-     * extra frame being enough to stop the alternative of the lookup being elided. Both
-     * shapes compute the same answer, and this one is the one that leaves every rate of the
-     * lookup as it was before the bound existed.
+     * The length of the text costs what one pass over the text costs, and no more. That is
+     * settled by the rules rather than here: a rule knows the character every full match of
+     * it must end with, where its expression proves one, and text that does not end with
+     * that character is a match that cannot happen and is not attempted. See
+     * [[LenientRule]] for why that leaves the answer untouched.
      *
      * @param name  the text to parse
      * @return the member the text names, or the failure describing why it names none
      */
     override def parse(name: String): EitherNec[Failure, A] =
       valueOf(name)
-        .orElse(
-          if (name.length > maxLenientLength) None
-          else valueOf(rewriteLeniently(name.toUpperCase(Locale.ENGLISH))))
+        .orElse(valueOf(rewriteLeniently(name.toUpperCase(Locale.ENGLISH))))
         .toRight(notFound(name))
 
-    /**
-     * Applies every lenient rewrite to the specified text, in order.
-     *
-     * An expression that matches the whole of the text replaces it, and the expression
-     * after it is applied to the replacement, so the rewrites chain. The replacement may
-     * refer back to the groups the expression captured.
-     *
-     * One matcher is created per rule and serves both purposes: it decides whether the rule
-     * applies and then performs the replacement, as the type being ported did. Asking an
-     * expression to replace within text a second time would match that text a second time,
-     * which is an allocation and a scan this loop does not need - a matcher resets itself
-     * when it replaces, so the replacement sees the whole of the text exactly as the test
-     * did.
-     *
-     * @param name  the text to rewrite, already folded to upper case
-     * @return the text that survives every rewrite
-     */
-    private def rewriteLeniently(name: String): String =
-      lenientMatchers.foldLeft(name) { case (current, (expression, replacement)) =>
-        val matcher = expression.pattern.matcher(current)
-        if (matcher.matches()) {
-          matcher.replaceFirst(replacement)
-        } else {
-          current
-        }
-      }
+    override def rewriteLeniently(name: String): String =
+      lenientRules.foldLeft(name)((current, rule) => rule.rewrite(current))
 
     /**
      * The failure reported for text that names no member.
      *
-     * The text is rendered through [[Failure.describeInput]] rather than interpolated as it
-     * stands, so the message is bounded in length and holds no character that could forge a
-     * line of a log carrying it. Text within the bound and free of control characters renders
-     * to itself, so the wording a caller sees for an ordinary rejected name is unchanged.
+     * The message is the one the ported lookup raised - the family, then the text as it was
+     * supplied - so the failure names exactly what was rejected. Bounding that text and
+     * escaping what it may hold is the business of writing a failure out, which
+     * [[Failure.show]] and the text form of a failure do for every part they write.
      *
      * @param name  the text that was rejected, as it was supplied
-     * @return the failure naming the family and the rendering of the text
+     * @return the failure naming the family and the text
      */
     private def notFound(name: String): NonEmptyChain[Failure] =
-      NonEmptyChain.one(Failure.Parsing(s"$familyName name not found: ${Failure.describeInput(name)}"))
+      NonEmptyChain.one(Failure.Parsing(s"$familyName name not found: $name"))
 
     override def externalNameGroups: Set[String] = externals.keySet
 
@@ -707,4 +766,199 @@ object NamedEnum {
 
     override def toString: String = s"NamedEnum[$familyName]"
   }
+
+  /**
+   * One lenient rewrite of a family: an expression, its replacement, and what it needs of
+   * the text before it is worth applying.
+   *
+   * ===The expression===
+   *
+   * Compiled once, here, from the source the family declared, with the inline flag that
+   * makes it insensitive to case - prefixed unless the source already carries it. The
+   * mechanism being ported compiled its expressions the same way, and the rows depend on it:
+   * the text a rule sees has been folded to upper case, so a row written in mixed case would
+   * never match without it.
+   *
+   * ===What it needs of the text===
+   *
+   * A rewrite is applied with a whole-text match, so every character of the text takes part
+   * in it, and the cost of deciding a match is therefore a function of the length of the
+   * text. For most expressions that cost is one pass; for an expression holding a group that
+   * can consume text of unbounded length it is a pass per position the group could end at,
+   * which is a cost that grows faster than the text does. Text arriving from outside the
+   * library reaches this - a name to parse, a name in a document being read - so that
+   * difference is the difference between rejecting a name in microseconds and rejecting it
+   * in minutes.
+   *
+   * It is closed by asking of the expression, once, a question about the language it
+   * matches: which character must a full match end with? Where the tail of the source is a
+   * plain literal, or a class holding exactly one character, the answer is that character
+   * and every full match ends with it. Where the tail is anything else - a group, a
+   * quantifier, a class of several characters, an anchor, an escape - there is no answer and
+   * none is guessed. An expression holding an alternation is not asked at all, since either
+   * branch may end the match.
+   *
+   * Text that does not end with a character the expression requires cannot match it, so
+   * declining to run the expression over such text removes no match: the two spellings of
+   * this rule agree on every input, and the specification of this port - which fixes the
+   * lenient algorithm as that of the type being ported - is satisfied either way. What
+   * changes is only the work: the one expression among the transcribed tables that can
+   * consume unbounded text, `(.*)[(](.*)[)]`, requires a closing bracket at the end, so text
+   * crafted to make it backtrack is now declined on its last character.
+   *
+   * The comparison of characters ignores case, because the expression does. A source that
+   * turns case sensitivity off again is therefore tested more weakly than it needs to be,
+   * which costs a match that the expression then declines itself and cannot admit a match it
+   * would have refused.
+   *
+   * @param source  the source of the expression, as the family declared it
+   * @param replacement  the replacement for text this rule matches, which may refer back to
+   *   the groups the expression captured
+   */
+  private final class LenientRule(source: String, replacement: String) {
+
+    /** The expression of this rule, compiled once and insensitive to case. */
+    private val expression: Regex =
+      (if (source.startsWith(CaseInsensitiveFlag)) source else CaseInsensitiveFlag + source).r
+
+    /** The character every full match of this rule ends with, where the source proves one. */
+    private val requiredFinalCharacter: Option[Char] = finalCharacterOf(source)
+
+    /**
+     * Applies this rule to the specified text, where it matches the whole of it.
+     *
+     * One matcher serves both purposes, as the ported loop did: it decides whether the rule
+     * applies and then performs the replacement. Asking the expression to replace within the
+     * text a second time would match that text a second time, which is a scan and an
+     * allocation this needs not - a matcher resets itself when it replaces, so the
+     * replacement sees the whole of the text exactly as the test did.
+     *
+     * @param current  the text as the rules before this one left it
+     * @return the replacement where this rule matches the whole of the text, the text
+     *   unchanged otherwise
+     */
+    def rewrite(current: String): String =
+      if (!couldMatch(current)) {
+        current
+      } else {
+        val matcher = expression.pattern.matcher(current)
+        if (matcher.matches()) matcher.replaceFirst(replacement) else current
+      }
+
+    /**
+     * Whether the text satisfies what this rule requires of its final character.
+     *
+     * A rule that requires nothing could match anything and is always applied.
+     *
+     * @param text  the text a match is being considered for
+     * @return false only where a full match is impossible
+     */
+    private def couldMatch(text: String): Boolean =
+      requiredFinalCharacter.forall(required =>
+        text.nonEmpty && equalIgnoringCase(text.charAt(text.length - 1), required))
+  }
+
+  /**
+   * The character every full match of the specified expression source must end with.
+   *
+   * Read from the text of the source and nothing else, and conservative at every turn: an
+   * answer is returned only where the shape of the source proves it, so a source this reader
+   * does not understand yields no answer rather than a wrong one.
+   *
+   * Four shapes stop the reading before it begins, each because it can make the tail of a
+   * source mean something other than what it spells:
+   *
+   *  - an '''alternation''', because a match may take either branch and only one of them ends
+   *    the source;
+   *  - an '''inline construct''' `(?...`, which covers every flag group, non-capturing group
+   *    and look-around. The flag that matters most is the one turning comments on: under it
+   *    `A # X` matches `A`, the `# X` being a comment, so reading `X` as required would refuse
+   *    text the expression accepts. Rather than track which flags are in force at which
+   *    position, a source holding any such construct is left without a requirement;
+   *  - a '''quoted run''' `\Q`, inside which no character means what it otherwise would;
+   *  - anything the two readers below decline.
+   *
+   * Only a leading `(?i)` is exempt, because that is the flag this lookup prefixes to a source
+   * itself and it changes nothing about how the source is read.
+   *
+   * @param source  the source of an expression
+   * @return the character a full match must end with, where the source proves one
+   */
+  private def finalCharacterOf(source: String): Option[Char] = {
+    val body =
+      if (source.startsWith(CaseInsensitiveFlag)) source.substring(CaseInsensitiveFlag.length) else source
+    if (body.isEmpty || body.contains(Alternation) || body.contains(GroupWithMeaning) ||
+      body.contains(QuoteOpen)) {
+      None
+    } else if (body.charAt(body.length - 1) == ClassClose) {
+      singleCharacterClassOf(body)
+    } else {
+      finalLiteralOf(body)
+    }
+  }
+
+  /**
+   * The character of a class of exactly one character closing the specified source.
+   *
+   * The shape read is three characters: an unescaped opening bracket, one character that is
+   * neither the negation nor an escape, and the closing bracket. A class of any other shape,
+   * and a closing bracket that is part of something else, yields no answer.
+   *
+   * @param body  the source, without any leading inline flag
+   * @return the single character of the closing class, where that is what closes the source
+   */
+  private def singleCharacterClassOf(body: String): Option[Char] =
+    if (body.length < SingleCharacterClassLength) {
+      None
+    } else {
+      val open = body.length - SingleCharacterClassLength
+      val inner = body.charAt(body.length - 2)
+      if (body.charAt(open) == ClassOpen && !isEscaped(body, open) && inner != ClassNegate && inner != Escape) {
+        Some(inner)
+      } else {
+        None
+      }
+    }
+
+  /**
+   * The literal character closing the specified source.
+   *
+   * A character that stands for itself, is not escaped, and carries no quantifier - a
+   * quantifier follows the character it applies to, so a source whose last character is a
+   * plain literal has none applying to that literal.
+   *
+   * @param body  the source, without any leading inline flag
+   * @return the closing character, where it stands for itself
+   */
+  private def finalLiteralOf(body: String): Option[Char] = {
+    val last = body.charAt(body.length - 1)
+    if (Metacharacters.contains(last) || isEscaped(body, body.length - 1)) None else Some(last)
+  }
+
+  /**
+   * Whether the character at the specified position of a source is escaped.
+   *
+   * An odd number of escapes before a character escapes it; an even number of them is that
+   * many literal escapes, leaving the character itself unescaped.
+   *
+   * @param body  the source
+   * @param index  the position of the character
+   * @return whether the character stands for something other than itself
+   */
+  private def isEscaped(body: String, index: Int): Boolean =
+    body.substring(0, index).reverseIterator.takeWhile(character => character == Escape).size % 2 == 1
+
+  /**
+   * Whether two characters are the same character, disregarding their case.
+   *
+   * Folded both ways, since a single fold is not enough for every character a name can hold.
+   *
+   * @param left  one character
+   * @param right  the other character
+   * @return whether the two are the same character in some case
+   */
+  private def equalIgnoringCase(left: Char, right: Char): Boolean =
+    left == right ||
+      Character.toUpperCase(left) == Character.toUpperCase(right) ||
+      Character.toLowerCase(left) == Character.toLowerCase(right)
 }

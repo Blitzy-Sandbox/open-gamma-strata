@@ -8,8 +8,6 @@ package com.opengamma.strata.basics.date
 import java.time.LocalDate
 import java.time.Period
 
-import scala.util.matching.Regex
-
 import cats.Hash
 import cats.Order
 import cats.Show
@@ -275,19 +273,23 @@ object PeriodAdditionConvention {
    * `LAST_DAY` cannot claim `LAST_BUSINESS_DAY`, and a replacement produced by one row matches
    * none of the rows after it. The chain therefore performs at most one rewrite, whichever
    * order a future row is added in.
+   *
+   * The rows are the source of each expression rather than a compiled expression, and are handed
+   * to the name lookup in that form, which compiles each of them once - insensitively to case,
+   * and only when this family first parses a name.
    */
-  private val LenientPatterns: List[(Regex, String)] =
+  private val LenientSources: List[(String, String)] =
     List(
-      "NONE".r -> "None",
-      "LAST_DAY".r -> "LastDay",
-      "LAST_BUSINESS_DAY".r -> "LastBusinessDay"
+      "NONE" -> "None",
+      "LAST_DAY" -> "LastDay",
+      "LAST_BUSINESS_DAY" -> "LastBusinessDay"
     )
 
   /**
    * The name lookup for this family.
    *
    * This instance is the single route from text to a convention, and it is built from `values`
-   * and `LenientPatterns` alone. Of the three tables a named family may declare, this family
+   * and `LenientSources` alone. Of the three tables a named family may declare, this family
    * declares only the lenient rewrites, because the configuration of the type being ported
    * declared only those: it named no alternate spelling of any convention and no group of
    * names published for an external protocol. The whole name space of the family is therefore
@@ -297,10 +299,10 @@ object PeriodAdditionConvention {
    * @return the name lookup for the three conventions
    */
   implicit val namedEnum: NamedEnum[PeriodAdditionConvention] =
-    NamedEnum.of(
+    NamedEnum.ofSources(
       values = values,
       alternates = Map.empty,
-      lenient = LenientPatterns,
+      lenient = LenientSources,
       externals = Map.empty,
       familyName = "PeriodAdditionConvention")
 

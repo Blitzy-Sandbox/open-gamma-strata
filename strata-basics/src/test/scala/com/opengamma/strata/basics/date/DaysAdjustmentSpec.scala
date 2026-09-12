@@ -22,6 +22,7 @@ import org.scalatest.matchers.should.Matchers
 import com.opengamma.strata.basics.ImmutableReferenceData
 import com.opengamma.strata.basics.RefDataReader
 import com.opengamma.strata.basics.ReferenceData
+import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
@@ -401,14 +402,29 @@ class DaysAdjustmentSpec extends AnyFunSuite with Matchers {
     test.toString shouldBe
       "4 business days using calendar Sat/Sun then apply Following using calendar WedThu"
 
-    // Unlike the two-argument form, this one holds exactly the fields it is given, including a
-    // count of zero and an adjustment naming the calendar that did the addition, which is what
-    // makes it the way to rebuild an adjustment from the fields of another.
+    // With a non-zero count this form holds exactly the fields it is given, which is what makes
+    // it the way to rebuild an adjustment from the fields of another - and the fields of every
+    // adjustment are accepted by the validated factory, which is the statement that the two
+    // construction routes agree.
+    DaysAdjustment.of(test.days, test.calendar, test.adjustment) should haveValue(test)
+
+    // A count of zero is the one input it rewrites, as the two-argument form does and for the
+    // same reason: there is no addition of zero business days, so the addition calendar is
+    // dropped and the adjustment supplied is kept. The value is the one `normalized` answers with
+    // for the fields as given, and it is a value the validated factory accepts - which is why
+    // that factory can refuse the pairing outright.
     val zero: DaysAdjustment =
       DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.SAT_SUN, BDA_NONE)
     zero.days shouldBe 0
-    zero.calendar shouldBe HolidayCalendarIds.SAT_SUN
+    zero.calendar shouldBe HolidayCalendarIds.NO_HOLIDAYS
     zero.adjustment shouldBe BDA_NONE
+    zero shouldBe DaysAdjustment.NONE
+    DaysAdjustment.of(0, HolidayCalendarIds.SAT_SUN, BDA_NONE) should
+      beFailureWith(FailureReason.INVALID)
+
+    // The two-argument form of the same request reads it as the rule it can mean, so the two
+    // zero-day forms are different values: this one adjusts nothing, that one moves a holiday
+    // forwards.
     zero should not be DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.SAT_SUN)
   }
 
@@ -534,14 +550,47 @@ class DaysAdjustmentSpec extends AnyFunSuite with Matchers {
       }
     }
 
-    // The alternative the factory rejected is a different value with different behaviour: held as
-    // `(0, Sat/Sun, no adjustment)` by the three-argument factory, it adds nothing and adjusts
-    // nothing, so a holiday stays a holiday. That is why the zero case is special-cased at all.
-    val heldAsGiven: DaysAdjustment =
+    // The alternative reading of the same request is a different value with different behaviour:
+    // a zero-day addition carrying no trailing adjustment adds nothing and adjusts nothing, so a
+    // holiday stays a holiday. That is why the zero case is special-cased at all. The three-
+    // argument factory builds it by dropping the addition calendar, so it is the no-adjustment
+    // constant and renders in the calendar-day form; the calendar the caller named is gone
+    // because nothing in that value would ever have consulted it.
+    val addsNothing: DaysAdjustment =
       DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.SAT_SUN, BDA_NONE)
-    heldAsGiven should not be test
-    heldAsGiven.adjust(SAT_2014_08_16, REF_DATA) should haveValue(SAT_2014_08_16)
-    heldAsGiven.toString shouldBe "0 business days using calendar Sat/Sun"
+    addsNothing should not be test
+    addsNothing shouldBe DaysAdjustment.NONE
+    addsNothing.adjust(SAT_2014_08_16, REF_DATA) should haveValue(SAT_2014_08_16)
+    addsNothing.toString shouldBe "0 calendar days"
+
+    // The three-argument rewrite is the one place this port departs from the factory being
+    // ported, which held a zero-day business-day addition as it was given, so what it costs is
+    // asserted rather than described. It costs no computed date: shifting a date by zero business
+    // days returns the date whichever calendar is asked, so the value the rewrite keeps computes,
+    // for every date, exactly what the trailing adjustment alone computes - which is what the
+    // discarded calendar would have contributed nothing to. Sixty consecutive days carry that
+    // across weekends, a London bank holiday and a month end.
+    val adjustmentAlone: BusinessDayAdjustment = BDA_FOLLOW_SAT_SUN
+    val rewritten: DaysAdjustment =
+      DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.GBLO, adjustmentAlone)
+    rewritten.calendar shouldBe HolidayCalendarIds.NO_HOLIDAYS
+    (0 until 60).foreach { offset =>
+      val day: LocalDate = date(2014, 8, 1).plusDays(offset.toLong)
+      withClue(s"the rewritten zero-day addition adjusting $day: ") {
+        rewritten.adjust(day, REF_DATA) shouldBe adjustmentAlone.adjust(day, REF_DATA)
+      }
+    }
+
+    // What it does cost is one reading of one field, and only where the trailing adjustment names
+    // no calendar either: the calendar the caller passed is no longer recoverable from the value,
+    // so `resultCalendar` answers the no-holidays identifier where the type being ported answered
+    // the discarded calendar. The port's answer is the accurate one for this value - it adds
+    // nothing and adjusts nothing, so it returns its input, and an arbitrary input is not a
+    // business day of any calendar - which is why the rewrite is kept and recorded rather than
+    // repaired. With a trailing adjustment that does name a calendar, as `test` has, the reading
+    // is unchanged, because `resultCalendar` reads the adjustment first.
+    addsNothing.resultCalendar shouldBe HolidayCalendarIds.NO_HOLIDAYS
+    rewritten.resultCalendar shouldBe HolidayCalendarIds.SAT_SUN
 
     // The calendar it was given is recoverable from the value in spite of the rewrite, which is
     // what `resultCalendar` is for, and the value is already in normal form.
@@ -702,11 +751,23 @@ class DaysAdjustmentSpec extends AnyFunSuite with Matchers {
 
     // Two adjustments that compute the same dates while holding different fields are deliberately
     // not equal; `normalized` is how a caller asks for the representative form before comparing.
+    // The pair below is the surviving case of that: a business-day addition adjusted against the
+    // very calendar that performed it lands on a business day of that calendar already, so the
+    // trailing adjustment is redundant and the two values behave alike while holding different
+    // fields.
     val sameBehaviour: DaysAdjustment =
-      DaysAdjustment.ofBusinessDays(0, WED_THU, BDA_FOLLOW_SAT_SUN)
-    val normalForm: DaysAdjustment = DaysAdjustment.ofCalendarDays(0, BDA_FOLLOW_SAT_SUN)
+      DaysAdjustment.ofBusinessDays(3, WED_THU, BDA_FOLLOW_WED_THU)
+    val normalForm: DaysAdjustment = DaysAdjustment.ofBusinessDays(3, WED_THU)
     sameBehaviour should not be normalForm
     sameBehaviour.normalized shouldBe normalForm
+
+    // The other case the method being ported repaired - a zero-day addition naming a calendar -
+    // cannot reach `normalized` here, because no value holds those fields: the factory drops the
+    // calendar and the validated factory refuses the pairing, so the two forms are the same value
+    // rather than two values one of which normalises to the other.
+    DaysAdjustment.ofBusinessDays(0, WED_THU, BDA_FOLLOW_SAT_SUN) shouldBe
+      DaysAdjustment.ofCalendarDays(0, BDA_FOLLOW_SAT_SUN)
+    DaysAdjustment.of(0, WED_THU, BDA_FOLLOW_SAT_SUN) should beFailureWith(FailureReason.INVALID)
   }
 
   //-------------------------------------------------------------------------
@@ -788,6 +849,83 @@ class DaysAdjustmentSpec extends AnyFunSuite with Matchers {
       DaysAdjustment.ofBusinessDays(1, HolidayCalendarIds.NO_HOLIDAYS, BDA_NONE)
     DaysAdjustment.ofCalendarDays(1, BDA_FOLLOW_WED_THU) shouldBe
       DaysAdjustment.ofBusinessDays(1, HolidayCalendarIds.NO_HOLIDAYS, BDA_FOLLOW_WED_THU)
+
+    // The validated factory is the fifth route in, and the one a caller holding three fields it
+    // did not choose - read off a document, or computed from data - reaches for, because it is the
+    // one that judges them. It accepts every field combination that describes an adjustment: a
+    // negative count, a composite calendar, and any convention over any calendar.
+    DaysAdjustment.of(test.days, test.calendar, test.adjustment) should haveValue(test)
+    DaysAdjustment.of(-2, HolidayCalendarIds.SAT_SUN, BDA_NONE) should
+      haveValue(DaysAdjustment.ofBusinessDays(-2, HolidayCalendarIds.SAT_SUN))
+    DaysAdjustment.of(
+      3,
+      HolidayCalendarIds.GBLO.combinedWith(HolidayCalendarIds.USNY),
+      BDA_FOLLOW_WED_THU) should beSuccess
+    DaysAdjustment.of(0, HolidayCalendarIds.NO_HOLIDAYS, BDA_NONE) should
+      haveValue(DaysAdjustment.NONE)
+
+    // It refuses exactly one pairing, the one the class documents as naming no day: a count of
+    // zero against a calendar that would have performed the addition. The failure says so, and
+    // it is a single cause, the three fields having nothing else about them to be wrong.
+    val zeroDaysNamingACalendar: ResultNec[DaysAdjustment] =
+      DaysAdjustment.of(0, WED_THU, BDA_FOLLOW_SAT_SUN)
+    zeroDaysNamingACalendar should beFailureWith(FailureReason.INVALID)
+    zeroDaysNamingACalendar should haveFailureMessageMatching(
+      "A business day addition of zero days names no day.*WedThu.*")
+    zeroDaysNamingACalendar.left.toOption.map(failures => failures.length) shouldBe Some(1L)
+
+    // That message names the identifier it rejected, and an identifier is arbitrary text:
+    // `HolidayCalendarId.of` is total and accepts any string, including one carrying line breaks
+    // or running to any length. The failure carries that text as it was supplied, so a caller
+    // correcting its input is handed back exactly what was refused; bounding it and escaping what
+    // it may hold is the business of writing the failure out, and the rendering of a failure is
+    // one line, escapes anything a line-oriented reader could act on, and is bounded however long
+    // the name was. Both halves are asserted: what the failure carries, and what reaches a log.
+    val forgedName: String = "GBLO\nWARN  the addition succeeded\u2028and again"
+    val forgedLines: ResultNec[DaysAdjustment] =
+      DaysAdjustment.of(0, HolidayCalendarId.of(forgedName), BDA_NONE)
+    val forgedFailure: Failure =
+      forgedLines.left.toOption
+        .map(failures => failures.head)
+        .getOrElse(fail("a zero-day addition naming a calendar should have been refused"))
+    forgedFailure.message should include(forgedName)
+    val forgedRendering: String = Show[Failure].show(forgedFailure)
+    forgedRendering should include("GBLO\\n")
+    forgedRendering should include("\\u2028")
+    forgedRendering.linesIterator.size shouldBe 1
+
+    val overLongName: String = "Z" * 4096
+    val overLong: ResultNec[DaysAdjustment] =
+      DaysAdjustment.of(0, HolidayCalendarId.of(overLongName), BDA_NONE)
+    val overLongFailure: Failure =
+      overLong.left.toOption
+        .map(failures => failures.head)
+        .getOrElse(fail("a zero-day addition naming a calendar should have been refused"))
+    overLongFailure.message should include(overLongName)
+    val overLongRendering: String = Show[Failure].show(overLongFailure)
+    overLongRendering should not include overLongName
+    overLongRendering should include("...")
+    overLongRendering.length should be < overLongName.length
+
+    // No factory builds that pairing, which is what makes the refusal a statement about the type
+    // rather than about one route into it: every value any factory produces is accepted by `of`,
+    // and each zero-day value names no addition calendar.
+    List(
+      DaysAdjustment.NONE,
+      DaysAdjustment.ofCalendarDays(0),
+      DaysAdjustment.ofCalendarDays(0, BDA_FOLLOW_SAT_SUN),
+      DaysAdjustment.ofCalendarDays(4, BDA_FOLLOW_WED_THU),
+      DaysAdjustment.ofBusinessDays(0, WED_THU),
+      DaysAdjustment.ofBusinessDays(0, WED_THU, BDA_FOLLOW_SAT_SUN),
+      DaysAdjustment.ofBusinessDays(4, WED_THU),
+      DaysAdjustment.ofBusinessDays(-4, WED_THU, BDA_FOLLOW_SAT_SUN)).foreach { built =>
+      withClue(s"the fields of '$built' read back through the validated factory: ") {
+        DaysAdjustment.of(built.days, built.calendar, built.adjustment) should haveValue(built)
+        if (built.days == 0) {
+          built.calendar shouldBe HolidayCalendarIds.NO_HOLIDAYS
+        }
+      }
+    }
   }
 
   //-------------------------------------------------------------------------
@@ -832,14 +970,41 @@ class DaysAdjustmentSpec extends AnyFunSuite with Matchers {
     DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.SAT_SUN).asJson.noSpaces shouldBe
       DaysAdjustment.ofCalendarDays(0, BDA_FOLLOW_SAT_SUN).asJson.noSpaces
 
-    // Decoding hands the fields to the factory that holds them as given, deliberately rather than
-    // to the two-argument form, whose zero-day case would rewrite a document describing
-    // `(0, Sat/Sun, no adjustment)` into a different adjustment and break the round trip.
-    val heldAsGiven: DaysAdjustment =
+    // Decoding hands the fields to the validated factory, so a document describing the one
+    // pairing no adjustment has - a count of zero against a named addition calendar - is refused
+    // rather than wrapped. Such a document is one no encoder of this port writes, because every
+    // factory drops the addition calendar of a zero-day addition, so the round trip is unaffected
+    // and the refusal reaches only hand-written input.
+    val zeroDaysNamingACalendar: String =
+      """{"days":0,"calendar":"Sat/Sun","adjustment":{"convention":"NoAdjust","calendar":"NoHolidays"}}"""
+    decode[DaysAdjustment](zeroDaysNamingACalendar).isLeft shouldBe true
+    decode[DaysAdjustment](zeroDaysNamingACalendar).left.map(_.getMessage) match {
+      case Left(message) => message should include("zero")
+      case Right(value) => fail(s"the document should have been refused but decoded to $value")
+    }
+
+    // The calendar of such a document is arbitrary text, and the refusal names it, so the
+    // decoder is the second way a hostile identifier could reach whatever records the failure.
+    // It reaches it as it stands, exactly as it does through the factory, because the message is
+    // built in one place - and the rendering asserted above, which is what a log receives, is
+    // therefore bounded and single-line on this path as well.
+    val forgedInDocument: String =
+      """{"days":0,"calendar":"GBLO\nWARN  decoded","adjustment":{"convention":"NoAdjust","calendar":"NoHolidays"}}"""
+    decode[DaysAdjustment](forgedInDocument).left.map(_.getMessage) match {
+      case Left(message) => message should include("GBLO\nWARN  decoded")
+      case Right(value) => fail(s"the document should have been refused but decoded to $value")
+    }
+    val longInDocument: String = "Z" * 4096
+    decode[DaysAdjustment](
+      s"""{"days":0,"calendar":"$longInDocument","adjustment":{"convention":"NoAdjust","calendar":"NoHolidays"}}""")
+      .left.map(_.getMessage) match {
+      case Left(message) => message should include(longInDocument)
+      case Right(value) => fail(s"the document should have been refused but decoded to $value")
+    }
+    val zeroDays: DaysAdjustment =
       DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.SAT_SUN, BDA_NONE)
-    decode[DaysAdjustment](heldAsGiven.asJson.noSpaces) shouldBe Right(heldAsGiven)
-    decode[DaysAdjustment](heldAsGiven.asJson.noSpaces).map(value => value.calendar) shouldBe
-      Right(HolidayCalendarIds.SAT_SUN)
+    zeroDays.calendar shouldBe HolidayCalendarIds.NO_HOLIDAYS
+    decode[DaysAdjustment](zeroDays.asJson.noSpaces) shouldBe Right(zeroDays)
 
     // The documents below vary one part of a payload at a time, so the parts they share are named
     // once here: the adjustment object of `BusinessDayAdjustment.NONE`, and a function assembling
@@ -848,9 +1013,9 @@ class DaysAdjustmentSpec extends AnyFunSuite with Matchers {
     def document(days: String, calendar: String, adjustment: String): String =
       s"""{"days":$days,"calendar":"$calendar","adjustment":$adjustment}"""
 
-    // Construction is total, so the decoder rejects nothing but the shape of the payload: every
-    // field is required, the count has to be a number, and an adjustment is an object rather than
-    // a string. A failure here is a `DecodingFailure` carried in the `Left`, not an exception.
+    // Beyond that one pairing the decoder rejects the shape of the payload: every field is
+    // required, the count has to be a number, and an adjustment is an object rather than a
+    // string. A failure here is a `DecodingFailure` carried in the `Left`, not an exception.
     decode[DaysAdjustment](s"""{"calendar":"NoHolidays","adjustment":$noAdjustObject}""")
       .isLeft shouldBe true
     decode[DaysAdjustment](s"""{"days":4,"adjustment":$noAdjustObject}""").isLeft shouldBe true
@@ -882,4 +1047,3 @@ class DaysAdjustmentSpec extends AnyFunSuite with Matchers {
     unknown.map(adjustment => adjustment.adjust(FRI_2014_08_15, REF_DATA).isLeft) shouldBe Right(true)
   }
 }
-

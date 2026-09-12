@@ -7,6 +7,8 @@ package com.opengamma.strata.basics.value
 
 import java.time.LocalDate
 
+import cats.data.NonEmptyList
+
 import cats.Hash
 import cats.Show
 
@@ -15,9 +17,16 @@ import io.circe.parser.decode
 import io.circe.parser.parse
 import io.circe.syntax._
 
+import org.scalacheck.Gen
+
+import org.scalatest.Assertion
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
+import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 
+import com.opengamma.strata.basics.schedule.SchedulePeriod
+import com.opengamma.strata.collect.result.Failure
+import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.result.ResultNec
 import com.opengamma.strata.collect.testkit.ResultMatchers._
@@ -74,10 +83,24 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * accumulation (`SmartConstructorSpec`), the proof that no validated type has a public `apply`
  * or `copy` (`ApiSurfaceSpec`), and the property-based codec round trip over every
  * codec-bearing type (`json/JsonRoundTripSpec`). This spec stays with the six ported methods,
- * and the resolution helpers of the type - which are not public and are reached only from
- * [[ValueSchedule]] - are asserted through `ValueScheduleSpec`, as they were in Java.
+ * and the '''behaviour''' of the resolution helpers of the type - which are not public and are
+ * reached only from [[ValueSchedule]] - is asserted through `ValueScheduleSpec`, as it was in
+ * Java.
+ *
+ * ===The two tests that are not ports===
+ *
+ * The last two tests have no Java counterpart, and cover something the Java implementation did
+ * not have: the resolution helpers answer from a [[ValueStep.PeriodIndex]] built once per
+ * resolution rather than by searching the period list once per step, and an index is only worth
+ * having if it answers exactly what the search answered. So they assert equivalence rather than
+ * behaviour - the indexed answers against a linear search written here, over deliberately
+ * awkward period lists first and over randomly generated ones after - and they are the reason
+ * the rewrite of those two helpers can be trusted on inputs no ported case names. Awkward means
+ * what the type permits: `Schedule.of` accepts periods in any order and explicitly allows
+ * periods that are not adjacent, so unsorted lists, repeated start dates, gaps and overlaps are
+ * all legal input and all appear below.
  */
-final class ValueStepSpec extends AnyFunSuite with Matchers {
+final class ValueStepSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
 
   /** The relative adjustment of the Java fixture `DELTA_MINUS_2000`. */
   private val DeltaMinus2000: ValueAdjustment = ValueAdjustment.ofDeltaAmount(-2000.0d)
@@ -418,5 +441,280 @@ final class ValueStepSpec extends AnyFunSuite with Matchers {
       """{"periodIndex":1,"date":"2014-06-30","value":{"modifyingValue":-2000.0,"type":"DeltaAmount"}}""")
     bothPositions.isLeft shouldBe true
     bothPositions.swap.toOption.fold("")(error => error.getMessage) should include(SinglePositionRequired)
+  }
+
+  //-------------------------------------------------------------------------
+  // The fixtures, generators and linear references of the two equivalence tests, which are the
+  // two tests of this spec that are not ports. They are kept here, between the ported tests and
+  // the two that use them, rather than with the fixtures at the top of the file: everything above
+  // this line belongs to the Java test class being ported, and everything below it belongs to the
+  // indexed resolution this port introduced.
+
+  /** The date every period and query date of the two equivalence tests is measured from. */
+  private val IndexBaseDate: LocalDate = date(2016, 1, 1)
+
+  /**
+   * The message `findIndex` reports for an index-based step naming no period of the schedule.
+   *
+   * The two messages here are transcribed from the implementation, as every message this spec
+   * asserts is, and they are what makes the equivalence asserted below an equivalence of
+   * '''outcomes''' rather than of the successful half of them: a failure is compared whole, so a
+   * rewrite that reported the right condition in the wrong words would not pass.
+   */
+  private val IndexBeyondSchedule: String = "ValueStep index is beyond last schedule period"
+
+  /** The message `findPreviousIndex` reports for a step that is not date-based. */
+  private val NoDateHeld: String = "ValueStep is not date-based, so it has no preceding period"
+
+  /**
+   * Reads the period out of an outcome that is expected to hold one.
+   *
+   * @param result  the outcome of the period factory, expected to hold a period
+   * @return the period the outcome holds
+   */
+  private def period(result: ResultNec[SchedulePeriod]): SchedulePeriod =
+    result.fold(
+      failures =>
+        fail(s"invalid period fixture: ${failures.toChain.toList.map(_.message).mkString("; ")}"),
+      held => held)
+
+  /**
+   * A period whose adjusted dates are its unadjusted dates, named by day offsets from the base
+   * date.
+   *
+   * @param startOffset  the offset in days of the start date from the base date
+   * @param endOffset  the offset in days of the end date from the base date
+   * @return the period spanning those two dates, adjusted and unadjusted alike
+   */
+  private def periodAt(startOffset: Long, endOffset: Long): SchedulePeriod =
+    period(
+      SchedulePeriod.of(
+        IndexBaseDate.plusDays(startOffset),
+        IndexBaseDate.plusDays(endOffset)))
+
+  /**
+   * A period whose adjusted dates are its unadjusted dates moved by the specified shift.
+   *
+   * This is the shape that makes the two passes of `findIndex` distinguishable: a date can be the
+   * adjusted start of one period and the unadjusted start of another, and which period it
+   * resolves to is decided by the order of the passes rather than by the data.
+   *
+   * @param startOffset  the offset in days of the unadjusted start date from the base date
+   * @param endOffset  the offset in days of the unadjusted end date from the base date
+   * @param shift  the number of days the adjusted dates are moved by
+   * @return the period holding those unadjusted dates and the shifted adjusted ones
+   */
+  private def shiftedPeriodAt(startOffset: Long, endOffset: Long, shift: Long): SchedulePeriod =
+    period(
+      SchedulePeriod.of(
+        IndexBaseDate.plusDays(startOffset + shift),
+        IndexBaseDate.plusDays(endOffset + shift),
+        IndexBaseDate.plusDays(startOffset),
+        IndexBaseDate.plusDays(endOffset)))
+
+  //-------------------------------------------------------------------------
+  /**
+   * Finds the index of the specified step by searching the periods, as the Java original did.
+   *
+   * This is the reference the indexed implementation is compared against, and it is written to
+   * read like the two `for` loops of the Java method rather than like the implementation it is
+   * checking: the index of the first period whose unadjusted start date is the date of the step,
+   * then - only if there is none - the index of the first whose adjusted start date is. Writing
+   * it independently is the whole point; a reference that shared code with its subject would
+   * agree with it by construction.
+   *
+   * @param stepUnderTest  the step to resolve
+   * @param periods  the periods of the schedule, in schedule order
+   * @return the outcome the indexed implementation has to match
+   */
+  private def referenceFindIndex(
+      stepUnderTest: ValueStep,
+      periods: List[SchedulePeriod]): FailureOr[Option[Int]] =
+    (stepUnderTest.periodIndex, stepUnderTest.date) match {
+      case (Some(index), _) =>
+        if (index >= periods.size) {
+          Left(Failure.Invalid(IndexBeyondSchedule))
+        } else {
+          Right(Some(index))
+        }
+      case (None, Some(stepDate)) =>
+        val unadjusted = periods.indexWhere(_.unadjustedStartDate == stepDate)
+        val adjusted = periods.indexWhere(_.startDate == stepDate)
+        if (unadjusted >= 0) {
+          Right(Some(unadjusted))
+        } else if (adjusted >= 0) {
+          Right(Some(adjusted))
+        } else {
+          Right(None)
+        }
+      case (None, None) =>
+        fail("no ValueStep holds neither position, so no generator of this spec produces one")
+    }
+
+  /**
+   * Finds the index of the period preceding the specified step by searching the periods, as the
+   * Java original did.
+   *
+   * The four rules are transcribed in the order the Java method decided them, and the middle one
+   * is written as the linear search it was: the first period after the first one whose unadjusted
+   * start date is after the date, minus one. The implementation under test answers that same rule
+   * from the prefix maxima of the start dates, which is where an error would hide if the identity
+   * it relies on did not hold - hence this reference.
+   *
+   * @param stepUnderTest  the step to resolve
+   * @param periods  the periods of the schedule, in schedule order, non-empty
+   * @return the outcome the indexed implementation has to match
+   */
+  private def referenceFindPreviousIndex(
+      stepUnderTest: ValueStep,
+      periods: List[SchedulePeriod]): FailureOr[Int] =
+    stepUnderTest.date match {
+      case None => Left(Failure.Invalid(NoDateHeld))
+      case Some(stepDate) =>
+        val firstPeriod = periods.head
+        val lastPeriod = periods.last
+        if (stepDate.isBefore(firstPeriod.unadjustedStartDate)) {
+          Left(
+            Failure.Invalid(
+              "ValueStep date is before the start of the schedule: " +
+                s"$stepDate < ${firstPeriod.unadjustedStartDate}"))
+        } else {
+          val laterStart =
+            (1 until periods.size).find(index =>
+              periods(index).unadjustedStartDate.isAfter(stepDate))
+          laterStart match {
+            case Some(index) => Right(index - 1)
+            case None if stepDate.isAfter(lastPeriod.unadjustedEndDate) =>
+              Left(
+                Failure.Invalid(
+                  "ValueStep date is after the end of the schedule: " +
+                    s"$stepDate > ${lastPeriod.unadjustedEndDate}"))
+            case None => Right(periods.size - 1)
+          }
+        }
+    }
+
+  /**
+   * Asserts that the indexed resolution of the specified step agrees with the linear reference.
+   *
+   * Four answers are compared for every pair: the two questions asked of the index, and the same
+   * two asked through the members that take the period list, which have to agree with the indexed
+   * ones because they are written in terms of them. The comparison is of whole outcomes, so an
+   * index that answered the right period through the wrong branch - or reported the right
+   * condition in the wrong words - fails here.
+   *
+   * @param periods  the periods of the schedule to resolve against
+   * @param stepUnderTest  the step to resolve
+   * @return the assertion that all four answers agree
+   */
+  private def assertResolutionAgrees(
+      periods: NonEmptyList[SchedulePeriod],
+      stepUnderTest: ValueStep): Assertion = {
+    val index = ValueStep.PeriodIndex.of(periods)
+    val periodList = periods.toList
+    stepUnderTest.findIndex(index) shouldBe referenceFindIndex(stepUnderTest, periodList)
+    stepUnderTest.findPreviousIndex(index) shouldBe
+      referenceFindPreviousIndex(stepUnderTest, periodList)
+    stepUnderTest.findIndex(periods) shouldBe stepUnderTest.findIndex(index)
+    stepUnderTest.findPreviousIndex(periods) shouldBe stepUnderTest.findPreviousIndex(index)
+  }
+
+  /**
+   * Asserts the agreement above for every step worth asking about over the specified periods.
+   *
+   * The steps are every date in a window that runs from before the first period to well past the
+   * last - which is what reaches the before-the-start and after-the-end rules as well as the ones
+   * in between - and every period index from one up to two past the end of the schedule, which
+   * reaches both halves of the index-based branch. A step at index zero is not among them because
+   * no factory of the type builds one.
+   *
+   * @param periods  the periods of the schedule to resolve against
+   * @return the assertion that every step agrees
+   */
+  private def assertEveryStepAgrees(periods: NonEmptyList[SchedulePeriod]): Assertion = {
+    val dateSteps =
+      (-4L to 30L).map(offset => ValueStep.of(IndexBaseDate.plusDays(offset), DeltaMinus2000))
+    val indexSteps =
+      (1 to periods.size + 2).map(index => step(ValueStep.of(index, DeltaMinus2000)))
+    dateSteps.foreach(dateStep => assertResolutionAgrees(periods, dateStep))
+    indexSteps.foreach(indexStep => assertResolutionAgrees(periods, indexStep))
+    succeed
+  }
+
+  //-------------------------------------------------------------------------
+  test("resolution_agreesWithLinearSearch_awkwardSchedules") {
+    // A schedule of one period, which is the degenerate case of the predecessor search: there is
+    // no period after the first, so the vector of prefix maxima the search runs over is empty.
+    assertEveryStepAgrees(NonEmptyList.of(periodAt(0L, 2L)))
+
+    // Periods in descending order. `Schedule.of` accepts any order, so a binary search over the
+    // start dates themselves would answer the middle rule wrongly here; this is the case that
+    // proves the search is over their prefix maxima instead.
+    assertEveryStepAgrees(
+      NonEmptyList.of(periodAt(10L, 12L), periodAt(5L, 7L), periodAt(0L, 2L)))
+
+    // Repeated start dates, where both resolution questions have more than one candidate answer
+    // and the behaviour being preserved is that the earliest period wins.
+    assertEveryStepAgrees(
+      NonEmptyList.of(periodAt(0L, 2L), periodAt(0L, 5L), periodAt(0L, 1L), periodAt(3L, 4L)))
+
+    // Non-adjacent periods with gaps between them, which the type explicitly allows and which
+    // put dates inside the schedule that belong to no period at all.
+    assertEveryStepAgrees(
+      NonEmptyList.of(periodAt(0L, 2L), periodAt(6L, 8L), periodAt(20L, 22L)))
+
+    // Overlapping periods, out of order, with a duplicate start among them: the combination of
+    // all three, which is where an implementation that assumed any of them would break.
+    assertEveryStepAgrees(
+      NonEmptyList.of(periodAt(6L, 12L), periodAt(0L, 8L), periodAt(6L, 7L), periodAt(2L, 3L)))
+
+    // Adjusted starts colliding with unadjusted starts of other periods. The first period's
+    // adjusted start is day 5, which is also the second period's unadjusted start, so day 5
+    // resolves to the second period - the unadjusted pass is made first - while day 2 resolves to
+    // the first period through the adjusted pass. Both passes are therefore exercised, and in
+    // their order.
+    assertEveryStepAgrees(
+      NonEmptyList.of(
+        shiftedPeriodAt(0L, 2L, 5L),
+        periodAt(5L, 7L),
+        shiftedPeriodAt(10L, 12L, -8L)))
+  }
+
+  //-------------------------------------------------------------------------
+  test("resolution_agreesWithLinearSearch_randomSchedules") {
+    // Random period lists over a twenty-day window, which is narrow enough that duplicated start
+    // dates, overlaps, gaps and unsorted order all occur often rather than as rarities, paired
+    // with a random step positioned either by a date in and around that window or by an index in
+    // and beyond the schedule. Every pair asserts the same four-way agreement the awkward
+    // schedules above do.
+    val genPeriod: Gen[SchedulePeriod] =
+      for {
+        startOffset <- Gen.choose(0L, 20L)
+        unadjustedLength <- Gen.choose(1L, 6L)
+        adjustedShift <- Gen.choose(-2L, 2L)
+        adjustedLength <- Gen.choose(1L, 6L)
+      } yield period(
+        SchedulePeriod.of(
+          IndexBaseDate.plusDays(startOffset + adjustedShift),
+          IndexBaseDate.plusDays(startOffset + adjustedShift + adjustedLength),
+          IndexBaseDate.plusDays(startOffset),
+          IndexBaseDate.plusDays(startOffset + unadjustedLength)))
+    val genPeriods: Gen[NonEmptyList[SchedulePeriod]] =
+      for {
+        firstPeriod <- genPeriod
+        restSize <- Gen.choose(0, 7)
+        restPeriods <- Gen.listOfN(restSize, genPeriod)
+      } yield NonEmptyList(firstPeriod, restPeriods)
+    val genStep: Gen[ValueStep] =
+      Gen.oneOf(
+        Gen
+          .choose(-4L, 30L)
+          .map(offset => ValueStep.of(IndexBaseDate.plusDays(offset), DeltaMinus2000)),
+        Gen.choose(1, 12).map(index => step(ValueStep.of(index, DeltaMinus2000))))
+
+    forAll(genPeriods, genStep, minSuccessful(500)) {
+      (periods: NonEmptyList[SchedulePeriod], stepUnderTest: ValueStep) =>
+        assertResolutionAgrees(periods, stepUnderTest)
+    }
   }
 }

@@ -212,6 +212,48 @@ class FxIndexObservationSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  test("test_resolve") {
+    // The batch route into the type, which the index being ported published as `resolve` and
+    // which this port publishes on both the type and the index: the fixing calendar and the
+    // maturity offset are resolved once and the function that comes back observes any fixing
+    // without consulting reference data again. Equality of an observation ignores the maturity
+    // date, so each resolved value is compared to the per-fixing factory's value field by field
+    // as well - a maturity date derived wrongly by this route would otherwise be invisible.
+    val index = FxIndices.GBP_USD_WM
+    val observe = required("resolved observation", FxIndexObservation.resolve(index, RefData))
+    val observeFromIndex = required("resolved observation", index.resolve(RefData))
+
+    List(FixingDate, FixingDate.plusDays(1L), FixingDate.plusDays(4L), FixingDate.plusMonths(2L))
+      .foreach { fixingDate =>
+        withClue(s"$fixingDate: ") {
+          val direct = required("observation", FxIndexObservation.of(index, fixingDate, RefData))
+          List(observe(fixingDate), observeFromIndex(fixingDate)).foreach { resolved =>
+            resolved shouldBe direct
+            resolved.index shouldBe index
+            resolved.fixingDate shouldBe fixingDate
+            resolved.maturityDate shouldBe direct.maturityDate
+            resolved.maturityDate shouldBe
+              required("maturity date", index.calculateMaturityFromFixing(fixingDate, RefData))
+          }
+        }
+      }
+
+    // A fixing date that is not a fixing date of the index is carried as given while the maturity
+    // date follows from the fixing date the index would use, exactly as the per-fixing factory
+    // treats it.
+    val saturday = FixingDate.`with`(java.time.DayOfWeek.SATURDAY)
+    saturday.getDayOfWeek shouldBe java.time.DayOfWeek.SATURDAY
+    observe(saturday).fixingDate shouldBe saturday
+    observe(saturday).maturityDate shouldBe
+      required("maturity date", index.calculateMaturityFromFixing(saturday, RefData))
+
+    // Reference data that cannot supply a calendar is reported once, by the resolution, rather
+    // than per fixing - which is the reason a caller observing a series reaches for it.
+    FxIndexObservation.resolve(index, ReferenceData.empty) should beFailureWith(FailureReason.MISSING_DATA)
+    index.resolve(ReferenceData.empty) should beFailureWith(FailureReason.MISSING_DATA)
+  }
+
+  //-------------------------------------------------------------------------
   test("coverage") {
     // The Java sweeps walked the properties of a bean through its meta-bean and compared one
     // bean with another. There is no meta-bean here, so what they stood for is asserted directly

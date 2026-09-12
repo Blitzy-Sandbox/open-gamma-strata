@@ -10,8 +10,6 @@ import java.time.LocalDate
 import java.time.temporal.TemporalAdjuster
 import java.time.temporal.TemporalAdjusters
 
-import scala.util.matching.Regex
-
 import cats.Hash
 import cats.Order
 import cats.Show
@@ -666,20 +664,24 @@ object RollConvention {
    * the digits of the day, and the replacements of the others are literal names. Each expression
    * is matched insensitively to case by the name lookup, which is why they are written here in
    * the mixed case of the original rows rather than folded by hand.
+   *
+   * The rows are the source of each expression rather than a compiled expression, and are handed
+   * to the name lookup in that form, which compiles each of them once - insensitively to case,
+   * and only when this family first parses a name.
    */
-  private val LenientPatterns: List[(Regex, String)] =
+  private val LenientSources: List[(String, String)] =
     List(
-      "(Day_?)?31".r -> "EOM",
-      "(Day_?)?30".r -> "Day30",
-      "(Day_?)?([1-2]?[0-9])".r -> "Day$2",
-      "NONE".r -> "None",
-      "(Day_?)?MON".r -> "DayMon",
-      "(Day_?)?TUE".r -> "DayTue",
-      "(Day_?)?WED".r -> "DayWed",
-      "(Day_?)?THU".r -> "DayThu",
-      "(Day_?)?FRI".r -> "DayFri",
-      "(Day_?)?SAT".r -> "DaySat",
-      "(Day_?)?SUN".r -> "DaySun"
+      "(Day_?)?31" -> "EOM",
+      "(Day_?)?30" -> "Day30",
+      "(Day_?)?([1-2]?[0-9])" -> "Day$2",
+      "NONE" -> "None",
+      "(Day_?)?MON" -> "DayMon",
+      "(Day_?)?TUE" -> "DayTue",
+      "(Day_?)?WED" -> "DayWed",
+      "(Day_?)?THU" -> "DayThu",
+      "(Day_?)?FRI" -> "DayFri",
+      "(Day_?)?SAT" -> "DaySat",
+      "(Day_?)?SUN" -> "DaySun"
     )
 
   /**
@@ -693,14 +695,14 @@ object RollConvention {
    * derived. Nothing is read from a class or from the class path, so the name space of the family
    * is fixed when this file is compiled.
    *
-   * The instance also carries the tables themselves - `lenientPatterns` and `externalNamesRaw` -
+   * The instance also carries the tables themselves - `lenientSources` and `externalNamesRaw` -
    * which is how a caller or a specification reads the transcribed data back without this object
    * having to publish it twice.
    *
    * @return the name lookup for the 45 conventions
    */
   implicit val namedEnum: NamedEnum[RollConvention] =
-    NamedEnum.of(values, Map.empty, LenientPatterns, Map("FpML" -> FpMLNames), "RollConvention")
+    NamedEnum.ofSources(values, Map.empty, LenientSources, Map("FpML" -> FpMLNames), "RollConvention")
 
   //-------------------------------------------------------------------------
   /**

@@ -34,6 +34,9 @@ import org.scalatest.prop.TableFor2
 import org.scalatest.prop.TableFor4
 import org.scalatest.prop.TableFor6
 
+import com.opengamma.strata.basics.date.BusinessDayAdjustment
+import com.opengamma.strata.basics.date.BusinessDayConventions
+import com.opengamma.strata.basics.date.HolidayCalendarId
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
@@ -44,10 +47,12 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * Test [[StubConvention]], ported from the Java `StubConventionTest`.
  *
  * This is a one-to-one port: each of the Java class's twenty-one test methods has a test of the
- * same name here, in the same order, and no test has been added, split or renamed. Eight of those
- * methods were parameterised over five data providers; each provider is transcribed row for row
- * into one table, and the row loop lives inside the single test that the Java method became, so
- * the method-level traceability recorded in `manifest/java-test-mapping.csv` stays exact:
+ * same name here, in the same order, and none of them has been split or renamed. One case with no
+ * Java counterpart follows them, `test_rejectedDefinitionSurvivesHostileCalendarNames`, described
+ * at the foot of this comment. Eight of the Java methods were parameterised over five data
+ * providers; each provider is transcribed row for row into one table, and the row loop lives
+ * inside the single test that the Java method became, so the method-level traceability recorded in
+ * `manifest/java-test-mapping.csv` stays exact:
  *
  *  - `data_types` - the 8 members of the family, driving `test_null`;
  *  - `data_roll` - '''65''' rows, driving `test_toRollConvention`;
@@ -113,6 +118,19 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  *    neither Java serialization nor wire compatibility with that library's JSON is in its scope
  *    (AAP 0.2.2). The circe codec replaced the first and `Show`, `toString` and `parse` replaced
  *    the second, so the two tests assert exactly those.
+ *
+ * ===The one added case===
+ *
+ * The definition a rejection carries is text the caller rendered, and part of that text is not
+ * constrained by this library: a definition names a business day adjustment, which names a
+ * holiday calendar identifier whose name `HolidayCalendarId.of` accepts as given, so it may hold
+ * a line feed or several thousand characters. `test_rejectedDefinitionSurvivesHostileCalendarNames`
+ * drives such a definition - a real [[PeriodicSchedule]], rendered by its own `toString` - into
+ * three of the rejection paths above and asserts the two properties that have to hold together.
+ * The `definition` attribute carries that text exactly, line feed and all, because it stands in
+ * for the field the ported exception carried, while the text of the failure itself is one bounded
+ * line holding no character a reader of lines could act on, because bounding and escaping belong
+ * to the writing of a failure rather than to its construction.
  *
  * Numerical parity against the Java implementation is not this spec's subject: the effect of a
  * stub convention on a generated schedule is pinned to the captured Java baseline, to 1e-9
@@ -618,6 +636,34 @@ final class StubConventionSpec
         StubConvention.BOTH.isStubLong(anchor, other) shouldBe false
       }
     }
+
+    // The three days either side of the threshold, stated on their own so that the exclusive
+    // boundary the scaladoc promises is pinned by an assertion a reader can find by name: six days
+    // is absorbed, seven days is retained, eight days is retained.
+    StubConvention.SMART_INITIAL.isStubLong(anchor, anchor.plusDays(6L)) shouldBe true
+    StubConvention.SMART_FINAL.isStubLong(anchor, anchor.plusDays(6L)) shouldBe true
+    StubConvention.SMART_INITIAL.isStubLong(anchor, anchor.plusDays(7L)) shouldBe false
+    StubConvention.SMART_FINAL.isStubLong(anchor, anchor.plusDays(7L)) shouldBe false
+    StubConvention.SMART_INITIAL.isStubLong(anchor, anchor.plusDays(8L)) shouldBe false
+    StubConvention.SMART_FINAL.isStubLong(anchor, anchor.plusDays(8L)) shouldBe false
+
+    // A reversed pair is absorbed, its gap being negative and therefore below the threshold.
+    StubConvention.SMART_INITIAL.isStubLong(anchor, anchor.minusDays(1L)) shouldBe true
+    StubConvention.SMART_FINAL.isStubLong(anchor, anchor.minusDays(30L)) shouldBe true
+
+    // The rule is total over the whole of `LocalDate`. The two pairs below sit within seven days
+    // of the extremes, where asking the question by stepping seven days forward from the first
+    // date raised `DateTimeException` - the schedule generation that asks it answers with
+    // `Either`, so no member of this family may raise. Both pairs are wider than the threshold at
+    // the top of the range and narrower than it at the bottom, and each is answered rather than
+    // refused.
+    StubConvention.SMART_INITIAL.isStubLong(LocalDate.MAX.minusDays(1L), LocalDate.MAX) shouldBe
+      true
+    StubConvention.SMART_FINAL.isStubLong(LocalDate.MAX.minusDays(1L), LocalDate.MAX) shouldBe true
+    StubConvention.SMART_INITIAL.isStubLong(LocalDate.MIN, LocalDate.MAX) shouldBe false
+    StubConvention.SMART_FINAL.isStubLong(LocalDate.MIN, LocalDate.MAX) shouldBe false
+    StubConvention.SMART_INITIAL.isStubLong(LocalDate.MAX, LocalDate.MIN) shouldBe true
+    StubConvention.SMART_FINAL.isStubLong(LocalDate.MAX, LocalDate.MIN) shouldBe true
   }
 
   //-------------------------------------------------------------------------
@@ -1038,5 +1084,136 @@ final class StubConventionSpec
           be theSameInstanceAs convention
       }
     }
+  }
+
+  //-------------------------------------------------------------------------
+  // The fixtures of the added case. The definitions below are built through the ordinary factory
+  // and rendered by their own `toString`, so the text driven into the rejection paths is the text
+  // `PeriodicSchedule` itself passes rather than a string this spec composed.
+
+  /**
+   * A calendar name carrying a line feed and text that reads as a log line of its own.
+   *
+   * This is the shape a forged log entry takes: everything after the line feed would appear as a
+   * line of its own wherever the failure was written out unescaped, stating something this library
+   * never reported (CWE-117).
+   */
+  private val ForgedCalendarName: String = "GBLO\nINVALID: forged"
+
+  /** A calendar name of a few thousand characters, which no part of the API rejects. */
+  private val OversizedCalendarName: String = "GBLO\n" + ("FORGED " * 600)
+
+  /**
+   * The ceiling the text of a rejection is asserted to stay under.
+   *
+   * The bound is a concrete number comfortably above an ordinary rendering rather than an exact
+   * length, so that it states what it is for - the text of a failure stays a line that can be read
+   * - without pinning the rendering down character by character. A rejection of this family
+   * renders as its reason, one message part and one attribute whose key is the ten-character
+   * `definition`, each part bounded where it is written, so no rejection can reach this ceiling
+   * however large the definition handed to it; the oversized name below is more than three times
+   * it, and the attribute holding it keeps every character.
+   */
+  private val RenderingCeiling: Int = 1200
+
+  /** The definition whose rendering carries the forged calendar name. */
+  private val forgedDefinition: PeriodicSchedule = definitionAdjustedBy(ForgedCalendarName)
+
+  /** The definition whose rendering carries a calendar name of a few thousand characters. */
+  private val oversizedDefinition: PeriodicSchedule = definitionAdjustedBy(OversizedCalendarName)
+
+  //-------------------------------------------------------------------------
+  test("test_rejectedDefinitionSurvivesHostileCalendarNames") {
+    // The definition really does carry the name, so the text this case drives into the rejection
+    // paths is the text a caller that parsed such a name would have arrived at.
+    forgedDefinition.toString should include(ForgedCalendarName)
+
+    // The first half, on the path that rejects an explicit stub the convention forbids: the
+    // attribute is the rendering of the definition, character for character, line feed included.
+    val reported: Failure =
+      failureOf(StubConvention.NONE.toImplicit(forgedDefinition.toString, true, false))
+    reported.reason shouldBe FailureReason.INVALID
+    reported.message shouldBe "Dates specify an explicit stub, but stub convention is 'None'"
+    reported.attributes.get("definition") shouldBe Some(forgedDefinition.toString)
+    reported.attributes("definition") should include(ForgedCalendarName)
+    reported.attributes("definition") should include("\n")
+
+    // The second half: the text of that same failure is one bounded line, the line feed appearing
+    // in it as the two characters of its escape, so the failure cannot be read as two lines.
+    val rendered: String = neutralisedRendering(reported)
+    rendered should include("""GBLO\nINVALID: forged""")
+    rendered should include(reported.message)
+
+    // The same two halves on a second rejection path, this one reported by a different member for
+    // a different reason, since the attachment is made once for the whole family.
+    val alsoReported: Failure =
+      failureOf(StubConvention.SHORT_INITIAL.toImplicit(forgedDefinition.toString, false, true))
+    alsoReported.attributes.get("definition") shouldBe Some(forgedDefinition.toString)
+    neutralisedRendering(alsoReported) should include("""GBLO\nINVALID: forged""")
+
+    // The oversized case. The attribute keeps the whole of a definition of a few thousand
+    // characters, because that is the value a caller reads back, while the text of the failure
+    // stays under the same ceiling as every other rendering, having stopped and marked the part it
+    // could not finish.
+    val oversized: Failure =
+      failureOf(StubConvention.BOTH.toImplicit(oversizedDefinition.toString, false, false))
+    oversized.attributes.get("definition") shouldBe Some(oversizedDefinition.toString)
+    oversized.attributes("definition") should include(OversizedCalendarName)
+    oversized.attributes("definition").length should be > OversizedCalendarName.length
+    OversizedCalendarName.length should be > RenderingCeiling
+    neutralisedRendering(oversized) should include("...")
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * Builds a valid schedule definition adjusted by a calendar of the given name.
+   *
+   * The name is not constrained by anything: `HolidayCalendarId.of` is total, so this is how a
+   * calendar name read from a document reaches a definition, and the definition is accepted
+   * because the only invariants of the factory are over its dates. The dates are those of
+   * [[definitionText]], so the definitions of this spec describe the same schedule whether they
+   * are the stand-in text or a real definition.
+   *
+   * @param calendarName  the name of the holiday calendar the definition is adjusted by
+   * @return the definition, which the test renders with its own `toString`
+   */
+  private def definitionAdjustedBy(calendarName: String): PeriodicSchedule =
+    PeriodicSchedule
+      .of(
+        date(2014, 6, 30),
+        date(2015, 9, 30),
+        Frequency.P3M,
+        BusinessDayAdjustment
+          .of(BusinessDayConventions.MODIFIED_FOLLOWING, HolidayCalendarId.of(calendarName)),
+        StubConvention.NONE,
+        false)
+      .fold(
+        failures =>
+          fail(
+            failures.toNonEmptyList.toList
+              .map(failure => failure.message)
+              .mkString("Expected a valid definition but the factory rejected it: ", "; ", "")),
+        definition => definition)
+
+  /**
+   * Asserts of a failure the three properties its text has to have, and answers with that text.
+   *
+   * The two routes to the text of a failure - the `Show` instance and the text form of the value -
+   * are asserted to be the same string, because a caller reaching for either has to get the
+   * neutralised rendering rather than whichever of the two happened to be neutralised. What is
+   * then asserted of that string is what makes it safe to write into a log or a report: it holds
+   * no character for which `Character.isISOControl` holds, so it is one line and carries no
+   * terminal control, and it is bounded, so a definition quoted by the failure cannot dominate it.
+   *
+   * @param failure  the failure whose text is asserted
+   * @return the text of that failure
+   */
+  private def neutralisedRendering(failure: Failure): String = {
+    val rendered: String = Show[Failure].show(failure)
+    rendered shouldBe failure.toString
+    rendered.exists(character => character.isControl) shouldBe false
+    rendered.linesIterator.size shouldBe 1
+    rendered.length should be <= RenderingCeiling
+    rendered
   }
 }

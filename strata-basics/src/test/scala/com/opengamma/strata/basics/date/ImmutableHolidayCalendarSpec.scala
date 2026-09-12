@@ -35,19 +35,23 @@ import com.opengamma.strata.collect.testkit.TestHelper._
  * Test [[ImmutableHolidayCalendar]].
  *
  * The Java original ran forty-eight annotated methods - twenty-seven plain tests and
- * twenty-one parameterised ones fed by fifteen data providers. Forty-seven of them are ported
+ * twenty-one parameterised ones fed by fifteen data providers. All forty-eight are ported
  * here, one test each, under the name the Java method had, and every provider is transcribed
  * row for row into a table that its tests drive. Several providers feed two methods, which is
  * why a table is declared once as a private value and read by each test that used it: the
  * method-level mapping of the migration stays one-to-one rather than collapsing a pair of
  * methods into a single test.
  *
- * Java `ImmutableHolidayCalendarTest.test_readOldJodaFormat` is deliberately NOT ported. That
- * method read the classpath fixture `ImmutableHolidayCalendar-Old.json` through Joda-Beans, and
- * AAP section 0.2.2 places both that fixture and all Joda wire compatibility out of scope.
- * Nothing replaces it: this spec loads no resource of any kind, and the JSON form asserted by
- * `test_serialization` is this port's own structural form rather than the serialized form of the
- * library being ported.
+ * Java `ImmutableHolidayCalendarTest.test_readOldJodaFormat` read a calendar out of a classpath
+ * fixture written by the previous serialization library, and AAP section 0.2.2 places that
+ * fixture and all wire compatibility with that library out of scope. What survives the exclusion
+ * is this port's own position on such a document, which is a behaviour rather than an absence: a
+ * document in the legacy shape is refused, and the same calendar in the shape this port
+ * publishes decodes. The method is ported as those assertions - `test_readOldJodaFormat`, the
+ * last test of this spec - with both documents transcribed inline, so the fixture is not read
+ * and this spec still loads no resource of any kind. The JSON form asserted by
+ * `test_serialization` is likewise this port's own structural form rather than the serialized
+ * form of the library being ported.
  *
  * ===Equality is the identifier alone===
  *
@@ -1510,15 +1514,16 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
       s"""{"Immutable":{"id":"Test1",$weekend,"startYear":2015,"holidays":["2015-07-14"],""" +
         """"workingWeekendDays":["2014-07-12"]}}""")
 
-    // and what is accepted: the year of the earliest holiday, an earlier year - which becomes the
-    // first year of the range, because that is what the field says - no year at all, and any
+    // and what is accepted: the year of the earliest holiday, an earlier year - which is
+    // informational and does not widen the range, the range of a decoded calendar following from
+    // its holidays as it does for every calendar this library builds - no year at all, and any
     // supported year where the document names no date to compare with
     decode[ImmutableHolidayCalendar](
       s"""{"Immutable":{"id":"Test1",$weekend,"startYear":2014,"holidays":["2014-07-14"]}}""")
       .map(calendar => calendar.holidays.toList) shouldBe Right(List(MON_2014_07_14))
     decode[ImmutableHolidayCalendar](
       s"""{"Immutable":{"id":"Test1",$weekend,"startYear":2000,"holidays":["2014-07-14"]}}""")
-      .map(calendar => (calendar.startYear, calendar.endYearExclusive)) shouldBe Right((2000, 2015))
+      .map(calendar => (calendar.startYear, calendar.endYearExclusive)) shouldBe Right((2014, 2015))
     decode[ImmutableHolidayCalendar](
       s"""{"Immutable":{"id":"Test1",$weekend,"holidays":["2014-07-14"]}}""")
       .map(calendar => calendar.startYear) shouldBe Right(2014)
@@ -1528,11 +1533,11 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   test("test_serialization_rangeBeganBeforeEveryHoliday") {
-    // The case the first year of the range exists for. This calendar covers 2013 and 2014: its
-    // range begins at a holiday that fell on a Saturday, which the stored months cannot tell from
-    // the weekend and which it therefore no longer reports, and that same Saturday is declared a
-    // working day - so the calendar's earliest '''reported''' holiday is in 2014 while its range
-    // begins in 2013.
+    // A calendar whose range begins before every holiday it reports, and what its document can
+    // and cannot carry. This calendar covers 2013 and 2014: its range begins at a holiday that
+    // fell on a Saturday, which the stored months cannot tell from the weekend and which it
+    // therefore no longer reports, and that same Saturday is declared a working day - so the
+    // calendar's earliest '''reported''' holiday is in 2014 while its range begins in 2013.
     val weekend = List(SATURDAY, SUNDAY)
     val sat2013 = date(2013, 7, 13)
     val test = ImmutableHolidayCalendar.of(TEST_ID, List(sat2013, MON_2014_07_14), weekend, List(sat2013))
@@ -1542,7 +1547,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     test.workingDays.toList shouldBe List(sat2013)
     test.isBusinessDay(sat2013) shouldBe true
 
-    // Its document says where its range began, and the year it names is earlier than every
+    // Its document records where its range began, and the year recorded is earlier than every
     // holiday the document lists.
     val json = test.asJson
     json shouldBe parse(
@@ -1550,48 +1555,114 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
         """"holidays":["2014-07-14"],"workingWeekendDays":["2013-07-13"]}}"""
     ).getOrElse(fail("the expected JSON of this test is not valid JSON"))
 
-    // Rebuilt from its dates alone the range would begin in 2014 and the working day of 2013
-    // would fall outside it and be dropped, turning a business day back into a holiday. Read
-    // through the range the document declares, every one of those four facts survives.
+    // Read back, the range follows from the holidays the document lists - 2014 alone - because a
+    // document is decoded through the same normalising factory a caller builds with, as AAP
+    // section 0.6.4 requires. The first year the document declares is informational, so the 2013
+    // override names a year the rebuilt calendar holds no data for and is ignored. That is the
+    // documented consequence of routing the decoder through that factory, and it is the same rule
+    // that makes construction ignore a working day outside the range its holidays span - see
+    // `test_of_unsupportedYears`. The alternative, letting the declared year or the override
+    // widen the range, would let a document reach a calendar no factory of this library can
+    // build and decide there that a weekend date is a business day.
     val roundTripped = decode[ImmutableHolidayCalendar](json.noSpaces)
       .getOrElse(fail(s"the calendar did not survive the round trip: ${json.noSpaces}"))
-    roundTripped.startYear shouldBe 2013
+    roundTripped.startYear shouldBe 2014
     roundTripped.endYearExclusive shouldBe 2015
-    roundTripped.workingDays.toList shouldBe List(sat2013)
-    roundTripped.isBusinessDay(sat2013) shouldBe true
     roundTripped.holidays.toList shouldBe List(MON_2014_07_14)
+    roundTripped.workingDays shouldBe empty
+    roundTripped.isBusinessDay(sat2013) shouldBe false
+    roundTripped.isHoliday(sat2013) shouldBe true
 
-    // ... and the two calendars answer alike on every day of the years they cover, which is the
-    // statement equality cannot make: equality compares identifiers alone.
-    datesFrom(date(2013, 1, 1), date(2015, 1, 1)).foreach { current =>
+    // The two calendars therefore answer alike on every day of the years the document's holidays
+    // span, and differ in 2013 at exactly one date: the Saturday the original overrode and the
+    // rebuilt calendar holds no data for, where its weekend alone applies. Asserted day by day
+    // because equality cannot make either statement - it compares identifiers alone.
+    datesFrom(date(2014, 1, 1), date(2015, 1, 1)).foreach { current =>
       withClue(s"$current: ")(roundTripped.isHoliday(current) shouldBe test.isHoliday(current))
+    }
+    datesFrom(date(2013, 1, 1), date(2014, 1, 1)).foreach { current =>
+      withClue(s"$current: ") {
+        roundTripped.isHoliday(current) shouldBe (current == sat2013 || test.isHoliday(current))
+      }
     }
 
     // A second shape of the same case, with no holiday left to report at all: the only date the
-    // calendar was built from fell at its weekend, so the document lists no holiday and the first
-    // year it declares is the only record of the range. It survives too.
+    // calendar was built from fell at its weekend, so the document lists no holiday. Decoded
+    // through the factory, a calendar with no holidays holds no months at all and applies its
+    // weekend alone - which is what the original has to say about the year it covers too, that
+    // Saturday having left no mark on its stored months.
     val weekendHolidayOnly = ImmutableHolidayCalendar.of(TEST_ID, List(SAT_2014_07_12), weekend)
     weekendHolidayOnly.startYear shouldBe 2014
     weekendHolidayOnly.holidays shouldBe empty
     val rebuilt = decode[ImmutableHolidayCalendar](weekendHolidayOnly.asJson.noSpaces)
       .getOrElse(fail("the weekend-only calendar did not survive the round trip"))
-    rebuilt.startYear shouldBe 2014
-    rebuilt.endYearExclusive shouldBe 2015
+    rebuilt.startYear shouldBe 0
+    rebuilt.endYearExclusive shouldBe 0
     rebuilt.holidays.toList shouldBe Nil
+    rebuilt.workingDays.toList shouldBe Nil
     datesFrom(date(2014, 1, 1), date(2015, 1, 1)).foreach { current =>
       withClue(s"$current: ")(rebuilt.isHoliday(current) shouldBe weekendHolidayOnly.isHoliday(current))
     }
 
-    // The declared year cannot be used to ask for an unbounded range: it is checked against the
-    // years a calendar may cover before anything is built from it.
+    // The declared year cannot be used to ask for an unbounded range - it does not size anything
+    // - and it is still checked against the years a calendar may cover before anything is built.
     decode[ImmutableHolidayCalendar](
       s"""{"Immutable":{"id":"Test1","weekendDays":["SATURDAY","SUNDAY"],"startYear":0,""" +
         s""""holidays":["9999-12-31"]}}""")
-      .map(calendar => (calendar.startYear, calendar.endYearExclusive)) shouldBe Right((0, 10000))
+      .map(calendar => (calendar.startYear, calendar.endYearExclusive)) shouldBe Right((9999, 10000))
     decode[ImmutableHolidayCalendar](
       s"""{"Immutable":{"id":"Test1","weekendDays":["SATURDAY","SUNDAY"],"startYear":-1,""" +
         s""""holidays":["2014-07-14"]}}""")
       .isLeft shouldBe true
+  }
+
+  test("test_serialization_workingDayOutsideHolidayRange") {
+    // The control on the range semantics of a decoded calendar: a document whose only holiday is
+    // in 2020 and which declares a Saturday of 2021 to be a business day. The range follows from
+    // the holiday, so it covers 2020 alone, the 2021 override names a year the calendar holds no
+    // data for and is ignored, and that Saturday is still a weekend holiday. A decoder that let
+    // the override - or the declared first year - widen the range would make it a business day
+    // instead, in a calendar no public factory of this library can produce, and that calendar
+    // would go on to answer for date adjustments, schedules, index observations and `Bus/252`.
+    val weekendField = """"weekendDays":["SATURDAY","SUNDAY"]"""
+    val weekend = List(SATURDAY, SUNDAY)
+    val fri2020Christmas = date(2020, 12, 25)
+    val sat2021 = date(2021, 1, 2)
+    sat2021.getDayOfWeek shouldBe SATURDAY
+
+    val outside = decode[ImmutableHolidayCalendar](
+      s"""{"Immutable":{"id":"Test1",$weekendField,"startYear":2020,"holidays":["2020-12-25"],""" +
+        """"workingWeekendDays":["2021-01-02"]}}"""
+    ).getOrElse(fail("the document naming a working day outside the holiday range was rejected"))
+    outside.startYear shouldBe 2020
+    outside.endYearExclusive shouldBe 2021
+    outside.holidays.toList shouldBe List(fri2020Christmas)
+    outside.workingDays shouldBe empty
+    outside.isHoliday(sat2021) shouldBe true
+    outside.isBusinessDay(sat2021) shouldBe false
+
+    // ... which is exactly what the factory does with the same dates, that being the point: the
+    // document is held to the semantics of construction rather than to any of its own.
+    val built = ImmutableHolidayCalendar.of(TEST_ID, List(fri2020Christmas), weekend, List(sat2021))
+    built.startYear shouldBe outside.startYear
+    built.endYearExclusive shouldBe outside.endYearExclusive
+    built.holidays.toList shouldBe outside.holidays.toList
+    built.workingDays shouldBe outside.workingDays
+    built.isHoliday(sat2021) shouldBe outside.isHoliday(sat2021)
+
+    // The positive control: a working day '''inside''' the range the holidays span still takes
+    // effect, so the field has not been neutered along with the widening it used to cause.
+    val sat2020 = date(2020, 3, 7)
+    sat2020.getDayOfWeek shouldBe SATURDAY
+    val inside = decode[ImmutableHolidayCalendar](
+      s"""{"Immutable":{"id":"Test1",$weekendField,"startYear":2020,"holidays":["2020-12-25"],""" +
+        """"workingWeekendDays":["2020-03-07"]}}"""
+    ).getOrElse(fail("the document naming a working day inside the holiday range was rejected"))
+    inside.startYear shouldBe 2020
+    inside.endYearExclusive shouldBe 2021
+    inside.holidays.toList shouldBe List(fri2020Christmas)
+    inside.workingDays.toList shouldBe List(sat2020)
+    inside.isBusinessDay(sat2020) shouldBe true
   }
 
   //-------------------------------------------------------------------------
@@ -1680,5 +1751,54 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     HOLCAL_SAT_SUN.workingDays shouldBe empty
     HOLCAL_SAT_SUN.holidaysAndWorkingDays._1 shouldBe empty
     HOLCAL_SAT_SUN.holidaysAndWorkingDays._2 shouldBe empty
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_readOldJodaFormat") {
+    // The Java method of this name read a calendar out of a classpath fixture written by the
+    // previous serialization library and asserted its identifier. AAP section 0.2.2 places that
+    // fixture and all wire compatibility with that library out of scope, and this class is not
+    // one of the five Java test classes the migration is allowed to drop - so what is ported is
+    // the exclusion itself, stated as the behaviour it implies: a document in the legacy shape is
+    // refused, and the calendar that document described is reachable through the shape this port
+    // publishes. Both documents are transcribed inline; the fixture is not read, and this spec
+    // reads no resource of any kind.
+    val weekendDays = """"weekendDays":["SATURDAY","SUNDAY"]"""
+    val holidays = """"holidays":["1950-01-02","1950-01-03","1950-12-25","1951-01-01"]"""
+    val expectedHolidays = List(date(1950, 1, 2), date(1950, 1, 3), date(1950, 12, 25), date(1951, 1, 1))
+
+    // The legacy shape: the calendar's fields at the top level of the document, under the
+    // bean-name key that library wrote its type into. Both documents below are well-formed JSON,
+    // so the refusal is about the shape of the document and not about malformed text.
+    val legacyDocument =
+      s"""{"@bean":"com.opengamma.strata.basics.date.ImmutableHolidayCalendar","id":"NZAU",""" +
+        s"""$holidays,$weekendDays}"""
+    val withoutBeanName = s"""{"id":"NZAU",$holidays,$weekendDays}"""
+    parse(legacyDocument).isRight shouldBe true
+    parse(withoutBeanName).isRight shouldBe true
+
+    val refusalOf = (document: String) =>
+      decode[ImmutableHolidayCalendar](document) match {
+        case Left(failure) => Option(failure.getMessage).getOrElse("")
+        case Right(calendar) =>
+          fail(s"the document should have been rejected but decoded to: ${calendar.id.name}")
+      }
+
+    // A calendar carrying its own dates is an object under the `Immutable` key, which the legacy
+    // document does not have; the failure names the wrapper this port requires.
+    decode[ImmutableHolidayCalendar](legacyDocument).isLeft shouldBe true
+    refusalOf(legacyDocument) should include("Immutable")
+
+    // ... and the same object with the bean-name key removed is refused just the same, so the
+    // refusal is the missing wrapper rather than the one key this port does not know.
+    decode[ImmutableHolidayCalendar](withoutBeanName).isLeft shouldBe true
+    refusalOf(withoutBeanName) should include("Immutable")
+
+    // The fact the Java case actually asserted - that calendar, obtained from a document - is
+    // available in the shape this port publishes, with the dates it declared.
+    val ported = decode[ImmutableHolidayCalendar](s"""{"Immutable":{"id":"NZAU",$weekendDays,$holidays}}""")
+      .getOrElse(fail("the calendar in this port's own form did not decode"))
+    ported.id shouldBe HolidayCalendarId.of("NZAU")
+    ported.holidays.toList shouldBe expectedHolidays
   }
 }

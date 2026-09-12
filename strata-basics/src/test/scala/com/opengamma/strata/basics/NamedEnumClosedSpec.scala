@@ -7,7 +7,6 @@ package com.opengamma.strata.basics
 
 import java.util.Locale
 
-import scala.util.matching.Regex
 
 import cats.data.NonEmptyChain
 
@@ -54,8 +53,10 @@ import com.opengamma.strata.collect.result.ResultNec
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
- * Holds every closed named family of this module to the name space the library being ported
- * published, so that replacing its runtime registry with sealed data lost nothing.
+ * Holds every closed named family of this module - and the one in `strata-collect`, the family
+ * of failure reasons, which no closed-family sweep of that module covers - to the name space the
+ * library being ported published, so that replacing its runtime registry with sealed data lost
+ * nothing.
  *
  * The implementation being ported resolved a convention, an index or a currency through
  * `ExtendedEnum`: a registry assembled at class-initialization time by reading a configuration
@@ -97,7 +98,7 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * ===Exhaustive rather than sampled===
  *
  * Every family here is a closed, finite set, so there is no reason to sample one: each property
- * iterates the whole of `values` and the whole of each transcribed table. The sweep visits 855
+ * iterates the whole of `values` and the whole of each transcribed table. The sweep visits 865
  * members and some 1,400 transcribed rows, and a specification that checked a hand-picked subset
  * would pass with a row missing - which is precisely the failure this file exists to prevent. The
  * lenient tables are the one place a table cannot simply be iterated, because a row's left-hand
@@ -113,14 +114,19 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * shouldBe values.size` would pass with a row dropped. The numbers are those of the manifest
  * captured from the Java implementation - 74 currencies, 21 standard day counts, 7 business day
  * conventions, 45 roll conventions, 3 period addition conventions, 6 date sequences, 8 stub
- * conventions, 5 floating rate types, 4 value adjustment types, 271 Ibor, 35 Overnight, 9 price
- * and 16 FX indices, 351 published floating rate names and 30 built-in holiday calendars.
+ * conventions, 5 floating rate types, 4 value adjustment types, 10 failure reasons, 271 Ibor, 35
+ * Overnight, 9 price and 16 FX indices, 351 published floating rate names and 30 built-in holiday
+ * calendars.
  *
- * Two of those deserve a note. The day count family is 21 members and not 22: a `Bus/252`
+ * Three of those deserve a note. The day count family is 21 members and not 22: a `Bus/252`
  * convention exists per holiday calendar rather than per family, so the set of them is open and is
  * reached through a factory, exactly as the ported library reached it through a second provider.
  * The floating rate name family is the 351 rows the published table declares, of which 41 are
  * named constants; both figures appear in the manifest and this file asserts each where it belongs.
+ * The failure reasons are the one family whose number comes from the constants of the Java enum
+ * rather than from a configuration resource, because that family never had one: its ten members
+ * are the ten constants of the type being ported, and its whole name space is their canonical
+ * names and the folded forms of them.
  *
  * ===The two documented divergences===
  *
@@ -142,6 +148,39 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
   import NamedEnumClosedSpec._
+
+  test("the family table is the whole inventory of closed named families") {
+    // The sweeps below are only as exhaustive as this table, and a family missing from it is a
+    // family with no coverage rather than a failing assertion - which is how the failure reasons
+    // went unswept. The inventory is therefore stated here as a literal set of labels and a
+    // literal member total, so that a family added to the library without a row here fails, and
+    // so that the figures quoted in the documentation of this file are held to the table rather
+    // than left as prose.
+    families.map(_.label).toSet shouldBe
+      Set(
+        "Currency",
+        "DayCount",
+        "BusinessDayConvention",
+        "RollConvention",
+        "PeriodAdditionConvention",
+        "DateSequence",
+        "StubConvention",
+        "FloatingRateType",
+        "ValueAdjustmentType",
+        "IborIndex",
+        "OvernightIndex",
+        "PriceIndex",
+        "FxIndex",
+        "FloatingRateName",
+        "FailureReason")
+    families.size shouldBe 15
+    families.map(_.label).distinct.size shouldBe 15
+
+    // The 865 members the documentation of this file quotes, which is the size of the name space
+    // every property below iterates.
+    families.map(_.expectedMembers).sum shouldBe 865
+    families.map(_.members.size).sum shouldBe 865
+  }
 
   test("every closed family holds exactly the members its reference data fixes") {
     forAll(families) { (family: Family) =>
@@ -194,10 +233,16 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
           family.valueOf(folded).map(_.name.toUpperCase(Locale.ENGLISH)) shouldBe Some(folded)
           family.parse(folded) should beSuccess
 
-          // Where no two members of the family fold to the same key - every family but the
-          // published floating rate names - the value reached is the member itself. The one
-          // family that does have such a pair is asserted exactly, by name, further down.
-          if (family.shadowedNames.isEmpty) {
+          // And which member that is, stated exactly rather than skipped for the one family
+          // where it is not the member itself. A folded key is claimed by the member whose
+          // canonical name it is, because a canonical name is registered unconditionally, and by
+          // the first member to offer it otherwise. So the folded key reaches this member unless
+          // it happens to be the published name of another member of the same family - which is
+          // the case the declaration below names, and only there does the pair-mate hold it.
+          if (family.foldedNameCollisions.contains(folded) && member.name != folded) {
+            family.valueOf(folded).map(_.name) shouldBe Some(folded)
+            family.valueOf(folded) should not be Some(member)
+          } else {
             family.valueOf(folded) shouldBe Some(member)
           }
         }
@@ -215,18 +260,21 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
         family.byCanonicalName.foreach {
           case (key, value) => withClue(s"key $key: ")(key shouldBe value.name)
         }
-        family.byCanonicalName.size shouldBe family.expectedMembers - family.shadowedNames.size
 
-        // A member is absent from this view only where an earlier member claimed both of its
-        // keys, which can happen only between two members differing in case alone. The set of
-        // such names is declared per family - empty for all but one - so a new collision fails
-        // here instead of quietly removing a member from the family's own normalised view.
-        (family.members.map(_.name).toSet -- family.byCanonicalName.keySet) shouldBe
-          family.shadowedNames
+        // The whole of the family, with no exception for any family: a canonical name is
+        // registered unconditionally, so it is claimed by its own member and can be taken from it
+        // by nothing - not by an earlier member whose folded name it is, and not by an alternate
+        // spelling. The view therefore holds one key per member, asserted against the declared
+        // cardinality rather than against the view's own size.
+        family.byCanonicalName.size shouldBe family.expectedMembers
+        family.byCanonicalName.keySet shouldBe family.members.map(_.name).toSet
 
-        family.members.filterNot(member => family.shadowedNames.contains(member.name)).foreach {
-          member =>
-            withClue(s"${member.name}: ")(family.byCanonicalName.get(member.name) shouldBe Some(member))
+        // And each key reaches the member that renders it. This is the statement the normalised
+        // view exists for - it is how a caller iterated the family and how a name is written out
+        // again - so it is made for every member of every family, through the family's own
+        // `NamedEnum` instance, which is where this view comes from.
+        family.members.foreach { member =>
+          withClue(s"${member.name}: ")(family.byCanonicalName.get(member.name) shouldBe Some(member))
         }
       }
     }
@@ -241,9 +289,14 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
           case (key, _) => withClue(s"key $key: ")(key shouldBe key.toUpperCase(Locale.ENGLISH))
         }
 
-        // One key per distinct folded name: the count differs from the member count by exactly
-        // the number of members whose folded name another member already holds.
-        family.byUpperName.size shouldBe family.expectedMembers - family.shadowedNames.size
+        // One key per distinct folded name, which makes this the one view that can hold fewer
+        // entries than the family has members: two members whose names differ in case alone offer
+        // the same folded key and one of them holds it. The count therefore differs from the
+        // member count by exactly the number of declared folded-key collisions - zero for every
+        // family but the published names - so a new collision fails here rather than silently
+        // shrinking the case-insensitive name space of a family.
+        family.byUpperName.size shouldBe
+          family.expectedMembers - family.foldedNameCollisions.size
       }
     }
   }
@@ -290,28 +343,42 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
               // external row takes part in no lookup and so breaks nothing when it disappears.
               raw.size shouldBe expectedRows
 
-              // The resolved view is the raw table with the rows that name no member removed, so
-              // the two key sets differ by exactly the rows declared unresolvable below.
-              val unresolvable = family.expectedUnresolvedExternals.getOrElse(group, Set.empty)
-              resolved.keySet shouldBe (raw.keySet -- unresolvable)
+              // Every declared row resolves: the resolved view drops a row whose canonical name
+              // nothing reaches, so the two key sets being equal is the statement that no
+              // transcribed protocol spelling has been left pointing at a name that has gone.
+              resolved.keySet shouldBe raw.keySet
 
-              // Every resolved row reaches a member of this family, through the same alias-aware
-              // exact lookup a caller would use on the canonical name the row carries.
+              // Every resolved row reaches the value its canonical name identifies, through the
+              // same lookup a caller would use on that name. Which values are eligible is the
+              // family's own business: a family whose name space is exactly its members resolves
+              // onto a member, and one that layers a second provider over them - the day counts,
+              // whose `Bus/252` conventions exist per calendar - resolves onto a value outside
+              // `values`, declared row by row below.
+              val beyondValues = family.expectedExternalsBeyondValues.getOrElse(group, Set.empty)
               resolved.foreach {
                 case (spelling, value) =>
                   withClue(s"row $spelling: ") {
-                    family.members should contain(value)
                     family.valueOf(raw(spelling)) shouldBe Some(value)
+                    value.name shouldBe raw(spelling)
+                    if (beyondValues.contains(spelling)) {
+                      family.members should not contain value
+                    } else {
+                      family.members should contain(value)
+                    }
                   }
               }
 
-              // And every row declared unresolvable names something this family does not hold,
-              // which is why the resolved view drops it. The day count row for `BUS/252` is the
-              // only one in the library, and the test below shows the name it carries is real.
-              unresolvable.foreach { spelling =>
-                withClue(s"unresolved row $spelling: ") {
+              // And every row declared to resolve beyond the members is a row of this group that
+              // does so: it is present, it resolves, and what it resolves to is a value the
+              // family's closed set does not hold - which is the one shape of external row that
+              // needs the family's own wider lookup rather than the lookup over `values`. The day
+              // count row for `BUS/252` is the only one in the library, and the test below shows
+              // the convention it names.
+              beyondValues.foreach { spelling =>
+                withClue(s"row beyond values $spelling: ") {
                   raw.keySet should contain(spelling)
                   family.members.map(_.name) should not contain raw(spelling)
+                  resolved.get(spelling).map(_.name) shouldBe Some(raw(spelling))
                 }
               }
             }
@@ -326,7 +393,7 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
         // The whole table, as a literal count. The order of these rows is behaviour rather than
         // presentation - a later pattern is applied to what an earlier one produced - so the
         // order is exercised by the chaining test further down.
-        family.lenientPatterns.size shouldBe
+        family.lenientRows.size shouldBe
           family.expectedLiteralLenient + family.expectedPatternLenient
 
         // The partition the two tests after this one drive. Asserting both parts against
@@ -335,7 +402,7 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
         family.literalLenientRows.size shouldBe family.expectedLiteralLenient
         family.patternLenientRows.size shouldBe family.expectedPatternLenient
         (family.literalLenientRows.size + family.patternLenientRows.size) shouldBe
-          family.lenientPatterns.size
+          family.lenientRows.size
       }
     }
   }
@@ -441,7 +508,7 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
     // production.
     forAll(families) { (family: Family) =>
       withClue(s"${family.label}: ") {
-        (family.alternateNames.nonEmpty && family.lenientPatterns.nonEmpty) shouldBe false
+        (family.alternateNames.nonEmpty && family.lenientRows.nonEmpty) shouldBe false
       }
     }
 
@@ -459,7 +526,7 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
         "StubConvention",
         "FloatingRateType",
         "ValueAdjustmentType")
-    families.filter(candidate => candidate.lenientPatterns.nonEmpty).map(_.label).toSet shouldBe
+    families.filter(candidate => candidate.lenientRows.nonEmpty).map(_.label).toSet shouldBe
       Set("DayCount", "RollConvention", "BusinessDayConvention", "PeriodAdditionConvention")
     families.filter(candidate => candidate.enumNameSpellings).map(_.label).toSet shouldBe
       Set("StubConvention", "FloatingRateType", "ValueAdjustmentType")
@@ -573,9 +640,10 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
 
     FxIndex.namedEnum.alternateNames shouldBe Map("USD/INR-RBIB-INR01" -> "USD/INR-FBIL-INR01")
 
-    // Eight families declare none, because the resource behind each of them declared none: the
-    // whole name space of such a family is its canonical names, their folded forms, and whatever
-    // its lenient table rewrites into one of those.
+    // Nine families declare none, because the resource behind each of them declared none - and,
+    // for the failure reasons, because that family never had a resource at all: the whole name
+    // space of such a family is its canonical names, their folded forms, and whatever its lenient
+    // table rewrites into one of those.
     val withoutAlternates =
       Set(
         "Currency",
@@ -585,7 +653,8 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
         "PeriodAdditionConvention",
         "DateSequence",
         "PriceIndex",
-        "FloatingRateName")
+        "FloatingRateName",
+        "FailureReason")
     families.filter(candidate => withoutAlternates.contains(candidate.label)).foreach { candidate =>
       withClue(s"${candidate.label}: ")(candidate.alternateNames shouldBe Map.empty[String, String])
     }
@@ -710,14 +779,29 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
     DayCount.parse("Bus/252 GBXX", ReferenceData.standard) should
       beFailureWith(FailureReason.MISSING_DATA)
 
-    // The one external row in the library that names a non-member: the FpML spelling of the
-    // Brazilian convention. The row is real - the name it carries resolves - which is why it is
-    // published by the raw table while the resolved view, which maps onto members, drops it.
+    // The one external row in the library that names a value outside `values`: the FpML spelling
+    // of the Brazilian convention. It resolves, as the row of the resource it was transcribed
+    // from resolved - the ported registry answered an external name by handing the canonical name
+    // it carries to its providers, and the second of those built the convention - so the resolved
+    // group is the whole of the table, 14 rows of 14, and the row reaches the convention named
+    // `Bus/252 BRBD` rather than being dropped for not being one of the 21.
     DayCount.namedEnum.externalNamesRaw("FpML").flatMap(_.get("BUS/252")) shouldBe
       Some("Bus/252 BRBD")
     DayCount.namedEnum.externalNamesRaw("FpML").map(_.size) shouldBe Some(14)
-    DayCount.namedEnum.externalNames("FpML").map(_.contains("BUS/252")) shouldBe Some(false)
-    DayCount.namedEnum.externalNames("FpML").map(_.size) shouldBe Some(13)
+    DayCount.namedEnum.externalNames("FpML").map(_.size) shouldBe Some(14)
+    DayCount.namedEnum.externalNames("FpML").map(_.keySet) shouldBe
+      DayCount.namedEnum.externalNamesRaw("FpML").map(_.keySet)
+    DayCount.namedEnum.externalNames("FpML").flatMap(_.get("BUS/252")).map(_.name) shouldBe
+      Some("Bus/252 BRBD")
+
+    // Which resolves the row without reopening the family: the convention it names is still not a
+    // member, so the closed set of 21 is untouched and the wider lookup is the only thing that
+    // reaches it.
+    val resolvedBus252 = DayCount.namedEnum.externalNames("FpML").flatMap(_.get("BUS/252")).getOrElse(
+      fail("the FpML group no longer resolves the BUS/252 row"))
+    DayCount.values.toList should not contain resolvedBus252
+    DayCount.namedEnum.values.toList should not contain resolvedBus252
+    DayCount.valueOf("Bus/252 BRBD") shouldBe Some(resolvedBus252)
     DayCount.parse("BUS/252").map(_.name) shouldBe Right("Bus/252 BRBD")
   }
 
@@ -736,12 +820,24 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
           calendar.name shouldBe id.name
           HolidayCalendarId.of(calendar.name) shouldBe id
 
-          // Both name views of the built-in set reach it: the canonical one, which is what the
-          // JSON form of a calendar writes and reads, and the folded one, which is why
-          // `Bus/252 gblo` names the same day count as `Bus/252 GBLO`.
+          // Both name views of the built-in set reach it: the canonical one, which is keyed by
+          // the name the calendar carries and is what the JSON form of a calendar writes and
+          // reads, and the folded one, which is keyed by that name already folded to upper case.
           StandardHolidayCalendars.byName(calendar.name) shouldBe Some(calendar)
           StandardHolidayCalendars.byUpperName(calendar.name.toUpperCase(Locale.ENGLISH)) shouldBe
             Some(calendar)
+
+          // Those two key spaces - the canonical name and the folded name, and no third - are
+          // what the name route consults, matching the text it is given against them without
+          // folding it, which is exactly what the registry being ported did. That is the case
+          // sensitivity the `Bus/252` assertions further up state at the level of a day count:
+          // `BUS/252 GBLO` resolves because `GBLO` is one of the two keys of the London calendar,
+          // and `Bus/252 gblo` is refused because `gblo` is neither of them. The folded view
+          // above tolerates any case in the name it is handed, but it is a view of the built-in
+          // set rather than the route a name takes, so its tolerance does not reach a day count.
+          HolidayCalendars.of(calendar.name.toUpperCase(Locale.ENGLISH)) should haveValue(calendar)
+          HolidayCalendars.of(calendar.name.toLowerCase(Locale.ENGLISH)) should
+            beFailureWith(FailureReason.PARSING)
 
           // And both resolution routes reach it: the short cut that reads a name directly, and
           // the reference data route every adjustment and schedule in the library takes.
@@ -1070,38 +1166,69 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
   test("the published name family reaches both members of each pair differing only in case") {
     // Two rows of the published table are declared twice, differing in the case of one word, and
     // both spellings are published names of their own. That makes this the one family in the
-    // library where a member's folded key is another member's canonical name, and it is why the
-    // family's lookup by name probes the published names before the general name lookup: under
-    // the general lookup's precedence alone - first member to offer a key keeps it - the second of
-    // each pair would be unreachable by the name it was published under, and so unable to survive
-    // a serialization round trip.
+    // library where a member's folded key is the canonical name of another member, and it is the
+    // case the name lookup's registration order is built for: a canonical name is registered
+    // unconditionally and a folded name only where the key is still free, which is the order the
+    // loader being ported registered its two keys in. Both members are therefore reachable by the
+    // name they were published under - and a member that could not be would be a member no text
+    // resolves to, unable to survive a serialization round trip.
     foldedNamePairs.foreach {
       case (mixedCase, folded) =>
         withClue(s"$mixedCase / $folded: ") {
           folded shouldBe mixedCase.toUpperCase(Locale.ENGLISH)
           folded should not be mixedCase
 
-          // Both members are reachable by their own name through the family's own lookup.
+          // Both members are reachable by their own name through the shared name lookup itself,
+          // which is where the property has to hold: the family's own `valueOf` and `parse` add
+          // the index resolution this family needs, and a round trip that depended on that
+          // addition would not be a property of the lookup the rest of the library shares.
+          FloatingRateName.namedEnum.valueOf(mixedCase).map(_.name) shouldBe Some(mixedCase)
+          FloatingRateName.namedEnum.valueOf(folded).map(_.name) shouldBe Some(folded)
+          FloatingRateName.namedEnum.parse(mixedCase).map(_.name) shouldBe Right(mixedCase)
+          FloatingRateName.namedEnum.parse(folded).map(_.name) shouldBe Right(folded)
+
+          // The family's own entry points agree with it, which is what a caller reaches.
           FloatingRateName.valueOf(mixedCase).map(_.name) shouldBe Some(mixedCase)
           FloatingRateName.valueOf(folded).map(_.name) shouldBe Some(folded)
           FloatingRateName.parse(mixedCase).map(_.name) shouldBe Right(mixedCase)
           FloatingRateName.parse(folded).map(_.name) shouldBe Right(folded)
 
-          // The general name lookup, asked directly, shows the precedence being worked around:
-          // the member declared first holds the folded key, and the member whose canonical name
-          // that key is has no entry in the normalised view at all.
-          FloatingRateName.namedEnum.valueOf(folded).map(_.name) shouldBe Some(mixedCase)
-          FloatingRateName.namedEnum.byCanonicalName.contains(folded) shouldBe false
-          FloatingRateName.namedEnum.byCanonicalName.contains(mixedCase) shouldBe true
+          // Both are keys of the normalised view, each reaching the member that renders it: the
+          // canonical registration is unconditional, so neither member of the pair displaces the
+          // other from the view a caller iterates to obtain the family.
+          FloatingRateName.namedEnum.byCanonicalName.get(mixedCase).map(_.name) shouldBe
+            Some(mixedCase)
+          FloatingRateName.namedEnum.byCanonicalName.get(folded).map(_.name) shouldBe Some(folded)
+
+          // The one key the pair shares is the folded one, and it is held by the member whose
+          // canonical name it is - the upper-case row - rather than by whichever of the two was
+          // declared first. That is the whole of the difference the pair makes.
+          FloatingRateName.namedEnum.byUpperName.get(folded).map(_.name) shouldBe Some(folded)
+          FloatingRateName.namedEnum.byUpperName.get(folded) should not be
+            FloatingRateName.namedEnum.valueOf(mixedCase)
         }
     }
 
-    // Which is the whole of the difference between the family and its normalised view: 351
-    // members, 349 canonical keys, the two missing keys being those of the pairs above.
-    FloatingRateName.namedEnum.byCanonicalName.size shouldBe 349
-    FloatingRateName.namedEnum.byUpperName.size shouldBe 349
+    // Which is the whole of the difference between the family and its two views: 351 members,
+    // 351 canonical keys - one per member, no exception - and 349 folded keys, the two pairs
+    // above each folding to one.
+    FloatingRateName.values.length shouldBe 351
+    FloatingRateName.namedEnum.byCanonicalName.size shouldBe 351
     (FloatingRateName.values.toList.map(_.name).toSet --
-      FloatingRateName.namedEnum.byCanonicalName.keySet) shouldBe foldedNamePairs.map(_._2).toSet
+      FloatingRateName.namedEnum.byCanonicalName.keySet) shouldBe empty
+    FloatingRateName.namedEnum.byUpperName.size shouldBe 349
+    (FloatingRateName.values.toList.map(_.name.toUpperCase(Locale.ENGLISH)).toSet --
+      FloatingRateName.namedEnum.byUpperName.keySet) shouldBe empty
+
+    // And every member of the family, not only the four rows of the two pairs, answers to its own
+    // published name through the shared lookup - the property the pairs used to be an exception
+    // to, stated over the whole family.
+    FloatingRateName.values.toList.foreach { value =>
+      withClue(s"${value.name}: ") {
+        FloatingRateName.namedEnum.valueOf(value.name) shouldBe Some(value)
+        FloatingRateName.namedEnum.parse(value.name) should haveValue(value)
+      }
+    }
   }
 }
 
@@ -1136,8 +1263,10 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
    * The `valueOf` and `parse` held here are the family's own, taken from its companion rather
    * than from the name lookup, because two families wrap that lookup: the day counts add the
    * `Bus/252` conventions, which no closed set can express, and the published floating rate
-   * names add the precedence their duplicated spellings require. Asserting the companion's
-   * entry points is asserting what a caller actually reaches.
+   * names add the resolution of a concrete index name. Asserting the companion's entry points is
+   * asserting what a caller actually reaches; where a property belongs to the shared lookup
+   * instead - the two name-keyed views below, and the round trip of a name whose folded form is
+   * another member's name - it is asserted through the lookup itself.
    *
    * @param label  the name of the family, which is also the label its lookup reports
    * @param members  the members of the family, in declaration order
@@ -1148,13 +1277,17 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
    * @param alternateNames  the alternate spellings, expanded with their folded forms
    * @param byUpperName  the members keyed by their folded name
    * @param byCanonicalName  the members keyed by the name they render
-   * @param lenientPatterns  the lenient rewrites, in the order they are applied
+   * @param lenientRows  the lenient rewrites as text, in the order they are applied - the raw
+   *   view, which is what a table comparison needs and which compiles no expression
    * @param externalNameGroups  the names of the groups of protocol spellings published
    * @param externalNamesRaw  a group of protocol spellings as the family declared it
-   * @param externalNames  a group of protocol spellings resolved onto members
+   * @param externalNames  a group of protocol spellings resolved onto values, which are members
+   *   except where the family declares a row that resolves beyond them
    * @param expectedMembers  the number of members the captured reference data fixes
-   * @param shadowedNames  the canonical names an earlier member of the same family claims,
-   *   which are therefore absent from the normalised view
+   * @param foldedNameCollisions  the canonical names of this family that are also the folded
+   *   form of another member's name, which is the one way a folded key can be held by a member
+   *   other than the one that offered it; every such name is still a key of the normalised view,
+   *   because a canonical name is registered unconditionally
    * @param expectedAlternateRows  the number of alternate spellings the configuration resource
  *   declared, which is zero for a family whose spellings come from its constant identifiers
  * @param expectedAlternateEntries  the size of the alternate-name table after the lookup has
@@ -1162,7 +1295,9 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
  * @param enumNameSpellings  whether the family declares the spellings that the ported
  *   enumeration-name lookup derived from its constant identifiers
    * @param expectedExternals  the number of rows of each group the resource declared
-   * @param expectedUnresolvedExternals  the spellings of each group naming no member
+   * @param expectedExternalsBeyondValues  the spellings of each group whose canonical name the
+   *   family resolves through a lookup wider than its own `values`, so that the row resolves to a
+   *   value the closed set does not hold
    * @param expectedLiteralLenient  the number of lenient rows that are plain spellings
    * @param expectedPatternLenient  the number of lenient rows that are patterns
    */
@@ -1176,17 +1311,17 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       val alternateNames: Map[String, String],
       val byUpperName: Map[String, Named],
       val byCanonicalName: Map[String, Named],
-      val lenientPatterns: List[(Regex, String)],
+      val lenientRows: List[(String, String)],
       val externalNameGroups: Set[String],
       val externalNamesRaw: String => Option[Map[String, String]],
       val externalNames: String => Option[Map[String, Named]],
       val expectedMembers: Int,
-      val shadowedNames: Set[String],
+      val foldedNameCollisions: Set[String],
       val expectedAlternateRows: Int,
       val expectedAlternateEntries: Int,
       val enumNameSpellings: Boolean,
       val expectedExternals: Map[String, Int],
-      val expectedUnresolvedExternals: Map[String, Set[String]],
+      val expectedExternalsBeyondValues: Map[String, Set[String]],
       val expectedLiteralLenient: Int,
       val expectedPatternLenient: Int) {
 
@@ -1210,20 +1345,15 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
      * @return the spelling and replacement of each literal row
      */
     def literalLenientRows: List[(String, String)] =
-      lenientPatterns.collect {
-        case (expression, replacement) if isLiteralRow(expression, replacement) =>
-          (expression.pattern.pattern(), replacement)
-      }
+      lenientRows.filter { case (source, replacement) => isLiteralRow(source, replacement) }
 
     /**
      * The lenient rows that are patterns.
      *
      * @return the expression and replacement of each pattern-shaped row
      */
-    def patternLenientRows: List[(Regex, String)] =
-      lenientPatterns.filterNot {
-        case (expression, replacement) => isLiteralRow(expression, replacement)
-      }
+    def patternLenientRows: List[(String, String)] =
+      lenientRows.filterNot { case (source, replacement) => isLiteralRow(source, replacement) }
 
     /**
      * The sources of the pattern-shaped lenient rows, as the production table spells them.
@@ -1231,13 +1361,12 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
      * @return the expression source of each pattern-shaped row
      */
     def patternSources: List[String] =
-      patternLenientRows.map { case (expression, _) => expression.pattern.pattern() }
+      patternLenientRows.map { case (source, _) => source }
 
     override def toString: String = label
 
-    private def isLiteralRow(expression: Regex, replacement: String): Boolean =
-      !expression.pattern.pattern().exists(PatternMetacharacters.contains) &&
-        !replacement.contains('$')
+    private def isLiteralRow(source: String, replacement: String): Boolean =
+      !source.exists(PatternMetacharacters.contains) && !replacement.contains('$')
   }
 
   /**
@@ -1247,7 +1376,8 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
    * @param expectedMembers  the number of members the captured reference data fixes
    * @param valueOf  the family's exact lookup by name
    * @param parse  the family's lenient lookup by name
-   * @param shadowedNames  the canonical names an earlier member of the family claims
+   * @param foldedNameCollisions  the canonical names of the family that are also the folded
+   *   form of another member's name
    * @param expectedAlternateRows  the number of alternate spellings the configuration resource
  *   declared, which is zero for a family whose spellings come from its constant identifiers
  * @param expectedAlternateEntries  the size of the alternate-name table after the lookup has
@@ -1255,7 +1385,8 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
  * @param enumNameSpellings  whether the family declares the spellings that the ported
  *   enumeration-name lookup derived from its constant identifiers
    * @param expectedExternals  the number of rows of each published group
-   * @param expectedUnresolvedExternals  the spellings of each group naming no member
+   * @param expectedExternalsBeyondValues  the spellings of each group whose canonical name the
+   *   family resolves through a lookup wider than its own `values`
    * @param expectedLiteralLenient  the number of lenient rows that are plain spellings
    * @param expectedPatternLenient  the number of lenient rows that are patterns
    * @param lookup  the name lookup the family's companion publishes
@@ -1267,12 +1398,12 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       expectedMembers: Int,
       valueOf: String => Option[A],
       parse: String => ResultNec[A],
-      shadowedNames: Set[String] = Set.empty,
+      foldedNameCollisions: Set[String] = Set.empty,
       expectedAlternateRows: Int = 0,
       expectedAlternateEntries: Int = 0,
       enumNameSpellings: Boolean = false,
       expectedExternals: Map[String, Int] = Map.empty,
-      expectedUnresolvedExternals: Map[String, Set[String]] = Map.empty,
+      expectedExternalsBeyondValues: Map[String, Set[String]] = Map.empty,
       expectedLiteralLenient: Int = 0,
       expectedPatternLenient: Int = 0)(implicit lookup: NamedEnum[A]): Family =
 
@@ -1286,17 +1417,17 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       alternateNames = lookup.alternateNames,
       byUpperName = lookup.byUpperName,
       byCanonicalName = lookup.byCanonicalName,
-      lenientPatterns = lookup.lenientPatterns,
+      lenientRows = lookup.lenientSources,
       externalNameGroups = lookup.externalNameGroups,
       externalNamesRaw = group => lookup.externalNamesRaw(group),
       externalNames = group => lookup.externalNames(group),
       expectedMembers = expectedMembers,
-      shadowedNames = shadowedNames,
+      foldedNameCollisions = foldedNameCollisions,
       expectedAlternateRows = expectedAlternateRows,
       expectedAlternateEntries = expectedAlternateEntries,
       enumNameSpellings = enumNameSpellings,
       expectedExternals = expectedExternals,
-      expectedUnresolvedExternals = expectedUnresolvedExternals,
+      expectedExternalsBeyondValues = expectedExternalsBeyondValues,
       expectedLiteralLenient = expectedLiteralLenient,
       expectedPatternLenient = expectedPatternLenient)
 
@@ -1327,11 +1458,21 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       .toUpperCase(Locale.ENGLISH)
 
   /**
-   * Every closed named family of this module, with the cardinality its reference data fixes.
+   * Every closed named family of this module and the failure reasons of `strata-collect`, each
+   * with the cardinality its reference data fixes.
    *
    * The numbers are those of `manifest/reference-data-manifest.json`, captured from the
    * implementation being ported, and they are written here as literals so that a row dropped
-   * from a data table fails rather than quietly shrinking a family.
+   * from a data table fails rather than quietly shrinking a family. The failure reasons are the
+   * exception: that family was a plain Java enum with no configuration resource behind it, so its
+   * ten is the number of its constants.
+   *
+   * The failure reasons are swept here rather than in their own module because this is the
+   * specification the acceptance gate for closed enumerations runs, and because their family is
+   * declared exactly as the families of this module are - members in a companion, a `NamedEnum`
+   * built from `values`, an exact `valueOf` and a lenient `parse`. Nothing in the sweep is
+   * specific to `strata-basics`, so the row costs an import and gains the family every universal
+   * property above.
    */
   val families: TableFor1[Family] = Table(
     "family",
@@ -1346,7 +1487,7 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       valueOf = name => DayCount.valueOf(name),
       parse = name => DayCount.parse(name),
       expectedExternals = Map("FpML" -> 14, "SWIFT" -> 8),
-      expectedUnresolvedExternals = Map("FpML" -> Set("BUS/252")),
+      expectedExternalsBeyondValues = Map("FpML" -> Set("BUS/252")),
       expectedLiteralLenient = 58,
       expectedPatternLenient = 9),
     family[BusinessDayConvention](
@@ -1428,7 +1569,12 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       expectedMembers = 351,
       valueOf = name => FloatingRateName.valueOf(name),
       parse = name => toNec(FloatingRateName.parse(name)),
-      shadowedNames = Set("DKK-DESTR-OIS COMPOUND", "SEK-SWESTR-OIS COMPOUND"))
+      foldedNameCollisions = Set("DKK-DESTR-OIS COMPOUND", "SEK-SWESTR-OIS COMPOUND")),
+    family[FailureReason](
+      label = "FailureReason",
+      expectedMembers = 10,
+      valueOf = name => FailureReason.valueOf(name),
+      parse = name => FailureReason.parse(name))
   )
 
   /** The families by the label they are declared under. */
@@ -1532,9 +1678,15 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
    * The two pairs of published floating rate names that differ only in the case of one word.
    *
    * The published table declares each of these rates twice, and both spellings are names of their
-   * own. They are the only reason any family of this library has a member absent from its
-   * normalised view, and the reason the published name family probes its own table before the
-   * shared name lookup.
+   * own. They are the only reason any family of this library holds two members that fold to one
+   * upper-case key, which is why the published name family is the only one whose folded view is
+   * smaller than its member list, and why the shared name lookup registers a canonical name
+   * unconditionally and a folded name only where the key is free: under any other order the
+   * second member of each pair would lose the name it was published under.
+   *
+   * The first element of each pair is the mixed-case spelling and the second its folded form,
+   * which is also the published name of the other member - so the second element of each pair is
+   * exactly the `foldedNameCollisions` the family declares.
    */
   val foldedNamePairs: List[(String, String)] =
     List(

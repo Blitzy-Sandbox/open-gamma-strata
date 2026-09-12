@@ -28,7 +28,20 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * package that the Java test inventory covers nowhere - `ReferenceDataId.resolve`,
  * `ReferenceDataId.toReader` and the two resolution contracts [[Resolvable]] and
  * [[ResolvableCalculationTarget]] - because those exist only in this port and would otherwise
- * carry no regression coverage at all.
+ * carry no regression coverage at all. Two more sit in the middle, with the group of tests each
+ * belongs to: `test_values` asserts the public view of a store's content, which the original
+ * read only through its reflective bean sweep, and `test_findValue_genericIdFamily` asserts the
+ * retrieval check `ReferenceDataId.valueType` supplies, which the original performed
+ * reflectively at construction time instead.
+ *
+ * Three further tests follow those, over the two diagnostics this file reports - the
+ * missing-identifier failure and the duplicate-identifier failure. Both name text that
+ * reaches the library from a host's own `ReferenceDataId`, whose rendering nothing
+ * constrains, so each of the three asserts both halves of the port's message policy at once:
+ * the failure carries the identifier exactly as the identifier renders itself, untruncated,
+ * and every text form of that failure is a single bounded line. The identifier they use
+ * renders as whatever the test hands it, which is what lets them state a rendering holding a
+ * line feed or ten thousand characters.
  *
  * ===The fixtures, and why four of them are hand-written implementations===
  *
@@ -84,10 +97,13 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  */
 final class ReferenceDataSpec extends AnyFunSuite with Matchers {
 
+  import GenericTestingReferenceDataId.count
+  import GenericTestingReferenceDataId.text
   import ReferenceDataSpec.FallbackReferenceDataId
   import ReferenceDataSpec.ProbeResolvable
   import ReferenceDataSpec.ProbeResolvableTarget
   import ReferenceDataSpec.ProbeTarget
+  import ReferenceDataSpec.RenderedReferenceDataId
 
   /** The identifier the first and the third hand-written fixture hold, under different values. */
   private val ID1: TestingReferenceDataId = TestingReferenceDataId("1")
@@ -288,6 +304,60 @@ final class ReferenceDataSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   /**
+   * Asserts the public view of a store's content, which the Java `getValues()` property named.
+   *
+   * `findValue` answers one question about one identifier; this view is the mapping itself,
+   * which is what a caller enumerating what it was given needs. It is asserted over each of
+   * the four ways a store comes into being, because each assembles its content differently:
+   * the entry-based factory holds exactly what it was handed, `ReferenceData.of` lays those
+   * entries over the four built-in weekend and no-holiday calendars, [[ReferenceData.empty]]
+   * holds nothing, and combining two stores merges their entries with the preferred side
+   * winning a clash - so the view of a combination is where the precedence rule becomes
+   * visible in the content rather than only in an answer.
+   *
+   * The view is also asserted to agree with the reading surface, which is what makes it a view
+   * of the store and not a second store: an identifier it names is one the store holds, and
+   * the value it maps to is the value `findValue` answers with.
+   */
+  test("test_values") {
+    val test: ImmutableReferenceData =
+      store(ReferenceData.Entry(ID1, VAL1), ReferenceData.Entry(ID2, VAL2))
+
+    // exactly the entries supplied, keyed by the identifier each was filed under
+    test.values shouldBe Map[ReferenceDataId[_], Any](ID1 -> VAL1, ID2 -> VAL2)
+    test.values.get(ID3) shouldBe None
+
+    // and it agrees with the three members of the reading surface for every identifier it names
+    test.values.keys.foreach(id => test.containsValue(id) shouldBe true)
+    test.values.get(ID1) shouldBe test.findValue(ID1)
+    test.values.get(ID2) shouldBe test.findValue(ID2)
+
+    // the empty store holds nothing to show, `ReferenceData.empty` being that store
+    ImmutableReferenceData.empty.values shouldBe Map.empty[ReferenceDataId[_], Any]
+    viewOf(ReferenceData.empty) shouldBe Map.empty[ReferenceDataId[_], Any]
+
+    // `ReferenceData.of` lays the caller's entries over the four built-in calendars, so its
+    // view is the minimal set's view plus the entry supplied - which also states, in content
+    // rather than in an answer, that the four are seeded and that `GBLO` is not among them
+    val minimalView: Map[ReferenceDataId[_], Any] = ReferenceData.minimal.values
+    minimalView should have size 4
+    viewOf(layeredOverMinimal(ReferenceData.Entry(ID1, VAL1))) shouldBe
+      (minimalView + ((ID1: ReferenceDataId[_]) -> (VAL1: Any)))
+    minimalView.get(HolidayCalendarIds.GBLO) shouldBe None
+
+    // combining two stores merges their content, and the preferred side's value is the one the
+    // view shows for an identifier both hold
+    val merged: ReferenceData =
+      store(ReferenceData.Entry(ID1, VAL1)).combinedWith(store(ReferenceData.Entry(ID2, VAL2)))
+    viewOf(merged) shouldBe Map[ReferenceDataId[_], Any](ID1 -> VAL1, ID2 -> VAL2)
+
+    val clashing: ReferenceData =
+      store(ReferenceData.Entry(ID1, VAL1)).combinedWith(store(ReferenceData.Entry(ID1, VAL3)))
+    viewOf(clashing) shouldBe Map[ReferenceDataId[_], Any](ID1 -> VAL1)
+  }
+
+  //-------------------------------------------------------------------------
+  /**
    * Asserts at compile time the run-time type check the original asserted.
    *
    * The Java factory took a `Map` of type-erased identifiers to plain objects and validated each
@@ -331,6 +401,70 @@ final class ReferenceDataSpec extends AnyFunSuite with Matchers {
     assertDoesNotCompile("""ReferenceData.Entry(ID1)""")
     assertDoesNotCompile("""ImmutableReferenceData.of(ID1)""")
     assertCompiles("""ReferenceData.Entry(ID1, VAL1)""")
+  }
+
+  /**
+   * Asserts the half of the type-safety argument that closed construction cannot supply.
+   *
+   * `test_of_badType` above is about what can be filed, and the compiler settles it. This test
+   * is about what can be '''found''', which the compiler cannot settle: a store is a map keyed
+   * by an identifier whose type argument is erased, a map lookup compares keys with ordinary
+   * `equals`, and `ReferenceDataId` is open - so a host may declare an identifier family
+   * parameterized in its value type, and two instantiations of such a family are one key.
+   * [[GenericTestingReferenceDataId]] is that family, and the two identifiers below are equal
+   * values referring to different types of data.
+   *
+   * Without a retrieval check, the value filed by one instantiation would be returned through
+   * the other at the other's type - a `String` handed back as an `Int` - and would fail in the
+   * first expression the caller wrote with it, arbitrarily far from the lookup and on the
+   * resolution path of every adjustment, schedule and observation in the library. The check is
+   * `ReferenceDataId.valueType`: the identifier that asks narrows what was found with its own
+   * witness, so the mismatch is reported as an absence.
+   *
+   * Every member of the reading surface is asserted, because each is a way a consumer reaches
+   * that value, and the last two assertions record that filing is still settled at compile
+   * time - the retrieval check is added to that guarantee and does not replace it.
+   */
+  test("test_findValue_genericIdFamily") {
+    val textId: GenericTestingReferenceDataId[String] =
+      GenericTestingReferenceDataId[String]("shared")
+    val countId: GenericTestingReferenceDataId[Int] =
+      GenericTestingReferenceDataId[Int]("shared")
+
+    // the two instantiations are one key: equality is the id alone, the type argument having
+    // been erased, and a store keyed by identifier cannot tell them apart
+    (textId: ReferenceDataId[_]) shouldBe (countId: ReferenceDataId[_])
+    textId.hashCode shouldBe countId.hashCode
+
+    // what does tell them apart is the witness each carries, which is why that member is
+    // abstract on the trait: a generic family has to demand one per instantiation
+    textId.valueType should not be countId.valueType
+
+    val data: ImmutableReferenceData = store(ReferenceData.Entry(textId, "a value"))
+
+    // the instantiation that filed the value finds it, through every member
+    data.findValue(textId) shouldBe Some("a value")
+    data.containsValue(textId) shouldBe true
+    data.getValue(textId) should haveValue("a value")
+    textId.resolve(data) should haveValue("a value")
+    textId.toReader.run(data) should haveValue("a value")
+
+    // the instantiation that did not is told the store holds nothing for it, rather than
+    // handed a `String` at type `Int`
+    data.findValue(countId) shouldBe None
+    data.containsValue(countId) shouldBe false
+    data.getValue(countId) should beFailureWith(FailureReason.MISSING_DATA)
+    countId.resolve(data) should beFailureWith(FailureReason.MISSING_DATA)
+    countId.toReader.run(data) should beFailureWith(FailureReason.MISSING_DATA)
+
+    // and the consumer the mistyped value used to reach is reached with nothing: the miss is
+    // data about the request, so this arithmetic is never performed and nothing is thrown
+    data.findValue(countId).map(count => count + 1) shouldBe None
+
+    // filing is unchanged and still settled by the compiler: the entry that would put a
+    // `String` under the identifier of counts is not a program that runs
+    assertDoesNotCompile("""ReferenceData.Entry(countId, "a value")""")
+    assertCompiles("""ReferenceData.Entry(countId, 1)""")
   }
 
   //-------------------------------------------------------------------------
@@ -448,9 +582,10 @@ final class ReferenceDataSpec extends AnyFunSuite with Matchers {
    * `ReferenceData.minimal` - each computed once on first use, which is the property asserted in
    * place of the constructor sweep at the end of this test.
    *
-   * The store publishes no accessor for its entries, and deliberately so: a store of erased
-   * values is exactly what must not be handed out. So the entries are read back the way a caller
-   * reads them, through the three members of the reading surface, and the two properties of an
+   * The store publishes its content as [[ImmutableReferenceData.values]] - the counterpart of
+   * the property the bean sweep would have read - and that view has a test of its own,
+   * `test_values`, so the entries are read back here the way a caller ordinarily reads them,
+   * through the three members of the reading surface. The two properties of an
    * [[ReferenceData.Entry]] are read back from the entry itself.
    */
   test("coverage") {
@@ -689,13 +824,149 @@ final class ReferenceDataSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   /**
+   * Asserts the missing-identifier failure over an identifier that renders as two lines.
+   *
+   * `ReferenceDataId` is an open contract and nothing in it constrains `toString`, so the
+   * rendering below - which holds a line feed, a plausible second log line and a carriage
+   * return - is a legal identifier that a host application could define, deliberately or by
+   * accident. Two properties are asserted of it, and they are the two halves of the port's
+   * message policy:
+   *
+   *   - the failure carries the rendering exactly, in its message and under its `id`
+   *     attribute, because a caller acting on missing reference data has to be told which
+   *     item to supply and an identifier rewritten on the way into the message would not
+   *     tell it;
+   *   - every text form of that failure - `Show[Failure]`, and `Failure.toString`, which is
+   *     defined as it - is one line in which no character is a control character, so the
+   *     second line the rendering asks for cannot appear in a log holding the failure
+   *     (CWE-117).
+   */
+  test("test_notFound_injectedIdentifier") {
+    val rendering: String = "InjectedId [id=1]\nMISSING_DATA: forged by the caller\r"
+    val id: RenderedReferenceDataId = RenderedReferenceDataId(rendering)
+
+    val missing: Either[Failure, java.lang.Number] = ReferenceData.empty.getValue(id)
+    missing should beFailureWith(FailureReason.MISSING_DATA)
+
+    val failure: Failure = failureOf(missing)
+    failure.message shouldBe s"Reference data not found for identifier '$rendering'"
+    failure.attributes.get("id") shouldBe Some(rendering)
+
+    // the identifier-side entry point reports the same failure, `resolve` defaulting to
+    // `getValue`, so the policy holds on both paths into the diagnostic
+    id.resolve(ReferenceData.empty) shouldBe missing
+
+    // the two characters `\n`, written here as the escape a reader sees rather than as the
+    // character the identifier holds
+    val escaped: String = "InjectedId [id=1]\\nMISSING_DATA: forged by the caller\\r"
+    val rendered: String = Show[Failure].show(failure)
+    rendered shouldBe
+      s"MISSING_DATA: Reference data not found for identifier '$escaped' [id=$escaped]"
+    failure.toString shouldBe rendered
+    rendered.exists(_.isControl) shouldBe false
+  }
+
+  /**
+   * Asserts the missing-identifier failure over an identifier that renders as ten thousand
+   * characters.
+   *
+   * The failure keeps the whole rendering, which is what makes it a faithful report of what
+   * was asked for, and the text form of the failure is bounded regardless: the message and
+   * the attribute are each written up to a fixed number of characters and then marked as cut
+   * short, so a log line holding this failure cannot be made large by the size of an
+   * identifier. The ceiling asserted below is a concrete number well above what two bounded
+   * parts and the fixed text around them come to, and well below the ten thousand characters
+   * the failure holds, so the case pins the property rather than the constant the bound
+   * happens to be set to.
+   */
+  test("test_notFound_oversizedIdentifier") {
+    val rendering: String = "9" * 10000
+    val id: RenderedReferenceDataId = RenderedReferenceDataId(rendering)
+
+    val failure: Failure = failureOf(ReferenceData.empty.getValue(id))
+    failure.message shouldBe s"Reference data not found for identifier '$rendering'"
+    failure.message.length should be > 10000
+    failure.attributes("id").length shouldBe 10000
+
+    val rendered: String = Show[Failure].show(failure)
+    failure.toString shouldBe rendered
+    rendered.length should be < 1500
+    rendered should startWith("MISSING_DATA: Reference data not found for identifier '9")
+    rendered should endWith("...]")
+    rendered.exists(_.isControl) shouldBe false
+  }
+
+  /**
+   * Asserts the duplicate-identifier failure over identifiers whose renderings are hostile.
+   *
+   * Two identifiers are duplicated, one rendering as two lines and one as ten thousand
+   * characters, which is the case the port adds - the Java factory took a `Map` in which the
+   * ambiguity had already been resolved - and the two properties asserted are again those of
+   * `test_notFound_injectedIdentifier`, with the determinism of the report added: the failure
+   * names every duplicated identifier exactly, ordered by its rendering, so the same set of
+   * entries is the same failure however the caller arranged them, and the text form of that
+   * failure stays one bounded line.
+   *
+   * The expected order is stated rather than computed from the values under test: `I` sorts
+   * before `O`, so `InjectedId` precedes `OversizedId` and a sort that stopped happening
+   * would be a failed assertion rather than an expectation that moved with it.
+   */
+  test("test_duplicateIds_injectedAndOversizedIdentifiers") {
+    val injected: String = "InjectedId [id=1]\nINVALID: forged by the caller"
+    val oversized: String = s"OversizedId ${"9" * 10000}"
+    val first: RenderedReferenceDataId = RenderedReferenceDataId(injected)
+    val second: RenderedReferenceDataId = RenderedReferenceDataId(oversized)
+
+    val duplicated: Either[Failure, ImmutableReferenceData] = ImmutableReferenceData.of(
+      ReferenceData.Entry(first, VAL1),
+      ReferenceData.Entry(first, VAL2),
+      ReferenceData.Entry(second, VAL1),
+      ReferenceData.Entry(second, VAL2))
+    duplicated should beFailureWith(FailureReason.INVALID)
+
+    val failure: Failure = failureOf(duplicated)
+    val expected: String = s"$injected, $oversized"
+    failure.message shouldBe s"Duplicate reference data identifiers: $expected"
+    failure.attributes.get("duplicateIds") shouldBe Some(expected)
+    failure.attributes("duplicateIds").length should be > 10000
+
+    // the sort is what makes the failure a function of the set of entries: the same four
+    // entries supplied the other way round are the same value, not a message in a new order
+    val reversed: Either[Failure, ImmutableReferenceData] = ImmutableReferenceData.of(
+      ReferenceData.Entry(second, VAL2),
+      ReferenceData.Entry(second, VAL1),
+      ReferenceData.Entry(first, VAL2),
+      ReferenceData.Entry(first, VAL1))
+    failureOf(reversed) shouldBe failure
+
+    // and `ReferenceData.of`, being defined in terms of this factory, reports it unchanged
+    val layered: Either[Failure, ReferenceData] = ReferenceData.of(
+      ReferenceData.Entry(first, VAL1),
+      ReferenceData.Entry(first, VAL2),
+      ReferenceData.Entry(second, VAL1),
+      ReferenceData.Entry(second, VAL2))
+    failureOf(layered) shouldBe failure
+
+    val rendered: String = Show[Failure].show(failure)
+    failure.toString shouldBe rendered
+    rendered.length should be < 1500
+    rendered should startWith(
+      "INVALID: Duplicate reference data identifiers: " +
+        "InjectedId [id=1]\\nINVALID: forged by the caller, OversizedId 9")
+    rendered should endWith("...]")
+    rendered.exists(_.isControl) shouldBe false
+  }
+
+  //-------------------------------------------------------------------------
+  /**
    * Finds an identifier among the entries a hand-written fixture holds.
    *
-   * This is the body of all four hand-written fixtures above, written once. The cast is the same one
-   * [[ImmutableReferenceData.findValue]] performs and is sound for the same reason: every pair
-   * handed to it below files a value under an identifier of that value's own type, so the value
-   * found under an identifier of type `ReferenceDataId[T]` is a `T`. The Java fixtures carried an
-   * unchecked-cast suppression annotation on exactly this cast, for exactly this reason.
+   * This is the body of all four hand-written fixtures above, written once, and it is written
+   * the way [[ImmutableReferenceData.findValue]] is written: the matching entry is found by
+   * equality, exactly as a map lookup finds it, and the value is then narrowed by the witness
+   * the asking identifier carries. So it needs no cast - where the Java fixtures carried an
+   * unchecked-cast suppression annotation on this very expression - and a fixture reports a
+   * value of another type as absent for the same reason a store does.
    *
    * The entries are searched rather than looked up in a map, because a fixture holds one or two
    * of them and the search states the fixture's content at the point the fixture is declared.
@@ -711,9 +982,9 @@ final class ReferenceDataSpec extends AnyFunSuite with Matchers {
   private def findIn[T](
       id: ReferenceDataId[T],
       entries: (ReferenceDataId[_], java.lang.Number)*): Option[T] =
-    entries.collectFirst {
-      case (entryId, entryValue) if entryId == id => entryValue.asInstanceOf[T]
-    }
+    entries
+      .collectFirst { case (entryId, entryValue) if entryId == id => entryValue }
+      .flatMap(entryValue => id.valueType.narrow(entryValue))
 
   /**
    * Builds a store holding exactly the entries given.
@@ -751,6 +1022,26 @@ final class ReferenceDataSpec extends AnyFunSuite with Matchers {
     ReferenceData.of(entries: _*) match {
       case Right(data) => data
       case Left(failure) => fail(s"Fixture reference data could not be built: ${failure.message}")
+    }
+
+  /**
+   * Reads the public view of a set of reference data that is expected to be a store.
+   *
+   * `ImmutableReferenceData.values` is a member of the store, while `ReferenceData.of`,
+   * `ReferenceData.empty` and `combinedWith` are all declared to return the trait - the last
+   * of them because it returns a chain of wrappers when the other side is not a store. Every
+   * subject `test_values` reads is a store all the same, so the narrowing is asserted here
+   * rather than assumed: a subject that turned out to be anything else is a change in the
+   * behaviour those three factories document, and is reported as a failed test naming what
+   * was found instead.
+   *
+   * @param data  the reference data expected to be a materialised store
+   * @return the public view of its content
+   */
+  private def viewOf(data: ReferenceData): Map[ReferenceDataId[_], Any] =
+    data match {
+      case immutable: ImmutableReferenceData => immutable.values
+      case other => fail(s"Expected a materialised store but the reference data was $other")
     }
 
   /**
@@ -801,6 +1092,17 @@ object ReferenceDataSpec {
       extends ReferenceDataId[java.lang.Number] {
 
     /**
+     * The witness by which reference data recognises a value this identifier may answer with.
+     *
+     * The same witness [[TestingReferenceDataId]] carries, this probe referring to the same
+     * type of data: an identifier of a fixed value type names the one witness for that type
+     * rather than declaring a second equal to it.
+     *
+     * @return the witness for a boxed number
+     */
+    override def valueType: ReferenceDataType[java.lang.Number] = TestingReferenceDataId.number
+
+    /**
      * Resolves this identifier, falling back to the value it carries.
      *
      * @param refData  the reference data to resolve against
@@ -815,6 +1117,44 @@ object ReferenceDataSpec {
      * @return the identifier in the form `FallbackReferenceDataId [id=9]`
      */
     override def toString: String = s"FallbackReferenceDataId [id=$id]"
+  }
+
+  /**
+   * An identifier that renders as exactly the text it was built with.
+   *
+   * [[TestingReferenceDataId]] renders itself in a fixed form, which is what the ported cases
+   * of this suite want; the three diagnostic cases want the opposite - a rendering the test
+   * chooses character for character, so that an identifier holding a line feed or ten
+   * thousand characters can be handed to a lookup. `ReferenceDataId` is open and constrains
+   * `toString` in no way, so an identifier of this shape is a legal one for a host to define
+   * and is precisely the input those cases are about.
+   *
+   * It is a case class for the reason [[TestingReferenceDataId]] is one: reference data is
+   * keyed by identifier, so an identifier with reference equality could not find the value
+   * filed under an equal instance, and the duplicate-identifier case needs two equal
+   * instances to be recognised as one key.
+   *
+   * @param rendering  the text this identifier renders as, and which alone determines equality
+   */
+  final case class RenderedReferenceDataId(rendering: String)
+      extends ReferenceDataId[java.lang.Number] {
+
+    /**
+     * The witness by which reference data recognises a value this identifier may answer with.
+     *
+     * The one witness of the fixture family this identifier belongs to: it names a boxed number
+     * and nothing else, so every instance answers with the same witness.
+     *
+     * @return the witness for a boxed number
+     */
+    override def valueType: ReferenceDataType[java.lang.Number] = TestingReferenceDataId.number
+
+    /**
+     * Renders this identifier as the text it was built with, unaltered.
+     *
+     * @return the rendering supplied at construction
+     */
+    override def toString: String = rendering
   }
 
   /**

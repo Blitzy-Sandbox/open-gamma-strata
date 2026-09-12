@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.util.matching.Regex
 
 import cats.Hash
+import cats.Order
 import cats.Show
 
 import io.circe.Json
@@ -37,10 +38,18 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * Every one of the thirty-three methods of the original is kept under the name the original gave
  * it, with the two data-driven methods each staying '''one''' test that runs the whole table of
  * the provider it was driven by, so that a Java test method and a test of this suite remain in
- * one-to-one correspondence in the migration manifest. This suite therefore holds exactly
- * thirty-three tests: a reader comparing it against the Java class finds every method and no
- * method that was never there, and the manifest join on suite class and test name is exact in
- * both directions. One of the thirty-three keeps its name and changes its subject: the original's
+ * one-to-one correspondence in the migration manifest. This suite therefore holds those
+ * thirty-three tests and exactly two more, so that a reader comparing it against the Java class
+ * finds every method and no method that was never there, and every Java method the manifest names
+ * joins to a test of this suite. The first addition is `test_toMoney_toBigMoney`, which asserts
+ * the two conversions to the exact-decimal types. The original published both and tested neither
+ * from here - `MoneyTest` and `BigMoneyTest` asserted each of them as the return leg of their own
+ * round trips - and in this port each answers with an outcome rather than raising, so the case
+ * that is genuinely this type's own is stated where the conversions live. The second is the
+ * concrete comparison the ordering instance performs, which the Java class never tested and which
+ * is therefore named as a sentence rather than after a method that does not exist. Neither maps to
+ * a Java method and the manifest records a row for neither. One of the thirty-three keeps its name
+ * and changes its subject: the original's
  * `test_serialization` round-tripped through Java serialization, which no type of this port
  * supports, so the manifest records that method as consolidated into `json.JsonRoundTripSpec` and
  * the `test_serialization` of this suite is the per-type representation of the codec that
@@ -96,14 +105,20 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * ===What is asserted elsewhere===
  *
  * The property-based round trip of every codec of the module belongs to `json.JsonRoundTripSpec`,
- * the laws of the ordering, hashing and rendering instances to `TypeclassLawsSpec`, the sweep
- * over the construction surface of every validated type - with the documented numeric edge of
- * this type's arithmetic among them - to `SmartConstructorSpec`, the compile-time proof that the
- * type publishes no `apply` and no `copy` to `ApiSurfaceSpec`, and the fixture-driven numerical
- * parity of currency arithmetic against the Java baseline to `parity.CurrencyMathParitySpec`.
- * This suite asserts the cases of the Java test it is ported from and nothing those sweeps own,
- * which is what keeps it at thirty-three tests and keeps a failure here attributable to one
- * ported method.
+ * the '''laws''' of the ordering, hashing and rendering instances to `TypeclassLawsSpec`, the
+ * sweep over the construction surface of every validated type - with the documented numeric edge
+ * of this type's arithmetic among them - to `SmartConstructorSpec`, the compile-time proof that
+ * the type publishes no `apply` and no `copy` to `ApiSurfaceSpec`, and the fixture-driven
+ * numerical parity of currency arithmetic against the Java baseline to
+ * `parity.CurrencyMathParitySpec`.
+ *
+ * What the law suite owns is the laws of the ordering and nothing further: every lawful total
+ * order satisfies them and only one such order is this type's, so the comparison the instance
+ * actually performs is asserted here, in the second of this suite's two additions. This suite
+ * therefore asserts the cases of the Java test it is ported from plus its two additions - the
+ * conversions to the exact-decimal types and that comparison - and nothing else those sweeps
+ * own, which is what keeps it at thirty-five tests and keeps a failure here attributable to one
+ * ported method, to the conversions or to the ordering.
  *
  * @see [[CurrencyAmount]] for the type under test
  * @see [[FxRateProvider]] for the source of the rates the conversions use
@@ -351,14 +366,12 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
    * the original could write and this port cannot, and the reasoning for it is on
    * [[data_parseBad]].
    *
-   * The second half of this test is the one thing the original could not assert. It interpolated
-   * the text it was handed into the exception it threw, as it stood, so the size of the message
-   * was the size of the input and a line break in the input was a line break in the message. This
-   * port reports the rejection as a value and renders the text it names through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], which bounds the message and
-   * keeps it to one line. Both wordings quote the text, so both are asserted, and the ordinary
-   * rows above are what states that the bound is invisible to every caller but the adversarial
-   * one: their messages are unchanged, character for character.
+   * The second half of this test is the one thing the original could not assert. The original
+   * interpolated the text it was handed into the exception it threw, as it stood, and this port
+   * names it the same way in the failure it returns - so the wording is that one, and a caller is
+   * handed back exactly what was refused. What the port adds is the boundary at which such a
+   * failure is written out: its rendering bounds every part and escapes anything that could forge
+   * a line of a log holding it. Both wordings quote the text, so both are asserted.
    */
   test("test_parse_String_bad") {
     forAll(data_parseBad) { (input: String, message: String) =>
@@ -368,28 +381,40 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
     }
 
     // Ten thousand characters with no separator at the fourth position reach the invalid-format
-    // wording, which is the wording reached before anything is read from the text. The message is
-    // the fixed wording plus at most `MaxDescribedInput + 3` characters of the text, whatever its
-    // size - where it was once the whole ten thousand.
+    // wording, which is the wording reached before anything is read from the text, and the
+    // failure names the whole of what it refused.
     val payload: String = "H" * 10000
     val bounded: FailureOr[CurrencyAmount] = CurrencyAmount.parse(payload)
     bounded should beFailureWith(FailureReason.PARSING)
-    bounded should haveFailureMessageMatching(
-      Regex.quote(s"Unable to parse amount, invalid format: ${"H" * Failure.MaxDescribedInput}..."))
+    bounded.left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse amount, invalid format: $payload")
+    // The rendering of that failure is where the size stops: the ten thousand characters reach a
+    // log as a few hundred, marked to say that there was more.
+    val rendered = Show[Failure].show(bounded.left.toOption.getOrElse(fail("expected a failure")))
+    rendered.length should be < 1000
+    rendered should startWith("PARSING: Unable to parse amount, invalid format: HHH")
+    rendered should endWith("...")
 
-    // The same payload behind a well-formed prefix reaches the other wording, bounded by the same
-    // rendering.
-    CurrencyAmount.parse(s"AUD $payload") should haveFailureMessageMatching(
-      Regex.quote(s"Unable to parse amount: AUD ${"H" * (Failure.MaxDescribedInput - 4)}..."))
+    // The same payload behind a well-formed prefix reaches the other wording, named in full and
+    // bounded by the same rendering.
+    val prefixed: FailureOr[CurrencyAmount] = CurrencyAmount.parse(s"AUD $payload")
+    prefixed.left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse amount: AUD $payload")
+    Show[Failure]
+      .show(prefixed.left.toOption.getOrElse(fail("expected a failure")))
+      .length should be < 1000
 
-    // Text holding a line break cannot put one in the message, so a line-oriented consumer of the
-    // message cannot be made to record a line the library did not report. The break is placed to
-    // reach each wording in turn: at the separator position for the format failure, and inside the
-    // amount part for the unparsable-amount failure.
+    // Text holding a line break is named as it stands and rendered on one line, so a
+    // line-oriented consumer of the rendering cannot be made to record a line the library did not
+    // report. The break is placed to reach each wording in turn: at the separator position for
+    // the format failure, and inside the amount part for the unparsable-amount failure.
     CurrencyAmount.parse("AUD\n1.5") should haveFailureMessageMatching(
-      Regex.quote("Unable to parse amount, invalid format: AUD\\n1.5"))
+      Regex.quote("Unable to parse amount, invalid format: AUD\n1.5"))
     CurrencyAmount.parse("AUD 1.5\nINJECTED") should haveFailureMessageMatching(
-      Regex.quote("Unable to parse amount: AUD 1.5\\nINJECTED"))
+      Regex.quote("Unable to parse amount: AUD 1.5\nINJECTED"))
+    val injected: FailureOr[CurrencyAmount] = CurrencyAmount.parse("AUD 1.5\nINJECTED")
+    Show[Failure].show(injected.left.toOption.getOrElse(fail("expected a failure"))) shouldBe
+      "PARSING: Unable to parse amount: AUD 1.5\\nINJECTED"
   }
 
   //-------------------------------------------------------------------------
@@ -516,6 +541,45 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
 
   //-------------------------------------------------------------------------
   /**
+   * Asserts the two conversions to the exact-decimal types, in the direction this type owns.
+   *
+   * The original published `toMoney` and `toBigMoney` here and asserted them from the other side,
+   * as the return leg of `MoneyTest.testToCurrencyAmount` and `BigMoneyTest.testToCurrencyAmount`.
+   * Both round trips are still asserted there, in the original's form; what this test adds is the
+   * three things that belong to this end of the conversion and to no Java test:
+   *
+   *   - each conversion equals the factory of the type converted to, which is how the original
+   *     defined it - `Money.of(currency, amount)` and `BigMoney.of(currency, amount)`;
+   *   - the two differ in what they round to, and the difference is observable rather than
+   *     notional: the Australian dollar quotes two digits, so `AUD 100.125` becomes `AUD 100.13`
+   *     as money and stays `AUD 100.125` at scale twelve;
+   *   - an '''infinite''' amount, which this type admits and no decimal holds, is reported by both
+   *     rather than raised. That is the port's divergence: the original raised from exactly the
+   *     same decimal conversion, so the case existed there too and had no value to carry it.
+   */
+  test("test_toMoney_toBigMoney") {
+    CCY_AMOUNT.toMoney shouldBe Money.of(CCY1, AMT1)
+    CCY_AMOUNT.toBigMoney shouldBe BigMoney.of(CCY1, AMT1)
+
+    // money rounds to the minor units the currency quotes, while the wider type keeps the digit
+    // that rounding would have dropped
+    amountOf(CCY1, 100.125d).toMoney.map(money => money.amount.toString) shouldBe Right("100.13")
+    amountOf(CCY1, 100.125d).toBigMoney.map(money => money.amount.toString) shouldBe Right("100.125")
+
+    // an amount already within the currency's minor units survives both trips unchanged, which is
+    // the identity the two money suites assert as their return leg
+    CCY_AMOUNT.toMoney.map(money => money.toCurrencyAmount) shouldBe Right(CCY_AMOUNT)
+    CCY_AMOUNT.toBigMoney.map(money => money.toCurrencyAmount) shouldBe Right(CCY_AMOUNT)
+
+    // and the one value this type admits that no decimal holds is reported by both conversions
+    amountOf(CCY1, Double.PositiveInfinity).toMoney should beFailureWith(FailureReason.INVALID)
+    amountOf(CCY1, Double.PositiveInfinity).toBigMoney should beFailureWith(FailureReason.INVALID)
+    amountOf(CCY1, Double.NegativeInfinity).toMoney should beFailureWith(FailureReason.INVALID)
+    amountOf(CCY1, Double.NegativeInfinity).toBigMoney should beFailureWith(FailureReason.INVALID)
+  }
+
+  //-------------------------------------------------------------------------
+  /**
    * Asserts conversion at a rate the caller supplies, including the rate that must be one.
    *
    * The original asserted an `IllegalArgumentException` for the last case. Supplying a rate other
@@ -602,9 +666,10 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
    * value here, because construction normalises the sign away, which is the single place this
    * equality differs from a bit comparison of unnormalised doubles. The laws of the instance -
    * reflexivity, symmetry, transitivity and the hash agreeing with equality in general - belong to
-   * the root `TypeclassLawsSpec`, and the ordering the same instance carries with it belongs there
-   * too; this test asserts the values the ported method named plus the two the type's own
-   * normalisation makes interesting.
+   * the root `TypeclassLawsSpec`, and so do the laws of the ordering the same instance carries
+   * with it, whose concrete comparison is asserted by the ordering test below; this test asserts
+   * the values the ported method named plus the two the type's own normalisation makes
+   * interesting.
    */
   test("test_equals_hashCode") {
     val other: CurrencyAmount = amountOf(CCY1, AMT1)
@@ -656,6 +721,92 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
     // the method that remains expressible, and it is asserted in both directions
     CCY_AMOUNT.equals(ANOTHER_TYPE) shouldBe false
     ANOTHER_TYPE.equals(CCY_AMOUNT) shouldBe false
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * Asserts the comparison the ordering instance performs, not merely that it is lawful.
+   *
+   * This test has no counterpart in the Java class, which never tested `compareTo`, so it is a
+   * test of this port and carries no manifest row. It exists because the law suite of
+   * `TypeclassLawsSpec` proves only that the instance is a total order consistent with itself and
+   * agreeing with equality - properties an ordering that read the amount before the currency, or
+   * that reversed either of the two comparisons, would satisfy exactly as well. Without the
+   * assertions below, any of those orderings would keep this module green while sorting a report
+   * of amounts into an order the implementation being ported never produced.
+   *
+   * What is asserted is therefore the comparison itself, in the two parts the port is held to: the
+   * currency first, alphabetically by code, and the amount second by `java.lang.Double.compare`
+   * [[CurrencyAmount.order]]. Every pair is stated in both directions, because a sign is only
+   * pinned by its opposite; the equal case is stated as `compare == 0` and tied to the equality
+   * this suite asserts elsewhere, because the two are required to agree for every value; and the
+   * three values outside the ordinary ones that the second comparison makes interesting - a
+   * negative zero and the two infinities - are stated last.
+   */
+  test("the ordering compares the currency before the amount and agrees with equality") {
+    val order: Order[CurrencyAmount] = implicitly[Order[CurrencyAmount]]
+
+    // the currency decides the result whatever the amounts are, so a large amount of the earlier
+    // code is less than a small amount of the later one - the assertion an ordering that read the
+    // amount first would fail in both directions
+    val audLarge: CurrencyAmount = amountOf(CCY1, AMT1)
+    val cadSmall: CurrencyAmount = amountOf(CCY2, 1d)
+    (order.compare(audLarge, cadSmall) < 0) shouldBe true
+    (order.compare(cadSmall, audLarge) > 0) shouldBe true
+
+    // the same comparison with the amounts equal, so the sign above is the currency's and not an
+    // accident of the two amounts chosen for it
+    (order.compare(amountOf(CCY1, AMT1), amountOf(CCY2, AMT1)) < 0) shouldBe true
+    (order.compare(amountOf(CCY2, AMT1), amountOf(CCY1, AMT1)) > 0) shouldBe true
+
+    // within one currency the amount decides, ascending: a lower amount, the same amount and a
+    // higher one, each in both directions, so a reversed amount comparison fails here
+    (order.compare(CCY_AMOUNT_NEGATIVE, CCY_AMOUNT) < 0) shouldBe true
+    (order.compare(CCY_AMOUNT, CCY_AMOUNT_NEGATIVE) > 0) shouldBe true
+    (order.compare(CCY_AMOUNT, amountOf(CCY1, AMT2)) < 0) shouldBe true
+    (order.compare(amountOf(CCY1, AMT2), CCY_AMOUNT) > 0) shouldBe true
+    order.compare(CCY_AMOUNT, amountOf(CCY1, AMT1)) shouldBe 0
+
+    // the two parts stated together as the order a caller sees: sorting a mixed list groups the
+    // amounts by currency first and orders each group by amount, which is the arrangement the
+    // implementation being ported produced
+    val mixed: List[CurrencyAmount] =
+      List(cadSmall, amountOf(CCY1, AMT2), CCY_AMOUNT_NEGATIVE, audLarge)
+    mixed.sorted(order.toOrdering) shouldBe
+      List(CCY_AMOUNT_NEGATIVE, audLarge, amountOf(CCY1, AMT2), cadSmall)
+
+    // a zero comparison is equality and a non-zero comparison is inequality, over every pair of
+    // those four values: this is what ties the ordering to the equality `test_equals_hashCode`
+    // asserts, and it holds in both directions of the iteration because the sweep is complete
+    mixed.foreach { left =>
+      mixed.foreach { right =>
+        withClue(s"$left vs $right: ") {
+          (order.compare(left, right) == 0) shouldBe (left == right)
+        }
+      }
+    }
+
+    // `java.lang.Double.compare(-0.0, 0.0)` is negative, so an ordering over unnormalised amounts
+    // would sort an amount built from a negative zero below one built from a positive zero.
+    // Construction normalises the sign away - the normalisation `test_of_Currency_negativeZero`
+    // asserts - so the two are one value here and the comparison is zero, which is also what
+    // agreement with equality requires of them
+    order.compare(amountOf(CCY1, -0d), amountOf(CCY1, 0d)) shouldBe 0
+
+    // the two infinities are amounts this type admits, and each sorts outside every finite amount
+    // of the same currency - which `java.lang.Double.compare` gives and a subtraction of the two
+    // amounts would not
+    val negativeInfinity: CurrencyAmount = amountOf(CCY1, Double.NegativeInfinity)
+    val positiveInfinity: CurrencyAmount = amountOf(CCY1, Double.PositiveInfinity)
+    (order.compare(negativeInfinity, CCY_AMOUNT_NEGATIVE) < 0) shouldBe true
+    (order.compare(CCY_AMOUNT_NEGATIVE, negativeInfinity) > 0) shouldBe true
+    (order.compare(positiveInfinity, amountOf(CCY1, AMT2)) > 0) shouldBe true
+    (order.compare(amountOf(CCY1, AMT2), positiveInfinity) < 0) shouldBe true
+
+    // and the currency still decides first against an infinite amount, so the second comparison
+    // is reached only for two amounts in one currency
+    (order.compare(positiveInfinity, amountOf(CCY2, Double.NegativeInfinity)) < 0) shouldBe true
+    (order.compare(amountOf(CCY2, Double.NegativeInfinity), positiveInfinity) > 0) shouldBe true
   }
 
   //-------------------------------------------------------------------------

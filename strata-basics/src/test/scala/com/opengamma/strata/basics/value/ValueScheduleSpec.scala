@@ -39,16 +39,22 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * name. The last three names are the bare `equals`, `coverage` and `test_serialization`, kept
  * verbatim for that same reason.
  *
- * ===Construction is total here, and that is the point of one of these tests===
+ * ===Construction is validated here, and one of these tests is about where the line falls===
  *
- * Every factory of [[ValueSchedule]] hands back a schedule rather than an outcome, exactly as
- * every factory of the Java bean did, so nothing in this spec unwraps a schedule. That is not an
- * omission: a definition can only be judged against the schedule of periods it is resolved
- * against, and `test_resolveValues_indexBased_duplicateDefinitionInvalid` is the test that pins
- * it - two steps naming the same period with different adjustments '''build''' successfully and
- * fail only at [[ValueSchedule.resolveValues]]. The collaborators are a different matter: a
- * period, a schedule, an index-based step and a sequence each report their own rejections, so the
- * fixtures built from them pass through the one fold helper below.
+ * Every factory of [[ValueSchedule]] hands back an outcome rather than a schedule, as every
+ * validated type of this port does, so every fixture in this spec is unwrapped through the fold
+ * helper below - and so are the collaborators, since a period, a schedule, an index-based step
+ * and a sequence each report their own rejections.
+ *
+ * What construction judges is the half of the Java original's contradiction that needs no
+ * schedule: two steps naming the '''same position''' - the same period index, or the same date -
+ * with different adjustments. `test_resolveValues_indexBased_duplicateDefinitionInvalid` is the
+ * test where that line is drawn. The Java method built such a definition and asserted the throw
+ * from `resolveValues`; here the same pair is refused by construction, and the case goes on to
+ * assert the part only resolution can decide - a step named by index and a step named by the date
+ * of that period's boundary, two positions that differ as written and coincide only once the
+ * periods are in hand. Nothing the Java test covered is dropped: both halves are asserted, each
+ * against the channel that now reports it.
  *
  * ===What the port changes, and why===
  *
@@ -113,8 +119,9 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
    * name nothing.
    *
    * One helper covers every fixture here because every one of them reports through the
-   * accumulating channel; the schedule type itself needs none, since none of its factories
-   * reports anything.
+   * accumulating channel, the schedule type itself included: its factories and its two `with`
+   * operations all answer `ResultNec`, so a fixture of this type is unwrapped exactly as a
+   * fixture of a collaborator is.
    *
    * @param result  the outcome of a factory, expected to hold a value
    * @tparam A  the type of the value the outcome holds
@@ -240,7 +247,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   test("test_of_int") {
     // The single-value factory, which is total: there is nothing about a value this type rejects.
-    val test: ValueSchedule = ValueSchedule.of(10000.0d)
+    val test: ValueSchedule = ok(ValueSchedule.of(10000.0d))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List.empty[ValueStep]
     test.stepSequence shouldBe None
@@ -251,7 +258,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // be confused with the single-value factory above. The order of the steps is part of the
     // value - they are resolved in the order given - so it is asserted as an ordered list, which
     // is what the Java `containsExactly` asserted.
-    val test: ValueSchedule = ValueSchedule.of(10000.0d, Step1, Step2)
+    val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, Step1, Step2))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List(Step1, Step2)
     test.stepSequence shouldBe None
@@ -262,33 +269,33 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // separately is what keeps that factory apart from the single-value one, so it has no
     // zero-step form and the Java call has no distinct counterpart here; the empty case is
     // expressed by the list factory, and the two routes agree with the single-value factory.
-    val test: ValueSchedule = ValueSchedule.of(10000.0d, List.empty[ValueStep])
+    val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, List.empty[ValueStep]))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List.empty[ValueStep]
     test.stepSequence shouldBe None
-    test shouldBe ValueSchedule.of(10000.0d)
+    test shouldBe ok(ValueSchedule.of(10000.0d))
 
     // The one-step varargs call, which is the shortest form that factory does have, so that this
     // test still covers the factory the Java one was written against.
-    val single: ValueSchedule = ValueSchedule.of(10000.0d, Step1)
+    val single: ValueSchedule = ok(ValueSchedule.of(10000.0d, Step1))
     single.steps shouldBe List(Step1)
   }
 
   test("test_of_intStepsList") {
     // The list factory, reached in Java through a mutable list; the list of this port is
     // immutable, so the schedule holds the list it was given rather than a defensive copy of it.
-    val test: ValueSchedule = ValueSchedule.of(10000.0d, List(Step1, Step2))
+    val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List(Step1, Step2)
     test.stepSequence shouldBe None
 
     // The same schedule reached through the varargs factory, which is what makes the two routes
     // into a stepped schedule one value rather than two that merely look alike.
-    test shouldBe ValueSchedule.of(10000.0d, Step1, Step2)
+    test shouldBe ok(ValueSchedule.of(10000.0d, Step1, Step2))
   }
 
   test("test_of_intStepsList_empty") {
-    val test: ValueSchedule = ValueSchedule.of(10000.0d, List.empty[ValueStep])
+    val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, List.empty[ValueStep]))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List.empty[ValueStep]
     test.stepSequence shouldBe None
@@ -297,7 +304,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   test("test_of_sequence") {
     // The sequence factory, which holds the sequence and no individual steps. The Java test read
     // the property back through `Optional`; a property that is held is `Some` here.
-    val test: ValueSchedule = ValueSchedule.of(10000.0d, QuarterlySequence)
+    val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, QuarterlySequence))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List.empty[ValueStep]
     test.stepSequence shouldBe Some(QuarterlySequence)
@@ -308,14 +315,14 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // defaulted to zero and whose list of steps defaulted to empty. There is no builder here, so
     // this is re-pointed onto the full-field factory that replaced it, handed exactly those two
     // defaults and no sequence.
-    val test: ValueSchedule = ValueSchedule.of(0.0d, List.empty[ValueStep], None)
+    val test: ValueSchedule = ok(ValueSchedule.of(0.0d, List.empty[ValueStep], None))
     test.initialValue shouldBe 0.0d
     test.steps shouldBe List.empty[ValueStep]
     test.stepSequence shouldBe None
 
     // The same value as the two shorter routes to a schedule of zero, so the defaults the builder
     // supplied are the defaults these factories supply.
-    test shouldBe ValueSchedule.of(0.0d)
+    test shouldBe ok(ValueSchedule.of(0.0d))
     test shouldBe ValueSchedule.ALWAYS_0
   }
 
@@ -324,15 +331,16 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // which that bean could carry individual steps and a sequence at once. The full-field factory
     // is that route here, and it is the factory the two resolution tests for a sequence alongside
     // a step use as well.
-    val test: ValueSchedule = ValueSchedule.of(2000.0d, List(Step1, Step2), Some(QuarterlySequence))
+    val test: ValueSchedule = ok(ValueSchedule.of(2000.0d, List(Step1, Step2), Some(QuarterlySequence)))
     test.initialValue shouldBe 2000.0d
     test.steps shouldBe List(Step1, Step2)
     test.stepSequence shouldBe Some(QuarterlySequence)
 
     // The two `with` operations reach the same value from either half of it, which is what makes
     // them the replacement of the builder rather than a convenience beside it.
-    ValueSchedule.of(2000.0d, List(Step1, Step2)).withStepSequence(QuarterlySequence) shouldBe test
-    ValueSchedule.of(2000.0d, QuarterlySequence).withSteps(List(Step1, Step2)) shouldBe test
+    ok(ok(ValueSchedule.of(2000.0d, List(Step1, Step2))).withStepSequence(QuarterlySequence)) shouldBe
+      test
+    ok(ok(ValueSchedule.of(2000.0d, QuarterlySequence)).withSteps(List(Step1, Step2))) shouldBe test
   }
 
   //-------------------------------------------------------------------------
@@ -344,19 +352,19 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     val step2: ValueStep = ValueStep.of(date(2014, 3, 1), ValueAdjustment.ofReplace(400.0d))
 
     // no steps: every period carries the initial value
-    ValueSchedule.of(200.0d, List.empty[ValueStep]).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List.empty[ValueStep])).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 200.0d, 200.0d))
 
     // step1: the change at the second period carries forward into the third
-    ValueSchedule.of(200.0d, List(step1)).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List(step1))).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 300.0d, 300.0d))
 
     // step2: the first two periods are untouched
-    ValueSchedule.of(200.0d, List(step2)).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List(step2))).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 200.0d, 400.0d))
 
     // step1 and step2: one change at each of the two later periods
-    ValueSchedule.of(200.0d, List(step1, step2)).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List(step1, step2))).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 300.0d, 400.0d))
   }
 
@@ -378,19 +386,19 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     Period3.unadjustedEndDate shouldBe date(2014, 4, 1)
 
     // no steps
-    ValueSchedule.of(200.0d, List.empty[ValueStep]).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List.empty[ValueStep])).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 200.0d, 200.0d))
 
     // step1
-    ValueSchedule.of(200.0d, List(step1)).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List(step1))).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 300.0d, 300.0d))
 
     // step2
-    ValueSchedule.of(200.0d, List(step2)).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List(step2))).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 200.0d, 400.0d))
 
     // step1 and step2
-    ValueSchedule.of(200.0d, List(step1, step2)).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List(step1, step2))).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 300.0d, 400.0d))
   }
 
@@ -406,7 +414,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     val step4: ValueStep = ValueStep.of(date(2014, 3, 15), ValueAdjustment.ofDeltaAmount(0.0d))
     val step5: ValueStep = ValueStep.of(date(2014, 4, 1), ValueAdjustment.ofMultiplier(1.0d))
 
-    val test: ValueSchedule = ValueSchedule.of(200.0d, List(step1, step2, step3, step4, step5))
+    val test: ValueSchedule = ok(ValueSchedule.of(200.0d, List(step1, step2, step3, step4, step5)))
     test.resolveValues(ScheduleFixture) should haveValue(DoubleArray.of(200.0d, 300.0d, 400.0d))
   }
 
@@ -419,19 +427,19 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     val step2: ValueStep = ok(ValueStep.of(2, ValueAdjustment.ofReplace(400.0d)))
 
     // no steps
-    ValueSchedule.of(200.0d, List.empty[ValueStep]).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List.empty[ValueStep])).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 200.0d, 200.0d))
 
     // step1
-    ValueSchedule.of(200.0d, List(step1)).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List(step1))).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 300.0d, 300.0d))
 
     // step2
-    ValueSchedule.of(200.0d, List(step2)).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List(step2))).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 200.0d, 400.0d))
 
     // step1 and step2
-    ValueSchedule.of(200.0d, List(step1, step2)).resolveValues(ScheduleFixture) should
+    ok(ValueSchedule.of(200.0d, List(step1, step2))).resolveValues(ScheduleFixture) should
       haveValue(DoubleArray.of(200.0d, 300.0d, 400.0d))
   }
 
@@ -442,26 +450,67 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     val step1: ValueStep = ok(ValueStep.of(1, ValueAdjustment.ofReplace(300.0d)))
     val step2: ValueStep = ok(ValueStep.of(1, ValueAdjustment.ofReplace(300.0d)))
 
-    val test: ValueSchedule = ValueSchedule.of(200.0d, List(step1, step2))
+    val test: ValueSchedule = ok(ValueSchedule.of(200.0d, List(step1, step2)))
     test.resolveValues(ScheduleFixture) should haveValue(DoubleArray.of(200.0d, 300.0d, 300.0d))
   }
 
   test("test_resolveValues_indexBased_duplicateDefinitionInvalid") {
-    // Two steps naming the same period with '''different''' adjustments. This is the test that
-    // pins the totality of construction: nothing about the pair decides which of the two should
-    // win, and nothing can decide it until the periods are in hand, so the definition is built
-    // successfully and the contradiction is reported only when it is resolved.
+    // Two steps naming the same period with '''different''' adjustments. The Java test built the
+    // definition and asserted the throw from `resolveValues`; here the same contradiction is
+    // reported by construction, because two steps carrying the same period index ask for two
+    // different values at one point of the time line whatever schedule they are resolved against.
+    // The report is the one failure of that position, carrying both adjustments.
     val step1: ValueStep = ok(ValueStep.of(1, ValueAdjustment.ofReplace(300.0d)))
     val step2: ValueStep = ok(ValueStep.of(1, ValueAdjustment.ofReplace(400.0d)))
 
-    val test: ValueSchedule = ValueSchedule.of(200.0d, List(step1, step2))
+    val rejected: ResultNec[ValueSchedule] = ValueSchedule.of(200.0d, List(step1, step2))
+    rejected should beFailureWith(FailureReason.INVALID)
+    rejected.left.toOption.map(_.length) shouldBe Some(1L)
+    rejected should haveFailureMessageMatching(
+      ".*two steps name period index 1 with different adjustments.*")
+
+    // Every other route into the type reports it too, since all of them funnel through the
+    // factory above: the varargs shorthand, the full-field factory, and the operation that
+    // replaces the steps of a definition already built.
+    ValueSchedule.of(200.0d, step1, step2) should beFailureWith(FailureReason.INVALID)
+    ValueSchedule.of(200.0d, List(step1, step2), None) should beFailureWith(FailureReason.INVALID)
+    ok(ValueSchedule.of(200.0d)).withSteps(List(step1, step2)) should
+      beFailureWith(FailureReason.INVALID)
+
+    // The half of the contradiction that construction cannot see is still reported by resolution,
+    // and this is it: one step names period 1 by its index, the other names it by the date of its
+    // boundary, so the two positions differ as written and coincide only once the periods are in
+    // hand. That is the message the Java assertion pinned.
+    val byDate: ValueStep =
+      ValueStep.of(Period2.unadjustedStartDate, ValueAdjustment.ofReplace(400.0d))
+    val test: ValueSchedule = ok(ValueSchedule.of(200.0d, List(step1, byDate)))
     test.initialValue shouldBe 200.0d
-    test.steps shouldBe List(step1, step2)
+    test.steps shouldBe List(step1, byDate)
 
     val result: FailureOr[DoubleArray] = test.resolveValues(ScheduleFixture)
     result should beFailure
     result should beFailureWith(FailureReason.INVALID)
     result should haveFailureMessageMatching(".*two steps resolved to the same schedule period.*")
+
+    // The check that reports the contradiction above runs on '''every''' construction, and both
+    // the factory and the decoder take a step list of any length from a caller or a document, so
+    // what that check costs is part of this type's contract. It is linear in the steps plus the
+    // sort of their distinct positions: each step is paired with its own position in the list
+    // before the steps are grouped, so ordering the reports reads an index already in hand.
+    // Searching the list for each group's first step instead would rescan it once per position,
+    // which is quadratic, and a document naming many positions would then choose a cost far
+    // beyond its size. Sixty thousand distinct positions are built here, which the linear form
+    // checks in tens of milliseconds and a per-position search would take tens of seconds over,
+    // so the bound below separates the two without depending on how fast the machine is.
+    val manySteps: List[ValueStep] =
+      List.tabulate(60000)(index => ok(ValueStep.of(index + 1, ValueAdjustment.ofReplace(index.toDouble))))
+    val startedAt: Long = System.nanoTime()
+    val ofManySteps: ResultNec[ValueSchedule] = ValueSchedule.of(100.0d, manySteps)
+    val elapsedMillis: Long = (System.nanoTime() - startedAt) / 1000000L
+    ofManySteps.map(schedule => schedule.steps.size) shouldBe Right(60000)
+    withClue(s"checking sixty thousand distinct step positions took ${elapsedMillis}ms: ") {
+      elapsedMillis should be < 15000L
+    }
   }
 
   test("test_resolveValues_dateBased_indexZeroValid") {
@@ -469,7 +518,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // a step at index zero is meaningful even though no period precedes it.
     val step: ValueStep = ValueStep.of(date(2014, 1, 1), ValueAdjustment.ofReplace(300.0d))
 
-    val test: ValueSchedule = ValueSchedule.of(200.0d, List(step))
+    val test: ValueSchedule = ok(ValueSchedule.of(200.0d, List(step)))
     test.resolveValues(ScheduleFixture) should haveValue(DoubleArray.of(300.0d, 300.0d, 300.0d))
   }
 
@@ -479,7 +528,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // the pairing of the definition with the schedule and is reported by resolution.
     val step: ValueStep = ok(ValueStep.of(3, ValueAdjustment.ofReplace(300.0d)))
 
-    val result: FailureOr[DoubleArray] = ValueSchedule.of(200.0d, List(step)).resolveValues(ScheduleFixture)
+    val result: FailureOr[DoubleArray] = ok(ValueSchedule.of(200.0d, List(step))).resolveValues(ScheduleFixture)
     result should beFailure
     result should beFailureWith(FailureReason.INVALID)
     result should haveFailureMessageMatching(".*index is beyond last schedule period.*")
@@ -493,7 +542,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // compares the whole of it, so the pattern is anchored and closed with a wildcard tail.
     val step: ValueStep = ValueStep.of(date(2014, 4, 1), ValueAdjustment.ofReplace(300.0d))
 
-    val result: FailureOr[DoubleArray] = ValueSchedule.of(200.0d, List(step)).resolveValues(ScheduleFixture)
+    val result: FailureOr[DoubleArray] = ok(ValueSchedule.of(200.0d, List(step))).resolveValues(ScheduleFixture)
     result should beFailure
     result should beFailureWith(FailureReason.INVALID)
     result should haveFailureMessageMatching("^ValueStep date does not match a period boundary.*")
@@ -503,7 +552,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // A step dated before the first period of the schedule has no preceding period to adjust.
     val step: ValueStep = ValueStep.of(date(2013, 12, 31), ValueAdjustment.ofReplace(300.0d))
 
-    val result: FailureOr[DoubleArray] = ValueSchedule.of(200.0d, List(step)).resolveValues(ScheduleFixture)
+    val result: FailureOr[DoubleArray] = ok(ValueSchedule.of(200.0d, List(step))).resolveValues(ScheduleFixture)
     result should beFailure
     result should beFailureWith(FailureReason.INVALID)
     result should haveFailureMessageMatching("^ValueStep date is before the start of the schedule.*")
@@ -515,7 +564,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // above, which is reported for the other reason.
     val step: ValueStep = ValueStep.of(date(2014, 4, 3), ValueAdjustment.ofReplace(300.0d))
 
-    val result: FailureOr[DoubleArray] = ValueSchedule.of(200.0d, List(step)).resolveValues(ScheduleFixture)
+    val result: FailureOr[DoubleArray] = ok(ValueSchedule.of(200.0d, List(step))).resolveValues(ScheduleFixture)
     result should beFailure
     result should beFailureWith(FailureReason.INVALID)
     result should haveFailureMessageMatching("^ValueStep date is after the end of the schedule.*")
@@ -525,7 +574,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   test("test_resolveValues_sequence") {
     // A sequence stepping the value up by 100 at each of the two later boundaries of the
     // schedule, expanded under its roll convention into the two steps those boundaries carry.
-    val test: ValueSchedule = ValueSchedule.of(200.0d, MonthlySequence)
+    val test: ValueSchedule = ok(ValueSchedule.of(200.0d, MonthlySequence))
     test.stepSequence shouldBe Some(MonthlySequence)
     test.resolveValues(ScheduleFixture) should haveValue(DoubleArray.of(200.0d, 300.0d, 400.0d))
   }
@@ -537,7 +586,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // sequence-only case.
     val step1: ValueStep = ValueStep.of(date(2014, 1, 1), ValueAdjustment.ofReplace(350.0d))
 
-    val test: ValueSchedule = ValueSchedule.of(200.0d, List(step1), Some(MonthlySequence))
+    val test: ValueSchedule = ok(ValueSchedule.of(200.0d, List(step1), Some(MonthlySequence)))
     test.resolveValues(ScheduleFixture) should haveValue(DoubleArray.of(350.0d, 450.0d, 550.0d))
   }
 
@@ -548,7 +597,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // distinct.
     val step1: ValueStep = ValueStep.of(date(2014, 2, 1), ValueAdjustment.ofReplace(350.0d))
 
-    val test: ValueSchedule = ValueSchedule.of(200.0d, List(step1), Some(MonthlySequence))
+    val test: ValueSchedule = ok(ValueSchedule.of(200.0d, List(step1), Some(MonthlySequence)))
     val result: FailureOr[DoubleArray] = test.resolveValues(ScheduleFixture)
     result should beFailure
     result should beFailureWith(FailureReason.INVALID)
@@ -559,10 +608,10 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   test("equals") {
     // The equality matrix of the Java test, which varies one property at a time: the same
     // definition twice, a different initial value, and a shorter list of steps.
-    val a1: ValueSchedule = ValueSchedule.of(10000.0d, List(Step1, Step2))
-    val a2: ValueSchedule = ValueSchedule.of(10000.0d, List(Step1, Step2))
-    val b: ValueSchedule = ValueSchedule.of(5000.0d, List(Step1, Step2))
-    val c: ValueSchedule = ValueSchedule.of(10000.0d, List(Step1))
+    val a1: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
+    val a2: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
+    val b: ValueSchedule = ok(ValueSchedule.of(5000.0d, List(Step1, Step2)))
+    val c: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1)))
 
     a1 shouldBe a1
     a1 shouldBe a2
@@ -588,8 +637,8 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   test("coverage") {
     // The two instances the Java test swept reflectively through the meta-bean of the type. They
     // differ in every property, which is what made them a pair worth comparing.
-    val test: ValueSchedule = ValueSchedule.of(10000.0d, List(Step1, Step2))
-    val that: ValueSchedule = ValueSchedule.of(20000.0d, QuarterlySequence)
+    val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
+    val that: ValueSchedule = ok(ValueSchedule.of(20000.0d, QuarterlySequence))
 
     // Every property of both, read back through the accessors that replaced the bean getters.
     test.initialValue shouldBe 10000.0d
@@ -615,32 +664,37 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
 
     // The two operations that replaced the builder produce the expected modified value and leave
     // the original untouched, which is the whole of the field-wise modification this type has.
-    test.withSteps(List(Step1)) shouldBe ValueSchedule.of(10000.0d, List(Step1))
-    test.withStepSequence(QuarterlySequence) shouldBe
-      ValueSchedule.of(10000.0d, List(Step1, Step2), Some(QuarterlySequence))
+    // Both report their outcome, because both hand the caller's steps to the validated factory,
+    // so both are unwrapped here exactly as a factory call is.
+    ok(test.withSteps(List(Step1))) shouldBe ok(ValueSchedule.of(10000.0d, List(Step1)))
+    ok(test.withStepSequence(QuarterlySequence)) shouldBe
+      ok(ValueSchedule.of(10000.0d, List(Step1, Step2), Some(QuarterlySequence)))
     test.steps shouldBe List(Step1, Step2)
     test.stepSequence shouldBe None
 
     // The construction surface is closed: the type is an abstract case class with a private
     // constructor, so it has neither a public `apply` nor a `copy`, and the only way to assert
-    // the absence of a member is to require a snippet naming it to fail to compile.
+    // the absence of a member is to require a snippet naming it to fail to compile. The second
+    // snippet names a schedule this test already holds rather than a factory call, so what fails
+    // to compile in it is `copy` on the type and not the absence of `copy` on the outcome a
+    // factory answers with.
     assertDoesNotCompile("""ValueSchedule(10000.0d, Nil, None)""")
-    assertDoesNotCompile("""ValueSchedule.of(10000.0d).copy(initialValue = 5000.0d)""")
+    assertDoesNotCompile("""test.copy(initialValue = 5000.0d)""")
 
     // The same two snippets with the missing member replaced by one that exists, which is what
     // keeps the two above from passing for the wrong reason: a snippet naming an identifier this
     // scope cannot resolve would also fail to compile and would prove nothing about `apply` or
     // `copy`. These compile, so every other name in them resolves.
     assertCompiles("""ValueSchedule.of(10000.0d, Nil, None)""")
-    assertCompiles("""ValueSchedule.of(10000.0d).initialValue""")
+    assertCompiles("""test.initialValue""")
 
     // The initial value is compared by bit pattern, as it was by the bean equality of the
     // original and as it is by every double-bearing type of this port. Two consequences follow,
     // and the signed-zero one is stated against the platform comparison that decides it rather
     // than against a numeric test that would report the two zeroes equal.
-    ValueSchedule.of(Double.NaN) shouldBe ValueSchedule.of(Double.NaN)
+    ok(ValueSchedule.of(Double.NaN)) shouldBe ok(ValueSchedule.of(Double.NaN))
     java.lang.Double.compare(-0.0d, 0.0d) should not be 0
-    ValueSchedule.of(-0.0d) should not be ValueSchedule.of(0.0d)
+    ok(ValueSchedule.of(-0.0d)) should not be ok(ValueSchedule.of(0.0d))
   }
 
   //-------------------------------------------------------------------------
@@ -649,7 +703,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // directions are asserted - an encoding that is wrong and a decoding that is wrong in the
     // same way would still round trip - and the documents are compared as parsed JSON rather
     // than as printed text, so the assertion is about the fields rather than the rendering.
-    val test: ValueSchedule = ValueSchedule.of(10000.0d, List(Step1, Step2))
+    val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
     test.asJson shouldBe json(ExpectedStepsJson)
     decode[ValueSchedule](test.asJson.noSpaces) shouldBe Right(test)
     decode[ValueSchedule](ExpectedStepsJson) shouldBe Right(test)
@@ -663,7 +717,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
 
     // The other shape, which holds a sequence and no individual steps, so the array of steps is
     // written as an empty one and the sequence appears as the object its own codec writes.
-    val withSequence: ValueSchedule = ValueSchedule.of(10000.0d, QuarterlySequence)
+    val withSequence: ValueSchedule = ok(ValueSchedule.of(10000.0d, QuarterlySequence))
     withSequence.asJson shouldBe json(ExpectedSequenceJson)
     decode[ValueSchedule](withSequence.asJson.noSpaces) shouldBe Right(withSequence)
     decode[ValueSchedule](ExpectedSequenceJson) shouldBe Right(withSequence)
@@ -674,8 +728,8 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // makes the shorthand of a constant schedule decodable, and equal values encode to identical
     // bytes because the fields are written in declaration order and the order of the steps is
     // part of the value.
-    decode[ValueSchedule]("""{"initialValue":200.0}""") shouldBe Right(ValueSchedule.of(200.0d))
-    ValueSchedule.of(200.0d, List(Step1, Step2)).asJson.noSpaces shouldBe
-      ValueSchedule.of(200.0d, Step1, Step2).asJson.noSpaces
+    decode[ValueSchedule]("""{"initialValue":200.0}""") shouldBe Right(ok(ValueSchedule.of(200.0d)))
+    ok(ValueSchedule.of(200.0d, List(Step1, Step2))).asJson.noSpaces shouldBe
+      ok(ValueSchedule.of(200.0d, Step1, Step2)).asJson.noSpaces
   }
 }

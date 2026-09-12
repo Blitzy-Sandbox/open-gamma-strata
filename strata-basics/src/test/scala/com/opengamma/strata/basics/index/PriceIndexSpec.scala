@@ -17,6 +17,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.prop.TableFor2
+import org.scalatest.prop.TableFor6
 
 import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.basics.date.DayCounts
@@ -80,6 +81,19 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * by matching a message, so the diagnostic wording stays free to change. No index is ever
  * constructed here: every value under test is reached through the family's own lookup or
  * through the constants that directory publishes (Rule 4).
+ *
+ * ===The published index table, folded in===
+ *
+ * A final section, after the ported methods and marked as such, asserts the '''structure''' of
+ * the transcribed table this family creates its members from, `PriceIndexData`. The test
+ * inventory of AAP §0.3.1 lists thirteen index specs and none for that table - the Java
+ * sources have no test class for it, because there it was a comma separated resource a loader
+ * read from the class path on first use - so what a consumer of the table relies on is
+ * asserted here, in the spec of the family the table produces. The nine rows with all five of
+ * their columns, in published order, are compared against the Java-captured reference data by
+ * `ReferenceDataManifestSpec` and are deliberately not transcribed again. The reasoning is
+ * repeated at the section, and its tests are named `data_*` rather than after a Java method,
+ * because `manifest/java-test-mapping.csv` maps no Java method to any of them.
  */
 class PriceIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
@@ -109,6 +123,40 @@ class PriceIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     (PriceIndices.FR_EXT_CPI, "FR-EXT-CPI")
   )
 
+  /**
+   * The five fields the published data maps onto each member, row for row.
+   *
+   * The expectations are transcribed from the published reference data itself -
+   * `META-INF/com/opengamma/strata/config/base/PriceIndexData.csv` of the module being ported,
+   * whose header reads `Name,Currency,Country,Active,Publication Frequency` and whose nine data
+   * rows are lines 3 to 11 of that file - and deliberately not from the `PriceIndexData` object
+   * of this port. Transcribing the port would make the assertions below a restatement of the
+   * code they test; transcribing the data keeps them an independent statement of what the nine
+   * rows say, which is what makes them able to catch a mistranscribed row. The `Country` column
+   * of the data is the `region` of the index.
+   *
+   * Every row is listed rather than a representative one. The five fields are the part of a
+   * member that its name does not determine: nothing in the name `FR-EXT-CPI` says the index is
+   * quoted in euro, and nothing in `EU-AI-CPI` says its region is the currency union rather
+   * than a country, so a mapping that carried one row's currency, region, active flag or
+   * publication frequency across to another row would be invisible to a check that only looked
+   * names up. `test_rowMappedFields` drives the table, and asserts there that the family holds
+   * no row the table omits.
+   */
+  private val dataFields
+      : TableFor6[PriceIndex, String, Currency, Country, Boolean, Frequency] = Table(
+    ("index", "name", "currency", "region", "active", "publicationFrequency"),
+    (PriceIndices.GB_HICP, "GB-HICP", Currency.GBP, Country.GB, true, Frequency.P1M),
+    (PriceIndices.GB_RPI, "GB-RPI", Currency.GBP, Country.GB, true, Frequency.P1M),
+    (PriceIndices.GB_RPIX, "GB-RPIX", Currency.GBP, Country.GB, true, Frequency.P1M),
+    (PriceIndices.CH_CPI, "CH-CPI", Currency.CHF, Country.CH, true, Frequency.P1M),
+    (PriceIndices.EU_AI_CPI, "EU-AI-CPI", Currency.EUR, Country.EU, true, Frequency.P1M),
+    (PriceIndices.EU_EXT_CPI, "EU-EXT-CPI", Currency.EUR, Country.EU, true, Frequency.P1M),
+    (PriceIndices.JP_CPI_EXF, "JP-CPI-EXF", Currency.JPY, Country.JP, true, Frequency.P1M),
+    (PriceIndices.US_CPI_U, "US-CPI-U", Currency.USD, Country.US, true, Frequency.P1M),
+    (PriceIndices.FR_EXT_CPI, "FR-EXT-CPI", Currency.EUR, Country.FR, true, Frequency.P1M)
+  )
+
   //-------------------------------------------------------------------------
   test("test_gbpHicp") {
     // The index is reached by name rather than through its constant, as the Java method did:
@@ -133,6 +181,69 @@ class PriceIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     // an option, so the expectation is written as the option holding that family.
     FloatingRateName.valueOf("GB-HICP") shouldBe Some(test.floatingRateName)
     test.toString shouldBe "GB-HICP"
+  }
+
+  test("test_rowMappedFields") {
+    // `test_gbpHicp` above pins the five row-mapped fields of one member, the sterling
+    // harmonised index, exactly as the Java method it is ported from did. That leaves the other
+    // eight rows reached by name and identity alone everywhere else in this suite, and a name
+    // is not enough: a mapping that carried GB-HICP's currency, region, active flag or
+    // publication frequency across to another row would answer every name with the right
+    // member and still be wrong about what that member is. This test is where the whole
+    // row-to-instance mapping is pinned, one row of the published data at a time.
+    //
+    // Three rows are the ones such a mistake shows up in first. FR-EXT-CPI is quoted in euro
+    // and measures France, so its currency and its region disagree and neither can be derived
+    // from the other or from the name. The two EU rows are quoted in euro and measure the
+    // currency union, which is a region that is not a country at all. JP-CPI-EXF and US-CPI-U
+    // are the two remaining non-European currencies. All nine are asserted, so none is left
+    // resting on a sample.
+    forEvery(dataFields) {
+      (index: PriceIndex,
+          name: String,
+          currency: Currency,
+          region: Country,
+          active: Boolean,
+          publicationFrequency: Frequency) =>
+        withClue(s"$name: ") {
+          index.name shouldBe name
+          index.currency shouldBe currency
+          index.region shouldBe region
+          index.active shouldBe active
+          index.publicationFrequency shouldBe publicationFrequency
+
+          // The same five fields on the value the family's own lookup answers with, which is
+          // the route a caller who does not hold the constants directory takes. The two are
+          // the one member of that row - asserted here as well as in `test_of_lookup`, since
+          // fields read off a constant say nothing about what the lookup hands out.
+          val looked: PriceIndex = PriceIndex
+            .valueOf(name)
+            .getOrElse(fail(s"the price index family publishes no $name"))
+          looked shouldBe index
+          looked.name shouldBe name
+          looked.currency shouldBe currency
+          looked.region shouldBe region
+          looked.active shouldBe active
+          looked.publicationFrequency shouldBe publicationFrequency
+        }
+    }
+
+    // The table covers the family completely, in the declaration order of the published data,
+    // so a member that has no row of expectations here is a failure rather than a member
+    // verified by name alone.
+    val all: List[PriceIndex] = PriceIndex.values.toList
+    val expectedNames: List[String] = dataFields.toList.map { case (_, name, _, _, _, _) => name }
+    all.map(_.name) shouldBe expectedNames
+
+    // And the expectations discriminate between the rows: the Currency and Country columns of
+    // the published data hold five distinct currencies and six distinct regions across the nine
+    // rows, so these two sizes fall if the fields of one row are ever reused for another. The
+    // remaining two columns are uniform across the data - every published index is active and
+    // published monthly - and are asserted as exactly that, one value each.
+    all.map(_.currency).distinct should have size 5
+    all.map(_.region).distinct should have size 6
+    all.map(_.active).distinct shouldBe List(true)
+    all.map(_.publicationFrequency).distinct shouldBe List(Frequency.P1M)
   }
 
   test("test_getFloatingRateName") {
@@ -372,5 +483,79 @@ class PriceIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     Json.fromString("Rubbish").as[PriceIndex].isLeft shouldBe true
     Json.fromString("UK-RPI").as[PriceIndex].isLeft shouldBe true
     Json.obj("name" -> Json.fromString("US-CPI-U")).as[PriceIndex].isLeft shouldBe true
+  }
+
+  //-------------------------------------------------------------------------
+  // The published index table this family is created from, `PriceIndexData`, is asserted below.
+  // It is asserted in this spec because the Java sources have no test class for that data - in
+  // the original it was a comma separated resource that a loader read from the class path on
+  // first use, and what the Java `PriceIndexTest` asserted about it was the fields of a handful
+  // of the indices it produced - so the test inventory of this port maps no spec to it. Here the
+  // nine rows are Scala literals fixed at compile time, so the table can be asserted directly,
+  // and the spec of the family it produces is where that belongs.
+  //
+  // The nine rows with all five of their columns, in published order, are compared against the
+  // values captured from the Java implementation by `ReferenceDataManifestSpec`, which is the
+  // stronger statement of the two and is not repeated here; the order in which the family
+  // creates its members from them is asserted in `test_extendedEnum` above.
+  //
+  // What the tests below pin is what a consumer of the table relies on beyond those rows: the
+  // distinctness of the names that identify them, the derived lookup agreeing with the rows it
+  // is built from, and the two properties that hold of the data as it stands rather than of the
+  // row type - every index is published, and every index is published monthly.
+  //-------------------------------------------------------------------------
+  test("data_names_areDistinct") {
+    // A name is the identity of an index, so two rows sharing one would make the lookup below
+    // lose a row without any other symptom.
+    PriceIndexData.rows should have size 9
+    PriceIndexData.rows.map(_.name).distinct should have size 9
+  }
+
+  test("data_byName_holdsEveryRowUnderItsCanonicalNameOnly") {
+    PriceIndexData.byName should have size 9
+    PriceIndexData.rows.foreach { row =>
+      withClue(s"${row.name}: ") {
+        PriceIndexData.byName.get(row.name) shouldBe Some(row)
+      }
+    }
+    PriceIndexData.byName.keySet shouldBe PriceIndexData.rows.map(_.name).toSet
+
+    // The keys are the canonical names alone. Registering each name a second time in upper case
+    // was how the registry of the original answered a case-insensitive lookup; that
+    // responsibility belongs to the named enum support now, so a folded name is absent here.
+    PriceIndexData.byName.get("gb-rpi") shouldBe None
+    PriceIndexData.byName.get("GB_RPI") shouldBe None
+    PriceIndexData.byName.get("Rubbish") shouldBe None
+  }
+
+  test("data_everyIndexIsActiveAndPublishedMonthly") {
+    // Both are properties of the data as it stands rather than constraints on the row type: the
+    // type admits a discontinued index and any publication frequency, exactly as the column of
+    // the original did, so an index that is later discontinued is a change of one literal.
+    PriceIndexData.rows.forall(_.active) shouldBe true
+    PriceIndexData.rows.map(_.publicationFrequency).distinct shouldBe Vector(Frequency.P1M)
+  }
+
+  test("data_regionsAndCurrencies") {
+    // The three sterling indices measure the United Kingdom, the Swiss index Switzerland, the two
+    // European indices the `EU` region rather than any member state, the Japanese index Japan and
+    // the United States index the United States.
+    PriceIndexData.rows.filter(_.currency == Currency.GBP).map(_.name) shouldBe
+      Vector("GB-HICP", "GB-RPI", "GB-RPIX")
+    PriceIndexData.rows.filter(_.region == Country.EU).map(_.name) shouldBe Vector("EU-AI-CPI", "EU-EXT-CPI")
+
+    // The French index is the one row whose region is not the region of its currency: it is
+    // quoted in euro and measures France. That is the row a transcription is most likely to get
+    // wrong, so it is asserted on its own as well as in the table above.
+    PriceIndexData.byName.get("FR-EXT-CPI").map(row => (row.currency, row.region)) shouldBe
+      Some((Currency.EUR, Country.FR))
+    PriceIndexData.rows.count(row => row.currency == Currency.EUR) shouldBe 3
+  }
+
+  test("data_iterationOrderIsStable") {
+    // A consumer reading this table twice has to see the same thing both times, whatever private
+    // lookups are derived from it.
+    PriceIndexData.rows shouldBe PriceIndexData.rows
+    PriceIndexData.byName.toVector shouldBe PriceIndexData.byName.toVector
   }
 }

@@ -7,8 +7,12 @@ package com.opengamma.strata.basics.json
 
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.Period
 import java.time.YearMonth
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.immutable.List
 import scala.collection.immutable.SortedMap
@@ -166,14 +170,51 @@ private[json] object MockSerRecord {
 private[json] final case class ExcludedType(fqcn: String, reason: String)
 
 /**
+ * A value of a type the inventory does not cover, which an audit run generates in place of the
+ * covered values it is not allowed to construct.
+ *
+ * Its fields are the leaf types the generators of the covered types are built from - text, a
+ * whole number, a real number, a date, a time of day, a time zone and a day of the week - so
+ * generating and rendering one exercises the generator machinery, the collection machinery and
+ * the platform's date, time and zone machinery that generating and rendering a covered value
+ * exercises. It names no type of either module, so constructing one initialises no companion
+ * and therefore no codec. Those two properties together are what make it useful: it is the work
+ * the two audit runs have in common, and having it in common is what leaves the difference
+ * between them holding the codecs and nothing else.
+ *
+ * @param text  arbitrary text
+ * @param count  an arbitrary whole number
+ * @param magnitude  an arbitrary real number
+ * @param date  an arbitrary date
+ * @param time  an arbitrary time of day
+ * @param zone  an arbitrary time zone
+ * @param day  an arbitrary day of the week
+ */
+private[json] final case class AuditProbe(
+    text: String,
+    count: Int,
+    magnitude: Double,
+    date: LocalDate,
+    time: LocalTime,
+    zone: ZoneId,
+    day: DayOfWeek)
+
+/**
  * The tally an audit run accumulates over one type, and over the whole suite by addition.
  *
- * @param values  how many values were generated
- * @param digest  the sum of the lengths of their renderings, which is the baseline work
+ * @param planned  how many values the inventory plans for the type, which is read from the
+ *   inventory rather than from what was generated and is therefore the same in both audit runs
+ * @param digest  the digest of the work both runs do, which names no covered type
+ * @param generated  how many values of the covered type were constructed, which is zero unless
+ *   the run was asked to encode
  * @param roundTrips  how many of them encoded and decoded back to themselves, zero unless the
  *   run was asked to encode
  */
-private[json] final case class AuditTally(values: Int, digest: Int, roundTrips: Int) {
+private[json] final case class AuditTally(
+    planned: Int,
+    digest: Int,
+    generated: Int,
+    roundTrips: Int) {
 
   /**
    * Adds another tally to this one.
@@ -182,7 +223,11 @@ private[json] final case class AuditTally(values: Int, digest: Int, roundTrips: 
    * @return the sum of the two
    */
   def combine(other: AuditTally): AuditTally =
-    AuditTally(values + other.values, digest + other.digest, roundTrips + other.roundTrips)
+    AuditTally(
+      planned + other.planned,
+      digest + other.digest,
+      generated + other.generated,
+      roundTrips + other.roundTrips)
 }
 
 /**
@@ -262,6 +307,7 @@ private[json] final case class CodecCase(
  * invalid: <subject>                        a payload refused as a reported failure
  * byte-stability: <subject>                 a document that depends on the value alone
  * excluded from JSON: <SimpleTypeName>      one per deliberately unserializable type
+ * not published: <subject>                  a codec that exists but is not part of the API
  * codec coverage report                     the printed inventory
  * codec audit: deterministic value enumeration   the class-load audit mode
  * }}}
@@ -280,11 +326,24 @@ private[json] final case class CodecCase(
  *
  * Rule 6 of the migration prohibits reflection on the codec path, and the check for it is
  * performed on the classes the machine actually loads: this suite is run twice under a class
- * loading log, once generating every value without encoding it and once generating and encoding
- * it, and the difference between the two sets of loaded classes must hold no class of any
- * reflection package. That is what the `codec.audit` system property selects, and because the
- * difference has to be attributable to encoding alone, the property gates the registration of
- * the ''whole'' suite rather than of one test. See `registerAuditMode` below.
+ * loading log, once without serializing anything and once serializing every covered value, and
+ * the difference between the two sets of loaded classes must hold no class of any reflection
+ * package and no class that refers to the reflection API. That is what the `codec.audit` system
+ * property selects, and because the difference has to be attributable to serialization alone,
+ * the property gates the registration of the ''whole'' suite rather than of one test.
+ *
+ * What the two runs have in common is deliberately drawn at the boundary of this port rather
+ * than at the boundary of this suite's own bookkeeping. The run that is not serializing
+ * constructs '''no value of any covered type''': it generates and renders values of
+ * [[AuditProbe]] instead, which exercises the generator, collection, date and matcher machinery
+ * that the other run also uses while naming no type of either module. It has to be that way
+ * because a value of a covered type can only be built through that type's companion, and a
+ * companion is where the codec of the type is held - so a run that built one would construct
+ * that codec, and everything the construction of a codec touches would appear in ''both'' logs
+ * and cancel out of the difference the audit exists to measure. Nothing in this class is
+ * computed while it is constructed either: the fixtures and the five instances of every case are
+ * read on first use. `registerAuditMode` below states what the difference attributes, and
+ * asserts the three counts that make the statement checkable.
  */
 class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
 
@@ -344,8 +403,20 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
    * every public data type and every public contract type of `strata-collect` and
    * `strata-basics` appears in exactly one of the two, which is what makes the printed report a
    * statement about the modules rather than a list of what happened to be tested.
+   *
+   * Built on first use, like every other value of this class body, so that an audit run - which
+   * prints no report - builds nothing it does not read. See the note on the audit mode below.
+   *
+   * What closure means here, precisely, because the modules publish more than data and contracts:
+   * a type alias a module root re-exports is the '''same''' type under a second name, so it is
+   * closed by the entry for the type it names; a named partial application such as
+   * `RefDataReader` is a generic container of the standard library; and the value-type witness an
+   * identifier carries holds a pattern rather than data. Those are audited by the port's
+   * construction-kind inventory - `ApiSurfaceSpec`, which records one row per public surface of
+   * either module - and the two inventories together account for the whole of it. Transcribed
+   * reference-data rows are `private[basics]` and published by neither.
    */
-  private val excludedTypes: List[ExcludedType] = List(
+  private lazy val excludedTypes: List[ExcludedType] = List(
     ExcludedType("com.opengamma.strata.basics.ReferenceData", StoreReason),
     ExcludedType("com.opengamma.strata.basics.ImmutableReferenceData", StoreReason),
     ExcludedType("com.opengamma.strata.basics.CombinedReferenceData", StoreReason),
@@ -366,6 +437,14 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
     ExcludedType("com.opengamma.strata.basics.CalculationTarget", ContractReason),
     ExcludedType("com.opengamma.strata.basics.CalculationTargetList", "its element type is excluded"),
     ExcludedType("com.opengamma.strata.collect.array.Matrix", "trait; DoubleMatrix is covered"),
+    // the single-abstract-method callbacks the two numeric wrappers take instead of boxing an
+    // index: contract types by the same reading as DateAdjuster above, and the construction-kind
+    // inventory audits each of them as a function surface
+    ExcludedType("com.opengamma.strata.collect.array.DoubleArray.DoubleTernaryOperator", ContractReason),
+    ExcludedType("com.opengamma.strata.collect.array.DoubleMatrix.ElementAction", ContractReason),
+    ExcludedType("com.opengamma.strata.collect.array.DoubleMatrix.ElementFunction", ContractReason),
+    ExcludedType("com.opengamma.strata.collect.array.DoubleMatrix.RowArrayFunction", ContractReason),
+    ExcludedType("com.opengamma.strata.collect.array.DoubleMatrix.RowArrayObjectFunction", ContractReason),
     ExcludedType("com.opengamma.strata.collect.Named", MachineryReason),
     ExcludedType("com.opengamma.strata.collect.named.NamedEnum", MachineryReason),
     ExcludedType("com.opengamma.strata.collect.TypedStringCompanion", MachineryReason),
@@ -392,9 +471,16 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
   // it, so a fixture is unwrapped once through one of the two helpers below and a fixture that
   // could not be built is a failed test naming the cause - never a thrown exception and never a
   // `get` on an absent value.
+  //
+  // Every one of them is computed on first use. The fixtures below serve the document-form
+  // tests and nothing else, and an audit run registers none of those tests, so building them
+  // eagerly would have an audit run construct calendars, observations and a matrix of rates
+  // that it never looks at - work that loads classes in both audit runs and so cancels out of
+  // the very difference the audit measures. Computing them on demand keeps an audit run down to
+  // the generation, and the encoding, of the values it is measuring.
 
   /** The reference data every observation and every named calendar of this suite resolves against. */
-  private val refData: ReferenceData = ReferenceData.standard
+  private lazy val refData: ReferenceData = ReferenceData.standard
 
   /**
    * Unwraps a fixture whose factory reports a single cause.
@@ -431,10 +517,10 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
   private def decimal(text: String): Decimal = required(Decimal.of(text), s"Decimal $text")
 
   /** The identifier of the calendar the Java holiday tests built their fixtures under. */
-  private val testCalendarId: HolidayCalendarId = HolidayCalendarId.of("Test1")
+  private lazy val testCalendarId: HolidayCalendarId = HolidayCalendarId.of("Test1")
 
   /** The two holidays of the Java `HOLCAL_MON_WED` fixture, in ascending order. */
-  private val testHolidays: List[LocalDate] =
+  private lazy val testHolidays: List[LocalDate] =
     List(LocalDate.of(2014, 7, 14), LocalDate.of(2014, 7, 16))
 
   /**
@@ -444,11 +530,11 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
    * of the structural document form: a calendar carrying a built-in identifier is a different
    * case, covered by its own test.
    */
-  private val testCalendar: ImmutableHolidayCalendar =
+  private lazy val testCalendar: ImmutableHolidayCalendar =
     ImmutableHolidayCalendar.of(testCalendarId, testHolidays, DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
 
   /** A calendar declaring one weekend date to be a business day, so the fourth field is not empty. */
-  private val workingWeekendCalendar: ImmutableHolidayCalendar =
+  private lazy val workingWeekendCalendar: ImmutableHolidayCalendar =
     ImmutableHolidayCalendar.of(
       HolidayCalendarId.of("XCAL"),
       List(LocalDate.of(2020, 1, 1), LocalDate.of(2020, 12, 25)),
@@ -461,12 +547,16 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
   // encoding of a double cannot be picked up by accident at a derivation site. The two are bound
   // here by name, which is the import the support intends and which keeps the choice visible in
   // the file that makes it; the remaining fifty-six types publish their own instances.
+  //
+  // These two are the only codec instances this suite owns rather than imports from a companion,
+  // and they are read on first use for the same reason every case below acquires its instances on
+  // first use: an audit run that is not encoding must not reach for a codec at all.
 
   /** The document form of an immutable array of doubles: a JSON array of tagged doubles. */
-  private implicit val doubleArrayCodec: Codec[DoubleArray] = Codecs.doubleArrayCodec
+  private implicit lazy val doubleArrayCodec: Codec[DoubleArray] = Codecs.doubleArrayCodec
 
   /** The document form of an immutable matrix of doubles: a JSON array of rows. */
-  private implicit val doubleMatrixCodec: Codec[DoubleMatrix] = Codecs.doubleMatrixCodec
+  private implicit lazy val doubleMatrixCodec: Codec[DoubleMatrix] = Codecs.doubleMatrixCodec
 
   //-------------------------------------------------------------------------
   // The per-type case, and the generic builder of one.
@@ -474,19 +564,24 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
   /** The seed the audit mode generates from, fixed so that two runs generate the same values. */
   private val AuditSeed: Long = 20240101L
 
-  /** How many values the audit mode generates for each covered type. */
+  /**
+   * How many values the audit mode plans for each covered type, and draws of the probe value.
+   *
+   * The serializing run generates that many values of every covered type; the other run
+   * generates that many probe values and none of any covered type. The figure is part of the
+   * plan rather than of what happened, so it is the same in both runs.
+   */
   private val AuditValuesPerCase: Int = 8
 
   /** The generation size the audit mode uses, fixed for the same reason as the seed. */
   private val AuditGenerationSize: Int = 16
 
   /**
-   * Generates the values of one type for an audit run.
+   * Draws the values of one type from the fixed seeds.
    *
    * Nothing here is drawn from the clock, from a random source or from the property-check
-   * machinery, whose seeds vary between runs: a value is generated from the fixed seed plus its
-   * index, so the two runs of the audit generate byte-identical values and the difference
-   * between the classes they load is attributable to encoding alone.
+   * machinery, whose seeds vary between runs: a value is drawn from the fixed seed plus its
+   * index, so a generator asked twice for the same index yields the same value.
    *
    * A generator that yields nothing from every one of the fixed seeds is a defect of the
    * generator rather than an empty case, so it fails the run naming the type.
@@ -496,7 +591,7 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
    * @tparam A  the type being generated
    * @return the values generated, at least one
    */
-  private def auditValues[A](generator: Gen[A], typeName: String): List[A] = {
+  private def auditDraw[A](generator: Gen[A], typeName: String): List[A] = {
     val parameters = Gen.Parameters.default.withSize(AuditGenerationSize)
     val drawn = (0 until AuditValuesPerCase).toList
       .flatMap(index => generator(parameters, Seed(AuditSeed + index.toLong)))
@@ -508,29 +603,286 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
   }
 
   /**
+   * How many values of a covered type this suite has constructed since it was constructed.
+   *
+   * This is the count the audit rests on, and it counts the '''cause''' of codec construction
+   * rather than an acquisition of a codec that has already been built. A value of a covered type
+   * can only be made by calling a factory on that type's companion; calling it initialises the
+   * companion; and a companion is where the type's codec is held, in a field computed once when
+   * the companion initialises. So a run that constructs no value of a covered type has
+   * initialised no covered companion, has built none of their codecs, and has loaded nothing
+   * that building one touches - which is what puts codec construction, and the code of every
+   * dependency it reaches, inside the difference between the two runs rather than common to
+   * them.
+   *
+   * It is an atomic counter for the same reason [[codecAcquisitions]] is: nothing here depends on
+   * the increments being ordered, only on none of them being lost.
+   */
+  private val generatedValues: AtomicInteger = new AtomicInteger(0)
+
+  /**
+   * Draws the values of one covered type, counting the construction.
+   *
+   * @param generator  the generator of the type
+   * @param typeName  the simple name of the type, named in the failure
+   * @tparam A  the covered type
+   * @return the values generated, at least one
+   */
+  private def auditValues[A](generator: Gen[A], typeName: String): List[A] = {
+    val drawn = auditDraw(generator, typeName)
+    val _ = generatedValues.addAndGet(drawn.size)
+    drawn
+  }
+
+  /**
+   * The runtime classes an audit run loads by name.
+   *
+   * A class here refers to the reflection API in its own body, for its own reasons and none of
+   * this port's, and the serializing run would otherwise be the first to load it - which would
+   * leave it in the class-load difference and have the check that reads the difference report
+   * the platform's internals as though they were this port's codecs. Loading it in both runs
+   * keeps it out. Each is named rather than provoked because no expression this suite can write
+   * reaches it:
+   *
+   *   - the bootstrap of a symbol literal, which only generated code calls, and which finds the
+   *     symbol class by name;
+   *   - the platform's random-number class, which the test framework's own event serialization
+   *     pulls in through the platform's thread-local generator.
+   *
+   * A class constant is a constant and not a reflective lookup: it resolves where it is read,
+   * which loads the class and initialises nothing.
+   */
+  private val AuditRuntimeClasses: List[Class[_]] =
+    List(classOf[scala.runtime.SymbolLiteral], classOf[java.util.Random])
+
+  /**
+   * The zones an audit run asks the platform for, chosen to reach the zone-rule provider.
+   *
+   * The platform finds its zone rules through a service lookup that is reflective, and the
+   * codecs reach it through the zone of an index. Asking for a zone in both runs keeps the
+   * platform's own lookup out of the difference.
+   */
+  private val AuditZones: List[String] =
+    List("Europe/London", "America/New_York", "Asia/Tokyo", "UTC")
+
+  /**
+   * The generator of the value an audit run is allowed to construct.
+   *
+   * The combinators used here - a comprehension over choices, a weighted choice, a selection
+   * from a collection and a string generator - are the combinators the generators of the covered
+   * types are built from, so a run that draws from this generator has loaded the generator
+   * machinery that the other run's covered generators also need.
+   */
+  private val auditProbeGenerator: Gen[AuditProbe] =
+    for {
+      text <- Gen.alphaNumStr
+      count <- Gen.choose(-1000, 1000)
+      magnitude <- Gen.frequency(3 -> Gen.choose(-1.0e6, 1.0e6), 1 -> Gen.const(0.0))
+      dayOfYear <- Gen.choose(0, 364)
+      hour <- Gen.choose(0, 23)
+      minute <- Gen.choose(0, 59)
+      zone <- Gen.oneOf(AuditZones)
+      day <- Gen.oneOf(DayOfWeek.values().toList)
+    } yield AuditProbe(
+      text = text,
+      count = count,
+      magnitude = magnitude,
+      date = LocalDate.of(2024, 1, 1).plusDays(dayOfYear.toLong),
+      time = LocalTime.of(hour, minute),
+      zone = ZoneId.of(zone),
+      day = day)
+
+  /**
+   * Performs the work the two audit runs have in common, and returns its digest.
+   *
+   * Every step here is deliberate, and none of them names a covered type:
+   *
+   *   - values of [[AuditProbe]] are drawn from the fixed seeds and rendered, which is the
+   *     generator machinery and the rendering of a product;
+   *   - they are put into a set, copied into an array and collected into a buffer, which is the
+   *     collection machinery whose generic array support refers to the reflection API;
+   *   - every method of that collection and of that buffer which carries a lambda of its own is
+   *     called, for the reason given where the calls are made;
+   *   - their dates and times are formatted and their zones resolved, which is the platform's
+   *     date, format and zone machinery, the last of which finds its provider reflectively;
+   *   - the classes of [[AuditRuntimeClasses]] are loaded by name.
+   *
+   * The digest is a function of that work and of nothing else, so the two runs produce the same
+   * digest. An operator who diffs the two printed lines and finds them differing has found
+   * either a generator that is not deterministic or an inventory that changed between the runs,
+   * both of which would make the class-load difference mean something other than what the audit
+   * claims for it.
+   *
+   * @return the digest of the common work
+   */
+  private def auditCommonWork(): Int = {
+    val drawn = auditDraw(auditProbeGenerator, "AuditProbe")
+    val rendered = drawn.foldLeft(0)((total, probe) => total + probe.toString.length)
+    val distinct = drawn.map(_.text).toSet.size
+    val copied = drawn.toArray.length
+    val formatted = drawn.foldLeft(0) { (total, probe) =>
+      total + DateTimeFormatter.ISO_LOCAL_DATE.format(probe.date).length +
+        DateTimeFormatter.ISO_LOCAL_TIME.format(probe.time).length +
+        probe.zone.getRules.isFixedOffset.toString.length +
+        probe.day.toString.length
+    }
+    val named = AuditRuntimeClasses.foldLeft(0)((total, loaded) => total + loaded.getName.length)
+    rendered + distinct + copied + formatted + named + auditCollectionWork(drawn.map(_.count))
+  }
+
+  /**
+   * Exercises the two standard-library classes that reach the reflection API, and returns a
+   * digest of the results.
+   *
+   * The two are the aggregating half of every collection and the growable buffer, both of which
+   * call the reflection API to read the length of an array of unknown element type. They are
+   * loaded by the work above in either run, but that is not sufficient on its own: the check
+   * that reads the class-load difference cannot disassemble a lambda under its own name, so it
+   * inspects the '''whole''' of the class the lambda was defined in - and a lambda of one of
+   * these two classes that runs for the first time in the serializing run would put that class
+   * in front of the check. The methods called below are exactly the methods of those two classes
+   * that carry a lambda, read from the compiled standard library of the version this build pins,
+   * so every one of those lambdas runs in both runs and none of them can land in the difference.
+   *
+   * @param numbers  the numbers to aggregate, at least one
+   * @return the digest of the aggregation
+   */
+  private def auditCollectionWork(numbers: List[Int]): Int = {
+    val ordering: Ordering[Int] = Ordering.Int
+    // rendered rather than added, so that a product wide enough to wrap around cannot make the
+    // digest depend on how an overflow happened to land
+    val aggregated = List(
+      numbers.sum,
+      numbers.product,
+      numbers.max(ordering),
+      numbers.min(ordering),
+      numbers.maxBy(identity[Int])(ordering),
+      numbers.minBy(identity[Int])(ordering),
+      numbers.foldRight(0)((value, total) => total + value),
+      numbers.reduceRight((value, total) => total + value))
+      .foldLeft(0)((total, value) => total + value.toString.length)
+    val optional =
+      numbers.maxOption(ordering).size + numbers.minOption(ordering).size +
+        numbers.maxByOption(identity[Int])(ordering).size +
+        numbers.minByOption(identity[Int])(ordering).size
+    val buffer = numbers.toBuffer
+    val buffered =
+      buffer.reduceRight((value, total) => total + value) +
+        buffer.sliding(2, 1).size + buffer.view.size
+    aggregated + optional + buffered
+  }
+
+  /**
+   * The digest of one entry of the inventory.
+   *
+   * An audit run reads this for every covered type, in both modes, so the digest the run prints
+   * covers the inventory as well as the common work: a type added to or removed from the
+   * inventory between the two runs changes it, and the check that compares the two runs' digests
+   * would report that rather than proceeding on a difference measured against a different
+   * inventory. It names the type only as text, so reading it constructs nothing.
+   *
+   * @param category  which of the five routes into JSON the type takes
+   * @param typeName  the simple name of the type
+   * @param fqcn  the fully qualified name of the type
+   * @return the digest of the entry
+   */
+  private def auditInventoryDigest(category: String, typeName: String, fqcn: String): Int =
+    (0 until AuditValuesPerCase).foldLeft(0) { (total, index) =>
+      total + s"$category/$typeName/$fqcn@${AuditSeed + index.toLong}".length
+    }
+
+  /**
+   * How many instances of one case the encoding half of an audit run acquires.
+   *
+   * The three are both halves of the codec and the equality the round trip compares with, which
+   * are exactly the instances a run that does not encode has no use for.
+   */
+  private val CodecInstancesPerCase: Int = 3
+
+  /**
+   * How many codec-dependent instances this suite has acquired since it was constructed.
+   *
+   * Three of the five instances a case needs - both halves of the codec and the equality the
+   * round trip compares with - are acquired only where they are used, and each acquisition is
+   * counted here. The count is therefore a measurement of the suite's own behaviour, and the
+   * audit run asserts it: the baseline mode must finish having acquired '''none''' of them, and
+   * the codec mode exactly [[CodecInstancesPerCase]] for each covered type. That assertion is
+   * the standing evidence that the baseline run's class loading excludes this suite's codec
+   * acquisition, which is what makes the difference between the two runs attributable to the
+   * codecs rather than to the bookkeeping around them.
+   *
+   * It is an atomic counter rather than a plain counter because a suite may run beside another
+   * and because a `forAll` property may evaluate its body on more than one thread; nothing here
+   * depends on the increments being ordered, only on none of them being lost.
+   */
+  private val codecAcquisitions: AtomicInteger = new AtomicInteger(0)
+
+  /**
+   * Acquires one codec-dependent instance, counting the acquisition.
+   *
+   * @param instance  the instance, evaluated by this call and not before it
+   * @tparam A  the type of the instance
+   * @return the instance
+   */
+  private def acquired[A](instance: => A): A = {
+    val _ = codecAcquisitions.incrementAndGet()
+    instance
+  }
+
+  /**
    * Builds the case of one covered type from the instances that type publishes.
    *
    * The five instances required are exactly the five this suite needs of a serializable type,
    * and requiring them here is itself part of the coverage: a type that reaches this method has
    * a generator, both halves of a codec, an equality and a rendering, so a type whose codec was
-   * forgotten cannot be listed as covered.
+   * forgotten cannot be listed as covered. That remains a '''compile-time''' requirement: the
+   * five are implicit parameters, so a type missing one of them cannot be listed at all.
+   *
+   * ===Why all five arrive by name===
+   *
+   * Taking them by value would summon all five the moment a case is built, and the cases are
+   * built to populate a list in the class body - before the constructor reaches the switch that
+   * decides what this run is. A baseline audit run would then have acquired every encoder and
+   * every decoder of both modules before its only test started, and whatever the codec path
+   * loads on the way to those instances would appear in ''both'' class-load logs and be
+   * subtracted from the difference the audit exists to measure. By name, building the list
+   * evaluates nothing at all: each instance is summoned by the compiler here, exactly as before,
+   * and read at the first use of the parameter.
+   *
+   * Each is bound to a value computed on first use, so a parameter is read at most once however
+   * many times a closure below refers to it, and the three that the encoding half needs are read
+   * through [[acquired]] so that the reading is counted. The generator and the rendering are by
+   * name for the same reason and are counted differently: the values a generator produces are
+   * counted by [[auditValues]], because constructing one is what initialises the companion that
+   * holds the codec, and the audit asserts that the run which is not serializing constructs
+   * none.
    *
    * @param category  which of the five routes into JSON the type takes
    * @param typeName  the simple name of the type
    * @param fqcn  the fully qualified name of the type
+   * @param generatedInstance  the generator of values of the type
+   * @param renderingInstance  the rendering used in the clue of a failure
+   * @param encoderInstance  the encoding half of the type's codec
+   * @param decoderInstance  the decoding half of the type's codec
+   * @param equalityInstance  the equality the round trip compares with
    * @tparam A  the covered type
    * @return the case of that type
    */
-  private def codecCase[A: Arbitrary: Encoder: Decoder: Eq: Show](
+  private def codecCase[A](
       category: String,
       typeName: String,
-      fqcn: String): CodecCase = {
+      fqcn: String)(
+      implicit generatedInstance: => Arbitrary[A],
+      renderingInstance: => Show[A],
+      encoderInstance: => Encoder[A],
+      decoderInstance: => Decoder[A],
+      equalityInstance: => Eq[A]): CodecCase = {
 
-    val generated: Arbitrary[A] = implicitly[Arbitrary[A]]
-    val encoder: Encoder[A] = implicitly[Encoder[A]]
-    val decoder: Decoder[A] = implicitly[Decoder[A]]
-    val equality: Eq[A] = implicitly[Eq[A]]
-    val rendering: Show[A] = implicitly[Show[A]]
+    lazy val generated: Arbitrary[A] = generatedInstance
+    lazy val rendering: Show[A] = renderingInstance
+    lazy val encoder: Encoder[A] = acquired(encoderInstance)
+    lazy val decoder: Decoder[A] = acquired(decoderInstance)
+    lazy val equality: Eq[A] = acquired(equalityInstance)
 
     // The round trip is asserted value-first and in that direction only: a value is encoded, the
     // document read back, and the result compared with the value. The two notions of equality are
@@ -578,19 +930,25 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
       succeed
     }
 
-    // One routine serves both audit runs, which is what makes the class-load difference between
-    // them mean something: the generation and the rendering below are the same code in both, and
-    // the encoding is the only thing the flag adds.
+    // What an audit run does with this case, in whichever of the two modes is asking.
+    //
+    // What the two runs have in common here is the digest of this entry of the inventory, and
+    // that entry is text: reading it constructs no value, initialises no companion and builds no
+    // codec. Everything that would - drawing a value through the type's factory, reading the two
+    // halves of its codec, encoding and decoding - happens in the serializing run alone. So the
+    // classes brought in by the companion, by the construction of the codec held in it, and by
+    // every dependency either of those reaches are loaded in that run only, which is what leaves
+    // them inside the difference between the two runs where the check can inspect them.
     val audit: Boolean => AuditTally = encodeAndDecode => {
-      val drawn = auditValues(generated.arbitrary, typeName)
-      val digest = drawn.foldLeft(0)((total, value) => total + value.toString.length)
-      val roundTrips =
-        if (encodeAndDecode) {
-          drawn.count(value => decoder.decodeJson(encoder(value)).exists(back => equality.eqv(back, value)))
-        } else {
-          0
-        }
-      AuditTally(drawn.size, digest, roundTrips)
+      val digest = auditInventoryDigest(category, typeName, fqcn)
+      if (encodeAndDecode) {
+        val drawn = auditValues(generated.arbitrary, typeName)
+        val roundTrips = drawn.count(value =>
+          decoder.decodeJson(encoder(value)).exists(back => equality.eqv(back, value)))
+        AuditTally(AuditValuesPerCase, digest, drawn.size, roundTrips)
+      } else {
+        AuditTally(AuditValuesPerCase, digest, 0, 0)
+      }
     }
 
     CodecCase(category, typeName, fqcn, roundTrip, reEncode, audit)
@@ -609,7 +967,7 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
    * The order is by category and then by name, which is also the order the report prints, so a
    * reader comparing the two reads them in the same sequence.
    */
-  private val codecCases: List[CodecCase] = List(
+  private lazy val codecCases: List[CodecCase] = List(
     // The fourteen closed named families: a member is the JSON string of its name, which is the
     // same text the ported library wrote through its string conversion.
     codecCase[Currency](NamedEnumCategory, "Currency", "com.opengamma.strata.basics.currency.Currency"),
@@ -885,10 +1243,10 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
   /** The system property that selects an audit run in place of the suite. */
   private val AuditModeProperty: String = "codec.audit"
 
-  /** The audit run that generates every value and does not encode it. */
+  /** The audit run that serializes nothing and constructs no value of a covered type. */
   private val BaselineMode: String = "baseline"
 
-  /** The audit run that generates every value and encodes and decodes it. */
+  /** The audit run that generates every covered value and encodes and decodes it. */
   private val CodecMode: String = "codec"
 
   /** The name of the single test an audit run registers. */
@@ -897,33 +1255,119 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
   /**
    * Registers the single test of an audit run.
    *
-   * The run performs the baseline work for every covered type - generating its values from the
-   * fixed seeds and rendering each one - and, in the second mode only, additionally encodes and
-   * decodes them. Nothing else differs between the two runs, which is what makes the difference
-   * between the classes they load attributable to encoding.
+   * The run performs the work the two modes have in common - [[auditCommonWork]], plus the
+   * digest of every entry of the inventory - and, in the serializing mode only, generates the
+   * values of every covered type and encodes and decodes them. Nothing else differs between the
+   * two runs, which is what makes the difference between the classes they load attributable to
+   * serialization.
    *
-   * One line is printed, carrying the mode, how many values were generated and the digest of the
-   * baseline work. The digest covers the baseline work alone and is therefore expected to be
-   * ''identical'' in the two runs: an operator who diffs the two lines and finds them differing
-   * has found a generator that is not deterministic, which would pollute the class-load
-   * difference rather than being caught by it.
+   * Three lines are printed, and each of the figures on them is asserted rather than merely
+   * printed:
    *
-   * Both modes finish on the same two comparisons of integers, so the assertion machinery each
-   * run loads is the same as well.
+   *   - the mode, the number of values the inventory plans for and the digest of the common
+   *     work. Both are read from the inventory and the common work alone, so they are expected
+   *     to be ''identical'' in the two runs: an operator who diffs the two lines and finds them
+   *     differing has found either a generator that is not deterministic or an inventory that
+   *     changed between the runs, and either would make the class-load difference mean something
+   *     other than what this audit claims for it.
+   *   - the mode and how many codec-dependent instances the run acquired, which is `0` for the
+   *     baseline run and three per covered type for the serializing run.
+   *   - the mode and how many values of a covered type the run '''constructed''', which is `0`
+   *     for the baseline run and one per planned value for the serializing run.
+   *
+   * Both modes finish on the same comparisons of integers, so the assertion machinery each run
+   * loads is the same as well.
+   *
+   * ===What the class-load difference attributes===
+   *
+   * The difference attributes everything this port does to turn a value into a document and back,
+   * and the count of constructed values asserted to be zero is what establishes that:
+   *
+   *   - '''the acquisition and execution of the codecs.''' The baseline run reads no encoder, no
+   *     decoder and no equality - the count of acquisitions asserted to be zero is the evidence -
+   *     so every class that reading or running one brings in appears in the serializing run alone.
+   *   - '''the initialisation of the covered companions, and the construction of the codecs they
+   *     hold.''' A value of a covered type can only be built through a factory on that type's
+   *     companion, and a companion is where its codec is held in a field computed once when the
+   *     companion initialises. The baseline run constructs no such value, so it initialises no
+   *     such companion; the serializing run initialises all of them. Every class reached while a
+   *     codec is constructed - including the code of a dependency, which no scan of this port's
+   *     own classes would ever look at - is therefore loaded in the serializing run only and sits
+   *     in the difference, where the check that reads it disassembles it.
+   *
+   * The boundary is the language runtime and the platform, and it is drawn deliberately rather
+   * than left where it fell. [[auditCommonWork]] exercises the generator, collection, date,
+   * format and zone machinery, and loads the classes of [[AuditRuntimeClasses]], in ''both''
+   * runs. Those classes refer to the reflection API in their own bodies for their own reasons -
+   * the standard library's generic array support calls it to read the length of an array, the
+   * bootstrap of a symbol literal and the platform's zone-rule provider call it to find a class
+   * by name - and none of that is this port's serialization. Loading them in both runs keeps
+   * them out of the difference, so what the check reports on is the codecs.
+   *
+   * ===Why the work is done here and not inside the test===
+   *
+   * The audit work runs while this method runs - that is, while the suite is being constructed -
+   * and the single test it registers only prints and asserts what the work produced. That is a
+   * decision about what the difference is allowed to pick up, and it was made from measured
+   * behaviour rather than taste.
+   *
+   * The runner reports through a thread of its own, and that thread loads classes while the
+   * thread running a test loads its own. Doing the codec work inside the test body overlaps the
+   * two, and an overlap puts classes into the difference that no codec ever touched: the
+   * reporting thread submits its work to a shared pool, the pool asks the platform for this
+   * thread's probe, and the platform's random-number class is loaded - in the encoding run only,
+   * because that is the run whose test body is long enough to overlap. Measured over eight runs
+   * of the encoding mode, that happened in seven of them, and since the class in question
+   * initialises itself by reading one of its own fields through the reflection API, a check that
+   * disassembles every class of the difference would attribute the reporting thread's behaviour
+   * to this port's codecs. Doing the work before any test is registered - and therefore before
+   * the first event is reported - removes the overlap: over three further runs of the encoding
+   * mode the difference held nothing of the sort, while remaining the same set of codec classes
+   * it always held.
+   *
+   * The cost is stated rather than hidden: a generator that yields nothing from every fixed seed
+   * now aborts the audit run while the suite is constructed instead of failing its test. The run
+   * fails either way, and the check that consumes these runs reads their exit status, so what
+   * changes is the shape of the report and not whether the defect is caught.
    *
    * @param mode  the mode selected by the system property
    */
-  private def registerAuditMode(mode: String): Unit =
-    test(AuditTestName) {
-      val encodeAndDecode = mode == CodecMode
-      val tally = codecCases.foldLeft(AuditTally(0, 0, 0)) { (total, entry) =>
-        total.combine(entry.audit(encodeAndDecode))
-      }
-      println(s"CODEC-AUDIT-DIGEST $mode ${tally.values} ${tally.digest}")
-      val expectedRoundTrips = if (encodeAndDecode) tally.values else 0
-      tally.values should be >= codecCases.size
-      tally.roundTrips shouldBe expectedRoundTrips
+  private def registerAuditMode(mode: String): Unit = {
+    val encodeAndDecode = mode == CodecMode
+    val tally = codecCases.foldLeft(AuditTally(0, auditCommonWork(), 0, 0)) { (total, entry) =>
+      total.combine(entry.audit(encodeAndDecode))
     }
+    // read after the work, so they count what this run did and not what it was about to do
+    val acquisitions = codecAcquisitions.get()
+    val constructed = generatedValues.get()
+    val expectedPlanned = AuditValuesPerCase * codecCases.size
+    val expectedAcquisitions = if (encodeAndDecode) CodecInstancesPerCase * codecCases.size else 0
+    test(AuditTestName) {
+      println(s"CODEC-AUDIT-DIGEST $mode ${tally.planned} ${tally.digest}")
+      println(s"CODEC-AUDIT-ACQUIRED $mode $acquisitions")
+      println(s"CODEC-AUDIT-CONSTRUCTED $mode $constructed")
+      tally.planned shouldBe expectedPlanned
+      tally.planned should be >= codecCases.size
+      withClue(
+        s"the $mode run constructed $constructed value(s) of a covered type, and a value can " +
+          s"only be built through the companion that holds the type's codec: ") {
+        if (encodeAndDecode) {
+          constructed should be >= codecCases.size
+          tally.generated shouldBe constructed
+          tally.roundTrips shouldBe constructed
+        } else {
+          constructed shouldBe 0
+          tally.generated shouldBe 0
+          tally.roundTrips shouldBe 0
+        }
+      }
+      withClue(
+        s"the $mode run acquired $acquisitions codec-dependent instance(s) for ${codecCases.size} " +
+          s"covered type(s), where $expectedAcquisitions were expected: ") {
+        acquisitions shouldBe expectedAcquisitions
+      }
+    }
+  }
 
   /**
    * Registers the failure reported for a mode this suite does not define.
@@ -1000,23 +1444,23 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
       """"holidays":["2020-01-01","2020-12-25"],"workingWeekendDays":["2020-03-07"]}}"""
 
   /** The adjustment the Java serialization test used, over the weekend-only calendar. */
-  private val satSunModifiedFollowing: BusinessDayAdjustment =
+  private lazy val satSunModifiedFollowing: BusinessDayAdjustment =
     BusinessDayAdjustment.of(BusinessDayConventions.MODIFIED_FOLLOWING, HolidayCalendarIds.SAT_SUN)
 
   /** The Ibor observation of the Java `IborIndexObservationTest` fixture. */
-  private val iborObservation: IborIndexObservation =
+  private lazy val iborObservation: IborIndexObservation =
     required(
       IborIndexObservation.of(IborIndices.GBP_LIBOR_3M, LocalDate.of(2014, 6, 30), refData),
       "IborIndexObservation of GBP-LIBOR-3M on 2014-06-30")
 
   /** An overnight observation over an index whose calendars the built-in data resolves. */
-  private val overnightObservation: OvernightIndexObservation =
+  private lazy val overnightObservation: OvernightIndexObservation =
     required(
       OvernightIndexObservation.of(OvernightIndices.USD_FED_FUND, LocalDate.of(2016, 2, 22), refData),
       "OvernightIndexObservation of USD-FED-FUND on 2016-02-22")
 
   /** An FX observation over an index whose calendars the built-in data resolves. */
-  private val fxObservation: FxIndexObservation =
+  private lazy val fxObservation: FxIndexObservation =
     required(
       FxIndexObservation.of(FxIndices.GBP_USD_WM, LocalDate.of(2016, 2, 22), refData),
       "FxIndexObservation of GBP/USD-WM on 2016-02-22")
@@ -1030,7 +1474,7 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
    * placed, which the factory tolerates by holding it back - the behaviour the builder being
    * ported had.
    */
-  private val zeroRateMatrix: FxMatrix =
+  private lazy val zeroRateMatrix: FxMatrix =
     required(
       FxMatrix.ofRates(
         Vector(
@@ -1047,8 +1491,14 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
    * Asserts that every member of a named family is the JSON string of its name.
    *
    * The members come from the family's own `values`, so the assertion covers whatever the family
-   * holds rather than a list transcribed here: the forty-five roll conventions and the hundred
-   * and thirteen Ibor indices are asserted without any of their names appearing in this file.
+   * holds rather than a list transcribed here: all forty-five roll conventions and all two
+   * hundred and seventy-one Ibor indices are asserted without any of their names appearing in
+   * this file. Those two figures are the ''memberships'' of the closed families, which is what
+   * `values` answers with and therefore what this method sweeps. They are not the counts of
+   * named constants: `RollConventions` publishes a constant for each of its forty-five members,
+   * while `IborIndices` publishes one hundred and thirteen and the remaining one hundred and
+   * fifty-eight indices are reached through the family's own lookup - and all two hundred and
+   * seventy-one are swept here either way.
    *
    * @param values  the members of the family
    * @param typeName  the simple name of the family, named in a failure
@@ -1230,7 +1680,10 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
       // the policy removes a property holding no value, which is not the same as removing an
       // empty one: a schedule of no steps writes an empty list, and a failure with no attributes
       // writes an empty object, so a reader can tell "none" from "not stated"
-      encodesTo(ValueSchedule.of(1.0d), """{"initialValue":1.0,"steps":[]}""")
+      // `ALWAYS_1` is the schedule `ValueSchedule.of(1.0d)` builds, named as a constant so that
+      // this assertion reads a schedule rather than the outcome that validated factory answers
+      // with
+      encodesTo(ValueSchedule.ALWAYS_1, """{"initialValue":1.0,"steps":[]}""")
       encodesTo[Failure](Failure.Other("nothing to add"), """{"Other":{"message":"nothing to add","attributes":{}}}""")
       encodesTo[HolidayCalendar](testCalendar, TestCalendarDocument)
     }
@@ -1262,6 +1715,56 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
       encodesTo(DoubleMatrix.of(2, 2, 1.0d, 2.0d, 3.0d, 4.0d), "[[1.0,2.0],[3.0,4.0]]")
       encodesTo(DoubleMatrix.of(), "[]")
       encodesTo(ValueDerivatives.of(1.0d, DoubleArray.of(1.0d, 2.0d)), """{"value":1.0,"derivatives":[1.0,2.0]}""")
+    }
+
+    test("round-trip: ValueDerivatives carrying an array of more than a million elements") {
+      // How long an array a document may state is decided by what the factories of this port can
+      // build and not by a figure the reader chose: a decoder that refused a length the encoder
+      // produces would make `decode(encode(x))` fail for a value this library itself creates. The
+      // length below is that statement made concrete. It is one element beyond the ceiling a
+      // previous revision of the codec support imposed on an array - that ceiling was 1 << 20
+      // elements, applied to the payload before a single element was read - so this is the exact
+      // payload that revision refused, and the assertion here is that it round-trips.
+      //
+      // The value is nested rather than bare, which is the half of the defect no other test
+      // covers: the array is a field of a derived product, so the refusal would have arrived
+      // from inside the product's decoder and the value carrying it - a function and its
+      // derivatives, as produced by a differentiation of a curve with one point per basis
+      // point - could not have been read back at all.
+      //
+      // One such value, and one only: the document holds over a million numbers and every one of
+      // them is a JSON value while it is being read, so this is the largest payload in the suite
+      // by two orders of magnitude and there is nothing a second one would add.
+      //
+      // The round trip is asserted through the JSON tree rather than through its text, because
+      // the withdrawn ceiling was applied to the tree - it measured the array of the cursor
+      // before reading it - so this is the path that exercised it.
+      val elements = (1 << 20) + 1
+      val value = ValueDerivatives.of(2.5d, DoubleArray.tabulate(elements)(index => index.toDouble))
+      val document = value.asJson
+      withClue("the document is an object whose 'derivatives' property holds every element: ") {
+        document.asObject
+          .flatMap(fields => fields("derivatives"))
+          .flatMap(array => array.asArray)
+          .map(array => array.size)
+          .getOrElse(0) shouldBe elements
+      }
+      implicitly[Decoder[ValueDerivatives]].decodeJson(document) match {
+        case Right(restored) =>
+          // compared property by property rather than as a whole: the two values are equal or
+          // they are not, and a failure that rendered a million elements into its message would
+          // report the defect by burying it
+          restored.value shouldBe value.value
+          restored.derivatives.size shouldBe elements
+          withClue("every element of the decoded array is the element that was written: ") {
+            (restored.derivatives == value.derivatives) shouldBe true
+          }
+          withClue("and the decoded value is the value that was encoded: ")((restored == value) shouldBe true)
+        case Left(failure) =>
+          fail(
+            s"a ValueDerivatives carrying $elements derivatives could not be decoded from the " +
+              s"document it had just written: ${failure.getMessage}")
+      }
     }
 
     test("shape: validity is decided by the factory and not by the codec") {
@@ -2291,11 +2794,50 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
 
   //-------------------------------------------------------------------------
   /**
+   * Registers the proof that the codec surface of these modules is the inventory and nothing more.
+   *
+   * The inventory names a serializable ''family'' where a family exists, and the calendars are the
+   * case where the difference is visible: every calendar built from holiday dates is serializable
+   * and is covered by the `HolidayCalendar` row, but the narrowing of that family's codec to the
+   * one member - which the calendars' own tests use to pin the member's document form against a
+   * literal - is visible only inside the package that declares it. So the surface a consumer of
+   * this module sees carries the fifty-eight codecs of the inventory and not a fifty-ninth for a
+   * member of one of them, and that is a compile-time fact rather than a convention.
+   *
+   * This is deliberately '''not''' an exclusion. The type is not listed in [[excludedTypes]] and
+   * must not be: a row there would state that the type has no codec, which is false and would
+   * contradict the round trip the family already performs over exactly these values, and it would
+   * change counts that are compared against the closed inventory of the migration plan.
+   */
+  private def registerUnpublishedCodecProofs(): Unit =
+    test("not published: the narrowing of the calendar codec to one member") {
+      // the type itself is public - the summons below fail for the codec and for nothing else
+      assertCompiles("type Probe = com.opengamma.strata.basics.date.ImmutableHolidayCalendar")
+      assertDoesNotCompile(
+        "implicitly[io.circe.Encoder[com.opengamma.strata.basics.date.ImmutableHolidayCalendar]]")
+      assertDoesNotCompile(
+        "implicitly[io.circe.Decoder[com.opengamma.strata.basics.date.ImmutableHolidayCalendar]]")
+      assertDoesNotCompile(
+        "implicitly[io.circe.Codec[com.opengamma.strata.basics.date.ImmutableHolidayCalendar]]")
+      // nor by name, which is the narrower fact: the member is declared, and not for this package
+      assertDoesNotCompile("com.opengamma.strata.basics.date.ImmutableHolidayCalendar.codec")
+      // and the positive control, which is what makes the three refusals mean something: the
+      // family's codec is published, and one of these very calendars reaches JSON through it
+      assertCompiles("implicitly[io.circe.Encoder[com.opengamma.strata.basics.date.HolidayCalendar]]")
+      assertCompiles("implicitly[io.circe.Decoder[com.opengamma.strata.basics.date.HolidayCalendar]]")
+      encodesTo[HolidayCalendar](testCalendar, TestCalendarDocument)
+      decoded[HolidayCalendar](TestCalendarDocument, "a calendar") shouldBe (testCalendar: HolidayCalendar)
+      summonControl()
+    }
+
+  //-------------------------------------------------------------------------
+  /**
    * Registers the whole suite, which is what an ordinary run performs.
    *
    * The order is the order of the phases of the plan: the report first, so that it reaches the
    * output before the properties begin, then the round trips, the stability of the bytes, the
-   * document forms, the refusals, the consolidated Java test, and the proofs of absence.
+   * document forms, the refusals, the consolidated Java test, the proofs of absence, and the
+   * proof that the codec surface is the inventory and nothing besides.
    */
   private def registerFullSuite(): Unit = {
     registerCoverageReport()
@@ -2315,11 +2857,17 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
     registerInvalidPayloads()
     registerJodaBeansConsolidation()
     registerExclusionProofs()
+    registerUnpublishedCodecProofs()
   }
 
   //-------------------------------------------------------------------------
-  // The registration itself, which is the last thing this constructor does so that every value
-  // and every case above is in place before a test is registered.
+  // The registration itself, which is the last thing this constructor does.
+  //
+  // Every value and every case above is defined by now, and none of them has been computed: the
+  // fixtures, the two inventory lists and the five instances of each case are all read on first
+  // use, so this switch is reached having built nothing. That ordering is what the audit needs -
+  // a value built before the switch is built in both runs and cancels out of the difference
+  // between them - and it is asserted by the count of codec acquisitions the audit run prints.
   //
   // An ordinary run registers the whole suite. An audit run registers exactly one test and
   // nothing else, which is the point of switching here rather than inside a test: were the round

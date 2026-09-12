@@ -13,6 +13,7 @@ import cats.effect.testing.scalatest.AsyncIOSpec
 import cats.syntax.all._
 
 import io.circe.Decoder
+import io.circe.Json
 import io.circe.generic.semiauto.deriveDecoder
 
 import org.scalatest.funsuite.AsyncFunSuite
@@ -137,11 +138,20 @@ import com.opengamma.strata.basics.date.HolidayCalendarId
  *
  * Three samples per row, at the fixed dates 1 January, 15 June and 24 December, each carrying the
  * shift amount and the end date it was captured with - so this spec replays them without knowing
- * the sampling rule. A sample either carries a complete set of expectations or carries `error`
- * with every expectation absent; a half-populated sample is a fixture that no longer agrees with
- * this spec and is reported as such rather than measured. Every expectation a sample carries is
- * measured: they were all captured from Java, so leaving `isBusinessDay`, `nextOrSame` or
- * `previousOrSame` unread would discard captured baseline rather than avoid re-deriving anything.
+ * the sampling rule.
+ *
+ * The '''row''' states the outcome and every sample of it states the same one: where the row
+ * carries no `error`, all three samples carry no `error` and carry all eight of their expectations;
+ * where the row carries `error`, all three carry `error` and none of the eight. A sample that
+ * disagrees with its row about the outcome, and a sample carrying some but not all of the eight,
+ * are both fixtures that no longer agree with this spec: they are reported as such, and the row is
+ * then '''not''' measured at all, because which of the two measurements applies is exactly what has
+ * become unclear. Keying the rule to the row rather than to each sample's own `error` is what
+ * closes the gap a refused row full of populated samples would otherwise pass through - the row
+ * would be measured as a refusal and every captured expectation in it would go unread. Every
+ * expectation a sample carries is measured: they were all captured from Java, so leaving
+ * `isBusinessDay`, `nextOrSame` or `previousOrSame` unread would discard captured baseline rather
+ * than avoid re-deriving anything.
  *
  * What this spec does '''not''' do is invent a probe the fixture has no expectation for.
  * `nextSameOrLastInMonth`, `lastBusinessDayOfMonth`, `isLastBusinessDayOfMonth`, `businessDays`,
@@ -158,7 +168,13 @@ import com.opengamma.strata.basics.date.HolidayCalendarId
  * tables before writing them. It is never edited here, no expectation is ever "corrected", and no
  * row is ever skipped: a row that disagrees with the port means the port is wrong, and reporting it
  * is the whole job. Because a gate that reads `failed == 0` cannot tell a complete measurement from
- * a thinned one, the second test below asserts the population the baseline is required to carry.
+ * a thinned one, the second test below asserts the population the baseline is required to carry -
+ * as the '''exact''' set of (`source`, calendar, year) triples the endpoints of AAP section 0.6.1
+ * fix, compared in both directions. Counts and contiguity are not enough for that: a span shifted
+ * to 1951-2100, a fallback probe moved from 1949 to 1948 or a weekend row recaptured for 2021
+ * leaves every count and every contiguous run intact while retiring exactly the boundary years the
+ * fallback, the bitmask start and the bitmask end are pinned by. See
+ * [[HolidayCalendarParitySpec.RequiredPopulation]].
  *
  * ===No timing===
  *
@@ -183,44 +199,44 @@ class HolidayCalendarParitySpec extends AsyncFunSuite with AsyncIOSpec with Matc
       // collection, and nothing ambient - the rows are measured one after another, so the map is
       // built in fixture order and a repeated name costs a lookup.
       calendars <- Ref.of[IO, Map[String, HolidayCalendar]](Map.empty)
-      report <- ParityHarness.runFixture[HolidayRow](FixtureName, FixtureResource)(row =>
+      report <- ParityHarness.runFixture[HolidayRow](FixtureName, FixtureResource, RowSchema)(row =>
         checkRow(calendars, row))
       _ <- ParityHarness.failIfAny(report)
     } yield succeed
   }
 
   test("the fixture carries the population the holiday baseline is required to measure") {
-    ParityHarness.load[HolidayRow](FixtureResource).map { rows =>
+    ParityHarness.loadStrict[HolidayRow](FixtureResource, RowSchema).map { rows =>
       val counts = rows.groupBy(_.source).view.mapValues(_.size).toMap
+      val population = rows.map(row => (row.source, row.calendar, row.year)).toSet
+      val differences =
+        describePopulation("required rows missing from the fixture", RequiredPopulation -- population) :::
+          describePopulation(
+            "rows present that this spec does not account for",
+            population -- RequiredPopulation)
       withClue(
         s"fixture rows: ${rows.size}; rows by source: " +
           s"${counts.toVector.sortBy(_._1).mkString(", ")}: ") {
-        // The floors are the contract of the capture, restated on the consuming side so that a
-        // reduced fixture fails here instead of reporting a green measurement of less. They are
-        // floors rather than equalities so that extending the coverage stays possible.
-        rows.size should be >= MinimumRows
+        // The population is compared as the exact set of (source, calendar, year) triples the
+        // endpoints of AAP section 0.6.1 require - in both directions, so neither a row that is
+        // missing nor a row this spec cannot account for passes. This is what makes the endpoints
+        // themselves the contract: a span shifted to 1951-2100, a fallback probe substituted for
+        // its neighbour, or a weekend row moved off 2020 changes the set and is reported, where a
+        // count floor and a contiguity check see nothing.
+        differences shouldBe empty
+        // The set comparison is blind to multiplicity, so the count is asserted against the size
+        // of the required set: a (source, calendar, year) captured twice under two identities
+        // would otherwise leave the set equal.
+        rows.size shouldBe RequiredPopulation.size
         rows.map(_.id).distinct should have size rows.size.toLong
-        MinimumRowsBySource.foreach { case (source, minimum) =>
-          withClue(s"source '$source': ") {
-            counts.getOrElse(source, 0) should be >= minimum
-          }
-        }
-        // A row of unstated provenance is reported rather than counted towards a floor it does
-        // not belong to.
-        rows.map(_.source).distinct.filterNot(MinimumRowsBySource.contains) shouldBe empty
+        // A row of unstated provenance is named as that rather than only as a row that is not
+        // required, which is how the exact comparison above would render it.
+        rows.map(_.source).distinct.filterNot(RequiredSources.contains) shouldBe empty
         // Every calendar the port is required to reproduce appears, including the three
-        // composites and the four weekend and no-holiday calendars.
-        val named = rows.map(_.calendar).distinct.toSet
-        RequiredCalendars.filterNot(named.contains) shouldBe empty
-        // Each calendar's dated rows cover a contiguous span of years, so thinning the middle of
-        // a span cannot pass while the row-count floor still holds.
-        rows.groupBy(_.calendar).foreach { case (calendar, calendarRows) =>
-          val years = calendarRows.filter(row => DatedSources.contains(row.source)).map(_.year).sorted
-          withClue(s"calendar '$calendar' covers years ${years.headOption} to ${years.lastOption}: ") {
-            years.distinct should have size years.size.toLong
-            years.zip(years.drop(1)).filterNot { case (earlier, later) => later == earlier + 1 } shouldBe empty
-          }
-        }
+        // composites and the four weekend and no-holiday calendars. Subsumed by the comparison
+        // above, and kept because a calendar that has vanished entirely names itself here instead
+        // of being read off a list of its years.
+        rows.map(_.calendar).distinct.toSet shouldBe RequiredCalendars
         // Exactly the two deliberate rows refuse to answer, and a row refuses if and only if it
         // carries no holiday list: those are the two row kinds this spec measures differently, so
         // the distinction is asserted rather than assumed. Only identities are reported, because
@@ -230,6 +246,118 @@ class HolidayCalendarParitySpec extends AsyncFunSuite with AsyncIOSpec with Matc
         rows.filter(_.samples.size != SamplesPerRow).map(_.id) shouldBe empty
         succeed
       }
+    }
+  }
+
+  /*
+   * The three tests below are about the decoding of the fixture rather than about the port. They
+   * exist because the two above cannot see what they are not given: a gate that reads
+   * `failed == 0` over rows that decoded perfectly cannot tell a fixture that is measured in full
+   * from one that has grown a key nothing reads. So the four schemas are asserted to be the key
+   * sets the models actually read, and the refusals are exercised rather than assumed.
+   */
+
+  test("the declared row, sample and probe key sets are the ones the models read") {
+    IO {
+      // Each schema is its model's own field set, so the keys the decoders enforce cannot drift
+      // from the fields this spec measures: a field added to a model without being added to its
+      // schema, or the reverse, fails here.
+      RowSchema.known shouldBe DocumentedRowModel.productElementNames.toSet
+      RowSchema.known.size shouldBe 7
+      SampleSchema.known shouldBe DocumentedSampleModel.productElementNames.toSet
+      SampleSchema.known.size shouldBe 10
+      ShiftProbeSchema.known shouldBe DocumentedSampleModel.shift.productElementNames.toSet
+      BetweenProbeSchema.known shouldBe DocumentedSampleModel.daysBetween.productElementNames.toSet
+      // And the documented shapes are those key sets, which is what ties the committed documents
+      // below to the declarations above. Every schema here has one variant and no optional key,
+      // so satisfying it is equality of key sets.
+      DocumentedRow.asObject.map(_.keys.toSet) shouldBe Some(RowSchema.known)
+      DocumentedSample.asObject.map(_.keys.toSet) shouldBe Some(SampleSchema.known)
+      DocumentedShift.asObject.map(_.keys.toSet) shouldBe Some(ShiftProbeSchema.known)
+      DocumentedDaysBetween.asObject.map(_.keys.toSet) shouldBe Some(BetweenProbeSchema.known)
+      Vector(RowSchema, SampleSchema, ShiftProbeSchema, BetweenProbeSchema)
+        .map(schema => (schema.variants.size, schema.optional)) shouldBe
+        Vector.fill(4)((1, Set.empty[String]))
+      succeed
+    }
+  }
+
+  test("a captured row whose keys are not the documented seven is refused by name") {
+    IO {
+      // The documented shape decodes, field for field, nested objects included: strictness
+      // refuses what the document does not document and nothing else. This is a decode identity
+      // compared exactly - the mapping of keys onto fields - and not a measurement.
+      StrictRowDecoder.decodeJson(DocumentedRow) shouldBe Right(DocumentedRowModel)
+      // A key the capture has started emitting. This is the case the finding is about: a derived
+      // decoder would ignore it and measure the row as though the new expectation did not exist.
+      refusalOf(
+        StrictRowDecoder,
+        withKey(DocumentedRow, "businessDays", Json.arr())) should include("unknown keys {businessDays}")
+      // A schema-required key the document no longer carries. `holidays` is the one this spec
+      // reads as the difference between a row that answers and a row that refuses, so its
+      // absence must be refused rather than read as the other kind of row.
+      refusalOf(StrictRowDecoder, withoutKey(DocumentedRow, "holidays")) should include(
+        "a holiday parity row is missing {holidays}")
+      // A renamed key is both at once, and the refusal names both halves.
+      val renamed = refusalOf(StrictRowDecoder, withRenamedKey(DocumentedRow, SamplesKey, "probes"))
+      renamed should include("unknown keys {probes}")
+      renamed should include(s"a holiday parity row is missing {$SamplesKey}")
+      succeed
+    }
+  }
+
+  test("a sample or one of its probes whose keys are not the documented ones is refused by name") {
+    IO {
+      // A sample's keys, and a probe's, are visible only to that object's own decoder, so each
+      // refusal below is offered through a row exactly as the loader reads one.
+      StrictRowDecoder.decodeJson(rowWithSample(DocumentedSample)).map(_.samples) shouldBe
+        Right(Vector(DocumentedSampleModel))
+      // One more captured probe of the calendar, which nothing would read.
+      refusalOf(
+        StrictRowDecoder,
+        rowWithSample(withKey(DocumentedSample, "lastBusinessDayOfMonth", Json.Null))) should include(
+        "unknown keys {lastBusinessDayOfMonth}")
+      // An expectation the capture has stopped emitting, which `Option` alone cannot tell apart
+      // from the `null` that records a refusal.
+      refusalOf(StrictRowDecoder, rowWithSample(withoutKey(DocumentedSample, "nextOrSame"))) should include(
+        "a holiday parity sample is missing {nextOrSame}")
+      val renamedSample = refusalOf(
+        StrictRowDecoder,
+        rowWithSample(withRenamedKey(DocumentedSample, "previousOrSame", "priorOrSame")))
+      renamedSample should include("unknown keys {priorOrSame}")
+      renamedSample should include("a holiday parity sample is missing {previousOrSame}")
+      // The shift probe: a second operand, a missing operand and a renamed one.
+      refusalOf(
+        StrictRowDecoder,
+        rowWithSample(
+          sampleWithProbe(ShiftKey, withKey(DocumentedShift, "calendar", Json.fromString("GBLO"))))
+      ) should include("unknown keys {calendar}")
+      refusalOf(
+        StrictRowDecoder,
+        rowWithSample(sampleWithProbe(ShiftKey, withoutKey(DocumentedShift, "amount")))) should include(
+        "the shift probe of a holiday parity sample is missing {amount}")
+      val renamedShift = refusalOf(
+        StrictRowDecoder,
+        rowWithSample(sampleWithProbe(ShiftKey, withRenamedKey(DocumentedShift, "result", "shifted"))))
+      renamedShift should include("unknown keys {shifted}")
+      renamedShift should include("the shift probe of a holiday parity sample is missing {result}")
+      // The days-between probe: the same three departures.
+      refusalOf(
+        StrictRowDecoder,
+        rowWithSample(
+          sampleWithProbe(DaysBetweenKey, withKey(DocumentedDaysBetween, "startInclusive", Json.Null)))
+      ) should include("unknown keys {startInclusive}")
+      refusalOf(
+        StrictRowDecoder,
+        rowWithSample(sampleWithProbe(DaysBetweenKey, withoutKey(DocumentedDaysBetween, "endExclusive")))
+      ) should include("the days-between probe of a holiday parity sample is missing {endExclusive}")
+      val renamedBetween = refusalOf(
+        StrictRowDecoder,
+        rowWithSample(
+          sampleWithProbe(DaysBetweenKey, withRenamedKey(DocumentedDaysBetween, "result", "count"))))
+      renamedBetween should include("unknown keys {count}")
+      renamedBetween should include("the days-between probe of a holiday parity sample is missing {result}")
+      succeed
     }
   }
 }
@@ -260,48 +388,43 @@ private[parity] object HolidayCalendarParitySpec {
   val SamplesPerRow: Int = 3
 
   /**
-   * The least number of rows the baseline is worth measuring.
+   * The identity of one row within the population: its `source`, its calendar and its year.
    *
-   * The committed document holds 3,846: one per (calendar, year) over the whole generated span.
-   * Section 6 of `tools/parity-capture/README.md` records that count and states that the coverage
-   * is not negotiable, because the per-year span is the only thing that pins the monthly-bitmask
-   * representation across every year the calendars cover.
+   * This triple, not the row's `id`, is what the population contract is stated over: the `id` is a
+   * rendering of it, so pinning the triples pins which (calendar, year) pairs were measured under
+   * which provenance, independently of how the capture chose to name them.
    */
-  val MinimumRows: Int = 3846
+  type RowKey = (String, String, Int)
+
+  /** The `source` of a row produced by one of the rule generators, over the calendar's own span. */
+  val GeneratedSource: String = "generated"
+
+  /** The `source` of a row of a calendar published as a data table rather than generated. */
+  val DataTableSource: String = "dataTable"
+
+  /** The `source` of a probe one year outside a calendar's own span, where Java falls back. */
+  val OutOfRangeSource: String = "outOfRange"
+
+  /** The `source` of a row of one of the weekend and no-holiday calendars. */
+  val WeekendSource: String = "weekend"
+
+  /** The `source` of a row of one of the composite calendars. */
+  val CompositeSource: String = "composite"
+
+  /** The `source` of a row whose year lies outside 0000 to 9999, which the calendar refuses. */
+  val YearRangeSource: String = "yearRange"
 
   /**
-   * The least number of rows of each captured population, keyed by the row's `source`.
+   * Every rule-generated calendar, in the order `GlobalHolidayCalendars` builds them.
    *
-   * The key set is closed: a row whose `source` is not one of these five is a fixture this spec
-   * does not know how to account for, and is reported rather than measured silently.
+   * Twenty-five names
+   * (`modules/basics/src/main/java/com/opengamma/strata/basics/date/GlobalHolidayCalendars.java:59-96`),
+   * of which twenty-four loop 1950-2099 and `EUTA` covers 1997-2099 instead because
+   * `generateEuropeanTarget` starts there (same file, `:128,296`). The split is stated once, in
+   * [[DatedSpans]], so the span of a calendar and the out-of-range probes either side of it cannot
+   * drift apart.
    */
-  val MinimumRowsBySource: Map[String, Int] =
-    Map(
-      // the 24 calendars over 1950-2099 and EUTA over 1997-2099
-      "generated" -> 3703,
-      // THBA over its published range, 2005-2079
-      "dataTable" -> 75,
-      // the year either side of each calendar's range, where Java falls back to weekends
-      "outOfRange" -> 52,
-      // the four weekend and no-holiday calendars, for 2020 and 2024
-      "weekend" -> 8,
-      // GBLO+USNY, GBLO~USNY and JPTO+USNY, for 2020 and 2024
-      "composite" -> 6,
-      // GBLO for year 10000 and year -1, the two rows that refuse to answer
-      "yearRange" -> 2
-    )
-
-  /** The sources whose rows name a year of a calendar's own span, which must be contiguous. */
-  val DatedSources: Set[String] = Set("generated", "dataTable")
-
-  /**
-   * Every calendar name the baseline is required to measure.
-   *
-   * The 25 generated calendars and the published Thai calendar, the four weekend and no-holiday
-   * calendars, and the three composites - AAP section 0.6.2's covered set, which
-   * `SCALA_MIGRATION.md` documents as the ported calendar set.
-   */
-  val RequiredCalendars: Vector[String] =
+  val GeneratedCalendars: Vector[String] =
     Vector(
       "GBLO",
       "FRPA",
@@ -327,16 +450,130 @@ private[parity] object HolidayCalendarParitySpec {
       "NZBD",
       "PLWA",
       "SEST",
-      "ZAJO",
-      "THBA",
-      "NoHolidays",
-      "Sat/Sun",
-      "Fri/Sat",
-      "Thu/Fri",
-      "GBLO+USNY",
-      "GBLO~USNY",
-      "JPTO+USNY"
+      "ZAJO"
     )
+
+  /** The calendar published as an explicit data table rather than generated from rules. */
+  val DataTableCalendar: String = "THBA"
+
+  /** The calendar whose span starts later than every other generated one, `EUTA`. */
+  val LateStartingCalendar: String = "EUTA"
+
+  /** The four weekend and no-holiday calendars, which carry no dated span of their own. */
+  val WeekendCalendars: Vector[String] = Vector("NoHolidays", "Sat/Sun", "Fri/Sat", "Thu/Fri")
+
+  /** The three composite calendars, two combined and one linked. */
+  val CompositeCalendars: Vector[String] = Vector("GBLO+USNY", "GBLO~USNY", "JPTO+USNY")
+
+  /** The calendar the two out-of-year-range refusals were captured for. */
+  val YearRangeCalendar: String = "GBLO"
+
+  /** The first year of the twenty-four generated calendars that loop the whole span. */
+  val GeneratedFirstYear: Int = 1950
+
+  /** The last year of every generated calendar, `EUTA` included. */
+  val GeneratedLastYear: Int = 2099
+
+  /** The first year of `EUTA`, whose generator starts in 1997 rather than 1950. */
+  val LateStartingFirstYear: Int = 1997
+
+  /** The first year of the published Thai table. */
+  val DataTableFirstYear: Int = 2005
+
+  /** The last year of the published Thai table. */
+  val DataTableLastYear: Int = 2079
+
+  /**
+   * The two years the weekend, no-holiday and composite calendars were captured for.
+   *
+   * These calendars answer for every year, so a span would be arbitrary; 2020 and 2024 are the two
+   * the capture fixed on - one with 1 January on a Wednesday and one on a Monday, both leap years -
+   * and AAP section 0.6.1 names them as the population of those rows.
+   */
+  val ProbeYears: Vector[Int] = Vector(2020, 2024)
+
+  /**
+   * The two years outside 0000 to 9999 that the calendar refuses to answer for.
+   *
+   * They bracket the accepted range from both sides, which is what makes the refusal a range check
+   * rather than an upper bound (`ImmutableHolidayCalendar.java:410-415`).
+   */
+  val YearRangeYears: Vector[Int] = Vector(-1, 10000)
+
+  /**
+   * One calendar's own span of years, and the provenance the rows of that span carry.
+   *
+   * The out-of-range probes are derived from the same two endpoints rather than listed separately
+   * (see [[fallbackProbes]]), so a span that is widened, narrowed or shifted moves its probes with
+   * it and cannot leave a stale pair behind that still satisfies this spec.
+   *
+   * @param source  the `source` the rows inside the span carry
+   * @param calendar  the calendar name
+   * @param firstYear  the first year of the span, inclusive
+   * @param lastYear  the last year of the span, inclusive
+   */
+  final case class DatedSpan(source: String, calendar: String, firstYear: Int, lastYear: Int) {
+
+    /** Every row the span itself requires, one per year from [[firstYear]] to [[lastYear]]. */
+    def rows: Vector[RowKey] =
+      (firstYear to lastYear).toVector.map(year => (source, calendar, year))
+
+    /**
+     * The two rows that probe the weekend-only fallback, immediately below and above the span.
+     *
+     * Java answers these years rather than refusing them, falling back to a weekend-only test
+     * outside the bitmask array (`ImmutableHolidayCalendar.java:397-415`), so they are ordinary
+     * measured rows and carry the [[OutOfRangeSource]] provenance.
+     */
+    def fallbackProbes: Vector[RowKey] =
+      Vector((OutOfRangeSource, calendar, firstYear - 1), (OutOfRangeSource, calendar, lastYear + 1))
+  }
+
+  /**
+   * The span of every calendar that has one, generated or published.
+   *
+   * AAP section 0.6.1's holiday fixture row and section 0.6.2's data port are the source of these
+   * endpoints: the twenty-four generators over 1950-2099, `EUTA` over 1997-2099, and `THBA` over
+   * the 75 published years 2005-2079 (`HolidayCalendarData.ini:31-107`).
+   */
+  val DatedSpans: Vector[DatedSpan] =
+    GeneratedCalendars.map { calendar =>
+      val firstYear = if (calendar == LateStartingCalendar) LateStartingFirstYear else GeneratedFirstYear
+      DatedSpan(GeneratedSource, calendar, firstYear, GeneratedLastYear)
+    } :+ DatedSpan(DataTableSource, DataTableCalendar, DataTableFirstYear, DataTableLastYear)
+
+  /**
+   * Every (`source`, calendar, year) the baseline is required to carry, and nothing besides.
+   *
+   * Derived entirely from the constants above, so the contract is stated as the endpoints AAP
+   * section 0.6.1 fixes rather than as a row count: the dated spans, the fallback probe either side
+   * of each of them, the weekend and composite calendars in [[ProbeYears]], and the two
+   * out-of-year-range refusals. The committed document holds exactly these 3,846 triples.
+   */
+  val RequiredPopulation: Set[RowKey] =
+    (DatedSpans.flatMap(_.rows) ++
+      DatedSpans.flatMap(_.fallbackProbes) ++
+      WeekendCalendars.flatMap(calendar => ProbeYears.map(year => (WeekendSource, calendar, year))) ++
+      CompositeCalendars.flatMap(calendar => ProbeYears.map(year => (CompositeSource, calendar, year))) ++
+      YearRangeYears.map(year => (YearRangeSource, YearRangeCalendar, year))).toSet
+
+  /**
+   * The closed set of `source` keys, read off the required population.
+   *
+   * A row whose `source` is not one of these six is a fixture this spec does not know how to
+   * account for. The exact population comparison would report it too, as a row that is not
+   * required; naming the unknown provenance separately says which of the two it is.
+   */
+  val RequiredSources: Set[String] = RequiredPopulation.map { case (source, _, _) => source }
+
+  /**
+   * Every calendar name the baseline is required to measure, read off the required population.
+   *
+   * The 25 generated calendars and the published Thai calendar, the four weekend and no-holiday
+   * calendars, and the three composites - AAP section 0.6.2's covered set, which
+   * `SCALA_MIGRATION.md` documents as the ported calendar set.
+   */
+  val RequiredCalendars: Set[String] = RequiredPopulation.map { case (_, calendar, _) => calendar }
 
   /**
    * The identifiers of the two rows that record a refusal rather than an answer.
@@ -356,11 +593,40 @@ private[parity] object HolidayCalendarParitySpec {
    */
   val HolidayDifferenceLimit: Int = 10
 
+  /**
+   * The number of rows named when the fixture's population differs from the required one.
+   *
+   * A difference of one endpoint is a difference of one row, but a shifted span or a renamed source
+   * differs in thousands, and a failure message that printed them all would be unreadable. The
+   * message always reports the true totals; this bounds only how many are named.
+   */
+  val PopulationDifferenceLimit: Int = 12
+
   //-------------------------------------------------------------------------
   // The row model. Field for field the schema of section 6 of `tools/parity-capture/README.md`,
   // with `Option` exactly where that schema writes JSON `null`: a row that refuses to answer
   // carries no holiday list and no sample expectations, and carries `error` instead.
+  //
+  // Each of the four shapes of the document - the row, a sample, and the two probes nested in a
+  // sample - is declared as a [[KeySchema]] beside the model it describes, and every object is
+  // checked against its schema before it is decoded: the row by `loadStrict`, the three nested
+  // shapes by their own decoders, which are the only places those objects' keys are ever visible.
+  // Without that, derived decoding would read the fields these models declare and ignore every
+  // other key, so a probe the capture started emitting - another operation, another operand of a
+  // shift, a renamed field - would be dropped in silence while the report still read
+  // `failed == 0`. Declaring the keys also makes `Option` mean what the schema says: the key must
+  // be present, and `null` is then the one way it records a refusal, which a merely optional
+  // field cannot distinguish from a key that has gone missing.
   //-------------------------------------------------------------------------
+
+  /** The key of the business-day shift probe, inside a sample. */
+  val ShiftKey: String = "shift"
+
+  /** The key of the business-day count probe, inside a sample. */
+  val DaysBetweenKey: String = "daysBetween"
+
+  /** The key of the sample list, inside a row. */
+  val SamplesKey: String = "samples"
 
   /**
    * The shift a sample was captured with, and what it produced.
@@ -371,6 +637,21 @@ private[parity] object HolidayCalendarParitySpec {
   final case class ShiftProbe(amount: Int, result: Option[LocalDate])
 
   /**
+   * The documented shape of the `shift` object of a sample.
+   *
+   * This is the schema '''of''' [[ShiftProbe]] - the two keys that model declares, asserted
+   * against each other by `the declared row, sample and probe key sets are the ones the models
+   * read`. Its authority is the committed document, in which every one of the 11,538 `shift`
+   * objects carries exactly `amount` and `result`, together with section 6 of
+   * `tools/parity-capture/README.md`, which documents the probe as self-describing: the amount is
+   * in the document so that this spec replays the shift without knowing the sampling rule. A
+   * second operand appearing here would change what was captured, so it is refused by name rather
+   * than ignored.
+   */
+  val ShiftProbeSchema: KeySchema =
+    KeySchema.uniform("the shift probe of a holiday parity sample", Set("amount", "result"))
+
+  /**
    * The business-day count a sample was captured with, and what it produced.
    *
    * @param endExclusive  the end of the counted range, excluded from the count
@@ -379,11 +660,28 @@ private[parity] object HolidayCalendarParitySpec {
   final case class BetweenProbe(endExclusive: LocalDate, result: Option[Int])
 
   /**
+   * The documented shape of the `daysBetween` object of a sample.
+   *
+   * This is the schema '''of''' [[BetweenProbe]], on the same authority as [[ShiftProbeSchema]]:
+   * every one of the committed document's 11,538 `daysBetween` objects carries exactly
+   * `endExclusive` and `result`, and section 6 of `tools/parity-capture/README.md` documents the
+   * end date as part of the probe so that the count is replayed over the captured range rather
+   * than over one this spec chose.
+   */
+  val BetweenProbeSchema: KeySchema =
+    KeySchema.uniform(
+      "the days-between probe of a holiday parity sample",
+      Set("endExclusive", "result"))
+
+  /**
    * One sampled date of a row, with every answer the Java implementation gave for it.
    *
-   * Either every expectation is present and `error` is absent, or every expectation is absent and
-   * `error` carries the message Java produced. [[checkSample]] and [[checkRefusedSample]] are the
-   * two readings of that, and [[HolidayRow]] decides between them from the row.
+   * The outcome is the row's, and this sample states the same one: where its row carries no
+   * `error`, `error` is absent here and every one of the eight expectations is present; where its
+   * row carries `error`, so does this sample, carrying the message Java produced and none of the
+   * eight. [[checkSample]] and [[checkRefusedSample]] are the two readings of that, [[checkRow]]
+   * decides between them from the row, and [[checkShape]] requires the sample to agree with the
+   * row before either is reached.
    *
    * @param date  the sampled date
    * @param isHoliday  whether the date is a holiday, weekends included
@@ -409,10 +707,39 @@ private[parity] object HolidayCalendarParitySpec {
       error: Option[String])
 
   /**
+   * The documented shape of one element of a row's `samples` list.
+   *
+   * This is the schema '''of''' [[HolidaySample]] - the ten keys that model declares, which the
+   * committed document carries on every one of its 11,538 samples, and which section 6 of
+   * `tools/parity-capture/README.md` documents together with the fixed (date, shift amount,
+   * `endExclusive`) triple each sample stands for.
+   *
+   * One documented key set, so satisfying it is equality of key sets. That is what closes the
+   * gap the fixture's own `error` convention leaves open: a sample records either every
+   * expectation or none of them, and an eleventh key - one more probe of the calendar, captured
+   * from Java and therefore an expectation like any other - would otherwise be read by nothing
+   * while [[checkShape]] still found the sample consistent.
+   */
+  val SampleSchema: KeySchema =
+    KeySchema.uniform(
+      "a holiday parity sample",
+      Set(
+        "date",
+        "isHoliday",
+        "isBusinessDay",
+        "next",
+        "previous",
+        "nextOrSame",
+        "previousOrSame",
+        ShiftKey,
+        DaysBetweenKey,
+        "error"))
+
+  /**
    * One (calendar, year) row of the captured baseline.
    *
    * @param id  the identity of the row, unique across the document and what the report names
-   * @param source  the population the row belongs to, one of the keys of [[MinimumRowsBySource]]
+   * @param source  the population the row belongs to, one of [[RequiredSources]]
    * @param calendar  the name of the calendar identifier, such as `GBLO`, `Sat/Sun` or `GBLO+USNY`
    * @param year  the calendar year the row measures
    * @param holidays  every date of that year for which `isHoliday` is true, weekends included;
@@ -430,13 +757,197 @@ private[parity] object HolidayCalendarParitySpec {
       error: Option[String])
       extends ParityRow
 
-  implicit val shiftProbeDecoder: Decoder[ShiftProbe] = deriveDecoder[ShiftProbe]
+  /**
+   * The documented shape of one row of `holiday-baseline.json`.
+   *
+   * This is the schema '''of''' [[HolidayRow]] - the seven keys the committed document carries on
+   * every one of its 3,846 rows, which are exactly the seven fields that model declares, and
+   * which section 6 of `tools/parity-capture/README.md` records as identical in every row.
+   *
+   * One documented key set, so satisfying it is equality of key sets: a row that has gained a key
+   * is refused with that key named, and a row that has lost one - `holidays`, say, whose absence
+   * this spec reads as "the calendar refused to answer for the year" - is refused rather than
+   * measured as the other kind of row.
+   */
+  val RowSchema: KeySchema =
+    KeySchema.uniform(
+      "a holiday parity row",
+      Set("id", "source", "calendar", "year", "holidays", SamplesKey, "error"))
 
-  implicit val betweenProbeDecoder: Decoder[BetweenProbe] = deriveDecoder[BetweenProbe]
+  implicit val shiftProbeDecoder: Decoder[ShiftProbe] =
+    ParityHarness.strictObject(ShiftProbeSchema)(deriveDecoder[ShiftProbe])
 
-  implicit val holidaySampleDecoder: Decoder[HolidaySample] = deriveDecoder[HolidaySample]
+  implicit val betweenProbeDecoder: Decoder[BetweenProbe] =
+    ParityHarness.strictObject(BetweenProbeSchema)(deriveDecoder[BetweenProbe])
 
-  implicit val holidayRowDecoder: Decoder[HolidayRow] = deriveDecoder[HolidayRow]
+  implicit val holidaySampleDecoder: Decoder[HolidaySample] =
+    ParityHarness.strictObject(SampleSchema)(deriveDecoder[HolidaySample])
+
+  /**
+   * The row's own fields, read once the keys are known to be the documented ones.
+   *
+   * Deliberately not implicit: nothing may summon a decoder for a row of this document that is
+   * not the strict one below, so the only reference to this value is the composition that makes
+   * it strict.
+   */
+  private val holidayRowFields: Decoder[HolidayRow] = deriveDecoder[HolidayRow]
+
+  /**
+   * The decoder the fixture is read through, which is the row's fields behind the key check.
+   *
+   * This is the implicit a loader summons, so every path that reads a row of this document -
+   * `ParityHarness.loadStrict`, which composes this with the same check again while reading, and
+   * the strictness tests of this suite, which decode hand-built objects through it - is strict
+   * about keys by construction rather than by remembering to be.
+   */
+  implicit val StrictRowDecoder: Decoder[HolidayRow] =
+    ParityHarness.strictObject(RowSchema)(holidayRowFields)
+
+  //-------------------------------------------------------------------------
+  // The documented shapes as documents, and the three ways a document departs from one.
+  //
+  // A schema that is only exercised by the fixture it already agrees with proves nothing about
+  // what it would refuse, so the strictness tests of this suite decode these documents: the
+  // documented shapes, which must be accepted and must decode to the models below, and then the
+  // same documents with one key added, one key removed and one key renamed, each of which must be
+  // refused with the offending key named. The accepted documents are the committed shapes, key
+  // for key - the first row of `holiday-baseline.json` and its first sample - with the holiday
+  // list and the sample list shortened to what a decode needs; a decode reads the elements of a
+  // list, and their number is a property of the measurement that [[checkShape]] and the
+  // population test assert.
+  //-------------------------------------------------------------------------
+
+  /** The `shift` probe of the first sample of the committed document. */
+  val DocumentedShift: Json =
+    Json.obj("amount" -> Json.fromInt(-3), "result" -> Json.fromString("1949-12-28"))
+
+  /** The `daysBetween` probe of the first sample of the committed document. */
+  val DocumentedDaysBetween: Json =
+    Json.obj(
+      "endExclusive" -> Json.fromString("1951-01-01"),
+      "result" -> Json.fromInt(254))
+
+  /** The first sample of the committed document, key for key. */
+  val DocumentedSample: Json =
+    Json.obj(
+      "date" -> Json.fromString("1950-01-01"),
+      "isHoliday" -> Json.fromBoolean(true),
+      "isBusinessDay" -> Json.fromBoolean(false),
+      "next" -> Json.fromString("1950-01-02"),
+      "previous" -> Json.fromString("1949-12-30"),
+      "nextOrSame" -> Json.fromString("1950-01-02"),
+      "previousOrSame" -> Json.fromString("1949-12-30"),
+      ShiftKey -> DocumentedShift,
+      DaysBetweenKey -> DocumentedDaysBetween,
+      "error" -> Json.Null)
+
+  /** The first row of the committed document, key for key, carrying that one sample. */
+  val DocumentedRow: Json =
+    Json.obj(
+      "id" -> Json.fromString("gblo-1950"),
+      "source" -> Json.fromString("generated"),
+      "calendar" -> Json.fromString("GBLO"),
+      "year" -> Json.fromInt(1950),
+      "holidays" -> Json.arr(Json.fromString("1950-01-01"), Json.fromString("1950-01-07")),
+      SamplesKey -> Json.arr(DocumentedSample),
+      "error" -> Json.Null)
+
+  /** What [[DocumentedSample]] is required to decode to, field for field. */
+  val DocumentedSampleModel: HolidaySample =
+    HolidaySample(
+      date = LocalDate.of(1950, 1, 1),
+      isHoliday = Some(true),
+      isBusinessDay = Some(false),
+      next = Some(LocalDate.of(1950, 1, 2)),
+      previous = Some(LocalDate.of(1949, 12, 30)),
+      nextOrSame = Some(LocalDate.of(1950, 1, 2)),
+      previousOrSame = Some(LocalDate.of(1949, 12, 30)),
+      shift = ShiftProbe(-3, Some(LocalDate.of(1949, 12, 28))),
+      daysBetween = BetweenProbe(LocalDate.of(1951, 1, 1), Some(254)),
+      error = None)
+
+  /** What [[DocumentedRow]] is required to decode to, field for field. */
+  val DocumentedRowModel: HolidayRow =
+    HolidayRow(
+      id = "gblo-1950",
+      source = "generated",
+      calendar = "GBLO",
+      year = 1950,
+      holidays = Some(Vector(LocalDate.of(1950, 1, 1), LocalDate.of(1950, 1, 7))),
+      samples = Vector(DocumentedSampleModel),
+      error = None)
+
+  /**
+   * The documented row carrying the given sample, which is where the nested objects live.
+   *
+   * A nested object's keys are visible only to that object's own decoder, so the way to prove
+   * that the sample and probe schemas are in force is to offer them through a row, exactly as
+   * the loader does.
+   *
+   * @param sample  the sample object to put on the row
+   * @return the row document
+   */
+  def rowWithSample(sample: Json): Json =
+    withKey(DocumentedRow, SamplesKey, Json.arr(sample))
+
+  /**
+   * The documented sample carrying the given probe under the given key.
+   *
+   * @param key  either [[ShiftKey]] or [[DaysBetweenKey]]
+   * @param probe  the probe object to put on the sample
+   * @return the sample document
+   */
+  def sampleWithProbe(key: String, probe: Json): Json = withKey(DocumentedSample, key, probe)
+
+  /**
+   * The same object with one key added, which is the shape a newly captured field arrives in.
+   *
+   * @param document  the object to change
+   * @param key  the key to add, or to replace where the object already carries it
+   * @param value  the value of that key
+   * @return the changed object
+   */
+  def withKey(document: Json, key: String, value: Json): Json =
+    document.mapObject(fields => fields.add(key, value))
+
+  /**
+   * The same object with one key removed, which is the shape a retired field leaves behind.
+   *
+   * @param document  the object to change
+   * @param key  the key to remove
+   * @return the changed object
+   */
+  def withoutKey(document: Json, key: String): Json =
+    document.mapObject(fields => fields.remove(key))
+
+  /**
+   * The same object with one key renamed, keeping its value - a rename is a loss and a gain at
+   * once, and a schema has to report both halves for the message to say what happened.
+   *
+   * @param document  the object to change
+   * @param from  the key as the schema declares it
+   * @param to  the key the document is to carry instead
+   * @return the changed object
+   */
+  def withRenamedKey(document: Json, from: String, to: String): Json =
+    document.mapObject(fields => fields.remove(from).add(to, fields(from).getOrElse(Json.Null)))
+
+  /**
+   * The message a decoder refuses a document with.
+   *
+   * A decoder that '''accepts''' the document answers with a description of what it accepted, so
+   * that the assertion on the refusal's wording fails naming the value that got through rather
+   * than failing on an empty string that says nothing.
+   *
+   * @param decoder  the decoder under test
+   * @param document  the document to offer it
+   * @return the refusal message, or what was accepted instead
+   */
+  def refusalOf[A](decoder: Decoder[A], document: Json): String =
+    decoder.decodeJson(document) match {
+      case Left(failure) => failure.message
+      case Right(value) => s"the decoder accepted $value"
+    }
 
   //-------------------------------------------------------------------------
   // Resolving a calendar, once per distinct name.
@@ -481,12 +992,21 @@ private[parity] object HolidayCalendarParitySpec {
   /**
    * Measures one row of the fixture, answering with everything that differed.
    *
-   * The row decides which of the two measurements applies. A row carrying `error` records that
-   * Java refused to answer for the year at all, so every operation of the row is required to
-   * refuse; any other row carries a holiday list and three fully populated samples, and every
-   * expectation in it is compared. The identifier of the resolved calendar is checked in both
-   * cases: a composite name normalises its parts, so the name the port produces is itself a
-   * captured expectation.
+   * The '''row''' decides which of the two measurements applies, and it is the only outcome
+   * authority in this file. A row carrying `error` records that Java refused to answer for the
+   * year at all, so every operation of the row is required to refuse; any other row carries a
+   * holiday list and three fully populated samples, and every expectation in it is compared.
+   *
+   * A row whose shape this spec cannot read is '''not''' measured. [[checkShape]] runs first, and
+   * where it answers with anything the row is reported as a fixture disagreement and neither
+   * [[checkAnsweredYear]] nor [[checkRefusedYear]] is called: which of the two applies is exactly
+   * what has become unclear, so measuring one of them anyway would add discrepancies that say
+   * nothing about the port - or, worse, would pass. `FxParitySpec.checkRow` gates its measurement
+   * the same way for the same reason.
+   *
+   * The identifier of the resolved calendar is checked in every case, shape disagreement included:
+   * a composite name normalises its parts, so the name the port produces is itself a captured
+   * expectation, and it is readable from the row's identity alone.
    *
    * @param cache  the calendars resolved so far in this run
    * @param row  the row to measure
@@ -496,19 +1016,40 @@ private[parity] object HolidayCalendarParitySpec {
     calendarFor(cache, row.calendar).flatMap { calendar =>
       val name = ParityHarness.assertExact("calendar name", calendar.name, row.calendar)
       val shape = checkShape(row)
-      val body =
-        if (row.error.isDefined) checkRefusedYear(calendar, row) else checkAnsweredYear(calendar, row)
-      body.map(messages => name ::: shape ::: messages)
+      if (shape.nonEmpty) {
+        IO.pure(name ::: shape)
+      } else if (row.error.isDefined) {
+        checkRefusedYear(calendar, row).map(messages => name ::: messages)
+      } else {
+        checkAnsweredYear(calendar, row).map(messages => name ::: messages)
+      }
     }
 
   /**
    * Checks the invariants of the row model itself, before anything is measured.
    *
    * These are properties of the document rather than of the port: a row that no longer carries
-   * three samples, or that carries a half-populated sample, or that carries both an error and a
-   * holiday list, is a fixture that has stopped agreeing with this spec. Reporting that as what it
-   * is keeps it from being read as a defect of the port, and keeps it from being absorbed silently
-   * by a check that simply finds nothing to compare.
+   * three samples, that carries both an error and a holiday list, that carries a sample disagreeing
+   * with it about the outcome, or that carries a half-populated sample, is a fixture that has
+   * stopped agreeing with this spec. Reporting that as what it is keeps it from being read as a
+   * defect of the port, and keeps it from being absorbed silently by a check that simply finds
+   * nothing to compare.
+   *
+   * ===The row is the outcome authority===
+   *
+   * The population rule is keyed to the '''row''', because the row is what [[checkRow]] dispatches
+   * on. Two things are required of every sample, and they are reported separately so a failure
+   * says which one broke:
+   *
+   *   - '''alignment''' - the sample records a refusal if and only if its row does. A refused row
+   *     carrying a sample with no `error` is a disagreement inside the document, and the captured
+   *     expectations of such a sample would otherwise never be read at all: [[checkRefusedYear]]
+   *     would run, would find that eight calls refuse, and would report nothing.
+   *   - '''population''' - the eight expectations are all present when the row answered and all
+   *     absent when the row refused. The eight are `isHoliday`, `isBusinessDay`, `next`,
+   *     `previous`, `nextOrSame`, `previousOrSame`, `shift.result` and `daysBetween.result`; how
+   *     many of them a disagreeing sample carried is part of the message, because a half-populated
+   *     sample and an entirely populated one on a refused row are different fixture defects.
    *
    * @param row  the row to inspect
    * @return every way in which the row departs from the schema this spec reads
@@ -526,6 +1067,7 @@ private[parity] object HolidayCalendarParitySpec {
         List(
           "fixture disagreement: a row records either a holiday list or a refusal, but this row " +
             s"carries holidays=${row.holidays.map(_.size)} and error=${row.error}")
+    val rowRefused = row.error.isDefined
     val samples = row.samples.iterator.zipWithIndex.flatMap { case (sample, index) =>
       val populated = Vector(
         sample.isHoliday.isDefined,
@@ -536,42 +1078,62 @@ private[parity] object HolidayCalendarParitySpec {
         sample.previousOrSame.isDefined,
         sample.shift.result.isDefined,
         sample.daysBetween.result.isDefined)
-      val expectedPopulated = sample.error.isEmpty
-      if (populated.forall(_ == expectedPopulated)) {
-        Nil
-      } else {
-        List(
-          s"fixture disagreement: ${label(sample, index)} carries error=${sample.error} with " +
-            s"${populated.count(identity)} of ${populated.size} expectations present, and a " +
-            "sample must carry either all of them or none")
-      }
+      val alignment =
+        if (sample.error.isDefined == rowRefused) Nil
+        else
+          List(
+            s"fixture disagreement: ${label(sample, index)} records ${outcomeOf(sample.error)} " +
+              s"while its row records ${outcomeOf(row.error)}, and a sample records the outcome " +
+              "of its row")
+      val population =
+        if (populated.forall(_ == !rowRefused)) Nil
+        else
+          List(
+            s"fixture disagreement: ${label(sample, index)} carries " +
+              s"${populated.count(identity)} of ${populated.size} expectations present, and its " +
+              s"row records ${outcomeOf(row.error)}, so the sample must carry " +
+              (if (rowRefused) "none of them" else "all of them"))
+      alignment ::: population
     }
     sampleCount ::: exclusive ::: samples.toList
   }
 
   /**
+   * Names an outcome for a fixture-disagreement message: an answer, or the refusal it recorded.
+   *
+   * The captured message is quoted rather than summarised, because a disagreement about the
+   * outcome is read by someone deciding whether the document or this spec is wrong, and the Java
+   * text is what tells them which.
+   *
+   * @param error  the `error` field of a row or of a sample
+   * @return the outcome it states, as a phrase
+   */
+  private def outcomeOf(error: Option[String]): String =
+    error match {
+      case Some(message) => s"a refusal ('$message')"
+      case None => "an answer"
+    }
+
+  /**
    * Measures a row the calendar answers: the whole year, then each sample.
+   *
+   * Reached only for a row [[checkShape]] found nothing wrong with, so the holiday list and all
+   * three fully populated samples are present. The list is still read through [[attempted]] rather
+   * than unwrapped, which is what keeps that guarantee an assertion instead of an assumption: an
+   * absent list would be reported as the fixture disagreement it is.
    *
    * @param calendar  the resolved calendar
    * @param row  the row to measure
    * @return every discrepancy found
    */
-  private def checkAnsweredYear(calendar: HolidayCalendar, row: HolidayRow): IO[List[String]] = {
-    val holidays = row.holidays match {
-      case expected @ Some(_) =>
-        attempted("holidays", expected)(holidaysOfYear(calendar, row.year))(compareHolidays(_, _))
-      case None =>
-        // The shape check has already reported this; measuring nothing here keeps one fixture
-        // defect to one message.
-        IO.pure(List.empty[String])
-    }
+  private def checkAnsweredYear(calendar: HolidayCalendar, row: HolidayRow): IO[List[String]] =
     for {
-      year <- holidays
+      year <- attempted("holidays", row.holidays)(holidaysOfYear(calendar, row.year))(
+        compareHolidays(_, _))
       samples <- row.samples.toList.zipWithIndex.traverse { case (sample, index) =>
         checkSample(calendar, sample, index)
       }
     } yield year ::: samples.flatten
-  }
 
   /**
    * Measures a row the calendar refuses: every operation of it must refuse its argument.
@@ -725,6 +1287,36 @@ private[parity] object HolidayCalendarParitySpec {
       val omitted = dates.size - quoted.size
       val ellipsis = if (omitted > 0) s", and $omitted more" else ""
       quoted.mkString(" (", ", ", s"$ellipsis)")
+    }
+
+  /**
+   * Renders one direction of a population difference, or nothing when that direction is empty.
+   *
+   * Both directions of the comparison can be systematic - a shifted span differs by one row at
+   * each end of every calendar, a renamed `source` by every row of it - so the rows are named in a
+   * stable order and bounded to [[PopulationDifferenceLimit]], with the true total and the size of
+   * the required population always stated. Ordering is by source, then calendar, then year, so the
+   * examples a failure quotes are the same on every run over the same fixture.
+   *
+   * @param what  the direction being reported, which is what makes the message stand alone
+   * @param rows  the rows of that direction, in any order
+   * @return the message, or nothing when there is no difference in that direction
+   */
+  private def describePopulation(what: String, rows: Set[RowKey]): List[String] =
+    if (rows.isEmpty) {
+      Nil
+    } else {
+      val ordered = rows.toVector.sorted
+      val quoted = ordered.take(PopulationDifferenceLimit)
+      val omitted = ordered.size - quoted.size
+      val ellipsis = if (omitted > 0) s", and $omitted more" else ""
+      val named =
+        quoted
+          .map { case (source, calendar, year) => s"$source/$calendar/$year" }
+          .mkString(", ")
+      List(
+        s"$what: ${ordered.size}, against the ${RequiredPopulation.size} rows the baseline is " +
+          s"required to carry in total ($named$ellipsis)")
     }
 
   /**

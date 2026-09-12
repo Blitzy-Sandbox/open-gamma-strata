@@ -17,6 +17,9 @@ import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.Resolvable
+import com.opengamma.strata.collect.ResultNec
+import com.opengamma.strata.collect.Validate
+import com.opengamma.strata.collect.ValidatedFailures
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -105,18 +108,38 @@ import com.opengamma.strata.collect.result.Failure
  *
  * ===Construction===
  *
- * Construction is total: every combination of a day count, a calendar identifier and a business
- * day adjustment describes an adjustment, which is exactly what the type being ported held - its
- * factories validated nothing beyond non-nullness, and the types here state that on their own. No
- * failure mode is invented for the sake of the shape, so the factories return a `DaysAdjustment`
- * rather than an `Either` of one, and a caller assembling an adjustment from fields it already
- * holds has no failure to handle.
+ * An adjustment is a '''validated''' value. [[DaysAdjustment.of]] is the factory that judges the
+ * three fields, answering `ResultNec` - the adjustment or a non-empty chain of failures - and it
+ * is the one place the pairing of the day count with the addition calendar is checked:
  *
- * What the factories do have is meaning that a raw constructor would lose - which calendar
- * performs the addition, and the zero-day case of [[DaysAdjustment.ofBusinessDays]] - so they are
- * the only way to build one: the constructor of this `sealed abstract case class` is private and
- * neither `apply` nor `copy` exists. Pattern matching and `unapply` are unaffected, and a
- * modified instance is obtained by naming the change through a factory.
+ * {{{
+ * DaysAdjustment.of(2, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)  // Right
+ * DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)  // Left - see below
+ * }}}
+ *
+ * The condition is the one this class states above and the type being ported stated in the same
+ * words: '''a business-day addition of zero days names no day at all'''. An addition calendar
+ * other than the no-holidays identifier is what makes the addition walk business days, so pairing
+ * one with a day count of zero describes nothing, and `of` reports it rather than building a value
+ * whose calendar is never consulted. Nothing else about the three fields can be wrong - a day
+ * count is any integer, and a calendar is a name rather than a resolved calendar - so that single
+ * condition is the whole of the check, and it is reported through the accumulating channel every
+ * validated type of this port reports through.
+ *
+ * The four named factories remain '''total''', and they are total because each of them lands in
+ * the part of the field space `of` accepts rather than because construction is unchecked:
+ * [[DaysAdjustment.ofCalendarDays]] fixes the addition calendar to the no-holidays identifier, and
+ * both [[DaysAdjustment.ofBusinessDays]] forms answer a zero-day request by dropping the addition
+ * calendar, which is the rule the type being ported applied in its own two-argument factory and in
+ * `normalized`. `DaysAdjustmentSpec` and `SmartConstructorSpec` assert that equivalence as a
+ * property - every value any factory builds is accepted by `of`, and every triple `of` rejects is
+ * built by none of them - so the two construction routes cannot drift apart.
+ *
+ * What the factories have that a raw constructor would lose is meaning - which calendar performs
+ * the addition, and the zero-day case of [[DaysAdjustment.ofBusinessDays]] - and together with
+ * `of` they are the only way to build one: the constructor of this `sealed abstract case class` is
+ * private and neither `apply` nor `copy` exists. Pattern matching and `unapply` are unaffected,
+ * and a modified instance is obtained by naming the change through a factory.
  *
  * This type is immutable and thread-safe.
  *
@@ -233,17 +256,20 @@ sealed abstract case class DaysAdjustment private (
    * is often equal to it outright; normalising an already normalised adjustment returns it as it
    * stands.
    *
+   * The first of those two rewrites is '''already done''' by the time any adjustment exists here,
+   * which is where this port and the method being ported differ in code while agreeing in result:
+   * every factory drops the addition calendar of a zero-day addition and
+   * [[DaysAdjustment.of]] refuses the pairing outright, so a zero-day adjustment always names the
+   * no-holidays calendar already and is returned as it stands. The rule is stated above because it
+   * is still the rule - it is simply enforced at construction rather than repaired here.
+   *
    * This cannot fail - it rebuilds an adjustment from fields this adjustment already holds.
    *
    * @return the normalized adjustment
    */
   def normalized: DaysAdjustment =
     if (days == 0) {
-      if (calendar == HolidayCalendarIds.NO_HOLIDAYS) {
-        this
-      } else {
-        DaysAdjustment.ofCalendarDays(days, adjustment)
-      }
+      this
     } else if (calendar == adjustment.calendar) {
       DaysAdjustment.ofBusinessDays(days, calendar)
     } else {
@@ -315,6 +341,83 @@ object DaysAdjustment {
    */
   val NONE: DaysAdjustment =
     create(0, HolidayCalendarIds.NO_HOLIDAYS, BusinessDayAdjustment.NONE)
+
+  //-------------------------------------------------------------------------
+  /**
+   * Obtains an instance from the number of days, the addition calendar and the trailing
+   * adjustment, reporting a pairing that describes no adjustment.
+   *
+   * This is the validated factory of the type, and it is the route to reach for where the three
+   * fields are held already - read off another adjustment, decoded from a document, or computed
+   * from data - because it is the one that judges them. The named factories below are the route
+   * to reach for where the '''kind''' of addition is being named rather than its fields.
+   *
+   * One condition is checked, and it is the one the class-level documentation states: the addition
+   * calendar decides whether the days are calendar days or business days, so a day count of zero
+   * paired with a calendar other than the no-holidays identifier asks for a business-day addition
+   * of zero days, which names no day at all. Everything else is accepted: the day count may be
+   * negative, either calendar may be composite, and the trailing adjustment may name any
+   * convention over any calendar.
+   *
+   * {{{
+   * DaysAdjustment.of(2, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)   // Right
+   * DaysAdjustment.of(-2, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)  // Right
+   * DaysAdjustment.of(0, HolidayCalendarIds.NO_HOLIDAYS, BusinessDayAdjustment.NONE)  // Right
+   * DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)   // Left
+   * }}}
+   *
+   * A caller wanting the interpretable reading of that rejected request - "the next business day
+   * of this calendar, or this date if it already is one" - names it through
+   * [[DaysAdjustment.ofBusinessDays(numberOfDays:Int,holidayCalendar:com\.opengamma\.strata\.basics\.date\.HolidayCalendarId)* the two-argument business-day factory]],
+   * which builds that rule and cannot fail.
+   *
+   * @param days  the number of days to be added, which may be negative
+   * @param calendar  the identifier of the calendar that defines the meaning of a day when
+   *   performing the addition
+   * @param adjustment  the business day adjustment to apply to the result of the addition
+   * @return the days adjustment, or the failure describing why the three fields describe none
+   */
+  def of(
+      days: Int,
+      calendar: HolidayCalendarId,
+      adjustment: BusinessDayAdjustment): ResultNec[DaysAdjustment] =
+    checkedAddition(days, calendar)
+      .map(_ => create(days, calendar, adjustment))
+      .toEither
+
+  /**
+   * Checks that the number of days agrees with the calendar that is to add them.
+   *
+   * A calendar other than the no-holidays identifier makes the addition walk that calendar's
+   * business days, and there is no such thing as walking zero of them - the request names no day,
+   * which is why the two-argument business-day factory answers it by naming a rule instead and why
+   * [[DaysAdjustment.normalized]] erases the pairing wherever one reaches it.
+   *
+   * There is nothing worth returning from the check - both values it reads are already in the
+   * caller's hands - so its outcome carries `Unit`, which combines with further checks exactly as
+   * any other value would. This is the whole validation surface of the type: the three fields are
+   * required, which their types state on their own, and nothing else about them can be wrong.
+   *
+   * The rejected identifier reaches the message as it stands, so a caller correcting its input is
+   * handed back exactly what was refused. [[HolidayCalendarId.of]] is total and accepts any text,
+   * and the decoder of this type reads a calendar name straight out of a document, so the name in
+   * hand may carry line breaks or run to any length - and making that safe to write out belongs
+   * to the writing: the text form of a failure and [[Failure.show]] bound every part they write
+   * and escape anything a line-oriented reader could act on, as they do for every other reported
+   * input of these modules.
+   *
+   * @param days  the number of days to check
+   * @param calendar  the identifier of the calendar the days are counted against
+   * @return a passing outcome, or the failure describing the pairing that was rejected
+   */
+  private def checkedAddition(
+      days: Int,
+      calendar: HolidayCalendarId): ValidatedFailures[Unit] =
+    Validate.isFalse(
+      days == 0 && calendar != HolidayCalendarIds.NO_HOLIDAYS,
+      s"A business day addition of zero days names no day, so 'calendar' must be " +
+        s"'${HolidayCalendarIds.NO_HOLIDAYS.name}' when 'days' is zero but was " +
+        s"'${calendar.name}'")
 
   //-------------------------------------------------------------------------
   /**
@@ -392,9 +495,21 @@ object DaysAdjustment {
    * for, as the class-level documentation describes - since adjusting against the calendar the
    * addition already walked changes nothing.
    *
-   * Unlike the two-argument form, this factory holds exactly the fields it is given, including a
-   * day count of zero, so it is also the way to rebuild an adjustment from the fields of an
-   * existing one.
+   * This factory holds the fields it is given, with the '''one''' exception the two-argument form
+   * also makes: a day count of zero drops the addition calendar, since there is no such thing as
+   * an addition of zero business days and the calendar would name a walk that never happens. The
+   * adjustment supplied is kept, so the value built is `(0, NoHolidays, adjustment)` - which is
+   * what [[DaysAdjustment.normalized]] answers for the fields as given, and what the type being
+   * ported answered from `normalized` for the same input. Every date the two forms compute is the
+   * same, because shifting a date by zero days returns the date whichever calendar is asked, so
+   * the rule chooses the representative of the pair rather than changing an answer. It is what
+   * keeps every value of this type inside the field space [[DaysAdjustment.of]] accepts, and it is
+   * the one place this port departs from the factory being ported, which held a zero-day
+   * business-day addition as given.
+   *
+   * With a non-zero day count this factory is the way to rebuild an adjustment from the fields of
+   * an existing one, and [[DaysAdjustment.of]] is the way to do so while reporting a pairing that
+   * describes no adjustment.
    *
    * @param numberOfDays  the number of days, which may be negative
    * @param holidayCalendar  the identifier of the calendar that defines holidays and business days
@@ -405,7 +520,11 @@ object DaysAdjustment {
       numberOfDays: Int,
       holidayCalendar: HolidayCalendarId,
       adjustment: BusinessDayAdjustment): DaysAdjustment =
-    create(numberOfDays, holidayCalendar, adjustment)
+    if (numberOfDays == 0) {
+      create(0, HolidayCalendarIds.NO_HOLIDAYS, adjustment)
+    } else {
+      create(numberOfDays, holidayCalendar, adjustment)
+    }
 
   //-------------------------------------------------------------------------
   /**
@@ -493,20 +612,22 @@ object DaysAdjustment {
    * The JSON decoding of adjustments.
    *
    * This is the inverse of the encoding above and is likewise derived at compile time. All three
-   * fields have to be present. The fields are handed to
-   * [[DaysAdjustment.ofBusinessDays(numberOfDays:Int,holidayCalendar:com\.opengamma\.strata\.basics\.date\.HolidayCalendarId,adjustment:com\.opengamma\.strata\.basics\.date\.BusinessDayAdjustment)* the three-argument factory]],
-   * which holds them exactly as given - deliberately, rather than to the two-argument form, whose
-   * zero-day case would rewrite a document describing `(0, some calendar, no adjustment)` into a
-   * different adjustment and break the round trip.
+   * fields have to be present, and they are handed to the '''validated''' factory
+   * [[DaysAdjustment.of]] rather than being wrapped unchecked, so a document describing a pairing
+   * no adjustment has - a day count of zero against a named addition calendar - is a decoding
+   * failure carrying the reason that factory gives. That pairing is also one no value of this type
+   * holds, since every factory drops the addition calendar for a zero day count, so the round trip
+   * is unaffected: an encoded adjustment decodes back to one equal to it, and the check refuses
+   * only documents no encoder of this port produces.
    *
-   * Construction cannot fail, so nothing beyond the shape of the payload is checked here: a
-   * payload of the right shape always yields an adjustment, and an encoded adjustment decodes
-   * back to one equal to it. What the fields describe is checked where it can be - the convention
-   * against its closed family, and the calendar identifiers against the reference data, when the
-   * adjustment is applied.
+   * What the fields describe beyond that pairing is checked where it can be - the convention
+   * against its closed family, by its own codec, and the calendar identifiers against the
+   * reference data, when the adjustment is applied.
    *
    * @return the JSON decoding of an adjustment
    */
   implicit val decoder: Decoder[DaysAdjustment] =
-    rawDecoder.map(raw => ofBusinessDays(raw.days, raw.calendar, raw.adjustment))
+    Codecs.validatedDecoder[Raw, DaysAdjustment] { raw =>
+      of(raw.days, raw.calendar, raw.adjustment)
+    }(rawDecoder)
 }

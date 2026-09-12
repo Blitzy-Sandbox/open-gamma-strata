@@ -9,7 +9,6 @@ import java.time.LocalDate
 import java.util.Locale
 
 import scala.annotation.tailrec
-import scala.util.matching.Regex
 
 import cats.Hash
 import cats.Order
@@ -614,14 +613,20 @@ object DayCount {
         val scheduleEndDate = required(scheduleInfo.endDate, ScheduleEndDateRequired)
         val nextCouponDate = required(scheduleInfo.periodEndDate(firstDate), PeriodEndDateRequired)
         val freq = required(scheduleInfo.frequency, FrequencyRequired)
+        // The events per year of the frequency divides every nominal period, and the frequency is
+        // fixed for the whole calculation, so it is taken once here rather than per nominal
+        // period. It is taken after the facts above, which keeps the order in which a schedule
+        // missing several of them is refused, and after the zero-length case, which needs no
+        // schedule information at all.
+        val eventsPerYear = eventsPerYearOf(freq)
         val eom = scheduleInfo.isEndOfMonthConvention
         if (nextCouponDate == scheduleEndDate) {
           // the final period, which also covers single period schedules
-          finalPeriod(firstDate, secondDate, freq, eom)
+          finalPeriod(firstDate, secondDate, freq, eventsPerYear, eom)
         } else {
           // the initial period, and every other case where the previous coupon date has to be
           // determined, whether that date is real or nominal
-          initPeriod(firstDate, secondDate, nextCouponDate, freq, eom)
+          initPeriod(firstDate, secondDate, nextCouponDate, freq, eventsPerYear, eom)
         }
       }
 
@@ -641,6 +646,8 @@ object DayCount {
      * @param endDate  the end of the period being measured
      * @param couponDate  the known regular schedule date the nominal periods are counted from
      * @param freq  the frequency of the schedule
+     * @param eventsPerYear  the number of events per year of that frequency, taken once by
+     *   [[calculateYearFraction]]
      * @param eom  whether the end-of-month convention is in use
      * @return the year fraction of the period
      */
@@ -649,6 +656,7 @@ object DayCount {
         endDate: LocalDate,
         couponDate: LocalDate,
         freq: Frequency,
+        eventsPerYear: Int,
         eom: Boolean): Double = {
 
       @tailrec
@@ -657,9 +665,9 @@ object DayCount {
           accrue(
             prevNominal,
             endOfMonth(couponDate, freq.subtractFrom(prevNominal), eom),
-            accrued + calc(prevNominal, currentNominal, startDate, endDate, freq))
+            accrued + calc(prevNominal, currentNominal, startDate, endDate, eventsPerYear))
         } else {
-          accrued + calc(prevNominal, currentNominal, startDate, endDate, freq)
+          accrued + calc(prevNominal, currentNominal, startDate, endDate, eventsPerYear)
         }
 
       accrue(couponDate, endOfMonth(couponDate, freq.subtractFrom(couponDate), eom), 0d)
@@ -676,19 +684,27 @@ object DayCount {
      *   which is also the start of the period being measured
      * @param endDate  the end of the period being measured
      * @param freq  the frequency of the schedule
+     * @param eventsPerYear  the number of events per year of that frequency, taken once by
+     *   [[calculateYearFraction]]
      * @param eom  whether the end-of-month convention is in use
      * @return the year fraction of the period
      */
-    private def finalPeriod(couponDate: LocalDate, endDate: LocalDate, freq: Frequency, eom: Boolean): Double = {
+    private def finalPeriod(
+        couponDate: LocalDate,
+        endDate: LocalDate,
+        freq: Frequency,
+        eventsPerYear: Int,
+        eom: Boolean): Double = {
+
       @tailrec
       def accrue(curNominal: LocalDate, nextNominal: LocalDate, accrued: Double): Double =
         if (nextNominal.isBefore(endDate)) {
           accrue(
             nextNominal,
             endOfMonth(couponDate, freq.addTo(nextNominal), eom),
-            accrued + calc(curNominal, nextNominal, curNominal, endDate, freq))
+            accrued + calc(curNominal, nextNominal, curNominal, endDate, eventsPerYear))
         } else {
-          accrued + calc(curNominal, nextNominal, curNominal, endDate, freq)
+          accrued + calc(curNominal, nextNominal, curNominal, endDate, eventsPerYear)
         }
 
       accrue(couponDate, endOfMonth(couponDate, freq.addTo(couponDate), eom), 0d)
@@ -721,11 +737,16 @@ object DayCount {
      * that ends before the requested period starts contributes nothing, which is the case a long
      * stub produces.
      *
+     * The number of events per year arrives as a number rather than as the frequency it comes
+     * from: this method is called once per nominal period, and deriving it here would build and
+     * examine a result for every period of every long stub, each time from the same frequency and
+     * to the same answer.
+     *
      * @param prevNominal  the start of the nominal period
      * @param curNominal  the end of the nominal period
      * @param start  the start of the period being measured
      * @param end  the end of the period being measured
-     * @param freq  the frequency of the schedule
+     * @param eventsPerYear  the number of events per year of the schedule's frequency
      * @return the contribution of the nominal period
      */
     private def calc(
@@ -733,7 +754,7 @@ object DayCount {
         curNominal: LocalDate,
         start: LocalDate,
         end: LocalDate,
-        freq: Frequency): Double =
+        eventsPerYear: Int): Double =
 
       if (end.isAfter(prevNominal)) {
         val curNominalEpochDay = curNominal.toEpochDay
@@ -743,7 +764,7 @@ object DayCount {
         val periodDays = (curNominalEpochDay - prevNominalEpochDay).toDouble
         val actualDays =
           (Math.min(endEpochDay, curNominalEpochDay) - Math.max(startEpochDay, prevNominalEpochDay)).toDouble
-        actualDays / (eventsPerYearOf(freq).toDouble * periodDays)
+        actualDays / (eventsPerYear.toDouble * periodDays)
       } else {
         0d
       }
@@ -1384,9 +1405,15 @@ object DayCount {
    *
    * Unlike the twenty-one standard conventions this one is not a singleton: the calendar is part of
    * the convention and appears in its name, so `Bus/252 BRBD` and `Bus/252 GBLO` are two day counts
-   * of the same kind. Instances are created only by [[DayCount.ofBus252]] - the constructor is
-   * visible to the companion alone, and this is not a `case class`, so there is no `apply` and no
-   * `copy` to bypass it with.
+   * of the same kind. Instances are created only by [[DayCount.ofBus252]], and the representation is
+   * the one the port gives every validated type: a `sealed abstract case class` with a constructor
+   * visible to `DayCount` alone. An abstract case class has neither a synthesised `apply` nor a
+   * `copy`, so neither exists to bypass the factory with, and being sealed it cannot be instantiated
+   * as an anonymous subclass from anywhere but this file - which is where `ofBus252` does exactly
+   * that. What the `case` keyword is kept for is `unapply`: a caller that has a day count in hand
+   * can ask whether it is a `Bus/252` and take the calendar out of it in one pattern,
+   * `case DayCount.Bus252(calendar) => calendar.id`, which is how the codec of this family and any
+   * caller that needs the calendar reads it.
    *
    * The calendar held here is '''resolved''': the convention carries the calendar itself rather than
    * an identifier to be looked up, which is what keeps [[DayCount.yearFraction]] and
@@ -1401,11 +1428,13 @@ object DayCount {
    * calendar rather than by its holidays - the comparison the ported implementation made, and the
    * one consistent with the `Order`, `Hash` and `Show` instances of this family, all of which are
    * derived from the name. Two instances built over different calendars that share an identifier
-   * are therefore equal, as are the calendars themselves.
+   * are therefore equal, as are the calendars themselves. `equals`, `hashCode` and `toString` are
+   * written out below for that reason: a case class would otherwise synthesise structural equality
+   * and a `Bus252(...)` rendering, and both would contradict the family this member belongs to.
    *
    * @param calendar  the resolved holiday calendar whose business days are counted
    */
-  final class Bus252 private[DayCount] (val calendar: HolidayCalendar)
+  sealed abstract case class Bus252 private[DayCount] (calendar: HolidayCalendar)
       extends DayCount(Bus252Prefix + calendar.name) {
 
     override protected[date] def calculateYearFraction(
@@ -1424,6 +1453,56 @@ object DayCount {
     }
 
     override def hashCode: Int = name.hashCode
+
+    override def toString: String = name
+  }
+
+  /**
+   * The typeclass instances of [[DayCount.Bus252]].
+   *
+   * This companion exists for those two instances and holds nothing else: it declares no `apply`,
+   * so the only way to a `Bus/252` day count remains [[DayCount.ofBus252]], and the class it
+   * belongs to is not a `case class`, so no `copy` is synthesised for it either.
+   *
+   * The instances are the family's instances restated at the type of the member, which is what the
+   * invariance of `cats.Hash` and `cats.Show` requires: `Hash[DayCount]` is not a `Hash[Bus252]`,
+   * so a caller holding a value typed as this member - which is what a pattern match on the family
+   * and what a generator of this one convention both produce - could not summon one from
+   * [[DayCount.order]]. A calendar-bearing day count is a validated value type in its own right in
+   * the port's construction inventory, where every `[R]`, `[V]`, `[N]`, `[S]` and `[T]` type
+   * carries `Hash` and `Show`, and it is named there as a `[V]` type beside the `[R]` family
+   * itself.
+   *
+   * Neither declaration is ambiguous with the family's: a summon at `DayCount` can only be
+   * answered by [[DayCount.order]] and [[DayCount.show]], a summon at `DayCount.Bus252` only by
+   * the two below, and all four read the `name` of the value, so they cannot disagree about a
+   * value they both see.
+   */
+  object Bus252 {
+
+    /**
+     * The hashing and equality of calendar-bearing day counts.
+     *
+     * Taken from the `equals` and `hashCode` of the class above, which compare and hash the
+     * `name` - and the name of one of these carries the name of its calendar, so two instances
+     * are equal exactly when they count the business days of calendars with the same identifier.
+     * That is the comparison the implementation being ported made, and it is the comparison
+     * [[DayCount.order]] makes for the family.
+     *
+     * @return the hashing of calendar-bearing day counts
+     */
+    implicit val hash: Hash[Bus252] = Hash.fromUniversalHashCode[Bus252]
+
+    /**
+     * The rendering of calendar-bearing day counts as text.
+     *
+     * Renders the canonical name, `Bus/252 BRBD`, which is what `toString` produces as well, so
+     * the two ways of putting one into a message agree whether the value is typed as the member
+     * or as the family.
+     *
+     * @return the rendering of a calendar-bearing day count as its canonical name
+     */
+    implicit val show: Show[Bus252] = Show.show(_.name)
   }
 
   /**
@@ -1437,10 +1516,15 @@ object DayCount {
    * DayCount.ofBus252(StandardHolidayCalendars.BRBD).name == "Bus/252 BRBD"
    * }}}
    *
+   * [[DayCount.Bus252]] is a sealed abstract case class, so the instance is built here as an
+   * anonymous subclass with an empty body - the one route the representation leaves open, and it
+   * is open only inside this file. The body adds nothing: every member of the convention is
+   * declared on the class itself.
+   *
    * @param calendar  the resolved holiday calendar
    * @return the day count counting the business days of that calendar
    */
-  def ofBus252(calendar: HolidayCalendar): DayCount = new Bus252(calendar)
+  def ofBus252(calendar: HolidayCalendar): DayCount = new Bus252(calendar) {}
 
   /**
    * Obtains the 'Bus/252' day count for a calendar identifier, resolved against the reference data
@@ -1515,12 +1599,15 @@ object DayCount {
    * it - and exist so that a caller writing or reading that protocol can map between the two
    * vocabularies explicitly, through `NamedEnum.externalNames`.
    *
-   * Note the row for `BUS/252`, which names a day count that is not a member of [[values]]: the
-   * name lookup resolves an external row against the members of the family, so this row is
-   * published by `externalNamesRaw` and absent from the resolved view. `DayCount.parse("BUS/252")`
-   * reaches the Brazilian convention by the lenient route instead.
+   * Note the row for `BUS/252`, which names a day count that is not a member of [[values]]. The
+   * resolved view of this group holds it all the same: the name lookup resolves an external row
+   * through the resolution this family gives it, which is [[valueOf]] - the standard members and
+   * the `Bus/252` conventions together - so `externalNames("FpML")("BUS/252")` is the day count
+   * named `Bus/252 BRBD`, exactly as the external lookup of the ported registry resolved that row
+   * by delegating the name to its second provider. `DayCount.parse("BUS/252")` reaches the same
+   * convention by the lenient route.
    */
-  private val FpMLNames: Map[String, String] =
+  private lazy val FpMLNames: Map[String, String] =
     Map(
       "1/1" -> "1/1",
       "30/360" -> "30/360 ISDA",
@@ -1548,7 +1635,7 @@ object DayCount {
    * vocabularies - which is exactly why each group is published separately rather than merged into
    * one table of aliases.
    */
-  private val SwiftNames: Map[String, String] =
+  private lazy val SwiftNames: Map[String, String] =
     Map(
       "30E/360" -> "30E/360 ISDA",
       "360/360" -> "30U/360",
@@ -1585,100 +1672,92 @@ object DayCount {
    * Each expression is written here in the mixed case of the original row and matched insensitively
    * to case, because [[parse]] has already folded its input to upper case by the time they are
    * applied.
+   *
+   * The rows are the '''source''' of each expression rather than a compiled expression, and are
+   * handed to the name lookup in that form. The lookup compiles each of them once, insensitively
+   * to case, when this family first parses a name; a compiled table here would be a second set of
+   * sixty-seven expressions, compiled the moment anything in this file is touched, for a caller
+   * that may only ever ask a day count for a year fraction.
    */
-  private val LenientPatterns: List[(Regex, String)] =
+  private lazy val LenientSources: List[(String, String)] =
     List(
       // convert actual
-      "ACTUAL/ACTUAL(.*)".r -> "Act/Act$1",
-      "ACTUAL/(.*)".r -> "Act/$1",
-      "ACT/ACT(.*)".r -> "Act/Act$1",
-      "ACT/(.*)".r -> "Act/$1",
-      "A/A(.*)".r -> "Act/Act$1",
-      "A/(.*)".r -> "Act/$1",
+      "ACTUAL/ACTUAL(.*)" -> "Act/Act$1",
+      "ACTUAL/(.*)" -> "Act/$1",
+      "ACT/ACT(.*)" -> "Act/Act$1",
+      "ACT/(.*)" -> "Act/$1",
+      "A/A(.*)" -> "Act/Act$1",
+      "A/(.*)" -> "Act/$1",
       // remove brackets
-      "(.*)[(](.*)[)]".r -> "$1$2",
+      "(.*)[(](.*)[)]" -> "$1$2",
       // replace dot with space
-      "(.*)[.]([A-Z])(.*)".r -> "$1 $2$3",
+      "(.*)[.]([A-Z])(.*)" -> "$1 $2$3",
       // replace ISMA with ICMA
-      "(.*) ISMA".r -> "$1 ICMA",
+      "(.*) ISMA" -> "$1 ICMA",
       // Act/Act oddities
-      "Act/Act".r -> "Act/Act ISDA",
-      "Act/365 ISDA".r -> "Act/Act ISDA",
-      "Act/Act Historical".r -> "Act/Act ISDA",
-      "Act/Act Bond".r -> "Act/Act ICMA",
-      "ISMA-99".r -> "Act/Act ICMA",
-      "Act/Act Euro".r -> "Act/Act AFB",
-      "Act/Act YEAR".r -> "Act/Act Year",
+      "Act/Act" -> "Act/Act ISDA",
+      "Act/365 ISDA" -> "Act/Act ISDA",
+      "Act/Act Historical" -> "Act/Act ISDA",
+      "Act/Act Bond" -> "Act/Act ICMA",
+      "ISMA-99" -> "Act/Act ICMA",
+      "Act/Act Euro" -> "Act/Act AFB",
+      "Act/Act YEAR" -> "Act/Act Year",
       // Act/36x oddities
-      "Act/365 ACTUAL".r -> "Act/365 Actual",
-      "Act/365A".r -> "Act/365 Actual",
-      "Act/365 Leap year".r -> "Act/365L",
-      "ISMA-Year".r -> "Act/365L",
-      "French".r -> "Act/360",
-      "Act/365".r -> "Act/365F",
-      "Act/365 Fixed".r -> "Act/365F",
-      "Act/Fixed 365".r -> "Act/365F",
-      "English".r -> "Act/365F",
-      "NL360".r -> "NL/360",
-      "Act/360 No leap year".r -> "NL/360",
-      "Act/NL".r -> "NL/365",
-      "NL365".r -> "NL/365",
-      "Act/365 No leap year".r -> "NL/365",
+      "Act/365 ACTUAL" -> "Act/365 Actual",
+      "Act/365A" -> "Act/365 Actual",
+      "Act/365 Leap year" -> "Act/365L",
+      "ISMA-Year" -> "Act/365L",
+      "French" -> "Act/360",
+      "Act/365" -> "Act/365F",
+      "Act/365 Fixed" -> "Act/365F",
+      "Act/Fixed 365" -> "Act/365F",
+      "English" -> "Act/365F",
+      "NL360" -> "NL/360",
+      "Act/360 No leap year" -> "NL/360",
+      "Act/NL" -> "NL/365",
+      "NL365" -> "NL/365",
+      "Act/365 No leap year" -> "NL/365",
       // enum style
-      "ONE_ONE".r -> "1/1",
-      "ACT_ACT_ISDA".r -> "Act/Act ISDA",
-      "ACT_ACT_ICMA".r -> "Act/Act ICMA",
-      "ACT_ACT_AFB".r -> "Act/Act AFB",
-      "ACT_ACT_YEAR".r -> "Act/Act Year",
-      "ACT_365_ACTUAL".r -> "Act/365 Actual",
-      "ACT_365L".r -> "Act/365L",
-      "ACT_360".r -> "Act/360",
-      "ACT_364".r -> "Act/364",
-      "ACT_365F".r -> "Act/365F",
-      "ACT_365_25".r -> "Act/365.25",
-      "NL_360".r -> "NL/360",
-      "NL_365".r -> "NL/365",
-      "THIRTY_360_ISDA".r -> "30/360 ISDA",
-      "THIRTY_U_360".r -> "30U/360",
-      "THIRTY_U_360_EOM".r -> "30U/360 EOM",
-      "THIRTY_360_PSA".r -> "30/360 PSA",
-      "THIRTY_E_360_ISDA".r -> "30E/360 ISDA",
-      "THIRTY_E_360".r -> "30E/360",
-      "THIRTY_EPLUS_360".r -> "30E+/360",
-      "THIRTY_E_365".r -> "30E/365",
+      "ONE_ONE" -> "1/1",
+      "ACT_ACT_ISDA" -> "Act/Act ISDA",
+      "ACT_ACT_ICMA" -> "Act/Act ICMA",
+      "ACT_ACT_AFB" -> "Act/Act AFB",
+      "ACT_ACT_YEAR" -> "Act/Act Year",
+      "ACT_365_ACTUAL" -> "Act/365 Actual",
+      "ACT_365L" -> "Act/365L",
+      "ACT_360" -> "Act/360",
+      "ACT_364" -> "Act/364",
+      "ACT_365F" -> "Act/365F",
+      "ACT_365_25" -> "Act/365.25",
+      "NL_360" -> "NL/360",
+      "NL_365" -> "NL/365",
+      "THIRTY_360_ISDA" -> "30/360 ISDA",
+      "THIRTY_U_360" -> "30U/360",
+      "THIRTY_U_360_EOM" -> "30U/360 EOM",
+      "THIRTY_360_PSA" -> "30/360 PSA",
+      "THIRTY_E_360_ISDA" -> "30E/360 ISDA",
+      "THIRTY_E_360" -> "30E/360",
+      "THIRTY_EPLUS_360" -> "30E+/360",
+      "THIRTY_E_365" -> "30E/365",
       // 30/360 oddities
-      "30/360".r -> "30/360 ISDA",
-      "Eurobond Basis".r -> "30E/360",
-      "30S/360".r -> "30E/360",
-      "Special German".r -> "30E/360",
-      "30/360 ICMA".r -> "30E/360",
-      "30/360 German".r -> "30E/360 ISDA",
-      "German".r -> "30E/360 ISDA",
-      "30/360 US".r -> "30U/360",
-      "30US/360".r -> "30U/360",
-      "360/360".r -> "30U/360",
-      "Bond Basis".r -> "30U/360",
-      "US".r -> "30U/360",
-      "ISMA-30/360".r -> "30U/360",
-      "30/360 SIA".r -> "30U/360",
-      "30/365 German".r -> "30E/365",
+      "30/360" -> "30/360 ISDA",
+      "Eurobond Basis" -> "30E/360",
+      "30S/360" -> "30E/360",
+      "Special German" -> "30E/360",
+      "30/360 ICMA" -> "30E/360",
+      "30/360 German" -> "30E/360 ISDA",
+      "German" -> "30E/360 ISDA",
+      "30/360 US" -> "30U/360",
+      "30US/360" -> "30U/360",
+      "360/360" -> "30U/360",
+      "Bond Basis" -> "30U/360",
+      "US" -> "30U/360",
+      "ISMA-30/360" -> "30U/360",
+      "30/360 SIA" -> "30U/360",
+      "30/365 German" -> "30E/365",
       // Bus/252, defaulted to Brazil
-      "Bus/252".r -> "Bus/252 BRBD"
+      "Bus/252" -> "Bus/252 BRBD"
     )
-
-  /**
-   * The lenient expressions, copied to be insensitive to case.
-   *
-   * The rewrites are applied to text that [[parse]] has already folded to upper case, so an
-   * expression written in the mixed case of its original row - and a character class written as
-   * upper case - could never match without this. The copy is made by prefixing the inline flag to
-   * the source of each expression, which is how the name lookup of this library treats the same
-   * table.
-   */
-  private val LenientMatchers: List[(Regex, String)] =
-    LenientPatterns.map {
-      case (expression, replacement) => (("(?i)" + expression.pattern.pattern()).r, replacement)
-    }
 
   /**
    * The name lookup for the twenty-one standard day counts.
@@ -1690,14 +1769,30 @@ object DayCount {
    * a class or from the class path, so the name space of the standard family is fixed when this
    * file is compiled.
    *
-   * It covers the standard members only. [[valueOf]] and [[parse]] wrap it with the `Bus/252`
-   * lookup, which no closed family can express, in the two places the registry being replaced
-   * consulted its second provider.
+   * Its `values` are the standard members only. [[valueOf]] and [[parse]] wrap it with the
+   * `Bus/252` lookup, which no closed family can express, in the two places the registry being
+   * replaced consulted its second provider - and the external tables are resolved through that
+   * same wider lookup, which is passed here as this family's own resolution of an external row.
+   * That is what lets the FpML spelling `BUS/252` resolve to the Brazilian convention, as the
+   * external lookup of the ported registry did by delegating the name it carries to the second
+   * provider, while `Bus/252` conventions stay outside the twenty-one fixed values.
+   *
+   * It and the three tables behind it are built on first use rather than when this object is
+   * initialised: they serve the reading of a name, and a caller that only asks a day count for a
+   * year fraction never reads one. Touching a member of this family therefore costs the members
+   * themselves and nothing else - no table, no lookup and, since the lookup compiles its rewrites
+   * on its own first use, no compiled expression either.
    *
    * @return the name lookup for the twenty-one standard day counts
    */
-  implicit val namedEnum: NamedEnum[DayCount] =
-    NamedEnum.of(values, Map.empty, LenientPatterns, Map("FpML" -> FpMLNames, "SWIFT" -> SwiftNames), FamilyName)
+  implicit lazy val namedEnum: NamedEnum[DayCount] =
+    NamedEnum.ofSources(
+      values,
+      Map.empty,
+      LenientSources,
+      Map("FpML" -> FpMLNames, "SWIFT" -> SwiftNames),
+      FamilyName,
+      Some(name => valueOf(name)))
 
   //-------------------------------------------------------------------------
   /**
@@ -1787,6 +1882,13 @@ object DayCount {
    * calendar's own failure is reported instead: that is the more specific answer, and it is the
    * error the ported implementation raised from the same place.
    *
+   * The chain of rewrites is the one the name lookup runs, asked for here rather than reproduced:
+   * `NamedEnum.rewriteLeniently` applies this family's own sixty-seven rows in their declared
+   * order, compiled once, and bounds the work each row may do on text it cannot match. Only the
+   * repeat lookup differs from `NamedEnum.parse`, which is the whole reason this method exists -
+   * the rewritten text has to be offered to the `Bus/252` provider as well as to the closed
+   * family, which is what makes `Bus/252` resolve from the bare prefix the table rewrites.
+   *
    * @param name  the text to parse
    * @param resolveCalendar  resolves the calendar part of a `Bus/252` name
    * @return the day count the text names, or the failure describing why it names none
@@ -1798,7 +1900,7 @@ object DayCount {
     exact(name, resolveCalendar) match {
       case Some(result) => result
       case None =>
-        exact(rewriteLeniently(name.toUpperCase(Locale.ENGLISH)), resolveCalendar)
+        exact(namedEnum.rewriteLeniently(name.toUpperCase(Locale.ENGLISH)), resolveCalendar)
           .getOrElse(Left(NonEmptyChain.one(nameNotFound(name))))
     }
 
@@ -1851,45 +1953,19 @@ object DayCount {
     }
 
   /**
-   * Applies every lenient rewrite to the specified text, in order.
-   *
-   * An expression that matches the whole of the text replaces it, and the expression after it is
-   * applied to the replacement, so the rewrites chain and the replacement may refer back to the
-   * groups the expression captured. One matcher serves both purposes for each rule, deciding
-   * whether the rule applies and then performing the replacement, as the ported loop did.
-   *
-   * The whole table is applied to text of any length, which is what the ported algorithm did and
-   * what this family needs: the text reaching here may be a `Bus/252` name carrying a composite
-   * calendar name of no fixed size, and every expression in the table is anchored to a literal
-   * shape with no nested quantifier, so one pass costs one match per rule.
-   *
-   * @param name  the text to rewrite, already folded to upper case
-   * @return the text that survives every rewrite
-   */
-  private def rewriteLeniently(name: String): String =
-    LenientMatchers.foldLeft(name) {
-      case (current, (expression, replacement)) =>
-        val matcher = expression.pattern.matcher(current)
-        if (matcher.matches()) {
-          matcher.replaceFirst(replacement)
-        } else {
-          current
-        }
-    }
-
-  /**
    * The failure reported for text that names no day count.
    *
-   * The text is rendered through `Failure.describeInput` rather than interpolated as it stands, so
-   * the message is bounded in length and holds no character that could forge a line of a log
-   * carrying it. The wording is that of the name lookup of this library, so a caller cannot tell
-   * whether the standard family or the wrapping in this file rejected the text.
+   * The text is quoted as it stands, so the failure names exactly what was rejected; bounding it
+   * and escaping what it may hold belong to the writing of a failure, which the text form of one
+   * and `Failure.show` perform for every part they write. The wording is that of the name lookup
+   * of this library, so a caller cannot tell whether the standard family or the wrapping in this
+   * file rejected the text.
    *
    * @param name  the text that was rejected, as it was supplied
-   * @return the failure naming this family and the rendering of the text
+   * @return the failure naming this family and the text
    */
   private def nameNotFound(name: String): Failure =
-    Failure.Parsing(s"$FamilyName name not found: ${Failure.describeInput(name)}")
+    Failure.Parsing(s"$FamilyName name not found: $name")
 
   //-------------------------------------------------------------------------
   /**
@@ -2039,7 +2115,7 @@ object DayCount {
     } else {
       Left(
         DecodingFailure(
-          s"A day count named '${Failure.describeInput(name)}' does not match the calendar it " +
+          s"A day count named '$name' does not match the calendar it " +
             s"carries, which would be named '$expectedName'",
           cursor.history))
     }
@@ -2363,4 +2439,3 @@ object DayCounts {
    */
   val THIRTY_E_365: DayCount = DayCount.THIRTY_E_365
 }
-

@@ -5,18 +5,31 @@
  */
 package com.opengamma.strata.basics
 
+import java.io.File
+import java.math.BigDecimal
+import java.math.RoundingMode
+import java.time.DateTimeException
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.Period
 import java.time.YearMonth
 
-import cats.data.NonEmptyList
+import scala.annotation.tailrec
+import scala.io.Codec
+import scala.io.Source
+import scala.reflect.ClassTag
+import scala.util.matching.Regex
 
+import cats.data.NonEmptyList
+import cats.syntax.traverse._
+
+import org.scalatest.Assertion
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.prop.TableFor2
 
+import com.opengamma.strata.basics.currency.AdjustablePayment
 import com.opengamma.strata.basics.currency.BigMoney
 import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.basics.currency.CurrencyAmount
@@ -28,32 +41,48 @@ import com.opengamma.strata.basics.currency.FxRateProvider
 import com.opengamma.strata.basics.currency.Money
 import com.opengamma.strata.basics.currency.MultiCurrencyAmount
 import com.opengamma.strata.basics.currency.MultiCurrencyAmountArray
+import com.opengamma.strata.basics.currency.Payment
+import com.opengamma.strata.basics.date.AdjustableDate
 import com.opengamma.strata.basics.date.AdjustableDates
 import com.opengamma.strata.basics.date.BusinessDayAdjustment
+import com.opengamma.strata.basics.date.BusinessDayConvention
 import com.opengamma.strata.basics.date.BusinessDayConventions
 import com.opengamma.strata.basics.date.DateAdjuster
+import com.opengamma.strata.basics.date.DateSequence
+import com.opengamma.strata.basics.date.DateSequences
 import com.opengamma.strata.basics.date.DayCount
 import com.opengamma.strata.basics.date.DayCounts
 import com.opengamma.strata.basics.date.DaysAdjustment
+import com.opengamma.strata.basics.date.HolidayCalendar
 import com.opengamma.strata.basics.date.HolidayCalendarId
 import com.opengamma.strata.basics.date.HolidayCalendarIds
+import com.opengamma.strata.basics.date.HolidayCalendars
 import com.opengamma.strata.basics.date.ImmutableHolidayCalendar
 import com.opengamma.strata.basics.date.MarketTenor
+import com.opengamma.strata.basics.date.PeriodAdditionConvention
 import com.opengamma.strata.basics.date.PeriodAdditionConventions
 import com.opengamma.strata.basics.date.PeriodAdjustment
 import com.opengamma.strata.basics.date.SequenceDate
 import com.opengamma.strata.basics.date.Tenor
 import com.opengamma.strata.basics.date.TenorAdjustment
+import com.opengamma.strata.basics.index.FloatingRate
+import com.opengamma.strata.basics.index.FloatingRateIndex
 import com.opengamma.strata.basics.index.FloatingRateName
 import com.opengamma.strata.basics.index.FloatingRateNames
+import com.opengamma.strata.basics.index.FloatingRateType
 import com.opengamma.strata.basics.index.FxIndex
 import com.opengamma.strata.basics.index.FxIndexObservation
 import com.opengamma.strata.basics.index.FxIndices
+import com.opengamma.strata.basics.index.IborIndex
 import com.opengamma.strata.basics.index.IborIndexObservation
 import com.opengamma.strata.basics.index.IborIndices
+import com.opengamma.strata.basics.index.Index
+import com.opengamma.strata.basics.index.OvernightIndex
 import com.opengamma.strata.basics.index.OvernightIndexObservation
 import com.opengamma.strata.basics.index.OvernightIndices
+import com.opengamma.strata.basics.index.PriceIndex
 import com.opengamma.strata.basics.index.PriceIndices
+import com.opengamma.strata.basics.index.RateIndex
 import com.opengamma.strata.basics.location.Country
 import com.opengamma.strata.basics.schedule.Frequency
 import com.opengamma.strata.basics.schedule.PeriodicSchedule
@@ -62,25 +91,38 @@ import com.opengamma.strata.basics.schedule.RollConventions
 import com.opengamma.strata.basics.schedule.Schedule
 import com.opengamma.strata.basics.schedule.SchedulePeriod
 import com.opengamma.strata.basics.schedule.StubConvention
+import com.opengamma.strata.basics.value.HalfUp
 import com.opengamma.strata.basics.value.Rounding
 import com.opengamma.strata.basics.value.ValueAdjustment
+import com.opengamma.strata.basics.value.ValueAdjustmentType
+import com.opengamma.strata.basics.value.ValueDerivatives
 import com.opengamma.strata.basics.value.ValueSchedule
 import com.opengamma.strata.basics.value.ValueStep
 import com.opengamma.strata.basics.value.ValueStepSequence
+import com.opengamma.strata.collect.ArgCheck
+import com.opengamma.strata.collect.Collections
 import com.opengamma.strata.collect.Decimal
+import com.opengamma.strata.collect.DoubleArrayMath
 import com.opengamma.strata.collect.FixedScaleDecimal
+import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.TypedStringCompanion
+import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.array.DoubleArray
 import com.opengamma.strata.collect.array.DoubleMatrix
 import com.opengamma.strata.collect.named.NamedEnum
+import com.opengamma.strata.collect.result
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.result.ResultNec
+import com.opengamma.strata.collect.result.ValueWithFailures
+import com.opengamma.strata.collect.testkit.Outcome
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
- * Asserts the failable public '''method''' surface of both ported modules, one case per entry of
- * the inventory of AAP section 0.3.3.
+ * Asserts the failable public '''method''' surface of both ported modules, one case per owner and
+ * method family enumerated from the sources of the two modules, and one per entry of the inventory
+ * of AAP section 0.3.3.
  *
  * That inventory was produced by applying one classification rule to every `throw` and every
  * `ArgChecker` call of the public methods of the Java classes being ported:
@@ -96,35 +138,61 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *
  * This suite asserts each method on the side of that line the inventory puts it on, and it must
  * never move one across: a method listed as reporting a value is asserted to return a `Left`, and
- * a method listed as raising is asserted with `intercept`, with a comment at every `intercept`
- * naming why that particular refusal is a contract or a numeric edge rather than a value. Together
+ * a method listed as raising is asserted with `intercept`, every hand-written `intercept` carrying
+ * a comment that names why that particular refusal is a contract or a numeric edge rather than a
+ * value, and every generated one naming the exception type it intercepts in its row. Together
  * with `SmartConstructorSpec`, which owns the '''constructor''' half of the same inventory, this is
  * the Rule 5 gate of AAP section 0.10.1:
  * `sbt -batch "testOnly *SmartConstructorSpec *FailableSurfaceSpec *ApiSurfaceSpec *FailureSpec"`.
  *
- * ===The inventory, and how to count it===
+ * ===The inventory is derived, not transcribed===
  *
- * [[eitherEntries]] and [[contractEntries]] below hold the inventory verbatim, each entry paired
- * with the name of the test that covers it, and `inventory_coverage` asserts that every one of
- * those tests exists in this suite. A reviewer checking the gate therefore reads two lists rather
- * than counting tests, and an entry that loses its test fails the suite rather than passing
- * silently. The counts are 88 value-reporting entries and 12 contract entries.
+ * The plan's inventory is a list of names, and a suite that asserted only those names would cover
+ * whatever the list happened to hold. This suite therefore '''enumerates''' the surface instead:
+ * while it is being built it reads every Scala source of both modules from [[SourceRoots]] and
+ * collects
  *
- * Where several entries share one failure shape - the four element-wise arithmetic members of
- * `CurrencyAmountArray`, say - they are covered by one table-driven test holding '''one row per
- * entry''', so the mapping from inventory to assertion stays one-to-one and remains countable.
+ *   - every public `def` whose declared return type is a failure channel (`Either`, `EitherNec`,
+ *     `ResultNec`, `FailureOr`, `ValidatedNec`, `ValidatedFailures`, `Validated` or
+ *     `ValueWithFailures`), and
+ *   - every public `def` whose scaladoc documents a throw with a `@throws` tag,
+ *
+ * keyed by `Owner.method`, and then requires one '''row''' of its registry per family so
+ * enumerated. A row is `Rejects` (the call must report at least one failure), `Raises` (the call
+ * must raise the documented exception), `Total` (the family carries the channel but no input can
+ * fill it - the reason is part of the row and the call must succeed) or `Covered` (an abstract
+ * declaration whose failure another named row asserts). One test is generated per row, so a row
+ * cannot exist without an executed assertion, and the coverage tests at the end of the suite hold
+ * the two together in both directions: a family with no row fails, and a row naming a family the
+ * enumeration no longer finds fails too. Every count this suite reports - the size of the surface,
+ * the rows by kind, the entries of the plan - is computed from one of those two sets and printed by
+ * `derived_inventory_counts`; none is written down.
+ *
+ * The plan's own list is kept as [[aapFailableEntries]], [[aapReconciledEntries]] and
+ * [[aapContractEntries]], each entry still paired with the hand-written test that covers it, and
+ * `aap_inventory_is_a_subset_of_the_derived_surface` asserts that every name it holds is a family
+ * the enumeration found - with two entries reconciled by name, each carrying the reason the plan's
+ * name has no declaration of its own and the row or test that stands in for it.
+ *
+ * The hand-written tests above the registry are not replaced by it: they assert messages,
+ * attributes, accumulation counts and positive controls that a generated row does not, and the row
+ * for such a member names its test with `alsoAssertedBy`, which the coverage tests check still
+ * exists.
  *
  * ===What this suite deliberately does not assert===
  *
- * Three things belong to neighbouring suites and are not repeated here, so that a failure has one
+ * Two things belong to neighbouring suites and are not repeated here, so that a failure has one
  * home:
  *
- *   - the two '''numeric-edge''' throws of AAP section 0.3.3 - `CurrencyAmount` arithmetic that
- *     produces `NaN` from infinite operands, and `Decimal` arithmetic overflowing eighteen digits
- *     - are owned by `SmartConstructorSpec`, which owns every construction-time refusal;
  *   - the accumulation behaviour of the validated factories themselves - which reasons a factory
- *     reports and in what combination - is also `SmartConstructorSpec`'s, and this suite touches a
- *     factory only where the inventory lists it, or where it has to build a fixture;
+ *     reports and in what combination - is `SmartConstructorSpec`'s, and this suite touches a
+ *     factory only where the inventory lists it, where the enumeration requires a row for it, or
+ *     where it has to build a fixture. That is also where the '''messages''' of the two
+ *     numeric-edge refusals of AAP 0.3.3 are asserted - `CurrencyAmount` arithmetic reaching `NaN`
+ *     from infinite operands and `Decimal` arithmetic overflowing eighteen digits - while the rows
+ *     here assert that each of those families raises at all, because a throwing family the
+ *     enumeration finds and this registry skipped would make the enumeration representative rather
+ *     than exhaustive;
  *   - the exact message '''text''' of a failure belongs to the spec of the type that produces it.
  *     Here a failure is asserted by its [[FailureReason]], compared as a value of the closed family
  *     and never as a string, and by the attribute the AAP fixes where it fixes one - the
@@ -153,6 +221,8 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * @see `ApiSurfaceSpec` for the compile-time half of Rule 5 - the absence of `apply` and `copy`
  */
 final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
+
+  import FailableSurfaceSpec._
 
   //-------------------------------------------------------------------------
   // Dates. Named as the Java tests of the schedule package named them, so that a reader comparing
@@ -214,6 +284,19 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 
   /** One hundred dollars as unrounded money. */
   private lazy val usdBigMoney: BigMoney = obtained(BigMoney.of(Currency.USD, 100d))
+
+  /**
+   * An infinite amount, which this type admits and no decimal holds.
+   *
+   * An amount rejects only a value that is not a number, so the two infinities are values of it -
+   * and neither of them is a value of either exact-decimal type. This fixture is therefore the
+   * failure side of the two conversions to those types.
+   */
+  private lazy val infiniteAmount: CurrencyAmount =
+    obtained(CurrencyAmount.of(Currency.GBP, Double.PositiveInfinity))
+
+  /** A finite amount whose magnitude needs more than the eighteen digits a decimal holds. */
+  private lazy val oversizedAmount: CurrencyAmount = obtained(CurrencyAmount.of(Currency.GBP, 1e30d))
 
   /** The rate two, which no conversion into a currency's own currency may apply. */
   private lazy val two: Decimal = obtained(Decimal.of(2L))
@@ -387,9 +470,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       value => fail(s"Expected a failure but the call answered: $value"))
 
   //-------------------------------------------------------------------------
-  // FX and currency. Thirty-four entries of the inventory, every one of them a failure that
+  // FX and currency. Thirty-eight entries of the inventory, every one of them a failure that
   // depends on the data supplied - a rate the provider does not hold, two currencies that
-  // disagree, text that names no value - and therefore reported rather than raised.
+  // disagree, text that names no value, a mapped amount no decimal holds - and therefore reported
+  // rather than raised.
   //-------------------------------------------------------------------------
 
   test("FxRateProvider.fxRate reports a rate the provider cannot supply") {
@@ -584,6 +668,53 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 
     gbpMoney.plus(gbpMoney) should beSuccess
     gbpBigMoney.minus(gbpBigMoney) should beSuccess
+  }
+
+  test("Money.mapAmount and BigMoney.mapAmount report a result no decimal holds") {
+    // These two take a function on `BigDecimal`, which has no bound on its precision, so a mapper
+    // can return a number outside the range a decimal holds. That is a property of the function and
+    // the value it is applied to rather than of the calling code, so it is reported; the sibling
+    // `map`, whose function works on the decimal itself, cannot produce such a value and is total.
+    val oversized: TableFor2[String, FailureOr[Any]] = Table(
+      ("member", "outcome"),
+      ("Money.mapAmount", gbpMoney.mapAmount(amount => amount.multiply(new BigDecimal("1E+30")))),
+      ("BigMoney.mapAmount", gbpBigMoney.mapAmount(amount => amount.multiply(new BigDecimal("1E+30")))))
+    forAll(oversized) { (member: String, outcome: FailureOr[Any]) =>
+      withClue(s"$member: ") {
+        outcome should beFailureWith(FailureReason.INVALID)
+      }
+    }
+
+    // a mapper whose result a decimal holds answers with the mapped value, rounded by the type's
+    // own constructor - so the failure above is the oversized result and not the method itself
+    gbpMoney.mapAmount(amount => amount.multiply(new BigDecimal("2"))) should beSuccess
+    gbpBigMoney.mapAmount(amount => amount.multiply(new BigDecimal("2"))) should beSuccess
+  }
+
+  test("CurrencyAmount.toMoney and CurrencyAmount.toBigMoney report an amount no decimal holds") {
+    // Two inventory entries, four rows: each conversion refuses the two classes of amount that
+    // this type admits and no decimal holds. An amount rejects only a value that is not a number,
+    // so an infinite amount is a value of it, and a finite amount may need more digits than the
+    // eighteen a decimal carries. Both are properties of the value converted rather than of the
+    // calling code, so both are reported - the type being ported raised for each of them, from the
+    // same decimal conversion these two delegate to.
+    val unholdable: TableFor2[String, FailureOr[Any]] = Table(
+      ("member", "outcome"),
+      ("CurrencyAmount.toMoney, infinite", infiniteAmount.toMoney),
+      ("CurrencyAmount.toBigMoney, infinite", infiniteAmount.toBigMoney),
+      ("CurrencyAmount.toMoney, beyond eighteen digits", oversizedAmount.toMoney),
+      ("CurrencyAmount.toBigMoney, beyond eighteen digits", oversizedAmount.toBigMoney))
+    forAll(unholdable) { (member: String, outcome: FailureOr[Any]) =>
+      withClue(s"$member: ") {
+        outcome should beFailureWith(FailureReason.INVALID)
+      }
+    }
+
+    // an ordinary amount converts through both, so the failures above belong to the value and not
+    // to the conversions, and each answers the value the corresponding factory answers
+    infiniteAmount.amount.isInfinite shouldBe true
+    gbp100.toMoney should haveValue(gbpMoney)
+    gbp100.toBigMoney should haveValue(gbpBigMoney)
   }
 
   test("CurrencyAmountArray arithmetic reports size and currency mismatches") {
@@ -815,19 +946,51 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     SchedulePeriod.of(JAN_15, APR_15) should beSuccess
   }
 
-  test("Schedule.of accepts the periods its own type already guarantees") {
-    // The inventory lists this factory because the Java bean validated its period list. The only
-    // reason it could report - an empty list - is carried by `NonEmptyList` in this port, so the
-    // factory is total in effect while keeping the reported shape every factory here has. That is a
-    // divergence recorded in SCALA_MIGRATION.md, and it is asserted rather than assumed.
-    val single: ResultNec[Schedule] =
-      Schedule.of(NonEmptyList.one(schedule.firstPeriod), Frequency.P3M, RollConventions.DAY_15)
-    single should beSuccess
-    single should haveValue(
-      accepted(Schedule.of(NonEmptyList.one(schedule.firstPeriod), Frequency.P3M, RollConventions.DAY_15)))
+  test("Schedule.of reports periods that do not run from earliest to latest") {
+    // The one invariant of the field that is not carried by its type: `NonEmptyList` states that
+    // there is a period, and this factory states that the periods form a time line. A list that
+    // does not is data - a document or a transformation is exactly how a reversed one arrives -
+    // and every member that reads the periods in order would otherwise answer wrongly rather than
+    // fail, which is why the refusal belongs at construction.
+    val reversed: ResultNec[Schedule] =
+      Schedule.of(
+        NonEmptyList.of(schedule.period(1), schedule.period(0)),
+        Frequency.P3M,
+        RollConventions.DAY_15)
+    reversed should beFailureWith(FailureReason.INVALID)
 
-    val all: ResultNec[Schedule] = Schedule.of(schedule.periods, Frequency.P3M, RollConventions.DAY_15)
-    all should beSuccess
+    // both date pairs of one misplacement are reported, the unadjusted time line the schedule was
+    // generated on and the adjusted one its dates fall on, because they are two statements about
+    // the same list
+    val failures: List[Failure] = failuresOf(reversed)
+    failures should have size 2
+    failures.map(_.message).count(_.contains("the unadjusted end date")) shouldBe 1
+    failures.map(_.message).count(_.contains("the adjusted end date")) shouldBe 1
+    failures.foreach { failure =>
+      failure.message should include("the periods must run from earliest to latest")
+      failure.message should include("of the period at index 0 is after")
+      failure.message should include("of the period at index 1")
+    }
+
+    // one failure per misplaced pair, so a list that is wholly reversed reports every one of them
+    val whollyReversed: ResultNec[Schedule] =
+      Schedule.of(
+        NonEmptyList.of(schedule.period(2), schedule.period(1), schedule.period(0)),
+        Frequency.P3M,
+        RollConventions.DAY_15)
+    failuresOf(whollyReversed) should have size 4
+
+    // adjacency is what a generated schedule has and is accepted; a gap between two periods is
+    // accepted too, since a schedule may describe accrual that pauses
+    Schedule.of(schedule.periods, Frequency.P3M, RollConventions.DAY_15) should beSuccess
+    Schedule.of(
+      NonEmptyList.of(schedule.period(0), schedule.period(2)),
+      Frequency.P3M,
+      RollConventions.DAY_15) should beSuccess
+    Schedule.of(
+      NonEmptyList.one(schedule.firstPeriod),
+      Frequency.P3M,
+      RollConventions.DAY_15) should beSuccess
   }
 
   test("Schedule.merge reports a date that matches no period of the schedule") {
@@ -961,10 +1124,39 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     SequenceDate.full(YearMonth.of(2014, 6)) should beSuccess
   }
 
+  test("DaysAdjustment.of reports a business day addition of no days") {
+    // The one condition the three fields can break together: the addition calendar is what decides
+    // whether the days are calendar days or business days, so a day count of zero paired with a
+    // calendar other than the no-holidays identifier asks for a business-day addition of zero
+    // days, which names no day at all. Whether it happens depends on the two values a caller
+    // holds, which is why it is reported rather than raised.
+    val zeroDaysOverCalendar: ResultNec[DaysAdjustment] =
+      DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)
+    zeroDaysOverCalendar should beFailureWith(FailureReason.INVALID)
+    failuresOf(zeroDaysOverCalendar) should have size 1
+    failureOf(DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE).left.map(
+      _.head)).message should include(
+      "A business day addition of zero days names no day, so 'calendar' must be 'NoHolidays' " +
+        "when 'days' is zero but was 'GBLO'")
+
+    // everything else about the three fields is accepted: the count may be negative, and zero days
+    // over the no-holidays identifier is the identity adjustment
+    DaysAdjustment.of(-2, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE) should beSuccess
+    DaysAdjustment.of(2, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE) should beSuccess
+    DaysAdjustment.of(0, HolidayCalendarIds.NO_HOLIDAYS, BusinessDayAdjustment.NONE) should
+      haveValue(DaysAdjustment.NONE)
+
+    // the four named factories stay total, and each of them lands inside the accepted field space,
+    // which is what makes the validated factory the only place the pairing is judged
+    DaysAdjustment.ofCalendarDays(0) shouldBe DaysAdjustment.NONE
+    DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.GBLO).calendar shouldBe
+      HolidayCalendarIds.NO_HOLIDAYS
+  }
+
   test("DaysAdjustment resolution reports a calendar the reference data does not hold") {
-    // Construction is total in this port - every invariant of the type is carried by the types of
-    // its three fields - so the reported member of the inventory entry is the resolution, where the
-    // calendar identifier becomes a calendar or does not.
+    // The failure of the resolving members, which is the other half of this type's surface: the
+    // construction above judges the three fields, and here the calendar identifier becomes a
+    // calendar or does not.
     val adjustment: DaysAdjustment =
       DaysAdjustment.ofBusinessDays(2, HolidayCalendarId.of("NoSuchCalendarFS"))
     val unresolved: FailureOr[LocalDate] = adjustment.adjust(JAN_15, emptyRefData)
@@ -1173,15 +1365,40 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     ValueStep.of(APR_15, ValueAdjustment.ofReplace(200d)).value shouldBe ValueAdjustment.ofReplace(200d)
   }
 
-  test("ValueSchedule.of is total, every judgement belonging to resolution") {
-    // The inventory lists this factory because the Java bean validated its steps. In this port a
-    // definition is only judged against the schedule it is resolved against - a step position means
-    // nothing without one - so construction carries no error channel and `resolveValues` carries it
-    // all. The divergence is recorded in SCALA_MIGRATION.md and asserted here.
-    ValueSchedule.of(100d).initialValue shouldBe 100d
-    val step: ValueStep = accepted(ValueStep.of(1, ValueAdjustment.ofReplace(200d)))
-    ValueSchedule.of(100d, List(step)).steps shouldBe List(step)
-    ValueSchedule.of(100d, step).steps shouldBe List(step)
+  test("ValueSchedule.of reports two steps that name one position with different adjustments") {
+    // The condition construction decides is the half of the Java original's contradiction that
+    // needs no schedule: two steps carrying the same position - the same period index, or the same
+    // date - and different adjustments ask for two values at one point of the time line whatever
+    // schedule they are resolved against. One failure is reported per such position; everything
+    // else about a definition is judged by `resolveValues`, which is the entry below.
+    val replace200: ValueAdjustment = ValueAdjustment.ofReplace(200d)
+    val replace300: ValueAdjustment = ValueAdjustment.ofReplace(300d)
+    val byIndex: ResultNec[ValueSchedule] =
+      ValueSchedule.of(
+        100d,
+        List(accepted(ValueStep.of(1, replace200)), accepted(ValueStep.of(1, replace300))))
+    byIndex should beFailureWith(FailureReason.INVALID)
+    val byDate: ResultNec[ValueSchedule] =
+      ValueSchedule.of(
+        100d,
+        List(ValueStep.of(JAN_15, replace200), ValueStep.of(JAN_15, replace300)))
+    byDate should beFailureWith(FailureReason.INVALID)
+    // two contradicted positions are two failures, so a caller correcting one is told about both
+    val twoPositions: ResultNec[ValueSchedule] =
+      ValueSchedule.of(
+        100d,
+        List(
+          accepted(ValueStep.of(1, replace200)),
+          accepted(ValueStep.of(1, replace300)),
+          ValueStep.of(JAN_15, replace200),
+          ValueStep.of(JAN_15, replace300)))
+    failuresOf(twoPositions) should have size 2
+
+    // the same position twice with the same adjustment is no contradiction, and is accepted
+    val step: ValueStep = accepted(ValueStep.of(1, replace200))
+    accepted(ValueSchedule.of(100d)).initialValue shouldBe 100d
+    accepted(ValueSchedule.of(100d, List(step, step))).steps shouldBe List(step, step)
+    accepted(ValueSchedule.of(100d, step)).steps shouldBe List(step)
   }
 
   test("ValueStepSequence.of reports arguments that describe no sequence") {
@@ -1209,21 +1426,26 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     // that does not exist - a property of the pairing, which is why it is reported here and not
     // when the step was built
     val beyond: ValueSchedule =
-      ValueSchedule.of(100d, accepted(ValueStep.of(5, ValueAdjustment.ofReplace(200d))))
+      accepted(ValueSchedule.of(100d, accepted(ValueStep.of(5, ValueAdjustment.ofReplace(200d)))))
     val rejected: FailureOr[DoubleArray] = beyond.resolveValues(schedule)
     rejected should beFailureWith(FailureReason.INVALID)
 
-    // two steps resolving to one period with different adjustments contradict one another
+    // two steps resolving to one period with different adjustments contradict one another, and
+    // this is the pair only the schedule can see: one step names the period by its index and the
+    // other by the date of its boundary, so the positions differ until the periods are in hand
+    // (a pair naming one position twice is refused by construction instead, which is the entry
+    // for `ValueSchedule.of`)
     val contradictory: ValueSchedule =
-      ValueSchedule.of(
-        100d,
-        List(
-          accepted(ValueStep.of(1, ValueAdjustment.ofReplace(200d))),
-          accepted(ValueStep.of(1, ValueAdjustment.ofReplace(300d)))))
+      accepted(
+        ValueSchedule.of(
+          100d,
+          List(
+            accepted(ValueStep.of(1, ValueAdjustment.ofReplace(200d))),
+            ValueStep.of(schedule.period(1).unadjustedStartDate, ValueAdjustment.ofReplace(300d)))))
     contradictory.resolveValues(schedule) should beFailureWith(FailureReason.INVALID)
 
     val resolvable: ValueSchedule =
-      ValueSchedule.of(100d, accepted(ValueStep.of(1, ValueAdjustment.ofReplace(200d))))
+      accepted(ValueSchedule.of(100d, accepted(ValueStep.of(1, ValueAdjustment.ofReplace(200d)))))
     resolvable.resolveValues(schedule) should haveValue(DoubleArray.of(100d, 200d, 200d))
   }
 
@@ -1296,8 +1518,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   //-------------------------------------------------------------------------
-  // Index observations and floating rates. Eight entries. An observation computes dates from the
-  // calendars of its index, so it is built only through a factory that resolves them.
+  // Index observations and floating rates. Thirteen entries. An observation computes dates from
+  // the calendars of its index, so it is built only through a factory that resolves them - either
+  // per fixing, through `of`, or once for a series of fixings, through the `resolve` of the index
+  // and of the observation type, which report the same failure at the point of resolution.
   //-------------------------------------------------------------------------
 
   test("IborIndexObservation.of reports a calendar the reference data does not hold") {
@@ -1322,6 +1546,45 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     unresolved should beFailureWith(FailureReason.MISSING_DATA)
 
     FxIndexObservation.of(FxIndices.EUR_USD_ECB, JAN_15, standardRefData) should beSuccess
+  }
+
+  test("IborIndex.resolve reports a calendar the reference data does not hold") {
+    // The batch route reports the missing calendar once, at the point of resolution, rather than
+    // per fixing: there is no function to apply, so the failure cannot be deferred. Both published
+    // entry points are exercised - the one on the index, where the library being ported declared
+    // it, and the one on the observation type, where this port implements it.
+    val unresolvedIndex: FailureOr[java.time.LocalDate => IborIndexObservation] =
+      IborIndices.GBP_LIBOR_3M.resolve(emptyRefData)
+    unresolvedIndex should beFailureWith(FailureReason.MISSING_DATA)
+    val unresolvedType: FailureOr[java.time.LocalDate => IborIndexObservation] =
+      IborIndexObservation.resolve(IborIndices.GBP_LIBOR_3M, emptyRefData)
+    unresolvedType should beFailureWith(FailureReason.MISSING_DATA)
+
+    IborIndices.GBP_LIBOR_3M.resolve(standardRefData) should beSuccess
+    IborIndexObservation.resolve(IborIndices.GBP_LIBOR_3M, standardRefData) should beSuccess
+  }
+
+  test("FxIndex.resolve reports a calendar the reference data does not hold") {
+    val unresolvedIndex: FailureOr[java.time.LocalDate => FxIndexObservation] =
+      FxIndices.EUR_USD_ECB.resolve(emptyRefData)
+    unresolvedIndex should beFailureWith(FailureReason.MISSING_DATA)
+    val unresolvedType: FailureOr[java.time.LocalDate => FxIndexObservation] =
+      FxIndexObservation.resolve(FxIndices.EUR_USD_ECB, emptyRefData)
+    unresolvedType should beFailureWith(FailureReason.MISSING_DATA)
+
+    FxIndices.EUR_USD_ECB.resolve(standardRefData) should beSuccess
+    FxIndexObservation.resolve(FxIndices.EUR_USD_ECB, standardRefData) should beSuccess
+  }
+
+  test("OvernightIndexObservation.resolve reports a calendar the reference data does not hold") {
+    // The Overnight family publishes its batch resolution on the observation type alone, because
+    // the index being ported declares no `resolve` - only the Ibor and the exchange-rate families
+    // do - and the failure is the same one its per-fixing factory reports.
+    val unresolved: FailureOr[java.time.LocalDate => OvernightIndexObservation] =
+      OvernightIndexObservation.resolve(OvernightIndices.GBP_SONIA, emptyRefData)
+    unresolved should beFailureWith(FailureReason.MISSING_DATA)
+
+    OvernightIndexObservation.resolve(OvernightIndices.GBP_SONIA, standardRefData) should beSuccess
   }
 
   test("FloatingRateName.toIborIndex reports a name of the wrong kind and a tenor no index carries") {
@@ -1380,10 +1643,12 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   // Both `ArgCheck` throws are `IllegalArgumentException`, that object being the single place in
   // either module where a throw is written.
   //
-  // The two numeric-edge throws of the same section - `CurrencyAmount` arithmetic reaching `NaN`
-  // from infinite operands, and `Decimal` arithmetic overflowing eighteen digits - are asserted by
-  // `SmartConstructorSpec`, which owns every construction-time refusal, and are deliberately not
-  // duplicated here.
+  // The message and accumulation behaviour of the two numeric-edge throws of the same section -
+  // `CurrencyAmount` arithmetic reaching `NaN` from infinite operands, and `Decimal` arithmetic
+  // overflowing eighteen digits - belong to `SmartConstructorSpec`, which owns every
+  // construction-time refusal. That each of those families raises at all is asserted here by its
+  // generated `Raises` row, because the enumeration finds them and a family it finds that this
+  // registry skipped would make the enumeration representative rather than exhaustive.
   //-------------------------------------------------------------------------
 
   test("DoubleArray.get raises for an index outside the array") {
@@ -1592,23 +1857,2402 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     schedule.frequency shouldBe Some(Frequency.P3M)
   }
 
-  //-------------------------------------------------------------------------
+  //=========================================================================
+  // THE DERIVED ENUMERATION
+  //
+  // Everything above this point is a hand-written test of one named member. Everything below
+  // reads the sources of both modules while the suite is being built and derives the failable
+  // surface from them, so that the inventory is a function of the code rather than a
+  // transcription of it: a member added to either module, or one whose signature changes, is a
+  // failing assertion here until a row of the registry accounts for it.
+  //
+  // Two enumerations are taken, one per side of the classification line of AAP 0.3.3:
+  //
+  //   - every public `def` whose '''declared return type''' is a failure channel - `Either`,
+  //     `EitherNec`, `ResultNec`, `FailureOr`, `ValidatedNec`, `ValidatedFailures`, `Validated`
+  //     or `ValueWithFailures` - which is the surface that reports failure as a value;
+  //   - every public `def` whose scaladoc carries a `@throws` tag, which is the surface that
+  //     refuses by raising, and which the port documents on the method that raises.
+  //
+  // The reading is textual and deliberately conservative: it skips `private` and `protected`
+  // declarations, every member of a non-visible owner, and every `def` nested inside another
+  // `def`, and it reads a return type only where the declaration states one. A member that
+  // returns a failure channel it does not name - a function '''producing''' a validation, say,
+  // as `TypedStringCompanion.matchingPattern` does - is therefore not enumerated, and neither is
+  // a failure reached through a type parameter with no channel in the signature. The counts of
+  // what was enumerated are printed by `derived_inventory_counts`, so a reader of the gate sees
+  // the size of the surface this suite claims to cover rather than having to trust a number.
+  //=========================================================================
+
   /**
-   * The inventory of AAP section 0.3.3, entry by entry, paired with the test that covers it.
+   * The main source roots of the two ported modules, relative to the repository root.
    *
-   * These two lists are the gate this suite exists for, written out so that a reviewer counts
-   * entries rather than tests: the first holds every public method the inventory classifies as
-   * reporting its failure as a value, and the second every documented `ArgCheck` refusal and the
-   * one member this port makes more total than Java. `inventory_coverage` asserts that the test
-   * named beside each entry exists in this suite, so an entry whose test is renamed or removed
-   * fails the suite instead of passing unnoticed.
-   *
-   * Several entries share one test where they share one failure shape, which is why the test names
-   * repeat; each such test holds one table row per entry, so the mapping stays one-to-one where it
-   * matters - in what is actually asserted.
+   * The test JVM is forked with the build root as its working directory - `Test / fork := true`
+   * in `build.sbt`, where `strata-basics` is the root project - so both paths resolve as they
+   * are written. [[scalaSourcesOf]] refuses a root that is not a directory instead of
+   * enumerating nothing, because an empty enumeration would make every coverage assertion of
+   * this suite pass for the wrong reason.
    */
-  private val eitherEntries: List[(String, String)] = List(
-    // FX and currency, 34 entries
+  private val SourceRoots: List[String] =
+    List("strata-collect/src/main/scala", "strata-basics/src/main/scala")
+
+  /**
+   * The number of lines a declaration's signature is read across.
+   *
+   * A signature is joined from the line the `def` starts on and the lines following it, because
+   * the longest parameter lists of either module are formatted over several lines. Twelve covers
+   * every declaration in both modules - the longest is the eleven-property factory of
+   * `PeriodicSchedule`, whose return type is reached inside that window - and the joined text is
+   * truncated at the body, so reading past the end of a signature is harmless.
+   */
+  private val SignatureLines: Int = 12
+
+  /** The declared return types the enumeration reads as a failure channel. */
+  private val FailureChannelPattern: Regex =
+    """^(?:Either|EitherNec|ResultNec|FailureOr|ValidatedFailures|ValidatedNec|Validated|ValueWithFailures)\[""".r
+
+  /** A class, trait, object or package object declaration, with its modifiers and its name. */
+  private val OwnerPattern: Regex =
+    """^(\s*)((?:(?:final|sealed|abstract|case|implicit|private|protected)(?:\[[A-Za-z]+\])?\s+)*)(?:package\s+object|class|trait|object)\s+([A-Za-z_][A-Za-z0-9_]*)""".r
+
+  /** A method declaration, with its modifiers and its name. */
+  private val DefinitionPattern: Regex =
+    """^(\s*)((?:(?:final|override|implicit|lazy|private|protected)(?:\[[A-Za-z]+\])?\s+)*)def\s+([A-Za-z_][A-Za-z0-9_]*)""".r
+
+
+  /**
+   * Lists the Scala sources under one source root, refusing a root that is not a directory.
+   *
+   * @param root  the source root, relative to the repository root
+   * @return every Scala source under the root, ordered by path
+   */
+  private def scalaSourcesOf(root: String): List[File] = {
+    val directory: File = new File(root)
+    if (!directory.isDirectory) {
+      sys.error(
+        s"The failable-surface enumeration reads '$root' relative to the working directory " +
+          s"'${new File(".").getAbsolutePath}', which holds no such directory. The forked test " +
+          "JVM is expected to run at the build root; anywhere else the enumeration is empty and " +
+          "every coverage assertion of this suite would pass for the wrong reason.")
+    } else {
+      filesUnder(directory).filter(_.getName.endsWith(".scala")).sortBy(_.getPath)
+    }
+  }
+
+  /**
+   * Lists every file under a directory, however deeply nested.
+   *
+   * @param directory  the directory to read
+   * @return every file below it, directories excluded
+   */
+  private def filesUnder(directory: File): List[File] =
+    Option(directory.listFiles()).map(_.toList).getOrElse(Nil).flatMap(entry =>
+      if (entry.isDirectory) filesUnder(entry) else List(entry))
+
+  /**
+   * Reads the lines of a source file.
+   *
+   * @param file  the file to read
+   * @return its lines, in order
+   */
+  private def linesOf(file: File): Vector[String] = {
+    val source: Source = Source.fromFile(file)(Codec.UTF8)
+    try source.getLines().toVector
+    finally source.close()
+  }
+
+  /**
+   * Answers whether the `=` at a position is part of an operator rather than the body's.
+   *
+   * `==`, `=>`, `!=`, `<=` and `>=` all hold an `=` that does not open a body, and a signature
+   * truncated at one of them would lose its return type.
+   *
+   * @param text  the text being read
+   * @param position  the position of the `=`
+   * @return true where the `=` belongs to an operator
+   */
+  private def isOperatorEquals(text: String, position: Int): Boolean = {
+    val next: Char = if (position + 1 < text.length) text.charAt(position + 1) else ' '
+    val previous: Char = if (position > 0) text.charAt(position - 1) else ' '
+    next == '=' || next == '>' || "=!<>".contains(previous)
+  }
+
+  /**
+   * Truncates joined signature text at the point its body begins.
+   *
+   * The body begins at the first `=` or `{` outside every bracket, so a default argument, a
+   * function type in a parameter list and a comparison inside a type argument are all passed
+   * over. A declaration with no body - the abstract members of the traits - is left as it
+   * stands, which is why the caller reads the return type as a '''prefix''' rather than as the
+   * whole of what remains.
+   *
+   * @param text  the joined lines of a declaration
+   * @return the text up to the body
+   */
+  private def withoutBody(text: String): String = {
+    @tailrec
+    def bodyAt(position: Int, depth: Int): Int =
+      if (position >= text.length) {
+        text.length
+      } else {
+        val character: Char = text.charAt(position)
+        if (character == '(' || character == '[') bodyAt(position + 1, depth + 1)
+        else if (character == ')' || character == ']') bodyAt(position + 1, depth - 1)
+        else if (depth == 0 && character == '{') position
+        else if (depth == 0 && character == '=' && !isOperatorEquals(text, position)) position
+        else bodyAt(position + 1, depth)
+      }
+    text.substring(0, bodyAt(0, 0))
+  }
+
+  /**
+   * Reads the declared return type of a signature, where it states one.
+   *
+   * The return type is what follows the first `:` outside every bracket after the method's name,
+   * so the type parameters, the context bounds and every parameter list are passed over. A
+   * declaration that states no return type - one whose type is inferred - has none to read, and
+   * is answered with `None` rather than with the type of one of its parameters.
+   *
+   * @param signature  the signature, already truncated at its body
+   * @param method  the declared name of the method
+   * @return the declared return type, or `None` where the declaration states none
+   */
+  private def returnTypeOf(signature: String, method: String): Option[String] = {
+    val keyword: Int = signature.indexOf("def ")
+    val name: Int = if (keyword < 0) -1 else signature.indexOf(method, keyword)
+    if (name < 0) {
+      None
+    } else {
+      @tailrec
+      def typeAt(position: Int, depth: Int): Option[String] =
+        if (position >= signature.length) {
+          None
+        } else {
+          val character: Char = signature.charAt(position)
+          if (character == '(' || character == '[') typeAt(position + 1, depth + 1)
+          else if (character == ')' || character == ']') typeAt(position + 1, depth - 1)
+          else if (depth == 0 && character == ':') Some(signature.substring(position + 1).trim)
+          else typeAt(position + 1, depth)
+        }
+      typeAt(name + method.length, 0)
+    }
+  }
+
+  /**
+   * Reads the declared parameter types of a signature, as the identity of that one declaration.
+   *
+   * The parameter section is everything between the method's name and the `:` that introduces
+   * the return type, which is the same depth-zero colon [[returnTypeOf]] reads the type from. It
+   * is split at the commas standing one bracket deep - the commas that separate parameters,
+   * rather than those inside a `Map[String, Int]` - so several parameter lists contribute their
+   * parameters to one rendering, there being no member of either module whose overloads differ
+   * only in how their parameters are grouped. Each parameter is reduced to its declared type:
+   * everything up to its own first colon is its name and modifiers, and anything from a trailing
+   * `=` is a default value, so neither renaming a parameter nor changing a default changes the
+   * identity of a declaration. Whitespace is removed last, which is what makes the identity
+   * survive reformatting of a signature across lines.
+   *
+   * @param signature  the signature, already truncated at its body
+   * @param method  the declared name of the method
+   * @return the parameter types, comma separated, empty where the declaration takes no parameter
+   *   list at all
+   */
+  private def parametersOf(signature: String, method: String): String = {
+    val keyword: Int = signature.indexOf("def ")
+    val name: Int = if (keyword < 0) -1 else signature.indexOf(method, keyword)
+    if (name < 0) {
+      ""
+    } else {
+      val from: Int = name + method.length
+      @tailrec
+      def sectionEnd(position: Int, depth: Int): Int =
+        if (position >= signature.length) {
+          signature.length
+        } else {
+          val character: Char = signature.charAt(position)
+          if (character == '(' || character == '[') sectionEnd(position + 1, depth + 1)
+          else if (character == ')' || character == ']') sectionEnd(position + 1, depth - 1)
+          else if (depth == 0 && character == ':') position
+          else sectionEnd(position + 1, depth)
+        }
+      val section: String = signature.substring(from, sectionEnd(from, 0))
+      splitAtDepth(flattenedLists(section), ',', 0)
+        .map(typeOfParameter)
+        .filter(_.nonEmpty)
+        .mkString(",")
+    }
+  }
+
+  /**
+   * Flattens the parameter lists of a section into one comma-separated text.
+   *
+   * A top-level `(...)` is a parameter list, and its contents are taken; a top-level `[...]` is
+   * the type parameters, which are no part of the parameters and are dropped whole. Several lists
+   * contribute their parameters to one text separated by commas, and what stands between the
+   * lists - nothing but spaces - is dropped. Brackets nested inside a parameter are kept as they
+   * are, so the comma of a `Map[String, Int]` stays one bracket deep and the split that follows
+   * passes over it.
+   *
+   * @param section  the parameter section of a signature, between the method's name and the `:`
+   *   introducing its return type
+   * @return the parameters of every list, comma separated
+   */
+  private def flattenedLists(section: String): String = {
+    val (text, _, _) =
+      section.foldLeft(("", 0, false)) {
+        case ((out, depth, inTypes), character) =>
+          if (depth == 0 && character == '[') (out, 1, true)
+          else if (depth == 0 && character == '(') {
+            (if (out.isEmpty) out else out + ",", 1, false)
+          } else if (depth == 1 && (character == ']' || character == ')')) (out, 0, false)
+          else if (depth == 0) (out, depth, inTypes)
+          else {
+            val moved: Int =
+              if (character == '(' || character == '[') depth + 1
+              else if (character == ')' || character == ']') depth - 1
+              else depth
+            (if (inTypes) out else out + character, moved, inTypes)
+          }
+      }
+    text
+  }
+
+  /**
+   * Reduces one declared parameter to the type it declares.
+   *
+   * Everything up to the parameter's own colon is its name and its modifiers, and anything from a
+   * default value is dropped - the `=` that introduces one being distinguished from the `=>` of a
+   * by-name or function type, which belongs to the type and stays.
+   *
+   * @param parameter  the parameter as it was written, with its name, its modifiers and any
+   *   default value
+   * @return the declared type, with every space removed
+   */
+  private def typeOfParameter(parameter: String): String = {
+    val afterName: String = splitAtDepth(parameter, ':', 0) match {
+      case _ :: rest if rest.nonEmpty => rest.mkString(":")
+      case _ => parameter
+    }
+    @tailrec
+    def defaultAt(position: Int, depth: Int): Int =
+      if (position >= afterName.length) {
+        afterName.length
+      } else {
+        val character: Char = afterName.charAt(position)
+        val follows: Char = if (position + 1 < afterName.length) afterName.charAt(position + 1) else ' '
+        if (character == '(' || character == '[') defaultAt(position + 1, depth + 1)
+        else if (character == ')' || character == ']') defaultAt(position + 1, depth - 1)
+        else if (depth == 0 && character == '=' && follows != '>') position
+        else defaultAt(position + 1, depth)
+      }
+    afterName.substring(0, defaultAt(0, 0)).replaceAll("\\s+", "")
+  }
+
+  /**
+   * Splits text at every occurrence of a separator standing at one bracket depth.
+   *
+   * Depth is counted over `(`, `[`, `)` and `]` from zero at the start of the text, so a
+   * separator inside a nested type is passed over and the split is the one a reader of the
+   * signature would make.
+   *
+   * @param text  the text to split
+   * @param separator  the separating character
+   * @param depth  the depth at which the separator separates
+   * @return the pieces, in order, with the separators removed
+   */
+  private def splitAtDepth(text: String, separator: Char, depth: Int): List[String] = {
+    val (pieces, last, _) =
+      text.foldLeft((List.empty[String], "", 0)) {
+        case ((done, current, level), character) =>
+          if (character == '(' || character == '[') (done, current :+ character, level + 1)
+          else if (character == ')' || character == ']') (done, current :+ character, level - 1)
+          else if (character == separator && level == depth) (done :+ current, "", level)
+          else (done, current :+ character, level)
+      }
+    (pieces :+ last).map(_.trim).filter(_.nonEmpty)
+  }
+
+  /**
+   * Answers whether a declared return type is one of the failure channels of this library.
+   *
+   * The match is on the head of the type, so `Either[Failure, LocalDate => IborIndexObservation]`
+   * and `Either[E, List[A]]` are both channels: what matters is that the caller has to handle a
+   * failure to reach the value, not which failure type the left side names.
+   *
+   * @param returnType  the declared return type
+   * @return true where the type is a failure channel
+   */
+  private def isFailureChannel(returnType: String): Boolean =
+    FailureChannelPattern.findPrefixMatchOf(returnType.replaceAll("\\s+", " ").trim).isDefined
+
+  /**
+   * Reads one source file, enumerating its public failure-returning and throwing declarations.
+   *
+   * The owners currently open are tracked by indentation, which is what closes them again, and a
+   * `def` opened at a smaller indentation than the one being read makes the inner declaration a
+   * local one - it belongs to the body of the outer method and is no part of the public surface.
+   * A `@throws` tag is attributed to the next declaration read after the scaladoc that carries
+   * it, which is where the port documents one.
+   *
+   * @param file  the source file to read
+   * @return the declarations it holds
+   */
+  private def scannedFile(file: File): ScanState = {
+    val path: String = file.getPath
+    val lines: Vector[String] = linesOf(file)
+    lines.zipWithIndex.foldLeft(EmptyScan) {
+      case (state, (line, index)) =>
+        val trimmed: String = line.trim
+        val opensDoc: Boolean = trimmed.startsWith("/**")
+        val insideDoc: Boolean = state.inScaladoc || opensDoc
+        val documentsThrow: Boolean =
+          (!opensDoc && state.scaladocThrows) || (insideDoc && trimmed.contains("@throws"))
+        val read: ScanState =
+          state.copy(
+            inScaladoc = insideDoc && !trimmed.endsWith("*/"),
+            scaladocThrows = documentsThrow)
+        OwnerPattern.findPrefixMatchOf(line) match {
+          case Some(owner) =>
+            val indent: Int = owner.group(1).length
+            val outer: List[Enclosing] = read.enclosing.dropWhile(_.indent >= indent)
+            val visible: Boolean =
+              !owner.group(2).contains("private") && !owner.group(2).contains("protected") &&
+                outer.headOption.forall(_.visible)
+            read.copy(enclosing = Enclosing(indent, owner.group(3), visible) :: outer, openDefs = Nil)
+          case None =>
+            DefinitionPattern.findPrefixMatchOf(line) match {
+              case None => read
+              case Some(definition) =>
+                val indent: Int = definition.group(1).length
+                val modifiers: String = definition.group(2)
+                val method: String = definition.group(3)
+                val outerDefs: List[Int] = read.openDefs.dropWhile(_ >= indent)
+                val owners: List[Enclosing] = read.enclosing.dropWhile(_.indent >= indent)
+                val opened: ScanState =
+                  read.copy(enclosing = owners, openDefs = indent :: outerDefs, scaladocThrows = false)
+                val public: Boolean =
+                  outerDefs.isEmpty && !modifiers.contains("private") &&
+                    !modifiers.contains("protected") && owners.headOption.exists(_.visible)
+                if (!public) {
+                  opened
+                } else {
+                  val signature: String =
+                    withoutBody(lines.slice(index, index + SignatureLines).mkString(" "))
+                  val declaration: Declaration =
+                    Declaration(
+                      path,
+                      owners.head.name,
+                      method,
+                      parametersOf(signature, method),
+                      index + 1)
+                  val channel: Boolean = returnTypeOf(signature, method).exists(isFailureChannel)
+                  opened.copy(
+                    failable = if (channel) declaration :: opened.failable else opened.failable,
+                    throwing =
+                      if (documentsThrow) declaration :: opened.throwing else opened.throwing)
+                }
+            }
+        }
+    }
+  }
+
+  /** Every source file of the two modules, read once. */
+  private lazy val scannedFiles: List[ScanState] =
+    SourceRoots.flatMap(scalaSourcesOf).map(scannedFile)
+
+  /** Every public declaration whose declared return type is a failure channel. */
+  private lazy val derivedFailableDeclarations: List[Declaration] =
+    scannedFiles.flatMap(_.failable.reverse)
+
+  /** Every public declaration whose scaladoc documents a throw. */
+  private lazy val derivedThrowingDeclarations: List[Declaration] =
+    scannedFiles.flatMap(_.throwing.reverse)
+
+  /** The failure-returning families, each with the declarations that make it up. */
+  private lazy val derivedFailableFamilies: Map[String, List[Declaration]] =
+    derivedFailableDeclarations.groupBy(_.family)
+
+  /** The throw-documenting families, each with the declarations that make it up. */
+  private lazy val derivedThrowingFamilies: Map[String, List[Declaration]] =
+    derivedThrowingDeclarations.groupBy(_.family)
+
+  //=========================================================================
+  // THE REGISTRY
+  //
+  // One row per enumerated family, each carrying the evidence of its own classification rather
+  // than the name of a test that is trusted to hold some. A row is one of four kinds, and
+  // exactly one assertion is generated per row, so a row cannot exist without an assertion
+  // being executed for it:
+  //
+  //   - `Rejects`  - the call must report at least one failure, and the reason where AAP 0.3.3
+  //                  fixes one;
+  //   - `Raises`   - the call must raise, and the exception type is asserted;
+  //   - `Total`    - the family carries the channel but no input can fill it: the reason is
+  //                  recorded in the row and the call must '''succeed''';
+  //   - `Covered`  - an abstract declaration or a delegating overload whose failure is asserted
+  //                  by another row, which must exist and must itself be a failing row.
+  //
+  // Where a hand-written test above asserts more about the same member - a message, an
+  // attribute, an accumulation count - the row names it with `alsoAssertedBy`, and
+  // `registry_references_existing_tests` asserts that the test named still exists.
+  //=========================================================================
+
+
+  /**
+   * A row whose call must report at least one failure.
+   *
+   * @param label  the member the row accounts for
+   * @param call  the call, evaluated when the generated test runs
+   * @param outcome  reads the failures of whichever channel the call answers through
+   * @tparam R  the type of the outcome the call answers with
+   * @return the row
+   */
+  private def rejects[R](label: String)(call: => R)(implicit outcome: Outcome[R]): SurfaceRow =
+    rejecting(label, None)(call)
+
+  /**
+   * A row whose call must report at least one failure carrying the specified reason.
+   *
+   * @param label  the member the row accounts for
+   * @param reason  the reason the failure has to carry
+   * @param call  the call, evaluated when the generated test runs
+   * @param outcome  reads the failures of whichever channel the call answers through
+   * @tparam R  the type of the outcome the call answers with
+   * @return the row
+   */
+  private def rejectsWith[R](label: String, reason: FailureReason)(call: => R)(
+      implicit outcome: Outcome[R]): SurfaceRow =
+    rejecting(label, Some(reason))(call)
+
+  /** Builds a rejecting row, with or without an expected reason. */
+  private def rejecting[R](label: String, reason: Option[FailureReason])(call: => R)(
+      implicit outcome: Outcome[R]): SurfaceRow =
+    SurfaceRow(
+      label,
+      Rejects(reason),
+      None,
+      () => {
+        val failures: List[Failure] = outcome.failures(call)
+        withClue(s"$label was expected to report a failure and reported none: ") {
+          failures should not be empty
+        }
+        reason match {
+          case None => succeed
+          case Some(expected) =>
+            withClue(
+              s"$label reported ${failures.map(failure => s"${failure.reason}('${failure.message}')").mkString("; ")}: ") {
+              failures.map(_.reason) should contain(expected)
+            }
+        }
+      })
+
+  /**
+   * A row whose call must raise the documented exception.
+   *
+   * @param label  the member the row accounts for
+   * @param call  the call, evaluated when the generated test runs
+   * @param tag  identifies the exception type at run time
+   * @tparam E  the exception type the documented throw uses
+   * @return the row
+   */
+  private def raises[E <: Throwable](label: String)(call: => Any)(
+      implicit tag: ClassTag[E]): SurfaceRow =
+    raising[E](label, None)(call)
+
+  /**
+   * A row whose call must raise the documented exception with the specified message part.
+   *
+   * @param label  the member the row accounts for
+   * @param messagePart  text the message of the exception has to include
+   * @param call  the call, evaluated when the generated test runs
+   * @param tag  identifies the exception type at run time
+   * @tparam E  the exception type the documented throw uses
+   * @return the row
+   */
+  private def raisesWith[E <: Throwable](label: String, messagePart: String)(call: => Any)(
+      implicit tag: ClassTag[E]): SurfaceRow =
+    raising[E](label, Some(messagePart))(call)
+
+  /** Builds a raising row, with or without an expected message part. */
+  private def raising[E <: Throwable](label: String, messagePart: Option[String])(call: => Any)(
+      implicit tag: ClassTag[E]): SurfaceRow =
+    SurfaceRow(
+      label,
+      Raises(tag.runtimeClass.getSimpleName),
+      None,
+      () => {
+        val thrown: E = intercept[E](call)
+        messagePart match {
+          case None => succeed
+          case Some(expected) =>
+            withClue(s"$label raised ${thrown.getClass.getName}('${thrown.getMessage}'): ") {
+              Option(thrown.getMessage).getOrElse("") should include(expected)
+            }
+        }
+      })
+
+  /**
+   * A row recording that no input of the family can fill the channel it carries.
+   *
+   * The call must succeed, which is what makes the classification an assertion rather than a
+   * claim: a family that starts refusing something fails this row.
+   *
+   * @param label  the member the row accounts for
+   * @param reason  why no input can make the member fail
+   * @param call  the call, evaluated when the generated test runs
+   * @param outcome  reads the failures of whichever channel the call answers through
+   * @tparam R  the type of the outcome the call answers with
+   * @return the row
+   */
+  private def total[R](label: String, reason: String)(call: => R)(
+      implicit outcome: Outcome[R]): SurfaceRow =
+    SurfaceRow(
+      label,
+      Total(reason),
+      None,
+      () => {
+        val failures: List[Failure] = outcome.failures(call)
+        withClue(
+          s"$label is recorded as total because $reason, so the call must succeed, and it " +
+            s"reported ${failures.map(_.message).mkString("; ")}: ") {
+          failures shouldBe empty
+        }
+      })
+
+  /**
+   * A row recording that another row asserts this family's failure.
+   *
+   * @param label  the member the row accounts for
+   * @param by  the label of the row that asserts the failure
+   * @param reason  why this declaration is covered by that one
+   * @return the row
+   */
+  private def covered(label: String, by: String, reason: String): SurfaceRow =
+    SurfaceRow(
+      label,
+      Covered(by, reason),
+      None,
+      () => {
+        withClue(
+          s"$label is recorded as covered by '$by' because $reason, which has to be a failing " +
+            "row of this registry: ") {
+          registry.get(by).exists(_.establishment.failing) shouldBe true
+        }
+      })
+
+  /**
+   * A row recording that another row asserts this member's failure, for a member that can be
+   * called.
+   *
+   * This is [[covered]] for a concrete member rather than an abstract declaration, and it asserts
+   * both halves of what such a row claims: that the failure of the channel this member carries is
+   * asserted somewhere in this registry, by a row that really fails, and that this member's own
+   * call reaches the value - which is the part that says the arguments it can be handed cannot
+   * fill the channel. A member that starts refusing what it accepts today fails the second half,
+   * and one whose covering row stops failing fails the first, so neither half can rot unnoticed.
+   *
+   * @param label  the member the row accounts for
+   * @param by  the label of the row that asserts the failure of the channel
+   * @param reason  why this member's own arguments cannot fill that channel
+   * @param call  the call, evaluated when the generated test runs
+   * @param outcome  reads the failures of whichever channel the call answers through
+   * @tparam R  the type of the outcome the call answers with
+   * @return the row
+   */
+  private def coveredBySucceeding[R](label: String, by: String, reason: String)(call: => R)(
+      implicit outcome: Outcome[R]): SurfaceRow =
+    SurfaceRow(
+      label,
+      Covered(by, reason),
+      None,
+      () => {
+        withClue(
+          s"$label carries the failure channel asserted by '$by', and $reason, so that row has " +
+            "to be a failing row of this registry: ") {
+          registry.get(by).exists(_.establishment.failing) shouldBe true
+        }
+        val failures: List[Failure] = outcome.failures(call)
+        withClue(
+          s"$label cannot fill that channel itself because $reason, so its own call must reach " +
+            s"the value, and it reported ${failures.map(_.message).mkString("; ")}: ") {
+          failures shouldBe empty
+        }
+      })
+
+  //-------------------------------------------------------------------------
+  // Fixtures the rows need beyond those the hand-written tests above use. Each is `lazy`, so a
+  // fixture is built only if a row that reads it runs.
+
+  /** A failure to hand to the members that propagate one rather than produce one. */
+  private val surfaceFailure: Failure = Failure.Invalid("A failure supplied by FailableSurfaceSpec")
+
+  /** An identifier no reference data holds, which reaches the default `resolve` of the trait. */
+  private object SurfaceMissingId extends ReferenceDataId[HolidayCalendar] {
+
+    /** The published witness for a calendar, which every calendar identifier answers with. */
+    override def valueType: ReferenceDataType[HolidayCalendar] = ReferenceDataType.holidayCalendar
+  }
+
+  /** A typed string, the abstraction having no instance in either module (AAP 0.3.3). */
+  private final class SurfaceLabel(val name: String) extends Named
+
+  /** The companion of [[SurfaceLabel]], which is what publishes its validated factory. */
+  private object SurfaceLabel
+      extends TypedStringCompanion[SurfaceLabel](
+        TypedStringCompanion.matchingPattern(
+          "[A-Z]{1,5}".r,
+          "A surface label is one to five upper case letters"),
+        new SurfaceLabel(_))
+
+  /** An identifier naming a calendar that no reference data of this suite holds. */
+  private lazy val unknownCalendarId: HolidayCalendarId = HolidayCalendarId.of("NoSuchCalendarFS")
+
+  /** The entry of the fixture calendar, used to supply one identifier twice. */
+  private lazy val calendarEntry: ReferenceData.Entry[HolidayCalendar] =
+    ReferenceData.Entry[HolidayCalendar](HolidayCalendarId.of("TestFailableSurface"), datedCalendar)
+
+  /** An adjustment naming a calendar no reference data holds, so resolving it reports. */
+  private lazy val unresolvableDays: DaysAdjustment =
+    DaysAdjustment.ofBusinessDays(2, unknownCalendarId)
+
+  /** A date adjustment naming a calendar no reference data holds. */
+  private lazy val unresolvableBusinessDay: BusinessDayAdjustment =
+    BusinessDayAdjustment.of(BusinessDayConventions.FOLLOWING, unknownCalendarId)
+
+  /** An adjustable date naming a calendar no reference data holds. */
+  private lazy val unresolvableDate: AdjustableDate =
+    AdjustableDate.of(JAN_15, unresolvableBusinessDay)
+
+  /** The largest decimal the representation holds, which its arithmetic overflows from. */
+  private lazy val hugeDecimal: Decimal = obtained(Decimal.of("999999999999999999"))
+
+  /** Two at a fixed scale of two, which is what a scale-changing map is applied to. */
+  private lazy val fixedTwo: FixedScaleDecimal = accepted(FixedScaleDecimal.of(two, 2))
+
+  /** A run of one value that is not a number, which the amount type does not admit. */
+  private lazy val notANumberArray: CurrencyAmountArray =
+    CurrencyAmountArray.of(Currency.GBP, DoubleArray.of(Double.NaN))
+
+  /** An infinite amount, which is admitted, and whose sum with its negation is not. */
+  private lazy val gbpInfinite: CurrencyAmount =
+    obtained(CurrencyAmount.of(Currency.GBP, Double.PositiveInfinity))
+
+  /** The negation of [[gbpInfinite]]. */
+  private lazy val gbpNegativeInfinite: CurrencyAmount =
+    obtained(CurrencyAmount.of(Currency.GBP, Double.NegativeInfinity))
+
+  /** An infinite dollar amount, which pairs with [[gbpInfinite]] in one multi-currency amount. */
+  private lazy val usdNegativeInfinite: CurrencyAmount =
+    obtained(CurrencyAmount.of(Currency.USD, Double.NegativeInfinity))
+
+  /** An infinite multi-currency amount, for the same numeric edge one value further out. */
+  private lazy val multiInfinite: MultiCurrencyAmount = obtained(MultiCurrencyAmount.of(gbpInfinite))
+
+  /** The negation of [[multiInfinite]]. */
+  private lazy val multiNegativeInfinite: MultiCurrencyAmount =
+    obtained(MultiCurrencyAmount.of(gbpNegativeInfinite))
+
+  /**
+   * Two infinities of opposite sign in different currencies.
+   *
+   * Mapping both onto one currency is what makes their sum the value no amount admits, which is
+   * the one input `mapCurrencyAmounts` documents a refusal for.
+   */
+  private lazy val multiTwoInfinities: MultiCurrencyAmount =
+    obtained(MultiCurrencyAmount.of(gbpInfinite, usdNegativeInfinite))
+
+  /** Money of eighteen digits, whose arithmetic overflows the decimal behind the type. */
+  private lazy val hugeMoney: Money =
+    obtained(Money.of(Currency.GBP, new BigDecimal("999999999999999999")))
+
+  /** Unrounded money of eighteen digits, for the same overflow. */
+  private lazy val hugeBigMoney: BigMoney =
+    obtained(BigMoney.of(Currency.GBP, new BigDecimal("999999999999999999")))
+
+  /** A date adjuster that adds one calendar day, which no date at the end of the line accepts. */
+  private lazy val oneDayLater: DateAdjuster =
+    obtained(DaysAdjustment.ofCalendarDays(1).resolve(standardRefData))
+
+  /** The Euroyen TIBOR name, whose every published index has been retired. */
+  private lazy val euroyenName: FloatingRateName =
+    obtained(FloatingRateName.parse("JPY-TIBOR-EUROYEN"))
+
+  /** An adjuster that moves the third boundary of the fixture schedule onto the second. */
+  private lazy val collapsingAdjuster: DateAdjuster =
+    DateAdjuster(date => if (date == JUL_15) APR_15 else date)
+
+  /** Two steps that name period index one with different adjustments. */
+  private lazy val contradictorySteps: List[ValueStep] =
+    List(
+      accepted(ValueStep.of(1, ValueAdjustment.ofReplace(200d))),
+      accepted(ValueStep.of(1, ValueAdjustment.ofReplace(300d))))
+
+  /** A schedule of values holding one step, which is what the `with*` members derive from. */
+  private lazy val valueSchedule: ValueSchedule =
+    accepted(ValueSchedule.of(100d, accepted(ValueStep.of(1, ValueAdjustment.ofReplace(200d)))))
+
+  /** A sequence of steps, which a definition holding steps may also carry. */
+  private lazy val stepSequence: ValueStepSequence =
+    accepted(ValueStepSequence.of(APR_15, JUL_15, Frequency.P3M, ValueAdjustment.ofDeltaAmount(-1d)))
+
+  //-------------------------------------------------------------------------
+  // The rows of `strata-collect`, in the order the enumeration reads its files. The module is
+  // the error channel of this port, so most of its failable surface is the channel itself:
+  // `Validate` produces failures, the `result` package converts and combines them, and the two
+  // decimal types are where a value can be out of range.
+
+  /** The rows accounting for the failable surface of `strata-collect`. */
+  private val collectFailableRows: List[SurfaceRow] = List(
+    // Collections.scala
+    rejects("Collections.ensureOnlyOne")(Collections.ensureOnlyOne(List(1, 2))),
+    rejects("Collections.toSortedMap")(
+      Collections.toSortedMap(List(gbp100, gbp100), (amount: CurrencyAmount) => amount.currency)),
+    // Decimal.scala
+    rejectsWith("Decimal.mapAsDouble", FailureReason.INVALID)(two.mapAsDouble(_ => Double.NaN)),
+    rejectsWith("Decimal.mapAsBigDecimal", FailureReason.INVALID)(
+      two.mapAsBigDecimal(_ => new BigDecimal("1E+30"))),
+    rejects("Decimal.toFixedScale")(two.toFixedScale(19)),
+    rejectsWith("Decimal.of", FailureReason.INVALID)(Decimal.of(Double.NaN))
+      .alsoAssertedBy("Decimal.of reports a value no decimal holds"),
+    rejects("Decimal.ofScaled")(Decimal.ofScaled(Long.MaxValue, -1)),
+    rejectsWith("Decimal.parse", FailureReason.PARSING)(Decimal.parse("Rubbish"))
+      .alsoAssertedBy("Decimal.parse reports text that names no decimal"),
+    // FixedScaleDecimal.scala
+    rejects("FixedScaleDecimal.map")(fixedTwo.map(_ => obtained(Decimal.of(0.001)))),
+    rejects("FixedScaleDecimal.of")(FixedScaleDecimal.of(two, 19))
+      .alsoAssertedBy("FixedScaleDecimal.of reports a scale the decimal cannot be held at"),
+    rejects("FixedScaleDecimal.parse")(FixedScaleDecimal.parse("Rubbish")),
+    // TypedString.scala
+    rejects("TypedStringCompanion.of")(SurfaceLabel.of("lower case")),
+    // Validate.scala
+    total("Validate.valid", "it lifts a value into the passing outcome and reads nothing about it")(
+      Validate.valid(1)),
+    rejects("Validate.invalid")(Validate.invalid[Int](surfaceFailure)),
+    rejects("Validate.invalidNec")(Validate.invalidNec[Int]("A rejection of FailableSurfaceSpec")),
+    rejects("Validate.cond")(Validate.cond(test = false, 1, surfaceFailure)),
+    rejects("Validate.fromResult")(Validate.fromResult[Int](Left(surfaceFailure))),
+    rejects("Validate.toResult")(Validate.toResult(Validate.invalid[Int](surfaceFailure))),
+    rejects("Validate.isTrue")(Validate.isTrue(validIfTrue = false, "The test value was false")),
+    rejects("Validate.isFalse")(Validate.isFalse(validIfFalse = true, "The test value was true")),
+    rejects("Validate.matches")(Validate.matches("[A-Z]+".r, "lower case", "name")),
+    rejects("Validate.notBlank")(Validate.notBlank("   ", "name")),
+    rejects("Validate.notEmpty")(Validate.notEmpty("", "name")),
+    rejects("Validate.noDuplicates")(Validate.noDuplicates(Array(1d, 1d), "values")),
+    rejects("Validate.noDuplicatesSorted")(Validate.noDuplicatesSorted(Array(2d, 1d), "values")),
+    rejects("Validate.notPositive")(Validate.notPositive(1, "count")),
+    rejects("Validate.notPositiveIfPresent")(Validate.notPositiveIfPresent(Some(two), "count")),
+    rejects("Validate.notNegative")(Validate.notNegative(-1, "count")),
+    rejects("Validate.notNaN")(Validate.notNaN(Double.NaN, "value")),
+    rejects("Validate.notNegativeOrZero")(Validate.notNegativeOrZero(0, "count")),
+    rejects("Validate.notZero")(Validate.notZero(0d, "value")),
+    rejects("Validate.inRange")(Validate.inRange(5, 0, 5, "count")),
+    rejects("Validate.inRangeInclusive")(Validate.inRangeInclusive(6, 0, 5, "count")),
+    rejects("Validate.inRangeExclusive")(Validate.inRangeExclusive(5, 0, 5, "count")),
+    rejects("Validate.inRangeComparable")(
+      Validate.inRangeComparable(Currency.USD, Currency.AUD, Currency.EUR, "currency")),
+    rejects("Validate.inRangeComparableInclusive")(
+      Validate.inRangeComparableInclusive(Currency.USD, Currency.AUD, Currency.EUR, "currency")),
+    rejects("Validate.inRangeComparableExclusive")(
+      Validate.inRangeComparableExclusive(Currency.AUD, Currency.AUD, Currency.EUR, "currency")),
+    rejects("Validate.inOrderNotEqual")(
+      Validate.inOrderNotEqual(Currency.USD, Currency.AUD, "first", "second")),
+    rejects("Validate.inOrderOrEqual")(
+      Validate.inOrderOrEqual(Currency.USD, Currency.AUD, "first", "second")),
+    // named/NamedEnum.scala
+    rejectsWith("NamedEnum.parse", FailureReason.PARSING)(NamedEnum[Currency].parse("NotACurrency"))
+      .alsoAssertedBy("NamedEnum.parse reports a name no member of the family carries"),
+    // result/FailureReason.scala
+    rejectsWith("FailureReason.parse", FailureReason.PARSING)(FailureReason.parse("NotAReason")),
+    // result/package.scala
+    rejects("result.toNec")(result.toNec[Int](Left(surfaceFailure))),
+    rejects("result.toValidated")(result.toValidated(result.toNec[Int](Left(surfaceFailure)))),
+    rejects("result.toResult")(result.toResult(Validate.invalid[Int](surfaceFailure))),
+    rejects("result.sequence")(
+      result.sequence(List(result.toNec[Int](Left(surfaceFailure)), Right(1)))),
+    rejects("result.combine")(
+      result.combine(List(result.toNec[Int](Left(surfaceFailure)), Right(1)))(values => values.sum)),
+    rejects("result.flatCombine")(
+      result.flatCombine(List(result.toNec[Int](Left(surfaceFailure)), Right(1)))(values =>
+        Right(values.sum))),
+    rejects("result.withAdditionalFailures")(
+      result.withAdditionalFailures(ValueWithFailures.of(1), List(surfaceFailure))),
+    rejects("ValueWithFailures.of")(ValueWithFailures.of(1, List(surfaceFailure))),
+    rejects("ValueWithFailures.withValue")(
+      ValueWithFailures.withValue(ValueWithFailures.of(1, List(surfaceFailure)), 2)),
+    rejects("ValueWithFailures.combineValuesAsList")(
+      ValueWithFailures.combineValuesAsList(List(ValueWithFailures.of(1, List(surfaceFailure))))),
+    rejects("ValueWithFailures.combineValuesAsSet")(
+      ValueWithFailures.combineValuesAsSet(List(ValueWithFailures.of(1, List(surfaceFailure))))))
+
+  //-------------------------------------------------------------------------
+  // The rows of the root package of `strata-basics`: reference data, resolution and identifiers.
+  // The two resolution traits are extension points with no implementation inside this module -
+  // the trades and positions that implement them are migrated in later slices - so their rows
+  // are covered by the resolving members that do exist.
+
+  /** The rows accounting for the failable surface of the root package of `strata-basics`. */
+  private val basicsRootFailableRows: List[SurfaceRow] = List(
+    // ReferenceData.scala
+    rejectsWith("ReferenceData.getValue", FailureReason.MISSING_DATA)(
+      emptyRefData.getValue(HolidayCalendarIds.GBLO))
+      .alsoAssertedBy("ReferenceData.getValue reports an identifier the reference data does not hold"),
+    rejectsWith("ReferenceData.of", FailureReason.INVALID)(
+      ReferenceData.of(calendarEntry, calendarEntry)),
+    rejectsWith("ImmutableReferenceData.of", FailureReason.INVALID)(
+      ImmutableReferenceData.of(calendarEntry, calendarEntry)),
+    // ReferenceDataId.scala
+    rejectsWith("ReferenceDataId.resolve", FailureReason.MISSING_DATA)(
+      SurfaceMissingId.resolve(standardRefData))
+      .alsoAssertedBy("ReferenceDataId.resolve reports an identifier the reference data does not hold"),
+    // Resolvable.scala
+    covered(
+      "Resolvable.resolve",
+      by = "BusinessDayAdjustment.resolve",
+      reason =
+        "it is the abstract declaration of the trait, and the adjustments of this module are its " +
+          "implementations"),
+    covered(
+      "ResolvableCalculationTarget.resolveTarget",
+      by = "HolidayCalendarId.resolve",
+      reason =
+        "no type of either module implements it - it is the contract the trades of later slices " +
+          "implement - and the failure such an implementation propagates is the failure of " +
+          "resolving an identifier"),
+    // StandardId.scala
+    rejectsWith("StandardId.of", FailureReason.INVALID)(StandardId.of("", "1"))
+      .alsoAssertedBy("StandardId.of reports parts that name no identifier"),
+    rejectsWith("StandardId.parse", FailureReason.PARSING)(StandardId.parse("NoSeparator"))
+      .alsoAssertedBy("StandardId.parse reports text that names no identifier"),
+    // StandardSchemes.scala
+    rejects("StandardSchemes.createTicMic")(StandardSchemes.createTicMic("ULVR", "LSE")),
+    rejects("StandardSchemes.splitTicMic")(
+      StandardSchemes.splitTicMic(accepted(StandardId.of("OG-Ticker", "NoMic"))))
+      .alsoAssertedBy("StandardSchemes.splitTicMic reports an identifier that is no TICMIC"))
+
+  //-------------------------------------------------------------------------
+  // The rows of the currency package. Two failure shapes account for nearly all of it: two
+  // currencies that disagree, and a rate the provider asked for does not hold. The money types
+  // add a third - an amount no decimal holds - and the runs of amounts add a fourth, two runs
+  // that disagree in length.
+
+  /** The rows accounting for the failable surface of the currency package. */
+  private val currencyFailableRows: List[SurfaceRow] = List(
+    // AdjustablePayment.scala
+    rejects("AdjustablePayment.of")(AdjustablePayment.of(Currency.GBP, Double.NaN, JAN_15)),
+    rejectsWith("AdjustablePayment.resolve", FailureReason.MISSING_DATA)(
+      obtained(AdjustablePayment.of(Currency.GBP, 100d, unresolvableDate)).resolve(emptyRefData)),
+    // BigMoney.scala
+    rejectsWith("BigMoney.plus", FailureReason.INVALID)(gbpBigMoney.plus(usdBigMoney))
+      .alsoAssertedBy("Money.plus, Money.minus, BigMoney.plus and BigMoney.minus report a currency mismatch"),
+    rejectsWith("BigMoney.minus", FailureReason.INVALID)(gbpBigMoney.minus(usdBigMoney))
+      .alsoAssertedBy("Money.plus, Money.minus, BigMoney.plus and BigMoney.minus report a currency mismatch"),
+    rejects("BigMoney.mapAmount")(gbpBigMoney.mapAmount(_ => new BigDecimal("1E+30"))),
+    rejectsWith("BigMoney.isGreaterThan", FailureReason.INVALID)(gbpBigMoney.isGreaterThan(usdBigMoney)),
+    rejectsWith("BigMoney.isGreaterThanEqualTo", FailureReason.INVALID)(
+      gbpBigMoney.isGreaterThanEqualTo(usdBigMoney)),
+    rejectsWith("BigMoney.isLessThan", FailureReason.INVALID)(gbpBigMoney.isLessThan(usdBigMoney)),
+    rejectsWith("BigMoney.isLessThanEqualTo", FailureReason.INVALID)(
+      gbpBigMoney.isLessThanEqualTo(usdBigMoney)),
+    rejectsWith("BigMoney.convertedTo", FailureReason.INVALID)(
+      gbpBigMoney.convertedTo(Currency.GBP, two))
+      .alsoAssertedBy("Money.convertedTo and BigMoney.convertedTo report a non-unit rate for the same currency"),
+    rejects("BigMoney.of")(BigMoney.of(Currency.GBP, Double.NaN)),
+    rejectsWith("BigMoney.parse", FailureReason.PARSING)(BigMoney.parse("Rubbish")),
+    // Currency.scala
+    rejects("Currency.of")(Currency.of("GBPX")),
+    rejectsWith("Currency.parse", FailureReason.PARSING)(Currency.parse("XYZ"))
+      .alsoAssertedBy("Currency.parse reports a code outside the closed family"),
+    // CurrencyAmount.scala
+    rejectsWith("CurrencyAmount.plus", FailureReason.INVALID)(gbp100.plus(usd100))
+      .alsoAssertedBy("CurrencyAmount.plus and minus report a currency mismatch"),
+    rejectsWith("CurrencyAmount.minus", FailureReason.INVALID)(gbp100.minus(usd100))
+      .alsoAssertedBy("CurrencyAmount.plus and minus report a currency mismatch"),
+    rejectsWith("CurrencyAmount.convertedTo", FailureReason.INVALID)(
+      gbp100.convertedTo(Currency.GBP, 2d))
+      .alsoAssertedBy("CurrencyAmount.convertedTo reports a non-unit rate for the same currency"),
+    rejects("CurrencyAmount.of")(CurrencyAmount.of(Currency.GBP, Double.NaN)),
+    rejectsWith("CurrencyAmount.toMoney", FailureReason.INVALID)(infiniteAmount.toMoney)
+      .alsoAssertedBy(
+        "CurrencyAmount.toMoney and CurrencyAmount.toBigMoney report an amount no decimal holds"),
+    rejectsWith("CurrencyAmount.toBigMoney", FailureReason.INVALID)(infiniteAmount.toBigMoney)
+      .alsoAssertedBy(
+        "CurrencyAmount.toMoney and CurrencyAmount.toBigMoney report an amount no decimal holds"),
+    rejectsWith("CurrencyAmount.parse", FailureReason.PARSING)(CurrencyAmount.parse("Rubbish"))
+      .alsoAssertedBy("CurrencyAmount.parse reports text that names no amount"),
+    // CurrencyAmountArray.scala
+    rejectsWith("CurrencyAmountArray.convertedTo", FailureReason.CURRENCY_CONVERSION)(
+      gbpArray.convertedTo(Currency.EUR, gbpUsdMatrix)),
+    rejectsWith("CurrencyAmountArray.plus", FailureReason.INVALID)(gbpArray.plus(shortGbpArray))
+      .alsoAssertedBy("CurrencyAmountArray arithmetic reports size and currency mismatches"),
+    rejectsWith("CurrencyAmountArray.minus", FailureReason.INVALID)(gbpArray.minus(usdArray))
+      .alsoAssertedBy("CurrencyAmountArray arithmetic reports size and currency mismatches"),
+    rejectsWith("CurrencyAmountArray.of", FailureReason.INVALID)(
+      CurrencyAmountArray.of(List.empty[CurrencyAmount]))
+      .alsoAssertedBy("CurrencyAmountArray.of reports an empty collection and mixed currencies"),
+    // CurrencyPair.scala
+    rejectsWith("CurrencyPair.other", FailureReason.INVALID)(
+      CurrencyPair.of(Currency.GBP, Currency.USD).other(Currency.EUR))
+      .alsoAssertedBy("CurrencyPair.other reports a currency that is not in the pair"),
+    rejectsWith("CurrencyPair.parse", FailureReason.PARSING)(CurrencyPair.parse("Rubbish"))
+      .alsoAssertedBy("CurrencyPair.parse reports text that names no pair"),
+    // FxConvertible.scala
+    covered(
+      "FxConvertible.convertedTo",
+      by = "CurrencyAmount.convertedTo",
+      reason =
+        "it is the abstract declaration of the trait, implemented by every amount type of this " +
+          "package"),
+    // FxMatrix.scala
+    rejectsWith("FxMatrix.fxRate", FailureReason.CURRENCY_CONVERSION)(
+      gbpUsdMatrix.fxRate(Currency.EUR, Currency.CHF))
+      .alsoAssertedBy("FxMatrix.fxRate reports a rate the matrix does not hold"),
+    rejectsWith("FxMatrix.convert", FailureReason.CURRENCY_CONVERSION)(
+      gbpUsdMatrix.convert(eur100, Currency.GBP))
+      .alsoAssertedBy("FxMatrix.convert reports a rate the matrix does not hold"),
+    rejectsWith("FxMatrix.withRate", FailureReason.CURRENCY_CONVERSION)(
+      gbpUsdMatrix.withRate(Currency.EUR, Currency.CHF, 1.1d))
+      .alsoAssertedBy("FxMatrix.withRate reports a pair the matrix has no currency in common with"),
+    rejectsWith("FxMatrix.withRates", FailureReason.CURRENCY_CONVERSION)(
+      gbpUsdMatrix.withRates(List((CurrencyPair.of(Currency.EUR, Currency.CHF), 1.1d)))),
+    rejectsWith("FxMatrix.merge", FailureReason.CURRENCY_CONVERSION)(gbpUsdMatrix.merge(eurChfMatrix))
+      .alsoAssertedBy("FxMatrix.merge reports two matrices with no currency in common"),
+    rejectsWith("FxMatrix.of", FailureReason.CURRENCY_CONVERSION)(FxMatrix.of(List(gbpUsdRate, eurCadRate)))
+      .alsoAssertedBy("FxMatrix.of reports rates that can never be placed"),
+    rejectsWith("FxMatrix.ofRates", FailureReason.CURRENCY_CONVERSION)(
+      FxMatrix.ofRates(
+        List(
+          (CurrencyPair.of(Currency.GBP, Currency.USD), 1.6d),
+          (CurrencyPair.of(Currency.EUR, Currency.CHF), 1.1d)))),
+    rejects("FxMatrix.fromMatrix")(
+      FxMatrix.fromMatrix(Vector(Currency.GBP, Currency.USD), DoubleMatrix.of(1, 2, 1d, 1.6d))),
+    // FxRate.scala
+    rejectsWith("FxRate.fxRate", FailureReason.CURRENCY_CONVERSION)(
+      gbpUsdRate.fxRate(Currency.EUR, Currency.CHF)),
+    rejectsWith("FxRate.crossRate", FailureReason.CURRENCY_CONVERSION)(gbpUsdRate.crossRate(eurCadRate))
+      .alsoAssertedBy("FxRate.crossRate reports rates that do not cross"),
+    rejects("FxRate.of")(FxRate.of(Currency.GBP, Currency.USD, 0d)),
+    rejectsWith("FxRate.parse", FailureReason.PARSING)(FxRate.parse("Rubbish"))
+      .alsoAssertedBy("FxRate.parse reports text that names no rate"),
+    // FxRateProvider.scala
+    rejectsWith("FxRateProvider.fxRate", FailureReason.CURRENCY_CONVERSION)(
+      FxRateProvider.noConversion().fxRate(Currency.GBP, Currency.USD))
+      .alsoAssertedBy("FxRateProvider.fxRate reports a rate the provider cannot supply"),
+    rejectsWith("FxRateProvider.convert", FailureReason.CURRENCY_CONVERSION)(
+      FxRateProvider.noConversion().convert(100d, Currency.GBP, Currency.USD))
+      .alsoAssertedBy("FxRateProvider.convert reports a rate the provider cannot supply"),
+    // Money.scala
+    total(
+      "Money.getValue",
+      "the amount is at the currency's scale by construction and no currency has more than " +
+        "three minor unit digits, so neither reason the pairing reports is reachable")(
+      gbpMoney.getValue),
+    rejectsWith("Money.plus", FailureReason.INVALID)(gbpMoney.plus(usdMoney))
+      .alsoAssertedBy("Money.plus, Money.minus, BigMoney.plus and BigMoney.minus report a currency mismatch"),
+    rejectsWith("Money.minus", FailureReason.INVALID)(gbpMoney.minus(usdMoney))
+      .alsoAssertedBy("Money.plus, Money.minus, BigMoney.plus and BigMoney.minus report a currency mismatch"),
+    rejects("Money.mapAmount")(gbpMoney.mapAmount(_ => new BigDecimal("1E+30"))),
+    rejectsWith("Money.convertedTo", FailureReason.INVALID)(gbpMoney.convertedTo(Currency.GBP, two))
+      .alsoAssertedBy("Money.convertedTo and BigMoney.convertedTo report a non-unit rate for the same currency"),
+    rejects("Money.of")(Money.of(Currency.GBP, Double.NaN)),
+    rejectsWith("Money.parse", FailureReason.PARSING)(Money.parse("Rubbish")),
+    // MultiCurrencyAmount.scala
+    rejectsWith("MultiCurrencyAmount.getAmount", FailureReason.INVALID)(
+      gbpMulti.getAmount(Currency.AUD))
+      .alsoAssertedBy("MultiCurrencyAmount.getAmount reports a currency the amount does not hold"),
+    rejectsWith("MultiCurrencyAmount.convertedTo", FailureReason.CURRENCY_CONVERSION)(
+      gbpMulti.convertedTo(Currency.EUR, eurChfMatrix)),
+    rejectsWith("MultiCurrencyAmount.of", FailureReason.INVALID)(
+      MultiCurrencyAmount.of(gbp100, gbp100))
+      .alsoAssertedBy("MultiCurrencyAmount.of reports a duplicated currency"),
+    // MultiCurrencyAmountArray.scala
+    rejectsWith("MultiCurrencyAmountArray.getValues", FailureReason.INVALID)(
+      gbpRun.getValues(Currency.AUD))
+      .alsoAssertedBy("MultiCurrencyAmountArray.getValues reports a currency the run does not hold"),
+    rejectsWith("MultiCurrencyAmountArray.convertedTo", FailureReason.CURRENCY_CONVERSION)(
+      gbpRun.convertedTo(Currency.EUR, gbpUsdMatrix)),
+    rejectsWith("MultiCurrencyAmountArray.plus(MultiCurrencyAmountArray)", FailureReason.INVALID)(
+      gbpRun.plus(shortRun))
+      .alsoAssertedBy("MultiCurrencyAmountArray arithmetic reports a size mismatch"),
+    coveredBySucceeding(
+      "MultiCurrencyAmountArray.plus(MultiCurrencyAmount)",
+      by = "MultiCurrencyAmountArray.of",
+      reason =
+        "the channel it reports is the checking factory's, which it hands the arrays it has " +
+          "merged, and the amount is broadcast across the run - a currency the run already " +
+          "holds keeps its own array and one it does not is filled to this run's length - so " +
+          "every array that factory is handed has the size of this run by construction")(
+      gbpRun.plus(gbpMulti))
+      .alsoAssertedBy("MultiCurrencyAmountArray arithmetic reports a size mismatch"),
+    rejectsWith("MultiCurrencyAmountArray.minus(MultiCurrencyAmountArray)", FailureReason.INVALID)(
+      gbpRun.minus(shortRun))
+      .alsoAssertedBy("MultiCurrencyAmountArray arithmetic reports a size mismatch"),
+    coveredBySucceeding(
+      "MultiCurrencyAmountArray.minus(MultiCurrencyAmount)",
+      by = "MultiCurrencyAmountArray.of",
+      reason =
+        "the amount is broadcast across the run exactly as it is by the addition above, so the " +
+          "arrays reaching the checking factory all have this run's size")(
+      gbpRun.minus(gbpMulti))
+      .alsoAssertedBy("MultiCurrencyAmountArray arithmetic reports a size mismatch"),
+    rejects("MultiCurrencyAmountArray.of")(
+      MultiCurrencyAmountArray.of(
+        Map(
+          Currency.GBP -> DoubleArray.of(1d, 2d, 3d),
+          Currency.USD -> DoubleArray.of(1d, 2d))))
+      .alsoAssertedBy("MultiCurrencyAmountArray.of reports values of unequal length"),
+    rejects("MultiCurrencyAmountArray.total")(
+      MultiCurrencyAmountArray.total(List(gbpArray, shortGbpArray))),
+    // Payment.scala
+    rejectsWith("Payment.convertedTo", FailureReason.CURRENCY_CONVERSION)(
+      obtained(Payment.of(Currency.GBP, 100d, JAN_15)).convertedTo(Currency.EUR, gbpUsdMatrix)),
+    rejects("Payment.of")(Payment.of(Currency.GBP, Double.NaN, JAN_15)))
+
+  //-------------------------------------------------------------------------
+  // The rows of the date package. Every adjustment resolves its calendar against the reference
+  // data it is handed, so the failure of a resolving member is the absence of that calendar;
+  // every factory over a period or a tenor refuses a period the convention it is paired with
+  // cannot add, or a count that is no period at all.
+
+  /** The rows accounting for the failable surface of the date package. */
+  private val dateFailableRows: List[SurfaceRow] = List(
+    // AdjustableDate.scala
+    rejectsWith("AdjustableDate.adjusted", FailureReason.MISSING_DATA)(
+      unresolvableDate.adjusted(emptyRefData)),
+    // AdjustableDates.scala
+    rejectsWith("AdjustableDates.adjusted", FailureReason.MISSING_DATA)(
+      accepted(AdjustableDates.of(unresolvableBusinessDay, JAN_15)).adjusted(emptyRefData)),
+    rejectsWith("AdjustableDates.of", FailureReason.INVALID)(
+      AdjustableDates.of(List.empty[LocalDate]))
+      .alsoAssertedBy("AdjustableDates.of reports dates that describe no set"),
+    // BusinessDayAdjustment.scala
+    rejectsWith("BusinessDayAdjustment.adjust", FailureReason.MISSING_DATA)(
+      unresolvableBusinessDay.adjust(JAN_15, emptyRefData)),
+    rejectsWith("BusinessDayAdjustment.resolve", FailureReason.MISSING_DATA)(
+      unresolvableBusinessDay.resolve(emptyRefData)),
+    // BusinessDayConvention.scala
+    rejectsWith("BusinessDayConvention.parse", FailureReason.PARSING)(
+      BusinessDayConvention.parse("NotAConvention")),
+    // DateSequence.scala
+    rejectsWith("DateSequence.parse", FailureReason.PARSING)(DateSequence.parse("NotASequence")),
+    rejectsWith("SequenceDate.base", FailureReason.INVALID)(SequenceDate.base(0))
+      .alsoAssertedBy("SequenceDate.of reports fields that describe no instruction"),
+    rejectsWith("SequenceDate.full", FailureReason.INVALID)(SequenceDate.full(0))
+      .alsoAssertedBy("SequenceDate.of reports fields that describe no instruction"),
+    rejectsWith("SequenceDate.of", FailureReason.INVALID)(
+      SequenceDate.of(Some(YearMonth.of(2014, 6)), Some(Period.ofMonths(1)), 1, fullSequence = true))
+      .alsoAssertedBy("SequenceDate.of reports fields that describe no instruction"),
+    // DayCount.scala
+    rejectsWith("DayCount.ofBus252", FailureReason.MISSING_DATA)(
+      DayCount.ofBus252(unknownCalendarId, emptyRefData))
+      .alsoAssertedBy("DayCount.ofBus252 reports a calendar the reference data does not hold"),
+    rejectsWith("DayCount.parse", FailureReason.PARSING)(DayCount.parse("NotADayCount")),
+    // DaysAdjustment.scala
+    rejectsWith("DaysAdjustment.adjust", FailureReason.MISSING_DATA)(
+      unresolvableDays.adjust(JAN_15, emptyRefData))
+      .alsoAssertedBy("DaysAdjustment resolution reports a calendar the reference data does not hold"),
+    rejectsWith("DaysAdjustment.resolve", FailureReason.MISSING_DATA)(
+      unresolvableDays.resolve(emptyRefData))
+      .alsoAssertedBy("DaysAdjustment resolution reports a calendar the reference data does not hold"),
+    rejectsWith("DaysAdjustment.of", FailureReason.INVALID)(
+      DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE))
+      .alsoAssertedBy("DaysAdjustment.of reports a business day addition of no days"),
+    // HolidayCalendar.scala
+    rejectsWith("HolidayCalendars.of", FailureReason.PARSING)(
+      HolidayCalendars.of("NoSuchCalendarFS")),
+    // HolidayCalendarId.scala
+    rejectsWith("HolidayCalendarId.resolve", FailureReason.MISSING_DATA)(
+      unknownCalendarId.resolve(emptyRefData))
+      .alsoAssertedBy("HolidayCalendarId.resolve reports a calendar the reference data does not hold"),
+    // MarketTenor.scala
+    total(
+      "MarketTenor.ofSpot",
+      "its argument is already a tenor, so there is no count left to refuse; it answers in the " +
+        "reported shape only so that it composes with the counted factories")(
+      MarketTenor.ofSpot(Tenor.TENOR_1D))
+      .alsoAssertedBy("MarketTenor spot factories report a count that is no tenor"),
+    rejectsWith("MarketTenor.ofSpotDays", FailureReason.INVALID)(MarketTenor.ofSpotDays(0))
+      .alsoAssertedBy("MarketTenor spot factories report a count that is no tenor"),
+    rejectsWith("MarketTenor.ofSpotMonths", FailureReason.INVALID)(MarketTenor.ofSpotMonths(-1))
+      .alsoAssertedBy("MarketTenor spot factories report a count that is no tenor"),
+    rejectsWith("MarketTenor.ofSpotYears", FailureReason.INVALID)(MarketTenor.ofSpotYears(0)),
+    rejectsWith("MarketTenor.parse", FailureReason.PARSING)(MarketTenor.parse("2K"))
+      .alsoAssertedBy("MarketTenor.parse reports text that names no market tenor"),
+    // PeriodAdditionConvention.scala
+    rejectsWith("PeriodAdditionConvention.parse", FailureReason.PARSING)(
+      PeriodAdditionConvention.parse("NotAConvention")),
+    // PeriodAdjustment.scala
+    rejectsWith("PeriodAdjustment.adjust", FailureReason.MISSING_DATA)(
+      accepted(
+        PeriodAdjustment.of(
+          Period.ofMonths(3),
+          PeriodAdditionConventions.NONE,
+          unresolvableBusinessDay)).adjust(JAN_15, emptyRefData)),
+    rejectsWith("PeriodAdjustment.resolve", FailureReason.MISSING_DATA)(
+      accepted(
+        PeriodAdjustment.of(
+          Period.ofMonths(3),
+          PeriodAdditionConventions.NONE,
+          unresolvableBusinessDay)).resolve(emptyRefData)),
+    rejectsWith("PeriodAdjustment.of", FailureReason.INVALID)(
+      PeriodAdjustment.of(
+        Period.of(1, 2, 3),
+        PeriodAdditionConventions.LAST_DAY,
+        BusinessDayAdjustment.NONE))
+      .alsoAssertedBy("PeriodAdjustment.of reports a period the convention cannot add"),
+    rejectsWith("PeriodAdjustment.ofLastDay", FailureReason.INVALID)(
+      PeriodAdjustment.ofLastDay(Period.ofDays(3), BusinessDayAdjustment.NONE)),
+    rejectsWith("PeriodAdjustment.ofLastBusinessDay", FailureReason.INVALID)(
+      PeriodAdjustment.ofLastBusinessDay(Period.ofDays(3), BusinessDayAdjustment.NONE)),
+    // Tenor.scala
+    rejectsWith("Tenor.of", FailureReason.INVALID)(Tenor.of(Period.ZERO))
+      .alsoAssertedBy("Tenor.of reports a period that is no tenor"),
+    rejectsWith("Tenor.ofDays", FailureReason.INVALID)(Tenor.ofDays(0)),
+    rejectsWith("Tenor.ofWeeks", FailureReason.INVALID)(Tenor.ofWeeks(0)),
+    rejectsWith("Tenor.ofMonths", FailureReason.INVALID)(Tenor.ofMonths(-1)),
+    rejectsWith("Tenor.ofYears", FailureReason.INVALID)(Tenor.ofYears(0)),
+    rejectsWith("Tenor.parse", FailureReason.PARSING)(Tenor.parse("2K"))
+      .alsoAssertedBy("Tenor.parse reports text that names no tenor"),
+    // TenorAdjustment.scala
+    rejectsWith("TenorAdjustment.adjust", FailureReason.MISSING_DATA)(
+      accepted(
+        TenorAdjustment.of(
+          Tenor.TENOR_3M,
+          PeriodAdditionConventions.NONE,
+          unresolvableBusinessDay)).adjust(JAN_15, emptyRefData)),
+    rejectsWith("TenorAdjustment.resolve", FailureReason.MISSING_DATA)(
+      accepted(
+        TenorAdjustment.of(
+          Tenor.TENOR_3M,
+          PeriodAdditionConventions.NONE,
+          unresolvableBusinessDay)).resolve(emptyRefData)),
+    rejectsWith("TenorAdjustment.of", FailureReason.INVALID)(
+      TenorAdjustment.of(
+        Tenor.TENOR_1W,
+        PeriodAdditionConventions.LAST_DAY,
+        BusinessDayAdjustment.NONE))
+      .alsoAssertedBy("TenorAdjustment.of reports a tenor the convention cannot add"),
+    rejectsWith("TenorAdjustment.ofLastDay", FailureReason.INVALID)(
+      TenorAdjustment.ofLastDay(Tenor.TENOR_1W, BusinessDayAdjustment.NONE)),
+    rejectsWith("TenorAdjustment.ofLastBusinessDay", FailureReason.INVALID)(
+      TenorAdjustment.ofLastBusinessDay(Tenor.TENOR_1W, BusinessDayAdjustment.NONE)))
+
+  //-------------------------------------------------------------------------
+  // The rows of the index package. An index is a closed family, so text that names no member is
+  // a parse failure; every calculation over a fixing date reads the index's calendars from the
+  // reference data it is handed, so its failure is the absence of a calendar. The conversions of
+  // a floating rate name refuse a name of the wrong kind, and the Euroyen TIBOR name - whose
+  // every published index has been retired - is what reaches the retired-family failures.
+
+  /** The rows accounting for the failable surface of the index package. */
+  private val indexFailableRows: List[SurfaceRow] = List(
+    // FloatingRate.scala
+    rejectsWith("FloatingRate.parse", FailureReason.PARSING)(FloatingRate.parse("NotAnIndex")),
+    // FloatingRateName.scala
+    rejectsWith("FloatingRateName.defaultTenor", FailureReason.MISSING_DATA)(euroyenName.defaultTenor),
+    total(
+      "FloatingRateName.normalized",
+      "every published family carries its canonical name among the published names, so the " +
+        "lookup cannot miss; the row runs it over every name of the family rather than over one")(
+      FloatingRateName.values.toList.traverse(name => name.normalized)),
+    rejectsWith("FloatingRateName.toIborIndex", FailureReason.INVALID)(
+      FloatingRateNames.GBP_SONIA.toIborIndex(Tenor.TENOR_3M))
+      .alsoAssertedBy("FloatingRateName.toIborIndex reports a name of the wrong kind and a tenor no index carries"),
+    rejectsWith("FloatingRateName.toIborIndexFixingOffset", FailureReason.INVALID)(
+      FloatingRateNames.GBP_SONIA.toIborIndexFixingOffset),
+    rejectsWith("FloatingRateName.toOvernightIndex", FailureReason.INVALID)(
+      FloatingRateNames.GBP_LIBOR.toOvernightIndex)
+      .alsoAssertedBy("FloatingRateName.toOvernightIndex reports a name of the wrong kind"),
+    rejectsWith("FloatingRateName.toPriceIndex", FailureReason.INVALID)(
+      FloatingRateNames.GBP_LIBOR.toPriceIndex)
+      .alsoAssertedBy("FloatingRateName.toPriceIndex reports a name of the wrong kind"),
+    rejectsWith("FloatingRateName.toFloatingRateIndex", FailureReason.MISSING_DATA)(
+      euroyenName.toFloatingRateIndex),
+    rejectsWith("FloatingRateName.currency", FailureReason.MISSING_DATA)(euroyenName.currency),
+    rejectsWith("FloatingRateName.parse", FailureReason.PARSING)(FloatingRateName.parse("NotAName")),
+    rejectsWith("FloatingRateName.defaultIborIndex", FailureReason.MISSING_DATA)(
+      FloatingRateName.defaultIborIndex(Currency.BRL))
+      .alsoAssertedBy("FloatingRateName.defaultIborIndex reports a currency with no published default"),
+    rejectsWith("FloatingRateName.defaultOvernightIndex", FailureReason.MISSING_DATA)(
+      FloatingRateName.defaultOvernightIndex(Currency.KRW))
+      .alsoAssertedBy("FloatingRateName.defaultOvernightIndex reports a currency with no published default"),
+    // FloatingRateType.scala
+    rejectsWith("FloatingRateType.parse", FailureReason.PARSING)(
+      FloatingRateType.parse("NotAType")),
+    // FxIndexObservation.scala
+    rejectsWith("FxIndexObservation.of", FailureReason.MISSING_DATA)(
+      FxIndexObservation.of(FxIndices.EUR_GBP_ECB, JAN_15, emptyRefData))
+      .alsoAssertedBy("FxIndexObservation.of reports a calendar the reference data does not hold"),
+    rejectsWith("FxIndexObservation.resolve", FailureReason.MISSING_DATA)(
+      FxIndexObservation.resolve(FxIndices.EUR_GBP_ECB, emptyRefData))
+      .alsoAssertedBy("FxIndex.resolve reports a calendar the reference data does not hold"),
+    // IborIndexObservation.scala
+    rejectsWith("IborIndexObservation.of", FailureReason.MISSING_DATA)(
+      IborIndexObservation.of(IborIndices.GBP_LIBOR_3M, JAN_15, emptyRefData))
+      .alsoAssertedBy("IborIndexObservation.of reports a calendar the reference data does not hold"),
+    rejectsWith("IborIndexObservation.resolve", FailureReason.MISSING_DATA)(
+      IborIndexObservation.resolve(IborIndices.GBP_LIBOR_3M, emptyRefData)),
+    // Index.scala
+    rejectsWith("Index.parse", FailureReason.PARSING)(Index.parse("NotAnIndex")),
+    rejectsWith("FloatingRateIndex.parse", FailureReason.PARSING)(
+      FloatingRateIndex.parse("NotAnIndex")),
+    rejectsWith("RateIndex.parse", FailureReason.PARSING)(RateIndex.parse("NotAnIndex")),
+    rejectsWith("IborIndex.calculateEffectiveFromFixing", FailureReason.MISSING_DATA)(
+      IborIndices.GBP_LIBOR_3M.calculateEffectiveFromFixing(JAN_15, emptyRefData)),
+    rejectsWith("IborIndex.calculateMaturityFromFixing", FailureReason.MISSING_DATA)(
+      IborIndices.GBP_LIBOR_3M.calculateMaturityFromFixing(JAN_15, emptyRefData)),
+    rejectsWith("IborIndex.calculateFixingFromEffective", FailureReason.MISSING_DATA)(
+      IborIndices.GBP_LIBOR_3M.calculateFixingFromEffective(JAN_15, emptyRefData)),
+    rejectsWith("IborIndex.calculateMaturityFromEffective", FailureReason.MISSING_DATA)(
+      IborIndices.GBP_LIBOR_3M.calculateMaturityFromEffective(JAN_15, emptyRefData)),
+    rejectsWith("IborIndex.resolve", FailureReason.MISSING_DATA)(
+      IborIndices.GBP_LIBOR_3M.resolve(emptyRefData))
+      .alsoAssertedBy("IborIndex.resolve reports a calendar the reference data does not hold"),
+    rejectsWith("IborIndex.parse", FailureReason.PARSING)(IborIndex.parse("NotAnIndex")),
+    rejectsWith("OvernightIndex.calculatePublicationFromFixing", FailureReason.MISSING_DATA)(
+      OvernightIndices.GBP_SONIA.calculatePublicationFromFixing(JAN_15, emptyRefData)),
+    rejectsWith("OvernightIndex.calculateEffectiveFromFixing", FailureReason.MISSING_DATA)(
+      OvernightIndices.GBP_SONIA.calculateEffectiveFromFixing(JAN_15, emptyRefData)),
+    rejectsWith("OvernightIndex.calculateMaturityFromFixing", FailureReason.MISSING_DATA)(
+      OvernightIndices.GBP_SONIA.calculateMaturityFromFixing(JAN_15, emptyRefData)),
+    rejectsWith("OvernightIndex.calculateFixingFromEffective", FailureReason.MISSING_DATA)(
+      OvernightIndices.GBP_SONIA.calculateFixingFromEffective(JAN_15, emptyRefData)),
+    rejectsWith("OvernightIndex.calculateMaturityFromEffective", FailureReason.MISSING_DATA)(
+      OvernightIndices.GBP_SONIA.calculateMaturityFromEffective(JAN_15, emptyRefData)),
+    rejectsWith("OvernightIndex.parse", FailureReason.PARSING)(OvernightIndex.parse("NotAnIndex")),
+    rejectsWith("PriceIndex.parse", FailureReason.PARSING)(PriceIndex.parse("NotAnIndex")),
+    rejectsWith("FxIndex.calculateMaturityFromFixing", FailureReason.MISSING_DATA)(
+      FxIndices.EUR_GBP_ECB.calculateMaturityFromFixing(JAN_15, emptyRefData)),
+    rejectsWith("FxIndex.calculateFixingFromMaturity", FailureReason.MISSING_DATA)(
+      FxIndices.EUR_GBP_ECB.calculateFixingFromMaturity(JAN_15, emptyRefData)),
+    rejectsWith("FxIndex.resolve", FailureReason.MISSING_DATA)(
+      FxIndices.EUR_GBP_ECB.resolve(emptyRefData))
+      .alsoAssertedBy("FxIndex.resolve reports a calendar the reference data does not hold"),
+    rejectsWith("FxIndex.parse", FailureReason.PARSING)(FxIndex.parse("NotAnIndex"))
+      .alsoAssertedBy("FxIndex.of(String) reports text that names no published index"),
+    rejectsWith("FxIndex.of", FailureReason.PARSING)(
+      FxIndex.of(CurrencyPair.of(Currency.BRL, Currency.KRW)))
+      .alsoAssertedBy("FxIndex.of(CurrencyPair) reports a pair no published index quotes"),
+    // OvernightIndexObservation.scala
+    rejectsWith("OvernightIndexObservation.resolve", FailureReason.MISSING_DATA)(
+      OvernightIndexObservation.resolve(OvernightIndices.GBP_SONIA, emptyRefData))
+      .alsoAssertedBy(
+        "OvernightIndexObservation.resolve reports a calendar the reference data does not hold"),
+    rejectsWith("OvernightIndexObservation.of", FailureReason.MISSING_DATA)(
+      OvernightIndexObservation.of(OvernightIndices.GBP_SONIA, JAN_15, emptyRefData))
+      .alsoAssertedBy("OvernightIndexObservation.of reports a calendar the reference data does not hold"))
+
+  //-------------------------------------------------------------------------
+  // The rows of the location, schedule and value packages. A schedule definition is judged
+  // against the dates it holds and then against the calendar it is rolled out over, which is why
+  // the generating members report separately from the factory; the `with*` members of a
+  // definition re-run that judgement, so the five that replace a date can report and the five
+  // that replace an adjustment or a convention cannot.
+
+  /** The rows accounting for the failable surface of the location, schedule and value packages. */
+  private val scheduleFailableRows: List[SurfaceRow] = List(
+    // location/Country.scala
+    rejectsWith("Country.code3Char", FailureReason.MISSING_DATA)(accepted(Country.of("EU")).code3Char),
+    rejectsWith("Country.of", FailureReason.INVALID)(Country.of("abc"))
+      .alsoAssertedBy("Country.of reports a malformed code and accepts any well-formed one"),
+    rejectsWith("Country.parse", FailureReason.INVALID)(Country.parse("abc")),
+    rejectsWith("Country.of3Char", FailureReason.PARSING)(Country.of3Char("ZZZ"))
+      .alsoAssertedBy("Country.of3Char reports a code that names no country"),
+    // schedule/Frequency.scala
+    rejectsWith("Frequency.eventsPerYear", FailureReason.INVALID)(
+      accepted(Frequency.of(Period.ofMonths(5))).eventsPerYear)
+      .alsoAssertedBy("Frequency.eventsPerYear reports a frequency with no exact count"),
+    rejectsWith("Frequency.exactDivide", FailureReason.INVALID)(
+      Frequency.P3M.exactDivide(Frequency.P2M))
+      .alsoAssertedBy("Frequency.exactDivide reports a non-integral ratio and divides an integral one"),
+    rejectsWith("Frequency.of", FailureReason.INVALID)(Frequency.of(Period.ZERO))
+      .alsoAssertedBy("Frequency.of reports a period that is no frequency"),
+    rejectsWith("Frequency.ofDays", FailureReason.INVALID)(Frequency.ofDays(0)),
+    rejectsWith("Frequency.ofWeeks", FailureReason.INVALID)(Frequency.ofWeeks(0)),
+    rejectsWith("Frequency.ofMonths", FailureReason.INVALID)(Frequency.ofMonths(-1)),
+    rejectsWith("Frequency.ofYears", FailureReason.INVALID)(Frequency.ofYears(0)),
+    rejectsWith("Frequency.parse", FailureReason.PARSING)(Frequency.parse("2K"))
+      .alsoAssertedBy("Frequency.parse reports text that names no frequency"),
+    // schedule/PeriodicSchedule.scala
+    rejectsWith("PeriodicSchedule.createSchedule", FailureReason.INVALID)(
+      badStubDefinition.createSchedule(standardRefData))
+      .alsoAssertedBy("PeriodicSchedule.createSchedule reports a definition that generates nothing"),
+    rejectsWith("PeriodicSchedule.createUnadjustedDates", FailureReason.INVALID)(
+      badStubDefinition.createUnadjustedDates())
+      .alsoAssertedBy("PeriodicSchedule.createUnadjustedDates reports a disallowed stub"),
+    rejectsWith("PeriodicSchedule.createAdjustedDates", FailureReason.INVALID)(
+      collapsingDefinition.createAdjustedDates(standardRefData))
+      .alsoAssertedBy("PeriodicSchedule.createAdjustedDates reports dates that adjust onto one another"),
+    rejectsWith("PeriodicSchedule.of", FailureReason.INVALID)(
+      PeriodicSchedule.of(OCT_15, JAN_15, Frequency.P3M, BusinessDayAdjustment.NONE))
+      .alsoAssertedBy("PeriodicSchedule.of reports dates that describe no schedule"),
+    rejectsWith("PeriodicSchedule.replaceStartDate", FailureReason.INVALID)(
+      quarterly.replaceStartDate(OCT_15.plusYears(1L))),
+    rejectsWith("PeriodicSchedule.withStartDate", FailureReason.INVALID)(
+      quarterly.withStartDate(OCT_15.plusYears(1L))),
+    rejectsWith("PeriodicSchedule.withEndDate", FailureReason.INVALID)(
+      quarterly.withEndDate(JAN_15.minusYears(1L))),
+    rejectsWith("PeriodicSchedule.withFirstRegularStartDate", FailureReason.INVALID)(
+      quarterly.withFirstRegularStartDate(Some(OCT_15.plusYears(1L)))),
+    rejectsWith("PeriodicSchedule.withLastRegularEndDate", FailureReason.INVALID)(
+      quarterly.withLastRegularEndDate(Some(OCT_15.plusYears(1L)))),
+    rejectsWith("PeriodicSchedule.withOverrideStartDate", FailureReason.INVALID)(
+      quarterly.withOverrideStartDate(
+        Some(AdjustableDate.of(OCT_15.plusYears(1L), BusinessDayAdjustment.NONE)))),
+    total(
+      "PeriodicSchedule.withBusinessDayAdjustment",
+      "the seven order invariants of a definition read its five date properties alone, and this " +
+        "member replaces none of them")(
+      quarterly.withBusinessDayAdjustment(BusinessDayAdjustment.NONE)),
+    total(
+      "PeriodicSchedule.withStartDateBusinessDayAdjustment",
+      "it replaces an adjustment, which takes part in no invariant of the definition")(
+      quarterly.withStartDateBusinessDayAdjustment(Some(BusinessDayAdjustment.NONE))),
+    total(
+      "PeriodicSchedule.withEndDateBusinessDayAdjustment",
+      "it replaces an adjustment, which takes part in no invariant of the definition")(
+      quarterly.withEndDateBusinessDayAdjustment(None)),
+    total(
+      "PeriodicSchedule.withStubConvention",
+      "a stub is decided by rolling the schedule out, not by the definition's invariants, so " +
+        "no convention makes a valid definition invalid")(
+      quarterly.withStubConvention(Some(StubConvention.SHORT_INITIAL))),
+    total(
+      "PeriodicSchedule.withRollConvention",
+      "a roll convention is read when the schedule is generated, not by the definition's " +
+        "invariants")(
+      quarterly.withRollConvention(Some(RollConventions.DAY_15))),
+    // schedule/RollConvention.scala
+    rejectsWith("RollConvention.parse", FailureReason.PARSING)(
+      RollConvention.parse("NotAConvention")),
+    rejectsWith("RollConvention.ofDayOfMonth", FailureReason.INVALID)(
+      RollConvention.ofDayOfMonth(32))
+      .alsoAssertedBy("RollConvention.ofDayOfMonth reports a day outside one to thirty-one"),
+    // schedule/Schedule.scala
+    rejectsWith("Schedule.merge", FailureReason.INVALID)(
+      schedule.merge(3, LocalDate.of(2014, 2, 1), OCT_15))
+      .alsoAssertedBy("Schedule.merge reports a date that matches no period of the schedule"),
+    rejectsWith("Schedule.mergeRegular", FailureReason.INVALID)(schedule.mergeRegular(0, true))
+      .alsoAssertedBy("Schedule.mergeRegular reports an unusable group size"),
+    rejectsWith("Schedule.toAdjusted", FailureReason.INVALID)(
+      schedule.toAdjusted(collapsingAdjuster))
+      .alsoAssertedBy("Schedule.toAdjusted reports a period that collapses once adjusted"),
+    rejectsWith("Schedule.of", FailureReason.INVALID)(
+      Schedule.of(
+        NonEmptyList.of(schedule.period(1), schedule.period(0)),
+        Frequency.P3M,
+        RollConventions.DAY_15))
+      .alsoAssertedBy("Schedule.of reports periods that do not run from earliest to latest"),
+    // schedule/SchedulePeriod.scala
+    total(
+      "SchedulePeriod.subSchedule",
+      "it derives a definition from the two unadjusted dates of this period, which " +
+        "`SchedulePeriod.of` has already established to be strictly in order, and the frequency, " +
+        "the conventions and the adjustment take no part in the invariants of a definition")(
+      schedule.period(0).subSchedule(
+        Frequency.P1M,
+        RollConventions.DAY_15,
+        StubConvention.NONE,
+        BusinessDayAdjustment.NONE)),
+    rejectsWith("SchedulePeriod.toAdjusted", FailureReason.INVALID)(
+      schedule.period(1).toAdjusted(collapsingAdjuster)),
+    rejectsWith("SchedulePeriod.of", FailureReason.INVALID)(SchedulePeriod.of(OCT_15, JAN_15))
+      .alsoAssertedBy("SchedulePeriod.of reports dates that describe no period"),
+    // schedule/StubConvention.scala
+    rejectsWith("StubConvention.parse", FailureReason.PARSING)(
+      StubConvention.parse("NotAConvention")),
+    // value/Rounding.scala
+    rejectsWith("HalfUp.ofDecimalPlaces", FailureReason.INVALID)(HalfUp.ofDecimalPlaces(-1)),
+    rejectsWith("HalfUp.ofFractionalDecimalPlaces", FailureReason.INVALID)(
+      HalfUp.ofFractionalDecimalPlaces(-1, 257)),
+    rejectsWith("Rounding.ofDecimalPlaces", FailureReason.INVALID)(Rounding.ofDecimalPlaces(256))
+      .alsoAssertedBy("Rounding.ofDecimalPlaces reports a count outside zero to 255"),
+    rejectsWith("Rounding.ofFractionalDecimalPlaces", FailureReason.INVALID)(
+      Rounding.ofFractionalDecimalPlaces(-1, 257))
+      .alsoAssertedBy("Rounding.ofFractionalDecimalPlaces accumulates both rejections"),
+    // value/ValueAdjustmentType.scala
+    rejectsWith("ValueAdjustmentType.parse", FailureReason.PARSING)(
+      ValueAdjustmentType.parse("NotAType")),
+    // value/ValueSchedule.scala
+    rejectsWith("ValueSchedule.resolveValues", FailureReason.INVALID)(
+      accepted(ValueSchedule.of(100d, accepted(ValueStep.of(5, ValueAdjustment.ofReplace(200d)))))
+        .resolveValues(schedule))
+      .alsoAssertedBy("ValueSchedule.resolveValues reports a step the schedule cannot carry"),
+    rejectsWith("ValueSchedule.withSteps", FailureReason.INVALID)(
+      valueSchedule.withSteps(contradictorySteps)),
+    total(
+      "ValueSchedule.withStepSequence",
+      "it re-runs the construction check, which reads the steps of the definition and not the " +
+        "sequence, and the steps of an existing schedule have already passed it")(
+      valueSchedule.withStepSequence(stepSequence)),
+    rejectsWith("ValueSchedule.of", FailureReason.INVALID)(
+      ValueSchedule.of(100d, contradictorySteps))
+      .alsoAssertedBy("ValueSchedule.of reports two steps that name one position with different adjustments"),
+    // value/ValueStep.scala
+    rejectsWith("ValueStep.of", FailureReason.INVALID)(
+      ValueStep.of(0, ValueAdjustment.ofReplace(200d)))
+      .alsoAssertedBy("ValueStep.of reports a position that names no period"),
+    // value/ValueStepSequence.scala
+    rejectsWith("ValueStepSequence.of", FailureReason.INVALID)(
+      ValueStepSequence.of(OCT_15, JAN_15, Frequency.P3M, ValueAdjustment.ofDeltaAmount(-100d)))
+      .alsoAssertedBy("ValueStepSequence.of reports arguments that describe no sequence"))
+
+  /** Every row of the failure-returning side of the derived inventory. */
+  private val failableRows: List[SurfaceRow] =
+    collectFailableRows ::: basicsRootFailableRows ::: currencyFailableRows ::: dateFailableRows :::
+      indexFailableRows ::: scheduleFailableRows
+
+  //=========================================================================
+  // THE THROWING SIDE
+  //
+  // One row per family whose scaladoc documents a throw. Each row raises that throw, and the
+  // comment above each group names why the refusal is a caller contract or a numeric edge rather
+  // than a value - the classification rule of AAP 0.3.3 - so that a member does not move across
+  // the line unnoticed. A family whose label is also the label of a failure-returning row above
+  // names the refusal in brackets, because the two rows are two different statements about one
+  // member: `Money.plus` reports a currency mismatch and raises for an amount no decimal holds.
+  //
+  // Where a family documents two different throws - an index outside the array and a value that
+  // is not a number - both are rows, and where the hand-written tests above assert the same
+  // throw with its message, the row names that test.
+  //=========================================================================
+
+  /**
+   * The rows of `ArgCheck`, which is the single place in either module where a throw is written.
+   *
+   * Every one of these guards a caller contract: the condition is a property of the call - a
+   * count that must be positive, a text that must match, two values that must be in order - and
+   * not of data a caller could correct by supplying better values. They are the throws every
+   * other contract refusal of both modules is routed through.
+   */
+  private val argCheckThrowingRows: List[SurfaceRow] = List(
+    raises[IllegalArgumentException]("ArgCheck.isTrue")(ArgCheck.isTrue(validIfTrue = false)),
+    raises[IllegalArgumentException]("ArgCheck.isFalse")(
+      ArgCheck.isFalse(validIfFalse = true, "The test value was true")),
+    raises[IllegalArgumentException]("ArgCheck.matches")(
+      ArgCheck.matches("[A-Z]+".r, "lower case", "name")),
+    raises[IllegalArgumentException]("ArgCheck.notBlank")(ArgCheck.notBlank("   ", "name")),
+    raises[IllegalArgumentException]("ArgCheck.notEmpty")(ArgCheck.notEmpty("", "name")),
+    raises[IllegalArgumentException]("ArgCheck.noDuplicates")(
+      ArgCheck.noDuplicates(Array(1d, 1d), "values")),
+    raises[IllegalArgumentException]("ArgCheck.noDuplicatesSorted")(
+      ArgCheck.noDuplicatesSorted(Array(2d, 1d), "values")),
+    raises[IllegalArgumentException]("ArgCheck.notPositive")(ArgCheck.notPositive(1, "count")),
+    raises[IllegalArgumentException]("ArgCheck.notPositiveIfPresent")(
+      ArgCheck.notPositiveIfPresent(Some(two), "count")),
+    raises[IllegalArgumentException]("ArgCheck.notNegative")(ArgCheck.notNegative(-1, "count")),
+    raises[IllegalArgumentException]("ArgCheck.notNaN")(ArgCheck.notNaN(Double.NaN, "value")),
+    raises[IllegalArgumentException]("ArgCheck.notNegativeOrZero")(
+      ArgCheck.notNegativeOrZero(0, "count")),
+    raises[IllegalArgumentException]("ArgCheck.notZero")(ArgCheck.notZero(0d, "value")),
+    raises[IllegalArgumentException]("ArgCheck.inRange")(ArgCheck.inRange(5, 0, 5, "count")),
+    raises[IllegalArgumentException]("ArgCheck.inRangeInclusive")(
+      ArgCheck.inRangeInclusive(6, 0, 5, "count")),
+    raises[IllegalArgumentException]("ArgCheck.inRangeExclusive")(
+      ArgCheck.inRangeExclusive(5, 0, 5, "count")),
+    raises[IllegalArgumentException]("ArgCheck.inRangeComparable")(
+      ArgCheck.inRangeComparable(Currency.USD, Currency.AUD, Currency.EUR, "currency")),
+    raises[IllegalArgumentException]("ArgCheck.inRangeComparableInclusive")(
+      ArgCheck.inRangeComparableInclusive(Currency.USD, Currency.AUD, Currency.EUR, "currency")),
+    raises[IllegalArgumentException]("ArgCheck.inRangeComparableExclusive")(
+      ArgCheck.inRangeComparableExclusive(Currency.AUD, Currency.AUD, Currency.EUR, "currency")),
+    raises[IllegalArgumentException]("ArgCheck.inOrderNotEqual")(
+      ArgCheck.inOrderNotEqual(Currency.USD, Currency.AUD, "first", "second")),
+    raises[IllegalArgumentException]("ArgCheck.inOrderOrEqual")(
+      ArgCheck.inOrderOrEqual(Currency.USD, Currency.AUD, "first", "second")))
+
+  /**
+   * The rows of the numeric types of `strata-collect`.
+   *
+   * Two kinds of refusal live here, and AAP 0.3.3 keeps both fail-fast. A dimension or an index
+   * is the caller's own arithmetic over sizes it can read, so an array of the wrong length or an
+   * index outside one is a mistake in the calling code; and the overflow of the decimal
+   * representation beyond eighteen digits is a numeric domain edge, reachable only from values a
+   * caller chose to combine, which the port refuses exactly where the original refused it.
+   */
+  private val numericThrowingRows: List[SurfaceRow] = List(
+    // Decimal.scala
+    raises[IllegalArgumentException]("Decimal.plus")(hugeDecimal.plus(hugeDecimal)),
+    raises[IllegalArgumentException]("Decimal.minus")(
+      hugeDecimal.minus(hugeDecimal.multipliedBy(-1L))),
+    raises[IllegalArgumentException]("Decimal.multipliedBy")(
+      hugeDecimal.multipliedBy(hugeDecimal)),
+    raises[IllegalArgumentException]("Decimal.movePoint")(hugeDecimal.movePoint(1)),
+    raises[ArithmeticException]("Decimal.dividedBy")(two.dividedBy(Decimal.ZERO)),
+    raises[ArithmeticException]("Decimal.remainder")(two.remainder(Decimal.ZERO)),
+    raises[IllegalArgumentException]("Decimal.roundToScale")(
+      two.roundToScale(-18, RoundingMode.HALF_UP)),
+    raises[IllegalArgumentException]("Decimal.roundToPrecision")(
+      two.roundToPrecision(-1, RoundingMode.HALF_UP)),
+    raises[IllegalArgumentException]("Decimal.format")(two.format(19, RoundingMode.HALF_UP)),
+    raises[IllegalArgumentException]("Decimal.formatAtLeast")(two.formatAtLeast(19)),
+    // DoubleArrayMath.scala
+    raises[IllegalArgumentException]("DoubleArrayMath.combineByAddition")(
+      DoubleArrayMath.combineByAddition(Array(1d), Array(1d, 2d))),
+    raises[IllegalArgumentException]("DoubleArrayMath.combineByMultiplication")(
+      DoubleArrayMath.combineByMultiplication(Array(1d), Array(1d, 2d))),
+    raises[IllegalArgumentException]("DoubleArrayMath.combine")(
+      DoubleArrayMath.combine(Array(1d), Array(1d, 2d), (first, second) => first + second)),
+    raises[IllegalArgumentException]("DoubleArrayMath.fuzzyEquals")(
+      DoubleArrayMath.fuzzyEquals(1d, 1d, -1d)),
+    raises[IllegalArgumentException]("DoubleArrayMath.fuzzyEqualsZero")(
+      DoubleArrayMath.fuzzyEqualsZero(Array(1d), -1d)),
+    raises[IllegalArgumentException]("DoubleArrayMath.reorderedCopy")(
+      DoubleArrayMath.reorderedCopy(Array(1d), Array(0, 1))),
+    raises[IllegalArgumentException]("DoubleArrayMath.sortPairs")(
+      DoubleArrayMath.sortPairs(Array(1d), Array(1d, 2d))),
+    // array/DoubleArray.scala
+    raises[IndexOutOfBoundsException]("DoubleArray.get")(threeValues.get(3))
+      .alsoAssertedBy("DoubleArray.get raises for an index outside the array"),
+    raises[IllegalArgumentException]("DoubleArray.subArray")(threeValues.subArray(5)),
+    raises[IllegalArgumentException]("DoubleArray.plus")(threeValues.plus(twoValues))
+      .alsoAssertedBy("DoubleArray element-wise arithmetic raises for arrays of different sizes"),
+    raises[IllegalArgumentException]("DoubleArray.minus")(threeValues.minus(twoValues))
+      .alsoAssertedBy("DoubleArray element-wise arithmetic raises for arrays of different sizes"),
+    raises[IllegalArgumentException]("DoubleArray.multipliedBy")(
+      threeValues.multipliedBy(twoValues))
+      .alsoAssertedBy("DoubleArray element-wise arithmetic raises for arrays of different sizes"),
+    raises[IllegalArgumentException]("DoubleArray.dividedBy")(threeValues.dividedBy(twoValues))
+      .alsoAssertedBy("DoubleArray element-wise arithmetic raises for arrays of different sizes"),
+    raises[IllegalArgumentException]("DoubleArray.combine")(
+      threeValues.combine(twoValues, (first, second) => first + second))
+      .alsoAssertedBy("DoubleArray element-wise arithmetic raises for arrays of different sizes"),
+    raises[IllegalArgumentException]("DoubleArray.combineReduce")(
+      threeValues.combineReduce(
+        twoValues,
+        (total, first, second) => total + first * second)),
+    raises[IllegalArgumentException]("DoubleArray.min")(DoubleArray.of().min)
+      .alsoAssertedBy("DoubleArray element-wise arithmetic raises for arrays of different sizes"),
+    raises[IllegalArgumentException]("DoubleArray.max")(DoubleArray.of().max)
+      .alsoAssertedBy("DoubleArray element-wise arithmetic raises for arrays of different sizes"),
+    raises[IllegalArgumentException]("DoubleArray.equalWithTolerance")(
+      threeValues.equalWithTolerance(threeValues, -1d)),
+    raises[IllegalArgumentException]("DoubleArray.equalZeroWithTolerance")(
+      threeValues.equalZeroWithTolerance(-1d)),
+    raises[IllegalArgumentException]("DoubleArray.tabulate")(
+      DoubleArray.tabulate(-1)(index => index.toDouble)),
+    raises[IllegalArgumentException]("DoubleArray.copyOf")(DoubleArray.copyOf(Array(1d), 5)),
+    raises[IllegalArgumentException]("DoubleArray.filled")(DoubleArray.filled(-1)),
+    // array/DoubleMatrix.scala
+    raises[IndexOutOfBoundsException]("DoubleMatrix.get")(squareMatrix.get(2, 0))
+      .alsoAssertedBy("DoubleMatrix.get raises for a position outside the matrix"),
+    raises[IndexOutOfBoundsException]("DoubleMatrix.row")(squareMatrix.row(2)),
+    raises[IndexOutOfBoundsException]("DoubleMatrix.rowArray")(squareMatrix.rowArray(2)),
+    raises[IndexOutOfBoundsException]("DoubleMatrix.column")(squareMatrix.column(2)),
+    raises[IndexOutOfBoundsException]("DoubleMatrix.columnArray")(squareMatrix.columnArray(2)),
+    raises[IllegalArgumentException]("DoubleMatrix.plus")(squareMatrix.plus(flatMatrix))
+      .alsoAssertedBy("DoubleMatrix element-wise arithmetic raises for matrices of different shapes"),
+    raises[IllegalArgumentException]("DoubleMatrix.minus")(squareMatrix.minus(flatMatrix))
+      .alsoAssertedBy("DoubleMatrix element-wise arithmetic raises for matrices of different shapes"),
+    raises[IllegalArgumentException]("DoubleMatrix.combine")(
+      squareMatrix.combine(flatMatrix, (first, second) => first * second))
+      .alsoAssertedBy("DoubleMatrix element-wise arithmetic raises for matrices of different shapes"),
+    raises[IllegalArgumentException]("DoubleMatrix.of")(DoubleMatrix.of(-1, 2)),
+    raises[IllegalArgumentException]("DoubleMatrix.tabulate")(
+      DoubleMatrix.tabulate(-1, 1)((row, column) => (row + column).toDouble)),
+    raises[IllegalArgumentException]("DoubleMatrix.ofArrays")(
+      DoubleMatrix.ofArrays(-1, 1)(row => Array(row.toDouble))),
+    raises[IllegalArgumentException]("DoubleMatrix.ofArrayObjects")(
+      DoubleMatrix.ofArrayObjects(-1, 1)(row => DoubleArray.of(row.toDouble))),
+    raises[IllegalArgumentException]("DoubleMatrix.filled")(DoubleMatrix.filled(-1, 1)),
+    raises[IllegalArgumentException]("DoubleMatrix.identity")(DoubleMatrix.identity(-1)))
+
+  /**
+   * The rows of the amount types.
+   *
+   * These are the numeric domain edges of AAP 0.3.3 one layer up: an amount is admitted where it
+   * is infinite, as the original admitted it, so a sum of opposite infinities is the one input
+   * that produces a value no amount type holds, and an amount of eighteen digits is the one
+   * whose arithmetic overflows the decimal behind the money types. Both are reachable only from
+   * a value a caller chose to supply, which is why the port refuses them rather than reporting
+   * them - a refusal the construction half of the inventory owns in `SmartConstructorSpec`,
+   * where the accumulation and the messages are asserted; here each family is asserted once, so
+   * that the enumeration of the throwing surface is complete rather than representative.
+   */
+  private val amountThrowingRows: List[SurfaceRow] = List(
+    // BigMoney.scala
+    raises[IllegalArgumentException]("BigMoney.plus(eighteen digits)")(
+      hugeBigMoney.plus(hugeBigMoney)),
+    raises[IllegalArgumentException]("BigMoney.minus(eighteen digits)")(
+      hugeBigMoney.minus(hugeBigMoney.multipliedBy(-1L))),
+    raises[IllegalArgumentException]("BigMoney.multipliedBy")(hugeBigMoney.multipliedBy(2L)),
+    raises[IllegalArgumentException]("BigMoney.roundToScale")(
+      gbpBigMoney.roundToScale(-18, RoundingMode.HALF_UP)),
+    raises[IllegalArgumentException]("BigMoney.convertedTo(eighteen digits)")(
+      hugeBigMoney.convertedTo(Currency.USD, new BigDecimal("2"))),
+    // CurrencyAmount.scala
+    raises[IllegalArgumentException]("CurrencyAmount.plus(not a number)")(
+      gbpInfinite.plus(gbpNegativeInfinite)),
+    raises[IllegalArgumentException]("CurrencyAmount.minus(not a number)")(
+      gbpInfinite.minus(gbpInfinite)),
+    raises[IllegalArgumentException]("CurrencyAmount.multipliedBy")(gbpInfinite.multipliedBy(0d)),
+    raises[IllegalArgumentException]("CurrencyAmount.mapAmount")(
+      gbp100.mapAmount(_ => Double.NaN)),
+    // CurrencyAmountArray.scala
+    raises[IndexOutOfBoundsException]("CurrencyAmountArray.get(index outside the array)")(
+      gbpArray.get(3)),
+    raises[IllegalArgumentException]("CurrencyAmountArray.get(not a number)")(
+      notANumberArray.get(0)),
+    raises[IllegalArgumentException]("CurrencyAmountArray.iterator")(
+      notANumberArray.iterator.toList),
+    raises[IllegalArgumentException]("CurrencyAmountArray.toList")(notANumberArray.toList),
+    // FxRate.scala
+    raises[IllegalArgumentException]("FxRate.inverse")(
+      accepted(FxRate.of(Currency.GBP, Currency.USD, Double.PositiveInfinity)).inverse),
+    raises[IllegalArgumentException]("FxRate.toConventional")(
+      accepted(FxRate.of(Currency.USD, Currency.GBP, Double.PositiveInfinity)).toConventional),
+    // FxRateProvider.scala
+    raises[IllegalArgumentException]("FxRateProvider.convert(eighteen digits)")(
+      gbpUsdMatrix.convert(hugeDecimal, Currency.GBP, Currency.USD)),
+    // Money.scala
+    raises[IllegalArgumentException]("Money.plus(eighteen digits)")(hugeMoney.plus(hugeMoney)),
+    raises[IllegalArgumentException]("Money.minus(eighteen digits)")(
+      hugeMoney.minus(hugeMoney.multipliedBy(-1L))),
+    raises[IllegalArgumentException]("Money.multipliedBy")(hugeMoney.multipliedBy(2L)),
+    raises[IllegalArgumentException]("Money.convertedTo(eighteen digits)")(
+      hugeMoney.convertedTo(Currency.USD, new BigDecimal("2"))),
+    // MultiCurrencyAmount.scala
+    raises[IllegalArgumentException]("MultiCurrencyAmount.plus(not a number)")(
+      multiInfinite.plus(multiNegativeInfinite)),
+    raises[IllegalArgumentException]("MultiCurrencyAmount.minus(not a number)")(
+      multiInfinite.minus(multiInfinite)),
+    raises[IllegalArgumentException]("MultiCurrencyAmount.multipliedBy")(
+      multiInfinite.multipliedBy(0d)),
+    raises[IllegalArgumentException]("MultiCurrencyAmount.mapAmounts")(
+      multiInfinite.mapAmounts(_ => Double.NaN)),
+    raises[IllegalArgumentException]("MultiCurrencyAmount.mapCurrencyAmounts")(
+      multiTwoInfinities.mapCurrencyAmounts(amount =>
+        obtained(CurrencyAmount.of(Currency.GBP, amount.amount)))),
+    raises[IllegalArgumentException]("MultiCurrencyAmount.total")(
+      MultiCurrencyAmount.total(List(gbpInfinite, gbpNegativeInfinite))),
+    // MultiCurrencyAmountArray.scala
+    raises[IndexOutOfBoundsException]("MultiCurrencyAmountArray.get(3)")(gbpRun.get(3)),
+    raises[IndexOutOfBoundsException]("MultiCurrencyAmountArray.get(-1)")(gbpRun.get(-1)),
+    raises[IllegalArgumentException]("MultiCurrencyAmountArray.of(negative size)")(
+      MultiCurrencyAmountArray.of(-1, _ => gbpMulti)),
+    // Payment.scala
+    raises[DateTimeException]("Payment.adjustDate")(
+      obtained(Payment.of(Currency.GBP, 100d, JAN_15)).adjustDate(_.plusYears(1000000000L))))
+
+  /**
+   * The rows of the date, schedule and value packages.
+   *
+   * A holiday calendar holds its holidays as an array of months from its first year, so a date
+   * whose year falls outside 0 to 9999 is a date no calendar could hold data for and the
+   * question cannot be asked at all - a property of where the argument falls on the time line
+   * rather than of the holidays supplied. The same goes for a pair of dates given in the wrong
+   * order, for an index outside a schedule, and for the schedule information a day count is
+   * defined in terms of: each is a property of the call.
+   */
+  private val dateThrowingRows: List[SurfaceRow] = List(
+    // date/BusinessDayConvention.scala
+    raisesWith[IllegalArgumentException]("BusinessDayConvention.adjust", UnsupportedDateMessage)(
+      BusinessDayConventions.FOLLOWING.adjust(LocalDate.of(12000, 1, 15), datedCalendar)),
+    // date/DateAdjuster.scala
+    raises[DateTimeException]("DateAdjuster.adjust")(oneDayLater.adjust(LocalDate.MAX)),
+    raises[DateTimeException]("DateAdjuster.adjustInto")(oneDayLater.adjustInto(LocalDate.MAX)),
+    // date/DateSequence.scala
+    raises[IllegalArgumentException]("DateSequence.nth")(DateSequences.QUARTERLY_IMM.nth(JAN_15, 0)),
+    raises[IllegalArgumentException]("DateSequence.nthOrSame")(
+      DateSequences.QUARTERLY_IMM.nthOrSame(JAN_15, 0)),
+    // date/DayCount.scala
+    raisesWith[IllegalArgumentException]("DayCount.yearFraction", "time-line order")(
+      DayCounts.ACT_365F.yearFraction(APR_15, JAN_15))
+      .alsoAssertedBy("DayCount.yearFraction raises for dates out of time-line order"),
+    raises[IllegalArgumentException]("DayCount.relativeYearFraction")(
+      DayCounts.ACT_ACT_ICMA.relativeYearFraction(JAN_15, APR_15))
+      .alsoAssertedBy("DayCount Act/Act ICMA raises for schedule information it is not given"),
+    raisesWith[IllegalArgumentException]("DayCount.days", "time-line order")(
+      DayCounts.ACT_360.days(APR_15, JAN_15))
+      .alsoAssertedBy("DayCount.yearFraction raises for dates out of time-line order"),
+    // date/HolidayCalendar.scala
+    raisesWith[IllegalArgumentException]("HolidayCalendar.isHoliday", UnsupportedDateMessage)(
+      datedCalendar.isHoliday(LocalDate.MAX))
+      .alsoAssertedBy("HolidayCalendar operations raise for a year outside zero to 9999"),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.isBusinessDay", UnsupportedDateMessage)(
+      datedCalendar.isBusinessDay(LocalDate.MAX)),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.nextOrSame", UnsupportedDateMessage)(
+      datedCalendar.nextOrSame(LocalDate.of(12000, 1, 15))),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.next", UnsupportedDateMessage)(
+      datedCalendar.next(LocalDate.of(12000, 1, 15)))
+      .alsoAssertedBy("HolidayCalendar operations raise for a year outside zero to 9999"),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.previousOrSame", UnsupportedDateMessage)(
+      datedCalendar.previousOrSame(LocalDate.MIN)),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.previous", UnsupportedDateMessage)(
+      datedCalendar.previous(LocalDate.MIN.plusDays(1L))),
+    raisesWith[IllegalArgumentException](
+      "HolidayCalendar.nextSameOrLastInMonth",
+      UnsupportedDateMessage)(datedCalendar.nextSameOrLastInMonth(LocalDate.of(12000, 1, 15))),
+    raisesWith[IllegalArgumentException](
+      "HolidayCalendar.isLastBusinessDayOfMonth",
+      UnsupportedDateMessage)(datedCalendar.isLastBusinessDayOfMonth(LocalDate.of(12000, 1, 15))),
+    raisesWith[IllegalArgumentException](
+      "HolidayCalendar.lastBusinessDayOfMonth",
+      UnsupportedDateMessage)(datedCalendar.lastBusinessDayOfMonth(LocalDate.of(12000, 1, 15))),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.shift", UnsupportedDateMessage)(
+      datedCalendar.shift(LocalDate.MIN, 1))
+      .alsoAssertedBy("HolidayCalendar operations raise for a year outside zero to 9999"),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.daysBetween", UnsupportedDateMessage)(
+      datedCalendar.daysBetween(LocalDate.MIN, JAN_15))
+      .alsoAssertedBy("HolidayCalendar operations raise for a year outside zero to 9999"),
+    raises[IllegalArgumentException]("HolidayCalendar.businessDays")(
+      datedCalendar.businessDays(OCT_15, JAN_15)),
+    raises[IllegalArgumentException]("HolidayCalendar.holidays")(
+      datedCalendar.holidays(OCT_15, JAN_15)),
+    raises[IllegalArgumentException]("ImmutableHolidayCalendar.of")(
+      ImmutableHolidayCalendar.of(
+        HolidayCalendarId.of("TestFailableSurfaceOutOfRange"),
+        List(LocalDate.MAX),
+        List(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY),
+        List.empty[LocalDate])),
+    // date/PeriodAdditionConvention.scala
+    raisesWith[IllegalArgumentException]("PeriodAdditionConvention.adjust", UnsupportedDateMessage)(
+      PeriodAdditionConventions.LAST_BUSINESS_DAY.adjust(
+        LocalDate.of(12000, 1, 15),
+        Period.ofMonths(1),
+        datedCalendar)),
+    // schedule/Schedule.scala
+    raises[IllegalArgumentException]("Schedule.period")(schedule.period(9)),
+    raises[IllegalArgumentException]("Schedule.merge(dates out of order)")(
+      schedule.merge(3, OCT_15, JAN_15)),
+    // schedule/SchedulePeriod.scala
+    raises[IllegalArgumentException]("SchedulePeriod.yearFraction")(
+      schedule.period(0).yearFraction(DayCounts.ACT_ACT_ICMA, DayCount.ScheduleInfo.simple)),
+    // value/Rounding.scala
+    raises[ArithmeticException]("HalfUp.round")(
+      accepted(HalfUp.ofFractionalDecimalPlaces(0, 3)).round(new BigDecimal("0.5"))),
+    // value/ValueDerivatives.scala
+    raises[IndexOutOfBoundsException]("ValueDerivatives.getDerivative")(
+      ValueDerivatives.of(1d, DoubleArray.of(1d, 2d)).getDerivative(5)))
+
+  /** Every row of the throwing side of the derived inventory. */
+  private val throwingRows: List[SurfaceRow] =
+    argCheckThrowingRows ::: numericThrowingRows ::: amountThrowingRows ::: dateThrowingRows
+
+  /** Every row of the registry, by label, which is what a covered row is resolved through. */
+  private lazy val registry: Map[String, SurfaceRow] =
+    (failableRows ::: throwingRows).map(row => (row.label, row)).toMap
+
+  //=========================================================================
+  // THE GENERATED TESTS
+  //
+  // One test per row, named by the row's label and its kind, registered here rather than
+  // written out: a row that carries no assertion is not expressible, and a row whose call stops
+  // behaving as its kind records fails on its own line rather than inside a table of a
+  // neighbouring member.
+  //=========================================================================
+
+  failableRows.foreach { row =>
+    test(s"derived failable surface: ${row.label} [${row.establishment.kind}]") {
+      row.check()
+    }
+  }
+
+  throwingRows.foreach { row =>
+    test(s"derived throwing surface: ${row.label} [${row.establishment.kind}]") {
+      row.check()
+    }
+  }
+
+  //=========================================================================
+  // THE PER-SIGNATURE CLAIMS
+  //
+  // A row of the registry is written against an `Owner.method` family, and a family is one or
+  // more declarations: `ValueSchedule.of` is five of them. A row alone therefore says nothing
+  // about which of its overloads it reached, and an overload added, removed, or quietly turned
+  // total beside a failable sibling would leave the registry's own assertions passing.
+  //
+  // The claims below close that gap. There is one for every public declaration the enumeration
+  // finds - keyed by owner, method and declared parameter types, so overloads are distinct - and
+  // each names the row of the registry that accounts for it. A generated test per claim asserts
+  // that the declaration is still in the enumerated surface and that its row is still in the
+  // registry establishing something, and the two coverage assertions below compare the claims
+  // with the enumeration in '''both''' directions at that granularity. So:
+  //
+  //   - a declaration added to either module is unclaimed, and fails the gate;
+  //   - a declaration whose channel is removed, or whose parameters change, leaves its claim
+  //     naming nothing, and fails the gate;
+  //   - a claim pointing at a row that is deleted or renamed fails the gate.
+  //
+  // A claim is not a second assertion of the failure itself - that is the row's, and a row makes
+  // it once for the family - it is the statement that this exact signature is accounted for by
+  // that row, which is what the inventory could not say while it was written a family at a time.
+  //=========================================================================
+
+  /** How a claim names the side of the classification line its declaration sits on. */
+  private val FailableSide: String = "failure-returning"
+
+  /** How a claim names the throwing side of the classification line. */
+  private val ThrowingSide: String = "throw-documenting"
+
+  /**
+   * Every public declaration whose declared return type is a failure channel, each with the row
+   * of the registry that accounts for it.
+   *
+   * Twelve signatures appear here and among the throwing claims below as well, because they do
+   * both - `CurrencyAmount.plus(CurrencyAmount)` reports a currency mismatch as a value and
+   * documents the throw its numeric edge raises - and each side of such a member is accounted
+   * for by the row that establishes that side.
+   */
+  private val failableClaims: List[DeclarationClaim] = List(
+    DeclarationClaim("AdjustableDate.adjusted(ReferenceData)", "AdjustableDate.adjusted"),
+    DeclarationClaim("AdjustableDates.adjusted(ReferenceData)", "AdjustableDates.adjusted"),
+    DeclarationClaim("AdjustableDates.of(BusinessDayAdjustment,List[LocalDate])", "AdjustableDates.of"),
+    DeclarationClaim("AdjustableDates.of(BusinessDayAdjustment,LocalDate,LocalDate*)", "AdjustableDates.of"),
+    DeclarationClaim("AdjustableDates.of(BusinessDayAdjustment,NonEmptyList[LocalDate])", "AdjustableDates.of"),
+    DeclarationClaim("AdjustableDates.of(List[LocalDate])", "AdjustableDates.of"),
+    DeclarationClaim("AdjustableDates.of(LocalDate,LocalDate*)", "AdjustableDates.of"),
+    DeclarationClaim("AdjustablePayment.of(Currency,Double,AdjustableDate)", "AdjustablePayment.of"),
+    DeclarationClaim("AdjustablePayment.of(Currency,Double,LocalDate)", "AdjustablePayment.of"),
+    DeclarationClaim("AdjustablePayment.resolve(ReferenceData)", "AdjustablePayment.resolve"),
+    DeclarationClaim("BigMoney.convertedTo(Currency,BigDecimal)", "BigMoney.convertedTo"),
+    DeclarationClaim("BigMoney.convertedTo(Currency,Decimal)", "BigMoney.convertedTo"),
+    DeclarationClaim("BigMoney.convertedTo(Currency,FxRateProvider)", "BigMoney.convertedTo"),
+    DeclarationClaim("BigMoney.isGreaterThan(BigMoney)", "BigMoney.isGreaterThan"),
+    DeclarationClaim("BigMoney.isGreaterThanEqualTo(BigMoney)", "BigMoney.isGreaterThanEqualTo"),
+    DeclarationClaim("BigMoney.isLessThan(BigMoney)", "BigMoney.isLessThan"),
+    DeclarationClaim("BigMoney.isLessThanEqualTo(BigMoney)", "BigMoney.isLessThanEqualTo"),
+    DeclarationClaim("BigMoney.mapAmount(BigDecimal=>BigDecimal)", "BigMoney.mapAmount"),
+    DeclarationClaim("BigMoney.minus(BigMoney)", "BigMoney.minus"),
+    DeclarationClaim("BigMoney.of(Currency,BigDecimal)", "BigMoney.of"),
+    DeclarationClaim("BigMoney.of(Currency,Double)", "BigMoney.of"),
+    DeclarationClaim("BigMoney.of(CurrencyAmount)", "BigMoney.of"),
+    DeclarationClaim("BigMoney.parse(String)", "BigMoney.parse"),
+    DeclarationClaim("BigMoney.plus(BigMoney)", "BigMoney.plus"),
+    DeclarationClaim("BusinessDayAdjustment.adjust(LocalDate,ReferenceData)", "BusinessDayAdjustment.adjust"),
+    DeclarationClaim("BusinessDayAdjustment.resolve(ReferenceData)", "BusinessDayAdjustment.resolve"),
+    DeclarationClaim("BusinessDayConvention.parse(String)", "BusinessDayConvention.parse"),
+    DeclarationClaim("Collections.ensureOnlyOne(IterableOnce[A])", "Collections.ensureOnlyOne"),
+    DeclarationClaim("Collections.ensureOnlyOne(IterableOnce[A],=>String)", "Collections.ensureOnlyOne"),
+    DeclarationClaim("Collections.toSortedMap(IterableOnce[A],A=>K)", "Collections.toSortedMap"),
+    DeclarationClaim("Collections.toSortedMap(IterableOnce[A],A=>K,A=>V)", "Collections.toSortedMap"),
+    DeclarationClaim("Country.code3Char()", "Country.code3Char"),
+    DeclarationClaim("Country.of(String)", "Country.of"),
+    DeclarationClaim("Country.of3Char(String)", "Country.of3Char"),
+    DeclarationClaim("Country.parse(String)", "Country.parse"),
+    DeclarationClaim("Currency.of(String)", "Currency.of"),
+    DeclarationClaim("Currency.parse(String)", "Currency.parse"),
+    DeclarationClaim("CurrencyAmount.convertedTo(Currency,Double)", "CurrencyAmount.convertedTo"),
+    DeclarationClaim("CurrencyAmount.convertedTo(Currency,FxRateProvider)", "CurrencyAmount.convertedTo"),
+    DeclarationClaim("CurrencyAmount.minus(CurrencyAmount)", "CurrencyAmount.minus"),
+    DeclarationClaim("CurrencyAmount.of(Currency,Double)", "CurrencyAmount.of"),
+    DeclarationClaim("CurrencyAmount.of(String,Double)", "CurrencyAmount.of"),
+    DeclarationClaim("CurrencyAmount.parse(String)", "CurrencyAmount.parse"),
+    DeclarationClaim("CurrencyAmount.plus(CurrencyAmount)", "CurrencyAmount.plus"),
+    DeclarationClaim("CurrencyAmount.toBigMoney()", "CurrencyAmount.toBigMoney"),
+    DeclarationClaim("CurrencyAmount.toMoney()", "CurrencyAmount.toMoney"),
+    DeclarationClaim("CurrencyAmountArray.convertedTo(Currency,FxRateProvider)", "CurrencyAmountArray.convertedTo"),
+    DeclarationClaim("CurrencyAmountArray.minus(CurrencyAmount)", "CurrencyAmountArray.minus"),
+    DeclarationClaim("CurrencyAmountArray.minus(CurrencyAmountArray)", "CurrencyAmountArray.minus"),
+    DeclarationClaim("CurrencyAmountArray.of(Int,Int=>CurrencyAmount)", "CurrencyAmountArray.of"),
+    DeclarationClaim("CurrencyAmountArray.of(Iterable[CurrencyAmount])", "CurrencyAmountArray.of"),
+    DeclarationClaim("CurrencyAmountArray.plus(CurrencyAmount)", "CurrencyAmountArray.plus"),
+    DeclarationClaim("CurrencyAmountArray.plus(CurrencyAmountArray)", "CurrencyAmountArray.plus"),
+    DeclarationClaim("CurrencyPair.other(Currency)", "CurrencyPair.other"),
+    DeclarationClaim("CurrencyPair.parse(String)", "CurrencyPair.parse"),
+    DeclarationClaim("DateSequence.parse(String)", "DateSequence.parse"),
+    DeclarationClaim("DayCount.ofBus252(HolidayCalendarId,ReferenceData)", "DayCount.ofBus252"),
+    DeclarationClaim("DayCount.parse(String)", "DayCount.parse"),
+    DeclarationClaim("DayCount.parse(String,ReferenceData)", "DayCount.parse"),
+    DeclarationClaim("DaysAdjustment.adjust(LocalDate,ReferenceData)", "DaysAdjustment.adjust"),
+    DeclarationClaim("DaysAdjustment.of(Int,HolidayCalendarId,BusinessDayAdjustment)", "DaysAdjustment.of"),
+    DeclarationClaim("DaysAdjustment.resolve(ReferenceData)", "DaysAdjustment.resolve"),
+    DeclarationClaim("Decimal.mapAsBigDecimal(BigDecimal=>BigDecimal)", "Decimal.mapAsBigDecimal"),
+    DeclarationClaim("Decimal.mapAsDouble(Double=>Double)", "Decimal.mapAsDouble"),
+    DeclarationClaim("Decimal.of(BigDecimal)", "Decimal.of"),
+    DeclarationClaim("Decimal.of(Double)", "Decimal.of"),
+    DeclarationClaim("Decimal.of(Long)", "Decimal.of"),
+    DeclarationClaim("Decimal.of(String)", "Decimal.of"),
+    DeclarationClaim("Decimal.ofScaled(Long,Int)", "Decimal.ofScaled"),
+    DeclarationClaim("Decimal.parse(String)", "Decimal.parse"),
+    DeclarationClaim("Decimal.toFixedScale(Int)", "Decimal.toFixedScale"),
+    DeclarationClaim("FailureReason.parse(String)", "FailureReason.parse"),
+    DeclarationClaim("FixedScaleDecimal.map(Decimal=>Decimal)", "FixedScaleDecimal.map"),
+    DeclarationClaim("FixedScaleDecimal.of(Decimal,Int)", "FixedScaleDecimal.of"),
+    DeclarationClaim("FixedScaleDecimal.parse(String)", "FixedScaleDecimal.parse"),
+    DeclarationClaim("FloatingRate.parse(String)", "FloatingRate.parse"),
+    DeclarationClaim("FloatingRateIndex.parse(String)", "FloatingRateIndex.parse"),
+    DeclarationClaim("FloatingRateIndex.parse(String,Tenor)", "FloatingRateIndex.parse"),
+    DeclarationClaim("FloatingRateName.currency()", "FloatingRateName.currency"),
+    DeclarationClaim("FloatingRateName.defaultIborIndex(Currency)", "FloatingRateName.defaultIborIndex"),
+    DeclarationClaim("FloatingRateName.defaultOvernightIndex(Currency)", "FloatingRateName.defaultOvernightIndex"),
+    DeclarationClaim("FloatingRateName.defaultTenor()", "FloatingRateName.defaultTenor"),
+    DeclarationClaim("FloatingRateName.normalized()", "FloatingRateName.normalized"),
+    DeclarationClaim("FloatingRateName.parse(String)", "FloatingRateName.parse"),
+    DeclarationClaim("FloatingRateName.toFloatingRateIndex()", "FloatingRateName.toFloatingRateIndex"),
+    DeclarationClaim("FloatingRateName.toFloatingRateIndex(Tenor)", "FloatingRateName.toFloatingRateIndex"),
+    DeclarationClaim("FloatingRateName.toIborIndex(Tenor)", "FloatingRateName.toIborIndex"),
+    DeclarationClaim("FloatingRateName.toIborIndexFixingOffset()", "FloatingRateName.toIborIndexFixingOffset"),
+    DeclarationClaim("FloatingRateName.toOvernightIndex()", "FloatingRateName.toOvernightIndex"),
+    DeclarationClaim("FloatingRateName.toPriceIndex()", "FloatingRateName.toPriceIndex"),
+    DeclarationClaim("FloatingRateType.parse(String)", "FloatingRateType.parse"),
+    DeclarationClaim("Frequency.eventsPerYear()", "Frequency.eventsPerYear"),
+    DeclarationClaim("Frequency.exactDivide(Frequency)", "Frequency.exactDivide"),
+    DeclarationClaim("Frequency.of(Period)", "Frequency.of"),
+    DeclarationClaim("Frequency.ofDays(Int)", "Frequency.ofDays"),
+    DeclarationClaim("Frequency.ofMonths(Int)", "Frequency.ofMonths"),
+    DeclarationClaim("Frequency.ofWeeks(Int)", "Frequency.ofWeeks"),
+    DeclarationClaim("Frequency.ofYears(Int)", "Frequency.ofYears"),
+    DeclarationClaim("Frequency.parse(String)", "Frequency.parse"),
+    DeclarationClaim("FxConvertible.convertedTo(Currency,FxRateProvider)", "FxConvertible.convertedTo"),
+    DeclarationClaim("FxIndex.calculateFixingFromMaturity(LocalDate,ReferenceData)", "FxIndex.calculateFixingFromMaturity"),
+    DeclarationClaim("FxIndex.calculateMaturityFromFixing(LocalDate,ReferenceData)", "FxIndex.calculateMaturityFromFixing"),
+    DeclarationClaim("FxIndex.of(CurrencyPair)", "FxIndex.of"),
+    DeclarationClaim("FxIndex.of(String)", "FxIndex.of"),
+    DeclarationClaim("FxIndex.parse(String)", "FxIndex.parse"),
+    DeclarationClaim("FxIndex.resolve(ReferenceData)", "FxIndex.resolve"),
+    DeclarationClaim("FxIndexObservation.of(FxIndex,LocalDate,ReferenceData)", "FxIndexObservation.of"),
+    DeclarationClaim("FxMatrix.convert(CurrencyAmount,Currency)", "FxMatrix.convert"),
+    DeclarationClaim("FxMatrix.convert(MultiCurrencyAmount,Currency)", "FxMatrix.convert"),
+    DeclarationClaim("FxMatrix.fromMatrix(Vector[Currency],DoubleMatrix)", "FxMatrix.fromMatrix"),
+    DeclarationClaim("FxMatrix.fxRate(Currency,Currency)", "FxMatrix.fxRate"),
+    DeclarationClaim("FxMatrix.merge(FxMatrix)", "FxMatrix.merge"),
+    DeclarationClaim("FxMatrix.of(Iterable[FxRate])", "FxMatrix.of"),
+    DeclarationClaim("FxMatrix.ofRates(Iterable[(CurrencyPair,Double)])", "FxMatrix.ofRates"),
+    DeclarationClaim("FxMatrix.withRate(Currency,Currency,Double)", "FxMatrix.withRate"),
+    DeclarationClaim("FxMatrix.withRate(CurrencyPair,Double)", "FxMatrix.withRate"),
+    DeclarationClaim("FxMatrix.withRates(Iterable[(CurrencyPair,Double)])", "FxMatrix.withRates"),
+    DeclarationClaim("FxRate.crossRate(FxRate)", "FxRate.crossRate"),
+    DeclarationClaim("FxRate.fxRate(Currency,Currency)", "FxRate.fxRate"),
+    DeclarationClaim("FxRate.of(Currency,Currency,Double)", "FxRate.of"),
+    DeclarationClaim("FxRate.of(CurrencyPair,Double)", "FxRate.of"),
+    DeclarationClaim("FxRate.parse(String)", "FxRate.parse"),
+    DeclarationClaim("FxRateProvider.convert(Decimal,Currency,Currency)", "FxRateProvider.convert"),
+    DeclarationClaim("FxRateProvider.convert(Double,Currency,Currency)", "FxRateProvider.convert"),
+    DeclarationClaim("FxRateProvider.fxRate(Currency,Currency)", "FxRateProvider.fxRate"),
+    DeclarationClaim("FxRateProvider.fxRate(CurrencyPair)", "FxRateProvider.fxRate"),
+    DeclarationClaim("HalfUp.ofDecimalPlaces(Int)", "HalfUp.ofDecimalPlaces"),
+    DeclarationClaim("HalfUp.ofFractionalDecimalPlaces(Int,Int)", "HalfUp.ofFractionalDecimalPlaces"),
+    DeclarationClaim("HolidayCalendarId.resolve(ReferenceData)", "HolidayCalendarId.resolve"),
+    DeclarationClaim("HolidayCalendars.of(String)", "HolidayCalendars.of"),
+    DeclarationClaim("IborIndex.calculateEffectiveFromFixing(LocalDate,ReferenceData)", "IborIndex.calculateEffectiveFromFixing"),
+    DeclarationClaim("IborIndex.calculateFixingFromEffective(LocalDate,ReferenceData)", "IborIndex.calculateFixingFromEffective"),
+    DeclarationClaim("IborIndex.calculateMaturityFromEffective(LocalDate,ReferenceData)", "IborIndex.calculateMaturityFromEffective"),
+    DeclarationClaim("IborIndex.calculateMaturityFromFixing(LocalDate,ReferenceData)", "IborIndex.calculateMaturityFromFixing"),
+    DeclarationClaim("IborIndex.parse(String)", "IborIndex.parse"),
+    DeclarationClaim("IborIndex.resolve(ReferenceData)", "IborIndex.resolve"),
+    DeclarationClaim("IborIndexObservation.of(IborIndex,LocalDate,ReferenceData)", "IborIndexObservation.of"),
+    DeclarationClaim("IborIndexObservation.resolve(IborIndex,ReferenceData)", "IborIndexObservation.resolve"),
+    DeclarationClaim("FxIndexObservation.resolve(FxIndex,ReferenceData)", "FxIndexObservation.resolve"),
+    DeclarationClaim("OvernightIndexObservation.resolve(OvernightIndex,ReferenceData)",
+      "OvernightIndexObservation.resolve"),
+    DeclarationClaim("ImmutableReferenceData.of(ReferenceData.Entry[_]*)", "ImmutableReferenceData.of"),
+    DeclarationClaim("Index.parse(String)", "Index.parse"),
+    DeclarationClaim("MarketTenor.ofSpot(Tenor)", "MarketTenor.ofSpot"),
+    DeclarationClaim("MarketTenor.ofSpotDays(Int)", "MarketTenor.ofSpotDays"),
+    DeclarationClaim("MarketTenor.ofSpotMonths(Int)", "MarketTenor.ofSpotMonths"),
+    DeclarationClaim("MarketTenor.ofSpotYears(Int)", "MarketTenor.ofSpotYears"),
+    DeclarationClaim("MarketTenor.parse(String)", "MarketTenor.parse"),
+    DeclarationClaim("Money.convertedTo(Currency,BigDecimal)", "Money.convertedTo"),
+    DeclarationClaim("Money.convertedTo(Currency,Decimal)", "Money.convertedTo"),
+    DeclarationClaim("Money.convertedTo(Currency,FxRateProvider)", "Money.convertedTo"),
+    DeclarationClaim("Money.getValue()", "Money.getValue"),
+    DeclarationClaim("Money.mapAmount(BigDecimal=>BigDecimal)", "Money.mapAmount"),
+    DeclarationClaim("Money.minus(Money)", "Money.minus"),
+    DeclarationClaim("Money.of(Currency,BigDecimal)", "Money.of"),
+    DeclarationClaim("Money.of(Currency,Double)", "Money.of"),
+    DeclarationClaim("Money.of(CurrencyAmount)", "Money.of"),
+    DeclarationClaim("Money.parse(String)", "Money.parse"),
+    DeclarationClaim("Money.plus(Money)", "Money.plus"),
+    DeclarationClaim("MultiCurrencyAmount.convertedTo(Currency,FxRateProvider)", "MultiCurrencyAmount.convertedTo"),
+    DeclarationClaim("MultiCurrencyAmount.getAmount(Currency)", "MultiCurrencyAmount.getAmount"),
+    DeclarationClaim("MultiCurrencyAmount.of(Currency,Double)", "MultiCurrencyAmount.of"),
+    DeclarationClaim("MultiCurrencyAmount.of(CurrencyAmount*)", "MultiCurrencyAmount.of"),
+    DeclarationClaim("MultiCurrencyAmount.of(Iterable[CurrencyAmount])", "MultiCurrencyAmount.of"),
+    DeclarationClaim("MultiCurrencyAmount.of(Map[Currency,Double])", "MultiCurrencyAmount.of"),
+    DeclarationClaim("MultiCurrencyAmountArray.convertedTo(Currency,FxRateProvider)", "MultiCurrencyAmountArray.convertedTo"),
+    DeclarationClaim("MultiCurrencyAmountArray.getValues(Currency)", "MultiCurrencyAmountArray.getValues"),
+    DeclarationClaim("MultiCurrencyAmountArray.minus(MultiCurrencyAmount)", "MultiCurrencyAmountArray.minus(MultiCurrencyAmount)"),
+    DeclarationClaim("MultiCurrencyAmountArray.minus(MultiCurrencyAmountArray)", "MultiCurrencyAmountArray.minus(MultiCurrencyAmountArray)"),
+    DeclarationClaim("MultiCurrencyAmountArray.of(Map[Currency,DoubleArray])", "MultiCurrencyAmountArray.of"),
+    DeclarationClaim("MultiCurrencyAmountArray.plus(MultiCurrencyAmount)", "MultiCurrencyAmountArray.plus(MultiCurrencyAmount)"),
+    DeclarationClaim("MultiCurrencyAmountArray.plus(MultiCurrencyAmountArray)", "MultiCurrencyAmountArray.plus(MultiCurrencyAmountArray)"),
+    DeclarationClaim("MultiCurrencyAmountArray.total(Iterable[CurrencyAmountArray])", "MultiCurrencyAmountArray.total"),
+    DeclarationClaim("NamedEnum.parse(String)", "NamedEnum.parse"),
+    DeclarationClaim("OvernightIndex.calculateEffectiveFromFixing(LocalDate,ReferenceData)", "OvernightIndex.calculateEffectiveFromFixing"),
+    DeclarationClaim("OvernightIndex.calculateFixingFromEffective(LocalDate,ReferenceData)", "OvernightIndex.calculateFixingFromEffective"),
+    DeclarationClaim("OvernightIndex.calculateMaturityFromEffective(LocalDate,ReferenceData)", "OvernightIndex.calculateMaturityFromEffective"),
+    DeclarationClaim("OvernightIndex.calculateMaturityFromFixing(LocalDate,ReferenceData)", "OvernightIndex.calculateMaturityFromFixing"),
+    DeclarationClaim("OvernightIndex.calculatePublicationFromFixing(LocalDate,ReferenceData)", "OvernightIndex.calculatePublicationFromFixing"),
+    DeclarationClaim("OvernightIndex.parse(String)", "OvernightIndex.parse"),
+    DeclarationClaim("OvernightIndexObservation.of(OvernightIndex,LocalDate,ReferenceData)", "OvernightIndexObservation.of"),
+    DeclarationClaim("Payment.convertedTo(Currency,FxRateProvider)", "Payment.convertedTo"),
+    DeclarationClaim("Payment.of(Currency,Double,LocalDate)", "Payment.of"),
+    DeclarationClaim("PeriodAdditionConvention.parse(String)", "PeriodAdditionConvention.parse"),
+    DeclarationClaim("PeriodAdjustment.adjust(LocalDate,ReferenceData)", "PeriodAdjustment.adjust"),
+    DeclarationClaim("PeriodAdjustment.of(Period,PeriodAdditionConvention,BusinessDayAdjustment)", "PeriodAdjustment.of"),
+    DeclarationClaim("PeriodAdjustment.ofLastBusinessDay(Period,BusinessDayAdjustment)", "PeriodAdjustment.ofLastBusinessDay"),
+    DeclarationClaim("PeriodAdjustment.ofLastDay(Period,BusinessDayAdjustment)", "PeriodAdjustment.ofLastDay"),
+    DeclarationClaim("PeriodAdjustment.resolve(ReferenceData)", "PeriodAdjustment.resolve"),
+    DeclarationClaim("PeriodicSchedule.createAdjustedDates(ReferenceData)", "PeriodicSchedule.createAdjustedDates"),
+    DeclarationClaim("PeriodicSchedule.createSchedule(ReferenceData)", "PeriodicSchedule.createSchedule"),
+    DeclarationClaim("PeriodicSchedule.createSchedule(ReferenceData,Boolean)", "PeriodicSchedule.createSchedule"),
+    DeclarationClaim("PeriodicSchedule.createUnadjustedDates()", "PeriodicSchedule.createUnadjustedDates"),
+    DeclarationClaim("PeriodicSchedule.createUnadjustedDates(ReferenceData)", "PeriodicSchedule.createUnadjustedDates"),
+    DeclarationClaim("PeriodicSchedule.of(LocalDate,LocalDate,Frequency,BusinessDayAdjustment)", "PeriodicSchedule.of"),
+    DeclarationClaim("PeriodicSchedule.of(LocalDate,LocalDate,Frequency,BusinessDayAdjustment,Option[BusinessDayAdjustment],Option[BusinessDayAdjustment],Option[StubConvention],Option[RollConvention],Option[LocalDate],Option[LocalDate],Option[AdjustableDate])", "PeriodicSchedule.of"),
+    DeclarationClaim("PeriodicSchedule.of(LocalDate,LocalDate,Frequency,BusinessDayAdjustment,StubConvention,Boolean)", "PeriodicSchedule.of"),
+    DeclarationClaim("PeriodicSchedule.of(LocalDate,LocalDate,Frequency,BusinessDayAdjustment,StubConvention,RollConvention)", "PeriodicSchedule.of"),
+    DeclarationClaim("PeriodicSchedule.replaceStartDate(LocalDate)", "PeriodicSchedule.replaceStartDate"),
+    DeclarationClaim("PeriodicSchedule.withBusinessDayAdjustment(BusinessDayAdjustment)", "PeriodicSchedule.withBusinessDayAdjustment"),
+    DeclarationClaim("PeriodicSchedule.withEndDate(LocalDate)", "PeriodicSchedule.withEndDate"),
+    DeclarationClaim("PeriodicSchedule.withEndDateBusinessDayAdjustment(Option[BusinessDayAdjustment])", "PeriodicSchedule.withEndDateBusinessDayAdjustment"),
+    DeclarationClaim("PeriodicSchedule.withFirstRegularStartDate(Option[LocalDate])", "PeriodicSchedule.withFirstRegularStartDate"),
+    DeclarationClaim("PeriodicSchedule.withLastRegularEndDate(Option[LocalDate])", "PeriodicSchedule.withLastRegularEndDate"),
+    DeclarationClaim("PeriodicSchedule.withOverrideStartDate(Option[AdjustableDate])", "PeriodicSchedule.withOverrideStartDate"),
+    DeclarationClaim("PeriodicSchedule.withRollConvention(Option[RollConvention])", "PeriodicSchedule.withRollConvention"),
+    DeclarationClaim("PeriodicSchedule.withStartDate(LocalDate)", "PeriodicSchedule.withStartDate"),
+    DeclarationClaim("PeriodicSchedule.withStartDateBusinessDayAdjustment(Option[BusinessDayAdjustment])", "PeriodicSchedule.withStartDateBusinessDayAdjustment"),
+    DeclarationClaim("PeriodicSchedule.withStubConvention(Option[StubConvention])", "PeriodicSchedule.withStubConvention"),
+    DeclarationClaim("PriceIndex.parse(String)", "PriceIndex.parse"),
+    DeclarationClaim("RateIndex.parse(String)", "RateIndex.parse"),
+    DeclarationClaim("ReferenceData.getValue(ReferenceDataId[T])", "ReferenceData.getValue"),
+    DeclarationClaim("ReferenceData.of(Entry[_]*)", "ReferenceData.of"),
+    DeclarationClaim("ReferenceDataId.resolve(ReferenceData)", "ReferenceDataId.resolve"),
+    DeclarationClaim("Resolvable.resolve(ReferenceData)", "Resolvable.resolve"),
+    DeclarationClaim("ResolvableCalculationTarget.resolveTarget(ReferenceData)", "ResolvableCalculationTarget.resolveTarget"),
+    DeclarationClaim("RollConvention.ofDayOfMonth(Int)", "RollConvention.ofDayOfMonth"),
+    DeclarationClaim("RollConvention.parse(String)", "RollConvention.parse"),
+    DeclarationClaim("Rounding.ofDecimalPlaces(Int)", "Rounding.ofDecimalPlaces"),
+    DeclarationClaim("Rounding.ofFractionalDecimalPlaces(Int,Int)", "Rounding.ofFractionalDecimalPlaces"),
+    DeclarationClaim("Schedule.merge(Int,LocalDate,LocalDate)", "Schedule.merge"),
+    DeclarationClaim("Schedule.mergeRegular(Int,Boolean)", "Schedule.mergeRegular"),
+    DeclarationClaim("Schedule.of(NonEmptyList[SchedulePeriod],Frequency,RollConvention)", "Schedule.of"),
+    DeclarationClaim("Schedule.toAdjusted(DateAdjuster)", "Schedule.toAdjusted"),
+    DeclarationClaim("SchedulePeriod.of(LocalDate,LocalDate)", "SchedulePeriod.of"),
+    DeclarationClaim("SchedulePeriod.of(LocalDate,LocalDate,LocalDate,LocalDate)", "SchedulePeriod.of"),
+    DeclarationClaim("SchedulePeriod.subSchedule(Frequency,RollConvention,StubConvention,BusinessDayAdjustment)", "SchedulePeriod.subSchedule"),
+    DeclarationClaim("SchedulePeriod.toAdjusted(DateAdjuster)", "SchedulePeriod.toAdjusted"),
+    DeclarationClaim("SequenceDate.base(Int)", "SequenceDate.base"),
+    DeclarationClaim("SequenceDate.base(Period,Int)", "SequenceDate.base"),
+    DeclarationClaim("SequenceDate.base(YearMonth)", "SequenceDate.base"),
+    DeclarationClaim("SequenceDate.base(YearMonth,Int)", "SequenceDate.base"),
+    DeclarationClaim("SequenceDate.full(Int)", "SequenceDate.full"),
+    DeclarationClaim("SequenceDate.full(Period,Int)", "SequenceDate.full"),
+    DeclarationClaim("SequenceDate.full(YearMonth)", "SequenceDate.full"),
+    DeclarationClaim("SequenceDate.full(YearMonth,Int)", "SequenceDate.full"),
+    DeclarationClaim("SequenceDate.of(Option[YearMonth],Option[Period],Int,Boolean)", "SequenceDate.of"),
+    DeclarationClaim("StandardId.of(String,String)", "StandardId.of"),
+    DeclarationClaim("StandardId.parse(String)", "StandardId.parse"),
+    DeclarationClaim("StandardSchemes.createTicMic(String,String)", "StandardSchemes.createTicMic"),
+    DeclarationClaim("StandardSchemes.splitTicMic(StandardId)", "StandardSchemes.splitTicMic"),
+    DeclarationClaim("StubConvention.parse(String)", "StubConvention.parse"),
+    DeclarationClaim("Tenor.of(Period)", "Tenor.of"),
+    DeclarationClaim("Tenor.ofDays(Int)", "Tenor.ofDays"),
+    DeclarationClaim("Tenor.ofMonths(Int)", "Tenor.ofMonths"),
+    DeclarationClaim("Tenor.ofWeeks(Int)", "Tenor.ofWeeks"),
+    DeclarationClaim("Tenor.ofYears(Int)", "Tenor.ofYears"),
+    DeclarationClaim("Tenor.parse(String)", "Tenor.parse"),
+    DeclarationClaim("TenorAdjustment.adjust(LocalDate,ReferenceData)", "TenorAdjustment.adjust"),
+    DeclarationClaim("TenorAdjustment.of(Tenor,PeriodAdditionConvention,BusinessDayAdjustment)", "TenorAdjustment.of"),
+    DeclarationClaim("TenorAdjustment.ofLastBusinessDay(Tenor,BusinessDayAdjustment)", "TenorAdjustment.ofLastBusinessDay"),
+    DeclarationClaim("TenorAdjustment.ofLastDay(Tenor,BusinessDayAdjustment)", "TenorAdjustment.ofLastDay"),
+    DeclarationClaim("TenorAdjustment.resolve(ReferenceData)", "TenorAdjustment.resolve"),
+    DeclarationClaim("TypedStringCompanion.of(String)", "TypedStringCompanion.of"),
+    DeclarationClaim("Validate.cond(Boolean,=>A,=>Failure)", "Validate.cond"),
+    DeclarationClaim("Validate.fromResult(FailureOr[A])", "Validate.fromResult"),
+    DeclarationClaim("Validate.inOrderNotEqual(T,T,String,String,Order[T])", "Validate.inOrderNotEqual"),
+    DeclarationClaim("Validate.inOrderOrEqual(T,T,String,String,Order[T])", "Validate.inOrderOrEqual"),
+    DeclarationClaim("Validate.inRange(Double,Double,Double,String)", "Validate.inRange"),
+    DeclarationClaim("Validate.inRange(Int,Int,Int,String)", "Validate.inRange"),
+    DeclarationClaim("Validate.inRangeComparable(T,T,T,String,Order[T])", "Validate.inRangeComparable"),
+    DeclarationClaim("Validate.inRangeComparableExclusive(T,T,T,String,Order[T])", "Validate.inRangeComparableExclusive"),
+    DeclarationClaim("Validate.inRangeComparableInclusive(T,T,T,String,Order[T])", "Validate.inRangeComparableInclusive"),
+    DeclarationClaim("Validate.inRangeExclusive(Double,Double,Double,String)", "Validate.inRangeExclusive"),
+    DeclarationClaim("Validate.inRangeExclusive(Int,Int,Int,String)", "Validate.inRangeExclusive"),
+    DeclarationClaim("Validate.inRangeInclusive(Double,Double,Double,String)", "Validate.inRangeInclusive"),
+    DeclarationClaim("Validate.inRangeInclusive(Int,Int,Int,String)", "Validate.inRangeInclusive"),
+    DeclarationClaim("Validate.invalid(Failure)", "Validate.invalid"),
+    DeclarationClaim("Validate.invalidNec(String)", "Validate.invalidNec"),
+    DeclarationClaim("Validate.isFalse(Boolean,=>String)", "Validate.isFalse"),
+    DeclarationClaim("Validate.isTrue(Boolean)", "Validate.isTrue"),
+    DeclarationClaim("Validate.isTrue(Boolean,=>String)", "Validate.isTrue"),
+    DeclarationClaim("Validate.matches(Char=>Boolean,Int,Int,String,String,String)", "Validate.matches"),
+    DeclarationClaim("Validate.matches(Regex,String,String)", "Validate.matches"),
+    DeclarationClaim("Validate.noDuplicates(Array[Double],String)", "Validate.noDuplicates"),
+    DeclarationClaim("Validate.noDuplicatesSorted(Array[Double],String)", "Validate.noDuplicatesSorted"),
+    DeclarationClaim("Validate.notBlank(String,String)", "Validate.notBlank"),
+    DeclarationClaim("Validate.notEmpty(Array[Double],String)", "Validate.notEmpty"),
+    DeclarationClaim("Validate.notEmpty(Array[Int],String)", "Validate.notEmpty"),
+    DeclarationClaim("Validate.notEmpty(Array[Long],String)", "Validate.notEmpty"),
+    DeclarationClaim("Validate.notEmpty(Array[T],String)", "Validate.notEmpty"),
+    DeclarationClaim("Validate.notEmpty(Iterable[T],String)", "Validate.notEmpty"),
+    DeclarationClaim("Validate.notEmpty(Map[K,V],String)", "Validate.notEmpty"),
+    DeclarationClaim("Validate.notEmpty(String,String)", "Validate.notEmpty"),
+    DeclarationClaim("Validate.notNaN(Double,String)", "Validate.notNaN"),
+    DeclarationClaim("Validate.notNegative(Decimal,String)", "Validate.notNegative"),
+    DeclarationClaim("Validate.notNegative(Double,String)", "Validate.notNegative"),
+    DeclarationClaim("Validate.notNegative(Int,String)", "Validate.notNegative"),
+    DeclarationClaim("Validate.notNegative(Long,String)", "Validate.notNegative"),
+    DeclarationClaim("Validate.notNegativeOrZero(Decimal,String)", "Validate.notNegativeOrZero"),
+    DeclarationClaim("Validate.notNegativeOrZero(Double,Double,String)", "Validate.notNegativeOrZero"),
+    DeclarationClaim("Validate.notNegativeOrZero(Double,String)", "Validate.notNegativeOrZero"),
+    DeclarationClaim("Validate.notNegativeOrZero(Int,String)", "Validate.notNegativeOrZero"),
+    DeclarationClaim("Validate.notNegativeOrZero(Long,String)", "Validate.notNegativeOrZero"),
+    DeclarationClaim("Validate.notPositive(Decimal,String)", "Validate.notPositive"),
+    DeclarationClaim("Validate.notPositive(Double,String)", "Validate.notPositive"),
+    DeclarationClaim("Validate.notPositive(Int,String)", "Validate.notPositive"),
+    DeclarationClaim("Validate.notPositive(Long,String)", "Validate.notPositive"),
+    DeclarationClaim("Validate.notPositiveIfPresent(Option[Decimal],String)", "Validate.notPositiveIfPresent"),
+    DeclarationClaim("Validate.notZero(Double,Double,String)", "Validate.notZero"),
+    DeclarationClaim("Validate.notZero(Double,String)", "Validate.notZero"),
+    DeclarationClaim("Validate.toResult(ValidatedFailures[A])", "Validate.toResult"),
+    DeclarationClaim("Validate.valid(A)", "Validate.valid"),
+    DeclarationClaim("ValueAdjustmentType.parse(String)", "ValueAdjustmentType.parse"),
+    DeclarationClaim("ValueSchedule.of(Double)", "ValueSchedule.of"),
+    DeclarationClaim("ValueSchedule.of(Double,List[ValueStep])", "ValueSchedule.of"),
+    DeclarationClaim("ValueSchedule.of(Double,List[ValueStep],Option[ValueStepSequence])", "ValueSchedule.of"),
+    DeclarationClaim("ValueSchedule.of(Double,ValueStep,ValueStep*)", "ValueSchedule.of"),
+    DeclarationClaim("ValueSchedule.of(Double,ValueStepSequence)", "ValueSchedule.of"),
+    DeclarationClaim("ValueSchedule.resolveValues(Schedule)", "ValueSchedule.resolveValues"),
+    DeclarationClaim("ValueSchedule.withStepSequence(ValueStepSequence)", "ValueSchedule.withStepSequence"),
+    DeclarationClaim("ValueSchedule.withSteps(List[ValueStep])", "ValueSchedule.withSteps"),
+    DeclarationClaim("ValueStep.of(Int,ValueAdjustment)", "ValueStep.of"),
+    DeclarationClaim("ValueStep.of(Option[Int],Option[LocalDate],ValueAdjustment)", "ValueStep.of"),
+    DeclarationClaim("ValueStepSequence.of(LocalDate,LocalDate,Frequency,ValueAdjustment)", "ValueStepSequence.of"),
+    DeclarationClaim("ValueWithFailures.combineValuesAsList(IterableOnce[ValueWithFailures[A]])", "ValueWithFailures.combineValuesAsList"),
+    DeclarationClaim("ValueWithFailures.combineValuesAsSet(IterableOnce[ValueWithFailures[A]])", "ValueWithFailures.combineValuesAsSet"),
+    DeclarationClaim("ValueWithFailures.of(A)", "ValueWithFailures.of"),
+    DeclarationClaim("ValueWithFailures.of(A,IterableOnce[Failure])", "ValueWithFailures.of"),
+    DeclarationClaim("ValueWithFailures.withValue(ValueWithFailures[A],B)", "ValueWithFailures.withValue"),
+    DeclarationClaim("ValueWithFailures.withValue(ValueWithFailures[A],B,IterableOnce[Failure])", "ValueWithFailures.withValue"),
+    DeclarationClaim("ValueWithFailures.withValue(ValueWithFailures[A],ValueWithFailures[B])", "ValueWithFailures.withValue"),
+    DeclarationClaim("result.combine(IterableOnce[Either[E,A]],List[A]=>B)", "result.combine"),
+    DeclarationClaim("result.flatCombine(IterableOnce[Either[E,A]],List[A]=>Either[E,B])", "result.flatCombine"),
+    DeclarationClaim("result.sequence(IterableOnce[Either[E,A]])", "result.sequence"),
+    DeclarationClaim("result.toNec(FailureOr[A])", "result.toNec"),
+    DeclarationClaim("result.toResult(ValidatedFailures[A])", "result.toResult"),
+    DeclarationClaim("result.toValidated(ResultNec[A])", "result.toValidated"),
+    DeclarationClaim("result.withAdditionalFailures(ValueWithFailures[A],IterableOnce[Failure])", "result.withAdditionalFailures")
+  )
+
+  /**
+   * Every public declaration whose scaladoc documents a throw, each with the row that accounts
+   * for it.
+   */
+  private val throwingClaims: List[DeclarationClaim] = List(
+    DeclarationClaim("ArgCheck.inOrderNotEqual(T,T,String,String,Order[T])", "ArgCheck.inOrderNotEqual"),
+    DeclarationClaim("ArgCheck.inOrderOrEqual(T,T,String,String,Order[T])", "ArgCheck.inOrderOrEqual"),
+    DeclarationClaim("ArgCheck.inRange(Double,Double,Double,String)", "ArgCheck.inRange"),
+    DeclarationClaim("ArgCheck.inRange(Int,Int,Int,String)", "ArgCheck.inRange"),
+    DeclarationClaim("ArgCheck.inRangeComparable(T,T,T,String,Order[T])", "ArgCheck.inRangeComparable"),
+    DeclarationClaim("ArgCheck.inRangeComparableExclusive(T,T,T,String,Order[T])", "ArgCheck.inRangeComparableExclusive"),
+    DeclarationClaim("ArgCheck.inRangeComparableInclusive(T,T,T,String,Order[T])", "ArgCheck.inRangeComparableInclusive"),
+    DeclarationClaim("ArgCheck.inRangeExclusive(Double,Double,Double,String)", "ArgCheck.inRangeExclusive"),
+    DeclarationClaim("ArgCheck.inRangeExclusive(Int,Int,Int,String)", "ArgCheck.inRangeExclusive"),
+    DeclarationClaim("ArgCheck.inRangeInclusive(Double,Double,Double,String)", "ArgCheck.inRangeInclusive"),
+    DeclarationClaim("ArgCheck.inRangeInclusive(Int,Int,Int,String)", "ArgCheck.inRangeInclusive"),
+    DeclarationClaim("ArgCheck.isFalse(Boolean,=>String)", "ArgCheck.isFalse"),
+    DeclarationClaim("ArgCheck.isTrue(Boolean)", "ArgCheck.isTrue"),
+    DeclarationClaim("ArgCheck.isTrue(Boolean,=>String)", "ArgCheck.isTrue"),
+    DeclarationClaim("ArgCheck.matches(Char=>Boolean,Int,Int,String,String,String)", "ArgCheck.matches"),
+    DeclarationClaim("ArgCheck.matches(Regex,String,String)", "ArgCheck.matches"),
+    DeclarationClaim("ArgCheck.noDuplicates(Array[Double],String)", "ArgCheck.noDuplicates"),
+    DeclarationClaim("ArgCheck.noDuplicatesSorted(Array[Double],String)", "ArgCheck.noDuplicatesSorted"),
+    DeclarationClaim("ArgCheck.notBlank(String,String)", "ArgCheck.notBlank"),
+    DeclarationClaim("ArgCheck.notEmpty(Array[Double],String)", "ArgCheck.notEmpty"),
+    DeclarationClaim("ArgCheck.notEmpty(Array[Int],String)", "ArgCheck.notEmpty"),
+    DeclarationClaim("ArgCheck.notEmpty(Array[Long],String)", "ArgCheck.notEmpty"),
+    DeclarationClaim("ArgCheck.notEmpty(Array[T],String)", "ArgCheck.notEmpty"),
+    DeclarationClaim("ArgCheck.notEmpty(Iterable[T],String)", "ArgCheck.notEmpty"),
+    DeclarationClaim("ArgCheck.notEmpty(Map[K,V],String)", "ArgCheck.notEmpty"),
+    DeclarationClaim("ArgCheck.notEmpty(Matrix,String)", "ArgCheck.notEmpty"),
+    DeclarationClaim("ArgCheck.notEmpty(String,String)", "ArgCheck.notEmpty"),
+    DeclarationClaim("ArgCheck.notNaN(Double,String)", "ArgCheck.notNaN"),
+    DeclarationClaim("ArgCheck.notNegative(Decimal,String)", "ArgCheck.notNegative"),
+    DeclarationClaim("ArgCheck.notNegative(Double,String)", "ArgCheck.notNegative"),
+    DeclarationClaim("ArgCheck.notNegative(Int,String)", "ArgCheck.notNegative"),
+    DeclarationClaim("ArgCheck.notNegative(Long,String)", "ArgCheck.notNegative"),
+    DeclarationClaim("ArgCheck.notNegativeOrZero(Decimal,String)", "ArgCheck.notNegativeOrZero"),
+    DeclarationClaim("ArgCheck.notNegativeOrZero(Double,Double,String)", "ArgCheck.notNegativeOrZero"),
+    DeclarationClaim("ArgCheck.notNegativeOrZero(Double,String)", "ArgCheck.notNegativeOrZero"),
+    DeclarationClaim("ArgCheck.notNegativeOrZero(Int,String)", "ArgCheck.notNegativeOrZero"),
+    DeclarationClaim("ArgCheck.notNegativeOrZero(Long,String)", "ArgCheck.notNegativeOrZero"),
+    DeclarationClaim("ArgCheck.notPositive(Decimal,String)", "ArgCheck.notPositive"),
+    DeclarationClaim("ArgCheck.notPositive(Double,String)", "ArgCheck.notPositive"),
+    DeclarationClaim("ArgCheck.notPositive(Int,String)", "ArgCheck.notPositive"),
+    DeclarationClaim("ArgCheck.notPositive(Long,String)", "ArgCheck.notPositive"),
+    DeclarationClaim("ArgCheck.notPositiveIfPresent(Option[Decimal],String)", "ArgCheck.notPositiveIfPresent"),
+    DeclarationClaim("ArgCheck.notZero(Double,Double,String)", "ArgCheck.notZero"),
+    DeclarationClaim("ArgCheck.notZero(Double,String)", "ArgCheck.notZero"),
+    DeclarationClaim("BigMoney.convertedTo(Currency,BigDecimal)", "BigMoney.convertedTo(eighteen digits)"),
+    DeclarationClaim("BigMoney.convertedTo(Currency,Decimal)", "BigMoney.convertedTo(eighteen digits)"),
+    DeclarationClaim("BigMoney.minus(BigMoney)", "BigMoney.minus(eighteen digits)"),
+    DeclarationClaim("BigMoney.multipliedBy(Long)", "BigMoney.multipliedBy"),
+    DeclarationClaim("BigMoney.plus(BigMoney)", "BigMoney.plus(eighteen digits)"),
+    DeclarationClaim("BigMoney.roundToScale(Int,RoundingMode)", "BigMoney.roundToScale"),
+    DeclarationClaim("BusinessDayConvention.adjust(LocalDate,HolidayCalendar)", "BusinessDayConvention.adjust"),
+    DeclarationClaim("CurrencyAmount.mapAmount(Double=>Double)", "CurrencyAmount.mapAmount"),
+    DeclarationClaim("CurrencyAmount.minus(CurrencyAmount)", "CurrencyAmount.minus(not a number)"),
+    DeclarationClaim("CurrencyAmount.minus(Double)", "CurrencyAmount.minus(not a number)"),
+    DeclarationClaim("CurrencyAmount.multipliedBy(Double)", "CurrencyAmount.multipliedBy"),
+    DeclarationClaim("CurrencyAmount.plus(CurrencyAmount)", "CurrencyAmount.plus(not a number)"),
+    DeclarationClaim("CurrencyAmount.plus(Double)", "CurrencyAmount.plus(not a number)"),
+    DeclarationClaim("CurrencyAmountArray.get(Int)", "CurrencyAmountArray.get(index outside the array)"),
+    DeclarationClaim("CurrencyAmountArray.iterator()", "CurrencyAmountArray.iterator"),
+    DeclarationClaim("CurrencyAmountArray.toList()", "CurrencyAmountArray.toList"),
+    DeclarationClaim("DateAdjuster.adjust(LocalDate)", "DateAdjuster.adjust"),
+    DeclarationClaim("DateAdjuster.adjustInto(Temporal)", "DateAdjuster.adjustInto"),
+    DeclarationClaim("DateSequence.nth(LocalDate,Int)", "DateSequence.nth"),
+    DeclarationClaim("DateSequence.nthOrSame(LocalDate,Int)", "DateSequence.nthOrSame"),
+    DeclarationClaim("DayCount.days(LocalDate,LocalDate)", "DayCount.days"),
+    DeclarationClaim("DayCount.relativeYearFraction(LocalDate,LocalDate)", "DayCount.relativeYearFraction"),
+    DeclarationClaim("DayCount.relativeYearFraction(LocalDate,LocalDate,DayCount.ScheduleInfo)", "DayCount.relativeYearFraction"),
+    DeclarationClaim("DayCount.yearFraction(LocalDate,LocalDate)", "DayCount.yearFraction"),
+    DeclarationClaim("DayCount.yearFraction(LocalDate,LocalDate,DayCount.ScheduleInfo)", "DayCount.yearFraction"),
+    DeclarationClaim("Decimal.dividedBy(Decimal)", "Decimal.dividedBy"),
+    DeclarationClaim("Decimal.dividedBy(Decimal,RoundingMode)", "Decimal.dividedBy"),
+    DeclarationClaim("Decimal.dividedBy(Double)", "Decimal.dividedBy"),
+    DeclarationClaim("Decimal.dividedBy(Long)", "Decimal.dividedBy"),
+    DeclarationClaim("Decimal.format(Int,RoundingMode)", "Decimal.format"),
+    DeclarationClaim("Decimal.formatAtLeast(Int)", "Decimal.formatAtLeast"),
+    DeclarationClaim("Decimal.minus(Decimal)", "Decimal.minus"),
+    DeclarationClaim("Decimal.minus(Double)", "Decimal.minus"),
+    DeclarationClaim("Decimal.minus(Long)", "Decimal.minus"),
+    DeclarationClaim("Decimal.movePoint(Int)", "Decimal.movePoint"),
+    DeclarationClaim("Decimal.multipliedBy(Decimal)", "Decimal.multipliedBy"),
+    DeclarationClaim("Decimal.multipliedBy(Double)", "Decimal.multipliedBy"),
+    DeclarationClaim("Decimal.multipliedBy(Long)", "Decimal.multipliedBy"),
+    DeclarationClaim("Decimal.plus(Decimal)", "Decimal.plus"),
+    DeclarationClaim("Decimal.plus(Double)", "Decimal.plus"),
+    DeclarationClaim("Decimal.plus(Long)", "Decimal.plus"),
+    DeclarationClaim("Decimal.remainder(Decimal)", "Decimal.remainder"),
+    DeclarationClaim("Decimal.roundToPrecision(Int,RoundingMode)", "Decimal.roundToPrecision"),
+    DeclarationClaim("Decimal.roundToScale(Int,RoundingMode)", "Decimal.roundToScale"),
+    DeclarationClaim("DoubleArray.combine(DoubleArray,(Double,Double)=>Double)", "DoubleArray.combine"),
+    DeclarationClaim("DoubleArray.combineReduce(DoubleArray,DoubleArray.DoubleTernaryOperator)", "DoubleArray.combineReduce"),
+    DeclarationClaim("DoubleArray.copyOf(Array[Double],Int)", "DoubleArray.copyOf"),
+    DeclarationClaim("DoubleArray.copyOf(Array[Double],Int,Int)", "DoubleArray.copyOf"),
+    DeclarationClaim("DoubleArray.dividedBy(DoubleArray)", "DoubleArray.dividedBy"),
+    DeclarationClaim("DoubleArray.equalWithTolerance(DoubleArray,Double)", "DoubleArray.equalWithTolerance"),
+    DeclarationClaim("DoubleArray.equalZeroWithTolerance(Double)", "DoubleArray.equalZeroWithTolerance"),
+    DeclarationClaim("DoubleArray.filled(Int)", "DoubleArray.filled"),
+    DeclarationClaim("DoubleArray.filled(Int,Double)", "DoubleArray.filled"),
+    DeclarationClaim("DoubleArray.get(Int)", "DoubleArray.get"),
+    DeclarationClaim("DoubleArray.max()", "DoubleArray.max"),
+    DeclarationClaim("DoubleArray.min()", "DoubleArray.min"),
+    DeclarationClaim("DoubleArray.minus(DoubleArray)", "DoubleArray.minus"),
+    DeclarationClaim("DoubleArray.multipliedBy(DoubleArray)", "DoubleArray.multipliedBy"),
+    DeclarationClaim("DoubleArray.plus(DoubleArray)", "DoubleArray.plus"),
+    DeclarationClaim("DoubleArray.subArray(Int)", "DoubleArray.subArray"),
+    DeclarationClaim("DoubleArray.subArray(Int,Int)", "DoubleArray.subArray"),
+    DeclarationClaim("DoubleArray.tabulate(Int,Int=>Double)", "DoubleArray.tabulate"),
+    DeclarationClaim("DoubleArrayMath.combine(Array[Double],Array[Double],(Double,Double)=>Double)", "DoubleArrayMath.combine"),
+    DeclarationClaim("DoubleArrayMath.combineByAddition(Array[Double],Array[Double])", "DoubleArrayMath.combineByAddition"),
+    DeclarationClaim("DoubleArrayMath.combineByMultiplication(Array[Double],Array[Double])", "DoubleArrayMath.combineByMultiplication"),
+    DeclarationClaim("DoubleArrayMath.fuzzyEquals(Array[Double],Array[Double],Double)", "DoubleArrayMath.fuzzyEquals"),
+    DeclarationClaim("DoubleArrayMath.fuzzyEquals(Double,Double,Double)", "DoubleArrayMath.fuzzyEquals"),
+    DeclarationClaim("DoubleArrayMath.fuzzyEqualsZero(Array[Double],Double)", "DoubleArrayMath.fuzzyEqualsZero"),
+    DeclarationClaim("DoubleArrayMath.reorderedCopy(Array[Double],Array[Int])", "DoubleArrayMath.reorderedCopy"),
+    DeclarationClaim("DoubleArrayMath.sortPairs(Array[Double],Array[Double])", "DoubleArrayMath.sortPairs"),
+    DeclarationClaim("DoubleArrayMath.sortPairs(Array[Double],Array[Int])", "DoubleArrayMath.sortPairs"),
+    DeclarationClaim("DoubleArrayMath.sortPairs(Array[Double],Array[V])", "DoubleArrayMath.sortPairs"),
+    DeclarationClaim("DoubleMatrix.column(Int)", "DoubleMatrix.column"),
+    DeclarationClaim("DoubleMatrix.columnArray(Int)", "DoubleMatrix.columnArray"),
+    DeclarationClaim("DoubleMatrix.combine(DoubleMatrix,(Double,Double)=>Double)", "DoubleMatrix.combine"),
+    DeclarationClaim("DoubleMatrix.filled(Int,Int)", "DoubleMatrix.filled"),
+    DeclarationClaim("DoubleMatrix.filled(Int,Int,Double)", "DoubleMatrix.filled"),
+    DeclarationClaim("DoubleMatrix.get(Int,Int)", "DoubleMatrix.get"),
+    DeclarationClaim("DoubleMatrix.identity(Int)", "DoubleMatrix.identity"),
+    DeclarationClaim("DoubleMatrix.minus(DoubleMatrix)", "DoubleMatrix.minus"),
+    DeclarationClaim("DoubleMatrix.of(Int,Int,Double*)", "DoubleMatrix.of"),
+    DeclarationClaim("DoubleMatrix.ofArrayObjects(Int,Int,RowArrayObjectFunction)", "DoubleMatrix.ofArrayObjects"),
+    DeclarationClaim("DoubleMatrix.ofArrays(Int,Int,RowArrayFunction)", "DoubleMatrix.ofArrays"),
+    DeclarationClaim("DoubleMatrix.plus(DoubleMatrix)", "DoubleMatrix.plus"),
+    DeclarationClaim("DoubleMatrix.row(Int)", "DoubleMatrix.row"),
+    DeclarationClaim("DoubleMatrix.rowArray(Int)", "DoubleMatrix.rowArray"),
+    DeclarationClaim("DoubleMatrix.tabulate(Int,Int,(Int,Int)=>Double)", "DoubleMatrix.tabulate"),
+    DeclarationClaim("FxRate.inverse()", "FxRate.inverse"),
+    DeclarationClaim("FxRate.toConventional()", "FxRate.toConventional"),
+    DeclarationClaim("FxRateProvider.convert(Decimal,Currency,Currency)", "FxRateProvider.convert(eighteen digits)"),
+    DeclarationClaim("HalfUp.round(BigDecimal)", "HalfUp.round"),
+    DeclarationClaim("HolidayCalendar.businessDays(LocalDate,LocalDate)", "HolidayCalendar.businessDays"),
+    DeclarationClaim("HolidayCalendar.daysBetween(LocalDate,LocalDate)", "HolidayCalendar.daysBetween"),
+    DeclarationClaim("HolidayCalendar.holidays(LocalDate,LocalDate)", "HolidayCalendar.holidays"),
+    DeclarationClaim("HolidayCalendar.isBusinessDay(LocalDate)", "HolidayCalendar.isBusinessDay"),
+    DeclarationClaim("HolidayCalendar.isHoliday(LocalDate)", "HolidayCalendar.isHoliday"),
+    DeclarationClaim("HolidayCalendar.isLastBusinessDayOfMonth(LocalDate)", "HolidayCalendar.isLastBusinessDayOfMonth"),
+    DeclarationClaim("HolidayCalendar.lastBusinessDayOfMonth(LocalDate)", "HolidayCalendar.lastBusinessDayOfMonth"),
+    DeclarationClaim("HolidayCalendar.next(LocalDate)", "HolidayCalendar.next"),
+    DeclarationClaim("HolidayCalendar.nextOrSame(LocalDate)", "HolidayCalendar.nextOrSame"),
+    DeclarationClaim("HolidayCalendar.nextSameOrLastInMonth(LocalDate)", "HolidayCalendar.nextSameOrLastInMonth"),
+    DeclarationClaim("HolidayCalendar.previous(LocalDate)", "HolidayCalendar.previous"),
+    DeclarationClaim("HolidayCalendar.previousOrSame(LocalDate)", "HolidayCalendar.previousOrSame"),
+    DeclarationClaim("HolidayCalendar.shift(LocalDate,Int)", "HolidayCalendar.shift"),
+    DeclarationClaim("ImmutableHolidayCalendar.of(HolidayCalendarId,Iterable[LocalDate],Iterable[DayOfWeek],Iterable[LocalDate])", "ImmutableHolidayCalendar.of"),
+    DeclarationClaim("Money.convertedTo(Currency,BigDecimal)", "Money.convertedTo(eighteen digits)"),
+    DeclarationClaim("Money.convertedTo(Currency,Decimal)", "Money.convertedTo(eighteen digits)"),
+    DeclarationClaim("Money.minus(Money)", "Money.minus(eighteen digits)"),
+    DeclarationClaim("Money.multipliedBy(Long)", "Money.multipliedBy"),
+    DeclarationClaim("Money.plus(Money)", "Money.plus(eighteen digits)"),
+    DeclarationClaim("MultiCurrencyAmount.mapAmounts(Double=>Double)", "MultiCurrencyAmount.mapAmounts"),
+    DeclarationClaim("MultiCurrencyAmount.mapCurrencyAmounts(CurrencyAmount=>CurrencyAmount)", "MultiCurrencyAmount.mapCurrencyAmounts"),
+    DeclarationClaim("MultiCurrencyAmount.minus(Currency,Double)", "MultiCurrencyAmount.minus(not a number)"),
+    DeclarationClaim("MultiCurrencyAmount.minus(CurrencyAmount)", "MultiCurrencyAmount.minus(not a number)"),
+    DeclarationClaim("MultiCurrencyAmount.minus(MultiCurrencyAmount)", "MultiCurrencyAmount.minus(not a number)"),
+    DeclarationClaim("MultiCurrencyAmount.multipliedBy(Double)", "MultiCurrencyAmount.multipliedBy"),
+    DeclarationClaim("MultiCurrencyAmount.plus(Currency,Double)", "MultiCurrencyAmount.plus(not a number)"),
+    DeclarationClaim("MultiCurrencyAmount.plus(CurrencyAmount)", "MultiCurrencyAmount.plus(not a number)"),
+    DeclarationClaim("MultiCurrencyAmount.plus(MultiCurrencyAmount)", "MultiCurrencyAmount.plus(not a number)"),
+    DeclarationClaim("MultiCurrencyAmount.total(Iterable[CurrencyAmount])", "MultiCurrencyAmount.total"),
+    DeclarationClaim("MultiCurrencyAmountArray.get(Int)", "MultiCurrencyAmountArray.get(3)"),
+    DeclarationClaim("MultiCurrencyAmountArray.of(Int,Int=>MultiCurrencyAmount)", "MultiCurrencyAmountArray.of(negative size)"),
+    DeclarationClaim("Payment.adjustDate(LocalDate=>LocalDate)", "Payment.adjustDate"),
+    DeclarationClaim("PeriodAdditionConvention.adjust(LocalDate,Period,HolidayCalendar)", "PeriodAdditionConvention.adjust"),
+    DeclarationClaim("Schedule.merge(Int,LocalDate,LocalDate)", "Schedule.merge(dates out of order)"),
+    DeclarationClaim("Schedule.period(Int)", "Schedule.period"),
+    DeclarationClaim("SchedulePeriod.yearFraction(DayCount,DayCount.ScheduleInfo)", "SchedulePeriod.yearFraction"),
+    DeclarationClaim("ValueDerivatives.getDerivative(Int)", "ValueDerivatives.getDerivative")
+  )
+
+  /** Every claim of either side, paired with the side it is written on. */
+  private lazy val allClaims: List[(String, DeclarationClaim)] =
+    failableClaims.map((FailableSide, _)) ::: throwingClaims.map((ThrowingSide, _))
+
+  /** The enumerated declarations of each side, by key. */
+  private lazy val derivedDeclarationsByKey: Map[String, Map[String, List[Declaration]]] =
+    Map(
+      FailableSide -> derivedFailableDeclarations.groupBy(_.key),
+      ThrowingSide -> derivedThrowingDeclarations.groupBy(_.key))
+
+  allClaims.foreach { case (side, claim) =>
+    test(s"declared signature [$side]: ${claim.key} accounted for by ${claim.row}") {
+      withClue(s"the enumeration no longer finds '${claim.key}' among the $side declarations: ") {
+        derivedDeclarationsByKey(side).contains(claim.key) shouldBe true
+      }
+      withClue(s"'${claim.key}' names row '${claim.row}', which is not in the registry: ") {
+        registry.contains(claim.row) shouldBe true
+      }
+      withClue(s"row '${claim.row}' accounts for '${claim.key}' but is not a row of its family: ") {
+        registry.get(claim.row).map(row => row.family) shouldBe Some(familyOf(claim.key))
+      }
+    }
+  }
+
+  //=========================================================================
+  // THE AAP INVENTORY, AS THE PLAN WRITES IT
+  //
+  // The lists below are the inventory of AAP section 0.3.3 transcribed, each entry paired with
+  // the hand-written test that covers it. They are kept because the plan is what this suite is
+  // held to and a reader of the gate has to be able to find a named entry of it, but they are no
+  // longer what makes the coverage exhaustive: the derived enumeration above is, and
+  // `aap_inventory_is_a_subset_of_the_derived_surface` asserts that every name the plan lists is
+  // a family that enumeration found. Two names are not, and are reconciled by name with the
+  // reason - the plan names a shorthand in one case and a member that is total by specification
+  // in the other - so the two lists together, 95 failure-reporting entries and 12 contract
+  // entries, account for every entry the plan's inventory holds.
+  //=========================================================================
+
+  /**
+   * The failure-reporting entries of the inventory of AAP 0.3.3 that name a declaration.
+   *
+   * Each is paired with the hand-written test that covers it, and
+   * `aap_inventory_entries_name_an_existing_test` asserts that the test named still exists, so an
+   * entry whose test is renamed or removed fails the suite rather than passing unnoticed. Several
+   * entries share one test where they share one failure shape, which is why the test names
+   * repeat; each such test holds one table row per entry.
+   */
+  private val aapFailableEntries: List[(String, String)] = List(
+    // FX and currency, 38 entries
     "FxRateProvider.fxRate" -> "FxRateProvider.fxRate reports a rate the provider cannot supply",
     "FxRateProvider.convert" -> "FxRateProvider.convert reports a rate the provider cannot supply",
     "FxMatrix.of" -> "FxMatrix.of reports rates that can never be placed",
@@ -1633,6 +4277,12 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     "Money.minus" -> "Money.plus, Money.minus, BigMoney.plus and BigMoney.minus report a currency mismatch",
     "BigMoney.plus" -> "Money.plus, Money.minus, BigMoney.plus and BigMoney.minus report a currency mismatch",
     "BigMoney.minus" -> "Money.plus, Money.minus, BigMoney.plus and BigMoney.minus report a currency mismatch",
+    "Money.mapAmount" -> "Money.mapAmount and BigMoney.mapAmount report a result no decimal holds",
+    "BigMoney.mapAmount" -> "Money.mapAmount and BigMoney.mapAmount report a result no decimal holds",
+    "CurrencyAmount.toMoney" ->
+      "CurrencyAmount.toMoney and CurrencyAmount.toBigMoney report an amount no decimal holds",
+    "CurrencyAmount.toBigMoney" ->
+      "CurrencyAmount.toMoney and CurrencyAmount.toBigMoney report an amount no decimal holds",
     "CurrencyAmountArray.plus(CurrencyAmountArray)" ->
       "CurrencyAmountArray arithmetic reports size and currency mismatches",
     "CurrencyAmountArray.minus(CurrencyAmountArray)" ->
@@ -1659,7 +4309,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     // Location, 2 entries
     "Country.of" -> "Country.of reports a malformed code and accepts any well-formed one",
     "Country.of3Char" -> "Country.of3Char reports a code that names no country",
-    // Schedule and frequency, 15 entries
+    // Schedule and frequency, 14 entries
     "Frequency.eventsPerYear" -> "Frequency.eventsPerYear reports a frequency with no exact count",
     "Frequency.exactDivide" ->
       "Frequency.exactDivide reports a non-integral ratio and divides an integral one",
@@ -1673,19 +4323,17 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     "PeriodicSchedule.createAdjustedDates" ->
       "PeriodicSchedule.createAdjustedDates reports dates that adjust onto one another",
     "SchedulePeriod.of" -> "SchedulePeriod.of reports dates that describe no period",
-    "Schedule.of" -> "Schedule.of accepts the periods its own type already guarantees",
+    "Schedule.of" -> "Schedule.of reports periods that do not run from earliest to latest",
     "Schedule.merge" -> "Schedule.merge reports a date that matches no period of the schedule",
     "Schedule.mergeRegular" -> "Schedule.mergeRegular reports an unusable group size",
     "Schedule.toAdjusted" -> "Schedule.toAdjusted reports a period that collapses once adjusted",
     "RollConvention.ofDayOfMonth" -> "RollConvention.ofDayOfMonth reports a day outside one to thirty-one",
-    "RollConvention.ofDayOfWeek" -> "RollConvention.ofDayOfWeek is total for every day of the week",
-    // Dates and adjustments, 11 entries
+    // Dates and adjustments, 10 entries
     "Tenor.of" -> "Tenor.of reports a period that is no tenor",
     "Tenor.parse" -> "Tenor.parse reports text that names no tenor",
-    "MarketTenor.of" -> "MarketTenor spot factories report a count that is no tenor",
     "MarketTenor.parse" -> "MarketTenor.parse reports text that names no market tenor",
     "SequenceDate.of" -> "SequenceDate.of reports fields that describe no instruction",
-    "DaysAdjustment.of" -> "DaysAdjustment resolution reports a calendar the reference data does not hold",
+    "DaysAdjustment.of" -> "DaysAdjustment.of reports a business day addition of no days",
     "PeriodAdjustment.of" -> "PeriodAdjustment.of reports a period the convention cannot add",
     "TenorAdjustment.of" -> "TenorAdjustment.of reports a tenor the convention cannot add",
     "AdjustableDates.of" -> "AdjustableDates.of reports dates that describe no set",
@@ -1707,7 +4355,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     "MultiCurrencyAmountArray.of" -> "MultiCurrencyAmountArray.of reports values of unequal length",
     "MultiCurrencyAmount.of" -> "MultiCurrencyAmount.of reports a duplicated currency",
     "ValueStep.of" -> "ValueStep.of reports a position that names no period",
-    "ValueSchedule.of" -> "ValueSchedule.of is total, every judgement belonging to resolution",
+    "ValueSchedule.of" ->
+      "ValueSchedule.of reports two steps that name one position with different adjustments",
     "ValueStepSequence.of" -> "ValueStepSequence.of reports arguments that describe no sequence",
     "ValueSchedule.resolveValues" -> "ValueSchedule.resolveValues reports a step the schedule cannot carry",
     "Rounding.ofDecimalPlaces" -> "Rounding.ofDecimalPlaces reports a count outside zero to 255",
@@ -1717,12 +4366,20 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     "Decimal.of" -> "Decimal.of reports a value no decimal holds",
     "Decimal.parse" -> "Decimal.parse reports text that names no decimal",
     "FixedScaleDecimal.of" -> "FixedScaleDecimal.of reports a scale the decimal cannot be held at",
-    // Index observations and floating rates, 8 entries
+    // Index observations and floating rates, 13 entries
     "IborIndexObservation.of" ->
       "IborIndexObservation.of reports a calendar the reference data does not hold",
     "OvernightIndexObservation.of" ->
       "OvernightIndexObservation.of reports a calendar the reference data does not hold",
     "FxIndexObservation.of" -> "FxIndexObservation.of reports a calendar the reference data does not hold",
+    "IborIndex.resolve" -> "IborIndex.resolve reports a calendar the reference data does not hold",
+    "IborIndexObservation.resolve" ->
+      "IborIndex.resolve reports a calendar the reference data does not hold",
+    "FxIndex.resolve" -> "FxIndex.resolve reports a calendar the reference data does not hold",
+    "FxIndexObservation.resolve" ->
+      "FxIndex.resolve reports a calendar the reference data does not hold",
+    "OvernightIndexObservation.resolve" ->
+      "OvernightIndexObservation.resolve reports a calendar the reference data does not hold",
     "FloatingRateName.toIborIndex" ->
       "FloatingRateName.toIborIndex reports a name of the wrong kind and a tenor no index carries",
     "FloatingRateName.toOvernightIndex" ->
@@ -1733,8 +4390,31 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     "FloatingRateName.defaultOvernightIndex" ->
       "FloatingRateName.defaultOvernightIndex reports a currency with no published default")
 
+  /**
+   * The two entries of the inventory that name no failure-returning declaration.
+   *
+   * Each is paired with the derived row, or the hand-written test, that stands in for it, and
+   * with the reason the plan's name has no declaration of its own.
+   * `aap_inventory_is_a_subset_of_the_derived_surface` asserts that the stand-in named exists, so
+   * neither entry can be reconciled away without something still asserting it.
+   */
+  private val aapReconciledEntries: List[(String, String, String)] = List(
+    (
+      "MarketTenor.of",
+      "MarketTenor.ofSpot",
+      "the plan names the shorthand for the four spot factories, which is what the type " +
+        "publishes; the counted three of them are rejecting rows and `ofSpot` is a reasoned total " +
+        "row"),
+    (
+      "RollConvention.ofDayOfWeek",
+      "RollConvention.ofDayOfWeek is total for every day of the week",
+      "the plan lists it beside `ofDayOfMonth` because the Java pair shared a lookup, but its " +
+        "argument is an enumerated day rather than a number, so it is total by specification - " +
+        "seven days, seven conventions, no error channel - and the named test asserts every one " +
+        "of the seven"))
+
   /** The documented contract refusals of AAP 0.3.3, and the one member made more total than Java. */
-  private val contractEntries: List[(String, String)] = List(
+  private val aapContractEntries: List[(String, String)] = List(
     "DoubleArray index" -> "DoubleArray.get raises for an index outside the array",
     "DoubleArray dimensions" -> "DoubleArray element-wise arithmetic raises for arrays of different sizes",
     "DoubleMatrix index" -> "DoubleMatrix.get raises for a position outside the matrix",
@@ -1753,22 +4433,435 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       "DayCount 30U/360 reads the end-of-month flag and never refuses for it",
     "Schedule.periodEndDate totality" -> "Schedule.periodEndDate answers None for a date outside every period")
 
-  test("inventory_coverage") {
-    // the counts of AAP 0.3.3, stated so that an entry lost in an edit is a failing assertion
-    eitherEntries should have size 88
-    contractEntries should have size 12
+  //=========================================================================
+  // THE COVERAGE ASSERTIONS
+  //
+  // Six assertions, none of which can be satisfied by a count: the enumeration is read from the
+  // sources, the rows are matched against it in both directions, and every count this suite
+  // reports is computed from one of the two. There is deliberately no hard-coded total anywhere
+  // below - a number written here would be the transcription this section exists to replace.
+  //=========================================================================
 
-    val declared: Set[String] = testNames
+  test("derived_inventory_counts") {
+    // The size of the surface, reported rather than asserted: a reviewer of the Rule 5 gate reads
+    // what was enumerated and what accounts for it, and the assertions below are what hold the
+    // two together. Both source roots have to contribute, which is what catches an enumeration
+    // taken from the wrong working directory.
+    SourceRoots.foreach { root =>
+      withClue(s"source root '$root' relative to '${new File(".").getAbsolutePath}': ") {
+        new File(root).isDirectory shouldBe true
+      }
+    }
+    info(
+      s"enumerated ${derivedFailableDeclarations.size} public failure-returning declarations in " +
+        s"${derivedFailableFamilies.size} owner/method families")
+    info(
+      s"enumerated ${derivedThrowingDeclarations.size} public throw-documenting declarations in " +
+        s"${derivedThrowingFamilies.size} owner/method families")
+    info(
+      s"registry holds ${failableRows.size} failable rows and ${throwingRows.size} throwing rows, " +
+        rowCountsByKind(failableRows ::: throwingRows))
+    info(
+      s"AAP 0.3.3 names ${aapFailableEntries.size} failure-reporting entries with a declaration, " +
+        s"${aapReconciledEntries.size} reconciled by name, and ${aapContractEntries.size} " +
+        "contract entries")
+
+    val collectDeclarations: Int =
+      derivedFailableDeclarations.count(_.file.startsWith("strata-collect"))
+    val basicsDeclarations: Int =
+      derivedFailableDeclarations.count(_.file.startsWith("strata-basics"))
+    withClue("failure-returning declarations read from strata-collect: ") {
+      collectDeclarations should be > 0
+    }
+    withClue("failure-returning declarations read from strata-basics: ") {
+      basicsDeclarations should be > 0
+    }
+    derivedThrowingDeclarations.size should be > 0
+  }
+
+  test("every_derived_failable_family_has_a_row") {
+    // The assertion that makes this inventory exhaustive rather than representative: a public
+    // member that reports a failure and has no row is a member nothing here asserts anything
+    // about, and it fails the gate naming the declaration and where to find it.
+    val covered: Set[String] = failableRows.map(_.family).toSet
     val uncovered: List[String] =
-      (eitherEntries ::: contractEntries).collect {
+      derivedFailableFamilies.toList
+        .filterNot { case (family, _) => covered.contains(family) }
+        .sortBy { case (family, _) => family }
+        .map { case (family, declarations) => s"$family (${declarations.map(_.location).mkString(", ")})" }
+    withClue("failure-returning families the registry holds no row for: ") {
+      uncovered shouldBe empty
+    }
+  }
+
+  test("every_derived_throwing_family_has_a_row") {
+    // The same assertion for the other side of the classification line, so that a documented
+    // throw cannot be added - or a reported failure quietly turned into one - without a row.
+    val covered: Set[String] = throwingRows.map(_.family).toSet
+    val uncovered: List[String] =
+      derivedThrowingFamilies.toList
+        .filterNot { case (family, _) => covered.contains(family) }
+        .sortBy { case (family, _) => family }
+        .map { case (family, declarations) => s"$family (${declarations.map(_.location).mkString(", ")})" }
+    withClue("throw-documenting families the registry holds no row for: ") {
+      uncovered shouldBe empty
+    }
+  }
+
+  test("every_derived_declaration_is_claimed") {
+    // The assertion that lifts this inventory from one row per family to one row per signature:
+    // a public declaration with no claim is an overload nothing here accounts for, whatever its
+    // siblings are classified as. The clue lists each one as its key and where to find it, which
+    // is also how the table above is written when the surface changes.
+    val unclaimed: List[String] =
+      List(
+        (FailableSide, derivedFailableDeclarations, failableClaims),
+        (ThrowingSide, derivedThrowingDeclarations, throwingClaims))
+        .flatMap { case (side, declarations, claims) =>
+          val claimed: Set[String] = claims.map(_.key).toSet
+          declarations
+            .filterNot(declaration => claimed.contains(declaration.key))
+            .map(declaration => s"$side ${declaration.key} (${declaration.location})")
+        }
+        .distinct
+        .sorted
+    withClue(
+      s"public declarations with no claim (${unclaimed.size}):\n${unclaimed.mkString("\n")}\n") {
+      unclaimed shouldBe empty
+    }
+    info(
+      s"${failableClaims.size} per-signature claims account for the failure-returning " +
+        s"declarations and ${throwingClaims.size} for the throw-documenting ones, across " +
+        s"${(derivedFailableFamilies.keySet ++ derivedThrowingFamilies.keySet).size} families")
+  }
+
+  test("every_claim_names_one_derived_declaration_once") {
+    // The reverse direction, and the uniqueness that makes a claim a statement about one
+    // signature: a claim naming a declaration the enumeration does not find is a claim about a
+    // surface the port no longer has, and two claims for one key would let one hide the other.
+    val stale: List[String] =
+      allClaims
+        .filterNot { case (side, claim) => derivedDeclarationsByKey(side).contains(claim.key) }
+        .map { case (side, claim) => s"$side ${claim.key}" }
+        .distinct
+        .sorted
+    withClue(s"claims whose declaration the enumeration did not find:\n${stale.mkString("\n")}\n") {
+      stale shouldBe empty
+    }
+    List((FailableSide, failableClaims), (ThrowingSide, throwingClaims)).foreach {
+      case (side, claims) =>
+        val keys: List[String] = claims.map(_.key)
+        withClue(
+          s"$side keys claimed more than once: " +
+            s"${keys.diff(keys.distinct).distinct.mkString(", ")}: ") {
+          keys.distinct.size shouldBe keys.size
+        }
+    }
+  }
+
+  test("every_row_names_a_derived_family") {
+    // The reverse direction, which is what keeps the registry from rotting: a row for a member
+    // that no longer returns a failure channel, or no longer documents a throw, is a row that
+    // asserts something about a surface the port no longer has.
+    val staleFailable: List[String] =
+      failableRows.map(_.label).filterNot(label => derivedFailableFamilies.contains(familyOf(label)))
+    withClue("failable rows whose family the enumeration did not find: ") {
+      staleFailable shouldBe empty
+    }
+    val staleThrowing: List[String] =
+      throwingRows.map(_.label).filterNot(label => derivedThrowingFamilies.contains(familyOf(label)))
+    withClue("throwing rows whose family the enumeration did not find: ") {
+      staleThrowing shouldBe empty
+    }
+  }
+
+  test("every_row_is_named_once_and_carries_its_reason") {
+    // A label is what a covered row is resolved through and what names the generated test, so a
+    // repeated one would hide a row behind another; a total or covered row with no reason is the
+    // claim this registry exists to make impossible.
+    val labels: List[String] = (failableRows ::: throwingRows).map(_.label)
+    withClue(s"repeated row labels: ${labels.diff(labels.distinct).mkString(", ")}: ") {
+      labels.distinct.size shouldBe labels.size
+    }
+    val unreasoned: List[String] =
+      (failableRows ::: throwingRows).collect {
+        case row if reasonOf(row.establishment).exists(_.trim.isEmpty) => row.label
+      }
+    withClue("rows recording a classification without stating why: ") {
+      unreasoned shouldBe empty
+    }
+  }
+
+  test("aap_inventory_entries_name_an_existing_test") {
+    // The check the transcribed lists still earn their place: every entry of the plan names a
+    // hand-written test of this suite, and every row that references one names one too.
+    val declared: Set[String] = testNames
+    val missing: List[String] =
+      (aapFailableEntries ::: aapContractEntries).collect {
         case (entry, testName) if !declared.contains(testName) => s"$entry -> '$testName'"
       }
     withClue("inventory entries whose test does not exist in this suite: ") {
-      uncovered shouldBe empty
+      missing shouldBe empty
+    }
+    val missingReferences: List[String] =
+      (failableRows ::: throwingRows).collect {
+        case row if row.alsoAsserted.exists(name => !declared.contains(name)) =>
+          s"${row.label} -> '${row.alsoAsserted.getOrElse("")}'"
+      }
+    withClue("rows referring to a hand-written test that does not exist in this suite: ") {
+      missingReferences shouldBe empty
     }
 
-    // every entry is named once, so the inventory cannot be padded by repeating one
-    val entryNames: List[String] = (eitherEntries ::: contractEntries).map { case (entry, _) => entry }
-    entryNames.distinct.size shouldBe entryNames.size
+    // every entry is named once, so neither list can be padded by repeating one
+    val entries: List[String] =
+      (aapFailableEntries ::: aapContractEntries).map { case (entry, _) => entry } :::
+        aapReconciledEntries.map { case (entry, _, _) => entry }
+    entries.distinct.size shouldBe entries.size
+  }
+
+  test("aap_inventory_is_a_subset_of_the_derived_surface") {
+    // The plan and the enumeration are held together here. Every name AAP 0.3.3 lists is a family
+    // the enumeration found, with two reconciled exceptions, each of which has to name a row or a
+    // test that stands in for it - so an entry cannot be reconciled away into nothing.
+    val declaredFamilies: Set[String] = derivedFailableFamilies.keySet
+    val absent: List[String] =
+      aapFailableEntries.map { case (entry, _) => familyOf(entry) }.distinct.filterNot(declaredFamilies)
+    withClue("AAP 0.3.3 names with no failure-returning declaration in either module: ") {
+      absent shouldBe empty
+    }
+
+    val declared: Set[String] = testNames
+    val unstood: List[String] =
+      aapReconciledEntries.collect {
+        case (entry, standIn, _)
+            if !registry.contains(standIn) && !declared.contains(standIn) =>
+          s"$entry -> '$standIn'"
+      }
+    withClue("reconciled entries whose stand-in row or test does not exist: ") {
+      unstood shouldBe empty
+    }
+    info(
+      s"${aapFailableEntries.size} AAP entries checked against the derived families, " +
+        s"${aapReconciledEntries.size} reconciled by name")
+  }
+
+  /**
+   * The `Owner.method` family a label or an inventory entry names.
+   *
+   * Both are written with the argument list in brackets where one member is classified per
+   * overload - `MultiCurrencyAmountArray.plus(MultiCurrencyAmount)` - and the enumeration keys
+   * families by owner and method alone, so the brackets are what is dropped here.
+   *
+   * @param label  the row label or inventory entry
+   * @return the family it names
+   */
+  private def familyOf(label: String): String = label.takeWhile(_ != '(')
+
+  /**
+   * The reason a classification records, where its kind records one.
+   *
+   * A rejecting or raising row carries its evidence in the assertion it runs, so it has no reason
+   * to state; a total or covered row is a claim about what cannot happen, and states one.
+   *
+   * @param establishment  the classification
+   * @return the reason, where the kind has one
+   */
+  private def reasonOf(establishment: Establishment): Option[String] =
+    establishment match {
+      case Rejects(_) => None
+      case Raises(_) => None
+      case Total(reason) => Some(reason)
+      case Covered(_, reason) => Some(reason)
+    }
+
+  /**
+   * Counts the rows of each kind, for the line this suite prints.
+   *
+   * @param rows  the rows to count
+   * @return the counts, as text, ordered by kind
+   */
+  private def rowCountsByKind(rows: List[SurfaceRow]): String =
+    rows
+      .groupBy(row =>
+        row.establishment match {
+          case Rejects(_) => "rejecting"
+          case Raises(_) => "raising"
+          case Total(_) => "total"
+          case Covered(_, _) => "covered"
+        })
+      .toList
+      .sortBy { case (kind, _) => kind }
+      .map { case (kind, ofKind) => s"$kind=${ofKind.size}" }
+      .mkString(", ")
+}
+
+/**
+ * The types the enumeration and the registry of [[FailableSurfaceSpec]] are built from.
+ *
+ * They live in the companion rather than in the suite because a case class nested in a class
+ * carries a reference to the instance that declared it, which makes every pattern match over one
+ * an unchecked type test - a warning, and therefore an error, under the compiler options of this
+ * build. Declaring them here makes them ordinary values with no outer reference, and the suite
+ * imports them as its own.
+ */
+private object FailableSurfaceSpec {
+
+  /**
+   * A public declaration of one of the two modules, as the enumeration read it.
+   *
+   * @param file  the path of the source file, relative to the repository root
+   * @param owner  the name of the class, trait or object the declaration is a member of
+   * @param method  the declared name of the method
+   * @param parameters  the declared parameter types, as [[FailableSurfaceSpec.parametersOf]]
+   *   renders them: the types of each list, in order, whitespace removed, the lists separated by
+   *   `)(`, and empty for a member declared with no parameter list at all
+   * @param line  the one-based line the declaration starts on
+   */
+  private final case class Declaration(
+      file: String,
+      owner: String,
+      method: String,
+      parameters: String,
+      line: Int) {
+
+    /** The `Owner.method` key the rows of the registry are written against. */
+    def family: String = s"$owner.$method"
+
+    /**
+     * The identity of this one declaration, which distinguishes it from its own overloads.
+     *
+     * Two declarations share a key only where they are the same member: the owner, the method
+     * name and the declared parameter types all agree. It is what the per-signature claims are
+     * written against, so that a family classified as a whole still has to account for each of
+     * its overloads separately.
+     */
+    def key: String = s"$owner.$method($parameters)"
+
+    /** The declaration as a reader chasing a failure of this suite would look it up. */
+    def location: String = s"$file:$line"
+  }
+
+  /**
+   * One public declaration, and the row of the registry that accounts for it.
+   *
+   * A row is written against an `Owner.method` family and asserts its failure once; a claim is
+   * written against one signature of that family and says which row accounts for it. The pair is
+   * what makes the inventory exhaustive at the granularity of a declaration rather than of a
+   * method name.
+   *
+   * @param key  the declaration, as [[Declaration.key]] renders it
+   * @param row  the label of the registry row that accounts for it, which must be a row of the
+   *   same family
+   */
+  private final case class DeclarationClaim(key: String, row: String)
+
+  /**
+   * One enclosing owner of the file being read.
+   *
+   * @param indent  the indentation the owner is declared at, which is what closes it again
+   * @param name  the name of the owner
+   * @param visible  whether the owner and every owner enclosing it is public
+   */
+  private final case class Enclosing(indent: Int, name: String, visible: Boolean)
+
+  /**
+   * The state the reading of one source file threads from line to line.
+   *
+   * @param enclosing  the owners currently open, innermost first
+   * @param openDefs  the indentations of the `def`s currently open, innermost first
+   * @param inScaladoc  whether the line being read is inside a scaladoc comment
+   * @param scaladocThrows  whether the scaladoc most recently read carries a `@throws` tag
+   * @param failable  the declarations returning a failure channel, most recent first
+   * @param throwing  the declarations documenting a throw, most recent first
+   */
+  private final case class ScanState(
+      enclosing: List[Enclosing],
+      openDefs: List[Int],
+      inScaladoc: Boolean,
+      scaladocThrows: Boolean,
+      failable: List[Declaration],
+      throwing: List[Declaration])
+
+  /** The state a file is read from. */
+  private val EmptyScan: ScanState =
+    ScanState(Nil, Nil, inScaladoc = false, scaladocThrows = false, Nil, Nil)
+
+  /** How a row of the registry establishes the classification it records. */
+  private sealed trait Establishment {
+
+    /** The kind of the row, as the generated test names and the printed counts name it. */
+    def kind: String
+
+    /** Whether the row asserts a failure, which is what a covered row has to be covered by. */
+    def failing: Boolean
+  }
+
+  /**
+   * The call reports at least one failure.
+   *
+   * @param reason  the reason AAP 0.3.3 fixes for this member, where it fixes one
+   */
+  private final case class Rejects(reason: Option[FailureReason]) extends Establishment {
+    override def kind: String = "rejects"
+    override def failing: Boolean = true
+  }
+
+  /**
+   * The call raises the documented exception.
+   *
+   * @param exception  the simple name of the exception type the row intercepts
+   */
+  private final case class Raises(exception: String) extends Establishment {
+    override def kind: String = s"raises $exception"
+    override def failing: Boolean = true
+  }
+
+  /**
+   * The family carries the channel, or documents a throw, that no input of it can reach.
+   *
+   * @param reason  why no input can reach it, which is the substance of the row
+   */
+  private final case class Total(reason: String) extends Establishment {
+    override def kind: String = "total"
+    override def failing: Boolean = false
+  }
+
+  /**
+   * The failure of this family is asserted by another row of the registry.
+   *
+   * @param row  the label of the row that asserts it, which must be a failing row
+   * @param reason  why this declaration is covered by that one
+   */
+  private final case class Covered(row: String, reason: String) extends Establishment {
+    override def kind: String = s"covered by $row"
+    override def failing: Boolean = false
+  }
+
+  /**
+   * One row of the derived inventory.
+   *
+   * @param label  the member the row accounts for, as `Owner.method`, optionally naming the
+   *   overload in brackets where the family's overloads are classified differently
+   * @param establishment  how the row establishes its classification
+   * @param alsoAsserted  the name of a hand-written test of this suite that asserts more about
+   *   the same member, where there is one
+   * @param check  the assertion the generated test runs
+   */
+  private final case class SurfaceRow(
+      label: String,
+      establishment: Establishment,
+      alsoAsserted: Option[String],
+      check: () => Assertion) {
+
+    /** The `Owner.method` family this row accounts for. */
+    def family: String = label.takeWhile(_ != '(')
+
+    /**
+     * Names a hand-written test of this suite that asserts more about the same member.
+     *
+     * @param testName  the name of that test
+     * @return this row, carrying the reference
+     */
+    def alsoAssertedBy(testName: String): SurfaceRow = copy(alsoAsserted = Some(testName))
   }
 }

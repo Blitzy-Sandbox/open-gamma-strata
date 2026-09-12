@@ -53,36 +53,36 @@ import scala.annotation.tailrec
  * calls the scalar forms directly - a conversion rate is compared with one, and an amount
  * chooses between an integral and a fractional text form with the other.
  *
- * The comparison is the one the replaced helper made, clause for clause, and every edge of
- * it follows from those clauses. Two values are equal when any of the following holds:
+ * The comparison is defined over three disjoint cases, taken in this order, and every edge
+ * of it follows from them:
  *
- *   - the magnitude of their difference does not exceed the tolerance. This is the ordinary
- *     case, and it makes negative zero and positive zero equal at every tolerance, since
- *     they are no distance apart;
- *   - they compare equal, whatever the tolerance. This is what settles a pair of identical
- *     infinities: their difference is not a number and so exceeds every tolerance, yet they
- *     are the same value;
- *   - both are not a number. A not-a-number value is equal to another not-a-number value,
- *     and to nothing else at any tolerance, because it has no distance from any value.
+ *   - a not-a-number value is equal to nothing, itself included, at every tolerance. It
+ *     has no distance from any value, so no tolerance can bring it to one;
+ *   - where either value is infinite the two are equal only when they are the same
+ *     infinity, at every tolerance ''including'' an infinite one. So positive infinity is
+ *     not equal to negative infinity, and no infinity is equal to any finite value, at any
+ *     tolerance;
+ *   - two finite values are equal when they are no further apart than the tolerance, which
+ *     is the ordinary case. Negative zero and positive zero are no distance apart and are
+ *     therefore equal at every tolerance, and two finite values any distance apart are
+ *     equal at an infinite tolerance.
  *
- * Two consequences are worth naming, because both are observable and both were the
- * behaviour of the helper being replaced:
+ * Two consequences are worth naming, because both are observable:
  *
- *   - a not-a-number value is equal to itself here, although an ordinary comparison finds
- *     it equal to nothing. An array of keys holding one can therefore be compared with
- *     itself within a tolerance and answer yes, which is also what the bit-for-bit equality
- *     of this library's array wrappers answers, so the two agree rather than contradicting
- *     one another;
- *   - an infinite tolerance makes any two values equal - positive infinity and negative
- *     infinity included - because an infinite magnitude does not exceed an infinite
- *     tolerance. An infinite tolerance is a statement that nothing is to be distinguished,
- *     rather than a very large ordinary tolerance.
+ *   - this comparison and the bit-for-bit equality of this library's array wrappers
+ *     deliberately disagree about a not-a-number element. Bit equality reads the bit
+ *     pattern of each element and so finds such an element equal to itself; the comparison
+ *     here measures a distance and finds it equal to nothing. An array holding one is
+ *     therefore equal to itself under `equals` and unequal to itself within any tolerance,
+ *     and each answers the question it was asked;
+ *   - an infinite tolerance admits any two ''finite'' values, because no finite distance
+ *     exceeds it, and admits nothing further: it brings neither infinity to the other nor
+ *     either infinity to a finite value, and it brings nothing to a not-a-number value.
  *
  * The forms that compare against zero - `fuzzyEqualsZero` and, through it,
- * `DoubleArray.equalZeroWithTolerance` - cannot be reached by the first consequence, since
- * zero is a number and the not-a-number clause can never fire: an array holding a
- * not-a-number element is never effectively zero, at any tolerance. They are reached by the
- * second, an infinite tolerance admitting an infinite element.
+ * `DoubleArray.equalZeroWithTolerance` - follow from the same three cases with zero as the
+ * second value: an array holding a not-a-number element is never effectively zero, and an
+ * array holding an infinite element is never effectively zero either, at any tolerance.
  *
  * ===The tolerance precondition===
  *
@@ -475,16 +475,14 @@ object DoubleArrayMath {
   /**
    * Compares two values within a tolerance.
    *
-   * Two values are equal when the magnitude of their difference does not exceed the
-   * tolerance, or when they compare equal, or when both are not a number. So both zeroes
-   * are equal at every tolerance, two identical infinities are equal at every tolerance, a
-   * not-a-number value is equal to another not-a-number value and to nothing else, and an
-   * infinite tolerance makes any two values equal. The class-level documentation sets out
-   * the full edge behaviour and why it is what it is.
+   * Two finite values are equal when they are no further apart than the tolerance, which
+   * makes both zeroes equal and makes any two finite values equal at an infinite tolerance.
+   * An infinity is equal only to the same infinity, at every tolerance including an infinite
+   * one, and a not-a-number value is equal to nothing at all, itself included. The
+   * class-level documentation sets out the full edge behaviour and why it is what it is.
    *
    * This member, together with `isMathematicalInteger`, replaces the scalar comparison
-   * that the Java original delegated to an external numeric helper, and reproduces it
-   * clause for clause.
+   * that the Java original delegated to an external numeric helper.
    *
    * @param a  the first value
    * @param b  the second value
@@ -556,26 +554,25 @@ object DoubleArrayMath {
   }
 
   // The comparison itself, with the tolerance already checked by the caller. The three
-  // clauses, and their order, are those of the helper being replaced, and the order is what
-  // makes the edges come out right:
+  // cases are disjoint and are taken in this order: a not-a-number value has no distance
+  // from anything and is equal to nothing, itself included; an infinity is equal only to
+  // the same infinity, whatever the tolerance, which an unguarded distance would get wrong
+  // at an infinite one; and two finite values are equal within the tolerance, which covers
+  // the two zeroes because their distance is zero.
   //
-  //   - the magnitude of the difference is compared with the tolerance first. Copying a
-  //     positive sign onto the difference is how that magnitude is taken, rather than by
-  //     negating a negative difference, because it is a single machine instruction and
-  //     leaves a not-a-number difference alone. The subtraction yields a not-a-number value
-  //     whenever either operand is one, and also when both are the same infinity, and such a
-  //     value exceeds every tolerance, so this clause declines to decide those cases and
-  //     leaves them to the two below;
-  //   - values that compare equal are equal at every tolerance, which decides a pair of
-  //     identical infinities;
-  //   - two not-a-number values are equal to each other, and to nothing else.
-  //
-  // Written this way the common case - two ordinary numbers - is decided by one subtraction,
-  // one sign copy and one comparison, with the remaining clauses never evaluated.
+  // Taking the two non-finite cases first is what makes the distance in the third case
+  // meaningful: by then both values are finite, so their difference is finite or overflows
+  // to an infinity, and in either event comparing its magnitude with the tolerance answers
+  // the question that was asked. The ordinary case - two ordinary numbers - reaches it after
+  // two cheap classifications of each operand.
   private def fuzzyEqualsUnchecked(a: Double, b: Double, tolerance: Double): Boolean =
-    java.lang.Math.copySign(a - b, 1.0) <= tolerance ||
-      a == b ||
-      (java.lang.Double.isNaN(a) && java.lang.Double.isNaN(b))
+    if (java.lang.Double.isNaN(a) || java.lang.Double.isNaN(b)) {
+      false
+    } else if (java.lang.Double.isInfinite(a) || java.lang.Double.isInfinite(b)) {
+      a == b
+    } else {
+      math.abs(a - b) <= tolerance
+    }
 
   @tailrec
   private def allFuzzyEqualsZero(array: Array[Double], tolerance: Double, index: Int): Boolean =

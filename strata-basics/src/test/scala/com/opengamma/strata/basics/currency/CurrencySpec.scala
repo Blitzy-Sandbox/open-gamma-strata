@@ -568,34 +568,39 @@ final class CurrencySpec extends AnyFunSuite with Matchers with TableDrivenPrope
   }
 
   /**
-   * Asserts that a rejected code is quoted back bounded and on one line.
+   * Asserts that a rejected code is named in full and rendered bounded and on one line.
    *
-   * No counterpart in the Java test class, and none was possible: the original minted a currency
-   * for any three upper-case letters and threw for anything else, interpolating the text it was
-   * handed into the exception as it stood, so the size of the message was the size of the input
-   * and a line break in the input was a line break in the message. This port reports the
-   * rejection as a value, and the text it names is rendered rather than reproduced.
+   * No counterpart in the Java test class: the original minted a currency for any three
+   * upper-case letters and threw for anything else, interpolating the text it was handed into
+   * the exception as it stood. This port names it the same way in the failure it returns, so the
+   * wording is that one; what the port adds is the boundary at which a failure is written out,
+   * where every part is bounded and anything that could forge a line is escaped.
    */
-  test("both factories reject a code of any size without echoing it unbounded or across lines") {
+  test("both factories name a rejected code in full, and their failures render bounded and on one line") {
     val payload = "H" * 10000
     val bounded: FailureOr[Currency] = Currency.of(payload)
     bounded should beFailureWith(FailureReason.PARSING)
-    // The echo is the rendering the message is built from, so the message is the fixed wording
-    // plus at most `MaxDescribedInput + 3` characters of the code, whatever its size - where it
-    // was once the whole ten thousand.
-    val message = messageOf(bounded)
-    message.length should be <= "Currency name not found: ".length + Failure.MaxDescribedInput + 3
-    message shouldBe s"Currency name not found: ${"H" * Failure.MaxDescribedInput}..."
-    // `parse` folds the text and then resolves it exactly as `of` does, so it is bounded by the
-    // same rendering; the fold of this payload is the payload.
-    messageOf(Currency.parse(payload)) shouldBe message
+    messageOf(bounded) shouldBe s"Currency name not found: $payload"
+    // `parse` folds the text and then resolves it exactly as `of` does; the fold of this
+    // payload is the payload.
+    messageOf(Currency.parse(payload)) shouldBe messageOf(bounded)
+    // The rendering is where the size stops: the ten thousand characters reach a log as a few
+    // hundred, marked to say that there was more.
+    val rendered = Show[Failure].show(bounded.left.toOption.getOrElse(fail("expected a failure")))
+    rendered.length should be < 1000
+    rendered should startWith("PARSING: Currency name not found: HHH")
+    rendered should endWith("...")
 
-    // A code holding a line break cannot put one in the message, so a line-oriented consumer of
-    // the message cannot be made to record a line the library did not report.
-    val injected = messageOf(Currency.of("EUR\nUSD"))
-    injected should not include "\n"
-    injected should not include "\r"
-    injected shouldBe "Currency name not found: EUR\\nUSD"
+    // A code holding a line break is named as it stands and rendered on one line, so a
+    // line-oriented consumer of the rendering cannot be made to record a line the library did
+    // not report.
+    val injected = Currency.of("EUR\nUSD")
+    messageOf(injected) shouldBe "Currency name not found: EUR\nUSD"
+    val injectedRendering =
+      Show[Failure].show(injected.left.toOption.getOrElse(fail("expected a failure")))
+    injectedRendering should not include "\n"
+    injectedRendering should not include "\r"
+    injectedRendering shouldBe "PARSING: Currency name not found: EUR\\nUSD"
 
     // And the message for an ordinary rejected code is unchanged, character for character, which
     // is what makes the bound invisible to every caller but the adversarial one.

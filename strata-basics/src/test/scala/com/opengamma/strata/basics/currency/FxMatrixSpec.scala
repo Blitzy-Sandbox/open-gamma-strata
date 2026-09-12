@@ -18,7 +18,9 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.prop.TableFor4
+import org.scalatestplus.scalacheck.ScalaCheckDrivenPropertyChecks
 
+import com.opengamma.strata.basics.Arbitraries.genEdgeFxMatrix
 import com.opengamma.strata.basics.currency.Currency.AUD
 import com.opengamma.strata.basics.currency.Currency.CAD
 import com.opengamma.strata.basics.currency.Currency.CHF
@@ -44,6 +46,15 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * manifest. The values, the fixtures and the exact-versus-tolerant split of every assertion are
  * the original's.
  *
+ * The suite holds those thirty-two ported methods, the case of this port's own described next,
+ * and the eight further cases of the closing section, each of which carries a descriptive name
+ * because no Java method corresponds to it. The first of them covers the structurally
+ * valid '''edge''' states of a matrix - an off-diagonal pair that are not reciprocals of each
+ * other, a `NaN`, either infinity and a negative zero - which [[FxMatrix.fromMatrix]] admits
+ * because it checks the shape and the diagonal and nothing else, and which every fixture of the
+ * original and of the tests below misses: they are reciprocal and finite but for the one zero
+ * rate. Its scaladoc, at the test itself, says what each of those states costs if it breaks.
+ *
  * ===The builder and the two collectors have no target===
  *
  * This is the suite with the widest gap between the original API and the ported one. The original
@@ -52,7 +63,7 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * into a matrix through the two `Collector` factories `entriesToFxMatrix()` and
  * `pairsToFxMatrix()`. None of the four is ported: the builder's mutating calls are replaced by
  * methods of [[FxMatrix]] that answer with a new matrix, and a collection of rates is placed by
- * the factories of its companion. Eleven of the thirty-two tests below are written against that
+ * the factories of its companion. Eleven of the thirty-two ported tests are written against that
  * machinery, and each of them keeps its name, states the substitution in its own scaladoc, and
  * asserts the same facts about the same matrix:
  *
@@ -118,13 +129,29 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * input and the property-based round trip of every codec each live in their own spec at the root
  * of the test tree; the fixture-driven numerical parity of the matrix against the captured Java
  * baseline, including its zero-rate matrix and its disjoint merges, belongs to
- * `parity.FxParitySpec`. This suite asserts the in-line expectations of the Java test it is ported
- * from and nothing beyond them.
+ * `parity.FxParitySpec`.
+ *
+ * ===Eight tests state properties the Java suite left unstated===
+ *
+ * The thirty-two ported tests assert the in-line expectations of the Java test and nothing beyond
+ * them. Eight further tests follow them, in their own section below, under names of their own: the
+ * Java suite has no method they correspond to and the migration manifest maps none to them. Each
+ * pins a property of the ported implementation that the Java suite exercised only incidentally -
+ * that a collection of rates connecting to nothing is refused with a bounded listing of them,
+ * how the rates held back are stored and when they are retried, that a multi-currency conversion
+ * stops at the first rate it cannot find and totals in currency order, that the two collection
+ * factories agree and that the one taking rate values traverses its argument once, and that the
+ * ordered set of currencies is held rather than rebuilt. They are stated here because they are
+ * properties of this type's observable behaviour; see the section comment above them.
  *
  * @see [[FxMatrix]] for the type under test, whose scaladoc documents the placement of a rate
  * @see [[FxRate]] for the single rate, which [[FxMatrix.of]] also accepts a collection of
  */
-final class FxMatrixSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
+final class FxMatrixSpec
+    extends AnyFunSuite
+    with Matchers
+    with TableDrivenPropertyChecks
+    with ScalaCheckDrivenPropertyChecks {
 
   /**
    * The tolerance the original compared a derived rate against, and its value.
@@ -1009,6 +1036,306 @@ final class FxMatrixSpec extends AnyFunSuite with Matchers with TableDrivenPrope
       .isLeft shouldBe true
   }
 
+  /**
+   * Asserts the structurally valid edge states of a matrix, over the shared edge generator.
+   *
+   * [[FxMatrix.fromMatrix]] - the factory a decoded document arrives at - checks three things and
+   * no more: the currencies are distinct, the rates are a square matrix of their number, and the
+   * diagonal is one. It deliberately requires neither reciprocity nor triangulation, because the
+   * builder being ported accepted whatever rates it was given, so a matrix may hold an
+   * off-diagonal pair that are not reciprocals of each other, a `NaN`, either infinity and a
+   * negative zero. Those states are legal, they are what the bit-pattern equality and the tagged
+   * document form of this type exist for, and every fixture of the original and of the tests above
+   * is reciprocal and finite apart from the one zero rate - so until now they were asserted
+   * nowhere.
+   *
+   * The generator is the module's shared edge generator for this type, which builds every matrix
+   * through `fromMatrix` for exactly that reason - placing a rate computes the reciprocal for the
+   * opposite position, which is the state a non-reciprocal matrix does not have - and it is the
+   * same generator the typeclass law suite runs its `FxMatrix` rule sets over, so a matrix this
+   * test admits is one those laws are checked over too. The property-based sweep over every codec
+   * of the module lives in the module's JSON round-trip spec, which is another unit's file, so the
+   * document half of this coverage is asserted here beside the equality half it belongs with.
+   *
+   * The matrix stated by hand after the property is the one the generator pins: a non-reciprocal
+   * pair - 2.0 one way and 5.0 the other, where reciprocity would require 0.5 - a negative zero, a
+   * `NaN` and both infinities, all in one value, so that each is present however the draws fall.
+   */
+  test("a matrix holding non-reciprocal and non-finite rates is a value the codec carries") {
+    forAll(genEdgeFxMatrix, minSuccessful(200)) { (matrix: FxMatrix) =>
+      // the document form carries every entry, the three JSON has no number for as tagged strings
+      cycled(matrix) shouldBe matrix
+      // and the value read back is equal to the value written and hashes with it, which for a
+      // matrix holding a `NaN` holds only because the equality compares bit patterns
+      Hash[FxMatrix].eqv(cycled(matrix), matrix) shouldBe true
+      Hash[FxMatrix].hash(cycled(matrix)) shouldBe Hash[FxMatrix].hash(matrix)
+      Show[FxMatrix].show(matrix) shouldBe matrix.toString
+      // every generated matrix is one `fromMatrix` accepts, which is what makes the states above
+      // legal states rather than values that bypassed a check
+      FxMatrix.fromMatrix(matrix.currencies, matrix.rates) shouldBe Right(matrix)
+    }
+
+    val edges: FxMatrix = unwrapNec(
+      FxMatrix.fromMatrix(
+        Vector(GBP, USD, EUR),
+        DoubleMatrix.of(
+          3,
+          3,
+          1d,
+          2d,
+          Double.NaN,
+          5d,
+          1d,
+          Double.PositiveInfinity,
+          -0.0d,
+          Double.NegativeInfinity,
+          1d)))
+
+    // the pair that is not reciprocal, kept as it was stated rather than recomputed
+    unwrap(edges.fxRate(GBP, USD)) shouldBe 2d
+    unwrap(edges.fxRate(USD, GBP)) shouldBe 5d
+    // the three entries no JSON number can carry, and the signed zero the equality tells apart
+    unwrap(edges.fxRate(GBP, EUR)).isNaN shouldBe true
+    unwrap(edges.fxRate(USD, EUR)) shouldBe Double.PositiveInfinity
+    unwrap(edges.fxRate(EUR, USD)) shouldBe Double.NegativeInfinity
+    java.lang.Double.doubleToLongBits(unwrap(edges.fxRate(EUR, GBP))) shouldBe
+      java.lang.Double.doubleToLongBits(-0.0d)
+
+    // the whole value survives its document form, and the document is pinned as written text
+    cycled(edges) shouldBe edges
+    edges.asJson.noSpaces shouldBe
+      """{"currencies":["GBP","USD","EUR"],""" +
+        """"rates":[[1.0,2.0,"NaN"],[5.0,1.0,"Infinity"],[-0.0,"-Infinity",1.0]]}"""
+    // a matrix holding a `NaN` equals itself, where the primitive comparison of that entry would
+    // not, and the negative zero is what keeps it apart from the same matrix holding a positive one
+    edges.equals(
+      unwrapNec(FxMatrix.fromMatrix(edges.currencies, edges.rates))) shouldBe true
+    val positiveZero: FxMatrix = unwrapNec(
+      FxMatrix.fromMatrix(
+        Vector(GBP, USD, EUR),
+        DoubleMatrix.of(
+          3,
+          3,
+          1d,
+          2d,
+          Double.NaN,
+          5d,
+          1d,
+          Double.PositiveInfinity,
+          0.0d,
+          Double.NegativeInfinity,
+          1d)))
+    edges.equals(positiveZero) shouldBe false
+    Hash[FxMatrix].eqv(edges, positiveZero) shouldBe false
+
+    // and the one structural state that is not legal, so that the checks the factory does make
+    // are stated beside the ones it does not
+    FxMatrix
+      .fromMatrix(Vector(GBP, USD), DoubleMatrix.of(2, 2, 1d, 2d, 0.5d, Double.NaN))
+      .isLeft shouldBe true
+  }
+
+  //-------------------------------------------------------------------------
+  // The tests from here to the fixtures below are not ported from the Java suite and have no
+  // method of it to correspond to. They pin behaviour of this type that the Java suite left to
+  // follow from its implementation: the bounded refusal of a collection that connects to
+  // nothing, the storage and retry of the rates held back by a collection factory, the route a
+  // multi-currency conversion takes, the agreement of the two collection
+  // factories and the single traversal of the one that takes rate values, and the ordered set of
+  // currencies being a held value. Each states in its own scaladoc what it pins and why that is
+  // observable rather than internal.
+
+  /**
+   * A collection of rates that connect to nothing is refused, and the refusal names a bounded
+   * number of them.
+   *
+   * Twenty-one of the twenty-two rates offered here share no currency with the matrix or with each
+   * other, so every one of them is held back until the collection is exhausted and then reported.
+   * Two things are pinned. The '''listing is bounded''': eight rates are named and the rest are
+   * counted, so the message a caller reads does not grow with the collection they offered. And the
+   * '''work is bounded''': holding a rate back is a keyed write that does not examine the rates
+   * already held back, and a pass over those rates happens only when an offer brought a currency
+   * into the matrix, so twenty-one disconnected offers cost time proportional to their number
+   * rather than to its square. The mechanism rather than the elapsed time is what the two tests
+   * after this one assert, because a timing assertion would pin the machine and not the code.
+   */
+  test("manyDisconnectedRatesAreRefusedWithABoundedListing") {
+    val rates: Vector[(CurrencyPair, Double)] = rateFor(GBP, USD, 1.6d) +: disconnectedRates
+
+    val collected: FailureOr[FxMatrix] = FxMatrix.ofRates(rates)
+    collected should beFailureWith(FailureReason.CURRENCY_CONVERSION)
+    collected should haveFailureMessageMatching(
+      Regex.quote(
+        "Received rates with no currencies in common with other: {AED/ARS=1.1, BGN/BHD=1.1, " +
+          "BRL/CLP=1.1, CNH/CNY=1.1, COP/CZK=1.1, DKK/EGP=1.1, HKD/HRK=1.1, HUF/IDR=1.1, " +
+          "and 13 more}"))
+  }
+
+  /**
+   * A rate offered again for a pair that is still held back replaces the rate held for it and
+   * keeps that pair's position among the rates held back.
+   *
+   * This is what pins the keyed, insertion-ordered store the rates held back are kept in: the
+   * `CHF/AUD` rate is offered twice and the `JPY/CAD` rate between them once, and the refusal
+   * names `CHF/AUD` first - its original position - carrying the '''second''' of its two rates.
+   * A store that appended the repeat would name the pair twice and in the wrong order, and one
+   * that replaced it by removal and re-insertion would name it last.
+   */
+  test("rateOfferedAgainWhileHeldBackReplacesItInPlace") {
+    val collected: FailureOr[FxMatrix] = FxMatrix.ofRates(
+      Vector(
+        rateFor(GBP, USD, 1.6d),
+        rateFor(CHF, AUD, 1.2d), // held back, and the first of the rates held back
+        rateFor(JPY, CAD, 0.01d), // held back, after it
+        rateFor(CHF, AUD, 1.3d))) // the same pair again: the rate is replaced, the position kept
+
+    collected should beFailureWith(FailureReason.CURRENCY_CONVERSION)
+    collected should haveFailureMessageMatching(
+      Regex.quote(
+        "Received rates with no currencies in common with other: {CHF/AUD=1.3, JPY/CAD=0.01}"))
+  }
+
+  /**
+   * A chain of rates that connects only when the last rate arrives places its currencies in the
+   * order the retry of the rates held back reaches them.
+   *
+   * Three rates are held back in turn and the fourth offered rate connects one of them; each pass
+   * over the rates held back then places exactly the one rate the matrix has come to reach, so the
+   * currencies arrive one pass at a time and in the order the passes reach them - `NZD` from the
+   * rate that connected, then `EUR`, `CHF` and `AUD`. The order is part of the value, so this is
+   * an assertion about the result and not about how it was computed; it is also what shows that
+   * retrying only when a currency arrived reaches the state retrying after every offer reached.
+   */
+  test("chainOfHeldBackRatesConnectingAtTheEndKeepsTheCurrencyOrder") {
+    val collected: FailureOr[FxMatrix] = FxMatrix.ofRates(
+      Vector(
+        rateFor(GBP, USD, 1.6d),
+        rateFor(CHF, AUD, 1.2d), // held back
+        rateFor(EUR, CHF, 1.2d), // held back
+        rateFor(NZD, EUR, 1.1d), // held back
+        rateFor(USD, NZD, 1.4d))) // places NZD, whose arrival unwinds the chain one pass at a time
+
+    collected should beSuccess
+    unwrap(collected).currencies shouldBe Vector(GBP, USD, NZD, EUR, CHF, AUD)
+  }
+
+  /**
+   * A multi-currency conversion stops at the first amount it can find no rate for.
+   *
+   * The amounts are held in the alphabetical order of their currency codes, so `GBP` is converted,
+   * `JPY` is the first currency this matrix holds no rate for and `NZD` is never reached. The
+   * failure is the failure of the `JPY` lookup, naming that pair: a conversion that carried the
+   * last failure instead, or accumulated both, would name `NZD` or mention it as well.
+   */
+  test("convertMultiCurrencyAmountStopsAtTheFirstMissingRate") {
+    val matrix = matrixOf(rateFor(GBP, USD, 1.6d))
+
+    val amount = multiOf(
+      amountOf(GBP, 100d),
+      amountOf(JPY, 200d),
+      amountOf(NZD, 300d))
+
+    val converted: FailureOr[CurrencyAmount] = matrix.convert(amount, USD)
+    converted should beFailureWith(FailureReason.CURRENCY_CONVERSION)
+    converted should haveFailureMessageMatching(
+      Regex.quote("No FX rate found for JPY/USD, matrix only contains rates for [GBP, USD]"))
+  }
+
+  /**
+   * A multi-currency conversion totals the converted amounts in the alphabetical order of their
+   * currency codes, and the total is that sum exactly.
+   *
+   * Floating-point addition is neither exact nor associative, so the order the terms are added in
+   * is part of the answer and the captured baseline of this port records the numbers it produces.
+   * The expectation here is therefore built as the conversion builds it - from zero, each amount
+   * multiplied by the rate this matrix answers for its currency, added in currency order - and
+   * compared exactly rather than within a tolerance, which is what makes a rearrangement of the
+   * summation a failing test rather than a passing one.
+   */
+  test("convertMultiCurrencyAmountTotalsInCurrencyOrder") {
+    val matrix = matrixOf(
+      rateFor(GBP, EUR, 1.4d),
+      rateFor(GBP, USD, 1.6d))
+
+    val amount = multiOf(
+      amountOf(GBP, 1600d),
+      amountOf(EUR, 1200d),
+      amountOf(USD, 1500d))
+
+    // EUR, then GBP, then USD - the order the amounts are held in, which is the order they total
+    val expected: Double =
+      0d +
+        (1200d * unwrap(matrix.fxRate(EUR, USD))) +
+        (1600d * unwrap(matrix.fxRate(GBP, USD))) +
+        (1500d * unwrap(matrix.fxRate(USD, USD)))
+
+    unwrap(matrix.convert(amount, USD)) should (haveCurrency(USD) and haveAmount(expected))
+  }
+
+  /**
+   * The two collection factories are one factory: rates stated as values place identically to the
+   * same pairs and rates stated directly, including when a rate must be held back.
+   *
+   * The fixture is deliberately out of order - `CHF/AUD` and `EUR/CHF` cannot be placed when they
+   * are offered and the final `EUR/USD` rate connects them - so the agreement asserted covers the
+   * tolerance of that order and not merely the straightforward case. The order the currencies end
+   * up in is asserted too, being part of the value the two factories must agree on.
+   */
+  test("ofRateValuesAgreesWithOfPairsAndRatesIncludingHeldBackRates") {
+    val rateValues: Vector[FxRate] = Vector(
+      fxRateOf(GBP, USD, 1.6d),
+      fxRateOf(CHF, AUD, 1.6d),
+      fxRateOf(EUR, CHF, 1.2d),
+      fxRateOf(EUR, USD, 1.4d))
+
+    val fromRateValues: FailureOr[FxMatrix] = FxMatrix.of(rateValues)
+    val fromPairsAndRates: FailureOr[FxMatrix] =
+      FxMatrix.ofRates(rateValues.map(rate => (rate.pair, rate.rate)))
+
+    fromRateValues should beSuccess
+    fromRateValues shouldBe fromPairsAndRates
+    unwrap(fromRateValues).currencies shouldBe Vector(GBP, USD, EUR, CHF, AUD)
+  }
+
+  /**
+   * The factory taking rate values traverses the collection it is given exactly once.
+   *
+   * The rates are offered through a collection that yields its iterator once and fails the test if
+   * it is asked for a second one, so a factory that materialised the rates before placing them -
+   * or read the collection twice for any other reason - fails here rather than merely allocating.
+   * The matrix built from it is the matrix the same rates in a strict collection build, so the
+   * single traversal places every rate.
+   */
+  test("ofRateValuesTraversesTheCollectionOnce") {
+    val rateValues: Vector[FxRate] = Vector(
+      fxRateOf(GBP, USD, 1.6d),
+      fxRateOf(EUR, USD, 1.4d),
+      fxRateOf(EUR, CHF, 1.2d))
+
+    FxMatrix.of(new SingleUseRates(rateValues)) shouldBe FxMatrix.of(rateValues)
+  }
+
+  /**
+   * The ordered set of currencies is a held value: two calls answer the same instance, and it
+   * iterates in matrix order.
+   *
+   * A matrix is immutable, so the set derived from its currencies cannot change and rebuilding it
+   * per call would allocate for every caller that reads it. The identity assertion is what pins
+   * that it is held rather than rebuilt - equality alone would pass either way - and the order
+   * assertion is what pins that holding it did not cost the property the set is documented to
+   * have.
+   */
+  test("getCurrenciesIsHeldRatherThanRebuilt") {
+    val matrix = matrixOf(
+      rateFor(GBP, USD, 1.6d),
+      rateFor(EUR, USD, 1.4d))
+
+    val currencies: Set[Currency] = matrix.getCurrencies
+    currencies should be theSameInstanceAs matrix.getCurrencies
+    currencies.iterator.toVector shouldBe matrix.currencies
+    currencies shouldBe Set(GBP, USD, EUR)
+  }
+
   //-------------------------------------------------------------------------
   /**
    * The seven rates the two stream tests of the original collected, in the order it stated them.
@@ -1029,6 +1356,73 @@ final class FxMatrixSpec extends AnyFunSuite with Matchers with TableDrivenPrope
     rateFor(JPY, CAD, 0d), // neither currency seen before, and the rate is zero
     rateFor(EUR, CHF, 1.2d),
     rateFor(JPY, USD, 0.008d))
+
+  /**
+   * Twenty-one rates, no two of which share a currency and none of which shares one with the
+   * `GBP/USD` rate the test offering them places first.
+   *
+   * Forty-two distinct currencies are needed to state twenty-one mutually disconnected pairs, so
+   * the codes are written through the companion rather than imported one by one, which would treble
+   * the import block of this suite for a single fixture. Every rate is the same number, because
+   * what the fixture is for is the number of rates that can never be placed and not their values -
+   * and one number makes the bounded listing the refusal produces readable as an expectation.
+   *
+   * The order is the order they are offered in and therefore the order the refusal lists them in,
+   * so the first eight of them are the eight the message names.
+   */
+  private val disconnectedRates: Vector[(CurrencyPair, Double)] = Vector(
+    rateFor(Currency.AED, Currency.ARS, 1.1d),
+    rateFor(Currency.BGN, Currency.BHD, 1.1d),
+    rateFor(Currency.BRL, Currency.CLP, 1.1d),
+    rateFor(Currency.CNH, Currency.CNY, 1.1d),
+    rateFor(Currency.COP, Currency.CZK, 1.1d),
+    rateFor(Currency.DKK, Currency.EGP, 1.1d),
+    rateFor(Currency.HKD, Currency.HRK, 1.1d),
+    rateFor(Currency.HUF, Currency.IDR, 1.1d),
+    rateFor(Currency.ILS, Currency.INR, 1.1d),
+    rateFor(Currency.ISK, Currency.KRW, 1.1d),
+    rateFor(Currency.KZT, Currency.MAD, 1.1d),
+    rateFor(Currency.MXN, Currency.MYR, 1.1d),
+    rateFor(Currency.NOK, Currency.OMR, 1.1d),
+    rateFor(Currency.PEN, Currency.PHP, 1.1d),
+    rateFor(Currency.PKR, Currency.PLN, 1.1d),
+    rateFor(Currency.QAR, Currency.RON, 1.1d),
+    rateFor(Currency.RUB, Currency.SAR, 1.1d),
+    rateFor(Currency.SGD, Currency.XAG, 1.1d),
+    rateFor(Currency.THB, Currency.TRY, 1.1d),
+    rateFor(Currency.TWD, Currency.UAH, 1.1d),
+    rateFor(Currency.VND, Currency.ZAR, 1.1d))
+
+  //-------------------------------------------------------------------------
+  /**
+   * A collection of rates that can be traversed exactly once.
+   *
+   * The collection factory taking rate values accepts an `Iterable`, and an `Iterable` is not
+   * required to be re-traversable: one backed by an iterator yields its elements to the first
+   * traversal and has nothing left for a second. This states that collection, and states it
+   * strictly - a second request for an iterator fails the test rather than answering an empty one -
+   * so a factory that reads its argument twice is reported as the defect it is instead of silently
+   * building a matrix from a prefix of the rates.
+   *
+   * The single iterator is handed out through a one-element iterator of its own, which is what lets
+   * the class record that it has been handed out without holding a mutable field.
+   *
+   * @param rates  the rates to yield, in order
+   */
+  private final class SingleUseRates(rates: Vector[FxRate]) extends Iterable[FxRate] {
+
+    /** The single traversal this collection admits, held until it is asked for. */
+    private val traversals: Iterator[Iterator[FxRate]] = Iterator.single(rates.iterator)
+
+    /**
+     * Answers the one iterator this collection has, or fails the test.
+     *
+     * @return the iterator over the rates, on the first call only
+     */
+    override def iterator: Iterator[FxRate] =
+      if (traversals.hasNext) traversals.next()
+      else fail("Expected the rates to be traversed once but a second traversal was requested")
+  }
 
   //-------------------------------------------------------------------------
   /**

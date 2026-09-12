@@ -411,29 +411,33 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     }
   }
 
-  test("parsing rejects text of any size without echoing it unbounded or across lines") {
+  test("parsing names the text it rejected in full, and the failure renders bounded and on one line") {
     // No Java counterpart: the Java method let the failure of `Period.parse` surface, so it
     // echoed none of the text it was given, while this port reports a failure of its own that
-    // quotes the text back. Quoting is useful - the caller is told what could not be read -
-    // and it is bounded and escaped, because the message reaches a log or a report and the
-    // text reached the library from outside it.
+    // quotes the text back. Quoting is useful - the caller is told what could not be read - and
+    // it is safe to write out because the rendering of a failure bounds every part it writes and
+    // escapes anything that could forge a line.
     val payload = "A" * 10000
     val bounded = Tenor.parse(payload)
     bounded should beFailureWith(FailureReason.PARSING)
-    // The echo is bounded by the rendering the message is built from, so the message is the
-    // fixed text plus at most `MaxDescribedInput + 3` characters of the input, whatever its
-    // size - where it was once the whole ten thousand.
-    val message = bounded.left.toOption.map(_.message).getOrElse("")
-    message.length should be <= "Unable to parse tenor: ''".length + Failure.MaxDescribedInput + 3
-    message should startWith("Unable to parse tenor:")
+    val failure = bounded.left.toOption.getOrElse(fail("expected a failure"))
+    failure.message shouldBe s"Unable to parse tenor: '$payload'"
+    // The rendering is where the size stops, and it marks what it left out.
+    val rendered = Show[Failure].show(failure)
+    rendered.length should be < 1000
+    rendered should startWith("PARSING: Unable to parse tenor: 'AAA")
+    rendered should endWith("...")
 
-    // A payload holding a line break cannot put one in the message, so a line-oriented
-    // consumer of the message cannot be made to record a line the library did not report.
+    // A payload holding a line break is named as it stands and rendered on one line, so a
+    // line-oriented consumer of the rendering cannot be made to record a line the library did
+    // not report.
     val injected = Tenor.parse("3M\nINJECTED")
     injected should beFailureWith(FailureReason.PARSING)
-    val injectedMessage = injected.left.toOption.map(_.message).getOrElse("")
-    injectedMessage should not include "\n"
-    injectedMessage shouldBe "Unable to parse tenor: '3M\\nINJECTED'"
+    val injectedFailure = injected.left.toOption.getOrElse(fail("expected a failure"))
+    injectedFailure.message shouldBe "Unable to parse tenor: '3M\nINJECTED'"
+    val injectedRendering = Show[Failure].show(injectedFailure)
+    injectedRendering should not include "\n"
+    injectedRendering shouldBe "PARSING: Unable to parse tenor: '3M\\nINJECTED'"
 
     // And the message for an ordinary rejected input is unchanged, character for character,
     // which is what makes the bound invisible to every caller but the adversarial one.

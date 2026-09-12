@@ -16,6 +16,7 @@ import scala.util.Try
 import cats.Eq
 import cats.Hash
 import cats.Order
+import cats.Show
 import cats.syntax.all._
 
 // the package of this file holds a sub-package named `io`, which shadows the top-level `io`
@@ -101,6 +102,12 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * same inputs, the decimal produces what `BigDecimal` produces. The loops are short and the
  * inputs are the literal ones of the harness, so these cases are as deterministic as the rest
  * of the spec.
+ *
+ * The one section that does read the clock reads it for a different question. A numeral can
+ * name a number of hundreds of millions of digits, and converting such a value by expanding it
+ * first would cost time proportional to the number named rather than to the text supplied;
+ * the bound asserted there separates microseconds from minutes, so it decides whether the work
+ * is bounded rather than how fast the machine is.
  *
  * @see [[FixedScaleDecimalSpec]] for the decimal of fixed scale built on this type
  */
@@ -658,6 +665,144 @@ class DecimalSpec
   }
 
   //-------------------------------------------------------------------------
+  // An exponent the caller names rather than supplies.
+  //
+  // A numeral of a dozen characters can name a number of hundreds of millions of digits, and
+  // `1e500000000` is the whole of the attack: the text is read by `BigDecimal`, which holds it
+  // as one digit at a scale of minus five hundred million, and bringing that to scale zero
+  // materialises every zero through `BigInteger.TEN.pow`. A factory that expanded first and
+  // counted afterwards would therefore answer the same rejection - eventually, having burned
+  // the heap or the processor of whatever read the text - so these cases assert the rejection
+  // *and* that it is reached without the expansion. The cost of the guarded path is a
+  // subtraction, which is why one wall-clock bound is enough to separate the two: microseconds
+  // against minutes, three orders of magnitude clear of the bound below on any machine.
+  //
+  // These three cases are the one place in this spec where the clock is read, and they read it
+  // for a resource bound rather than for throughput: the assertion is not that the factory is
+  // fast but that the work it does is proportional to the text it was given rather than to the
+  // number the text names.
+
+  /**
+   * The bound the guarded path is asserted to stay inside, in milliseconds.
+   *
+   * Chosen three orders of magnitude above what the guarded path takes - a subtraction and a
+   * comparison - and far below what the expansion it guards takes, so a loaded shared machine
+   * cannot make this flake while an unguarded factory cannot pass it.
+   */
+  private val ExpansionBoundMillis: Long = 5000L
+
+  /** Text naming more whole digits than any decimal holds, in twelve characters. */
+  private val HugeExponentText: String = "1e500000000"
+
+  /**
+   * The rejection every case of this section is answered by.
+   *
+   * The wording is the literal text of the report, and the number in it is the canonical
+   * `BigDecimal` form of the value rather than its digits - which is itself part of the
+   * contract, since a message quoting five hundred million digits would be its own resource
+   * problem.
+   */
+  private val hugeExponentMessage: String =
+    "Decimal value must not exceed 18 digits of precision at scale 0: 1E+500000000"
+
+  /**
+   * Runs a call and reports how long it took, in milliseconds.
+   *
+   * @param call  the call to run
+   * @return the value the call produced, with its elapsed time in milliseconds
+   */
+  private def timed[A](call: => A): (A, Long) = {
+    val startedAt = System.nanoTime()
+    val outcome = call
+    (outcome, (System.nanoTime() - startedAt) / 1000000L)
+  }
+
+  test("an exponent naming more digits than the type holds is rejected without expanding it") {
+    val (fromText, textMillis) = timed(Decimal.of(HugeExponentText))
+    fromText should beFailureWith(FailureReason.INVALID)
+    fromText.left.map(failure => failure.message) shouldBe Left(hugeExponentMessage)
+    withClue(s"reading '$HugeExponentText' took ${textMillis}ms: ") {
+      textMillis should be < ExpansionBoundMillis
+    }
+
+    val (fromParse, parseMillis) = timed(Decimal.parse(HugeExponentText))
+    fromParse shouldBe fromText
+    withClue(s"parsing '$HugeExponentText' took ${parseMillis}ms: ") {
+      parseMillis should be < ExpansionBoundMillis
+    }
+
+    // the guard sits in the conversion rather than in the reading of text, so the public
+    // `BigDecimal` factory - which the JSON decoder and every other caller of a `BigDecimal`
+    // reaches directly - is bounded by the same guard and not by a check on the text
+    val (fromBigDecimal, bigDecimalMillis) = timed(Decimal.of(new BigDecimal(HugeExponentText)))
+    fromBigDecimal shouldBe fromText
+    withClue(s"converting the BigDecimal took ${bigDecimalMillis}ms: ") {
+      bigDecimalMillis should be < ExpansionBoundMillis
+    }
+  }
+
+  test("an exponent at the top of the range is rejected, and one beyond it names no number") {
+    // an exponent at the top of the range of scales, held at a scale of `-Int.MaxValue`
+    val atTop = Decimal.of("1e2147483647")
+    atTop should beFailureWith(FailureReason.INVALID)
+    atTop.left.map(failure => failure.message) shouldBe
+      Left("Decimal value must not exceed 18 digits of precision at scale 0: 1E+2147483647")
+
+    // One more than that: `BigDecimal` reads this text on this platform and holds it at a
+    // scale of `Int.MinValue`, which is the case that decides the arithmetic of the guard -
+    // negating that scale in `Int` overflows to itself, so the digit count is computed in
+    // `Long` and this value is rejected rather than admitted and expanded.
+    val (pastTop, pastTopMillis) = timed(Decimal.of("1e2147483648"))
+    pastTop should beFailureWith(FailureReason.INVALID)
+    pastTop.left.map(failure => failure.message) shouldBe
+      Left("Decimal value must not exceed 18 digits of precision at scale 0: 1E+2147483648")
+    withClue(s"reading '1e2147483648' took ${pastTopMillis}ms: ") {
+      pastTopMillis should be < ExpansionBoundMillis
+    }
+
+    // An exponent of more digits than `BigDecimal` itself accepts is text that names no
+    // number, so it stays on the parsing side of the line this section's neighbours draw.
+    Decimal.of("1e21474836470") should beFailureWith(FailureReason.PARSING)
+    Decimal.of("1e21474836470").left.map(failure => failure.message) shouldBe
+      Left("Decimal string is invalid: '1e21474836470'")
+    Decimal.of("1e-2147483648") should beFailureWith(FailureReason.PARSING)
+  }
+
+  test("bounding the exponent moves neither end of the range of values the type holds") {
+    // the boundary itself: eighteen digits at scale zero is the largest whole number the type
+    // holds, nineteen is one too many, and the guard decides both exactly as the expansion did
+    assertRow(text("1e17"), 100000000000000000L, 0)
+    Decimal.of("1e18") should beFailureWith(FailureReason.INVALID)
+    Decimal.of("1e18").left.map(failure => failure.message) shouldBe
+      Left("Decimal value must not exceed 18 digits of precision at scale 0: 1E+18")
+
+    // an ordinary exponent is still applied rather than counted and refused
+    text("1e5").toString shouldBe "100000"
+    assertRow(text("1e5"), 100000L, 0)
+
+    // a zero is the value zero whatever scale it names, at either sign of the exponent, which
+    // is the case the guard answers before its arithmetic: the precision of a zero is one and
+    // its scale can be anything, so counting digits would have refused a legitimate zero
+    Decimal.of("0e100") shouldBe Right(Decimal.ZERO)
+    Decimal.of("0e-100") shouldBe Right(Decimal.ZERO)
+    Decimal.of(new BigDecimal("0e100")) shouldBe Right(Decimal.ZERO)
+
+    // a negative exponent names a value below the smallest the type distinguishes, which is
+    // zero rather than a rejection, and reaches that answer without arithmetic on its scale
+    val (tiny, tinyMillis) = timed(Decimal.of("1e-500000000"))
+    tiny shouldBe Right(Decimal.ZERO)
+    withClue(s"reading '1e-500000000' took ${tinyMillis}ms: ") {
+      tinyMillis should be < ExpansionBoundMillis
+    }
+
+    // and a whole number whose trailing zeroes live in the scale of the `BigDecimal` that
+    // holds it is still read as that number, which is the shape the guard measures
+    assertRow(fromBigDecimal(new BigDecimal("100")), 100L, 0)
+    assertRow(fromBigDecimal(new BigDecimal("1e2")), 100L, 0)
+    text("100").toString shouldBe "100"
+  }
+
+  //-------------------------------------------------------------------------
   // The character pass that reads text.
   //
   // `Decimal.of(String)` reads a numeral with one pass over the characters and hands the
@@ -794,10 +939,9 @@ class DecimalSpec
     ("1+23", "Decimal string is invalid: '1+23'"),
     ("--123", "Decimal string is invalid: '--123'"),
     ("A", "Decimal string is invalid: 'A'"),
-    // the one row whose text holds a control character, so the one row whose message is not
-    // the text as it stands: the rejection renders the text through `Failure.describeInput`,
-    // which escapes a line feed to the two characters `\n` and keeps the message to one line
-    ("\n", "Decimal string is invalid: '\\n'"),
+    // the row whose text is a control character: the rejection names it as it stands, as it
+    // names every other text here, and escaping it belongs to the writing of the failure
+    ("\n", "Decimal string is invalid: '\n'"),
     ("..", "Decimal string is invalid: '..'"),
     ("1..2", "Decimal string is invalid: '1..2'"),
     ("1.-2", "Decimal string is invalid: '1.-2'"),
@@ -890,12 +1034,12 @@ class DecimalSpec
     }
   }
 
-  test("parsing rejects text of any size without echoing it unbounded or across lines") {
-    // No counterpart in the ported tests: the type being ported interpolated the text it was
-    // handed into the message of the error it raised, as it stood. Two guards bound the message
+  test("parsing names the text it rejected, and the failure renders bounded and on one line") {
+    // No counterpart in the ported tests: the type being ported reported a malformed numeral by
+    // naming the offending character rather than the text. Two things bound what a log receives
     // here and they are independent: text longer than the type reads is rejected by its own
-    // guard before a numeral is quoted, and whatever text does reach the quoting is rendered
-    // through `Failure.describeInput`.
+    // guard before a numeral is quoted at all, and the rendering of any failure bounds every
+    // part it writes.
     val payload = "H" * 10000
     val bounded: FailureOr[Decimal] = Decimal.of(payload)
     bounded should beFailureWith(FailureReason.PARSING)
@@ -904,29 +1048,34 @@ class DecimalSpec
     bounded.left.map(failure => failure.message) shouldBe
       Left("Decimal string must not exceed 256 characters")
 
-    // Text within the length guard is echoed, and that echo is the bounded rendering: a numeral
-    // as long as the type reads renders to at most `MaxDescribedInput + 3` characters of itself.
+    // Text within the length guard is echoed, and the failure names the whole of it; the
+    // rendering of that failure is what is bounded, and it marks what it left out.
     val longNumeral = "1" * 200 + "Z"
     val echoed: FailureOr[Decimal] = Decimal.of(longNumeral)
     echoed should beFailureWith(FailureReason.PARSING)
-    val echoedMessage = echoed.left.toOption.map(failure => failure.message).getOrElse("")
-    echoedMessage.length should be <=
-      "Decimal string is invalid: ''".length + Failure.MaxDescribedInput + 3
-    echoedMessage shouldBe s"Decimal string is invalid: '${"1" * Failure.MaxDescribedInput}...'"
+    val echoedFailure = echoed.left.toOption.getOrElse(fail("expected a failure"))
+    echoedFailure.message shouldBe s"Decimal string is invalid: '$longNumeral'"
+    Show[Failure].show(echoedFailure).length should be < 600
 
-    // Text holding a line break cannot put one in the message, so a line-oriented consumer of
-    // the message cannot be made to record a line the library did not report.
+    // Text holding a line break is named as it stands and rendered on one line, so a
+    // line-oriented consumer of the rendering cannot be made to record a line the library did
+    // not report.
     val injected: FailureOr[Decimal] = Decimal.of("1.5\nINJECTED")
     injected should beFailureWith(FailureReason.PARSING)
-    val injectedMessage = injected.left.toOption.map(failure => failure.message).getOrElse("")
-    injectedMessage should not include "\n"
-    injectedMessage should not include "\r"
-    injectedMessage shouldBe "Decimal string is invalid: '1.5\\nINJECTED'"
+    val injectedFailure = injected.left.toOption.getOrElse(fail("expected a failure"))
+    injectedFailure.message shouldBe "Decimal string is invalid: '1.5\nINJECTED'"
+    val injectedRendering = Show[Failure].show(injectedFailure)
+    injectedRendering should not include "\n"
+    injectedRendering should not include "\r"
+    injectedRendering shouldBe "PARSING: Decimal string is invalid: '1.5\\nINJECTED'"
 
-    // And the message for an ordinary malformed numeral is unchanged, character for character,
-    // which is what makes the bound invisible to every caller but the adversarial one.
+    // And the message for an ordinary malformed numeral reads as it always did, in the failure
+    // and in its rendering alike, which is what makes the bound invisible to every caller but
+    // the adversarial one.
     Decimal.of("not-a-number").left.map(failure => failure.message) shouldBe
       Left("Decimal string is invalid: 'not-a-number'")
+    Decimal.of("not-a-number").left.map(failure => Show[Failure].show(failure)) shouldBe
+      Left("PARSING: Decimal string is invalid: 'not-a-number'")
   }
 
   test("text naming more than the type holds is still decided by BigDecimal") {

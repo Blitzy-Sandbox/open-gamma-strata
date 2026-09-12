@@ -36,8 +36,10 @@ import com.opengamma.strata.collect.testkit.ResultMatchers
  * order the original declared them, so that the method-level traceability of the migration
  * stays one-to-one; each of the original's two bad-input providers becomes one table declared
  * with the test that reads it, carrying the rows the provider carried other than its
- * absent-input row, for the reason given below. Nothing else declares a test here, so the
- * count of this suite is the count of the original.
+ * absent-input row, for the reason given below. The five cases of the closing section are the
+ * only ones that answer to no Java method, and they are named after the members of
+ * [[CountryData]] they pin rather than after a method of the original, so the twenty-one cases
+ * above remain exactly the count and the names of the original.
  *
  * Where the port gives a guarantee differently from the original the reasoning is recorded at
  * the method, and the same reasoning is collected here:
@@ -76,6 +78,27 @@ import com.opengamma.strata.collect.testkit.ResultMatchers
  * The three letter conversions were adjudicated against the published Java jar rather than
  * derived by hand: `CRI` is `CR`, `GIB` is `GI`, and `GB`, `FR`, `US` convert to `GBR`, `FRA`
  * and `USA`.
+ *
+ * ===The reference data behind the three letter conversions===
+ *
+ * The closing section pins [[CountryData]], the table those conversions resolve through. The
+ * AAP's frozen test inventory (section 0.3.1) gives the `location` package this one spec, and
+ * the table has no Java test class of its own: in the original it was not code but a properties
+ * resource a loader read from the class path, and what the Java `CountryTest` asserted about it
+ * is what the tests above assert. Here the table is Scala literals fixed at compile time, so
+ * what a consumer of it relies on is asserted directly - the published order, the shape of every
+ * key and value, the fact that the relation is a bijection, which is what makes the inverse
+ * total and unambiguous as the original's bidirectional map was, and the agreement of the
+ * derived views with the table they are views of.
+ *
+ * The row-for-row comparison against the data captured from the Java implementation is not
+ * repeated there. `ReferenceDataManifestSpec` compares every table of the module with the
+ * captured manifest, the 251 country rows and their count among them, and `test_get3CharString`
+ * above already carries every row of the table through `Country` in both directions; both are
+ * stronger than a hand-written expectation table, so the closing section states only what
+ * neither of them does. Its assertions deliberately never name the type of the collections: the
+ * published members are ordered maps and sets and the order is the contract, while how they are
+ * backed, and what private lookups are derived from them, is not.
  */
 class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks with ResultMatchers {
 
@@ -582,5 +605,89 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     Country.of("US").map(country => Show[Country].show(country)) should haveValue("US")
     Country.of(Country.US.toString) should haveValue(Country.US)
     Country.parse(Country.US.toString) should haveValue(Country.US)
+  }
+
+  //-----------------------------------------------------------------------
+  // The reference data table the three letter conversions resolve through.
+  //
+  // No case below answers to a method of the Java original; each is named after the member of
+  // `CountryData` it pins. What the captured reference data and `test_get3CharString` already
+  // establish is not restated here - the scaladoc of this spec records which of them covers what.
+  //-----------------------------------------------------------------------
+
+  test("test_alpha3ToAlpha2_isPublishedInAscendingOrderOfCode") {
+    // The published order is the contract of the member, and it is ascending by three letter
+    // code: a consumer that iterates the table - a report, or a comparison against the captured
+    // reference data - sees the rows in that order.
+    val keys = CountryData.alpha3ToAlpha2.keys.toVector
+    keys shouldBe keys.sorted
+    keys.head shouldBe "ABW"
+    keys.last shouldBe "ZWE"
+    // and the order is stable: iterating twice gives the same sequence, so no consumer can
+    // observe a different one
+    CountryData.alpha3ToAlpha2.toVector shouldBe CountryData.alpha3ToAlpha2.toVector
+  }
+
+  test("test_alpha3ToAlpha2_keysAndValuesAreWellFormedCodes") {
+    CountryData.alpha3ToAlpha2.foreach {
+      case (alpha3, alpha2) =>
+        withClue(s"$alpha3 -> $alpha2: ") {
+          alpha3 should have length 3
+          alpha2 should have length 2
+          alpha3.forall(character => character >= 'A' && character <= 'Z') shouldBe true
+          alpha2.forall(character => character >= 'A' && character <= 'Z') shouldBe true
+        }
+    }
+  }
+
+  test("test_relationIsABijection") {
+    // The original held this data in a bidirectional map, which is what let it convert in both
+    // directions. That is only sound while the relation is one-to-one, so it is asserted here:
+    // both sides are distinct, and the two conversions compose to the identity in both
+    // directions over the whole table.
+    val alpha3Keys = CountryData.alpha3ToAlpha2.keys.toVector
+    val alpha2Values = CountryData.alpha3ToAlpha2.values.toVector
+    alpha3Keys.distinct should have size 251
+    alpha2Values.distinct should have size 251
+
+    CountryData.alpha3ToAlpha2.foreach {
+      case (alpha3, alpha2) =>
+        withClue(s"$alpha3 -> $alpha2: ") {
+          CountryData.alpha2ToAlpha3.get(alpha2) shouldBe Some(alpha3)
+        }
+    }
+    CountryData.alpha2ToAlpha3.foreach {
+      case (alpha2, alpha3) =>
+        withClue(s"$alpha2 -> $alpha3: ") {
+          CountryData.alpha3ToAlpha2.get(alpha3) shouldBe Some(alpha2)
+        }
+    }
+  }
+
+  test("test_alpha2ToAlpha3_isTheDerivedInverse") {
+    CountryData.alpha2ToAlpha3 should have size 251
+    val keys = CountryData.alpha2ToAlpha3.keys.toVector
+    keys shouldBe keys.sorted
+    CountryData.alpha2ToAlpha3.get("GB") shouldBe Some("GBR")
+    CountryData.alpha2ToAlpha3.get("CR") shouldBe Some("CRI")
+    // the `EU` region is the notable code the standard gives no three letter form, so it is
+    // absent from the inverse and `Country.EU.code3Char` has nothing to answer with
+    CountryData.alpha2ToAlpha3.get("EU") shouldBe None
+    CountryData.alpha2ToAlpha3.get("ZZ") shouldBe None
+  }
+
+  test("test_codeSets_agreeWithTheTableTheyAreViewsOf") {
+    CountryData.alpha3Codes should have size 251
+    CountryData.alpha2Codes should have size 251
+    CountryData.alpha3Codes.toVector shouldBe CountryData.alpha3ToAlpha2.keys.toVector
+    CountryData.alpha2Codes.toVector shouldBe CountryData.alpha3ToAlpha2.values.toVector.sorted
+    // both are published in ascending order
+    CountryData.alpha3Codes.toVector shouldBe CountryData.alpha3Codes.toVector.sorted
+    CountryData.alpha2Codes.toVector shouldBe CountryData.alpha2Codes.toVector.sorted
+    // the alpha-2 set is the domain of the three letter conversions, not the set of codes a
+    // country may carry: any two letter code is well formed, and `EU` is the code that shows the
+    // difference
+    CountryData.alpha2Codes should contain("GB")
+    CountryData.alpha2Codes.contains("EU") shouldBe false
   }
 }

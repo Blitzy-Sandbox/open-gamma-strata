@@ -9,11 +9,17 @@ import java.time.LocalDate
 
 import scala.collection.immutable.SortedMap
 
+import cats.Show
+
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import com.opengamma.strata.basics.ImmutableReferenceData
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.date.BusinessDayAdjustment
+import com.opengamma.strata.basics.date.BusinessDayConventions.MODIFIED_FOLLOWING
+import com.opengamma.strata.basics.date.HolidayCalendarId
+import com.opengamma.strata.basics.date.HolidayCalendars
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.FailureReason
@@ -42,8 +48,11 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * `java_test_class = com.opengamma.strata.basics.schedule.ScheduleExceptionTest` with
  * `scala_spec = com.opengamma.strata.basics.schedule.ScheduleFailureSpec`, status `consolidated`.
  * The two Java method names are kept verbatim as the test names here, because the acceptance gate
- * joins that file to the JUnit XML on the suite class and the test name; this suite therefore
- * reports exactly two test cases, `test_withDefinition` and `test_withoutDefinition`.
+ * joins that file to the JUnit XML on the suite class and the test name: `test_withDefinition` and
+ * `test_withoutDefinition` are therefore reported under exactly those names. The suite carries one
+ * further case, `test_definitionAttributeSurvivesHostileCalendarNames`, which no manifest row names
+ * because it has no Java counterpart; the join runs from a row to a test case, so an unnamed case
+ * costs the gate nothing. It is described below.
  *
  * ===What each test asserts, and why in two halves===
  *
@@ -64,6 +73,23 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  *     rejection, which is the contrasting case: a merge is asked of a schedule, not of a
  *     definition, so there is no definition to name and the attribute map stays empty. Java's
  *     `Optional.empty()` only means something alongside a rejection that really does omit it.
+ *
+ * ===What the third test asserts===
+ *
+ * The definition a failure carries embeds a business day adjustment, which names a
+ * [[com.opengamma.strata.basics.date.HolidayCalendarId]] whose name is accepted as given:
+ * `HolidayCalendarId.of` is total, so a calendar name may hold a line feed or several thousand
+ * characters, and that text reaches both the `definition` attribute and - through the adjustment
+ * quoted by the duplicate-adjusted message - a failure message. Two properties have to hold at
+ * once for that to be both useful and safe, and the third test states both:
+ *
+ *   - the structured value stays '''faithful''': the attribute is the definition's own `toString`,
+ *     character for character, line feed and all, because a report naming the rejected definition
+ *     and a caller comparing it with what it supplied would otherwise read a summary of it;
+ *   - the '''text''' of the failure is neutralised: `Show[Failure]` and the text form of a failure
+ *     are the same string, hold no character a line-oriented reader could act on, and are bounded,
+ *     so a hostile or oversized calendar name cannot forge a line of a log or a report that holds
+ *     the failure and cannot inflate it to its own size.
  *
  * No test in this file asserts a thrown exception, and no exception type is referenced by it. The
  * rendering of the definition is not invented here either: [[PeriodicSchedule]] attaches its own
@@ -135,6 +161,96 @@ class ScheduleFailureSpec extends AnyFunSuite with Matchers with ResultMatchers 
         RollConventions.DAY_4))
 
   //-------------------------------------------------------------------------
+  // The fixtures of the third test: calendar names that a caller could supply and that this
+  // library does not constrain, reached through the ordinary API rather than by construction.
+
+  /**
+   * A calendar name carrying a line feed and text that reads as a log line of its own.
+   *
+   * This is the shape a forged log entry takes: everything after the line feed would appear as a
+   * separate line wherever the failure was written out unescaped, stating something this library
+   * never reported (CWE-117).
+   */
+  private val ForgedCalendarName: String = "GBLO\nINVALID: forged"
+
+  /** A calendar name of a few thousand characters, which no part of the API rejects. */
+  private val OversizedCalendarName: String = "GBLO\n" + ("FORGED " * 600)
+
+  /**
+   * The ceiling the text of a schedule failure is asserted to stay under.
+   *
+   * The bound is stated as a concrete number comfortably above an ordinary rendering rather than
+   * as an exact length, so that it says what it is for - the text of a failure stays a line that
+   * can be read - without pinning the rendering down character by character. A failure of this
+   * kind renders as its reason, one message part and one attribute whose key is the ten-character
+   * `definition`, and the writing of a failure bounds each part it writes, so no rendering of one
+   * can reach this ceiling; the oversized name below is more than three times it, and the
+   * attribute holding that name keeps every character of it.
+   */
+  private val RenderingCeiling: Int = 1200
+
+  /** The adjustment that carries the forged calendar name into a definition. */
+  private val forgedAdjustment: BusinessDayAdjustment =
+    BusinessDayAdjustment.of(MODIFIED_FOLLOWING, HolidayCalendarId.of(ForgedCalendarName))
+
+  /**
+   * The `test_none_badStub` scenario again, adjusted by a calendar whose name is forged.
+   *
+   * The rejection this reaches needs no reference data, so the identifier is never resolved: the
+   * name travels into the definition's own rendering and from there into the attribute, which is
+   * exactly the path a caller that parsed a document holding that name would take.
+   */
+  private val forgedBadStubDefinition: PeriodicSchedule =
+    accepted(
+      PeriodicSchedule.of(
+        JUN_04,
+        SEP_17,
+        Frequency.P1M,
+        forgedAdjustment,
+        StubConvention.NONE,
+        RollConventions.DAY_4))
+
+  /** The same scenario adjusted by a calendar whose name is several thousand characters long. */
+  private val oversizedDefinition: PeriodicSchedule =
+    accepted(
+      PeriodicSchedule.of(
+        JUN_04,
+        SEP_17,
+        Frequency.P1M,
+        BusinessDayAdjustment.of(MODIFIED_FOLLOWING, HolidayCalendarId.of(OversizedCalendarName)),
+        StubConvention.NONE,
+        RollConventions.DAY_4))
+
+  /**
+   * A daily definition over a weekend, which is the rejection whose ''message'' quotes the
+   * adjustment.
+   *
+   * Friday to the following Monday at a daily frequency yields four unadjusted dates, and the
+   * weekend calendar moves the Saturday and the Sunday onto the Monday that the fourth of them
+   * already is, so the adjusted dates contain duplicates. The failure reporting them names the
+   * adjustment that produced them - and therefore the forged calendar name - inside its message
+   * rather than only in its attribute.
+   */
+  private val forgedDailyDefinition: PeriodicSchedule =
+    accepted(
+      PeriodicSchedule.of(
+        date(2020, 9, 18),
+        date(2020, 9, 21),
+        Frequency.P1D,
+        forgedAdjustment,
+        StubConvention.SHORT_FINAL,
+        false))
+
+  /**
+   * Reference data resolving the forged identifier, so that the adjustment can be applied.
+   *
+   * The identifier is the hostile one, and it resolves to the ordinary weekend calendar: a name is
+   * text to this library, so a store may perfectly well hold an entry for it.
+   */
+  private val forgedReferenceData: ReferenceData =
+    ImmutableReferenceData.of(HolidayCalendarId.of(ForgedCalendarName), HolidayCalendars.SAT_SUN)
+
+  //-------------------------------------------------------------------------
   test("test_withDefinition") {
     // the shape of the replacement: the message the template produced, and the rejected definition
     // attached under the key the production code uses, which is Java's non-empty getDefinition
@@ -182,6 +298,80 @@ class ScheduleFailureSpec extends AnyFunSuite with Matchers with ResultMatchers 
   }
 
   //-------------------------------------------------------------------------
+  test("test_definitionAttributeSurvivesHostileCalendarNames") {
+    // The first half: the attribute is the definition as it renders. The forged name reached the
+    // definition through `HolidayCalendarId.of`, which accepts any text, so it is in the rendering
+    // with its line feed intact, and the failure carries that rendering character for character.
+    val rejection: FailureOr[List[LocalDate]] = forgedBadStubDefinition.createUnadjustedDates()
+    rejection should beFailureWith(FailureReason.INVALID)
+    val reported: Failure = failureOf(rejection)
+    forgedBadStubDefinition.toString should include(ForgedCalendarName)
+    reported.attributes.get(DefinitionAttribute) shouldBe Some(forgedBadStubDefinition.toString)
+    reported.attributes(DefinitionAttribute) should include(ForgedCalendarName)
+    reported.attributes(DefinitionAttribute) should include("\n")
+
+    // The second half: the text of that same failure is one bounded line. The line feed appears in
+    // it as the two characters of its escape, which is what makes the text of the failure unable
+    // to state a line the library never reported.
+    val rendered: String = neutralisedRendering(reported)
+    rendered should include("""GBLO\nINVALID: forged""")
+    rendered should include(reported.reason.name)
+
+    // The message-carrying case. The duplicate-adjusted rejection quotes the adjustment inside its
+    // own message, so the forged name is in the message as well as in the attribute - exactly, as
+    // the caller supplied it - while the text of the failure remains a single bounded line. Only
+    // the presence of the name is asserted of the message, not the wording around it, which is the
+    // Java wording and is asserted where that contract is tested.
+    val duplicated: FailureOr[List[LocalDate]] =
+      forgedDailyDefinition.createAdjustedDates(forgedReferenceData)
+    duplicated should beFailureWith(FailureReason.INVALID)
+    val duplicateFailure: Failure = failureOf(duplicated)
+    duplicateFailure.message should include("duplicate adjusted dates")
+    duplicateFailure.message should include(ForgedCalendarName)
+    duplicateFailure.attributes.get(DefinitionAttribute) shouldBe
+      Some(forgedDailyDefinition.toString)
+    val duplicateRendering: String = neutralisedRendering(duplicateFailure)
+    duplicateRendering should include("""GBLO\nINVALID: forged""")
+
+    // The oversized case. A name of a few thousand characters is kept whole by the attribute,
+    // because that is the value a caller reads back, and the text of the failure stays under the
+    // same ceiling as every other rendering, the writing of it having stopped and marked the part
+    // it could not finish.
+    val oversized: FailureOr[List[LocalDate]] = oversizedDefinition.createUnadjustedDates()
+    oversized should beFailureWith(FailureReason.INVALID)
+    val oversizedFailure: Failure = failureOf(oversized)
+    val carried: String = oversizedFailure.attributes(DefinitionAttribute)
+    carried shouldBe oversizedDefinition.toString
+    carried should include(OversizedCalendarName)
+    carried.length should be > OversizedCalendarName.length
+    OversizedCalendarName.length should be > RenderingCeiling
+    val oversizedRendering: String = neutralisedRendering(oversizedFailure)
+    oversizedRendering should include("...")
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * Asserts of a failure the three properties its text has to have, and answers with that text.
+   *
+   * The two routes to the text of a failure - the `Show` instance and the text form of the value -
+   * are asserted to be the same string, because a caller reaching for either has to get the
+   * neutralised rendering rather than whichever of the two happened to be neutralised. What is
+   * then asserted of that string is what makes it safe to write into a log or a report: it holds
+   * no character for which `Character.isISOControl` holds, so it is one line and carries no
+   * terminal control, and it is bounded, so a value quoted by the failure cannot dominate it.
+   *
+   * @param failure  the failure whose text is asserted
+   * @return the text of that failure
+   */
+  private def neutralisedRendering(failure: Failure): String = {
+    val rendered: String = Show[Failure].show(failure)
+    rendered shouldBe failure.toString
+    rendered.exists(character => character.isControl) shouldBe false
+    rendered.linesIterator.size shouldBe 1
+    rendered.length should be <= RenderingCeiling
+    rendered
+  }
+
   /**
    * Unwraps a definition built by the validated factory, failing the test if it was rejected.
    *

@@ -137,6 +137,22 @@ import StubConvention.SMART_INITIAL
  *     copies, and a circe round trip. Joda-Beans wire compatibility is out of scope
  *     (AAP §0.2.2).
  *
+ * ===The four tests that have no Java counterpart===
+ *
+ * Beyond the thirty-nine ported tests this file declares '''four''' of its own, at the end, each
+ * stating something the ported implementation did not do and therefore had no method to test:
+ * `test_generation_boundedPeriodCount` (generation stops exactly at the documented period ceiling,
+ * and a span provably beyond it is refused before anything is materialised, while every span the
+ * generation accepts is refused by nothing),
+ * `test_generation_datesOutsideSupportedRange` (roll arithmetic at the edges of `LocalDate` is
+ * reported rather than raised), `test_interiorAdjustmentResolvedOnce` (the business day adjustment
+ * is resolved once per generation, and only where there is an interior date to adjust) and
+ * `test_invalidPeriod_branchOrder` (the failure a schedule of invalid periods reports is chosen in
+ * the Java order, and duplicate-date messages render their date lists as Java's message formatter
+ * did). They are additions, not replacements: no ported test is weakened by them, and the
+ * traceability join the acceptance gate performs runs from a manifest row to a test case, so a
+ * test case that no row names costs nothing.
+ *
  * Numerical parity with the Java implementation is '''not''' this file's job: the sibling
  * `parity/ScheduleParitySpec` asserts it against `schedule-baseline.json`, whose inputs are drawn
  * from these same two providers. Neither spec is weakened on the assumption that the other covers
@@ -368,6 +384,23 @@ class PeriodicScheduleSpec
     failure.attributes.get("definition") shouldBe Some(definition.toString)
     failure
   }
+
+  /**
+   * The constant-time preflight of date generation, applied to one walk's span.
+   *
+   * `PeriodicSchedule.provablyExceedsPeriodCount` is `private[schedule]`, so this spec - which
+   * sits in that package - can put spans to the predicate itself. That is what makes the preflight
+   * assertable at all: a refusal from it and a refusal from the bound inside the walk carry the
+   * same message, so nothing observable from outside the package tells them apart, and only the
+   * predicate can state that the refusal is conservative.
+   *
+   * @param from  the earlier end of the span
+   * @param to  the later end of the span
+   * @param frequency  the periodic frequency each step of the walk would apply
+   * @return true if no walk over this span with this frequency can stay within the maximum
+   */
+  private def provablyOversized(from: LocalDate, to: LocalDate, frequency: Frequency): Boolean =
+    PeriodicSchedule.provablyExceedsPeriodCount(from, to, frequency)
 
   //-------------------------------------------------------------------------
   /**
@@ -2259,6 +2292,251 @@ class PeriodicScheduleSpec
       """{"startDate":"2014-06-04","endDate":"2014-09-17","frequency":"NotAFrequency",""" +
         """"businessDayAdjustment":{"convention":"Following","calendar":"Sat/Sun"}}""")
       .isLeft shouldBe true
+  }
+
+  //-------------------------------------------------------------------------
+  // The four tests below have no counterpart in the Java test class, for the reason given in the
+  // scaladoc of this spec: each states a containment or an ordering that the ported implementation
+  // did not have, so there was no Java method to port. They are named in this file's style and are
+  // not part of the traceability roster, which runs from a manifest row to a test case.
+
+  test("test_generation_boundedPeriodCount") {
+    // A definition asks for as many periods as its dates and frequency imply, and both are chosen
+    // by the caller, so generation is bounded: a daily frequency over a span wider than the
+    // ceiling is refused rather than materialised (CWE-400). The refusal names the limit and
+    // carries the rejected definition, as every refusal of this type does.
+    //
+    // The limit is a number of *periods*, which is what the message says, so the boundary is
+    // asserted on periods and not on dates: a schedule of n dates has n - 1 periods.
+    val start: LocalDate = date(2000, 1, 1)
+    val tooManyPeriods: String =
+      "Schedule calculation resulted in more than 100000 periods, which is the maximum number " +
+        "of periods that can be generated"
+
+    // Exactly the ceiling's worth of periods is generated in full: one hundred thousand and one
+    // daily dates, and a schedule of one hundred thousand periods built from them.
+    val widest: PeriodicSchedule = valid(
+      definition(
+        start,
+        start.plusDays(100000L),
+        P1D,
+        BDA_NONE,
+        stubConvention = Some(SHORT_FINAL)))
+    dates(widest.createUnadjustedDates()).size shouldBe 100001
+    sched(widest.createSchedule(REF_DATA)).size shouldBe 100000
+
+    // One day wider is one period too many, and is refused - through the dates alone and through
+    // schedule creation, the two routes being the same generation.
+    val tooWide: PeriodicSchedule = valid(
+      definition(
+        start,
+        start.plusDays(100001L),
+        P1D,
+        BDA_NONE,
+        stubConvention = Some(SHORT_FINAL)))
+    generationFailure(tooWide.createUnadjustedDates(), tooWide).message shouldBe tooManyPeriods
+    generationFailure(tooWide.createSchedule(REF_DATA), tooWide).message shouldBe tooManyPeriods
+
+    // The preflight that refuses an oversized span before anything is materialised, asserted on
+    // the predicate itself. It is conservative: it answers true only where the span is provably
+    // above the ceiling - every step advances at most the length of the period, or of the one-month
+    // step a convention falls back to, plus the convention's adjustment, so the span divided by
+    // that is a lower bound on the steps the walk must take - and false for every span a generation
+    // completes, including the one exactly at the ceiling above.
+    provablyOversized(date(1000, 1, 1), date(999999, 1, 1), P1D) shouldBe true
+    provablyOversized(LocalDate.MIN, LocalDate.MAX, P1D) shouldBe true
+    provablyOversized(LocalDate.MIN, LocalDate.MAX, P12M) shouldBe true
+    provablyOversized(start, start.plusDays(100000L), P1D) shouldBe false
+    provablyOversized(start, date(2003, 1, 1), P1D) shouldBe false
+    provablyOversized(start, start.plusYears(100L), P3M) shouldBe false
+    provablyOversized(LocalDate.MAX, LocalDate.MIN, P1D) shouldBe false
+
+    // Between the two sits the bound inside the walk, and this is the span that shows it is still
+    // doing the work: one million days of daily periods divided by the widest step any frequency
+    // and roll convention can take is far below the ceiling, so the preflight proves nothing here
+    // and the refusal can only be the walk stopping once it has rolled the ceiling's worth.
+    provablyOversized(start, start.plusDays(1000000L), P1D) shouldBe false
+    val beyondTheWalk: PeriodicSchedule = valid(
+      definition(
+        start,
+        start.plusDays(1000000L),
+        P1D,
+        BDA_NONE,
+        stubConvention = Some(SHORT_FINAL)))
+    generationFailure(beyondTheWalk.createUnadjustedDates(), beyondTheWalk).message shouldBe
+      tooManyPeriods
+
+    // And the same refusal reached through the public members, on a definition wide enough for the
+    // preflight to prove the ceiling unreachable: every route into generation reports it, with the
+    // message the ceiling names, and none of them walks the span to find out.
+    val enormous: PeriodicSchedule = valid(
+      definition(
+        start,
+        date(200000, 1, 1),
+        P1D,
+        BDA_NONE,
+        stubConvention = Some(SHORT_FINAL)))
+    val refused: FailureOr[List[LocalDate]] = enormous.createUnadjustedDates()
+    generationFailure(refused, enormous).message shouldBe tooManyPeriods
+    generationFailure(enormous.createUnadjustedDates(REF_DATA), enormous).message shouldBe
+      tooManyPeriods
+    generationFailure(enormous.createAdjustedDates(REF_DATA), enormous).message shouldBe
+      tooManyPeriods
+    generationFailure(enormous.createSchedule(REF_DATA), enormous).message shouldBe tooManyPeriods
+
+    // A daily schedule over a few years - the everyday large case - is generated in full, dates
+    // and periods alike, so nothing about the bound changes what this library actually builds.
+    val threeYears: PeriodicSchedule = valid(
+      definition(
+        start,
+        date(2003, 1, 1),
+        P1D,
+        BDA_NONE,
+        stubConvention = Some(SHORT_FINAL)))
+    val generated: List[LocalDate] = dates(threeYears.createUnadjustedDates())
+    generated.size shouldBe 1097
+    generated.head shouldBe start
+    generated.last shouldBe date(2003, 1, 1)
+    sched(threeYears.createSchedule(REF_DATA)).size shouldBe 1096
+  }
+
+  test("test_generation_datesOutsideSupportedRange") {
+    // The roll arithmetic of a generation is total over almost the whole of `LocalDate` and fails
+    // within one frequency of its two extremes, where `java.time` raises. That is a failure of the
+    // data of a definition, so it is reported through the channel every other generation failure
+    // uses (AAP §0.3.3) rather than raised out of a member that answers with `Either`.
+    val backwards: PeriodicSchedule = valid(
+      definition(
+        LocalDate.MIN,
+        LocalDate.MIN.plusMonths(1L),
+        P2M,
+        BDA_NONE,
+        stubConvention = Some(SHORT_INITIAL)))
+    generationFailure(backwards.createUnadjustedDates(), backwards).message shouldBe
+      "Schedule calculation moved outside the range of supported dates"
+
+    val forwards: PeriodicSchedule = valid(
+      definition(
+        LocalDate.MAX.minusDays(1L),
+        LocalDate.MAX,
+        P1M,
+        BDA_NONE,
+        stubConvention = Some(SHORT_FINAL)))
+    generationFailure(forwards.createUnadjustedDates(), forwards).message shouldBe
+      "Schedule calculation moved outside the range of supported dates"
+
+    // Every route into generation reports it, not only the one that generates dates alone.
+    generationFailure(backwards.createSchedule(REF_DATA), backwards).message shouldBe
+      "Schedule calculation moved outside the range of supported dates"
+    generationFailure(forwards.createAdjustedDates(REF_DATA), forwards).message shouldBe
+      "Schedule calculation moved outside the range of supported dates"
+  }
+
+  test("test_invalidPeriod_branchOrder") {
+    // The definition below is pre-adjusted, which is the case on which the two generations of a
+    // definition differ, and it is what makes the order of the failure branches observable.
+    //
+    // The start date is the 28th of November 2014, a Friday, declared with no adjustment of its
+    // own and a 'Day30' roll convention: the 30th of that month is a Sunday which
+    // 'ModifiedFollowing' maps back onto the 28th, so schedule creation recovers the 30th as the
+    // unadjusted start date, and generation from it succeeds. The no-argument
+    // `createUnadjustedDates` performs no such recovery - it generates from the declared dates -
+    // so it rolls forwards from the 28th, which 'Day30' does not match, and reports that.
+    val defn: PeriodicSchedule = valid(
+      definition(
+        NOV_28,
+        date(2015, 2, 1),
+        P1M,
+        BDA,
+        startDateBusinessDayAdjustment = Some(BDA_NONE),
+        endDateBusinessDayAdjustment = Some(BusinessDayAdjustment.of(PRECEDING, SAT_SUN)),
+        stubConvention = Some(SHORT_FINAL),
+        rollConvention = Some(DAY_30)))
+
+    // The two branches, each reached on its own, so the order asserted below is an order over
+    // failures that both genuinely occur. The no-argument generation reports the roll mismatch of
+    // the declared start date; the reference-data generation succeeds and its adjusted dates hold
+    // a duplicate, the end date's own 'Preceding' adjustment mapping the 1st of February back onto
+    // the 30th of January, which is already a boundary.
+    generationFailure(defn.createUnadjustedDates(), defn).message shouldBe
+      "Date '2014-11-28' does not match roll convention 'Day30' when starting to roll forwards"
+    dates(defn.createUnadjustedDates(REF_DATA)) shouldBe
+      list(NOV_30, date(2014, 12, 30), date(2015, 1, 30), date(2015, 2, 1))
+    // The duplicate-date message names its two lists exactly as the ported message formatter did,
+    // between square brackets - `[2014-11-28, ...]` - and not as a Scala `List(...)`, so a caller
+    // matching on the text of a rejected schedule reads what it always read.
+    generationFailure(defn.createAdjustedDates(REF_DATA), defn).message shouldBe
+      "Schedule calculation resulted in duplicate adjusted dates " +
+        "[2014-11-28, 2014-12-30, 2015-01-30, 2015-01-30] from unadjusted dates " +
+        "[2014-11-30, 2014-12-30, 2015-01-30, 2015-02-01] using adjustment " +
+        s"'$BDA'"
+
+    // Schedule creation therefore cannot build its periods, and the failure it reports is the
+    // first of those two - the no-argument one - which is the order the ported implementation
+    // reported in [PeriodicSchedule.java:466-473]. Reporting on the reference-data-derived lists
+    // instead would answer with the duplicate-adjusted-dates message asserted above.
+    generationFailure(defn.createSchedule(REF_DATA), defn).message shouldBe
+      "Date '2014-11-28' does not match roll convention 'Day30' when starting to roll forwards"
+
+    // Asking for coincident boundaries to be combined removes the reason the branch was reached at
+    // all, so this definition then produces a schedule of two periods. The branch is reported on
+    // only where the periods really cannot be built, which is the behaviour of the ported form.
+    sched(defn.createSchedule(REF_DATA, true)).size shouldBe 2
+  }
+
+  test("test_interiorAdjustmentResolvedOnce") {
+    // The interior dates take `businessDayAdjustment`, and it is resolved to an adjuster once per
+    // generation rather than per date. The observable half of that change is when the resolution
+    // happens: a schedule with no interior date puts nothing through the adjustment - the ported
+    // loop ran from the second date to the second-to-last, so it had no iterations - and must
+    // therefore still produce its schedule when that adjustment names a calendar the supplied
+    // reference data does not hold.
+    val missing: HolidayCalendarId = HolidayCalendarId.of("NotSupplied")
+    val onlySatSun: ReferenceData = ImmutableReferenceData.of(SAT_SUN, HolidayCalendars.SAT_SUN)
+
+    val twoDates: PeriodicSchedule = valid(
+      definition(
+        JUL_17,
+        AUG_17,
+        P1M,
+        BusinessDayAdjustment.of(MODIFIED_FOLLOWING, missing),
+        startDateBusinessDayAdjustment = Some(BDA),
+        endDateBusinessDayAdjustment = Some(BDA),
+        stubConvention = Some(STUB_NONE),
+        rollConvention = Some(ROLL_NONE)))
+    dates(twoDates.createUnadjustedDates(onlySatSun)) shouldBe list(JUL_17, AUG_17)
+    dates(twoDates.createAdjustedDates(onlySatSun)) shouldBe list(JUL_17, AUG_18)
+    sched(twoDates.createSchedule(onlySatSun)).size shouldBe 1
+
+    // With an interior date the adjustment is resolved, so the same missing calendar is reported -
+    // the laziness above is about there being nothing to adjust, not about the adjustment being
+    // skipped.
+    val threeDates: PeriodicSchedule = valid(
+      definition(
+        JUL_17,
+        SEP_17,
+        P1M,
+        BusinessDayAdjustment.of(MODIFIED_FOLLOWING, missing),
+        startDateBusinessDayAdjustment = Some(BDA),
+        endDateBusinessDayAdjustment = Some(BDA),
+        stubConvention = Some(STUB_NONE),
+        rollConvention = Some(ROLL_NONE)))
+    threeDates.createAdjustedDates(onlySatSun) should beFailureWith(FailureReason.MISSING_DATA)
+    threeDates.createSchedule(onlySatSun) should beFailureWith(FailureReason.MISSING_DATA)
+
+    // And where the calendar is supplied, the interior dates really are adjusted by it: the 17th
+    // of August 2014 is a Sunday, which 'ModifiedFollowing' moves forwards to the Monday, while
+    // the two ends keep their own adjustments.
+    val resolvable: PeriodicSchedule = valid(
+      definition(
+        JUL_17,
+        SEP_17,
+        P1M,
+        BDA,
+        stubConvention = Some(STUB_NONE),
+        rollConvention = Some(ROLL_NONE)))
+    dates(resolvable.createUnadjustedDates(REF_DATA)) shouldBe list(JUL_17, AUG_17, SEP_17)
+    dates(resolvable.createAdjustedDates(REF_DATA)) shouldBe list(JUL_17, AUG_18, SEP_17)
   }
 
 }

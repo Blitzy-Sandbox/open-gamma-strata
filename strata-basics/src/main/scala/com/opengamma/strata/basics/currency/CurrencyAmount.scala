@@ -84,11 +84,19 @@ import com.opengamma.strata.collect.result.Failure
  *
  * ===Conversions to the exact-decimal types===
  *
- * The conversions to [[Money]] and [[BigMoney]] are reached from those types - `Money.of(amount)`
- * rounds this amount to the minor units of its currency and `BigMoney.of(amount)` keeps it at
- * scale twelve - and each of them converts back. They are not offered as members here, because
- * this file is compiled without those two types being available to it, and a member that named
- * them would make this module fail to compile rather than merely lack a shorthand.
+ * [[toMoney]] rounds this amount to the minor units of its currency and [[toBigMoney]] keeps it
+ * at scale twelve, which are the two conversions the implementation being ported published here;
+ * `Money.of(amount)` and `BigMoney.of(amount)` are the same two conversions reached from the
+ * other side, and [[Money.toCurrencyAmount]] and [[BigMoney.toCurrencyAmount]] convert back. The
+ * three types therefore form one graph, and every edge of it can be travelled in either
+ * direction.
+ *
+ * The two members here answer with an outcome where the implementation being ported was total,
+ * and the difference is a property of what this type admits rather than a stylistic choice: an
+ * amount may be infinite, and no decimal is, so an infinite amount is not a money value. The
+ * implementation being ported raised in exactly that case, from the decimal conversion its
+ * factories performed; reporting it keeps the rejection visible in the signature instead of
+ * raising it from a conversion that reads as an accessor.
  *
  * This type is immutable and thread-safe: a value of it can be shared freely, and every
  * operation returns a new value rather than changing the one it was called on.
@@ -274,6 +282,46 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    * @return this amount with its amount made negative
    */
   def negative: CurrencyAmount = if (amount > 0d) negated else this
+
+  //-------------------------------------------------------------------------
+  /**
+   * Converts this amount to the equivalent [[Money]].
+   *
+   * A money value holds its amount as a decimal at the minor units of its currency, so this
+   * conversion rounds - half up, away from zero at a tie, at the width the currency quotes - and
+   * loses precision for an amount finer than that. `AUD 100.125` becomes `AUD 100.13`, `BHD
+   * 100.125` stays `BHD 100.125` because that currency quotes three digits, and `JPY 100.5`
+   * becomes `JPY 101` because the yen quotes none.
+   *
+   * It answers with an outcome because this type admits amounts no decimal holds: the two
+   * infinities, and any amount whose magnitude needs more than eighteen digits. The
+   * implementation being ported raised for both, from the decimal conversion its factory
+   * performed. Every other amount converts, so a caller holding an amount that came from
+   * ordinary arithmetic reads the `Right`.
+   *
+   * {{{
+   * CurrencyAmount.of(Currency.AUD, 100.125d).flatMap(amount => amount.toMoney)   // AUD 100.13
+   * }}}
+   *
+   * @return the equivalent money value rounded to the currency's minor units, or the failure
+   *   describing why this amount is not one
+   */
+  def toMoney: FailureOr[Money] = Money.of(this)
+
+  /**
+   * Converts this amount to the equivalent [[BigMoney]].
+   *
+   * A `BigMoney` holds its amount as a decimal at scale twelve, which is finer than any currency
+   * quotes, so this conversion keeps every digit of the amount that a decimal holds and rounds
+   * only a fraction longer than twelve places.
+   *
+   * It answers with an outcome for the reason [[toMoney]] gives: an infinite amount, and one
+   * needing more than eighteen digits, are values no decimal holds.
+   *
+   * @return the equivalent arbitrary-precision value, or the failure describing why this amount
+   *   is not one
+   */
+  def toBigMoney: FailureOr[BigMoney] = BigMoney.of(this)
 
   //-------------------------------------------------------------------------
   /**
@@ -533,14 +581,10 @@ object CurrencyAmount {
    * named only the text, and keeping the failure to that one message keeps two failures over the
    * same text equal and their serialized form stable.
    *
-   * Both wordings name the rendering of the text through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so each is bounded in length
-   * and has its control characters escaped. A message reaches a log or a report, and the text
-   * handed to this method came from outside the library, so it must not be able to forge a line
-   * of that log or to make the message as large as the input. Text within the bound and free of
-   * control characters - every spelling of an amount among them - is quoted exactly as it was
-   * given, so the wording of an ordinary rejection is unchanged; only a longer or a
-   * line-breaking input is now described rather than reproduced.
+   * Both wordings name the text as it was given, so each reads as the original's did. The text
+   * came from outside the library, so bounding it and escaping what it may hold belong to the
+   * writing of a failure, which [[com.opengamma.strata.collect.result.Failure.show]] and the
+   * text form of a failure perform for every part they write.
    *
    * @param amountStr  the amount as text, in the form `AAA 12.34`
    * @return the amount the text names, or the failure describing why it names none
@@ -561,7 +605,7 @@ object CurrencyAmount {
         } yield value
         // the text is rendered rather than interpolated as it stands, which bounds the message
         // and keeps it to one line while leaving an in-bound spelling quoted as it was given
-        parsed.toRight(Failure.Parsing(s"Unable to parse amount: ${Failure.describeInput(amountStr)}"))
+        parsed.toRight(Failure.Parsing(s"Unable to parse amount: $amountStr"))
       }
     }
 
@@ -570,36 +614,109 @@ object CurrencyAmount {
    * Creates an amount, normalising it and checking the invariant, which every route funnels
    * through.
    *
-   * This is the only instantiation of the type and it is private, so the routes above are the
-   * only way into it from outside this file. It is what keeps the arithmetic of the type total in
-   * signature while the invariant still holds: a caller that adds two ordinary amounts cannot
-   * reach the check, and a caller that combines infinities reaches it and is told so.
+   * This is the only instantiation of the type, so the routes above are the only way into it from
+   * outside this package. It is what keeps the arithmetic of the type total in signature while the
+   * invariant still holds: a caller that adds two ordinary amounts cannot reach the check, and a
+   * caller that combines infinities reaches it and is told so.
+   *
+   * ===Why the currency package may call it===
+   *
+   * It is visible to the currency package rather than to this file alone because the types of
+   * this package that hold amounts as numbers - [[CurrencyAmountArray]],
+   * [[MultiCurrencyAmount]], [[MultiCurrencyAmountArray]], [[Money]] and [[BigMoney]] - have to
+   * turn a number they hold back into an amount, and each of them was doing it by adding the
+   * number to the zero amount of the currency. That route allocates a zero amount, a function
+   * that closes over the number and then the amount itself, three objects where the one returned
+   * is the only one the caller keeps, and a run of a hundred thousand values pays that for each
+   * of them. Calling this directly performs the very same normalisation and the very same check -
+   * there is no second definition of what an amount is - and allocates exactly the object it
+   * returns.
+   *
+   * The contract a caller inside this package takes on is only that the number is a number it
+   * means as an amount: this method still normalises the sign of zero and still raises the
+   * invariant on a value that is not a number, so a caller cannot smuggle a state past it. The
+   * public factories remain the only way in from anywhere else, and this is not part of the
+   * published API of the module.
    *
    * @param currency  the currency
    * @param amount  the amount, normalised and checked here
    * @return the amount
    * @throws java.lang.IllegalArgumentException if the amount is not a number
    */
-  private def create(currency: Currency, amount: Double): CurrencyAmount = {
+  private[currency] def create(currency: Currency, amount: Double): CurrencyAmount =
+    new CurrencyAmount(currency, checkedAmount(amount)) {}
+
+  /**
+   * Normalises a number and checks that it is an amount, answering with the number itself.
+   *
+   * This is the invariant of the type with the type taken away: it is the very computation
+   * [[create]] performs, and [[create]] is written in terms of it, so what an amount may hold is
+   * decided in exactly one place in this library and cannot drift between the two.
+   *
+   * ===Why a number-level form exists===
+   *
+   * The types of this package that hold amounts as numbers rather than as objects -
+   * [[MultiCurrencyAmount]] most of all, whose representation is a map of currency to number -
+   * have to apply this invariant to a number they are about to store, and the number is all they
+   * want back. Reaching it through [[create]] means building an amount and reading its number
+   * again, an object allocated and discarded per entry, which for an aggregation over `E` entries
+   * is `E` objects that exist only to be unwrapped. The aggregation of this port is required to be
+   * one pass that allocates the value it returns, and this is what lets it be that while keeping
+   * the check where it belongs.
+   *
+   * A caller inside this package therefore uses this where it holds a number and [[create]] where
+   * it holds an amount; neither is reachable from outside the package, so the public factories
+   * remain the only way in from anywhere else.
+   *
+   * @param amount  the number to normalise and check
+   * @return the number, with a negative zero normalised to a positive zero
+   * @throws java.lang.IllegalArgumentException if the number is not a number
+   */
+  private[currency] def checkedAmount(amount: Double): Double = {
     // Adding a positive zero is the whole of the normalisation: `-0.0 + 0.0` is `0.0` while every
     // other value, the infinities included, is left exactly as it was. The implementation being
     // ported normalised the sign of zero with the same addition and called it weird in a comment
     // for the same reason it looks odd here - the arithmetic identity is the mechanism.
     val normalised = amount + 0d
     ArgCheck.notNaN(normalised, AmountField)
-    new CurrencyAmount(currency, normalised) {}
+    normalised
   }
+
+  /**
+   * Creates an amount for a caller inside this package that already holds a value the type
+   * admits.
+   *
+   * This is [[create]] under a name the rest of the package can reach, and it exists so that a
+   * conversion whose answer always exists allocates the amount it returns and nothing else.
+   * [[Money.toCurrencyAmount]] and [[BigMoney.toCurrencyAmount]] are the callers it was added
+   * for: the amount of a money value is a decimal, whose `Double` is finite by construction, so
+   * neither has anything to report and neither should build a zero amount on the way to the one
+   * it returns. The implementation being ported constructed the result once, and so does this.
+   *
+   * It is `private[currency]` rather than public because it names no failure channel: a caller
+   * outside the package has no way to know that the value it holds is one this type admits, and
+   * [[of]] is the route that tells it. The invariant is not weakened by it - the value still
+   * passes through [[create]], so a negative zero is normalised and a value that is not a number
+   * raises the documented invariant exactly as every other route into the type does.
+   *
+   * @param currency  the currency
+   * @param amount  the amount, which the caller has already established is one the type admits
+   * @return the amount
+   * @throws java.lang.IllegalArgumentException if the amount is not a number, which a caller
+   *   holding a decimal cannot reach
+   */
+  private[currency] def ofTrusted(currency: Currency, amount: Double): CurrencyAmount =
+    create(currency, amount)
 
   /**
    * The failure reported for text whose shape does not admit an amount.
    *
-   * The text is rendered through [[Failure.describeInput]] rather than interpolated as it
-   * stands, which bounds the message and keeps it to one line; in-bound text free of control
-   * characters renders to itself, so the wording is unchanged for every spelling a caller
-   * would sensibly offer.
+   * The text is quoted as it stands, which is the wording the implementation being ported
+   * produced; bounding it and escaping what it may hold belong to the writing of a failure,
+   * which the text form of one and [[Failure.show]] perform for every part they write.
    */
   private def invalidFormat(amountStr: String): Failure =
-    Failure.Parsing(s"Unable to parse amount, invalid format: ${Failure.describeInput(amountStr)}")
+    Failure.Parsing(s"Unable to parse amount, invalid format: $amountStr")
 
   /**
    * Renders an amount without a fractional part when it is a whole number.

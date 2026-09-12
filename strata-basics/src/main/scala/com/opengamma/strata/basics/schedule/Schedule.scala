@@ -6,12 +6,14 @@
 package com.opengamma.strata.basics.schedule
 
 import java.time.LocalDate
+import java.time.Period
 
 import cats.Hash
 import cats.Order
 import cats.Show
 import cats.data.EitherNec
 import cats.data.NonEmptyList
+import cats.syntax.foldable._
 import cats.syntax.traverse._
 
 import io.circe.Decoder
@@ -22,6 +24,8 @@ import io.circe.generic.semiauto.deriveEncoder
 import com.opengamma.strata.basics.date.DateAdjuster
 import com.opengamma.strata.basics.date.DayCount
 import com.opengamma.strata.collect.ArgCheck
+import com.opengamma.strata.collect.Validate
+import com.opengamma.strata.collect.ValidatedFailures
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -37,9 +41,12 @@ import com.opengamma.strata.collect.result.Failure
  *
  * A schedule is a '''validated''' value, and it is a `sealed abstract case class` with a private
  * constructor, so there is no public `apply` and no `copy`: every route to a value goes through
- * [[Schedule.of]] or [[Schedule.ofTerm]]. Its one invariant - that there is at least one period -
- * is carried by the type of [[periods]] rather than by a check, so the state the bean being ported
- * rejected at run time is not expressible here.
+ * [[Schedule.of]] or [[Schedule.ofTerm]]. It has two invariants, and they are carried differently.
+ * That there is at least one period is carried by the type of [[periods]] rather than by a check,
+ * so the state the bean being ported rejected at run time is not expressible here. That the
+ * periods run from '''earliest to latest''' is checked by [[Schedule.of]], which reports a list
+ * that runs backwards or overlaps and accepts one with gaps, because gaps are allowed and
+ * disorder is not - every member that reads the periods reads them as a time line.
  *
  * ===Accessor naming===
  *
@@ -70,6 +77,13 @@ import com.opengamma.strata.collect.result.Failure
  *    list with `validate = "notEmpty"` and threw `IllegalArgumentException` on an empty list;
  *    [[periods]] is a `cats.data.NonEmptyList`, so an empty schedule cannot be built, cannot be
  *    decoded from JSON, and needs no check.
+ *  - '''The documented chronology becomes a check.''' The bean documented its period list as
+ *    running from earliest to latest and validated only that it was not empty, so a reversed or
+ *    overlapping list was constructible - and, through Joda-Beans deserialization, arrivable from
+ *    a document. [[Schedule.of]] checks it here, reporting one failure for each pair that is out
+ *    of order, in both the unadjusted and the adjusted date pair. Gaps remain allowed, exactly as
+ *    the bean allowed them; only disorder is refused. Every schedule this library produces
+ *    satisfies the check, so the strengthening rejects no value the port can build.
  *  - '''`getPeriodEndDate` answers `None` instead of raising.''' The method threw
  *    `IllegalArgumentException("Date is not contained in any period")` for a date lying in none of
  *    the periods; [[periodEndDate]] returns `Option`, which is the shape the ported
@@ -93,6 +107,20 @@ import com.opengamma.strata.collect.result.Failure
  *    condition that moves the other way: Java raised `IllegalArgumentException` for it, and here
  *    it is a `Left(Failure.Invalid)`, because a group size is ordinarily computed from the same
  *    data as the dates it accompanies and belongs in the same error channel as them.
+ *  - '''The periods are held twice, once for the type and once for indexed access.''' The bean
+ *    carried its periods in an `ImmutableList`, which answers `size`, `last` and an indexed access
+ *    at once; [[periods]] is the `cats.data.NonEmptyList` the Agent Action Plan fixes, which
+ *    answers all three in time proportional to its length. The type therefore holds an
+ *    unpublished `Vector` of the same periods, computed on first use, and the members that need
+ *    positional access read it - a representation detail that changes no value, no equality and
+ *    no document, described on `Schedule.periodVector`.
+ *  - '''A group size too large to multiply the frequency by is reported.''' `Period.multipliedBy`
+ *    multiplies each component exactly and raises `ArithmeticException` where the product does not
+ *    fit, so in Java a large caller-supplied group size escaped `merge` and `mergeRegular` as an
+ *    exception - and escaped even the path that refuses the group size, because the message named
+ *    the multiplied frequency and so multiplied a second time. Here the multiplication happens
+ *    once per merge, inside a narrowly caught helper, and an overflow is a `Left(Failure.Invalid)`
+ *    like every other data-dependent failure of these two methods (AAP 0.3.3).
  *  - '''No Joda bean, builder or Java serialization.''' The meta-bean, the builder, `ImmutableBean`
  *    and `Serializable` are dropped; [[Schedule.of]] replaces the builder and JSON replaces Java
  *    serialization.
@@ -112,6 +140,26 @@ sealed abstract case class Schedule private (
     periodicFrequency: Frequency,
     rollConvention: RollConvention) extends DayCount.ScheduleInfo {
 
+  /**
+   * The periods of this schedule as an indexed sequence, which is a representation detail.
+   *
+   * [[periods]] is a `cats.data.NonEmptyList`, which the Agent Action Plan fixes as the type of
+   * that property and which the codecs of this type are derived over. A linked list answers
+   * `size`, `last` and an indexed access in time proportional to its length, so the members that
+   * ask those questions - [[size]], [[period]], [[lastPeriod]], [[regularPeriods]] and the scan
+   * [[merge]] performs - would each walk the schedule, and code that reads every period by index,
+   * which is how a caller holding a schedule usually reads one, would cost time proportional to
+   * the square of its length where the immutable list being ported answered each question at once.
+   *
+   * This is that same list held once as a `Vector`, computed on first use and shared by every
+   * member that needs indexed or positional access. It is '''not''' a constructor field, so
+   * equality, hashing, `unapply` and both codecs are exactly what they were - they read the three
+   * declared properties and nothing else - and it is not published, so nothing outside this file
+   * can observe the representation. Initialisation is a `lazy val`, which is thread-safe: a
+   * schedule shared between threads computes this once and every thread sees the same value.
+   */
+  private lazy val periodVector: Vector[SchedulePeriod] = periods.toList.toVector
+
   //-------------------------------------------------------------------------
   /**
    * Gets the number of periods in the schedule.
@@ -120,7 +168,7 @@ sealed abstract case class Schedule private (
    *
    * @return the number of periods
    */
-  def size: Int = periods.size
+  def size: Int = periodVector.size
 
   /**
    * Checks if this schedule represents a single 'Term' period.
@@ -155,7 +203,7 @@ sealed abstract case class Schedule private (
    */
   def period(index: Int): SchedulePeriod = {
     ArgCheck.inRange(index, 0, size, Schedule.IndexName)
-    periods.toList(index)
+    periodVector(index)
   }
 
   /**
@@ -170,7 +218,7 @@ sealed abstract case class Schedule private (
    *
    * @return the last schedule period
    */
-  def lastPeriod: SchedulePeriod = periods.last
+  def lastPeriod: SchedulePeriod = periodVector.last
 
   //-------------------------------------------------------------------------
   /**
@@ -273,12 +321,12 @@ sealed abstract case class Schedule private (
    */
   def regularPeriods: List[SchedulePeriod] =
     if (isTerm) {
-      periods.toList
+      periodVector.toList
     } else {
       val startStub = if (hasInitialStub) 1 else 0
       val endStub = if (hasFinalStub) 1 else 0
-      if (startStub == 0 && endStub == 0) periods.toList
-      else periods.toList.slice(startStub, size - endStub)
+      if (startStub == 0 && endStub == 0) periodVector.toList
+      else periodVector.slice(startStub, size - endStub).toList
     }
 
   /**
@@ -431,7 +479,7 @@ sealed abstract case class Schedule private (
     if (isSinglePeriod || groupSize == 1) {
       Right(this)
     } else {
-      val all = periods.toList.toVector
+      val all = periodVector
       // the last match is kept for each date, as in the loop being ported, which scanned the whole
       // list and overwrote the index it had found
       val startRegularIndex = all.lastIndexWhere(period =>
@@ -446,21 +494,28 @@ sealed abstract case class Schedule private (
         Left(Failure.Invalid(
           unmatchedDateMessage(Schedule.LastRegularEndDateName, lastRegularEndDate)))
       } else {
-        val endRegularIndex = lastRegularIndex + 1
-        if ((endRegularIndex - startRegularIndex) % groupSize != 0) {
-          Left(Failure.Invalid(
-            groupingMessage(groupSize, firstRegularStartDate, lastRegularEndDate)))
-        } else {
-          // everything before the first regular date is one group, everything after the last
-          // regular date is another, and the regular periods in between are grouped in threes,
-          // fours or whatever the group size says; the slice is empty where the two indices cross,
-          // which is the outcome the ported loop had for the same input
-          val leading =
-            if (startRegularIndex > 0) List(all.slice(0, startRegularIndex)) else Nil
-          val regular = all.slice(startRegularIndex, endRegularIndex).grouped(groupSize).toList
-          val trailing =
-            if (endRegularIndex < all.size) List(all.slice(endRegularIndex, all.size)) else Nil
-          regrouped(leading ::: regular ::: trailing, groupSize)
+        // the frequency is multiplied here, after the two dates have been matched and before
+        // either the grouping message or the merged frequency needs it, so that a date matching
+        // nothing is still reported as the implementation being ported reported it - that path
+        // never multiplied - and the multiplication that both remaining outcomes need happens
+        // exactly once
+        multipliedFrequencyPeriod(groupSize).flatMap { mergedPeriod =>
+          val endRegularIndex = lastRegularIndex + 1
+          if ((endRegularIndex - startRegularIndex) % groupSize != 0) {
+            Left(Failure.Invalid(
+              groupingMessage(mergedPeriod, firstRegularStartDate, lastRegularEndDate)))
+          } else {
+            // everything before the first regular date is one group, everything after the last
+            // regular date is another, and the regular periods in between are grouped in threes,
+            // fours or whatever the group size says; the slice is empty where the two indices
+            // cross, which is the outcome the ported loop had for the same input
+            val leading =
+              if (startRegularIndex > 0) List(all.slice(0, startRegularIndex)) else Nil
+            val regular = all.slice(startRegularIndex, endRegularIndex).grouped(groupSize).toList
+            val trailing =
+              if (endRegularIndex < all.size) List(all.slice(endRegularIndex, all.size)) else Nil
+            regrouped(leading ::: regular ::: trailing, mergedPeriod)
+          }
         }
       }
     }
@@ -495,18 +550,20 @@ sealed abstract case class Schedule private (
       if (isSinglePeriod || groupSize == 1) {
         Right(this)
       } else {
-        val regular = regularPeriods.toVector
-        val regularSize = regular.size
-        val remainder = regularSize % groupSize
-        // a negative start index is what puts the excess group first when rolling backwards; the
-        // bounds of each group are then clamped, exactly as the ported loop clamped them
-        val startIndex = if (rollForwards || remainder == 0) 0 else -(groupSize - remainder)
-        val regularGroups = Range(startIndex, regularSize, groupSize).toList.map { index =>
-          regular.slice(math.max(index, 0), math.min(index + groupSize, regularSize))
+        multipliedFrequencyPeriod(groupSize).flatMap { mergedPeriod =>
+          val regular = regularPeriods.toVector
+          val regularSize = regular.size
+          val remainder = regularSize % groupSize
+          // a negative start index is what puts the excess group first when rolling backwards; the
+          // bounds of each group are then clamped, exactly as the ported loop clamped them
+          val startIndex = if (rollForwards || remainder == 0) 0 else -(groupSize - remainder)
+          val regularGroups = Range(startIndex, regularSize, groupSize).toList.map { index =>
+            regular.slice(math.max(index, 0), math.min(index + groupSize, regularSize))
+          }
+          val leading = initialStub.toList.map(stub => Vector(stub))
+          val trailing = finalStub.toList.map(stub => Vector(stub))
+          regrouped(leading ::: regularGroups ::: trailing, mergedPeriod)
         }
-        val leading = initialStub.toList.map(stub => Vector(stub))
-        val trailing = finalStub.toList.map(stub => Vector(stub))
-        regrouped(leading ::: regularGroups ::: trailing, groupSize)
       }
     }
 
@@ -557,9 +614,18 @@ sealed abstract case class Schedule private (
    * '''This schedule itself''' is returned where the adjuster moved no date, which downstream code
    * relies on to avoid recalculating against an identical schedule.
    *
+   * The adjuster is an arbitrary function of a date supplied by the caller, so it is '''not''' in
+   * this method's gift to know that the adjusted periods still run from earliest to latest: an
+   * adjuster that moves one boundary across another produces a period list that no longer is a
+   * time line. The adjusted list is therefore rebuilt through [[Schedule.of]] rather than stored
+   * unchecked, and a list the adjuster reordered is reported as the same kind of failure a
+   * reordered list is reported as anywhere else, collapsed into the single cause this method
+   * answers with. A monotonic adjuster - which every business day convention of this library is -
+   * cannot reach that failure.
+   *
    * @param adjuster  the adjuster to use
    * @return the adjusted schedule, this schedule where nothing moved, or the failure describing
-   *   why a period is invalid once adjusted
+   *   why a period is invalid once adjusted or why the adjusted periods are out of order
    */
   def toAdjusted(adjuster: DateAdjuster): Either[Failure, Schedule] = {
     val lastIndex = size - 1
@@ -568,14 +634,16 @@ sealed abstract case class Schedule private (
         val mergeType = if (index == 0) -1 else if (index == lastIndex) 1 else 0
         period.toAdjusted(adjuster, mergeType).left.map(Failure.collapse)
       }
-      .map { adjustedPeriods =>
+      .flatMap { adjustedPeriods =>
         // each period hands back itself where its dates did not move, so reference inequality is
         // the test for "something changed", as it was in the implementation being ported
         val moved = adjustedPeriods.zipWith(periods)((adjusted, original) => adjusted ne original)
         if (moved.exists(identity)) {
-          Schedule.create(adjustedPeriods, periodicFrequency, rollConvention)
+          Schedule
+            .of(adjustedPeriods, periodicFrequency, rollConvention)
+            .left.map(Failure.collapse)
         } else {
-          this
+          Right(this)
         }
       }
   }
@@ -605,17 +673,19 @@ sealed abstract case class Schedule private (
    *
    * A group that is one period is that period, so a schedule where nothing was grouped keeps the
    * very periods it had. Any other group is collapsed into the period spanning it, and the
-   * frequency is rebuilt through [[Frequency.of]], which is where a multiplication beyond the
-   * frequencies this library expresses is reported - the implementation being ported raised there
-   * instead.
+   * frequency is rebuilt from the multiplied period through [[Frequency.of]], which is where a
+   * multiplication beyond the frequencies this library expresses is reported - the implementation
+   * being ported raised there instead. The multiplication itself is performed once per merge, by
+   * [[multipliedFrequencyPeriod]], and its result is handed to this method: multiplying here as
+   * well would repeat work that can fail.
    *
    * @param chunks  the groups of periods to collapse, in order, each of which is non-empty
-   * @param groupSize  the group size the frequency is multiplied by
+   * @param mergedPeriod  the periodic frequency's period multiplied by the group size
    * @return the regrouped schedule, or the first failure a group reported
    */
   private def regrouped(
       chunks: List[Vector[SchedulePeriod]],
-      groupSize: Int): Either[Failure, Schedule] = {
+      mergedPeriod: Period): Either[Failure, Schedule] = {
     // every group a caller of this method builds holds at least one period - a slice is taken only
     // where its bounds enclose something and `grouped` never yields an empty group - so nothing is
     // dropped here; the conversion is the way to say "non-empty" in the type without a partial
@@ -624,7 +694,7 @@ sealed abstract case class Schedule private (
     groups.traverse(createSchedulePeriod).flatMap {
       case head :: tail =>
         Frequency
-          .of(periodicFrequency.period.multipliedBy(groupSize))
+          .of(mergedPeriod)
           .left.map(Failure.collapse)
           .map(frequency => Schedule.create(NonEmptyList(head, tail), frequency, rollConvention))
       case Nil =>
@@ -678,24 +748,61 @@ sealed abstract case class Schedule private (
       unadjustedDates.toList.mkString("[", ", ", "]")
 
   /**
+   * Multiplies the period of this schedule's frequency by a group size, reporting an overflow.
+   *
+   * `java.time.Period` multiplies each of its three components exactly, raising
+   * `ArithmeticException` where the product does not fit, and the group size is supplied by the
+   * caller - so this is a failure that depends on the data a merge was asked to perform and
+   * belongs in the error channel the merges answer with rather than in an exception. Only that one
+   * exception is caught: anything else is a defect rather than a property of the group size.
+   *
+   * The result is computed '''once per merge''', before the grouping is worked out, and passed to
+   * the two members that need it - [[regrouped]], which builds the merged frequency from it, and
+   * [[groupingMessage]], which names it in the failure a group size that does not divide reports.
+   * Multiplying separately in each of them would repeat a computation that can fail, which is how
+   * the refusal path itself came to raise.
+   *
+   * Note where the two merges reach this. Both reach it only after their early returns - a
+   * single-period schedule and a group size of one answer with this schedule unchanged, as the
+   * implementation being ported did, and never multiply at all - and [[merge]] reaches it only
+   * after matching its two dates, so a date that matches nothing in the schedule is reported with
+   * the ported message rather than displaced by an overflow the ported code would not have
+   * reached either.
+   *
+   * @param groupSize  the group size to multiply by, which is greater than one here
+   * @return the multiplied period, or the failure describing why the group size cannot be applied
+   */
+  private def multipliedFrequencyPeriod(groupSize: Int): Either[Failure, Period] =
+    try {
+      Right(periodicFrequency.period.multipliedBy(groupSize))
+    } catch {
+      case _: ArithmeticException =>
+        Left(
+          Failure.Invalid(
+            s"Unable to merge schedule, '${Schedule.GroupSizeName}' of $groupSize is too large " +
+              s"to multiply the frequency '${periodicFrequency.name}' by"))
+    }
+
+  /**
    * The message reporting a group size that does not divide the regular periods.
    *
    * The frequency named in the text is the '''period''' the multiplication produced, printed by
    * its own ISO-8601 form as `P6M` rather than by the frequency it would become, which is what the
-   * message being ported printed.
+   * message being ported printed. The period is the one [[multipliedFrequencyPeriod]] computed for
+   * this merge, passed in rather than recomputed, so building this message cannot fail.
    *
-   * @param groupSize  the group size the frequency was multiplied by
+   * @param mergedPeriod  the periodic frequency's period multiplied by the group size
    * @param firstRegularStartDate  the start date of the first regular period
    * @param lastRegularEndDate  the end date of the last regular period
    * @return the message
    */
   private def groupingMessage(
-      groupSize: Int,
+      mergedPeriod: Period,
       firstRegularStartDate: LocalDate,
       lastRegularEndDate: LocalDate): String =
     s"Unable to merge schedule, firstRegularStartDate $firstRegularStartDate and " +
       s"lastRegularEndDate $lastRegularEndDate cannot be used to create regular periods of " +
-      s"frequency '${periodicFrequency.period.multipliedBy(groupSize)}'"
+      s"frequency '$mergedPeriod'"
 
   /**
    * Renders this schedule as text.
@@ -788,32 +895,111 @@ object Schedule {
   /**
    * Obtains an instance from the periods, the frequency and the roll convention.
    *
-   * This is the funnel every schedule is built through, and it '''accepts every well-typed
-   * input'''. The bean being ported had one validator, that its list of periods was not empty, and
-   * that condition is carried by the type of [[Schedule.periods]] here, so there is nothing left
-   * for this factory to decide. It keeps the failure-carrying return of a validated type all the
-   * same, for two reasons: it is the shape the decoder of this type builds through, and it is the
-   * shape a caller of a validated factory of this port reads at every other type, so a schedule
-   * does not become the one place where the pattern is broken. No input it rejects exists today,
-   * and none is invented to make the channel look used - the algorithms that derive one schedule
-   * from another report their own failures, through their own checks and through
-   * [[SchedulePeriod.of]].
+   * This is the funnel every schedule is built through, and it is where the '''chronology''' of
+   * the period list is decided. Two invariants are stated on [[Schedule.periods]], and this
+   * factory is what makes both of them true of every schedule in existence:
    *
-   * Note what is '''not''' checked, here or anywhere: that the periods run from earliest to latest
-   * and that each is adjacent to the next. Neither was checked by the bean being ported either -
-   * non-adjacent periods are explicitly allowed - and the members that depend on the ordering say
-   * so where they do.
+   *   1. there is at least one period, which is carried by the type of the field - a
+   *      `cats.data.NonEmptyList` - rather than by a check here, so the state the bean being
+   *      ported rejected at run time is not expressible;
+   *   1. the periods '''run from earliest to latest''', which is checked: each period's end is on
+   *      or before the next period's start, in both the unadjusted and the adjusted date pair.
    *
-   * @param periods  the schedule periods, of which there is at least one
+   * What the second check does '''not''' require is adjacency. A gap between one period and the
+   * next is explicitly allowed, as it was by the bean being ported, because a schedule may
+   * describe accrual that pauses; what is refused is a list that runs backwards or in which two
+   * periods overlap, because such a list contradicts the field it is stored in and every member
+   * that reads the periods in order. That matters beyond tidiness: the schedule is the
+   * [[com.opengamma.strata.basics.date.DayCount.ScheduleInfo]] a day count accrues against,
+   * [[Schedule.periodEndDate]] answers with the first period containing a date, stub
+   * classification reads the first and last period, the two merges collapse runs of adjacent
+   * periods, and [[com.opengamma.strata.basics.value.ValueSchedule]] resolves a step by finding
+   * the period whose boundary it names. Every one of those reads the list as a time line, so a
+   * list that is not one produces answers that are wrong rather than answers that fail - which is
+   * why the refusal belongs here, at the single point of construction, and why the decoder builds
+   * through this factory (a document is exactly the route by which a reversed list would otherwise
+   * arrive).
+   *
+   * One failure is reported for each ordering that does not hold, so a list with several
+   * misplaced periods reports each of them rather than only the first, in the accumulating channel
+   * every validated factory of this port reports through. The other failures a schedule can
+   * report belong to the algorithms that derive one schedule from another, which use their own
+   * checks and [[SchedulePeriod.of]].
+   *
+   * @param periods  the schedule periods, of which there is at least one, running from earliest
+   *   to latest
    * @param frequency  the periodic frequency used when building the schedule
    * @param rollConvention  the roll convention used when building the schedule
-   * @return the schedule
+   * @return the schedule, or the failures describing the periods that are out of order
    */
   def of(
       periods: NonEmptyList[SchedulePeriod],
       frequency: Frequency,
       rollConvention: RollConvention): EitherNec[Failure, Schedule] =
-    Right(create(periods, frequency, rollConvention))
+    checkedChronology(periods)
+      .map(_ => create(periods, frequency, rollConvention))
+      .toEither
+
+  /**
+   * Checks that a list of periods runs from earliest to latest.
+   *
+   * Each period is compared with the one after it, and both date pairs are compared: the
+   * unadjusted pair, which is the time line the schedule was generated on, and the adjusted pair,
+   * which is the time line its dates fall on once the business day convention has had its say. A
+   * period whose end - in either pair - falls after the start of the period following it is
+   * reported, and the two pairs are reported separately, because they are two different statements
+   * about the same list and a caller correcting one is helped by knowing whether the other is
+   * wrong too.
+   *
+   * Equal dates pass: that is the adjacency of a schedule generated from a periodic frequency,
+   * where each period begins on the day the one before it ended. Ordering '''within''' a period is
+   * not re-checked, since [[SchedulePeriod.of]] decided it when the period was built and no route
+   * to a period bypasses it.
+   *
+   * @param periods  the periods to check, in the order they are to be held
+   * @return a passing outcome, or one failure for each ordering that does not hold
+   */
+  private def checkedChronology(
+      periods: NonEmptyList[SchedulePeriod]): ValidatedFailures[Unit] =
+    periods.toList
+      .zip(periods.tail)
+      .zipWithIndex
+      .flatMap { case ((earlier, later), index) =>
+        List(
+          Validate.isFalse(
+            earlier.unadjustedEndDate.isAfter(later.unadjustedStartDate),
+            outOfOrderMessage(
+              index,
+              "unadjusted",
+              earlier.unadjustedEndDate,
+              later.unadjustedStartDate)),
+          Validate.isFalse(
+            earlier.endDate.isAfter(later.startDate),
+            outOfOrderMessage(index, "adjusted", earlier.endDate, later.startDate)))
+      }
+      .sequence_
+
+  /**
+   * The message reporting a pair of periods that does not run from earliest to latest.
+   *
+   * The text names the two periods by their position in the list, counting from zero as the list
+   * is indexed, which pair of dates was compared, and the two dates themselves, so a caller can
+   * see what has to move without reading the schedule back out of the failure.
+   *
+   * @param index  the index of the earlier period of the pair
+   * @param dates  which date pair was compared, `unadjusted` or `adjusted`
+   * @param end  the end date of the earlier period
+   * @param start  the start date of the later period
+   * @return the message
+   */
+  private def outOfOrderMessage(
+      index: Int,
+      dates: String,
+      end: LocalDate,
+      start: LocalDate): String =
+    s"Unable to create Schedule, the periods must run from earliest to latest but the $dates " +
+      s"end date $end of the period at index $index is after the $dates start date $start of the " +
+      s"period at index ${index + 1}"
 
   /**
    * Creates a value, which every route into the type funnels through.
@@ -824,12 +1010,24 @@ object Schedule {
    * type without a public `apply` or `copy` while keeping the `equals`, `hashCode` and `unapply` a
    * case class provides.
    *
-   * The method performs no check, because there is none to perform: every condition of the type is
-   * carried by the types of its three fields. It is visible '''within the schedule package''' so
-   * that the members deriving one schedule from another - the two merges and the two conversions
-   * of this type, and the schedule generation of [[PeriodicSchedule]] - can build from periods
-   * they have already decided on without routing a value that cannot be rejected through a factory
-   * that returns as though it could.
+   * The method performs '''no check''', so every caller of it owes the chronology
+   * [[Schedule.of]] checks, and each of the three in this file discharges that debt by
+   * construction:
+   *
+   *   - [[Schedule.ofTerm]] builds a schedule of one period, and a single period is in order
+   *     whatever its dates, there being no pair to compare;
+   *   - [[Schedule.toUnadjusted]] moves each period's unadjusted dates into its adjusted
+   *     positions, so both pairs of the result are the unadjusted pair of an ordered list and the
+   *     result is ordered in both;
+   *   - [[Schedule.regrouped]] collapses '''contiguous slices''' of an ordered list into the
+   *     periods spanning them, and the spans of contiguous slices of an ordered list are
+   *     themselves ordered - each span ends where its last period ended, on or before the start of
+   *     the next span's first period.
+   *
+   * [[Schedule.toAdjusted]], whose adjuster is supplied by the caller and can reorder anything,
+   * and the schedule generation of [[PeriodicSchedule]], whose periods come from data, both build
+   * through [[Schedule.of]] instead. The method stays visible '''within the schedule package'''
+   * for those three proven callers and for that reason only.
    *
    * @param periods  the schedule periods, of which there is at least one
    * @param frequency  the periodic frequency used when building the schedule
@@ -950,4 +1148,3 @@ object Schedule {
       of(raw.periods, raw.frequency, raw.rollConvention)
     }(rawDecoder)
 }
-

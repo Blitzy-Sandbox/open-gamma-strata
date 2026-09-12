@@ -11,6 +11,7 @@ import java.util.logging.{Handler, Level, LogRecord, Logger}
 import scala.collection.mutable.ListBuffer
 
 import org.scalacheck.Gen
+import org.scalatest.exceptions.TestFailedException
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
@@ -25,9 +26,15 @@ import com.opengamma.strata.collect.testkit.TestHelper._
  * signatures exercised here are what keeps that module compiling. Only the four
  * retained helper groups are covered - the two date factories, the list factory
  * and the two capture helpers. The members the migration drops have no
- * counterpart to test, and that includes the two assertion helpers the original
- * test class exercised exclusively: the test framework supplies both, so the
- * cases that covered them consolidate onto the named tests below.
+ * counterpart in the helper itself, and that includes the two assertion helpers
+ * the original test class exercised exclusively: one compared two references
+ * and one asserted a reference was set. Their replacement is not another helper
+ * but the test framework's own equality matcher, with `Option` standing in for
+ * the absent reference the first special-cased and the second rejected - which
+ * is why no case below writes that literal at all. The seven cases that covered
+ * those helpers are therefore ported one-for-one onto that replacement, in the
+ * dedicated section at the end of this file, rather than counted against the
+ * helper tests above; the helper tests carry only their own cases.
  *
  * Two properties of the port are made observable rather than assumed. The list
  * factory's result is bound to the fully qualified immutable Scala list type,
@@ -569,6 +576,94 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
     }
     records.map(_.getMessage) shouldBe ("typed" :: Nil)
     records.map(_.getLevel) shouldBe (Level.WARNING :: Nil)
+  }
+
+  //-------------------------------------------------------------------------
+  // The replacement for the two dropped assertion helpers
+  //
+  // The original test class exercised two helpers this port does not keep: one
+  // compared two references, special-casing the case where both were absent,
+  // and one asserted that a reference was set. What replaces them is the test
+  // framework's own equality matcher together with `Option`, which is how this
+  // port spells absence, so that is what the seven cases below assert - one for
+  // each case of the original, in its order.
+  //
+  // Three of those cases covered the reporting direction: the original called
+  // the helper with operands it expected to be rejected, caught the resulting
+  // error and asserted its message. The cases here do the same, through
+  // `intercept` and an assertion about the reported text, because a case that
+  // only established that something was thrown would pass just as well against
+  // a matcher that rejected everything.
+  //-------------------------------------------------------------------------
+
+  test("the equality assertion that replaced the removed comparison helper holds for two equal values") {
+    // Two values that are equal without being the same instance, exactly as the
+    // original built them: a literal, and a substring of a longer literal.
+    val computed = "abcd".substring(0, 3)
+    computed shouldBe "abc"
+    // And the same pair as present values, which is the shape the cases over
+    // absence below need, so both directions of the comparison read alike.
+    Option(computed) shouldBe Option("abc")
+  }
+
+  test("the equality assertion that replaced the removed comparison helper holds for two absent values") {
+    // The case the removed helper had to special-case before it compared
+    // anything. Absence is a value here, so the matcher needs no special case:
+    // two absent values are equal for the same reason any other two equal
+    // values are.
+    val absent: Option[String] = Option.empty[String]
+    absent shouldBe Option.empty[String]
+    absent shouldBe None
+  }
+
+  test("the equality assertion that replaced the removed comparison helper reports two unequal values") {
+    val reported = intercept[TestFailedException] {
+      "abc" shouldBe "def"
+    }
+    // Both operands appear in the report. That is the property the original
+    // asserted of the helper's message, and it is what makes a failure here
+    // diagnosable rather than merely a failure.
+    reported.getMessage should include("abc")
+    reported.getMessage should include("def")
+  }
+
+  test("the equality assertion that replaced the removed comparison helper reports a present value against an absent one") {
+    val reported = intercept[TestFailedException] {
+      Option("abc") shouldBe Option.empty[String]
+    }
+    // The present value and the absent one are both named, in the order they
+    // were given, so the report says which side was absent.
+    reported.getMessage should include("abc")
+    reported.getMessage should include("None")
+  }
+
+  test("the equality assertion that replaced the removed comparison helper reports an absent value against a present one") {
+    val reported = intercept[TestFailedException] {
+      Option.empty[String] shouldBe Option("abc")
+    }
+    // The mirror of the case above: the operands swap, and both are still
+    // named, which is what shows the report is not one-sided.
+    reported.getMessage should include("None")
+    reported.getMessage should include("abc")
+  }
+
+  test("the presence assertion that replaced the removed non-null helper holds for a value that is present") {
+    // What the removed helper asserted of a reference that was set, over the
+    // type that carries presence in this port.
+    val present = Option("abc")
+    present shouldBe defined
+    present should not be empty
+  }
+
+  test("the presence assertion that replaced the removed non-null helper reports a value that is absent") {
+    val reported = intercept[TestFailedException] {
+      Option.empty[String] shouldBe defined
+    }
+    // The report names the value it rejected and what it required of it, which
+    // is more than the original's helper gave: its message was whatever the
+    // caller passed in.
+    reported.getMessage should include("None")
+    reported.getMessage should include("defined")
   }
 }
 

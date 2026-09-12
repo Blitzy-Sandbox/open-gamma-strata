@@ -47,8 +47,16 @@ import com.opengamma.strata.basics.date.HolidayCalendarIds
  *                          date; two for most of these indices, one for the Chilean peso index
  *                          and zero for the Colombian peso index
  * @param maturityCalendar  the calendar those business days are counted in
+ *
+ * The row is a transcription of one line of the reference data this module was built from, so it
+ * is visible within `com.opengamma.strata.basics` and no further - the same visibility
+ * `PriceIndexRow` has, and for the same reason. It is the shape the table below is written in
+ * rather than a value of the published API: a caller reads this data as the index family the
+ * companion of `Index.scala` builds from it, never as rows, so publishing the row type would add
+ * a type to the module's surface that nothing outside it can use and that the port's construction
+ * and codec inventories would then have to account for.
  */
-final case class FxIndexRow(
+private[basics] final case class FxIndexRow(
     name: String,
     currencyPair: CurrencyPair,
     fixingCalendar: HolidayCalendarId,
@@ -116,8 +124,12 @@ final case class FxIndexRow(
  * with the family in `Index.scala`.
  *
  * All members are immutable values, so this object is thread-safe.
+ *
+ * The table is visible within `com.opengamma.strata.basics` and no further, as `PriceIndexData`
+ * is: it is the transcribed reference data the index family is built from, and the family is what
+ * a caller uses.
  */
-object FxIndexData {
+private[basics] object FxIndexData {
 
   /**
    * The sixteen transcribed FX index rows, in the declaration order of the original data.

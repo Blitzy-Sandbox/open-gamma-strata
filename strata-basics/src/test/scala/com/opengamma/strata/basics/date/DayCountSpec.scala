@@ -6,6 +6,7 @@
 package com.opengamma.strata.basics.date
 
 import java.time.LocalDate
+import java.time.Period
 import java.util.Locale
 
 import cats.Eq
@@ -16,6 +17,7 @@ import cats.Show
 import io.circe.Json
 import io.circe.syntax.EncoderOps
 
+import org.scalatest.concurrent.TimeLimits
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
@@ -24,10 +26,13 @@ import org.scalatest.prop.TableFor11
 import org.scalatest.prop.TableFor2
 import org.scalatest.prop.TableFor7
 import org.scalatest.prop.TableFor8
+import org.scalatest.time.Seconds
+import org.scalatest.time.Span
 
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.schedule.Frequency
 import com.opengamma.strata.collect.result.FailureReason
+import com.opengamma.strata.collect.result.ResultNec
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 import com.opengamma.strata.collect.testkit.TestHelper.date
 
@@ -113,8 +118,10 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  *     really about is asserted over real members instead.
  *   - `test_scheduleInfo` asserted that four accessors of the bare interface raise. They are
  *     total in this port and answer `None` (AAP 0.6.1), so that is what is asserted - together
- *     with the refusal that did '''not''' move, namely a day count asked to calculate against a
- *     schedule that cannot tell it what its rule is defined in terms of.
+ *     with the two refusals that did '''not''' move: a day count asked to calculate against a
+ *     schedule that cannot tell it what its rule is defined in terms of, and `Act/Act ICMA`
+ *     asked to accrue over a schedule whose frequency has no whole number of events in a year,
+ *     which is a complete schedule that the convention is none the less not defined over.
  *   - `coverage` invoked a private constructor and read the values of a Java enum reflectively,
  *     to satisfy a coverage tool. Neither has a target here, so what they stood for is asserted
  *     directly: the constants are the members, `values` is closed and in declaration order, and
@@ -133,7 +140,7 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * `json.JsonRoundTripSpec`. This spec carries the hand-written Java expectations and nothing
  * else.
  */
-class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
+class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks with TimeLimits {
 
   import DayCountSpec._
 
@@ -792,15 +799,23 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
           "EXA/EXA" -> "Act/Act AFB",
           "ICM/ACT" -> "Act/Act ICMA"))
 
-    // The resolved views hold the same rows as values. The FpML group is the one place in this
-    // module where a published external row names something that is not a member of the closed
-    // family: `BUS/252` names `Bus/252 BRBD`, one of the calendar-bearing conventions, of which
-    // there is one per holiday calendar rather than one per family. The resolved view therefore
-    // holds 13 of the 14 rows, and `parse("BUS/252")` reaches that convention by the lenient
-    // route instead - which is asserted here so the asymmetry is recorded rather than surprising.
-    lookup.externalNames("FpML").map(_.size) shouldBe Some(13)
-    lookup.externalNames("FpML").flatMap(_.get("BUS/252")) shouldBe None
+    // The resolved views hold the same rows as values, all 14 of them and all 8. The FpML group
+    // is the one place in this module where a published external row names something that is not
+    // a member of the closed family: `BUS/252` names `Bus/252 BRBD`, one of the calendar-bearing
+    // conventions, of which there is one per holiday calendar rather than one per family. It
+    // resolves none the less, because an external row is resolved through the '''family's own'''
+    // lookup - `DayCount.valueOf`, which spans the 21 standard members and the `Bus/252`
+    // conventions together - exactly as the external lookup of the ported registry resolved such
+    // a row by delegating the name it carries to its second provider. So the resolved view is the
+    // raw table row for row, while `values` still holds the 21 and not that convention, and
+    // `parse("BUS/252")` reaches the same day count by the lenient route.
+    lookup.externalNames("FpML").map(_.size) shouldBe Some(14)
+    lookup.externalNames("FpML").map(_.keySet) shouldBe lookup.externalNamesRaw("FpML").map(_.keySet)
+    lookup.externalNames("FpML").flatMap(_.get("BUS/252")) shouldBe
+      Some(DayCount.ofBus252(StandardHolidayCalendars.BRBD))
     lookup.externalNamesRaw("FpML").flatMap(_.get("BUS/252")) shouldBe Some("Bus/252 BRBD")
+    lookup.values.toList.contains(DayCount.ofBus252(StandardHolidayCalendars.BRBD)) shouldBe false
+    DayCount.valueOf("Bus/252 BRBD") shouldBe Some(DayCount.ofBus252(StandardHolidayCalendars.BRBD))
     DayCount.parse("BUS/252") should haveValue(DayCount.ofBus252(StandardHolidayCalendars.BRBD))
 
     lookup.externalNames("FpML").flatMap(_.get("ACT/ACT.ISMA")) shouldBe Some(DayCounts.ACT_ACT_ICMA)
@@ -822,8 +837,12 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     // replacements is asserted rather than just the count - reordering the rows would change
     // what resolves and to what, and is the one change to this table that no individual row
     // assertion would catch.
-    lookup.lenientPatterns should have size 67
-    lookup.lenientPatterns.map { case (_, replacement) => replacement } shouldBe lenientReplacements
+    // Read as text through `lenientSources`, the raw view, rather than through the compiled
+    // projection: the rows are what is being asserted, and reading them this way compiles none of
+    // the sixty-seven expressions.
+    lookup.lenientSources should have size 67
+    lookup.lenientSources.map { case (_, replacement) => replacement } shouldBe lenientReplacements
+    lookup.lenientSources.map { case (source, _) => source }.head shouldBe "ACTUAL/ACTUAL(.*)"
   }
 
   test("test_of_lookup_notFound") {
@@ -892,6 +911,41 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     // Brazilian calendar. Stating that here keeps the near-miss `"Bus/252  "`, which does not
     // resolve, from reading as an accident.
     DayCount.parse("Bus/252") should haveValue(DayCount.ofBus252(StandardHolidayCalendars.BRBD))
+
+    // The last thing a caller can supply is a lot of text. `parse` folds its input to upper case
+    // and runs all 67 rewrites over it, several of which hold a group that can consume text of
+    // unbounded length, so the cost of rejecting text has to be a function of its length and not
+    // of its length squared. Two hundred thousand open brackets is the input that made that
+    // difference visible: `(.*)[(](.*)[)]` has an open bracket to try at every one of those
+    // positions and, before the rewrites learned what a full match of them must end with, took
+    // minutes to decide it could not match. It is asserted as the other entries are - nothing
+    // resolves, the parsing reason is reported, and nothing is raised - inside a generous time
+    // limit that is a regression guard on the cost rather than a measurement of it: the work is
+    // now one pass, so thirty seconds cannot flake however loaded the host is, while the
+    // quadratic behaviour could not fit in it.
+    val oversized: String = "(" * 200000
+    val oversizedOutcome: ResultNec[DayCount] = failAfter(Span(30L, Seconds))(DayCount.parse(oversized))
+    oversizedOutcome should beFailureWith(FailureReason.PARSING)
+    noException should be thrownBy DayCount.parse(oversized)
+    DayCount.valueOf(oversized) shouldBe None
+
+    // And the other half of that statement, which is why the cost is bounded by the rewrites
+    // rather than by refusing long text outright: text is never rejected for its size, at either
+    // stage of the lookup. A `Bus/252` name may carry a combined calendar of any number of parts,
+    // so ten thousand characters naming two thousand and one calendars resolve to the day count
+    // over London and New York - the duplicate parts folding away, as a calendar combined with
+    // itself does - where a length cutoff would have refused the name outright.
+    val longCalendar: String = "Bus/252 " + ("GBLO+" * 2000) + "USNY"
+    longCalendar.length shouldBe 10012
+    DayCount.parse(longCalendar).map(dayCount => dayCount.name) should haveValue("Bus/252 GBLO+USNY")
+    DayCount.valueOf(longCalendar).map(dayCount => dayCount.name) shouldBe Some("Bus/252 GBLO+USNY")
+
+    // The lenient stage is reached by text of any length as well, which is the same statement
+    // about the second stage: the chain rewrites the head of this ten-thousand-character input
+    // and hands the rest of it back untouched, rather than being skipped because the input is
+    // long. That the result then names no day count is beside the point being made here - what
+    // matters is that the rewrites ran.
+    DayCount.namedEnum.rewriteLeniently("ACT/ACT" + ("X" * 10000)) shouldBe "Act/Act" + ("X" * 10000)
   }
 
   //-------------------------------------------------------------------------
@@ -1002,6 +1056,34 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     intercept[IllegalArgumentException](
       DayCounts.THIRTY_E_360_ISDA.yearFraction(LocalDate.of(2011, 12, 28), LocalDate.of(2012, 2, 29), test))
       .getMessage shouldBe "The end date of the schedule is required"
+
+    // The second refusal of the same kind, and the one a schedule reaches with '''every''' fact
+    // present. `Act/Act ICMA` divides each nominal period by the number of events the schedule's
+    // frequency has in a year, so a frequency that has no whole number of them - `P5M`, which no
+    // whole number of periods fills a year with - describes a schedule the convention is not
+    // defined over. The frequency type reports that as a value, because for its own callers it
+    // depends on data; here it is the contract of the call, so it is raised through `ArgCheck`
+    // carrying the frequency's own message, which is what the implementation being ported threw.
+    val fiveMonthly = frequencyOf(Frequency.of(Period.ofMonths(5)))
+    fiveMonthly.name shouldBe "P5M"
+    fiveMonthly.eventsPerYear.left.map(failure => failure.message) shouldBe
+      Left(NonIntegralEventsMessage)
+
+    val fiveMonthlyInfo = Info(Some(JAN_01), Some(JAN_01_NEXT), Some(JAN_01_NEXT), false, Some(fiveMonthly))
+    fiveMonthlyInfo.startDate shouldBe Some(JAN_01)
+    fiveMonthlyInfo.endDate shouldBe Some(JAN_01_NEXT)
+    fiveMonthlyInfo.periodEndDate(JAN_01) shouldBe Some(JAN_01_NEXT)
+    fiveMonthlyInfo.frequency shouldBe Some(fiveMonthly)
+    intercept[IllegalArgumentException](DayCounts.ACT_ACT_ICMA.yearFraction(JAN_01, JUL_01, fiveMonthlyInfo))
+      .getMessage shouldBe NonIntegralEventsMessage
+
+    // The control that keeps the assertion above about the frequency and not about the fixture:
+    // the same schedule shape with a frequency that does divide the year answers. Two six-month
+    // events fill the year from `JAN_01`, the period measured is the first of them, and its 181
+    // days over the 362 the two nominal periods span is exactly half a year.
+    val sixMonthlyInfo = Info(Some(JAN_01), Some(JAN_01_NEXT), Some(JAN_01_NEXT), false, Some(Frequency.P6M))
+    Frequency.P6M.eventsPerYear shouldBe Right(2)
+    DayCounts.ACT_ACT_ICMA.yearFraction(JAN_01, JUL_01, sixMonthlyInfo) shouldBe 0.5d
 
     // The 17 members that read nothing calculate against it, and so do the two that read only
     // what it always carries or only in a case these dates avoid.
@@ -1171,6 +1253,30 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
       }
     }
   }
+
+  //-------------------------------------------------------------------------
+  /**
+   * Unwraps the outcome of a frequency factory for use as a fixture.
+   *
+   * The frequencies this spec names as constants need no unwrapping, but the one frequency it
+   * builds - the five-month period of `test_scheduleInfo`, which no constant offers because no
+   * whole number of such periods fills a year - comes from a factory that reports a period it
+   * cannot accept as a value. Threading that outcome through here rather than forcing it with
+   * `getOrElse` and a fabricated fallback keeps a mistake in the fixture visible: a period that
+   * is not a frequency fails this spec naming its failures, instead of quietly testing some
+   * other value.
+   *
+   * @param result  the outcome of a frequency factory, expected to hold a frequency
+   * @return the frequency the outcome holds
+   */
+  private def frequencyOf(result: ResultNec[Frequency]): Frequency =
+    result match {
+      case Right(frequency) => frequency
+      case Left(failures) =>
+        fail(
+          "Fixture frequency could not be built: " +
+            failures.toChain.toList.map(failure => failure.message).mkString("; "))
+    }
 }
 
 /**
@@ -1202,6 +1308,16 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
 
   /** The message the date-order precondition reports, asserted rather than paraphrased. */
   val DatesOutOfOrderMessage: String = "Dates must be in time-line order"
+
+  /**
+   * The message a frequency with no whole number of events in a year reports, asserted rather
+   * than paraphrased.
+   *
+   * This is the text `Frequency.eventsPerYear` puts in its failure, which `Act/Act ICMA` raises
+   * as it stands rather than wrapping: a caller that supplied `P5M` is told which frequency the
+   * convention could not accrue over, and the wording comes from the type that owns the rule.
+   */
+  val NonIntegralEventsMessage: String = "Unable to calculate events per year: P5M"
 
   /**
    * The marker the numeric providers use for a row on which no day-of-month adjustment applies.

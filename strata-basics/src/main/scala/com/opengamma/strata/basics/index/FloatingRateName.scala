@@ -96,18 +96,21 @@ import com.opengamma.strata.collect.result.Failure
  *
  * The JSON form is the bare external name string, as the string conversion of the implementation
  * being ported was. Reading goes through the family's own name lookup and therefore accepts an
- * external name and its upper-case spelling, and nothing else: text naming a concrete index,
+ * external name in whatever case it arrives, and nothing else: text naming a concrete index,
  * `GBP-LIBOR-3M`, is '''not''' accepted by the codec, exactly as it was not accepted by the
  * `of` factory the string conversion was bound to. [[FloatingRateName.parse]] is the wider
  * resolution that does accept it.
  *
  * ===Implementation notes===
  *
- * Values are immutable and safe to share between threads. Every operation that reaches an index
- * family resolves it when called rather than holding it in a field: the index families and this
- * family refer to each other, and a field would make the two mutually dependent at creation
- * time, so that whichever a program touched first could observe the other half-built. The
- * implementation being ported avoided the cycle the same way.
+ * Values are immutable and safe to share between threads. No operation reaches an index family
+ * while this family is being created: the index families and this family refer to each other, and
+ * a field evaluated at creation time would make the two mutually dependent, so that whichever a
+ * program touched first could observe the other half-built. The conversions resolve an index when
+ * they are called, and [[tenors]] answers from a table of active tenors that the companion builds
+ * lazily, on the first call that needs it, so the one derivation that would otherwise read an
+ * index family eagerly is deferred as well. The implementation being ported avoided the cycle the
+ * same way.
  *
  * @param externalName  the external name, typically from FpML, such as `GBP-LIBOR-BBA`
  * @param indexName  the name of the index family this name resolves to, such as `GBP-LIBOR-`,
@@ -160,10 +163,14 @@ sealed abstract class FloatingRateName private[index] (
    * retired: `JPY-TIBOR-EUROYEN` is such a name in the published data. That is why
    * [[defaultTenor]] reports a failure rather than answering with a tenor.
    *
-   * This is a method rather than a field, and has to stay one: it reads the published Ibor index
-   * family, which refers back to this family, so a field would create an initialization cycle
-   * between the two. The cost is a scan of the Ibor indices per call, which is what the
-   * implementation being ported did as well.
+   * This is a method rather than a field, and has to stay one: the answer is derived from the
+   * published Ibor index family, which refers back to this family, so a field evaluated while
+   * this family was created would make the two mutually dependent. The derivation is held in a
+   * lazily built table of the active tenors of each Ibor family, forced by the first call that
+   * needs it, so the Ibor indices are scanned once for the whole of this family and a call is a
+   * lookup in that table; the implementation being ported scanned them on every call. Deferring
+   * the table until it is used is what keeps the two families from depending on each other at
+   * creation time.
    *
    * @return the available tenors, shortest first, empty where this name has none
    */
@@ -171,10 +178,7 @@ sealed abstract class FloatingRateName private[index] (
     if (!rateType.isIbor) {
       FloatingRateName.NoTenors
     } else {
-      SortedSet.from(
-        IborIndex.values.toList.iterator
-          .filter(index => index.name.startsWith(indexName) && index.active)
-          .map(index => index.tenor))(FloatingRateName.TenorOrdering)
+      FloatingRateName.activeIborTenorsByIndexName.getOrElse(indexName, FloatingRateName.NoTenors)
     }
 
   /**
@@ -462,9 +466,12 @@ sealed abstract class FloatingRateName private[index] (
  * that order. [[FloatingRateName.namedEnum]] is built from [[FloatingRateName.values]] and must
  * follow it; [[FloatingRateName.codec]] captures the name lookup when it is created and must
  * follow that; and the two currency default tables resolve published names through the lookup and
- * must follow it as well. Nothing here reaches an index family, so loading this object loads
- * none of them - the conversions that do are methods, evaluated when a caller reaches them, which
- * is what keeps this family and the index families from depending on each other at creation time.
+ * must follow it as well. One member does reach an index family - the table of active tenors that
+ * [[FloatingRateName.tenors]] answers from - and it is lazy, so it is not evaluated while this
+ * object loads. Loading this object therefore reaches no index family: the conversions that reach
+ * one are methods, evaluated when a caller reaches them, and the tenor table is built by the first
+ * call that needs it, which is what keeps this family and the index families from depending on
+ * each other at creation time.
  */
 object FloatingRateName {
 
@@ -526,6 +533,43 @@ object FloatingRateName {
   private val instances: Vector[FloatingRateName] = FloatingRateNameData.rows.map(instanceOf)
 
   /**
+   * The active tenors of each Ibor family, keyed by the index name the members of that family
+   * carry.
+   *
+   * This is the table [[FloatingRateName.tenors]] answers an Ibor name from. It holds one entry
+   * per distinct index name among the Ibor members, and each entry is the set that accessor
+   * describes - the tenors of the published Ibor indices whose name begins with that index name
+   * and which are still published, ordered by [[TenorOrdering]]. The keys therefore cover every
+   * Ibor member of this family, and a family whose every index has been retired maps to the empty
+   * set rather than being absent, so each of its names is answered by a lookup alone.
+   *
+   * It is `lazy`, and that is the whole of what keeps this family and the index families
+   * independent at creation time: the derivation reads [[IborIndex.values]], so a field evaluated
+   * while this object loaded would make the two mutually dependent and let whichever half a
+   * program touched first observe the other part-built. Evaluating it on the first call that needs
+   * it instead means loading this object still reaches no index family. The language's lazy-value
+   * semantics publish the table once, so concurrent first calls build it a single time and every
+   * caller afterwards reads the same immutable map.
+   *
+   * It is declared after [[instances]], which it takes its keys from, and derives them from the
+   * members rather than from a second reading of the published rows, so the key space of this
+   * table and the membership of the family cannot disagree.
+   */
+  private lazy val activeIborTenorsByIndexName: Map[String, SortedSet[Tenor]] = {
+    val activeIborIndices = IborIndex.values.toList.iterator.filter(index => index.active).toVector
+    instances.iterator
+      .filter(value => value.rateType.isIbor)
+      .map(value => value.indexName)
+      .distinct
+      .map(indexName =>
+        indexName -> SortedSet.from(
+          activeIborIndices.iterator
+            .filter(index => index.name.startsWith(indexName))
+            .map(index => index.tenor))(TenorOrdering))
+      .toMap
+  }
+
+  /**
    * The 351 published floating rate names, in the order the published name table declares them:
    * the Ibor names, then the Overnight compounded names, then the Overnight averaged names, then
    * the price names.
@@ -551,17 +595,6 @@ object FloatingRateName {
     NamedEnum.of(values, Map.empty, Nil, Map.empty, FamilyName)
 
   /**
-   * The members keyed by the external name each was published under.
-   *
-   * The 351 published names are distinct, so this table holds every member and loses none - which
-   * is precisely what makes [[valueOf]] able to answer every member with itself. It is the table
-   * the exact probe of [[valueOf]] reads first; see there for why a second table is needed beside
-   * the key space of the name lookup.
-   */
-  private val byPublishedName: Map[String, FloatingRateName] =
-    instances.iterator.map(value => value.name -> value).toMap
-
-  /**
    * Obtains the floating rate name that the specified name identifies, if one exists.
    *
    * This is the exact lookup: it accepts a published external name and the upper-case spelling of
@@ -574,38 +607,38 @@ object FloatingRateName {
    * valueOf("Rubbish")        // None
    * }}}
    *
-   * ===Why the published name is probed before the name lookup===
+   * ===The precedence this lookup applies===
    *
-   * A published name is answered from [[byPublishedName]] and anything else - the upper-case
-   * spelling of a mixed-case name - from the family's name lookup. That order is what reproduces
-   * the precedence of the loader being ported, which registered each row under its own name
-   * ''unconditionally'' and under the upper-case spelling of that name ''only where the spelling
-   * was still free''. A name lookup claims both of a member's keys for the first member to offer
-   * them, which is the precedence of the other kind of loader in the library being ported, the one
-   * that reads a family's members from its own constants; for a family whose members are all
-   * distinct once case is discounted the two precedences agree, and every other family of this
-   * port is such a family.
+   * There is one lookup for this family and this method is it: the family's [[namedEnum]] resolves
+   * the text, and nothing here holds a table beside it. The precedence is the one that lookup
+   * applies to every family - a member claims its own published name ''unconditionally'', and the
+   * upper-case spelling of that name is claimed afterwards ''only where the name space still has
+   * room for it''. That is the order in which the loader being ported registered a family read
+   * from configuration, this family among them, and it is what makes the published name of a
+   * member the text that reaches that member, whatever the other members are called.
    *
-   * This one is not. The published data declares four rates twice, differing in the case of one
-   * word: `DKK-DESTR-OIS Compound` beside `DKK-DESTR-OIS COMPOUND`, and `SEK-SWESTR-OIS Compound`
-   * beside `SEK-SWESTR-OIS COMPOUND`. The upper-case spelling of the first of each pair is the
-   * published name of the second, so under the name lookup's precedence alone the first member
-   * would hold both keys and the second would be unreachable by the name it was published under -
-   * a member of the family that no text resolves to. The loader being ported reaches both, and so
-   * does this lookup. The two members of each pair resolve onto the same index and differ in
-   * nothing but their spelling, so the distinction is one of identity rather than of behaviour;
-   * it matters because a name is the value's identity here, and because a member that cannot be
-   * resolved by its own name cannot survive a serialization round trip.
+   * The order is observable in this family and in no other, because the published data declares
+   * four rates twice, differing in the case of one word: `DKK-DESTR-OIS Compound` beside
+   * `DKK-DESTR-OIS COMPOUND`, and `SEK-SWESTR-OIS Compound` beside `SEK-SWESTR-OIS COMPOUND`. The
+   * upper-case spelling of the first of each pair '''is''' the published name of the second, so
+   * the two share one folded key, which the second holds because the key is its own name; each
+   * member of each pair therefore resolves to itself here, and the only narrowing is that the
+   * folded key space of the family holds 349 entries where the family has 351 members. Had the
+   * folded spelling been claimed first, the earlier member would have held both keys and the later
+   * one would have been a member of the family that no text resolves to. The two members of a pair
+   * resolve onto the same index and differ in nothing but their spelling, so the distinction is
+   * one of identity rather than of behaviour; it matters because a name is the value's identity
+   * here, and because a member that cannot be resolved by its own name cannot survive a
+   * serialization round trip.
    *
-   * The family declares no alternate spellings, so no substitution precedes the exact probe.
-   * Were such a table ever added, it would have to be applied to the text before this probe, as
-   * the lookup being ported applied it, and this method would be the place to do it.
+   * The family declares no alternate spellings, so no substitution precedes the lookup. Were such
+   * a table ever added, the family's lookup would apply it ahead of both keys, as the lookup being
+   * ported applied it, without anything changing here.
    *
    * @param name  the external name, such as `GBP-LIBOR-BBA`
    * @return the floating rate name of that name, or nothing where the family has no such member
    */
-  def valueOf(name: String): Option[FloatingRateName] =
-    byPublishedName.get(name).orElse(namedEnum.valueOf(name))
+  def valueOf(name: String): Option[FloatingRateName] = namedEnum.valueOf(name)
 
   /**
    * Tries to parse text naming a floating rate, with extended handling of index names, answering
@@ -642,10 +675,10 @@ object FloatingRateName {
    *
    * This is [[tryParse]] with the absent case reported as [[Failure.Parsing]], carrying the
    * message the implementation being ported used for the error it raised in the same situation.
-   * The text is rendered through [[Failure.describeInput]], so the message is bounded in length
-   * and holds no character that could forge a line of a log; text within the bound and free of
-   * control characters - every name of a floating rate among them - renders to itself, so an
-   * ordinary rejected name reads exactly as it did before.
+   * The text is quoted as it stands, so the message reads exactly as the ported one did and
+   * names the whole of what was rejected. Bounding it and escaping what it may hold belong to
+   * the writing of a failure, which the text form of one and [[Failure.show]] perform for every
+   * part they write, so a name from outside cannot forge a line of a log carrying it.
    *
    * @param str  the text to parse, such as `GBP-LIBOR-BBA` or `GBP-LIBOR-3M`
    * @return the floating rate name the text names, or a failure describing the text that named
@@ -653,7 +686,7 @@ object FloatingRateName {
    */
   def parse(str: String): Either[Failure, FloatingRateName] =
     tryParse(str).toRight(
-      Failure.Parsing(s"Floating rate name not known: ${Failure.describeInput(str)}"))
+      Failure.Parsing(s"Floating rate name not known: $str"))
 
   //-------------------------------------------------------------------------
   /**
@@ -667,7 +700,7 @@ object FloatingRateName {
    * @return the failure naming this family and the rendering of the name
    */
   private def notFound(name: String): Failure =
-    Failure.Parsing(s"$FamilyName name not found: ${Failure.describeInput(name)}")
+    Failure.Parsing(s"$FamilyName name not found: $name")
 
   /**
    * The failure reported where a conversion resolves to an index that is not published.
@@ -677,7 +710,7 @@ object FloatingRateName {
    * @return the failure naming that family and the rendering of the index name
    */
   private def indexNotFound(indexFamily: String, name: String): Failure =
-    Failure.Parsing(s"$indexFamily name not found: ${Failure.describeInput(name)}")
+    Failure.Parsing(s"$indexFamily name not found: $name")
 
   /**
    * Resolves a name this library itself names, fail-fast.
@@ -789,33 +822,42 @@ object FloatingRateName {
   /**
    * The JSON codec for floating rate names.
    *
-   * A name is written as the bare string of its external name, which is what the string
-   * conversion of the implementation being ported wrote, so a document written before this port
-   * reads back as the same member. Reading goes through [[FloatingRateName.valueOf]], the
-   * family's exact lookup, so a published name and the upper-case spelling of one are accepted
-   * and text naming a concrete index is not - matching the factory that string conversion was
-   * bound to. [[FloatingRateName.parse]] is the wider resolution, and it is deliberately not the
-   * decoder: a document holding `GBP-LIBOR-3M` names an index, and silently reading it as a
-   * family would discard the tenor it carries.
+   * This is the codec of a closed named family, [[Codecs.namedEnumCodec]] over [[namedEnum]],
+   * which is the form every named family of this port uses. A name is written as the bare string
+   * of its external name, which is what the string conversion of the implementation being ported
+   * wrote, so a document written before this port reads back as the same member. Reading goes
+   * through the family's own name lookup, [[NamedEnum.parse]].
    *
-   * The decoder is the family's exact lookup rather than the generic decoder of a named family,
-   * which would read the text through the key space of the name lookup alone. The two differ for
-   * the four names discussed on [[FloatingRateName.valueOf]] - the pairs that differ only in the
-   * case of one word - and the difference is exactly the one that decides whether every member of
-   * the family survives a round trip: through the exact lookup each of the four decodes back to
-   * the member that encoded it. The text written and the text accepted are otherwise identical,
-   * this family declaring neither an alternate spelling nor a lenient rewrite for a generic
-   * decoder to apply.
+   * ===Every member survives the round trip===
+   *
+   * A canonical name is claimed by its own member in the family's lookup and by nothing else -
+   * see [[FloatingRateName.valueOf]] for that precedence and for the four published rows that
+   * make it observable - so each of the 351 members decodes back from the name it encodes to,
+   * including both members of `DKK-DESTR-OIS Compound`/`DKK-DESTR-OIS COMPOUND` and of
+   * `SEK-SWESTR-OIS Compound`/`SEK-SWESTR-OIS COMPOUND`. That property belongs to the lookup
+   * rather than to this codec, which is why the codec is the generic one.
+   *
+   * ===What the decoder accepts besides a canonical name===
+   *
+   * The family declares no alternate spelling and no lenient rewrite, so the lenient stage of the
+   * lookup reduces to its fold to upper case: text whose upper-case form is a registered key
+   * resolves, and a published name therefore reads in whatever case it arrives -
+   * `gbp-libor-bba` as well as `GBP-LIBOR-BBA`. That is the leniency the family's lookup defines
+   * for every one of its names, not a widening peculiar to reading JSON; where the folded
+   * spelling of a mixed-case name is itself the published name of another member, it resolves to
+   * that member, which is the one place the leniency and the canonical claim meet.
+   *
+   * Text naming a concrete index is '''not''' accepted: `GBP-LIBOR-3M` names an index rather than
+   * a family and no fold of it is a published name. [[FloatingRateName.parse]] is the wider
+   * resolution that does accept it, and it is deliberately not the decoder - reading
+   * `GBP-LIBOR-3M` as a family would silently discard the tenor the document carries.
    *
    * The encoded form is a function of the value alone, so two equal names always encode to
    * identical bytes.
    *
    * @return the codec reading and writing a floating rate name as its external name
    */
-  implicit val codec: Codec[FloatingRateName] =
-    Codecs.parsedStringCodec[FloatingRateName](
-      name => valueOf(name).toRight(notFound(name)),
-      value => value.name)
+  implicit val codec: Codec[FloatingRateName] = Codecs.namedEnumCodec[FloatingRateName]
 }
 
 
@@ -994,4 +1036,3 @@ object FloatingRateNames {
   /** Constant for FR-EXT-CPI Price index. */
   val FR_EXT_CPI: FloatingRateName = FloatingRateName.builtIn("FR-EXT-CPI")
 }
-

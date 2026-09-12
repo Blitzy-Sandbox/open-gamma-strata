@@ -6,6 +6,7 @@
 package com.opengamma.strata.basics.currency
 
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 import scala.util.matching.Regex
 
@@ -16,6 +17,7 @@ import cats.Show
 import io.circe.Json
 import io.circe.syntax.EncoderOps
 
+import org.scalatest.Assertion
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
@@ -36,10 +38,14 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 /**
  * Test [[MultiCurrencyAmountArray]], ported from the Java `MultiCurrencyAmountArrayTest`.
  *
- * The original holds twenty-two test methods and so does this suite, each under the name the
- * original gave it - including the five it wrote without the `test_` prefix, `serializeSize`,
- * `coverage`, `collector`, `total` and `collectorDifferentArrayLengths` - so that a Java test
- * method and a test of this suite stay in one-to-one correspondence in the migration manifest.
+ * The original holds twenty-two test methods and this suite holds every one of them, each under
+ * the name the original gave it - including the five it wrote without the `test_` prefix,
+ * `serializeSize`, `coverage`, `collector`, `total` and `collectorDifferentArrayLengths` - so
+ * that a Java test method and a test of this suite stay in one-to-one correspondence in the
+ * migration manifest. Ten tests of this port's own follow them, under names of their own because
+ * the original has no counterpart for any of them, and the section below says what they are for.
+ * One of the ten pins the negative size the function factory refuses, which is a contract that
+ * class declared and its hand-written constructor did not enforce.
  *
  * ===What this suite exists to pin===
  *
@@ -72,6 +78,16 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     collector; `MultiCurrencyAmountArray.total` is the member that took over that role, and the
  *     test asserts the same aggregate over the same input.
  *
+ * ===Nine further tests follow the twenty-two===
+ *
+ * Each carries a name of its own, so the correspondence between a Java test method and a test of
+ * this suite stays one-to-one and the migration manifest keeps joining them by name. They pin the
+ * boundary between the amounts a caller holds and the primitive arrays the run keeps their values
+ * in, which the ported twenty-two exercise only for short runs of whole numbers: what
+ * reconstructing an index and transposing amounts produce and raise, how many rates a conversion
+ * asks for and in what order it accumulates them, and how many of its inputs the aggregation
+ * reads and in what order it adds the runs of one currency.
+ *
  * ===Failure is a value, so the fixtures are unwrapped===
  *
  * The original asserted an exception at seven places - five `assertThatIllegalArgumentException`
@@ -86,11 +102,13 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * for a missing rate.
  *
  * The two remaining assertions, `assertThatExceptionOfType(IndexOutOfBoundsException)` over
- * `get(3)` and `get(-1)`, are not `Left` here and are deliberately not asserted in this suite:
- * reading outside a run is a caller-contract invariant of the underlying array, which this port
- * keeps as the index exception of the runtime exactly as the implementation being ported had it,
- * and the sweep over every such documented invariant of the module belongs to
- * `FailableSurfaceSpec`. `test_get` says the same thing where the assertions were.
+ * `get(3)` and `get(-1)`, are not `Left` here: reading outside a run is a caller-contract
+ * invariant of the underlying array, which this port keeps as the index exception of the runtime
+ * exactly as the implementation being ported had it, so `get` stays total in signature. They are
+ * asserted all the same, as intercepted throws in `test_get`, rather than delegated to the
+ * module-wide invariant sweep of `FailableSurfaceSpec` - the assertions a mapped Java method made
+ * belong to the suite that method maps to, which is this one, so all seven of the original's
+ * exception assertions are accounted for here: five as a reported failure, two as a throw.
  *
  * Fixtures are built through [[unwrap]], the single unwrapping helper of the suite, so a fixture
  * that fails to build is reported as a failed test naming the reason rather than raising from
@@ -102,11 +120,13 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * The compile-time proofs that this type has no public `apply`, no `copy` and no reachable escape
  * hatch into a backing array belong to `ApiSurfaceSpec`; the sweep over every validated factory of
  * the module to `SmartConstructorSpec`; the sweep over every failable method and every documented
- * invariant to `FailableSurfaceSpec`; the typeclass laws to `TypeclassLawsSpec`; the
- * property-based round trip of every codec to `json.JsonRoundTripSpec` - `serializeSize` here is
- * one targeted example of size preservation, not a sweep; the numerical parity of currency
- * arithmetic against the Java baseline to `parity.CurrencyMathParitySpec`. This suite asserts the
- * cases of the Java test it is ported from.
+ * invariant to `FailableSurfaceSpec` - a module-wide sweep, which is why the index invariant of
+ * `get` is asserted here as well, at the Java method it maps to, and not left to it; the typeclass
+ * laws to `TypeclassLawsSpec`; the property-based round trip of every codec to
+ * `json.JsonRoundTripSpec` - `serializeSize` here is one targeted example of size preservation,
+ * not a sweep; the numerical parity of currency arithmetic against the Java baseline to
+ * `parity.CurrencyMathParitySpec`. This suite asserts the cases of the Java test it is ported
+ * from.
  *
  * @see [[MultiCurrencyAmountArray]] for the type under test
  * @see [[MultiCurrencyAmount]] for a single multi-currency amount, which `get` produces
@@ -164,6 +184,15 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
 
   /** The prefix the original asserted for arrays that disagree about their length. */
   private val ArrayLengthPrefix: String = "Arrays must have the same size"
+
+  /**
+   * The wording raised when the function form is handed a size no run can have.
+   *
+   * It is the wording of the argument check the factory performs, which names the argument and
+   * the value it was given, so the whole message is pinned here rather than a fragment of it.
+   */
+  private val NegativeSizeMessage: String =
+    "Argument 'size' must not be negative but has value -1"
 
   /**
    * A value of a type unrelated to a run, for the equality assertions that need one.
@@ -275,6 +304,56 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
     test.get(2) shouldBe mca3.plus(GBP, 0d).plus(EUR, 0d)
     // the factory documents one evaluation per index, in index order, and nothing more
     calls.get() shouldBe 3
+  }
+
+  /**
+   * Asserts the size the function form refuses, and the boundary size it admits.
+   *
+   * This is the one test of the suite that is not the original's, and it sits here because the
+   * factory it pins is the one above. The class being ported declared its size as a property that
+   * must not be negative and documented this factory as raising an argument exception for a size
+   * it does not admit, but the constructor written by hand for that class skipped the validation
+   * its declaration asked for: a negative size there produced a run whose declared size
+   * contradicted the values it held and whose every index was unreadable. This port enforces the
+   * declared contract, and nothing else in this suite or in the basics tests passes a negative
+   * size anywhere - so without this test the argument check that enforces it could be deleted and
+   * every test of this module would still pass.
+   *
+   * A negative size is refused as a caller contract rather than reported as a failure, since no
+   * data a caller holds makes a run of minus one amounts meaningful. It is therefore asserted as
+   * the raised argument exception and its whole message, rather than through the matchers the
+   * reported failures of this suite are asserted with.
+   *
+   * The function is asserted never to have been evaluated, which is what distinguishes a size
+   * checked before the amounts are materialised from one checked after: building the amounts of a
+   * negative size yields the empty sequence rather than raising, so a factory that built them
+   * first would answer a size of minus one with the run of size zero instead of refusing it. The
+   * counter is the atomic integer of `test_of_function`, for the reason given there.
+   *
+   * Size zero is the boundary on the admitted side of the same check: it describes the run of
+   * size zero holding no values, and evaluates the function for no index at all. No other test of
+   * this suite reaches '''this''' factory with a size of zero - `test_of_map` and `total` reach
+   * the run of size zero through the two factories that count their own input instead of being
+   * told a size.
+   */
+  test("of(size, valueFunction) refuses a negative size and admits zero") {
+    val calls: AtomicInteger = new AtomicInteger(0)
+    val counted: Int => MultiCurrencyAmount = index => {
+      val _ = calls.incrementAndGet()
+      multiOf(amountOf(GBP, index.toDouble))
+    }
+
+    val refused: IllegalArgumentException =
+      intercept[IllegalArgumentException](MultiCurrencyAmountArray.of(-1, counted))
+    refused.getMessage shouldBe NegativeSizeMessage
+    // the size is checked before any amount is asked for
+    calls.get() shouldBe 0
+
+    val none: MultiCurrencyAmountArray = MultiCurrencyAmountArray.of(0, counted)
+    none.size shouldBe 0
+    none.values shouldBe Map.empty[Currency, DoubleArray]
+    none.getCurrencies shouldBe Set.empty[Currency]
+    calls.get() shouldBe 0
   }
 
   /**
@@ -405,7 +484,8 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   }
 
   /**
-   * Asserts that an index reassembles the amount held at it, padded currencies included.
+   * Asserts that an index reassembles the amount held at it, padded currencies included, and
+   * that an index outside the run raises rather than answering with an amount.
    *
    * The first assertion is the original's. The two that follow are the padding read back through
    * this member: a run built from amounts whose currency sets differ names every currency at
@@ -413,11 +493,18 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
    * has more currencies than the amount it was built from.
    *
    * The original's two `assertThatExceptionOfType(IndexOutOfBoundsException)` assertions over
-   * `get(3)` and `get(-1)` are not reproduced here. This member is total in signature in this
-   * port, as it was there, and an index outside the run is the index exception of the underlying
-   * array - a caller-contract invariant rather than a property of the data, so it is not a
-   * reported failure and there is nothing in this suite's vocabulary to assert it with. The sweep
-   * over every documented invariant of the module, this one included, is `FailableSurfaceSpec`.
+   * `get(3)` and `get(-1)` close the test, over the same fixture the original used: it holds
+   * three values per currency, so `3` is one index past the end and `-1` one before the start.
+   * This member is total in signature in this port, as it was there, because an index outside the
+   * run is a caller-contract invariant rather than a property of the data - so it stays the index
+   * exception the underlying array raises instead of widening into the reported-failure channel
+   * the rest of this suite asserts against, and it is asserted here as the throw it is. What is
+   * pinned is the type the member documents, `IndexOutOfBoundsException`; the instance that
+   * arrives is the `ArrayIndexOutOfBoundsException` of the backing `DoubleArray`, which is a
+   * subtype of it, and its message is the runtime's own wording rather than this library's, so
+   * the message is not asserted. Without these two an implementation that clamped the index,
+   * wrapped it, or answered an out-of-range index with an empty amount would pass every other
+   * assertion of this suite.
    */
   test("test_get") {
     val expected: MultiCurrencyAmount =
@@ -430,6 +517,9 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
       MultiCurrencyAmountArray.of(multiOf(amountOf(EUR, 4d)), multiOf(amountOf(GBP, 21d)))
     ragged.get(0) shouldBe multiOf(amountOf(EUR, 4d), amountOf(GBP, 0d))
     ragged.get(1) shouldBe multiOf(amountOf(EUR, 0d), amountOf(GBP, 21d))
+
+    intercept[IndexOutOfBoundsException](VALUES_ARRAY.get(3))
+    intercept[IndexOutOfBoundsException](VALUES_ARRAY.get(-1))
   }
 
   /**
@@ -860,6 +950,294 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  // The nine tests below are additions to the ported set rather than ports of Java test methods,
+  // so each carries a name of its own and none of the names above changes: the migration manifest
+  // joins a Java test method to a test of this suite by name. They pin the boundary between the
+  // amounts a caller holds and the primitive arrays this type keeps their values in - what
+  // reconstruction produces and raises, what the three total factories transpose amounts into, how
+  // many rates a conversion asks for and in what order it adds them up, and how much of its input
+  // the aggregation reads and in what order it adds the runs of one currency. The tests above
+  // exercise that boundary only for short runs of whole numbers.
+
+  /**
+   * Asserts that an index is reassembled from the stored values alone, and in currency order.
+   *
+   * This is `test_get` read as a contract about what reconstruction produces rather than about
+   * one fixture: an index names every currency of the run exactly once, in the order of the
+   * currency codes, taking each currency's value at that position and nothing else. The entries
+   * are read as the map the amount holds, so what is asserted is that no currency is merged away,
+   * none is renamed and none is reordered by the route the values take out of the arrays.
+   *
+   * The disjoint case is the padding at its sharpest: two amounts naming one currency each
+   * describe a run of two currencies, so each index names a currency that the amount it came from
+   * did not, with a zero amount. A run holding no currency reads no array at all, so it answers
+   * with the empty amount at every index, whether or not that index is inside the run.
+   */
+  test("get reassembles every currency of the run, in currency-code order") {
+    VALUES_ARRAY.get(0) shouldBe multiOf(amountOf(GBP, 20d), amountOf(USD, 30d), amountOf(EUR, 40d))
+    VALUES_ARRAY.get(1) shouldBe multiOf(amountOf(GBP, 21d), amountOf(USD, 32d), amountOf(EUR, 43d))
+    VALUES_ARRAY.get(2) shouldBe multiOf(amountOf(GBP, 22d), amountOf(USD, 33d), amountOf(EUR, 44d))
+    // one entry per currency of the run, in the order the run holds them
+    VALUES_ARRAY.get(0).toMap.keys.toList shouldBe List(EUR, GBP, USD)
+    VALUES_ARRAY.get(0).toMap shouldBe Map(EUR -> 40d, GBP -> 20d, USD -> 30d)
+
+    // the zero padding: a currency no amount named at that index is named with a zero amount
+    val disjoint: MultiCurrencyAmountArray =
+      MultiCurrencyAmountArray.of(multiOf(amountOf(GBP, 1d)), multiOf(amountOf(USD, 2d)))
+    disjoint.get(0) shouldBe multiOf(amountOf(GBP, 1d), amountOf(USD, 0d))
+    disjoint.get(1) shouldBe multiOf(amountOf(GBP, 0d), amountOf(USD, 2d))
+    disjoint.get(0).toMap shouldBe Map(GBP -> 1d, USD -> 0d)
+
+    // a run holding no currency reads no array, so every index answers with the empty amount
+    val noCurrencies: MultiCurrencyAmountArray =
+      MultiCurrencyAmountArray.of(2, (_: Int) => MultiCurrencyAmount.empty)
+    noCurrencies.get(0) shouldBe MultiCurrencyAmount.empty
+    noCurrencies.get(1) shouldBe MultiCurrencyAmount.empty
+    noCurrencies.get(7) shouldBe MultiCurrencyAmount.empty
+    noCurrencies.get(-1) shouldBe MultiCurrencyAmount.empty
+  }
+
+  /**
+   * Asserts the two documented invariants reconstruction raises rather than reports.
+   *
+   * Both are caller-contract invariants of the implementation being ported, kept as such by this
+   * port, and `test_get` says where the original asserted the first of them. They are asserted
+   * here because they are properties of the route an index takes out of the arrays: an index
+   * outside the run is the index exception of the underlying array, raised as the array is read,
+   * and a value that is not a number is the amount invariant, raised as that value is turned into
+   * an amount and carrying the message the invariant reports for it.
+   *
+   * The run that holds such a value is built through the factory that reads the representation
+   * directly, which is the only route by which one can enter a run - the factories that read
+   * amounts cannot, because no amount holds such a value - and the index that holds a number is
+   * read back first, so what fires is the value and not the run.
+   */
+  test("get raises its two documented invariants as it reads the values") {
+    an[IndexOutOfBoundsException] should be thrownBy VALUES_ARRAY.get(3)
+    an[IndexOutOfBoundsException] should be thrownBy VALUES_ARRAY.get(-1)
+
+    val withNotANumber: MultiCurrencyAmountArray =
+      arrayOf(GBP -> DoubleArray.of(1d, Double.NaN), USD -> DoubleArray.of(2d, 3d))
+    withNotANumber.get(0) shouldBe multiOf(amountOf(GBP, 1d), amountOf(USD, 2d))
+    the[IllegalArgumentException] thrownBy withNotANumber.get(1) should have message
+      "Argument 'amount' must not be NaN"
+  }
+
+  /**
+   * Asserts that the three total factories agree, one full-length array per currency.
+   *
+   * The three read their amounts through one transposition, so this is where that transposition
+   * is pinned: the same two disjoint amounts are handed to the collection form, the varargs form
+   * and the function form, and each produces the same two full-length arrays with the padded zero
+   * where the amount named no value. A transposition that read an absent currency as anything but
+   * zero, or that produced the currencies in another order, would differ here for all three.
+   */
+  test("the three total factories transpose amounts into one array per currency") {
+    val disjointAmounts: List[MultiCurrencyAmount] =
+      List(multiOf(amountOf(GBP, 1d)), multiOf(amountOf(USD, 2d)))
+
+    assertDisjointRun(MultiCurrencyAmountArray.of(disjointAmounts))
+    assertDisjointRun(MultiCurrencyAmountArray.of(disjointAmounts: _*))
+    assertDisjointRun(MultiCurrencyAmountArray.of(2, index => disjointAmounts(index)))
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * Asserts that a conversion asks for each currency's rate exactly once, in code order.
+   *
+   * The documented contract of the conversion is one lookup per currency of the run, not one per
+   * currency and index: the rate is applied to a whole array, which is what guarantees that a run
+   * is converted at a single rate and what makes the cost of a conversion independent of how long
+   * the run is. The provider counts what it is asked and records the order, so a conversion that
+   * asked per element, or that asked twice for a currency, would fail here whatever numbers it
+   * produced.
+   *
+   * The order is asserted with the count because it is the order the sum is accumulated in, and
+   * the test below depends on it.
+   */
+  test("convertedTo asks for each currency's rate exactly once, in currency-code order") {
+    val asked: AtomicReference[Vector[Currency]] = new AtomicReference(Vector.empty[Currency])
+    val provider: FxRateProvider =
+      recordingRateProvider(Map((EUR, CAD) -> 1.4d, (GBP, CAD) -> 2d, (USD, CAD) -> 1.3d), asked)
+
+    val converted: CurrencyAmountArray = unwrap(VALUES_ARRAY.convertedTo(CAD, provider))
+
+    converted.size shouldBe 3
+    converted.values shouldBe DoubleArray.of(
+      0d + 20d * 2d + 30d * 1.3d + 40d * 1.4d,
+      0d + 21d * 2d + 32d * 1.3d + 43d * 1.4d,
+      0d + 22d * 2d + 33d * 1.3d + 44d * 1.4d)
+    // three currencies, three lookups - not one per currency and index, which would be nine -
+    // and in the order of the currency codes, which is the order the sum is accumulated in
+    asked.get().size shouldBe 3
+    asked.get() shouldBe Vector(EUR, GBP, USD)
+  }
+
+  /**
+   * Asserts that a refused rate returns at once, with nothing asked after it.
+   *
+   * A partially converted run would be numbers with no meaning, so the first rate the provider
+   * cannot supply fails the whole conversion. What is pinned here is that no rate after it is
+   * asked for: the provider supplies the first currency in code order and refuses the second, and
+   * it is asked exactly twice although the run holds three currencies, so the number of lookups a
+   * failing conversion costs does not depend on how many currencies follow the one that failed.
+   *
+   * The failure returned is the one the provider reported for that second currency, not for any
+   * other, which is what tells a caller which rate to supply.
+   */
+  test("convertedTo stops at the first rate the provider cannot supply") {
+    val asked: AtomicReference[Vector[Currency]] = new AtomicReference(Vector.empty[Currency])
+    val provider: FxRateProvider =
+      recordingRateProvider(Map((EUR, CAD) -> 1.4d, (USD, CAD) -> 1.3d), asked)
+
+    val refused: FailureOr[CurrencyAmountArray] = VALUES_ARRAY.convertedTo(CAD, provider)
+
+    refused should beFailureWith(FailureReason.CURRENCY_CONVERSION)
+    refused should haveFailureMessageMatching(Regex.quote("No FX rate found for GBP/CAD"))
+    // EUR answered, GBP refused, USD never asked about
+    asked.get().size shouldBe 2
+    asked.get() shouldBe Vector(EUR, GBP)
+  }
+
+  /**
+   * Asserts the converted values to the bit, against the sum computed in the test.
+   *
+   * The expectation is built here rather than typed as decimals, in the order and with the
+   * operands the conversion documents - from zero, the currencies by code, each term the value
+   * multiplied by the rate - and it is compared for equality rather than within a tolerance. The
+   * values and rates are chosen so that the order matters: accumulating the same three terms in
+   * the reverse order differs in the last bit, which the test asserts as well, so a conversion
+   * that summed the currencies in any other order would fail here.
+   */
+  test("convertedTo accumulates the currencies in currency-code order, to the last bit") {
+    val run: MultiCurrencyAmountArray = arrayOf(
+      EUR -> DoubleArray.of(1d, 3d),
+      GBP -> DoubleArray.of(1d, 5d),
+      USD -> DoubleArray.of(1d, 7d))
+    val rates: Map[(Currency, Currency), Double] =
+      Map((EUR, CAD) -> 0.1d, (GBP, CAD) -> 0.2d, (USD, CAD) -> 0.3d)
+
+    val expectedFirst: Double = 0d + 1d * 0.1d + 1d * 0.2d + 1d * 0.3d
+    val expectedSecond: Double = 0d + 3d * 0.1d + 5d * 0.2d + 7d * 0.3d
+    val reversedFirst: Double = 0d + 1d * 0.3d + 1d * 0.2d + 1d * 0.1d
+
+    val converted: CurrencyAmountArray = unwrap(run.convertedTo(CAD, rateProvider(rates)))
+    converted.values shouldBe DoubleArray.of(expectedFirst, expectedSecond)
+    converted.values.get(0) shouldBe expectedFirst
+    // the order is observable: the same terms added the other way round are a different number
+    reversedFirst should not be expectedFirst
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * Asserts that runs of one currency are added left to right, to the bit, and only once each.
+   *
+   * The aggregation is documented to add the runs of a currency in the order the input presents
+   * them, and that order is observable: the three values are chosen so that adding them the other
+   * way round differs in the last bit, which the test asserts as well, so an aggregation that
+   * accumulated in any other order - or that started from a zero array rather than from the first
+   * run - would fail here rather than only in the parity baseline.
+   *
+   * A currency offered a single run is asserted with them: it contributes the values it already
+   * holds, unchanged and compared by bit pattern.
+   */
+  test("total adds the runs of one currency left to right, to the last bit") {
+    val first: CurrencyAmountArray = CurrencyAmountArray.of(GBP, DoubleArray.of(0.1d, 1d))
+    val second: CurrencyAmountArray = CurrencyAmountArray.of(GBP, DoubleArray.of(0.2d, 2d))
+    val third: CurrencyAmountArray = CurrencyAmountArray.of(GBP, DoubleArray.of(0.3d, 3d))
+
+    val expectedFirst: Double = (0.1d + 0.2d) + 0.3d
+    val reversedFirst: Double = (0.3d + 0.2d) + 0.1d
+
+    val totalled: MultiCurrencyAmountArray =
+      unwrap(MultiCurrencyAmountArray.total(List(first, second, third)))
+    totalled.size shouldBe 2
+    totalled.getCurrencies shouldBe Set(GBP)
+    totalled.getValues(GBP) should haveValue(DoubleArray.of(expectedFirst, (1d + 2d) + 3d))
+    // the order is observable: the same three values added the other way round differ in the last
+    // bit, so this is an assertion about the order and not only about the sum
+    reversedFirst should not be expectedFirst
+
+    val single: MultiCurrencyAmountArray = unwrap(MultiCurrencyAmountArray.total(List(second)))
+    single.getValues(GBP) should haveValue(second.values)
+  }
+
+  /**
+   * Asserts that a mixture of repeated and single currencies keeps the arrays in currency order.
+   *
+   * The input names three currencies, two of them more than once and interleaved, so what is
+   * asserted is that each currency's runs are added among themselves and that the result holds
+   * the currencies in code order whatever order the input arrived in - the order the rendering,
+   * the JSON and the rates a conversion asks for all depend on.
+   */
+  test("total keeps the per-currency arrays in currency-code order") {
+    val totalled: MultiCurrencyAmountArray = unwrap(
+      MultiCurrencyAmountArray.total(
+        List(
+          CurrencyAmountArray.of(USD, DoubleArray.of(1d, 2d)),
+          CurrencyAmountArray.of(GBP, DoubleArray.of(10d, 20d)),
+          CurrencyAmountArray.of(USD, DoubleArray.of(3d, 4d)),
+          CurrencyAmountArray.of(EUR, DoubleArray.of(100d, 200d)),
+          CurrencyAmountArray.of(GBP, DoubleArray.of(30d, 40d)))))
+
+    totalled.size shouldBe 2
+    totalled.values.keys.toList shouldBe List(EUR, GBP, USD)
+    totalled.getValues(EUR) should haveValue(DoubleArray.of(100d, 200d))
+    totalled.getValues(GBP) should haveValue(DoubleArray.of(40d, 60d))
+    totalled.getValues(USD) should haveValue(DoubleArray.of(4d, 6d))
+  }
+
+  /**
+   * Asserts that the aggregation reads no further than the outcome needs.
+   *
+   * Two runs of one currency whose lengths differ decide the whole call, so nothing after the
+   * second of them may be read: the input is an `Iterable` whose iterator records what it hands
+   * over and fails the test if it is asked for anything past the pair that decided the answer, so
+   * an aggregation that kept consuming its input after the reason was settled - which a very
+   * large or lazily generated input makes expensive and an endless one makes fatal - fails here
+   * rather than merely taking longer.
+   *
+   * The reason is asserted in full, in the wording of the single-currency addition, and the same
+   * input read as an ordinary finite list is asserted to give the same reason, so the
+   * short-circuit is a property of how much is read and not of what is reported.
+   *
+   * The disagreement across currencies is asserted alongside, because it is the other reason and
+   * it is decided elsewhere: runs of different currencies are never added to each other, so their
+   * lengths are compared only when they are held together in one run, and every one that
+   * disagrees with the first in currency order is reported, in currency order.
+   */
+  test("total reads no further than the outcome needs") {
+    val handed: AtomicReference[Vector[Int]] = new AtomicReference(Vector.empty[Int])
+    val decisive: List[CurrencyAmountArray] = List(
+      CurrencyAmountArray.of(USD, DoubleArray.of(10d, 20d, 30d)),
+      CurrencyAmountArray.of(USD, DoubleArray.of(1d, 2d)))
+
+    val shortCircuited: ResultNec[MultiCurrencyAmountArray] =
+      MultiCurrencyAmountArray.total(readOnceThenFailing(decisive, handed))
+    shortCircuited should beFailureWith(FailureReason.INVALID)
+    shortCircuited should haveFailureMessageMatching(
+      Regex.quote("Sizes must be equal, this size is 3, other size is 2"))
+    // the two runs that decided the answer, and nothing after them
+    handed.get() shouldBe Vector(3, 2)
+
+    // read as an ordinary list, the same input reports the same single reason
+    failureMessages(MultiCurrencyAmountArray.total(decisive)) shouldBe
+      List("Sizes must be equal, this size is 3, other size is 2")
+
+    val acrossCurrencies: ResultNec[MultiCurrencyAmountArray] =
+      MultiCurrencyAmountArray.total(
+        List(
+          CurrencyAmountArray.of(EUR, DoubleArray.of(1d, 2d)),
+          CurrencyAmountArray.of(GBP, DoubleArray.of(1d)),
+          CurrencyAmountArray.of(USD, DoubleArray.of(1d, 2d, 3d))))
+    acrossCurrencies should beFailureWith(FailureReason.INVALID)
+    // EUR settles the length, and GBP and USD are reported in that order
+    failureMessages(acrossCurrencies) shouldBe List(
+      "Arrays must have the same size but found sizes 2 and 1",
+      "Arrays must have the same size but found sizes 2 and 3")
+  }
+
+  //-------------------------------------------------------------------------
   /**
    * Builds a run from values per currency, failing the test if they describe none.
    *
@@ -872,6 +1250,23 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
    */
   private def arrayOf(values: (Currency, DoubleArray)*): MultiCurrencyAmountArray =
     unwrap(MultiCurrencyAmountArray.of(values.toMap))
+
+  /**
+   * Asserts the run the three total factories build from one GBP amount and one USD amount.
+   *
+   * The expectation is shared by the three because the three share the transposition that
+   * produces it, and it is written once here so that a difference between them is a difference
+   * from this and not from each other.
+   *
+   * @param run  the run built from `[GBP 1]` at index zero and `[USD 2]` at index one
+   * @return the assertion that it holds the two padded arrays in currency order
+   */
+  private def assertDisjointRun(run: MultiCurrencyAmountArray): Assertion = {
+    run.size shouldBe 2
+    run.values.keys.toList shouldBe List(GBP, USD)
+    run.getValues(GBP) should haveValue(DoubleArray.of(1d, 0d))
+    run.getValues(USD) should haveValue(DoubleArray.of(0d, 2d))
+  }
 
   /**
    * Reads a run back out of a document, failing the test if it cannot be read.
@@ -914,6 +1309,75 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
           .toRight(
             Failure.CurrencyConversion(s"No FX rate found for $baseCurrency/$counterCurrency"))
       })
+
+  /**
+   * Builds a provider that records the base currency of every lookup it is asked to perform.
+   *
+   * This is [[rateProvider]] with the questions written down: the base currency of each lookup is
+   * appended to the given reference as the lookup happens, so the length of what it holds is the
+   * number of rates the conversion asked for and its order is the order it asked in. A table that
+   * does not name a pair reports the missing rate exactly as [[rateProvider]] does, which is what
+   * lets one provider serve both the counting and the short-circuit assertions.
+   *
+   * The record is kept in an atomic reference rather than in a mutable local, both because
+   * neither the domain nor the test code of this port holds one and because it is written from
+   * inside a function the conversion calls and read after it returns.
+   *
+   * @param rates  the rate of each base and counter currency pair the provider knows
+   * @param asked  the reference the base currency of each lookup is appended to, in order
+   * @return the provider answering from that table and recording what it was asked
+   */
+  private def recordingRateProvider(
+      rates: Map[(Currency, Currency), Double],
+      asked: AtomicReference[Vector[Currency]]): FxRateProvider =
+    FxRateProvider.fromFunction { (baseCurrency, counterCurrency) =>
+      val _ = asked.updateAndGet(seen => seen :+ baseCurrency)
+      rates
+        .get((baseCurrency, counterCurrency))
+        .toRight(Failure.CurrencyConversion(s"No FX rate found for $baseCurrency/$counterCurrency"))
+    }
+
+  /**
+   * Wraps runs in an `Iterable` that records what it hands over and fails if asked for more.
+   *
+   * The aggregating factory documents that it reads its input only as far as the outcome needs,
+   * which is a property of how much is pulled rather than of what is returned, so asserting it
+   * takes an input that can tell: the size of each run handed over is appended to the given
+   * reference, and an attempt to pull anything after the last of them fails the test where it
+   * happens. The iterator is endless rather than merely exhausted, so a factory that kept reading
+   * would not run out of input and quietly succeed.
+   *
+   * @param elements  the runs to hand over, in order
+   * @param handed  the reference the size of each run handed over is appended to, in order
+   * @return the collection handing over exactly those runs and failing the test beyond them
+   */
+  private def readOnceThenFailing(
+      elements: List[CurrencyAmountArray],
+      handed: AtomicReference[Vector[Int]]): Iterable[CurrencyAmountArray] =
+    new Iterable[CurrencyAmountArray] {
+      override def iterator: Iterator[CurrencyAmountArray] =
+        elements.iterator.map { element =>
+          val _ = handed.updateAndGet(seen => seen :+ element.size)
+          element
+        } ++ Iterator.continually[CurrencyAmountArray](
+          fail("the aggregation read an input after the outcome had already been decided"))
+    }
+
+  /**
+   * Reads the messages of the failures an outcome carries, in the order it carries them.
+   *
+   * This is [[unwrap]] read the other way round, for the assertions that pin how many reasons an
+   * outcome gives and in what order: the message matchers of this port answer whether some
+   * failure matches, which cannot distinguish one reason from several or say which came first.
+   *
+   * @param outcome  the outcome to read the failures of
+   * @param shape  the view of that outcome as failures and a value
+   * @tparam R  the type of the outcome
+   * @tparam A  the type of the value the outcome carries
+   * @return the message of each failure it carries, in order
+   */
+  private def failureMessages[R, A](outcome: R)(implicit shape: Outcome.Aux[R, A]): List[String] =
+    shape.failures(outcome).map(failure => failure.message)
 
   /**
    * Reads the value out of an outcome that is expected to have produced one.
@@ -960,4 +1424,3 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   private def amountOf(currency: Currency, amount: Double): CurrencyAmount =
     unwrap(CurrencyAmount.of(currency, amount))
 }
-

@@ -894,9 +894,9 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * behaviour - which values a tolerance does and does not bring together - belongs to the
    * comparison this delegates to, and is documented there in full. Two parts of it are worth
    * repeating, because they decide whether this member agrees with `equals`: a not-a-number
-   * element is equal to a not-a-number element at the same index, so an array holding one is
-   * equal to itself within any tolerance, exactly as it is under `equals`; and an infinite
-   * tolerance makes any two arrays of the same length equal.
+   * element is equal to no element at all, so an array holding one is ''not'' equal to itself
+   * within any tolerance, where under `equals` it is; and an infinite tolerance brings any two
+   * finite elements together but brings nothing to an infinite or a not-a-number element.
    *
    * @param other  the other array
    * @param tolerance  the tolerance to use, zero or greater
@@ -910,11 +910,10 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * Checks whether every value in this array equals zero within the specified tolerance.
    *
    * An empty array holds no value that differs from zero and so is equal to zero. Each
-   * element is compared with zero by the same comparison `equalWithTolerance` uses, and the
-   * consequences of comparing against a number rather than against another element are that
-   * a not-a-number element is never equal to zero, at any tolerance - the clause that makes
-   * two not-a-number values equal cannot fire against zero, since zero is a number - while an
-   * infinite tolerance admits every other element, an infinite one included.
+   * element is compared with zero by the same comparison `equalWithTolerance` uses, so a
+   * not-a-number element is never equal to zero and an infinite element is never equal to
+   * zero either, at any tolerance; every finite element is equal to zero at an infinite
+   * tolerance.
    *
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if every value is equal to zero up to the tolerance
@@ -1020,214 +1019,24 @@ object DoubleArray {
 
   //-------------------------------------------------------------------------
   /**
-   * Obtains the empty array.
+   * Obtains an instance holding the specified values.
+   *
+   * This one member replaces the ten arity-specific factories of the Java original - one for no
+   * values, one for each count up to eight, and one taking eight and any number more - which
+   * existed only to spare a caller the cost of an array allocation per call:
    *
    * {{{
    * val empty = DoubleArray.of()             // the empty array
    * val three = DoubleArray.of(1.0, 2.0, 3.0)
+   * val many = DoubleArray.of(readings: _*)  // a sequence of the caller's own, expanded
    * }}}
    *
-   * @return the empty array
-   */
-  def of(): DoubleArray = EMPTY
-
-  /**
-   * Obtains an instance holding one value.
-   *
-   * This and the seven factories below it take their values one parameter at a time, as the
-   * Java original's arity-specific factories did, and each allocates one array of exactly the
-   * length it needs and wraps it. The form taking any number of values is reached only beyond
-   * the eighth, because a call written with values listed out would otherwise pay for a
-   * sequence to carry them and a second array to copy them into - several times the cost of
-   * the array the result is made of. The arrays these build are freshly allocated here and
-   * published nowhere else, so wrapping one without copying it is safe.
-   *
-   * @param value  the value to hold
-   * @return an array holding the value
-   */
-  def of(value: Double): DoubleArray = {
-    val array = new Array[Double](1)
-    array(0) = value
-    new DoubleArray(array)
-  }
-
-  /**
-   * Obtains an instance holding two values.
-   *
-   * @param value1  the first value
-   * @param value2  the second value
-   * @return an array holding the values, in the order given
-   */
-  def of(value1: Double, value2: Double): DoubleArray = {
-    val array = new Array[Double](2)
-    array(0) = value1
-    array(1) = value2
-    new DoubleArray(array)
-  }
-
-  /**
-   * Obtains an instance holding three values.
-   *
-   * @param value1  the first value
-   * @param value2  the second value
-   * @param value3  the third value
-   * @return an array holding the values, in the order given
-   */
-  def of(value1: Double, value2: Double, value3: Double): DoubleArray = {
-    val array = new Array[Double](3)
-    array(0) = value1
-    array(1) = value2
-    array(2) = value3
-    new DoubleArray(array)
-  }
-
-  /**
-   * Obtains an instance holding four values.
-   *
-   * @param value1  the first value
-   * @param value2  the second value
-   * @param value3  the third value
-   * @param value4  the fourth value
-   * @return an array holding the values, in the order given
-   */
-  def of(value1: Double, value2: Double, value3: Double, value4: Double): DoubleArray = {
-    val array = new Array[Double](4)
-    array(0) = value1
-    array(1) = value2
-    array(2) = value3
-    array(3) = value4
-    new DoubleArray(array)
-  }
-
-  /**
-   * Obtains an instance holding five values.
-   *
-   * @param value1  the first value
-   * @param value2  the second value
-   * @param value3  the third value
-   * @param value4  the fourth value
-   * @param value5  the fifth value
-   * @return an array holding the values, in the order given
-   */
-  def of(value1: Double, value2: Double, value3: Double, value4: Double, value5: Double): DoubleArray = {
-    val array = new Array[Double](5)
-    array(0) = value1
-    array(1) = value2
-    array(2) = value3
-    array(3) = value4
-    array(4) = value5
-    new DoubleArray(array)
-  }
-
-  /**
-   * Obtains an instance holding six values.
-   *
-   * @param value1  the first value
-   * @param value2  the second value
-   * @param value3  the third value
-   * @param value4  the fourth value
-   * @param value5  the fifth value
-   * @param value6  the sixth value
-   * @return an array holding the values, in the order given
-   */
-  def of(
-      value1: Double,
-      value2: Double,
-      value3: Double,
-      value4: Double,
-      value5: Double,
-      value6: Double): DoubleArray = {
-
-    val array = new Array[Double](6)
-    array(0) = value1
-    array(1) = value2
-    array(2) = value3
-    array(3) = value4
-    array(4) = value5
-    array(5) = value6
-    new DoubleArray(array)
-  }
-
-  /**
-   * Obtains an instance holding seven values.
-   *
-   * @param value1  the first value
-   * @param value2  the second value
-   * @param value3  the third value
-   * @param value4  the fourth value
-   * @param value5  the fifth value
-   * @param value6  the sixth value
-   * @param value7  the seventh value
-   * @return an array holding the values, in the order given
-   */
-  def of(
-      value1: Double,
-      value2: Double,
-      value3: Double,
-      value4: Double,
-      value5: Double,
-      value6: Double,
-      value7: Double): DoubleArray = {
-
-    val array = new Array[Double](7)
-    array(0) = value1
-    array(1) = value2
-    array(2) = value3
-    array(3) = value4
-    array(4) = value5
-    array(5) = value6
-    array(6) = value7
-    new DoubleArray(array)
-  }
-
-  /**
-   * Obtains an instance holding eight values.
-   *
-   * @param value1  the first value
-   * @param value2  the second value
-   * @param value3  the third value
-   * @param value4  the fourth value
-   * @param value5  the fifth value
-   * @param value6  the sixth value
-   * @param value7  the seventh value
-   * @param value8  the eighth value
-   * @return an array holding the values, in the order given
-   */
-  def of(
-      value1: Double,
-      value2: Double,
-      value3: Double,
-      value4: Double,
-      value5: Double,
-      value6: Double,
-      value7: Double,
-      value8: Double): DoubleArray = {
-
-    val array = new Array[Double](8)
-    array(0) = value1
-    array(1) = value2
-    array(2) = value3
-    array(3) = value4
-    array(4) = value5
-    array(5) = value6
-    array(6) = value7
-    array(7) = value8
-    new DoubleArray(array)
-  }
-
-  /**
-   * Obtains an instance holding any number of values.
-   *
-   * This is the form a call reaches when it supplies more than eight values, or when it
-   * expands a sequence of its own into the call:
-   *
-   * {{{
-   * val many = DoubleArray.of(readings: _*)
-   * }}}
-   *
-   * The sequence copies itself into a fresh array, so a caller that expanded a sequence of its
-   * own into this call cannot reach the array the result holds. A sequence backed by an array
-   * is best passed to `copyOf` instead, which takes it without a sequence in between.
+   * A call supplying no values is the shared empty instance, which a caller may recognise by
+   * identity as well as by equality. The sequence copies itself into a fresh array, so a caller
+   * that expanded a sequence of its own into this call cannot reach the array the result holds.
+   * A caller that already holds an array, or any other collection, is better served by `copyOf`,
+   * which takes it without a sequence in between, and a caller computing its values from their
+   * positions by `tabulate`.
    *
    * @param values  the values to hold, in order
    * @return an array holding the specified values, the empty array if none are supplied

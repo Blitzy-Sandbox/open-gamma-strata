@@ -4,8 +4,13 @@ This directory contains the `strata-basics` module: the Scala port of the Java `
 It depends on the Scala [`strata-collect`](../strata-collect/README.md), and the two are the sbt
 build's only modules - `strata-basics` is the build's root project, with its sources under
 `strata-basics/src`. The package root is retained, `com.opengamma.strata.basics`, and so are the
-names of every type, constant and property, so `DayCounts.ACT_365F`, `HolidayCalendarIds.GBLO`,
+names of the published constants and properties, so `DayCounts.ACT_365F`, `HolidayCalendarIds.GBLO`,
 `IborIndices.GBP_LIBOR_3M`, `Tenor.TENOR_3M` and `Frequency.P3M` mean here what they meant there.
+The type-level structure is deliberately reorganised, however: the several Java classes that made
+up one concept collapse into a single Scala file - `date/DayCount.scala` holds the whole day-count
+family - while the resource loaders, the Joda-Beans builders and meta-beans, and the Java exception
+types have no Scala counterpart at all. [`SCALA_MIGRATION.md`](../SCALA_MIGRATION.md) records what
+was collapsed, replaced and dropped, symbol by symbol.
 Sources are Scala 2.13.18 on JDK 21, built by the root `build.sbt` with sbt 1.13.0.
 
 ### Overview
@@ -39,8 +44,10 @@ own `ReferenceData`, a parameter rather than a resource.
 
 ### Building and running
 
-JDK 21 and sbt 1.13.0 are the only prerequisites. The build definition is the root `build.sbt`,
-which compiles this module as Scala 2.13.18 with `-release 21` under `-Werror`.
+JDK 21 and sbt 1.13.0 are the prerequisites for the `sbt` commands below; the gate runner also
+needs `git`, `python3` and the POSIX text utilities - `awk`, `sed`, `grep`, `find`, `sort`, `comm`,
+`tr`, `cut`, `wc` and `diff`. The build definition is the root `build.sbt`, which compiles this
+module as Scala 2.13.18 with `-release 21` under `-Werror`.
 
 ```
   sbt test
@@ -59,8 +66,10 @@ cats-effect `IOApp.Simple`. It builds a `PeriodicSchedule`, adjusts its dates ag
 prints them.
 
 [`scripts/verify-gates.sh`](../scripts/verify-gates.sh) is the single authoritative acceptance-gate
-runner: it executes every gate of the migration in order, writes `target/gate-report.md`, and exits
-non-zero if any gate fails. CI runs it in the `scala_build21` job.
+runner: it executes every automated gate of the migration in order, writes `target/gate-report.md`,
+and exits non-zero if an automated gate fails. Gate 7's manual approval of the migration note is an
+out-of-band review rather than a measurement, so the script records that row as reported and never
+blocks or fails on it. CI runs it in the `scala_build21` job.
 
 
 ### Parity harness
@@ -88,11 +97,12 @@ method-level traceability from the Java suite to this one.
 ### Migration notes
 
 [`SCALA_MIGRATION.md`](../SCALA_MIGRATION.md) records the migration in full: the member-level table
-of every `strata-collect` symbol with its Scala replacement, and every deliberate divergence from
-the Java behaviour - among them a closed `Currency` of the 74 configured codes with no dynamic
-minting, a closed `FxIndex` of the 16 configured rows with no `createFxIndex`, and exceptions
-replaced by `Either` and the `Failure` ADT. [`README.md`](../README.md) is the repository-level
-overview.
+of every `strata-collect` member `strata-basics` uses, each with its Scala replacement or an
+explicit no-target entry, the collect symbols deliberately left behind, and every deliberate
+divergence from the Java behaviour - among them a closed `Currency` of the 74 configured codes with
+no dynamic minting, a closed `FxIndex` of the 16 configured rows with no `createFxIndex`, and
+exceptions replaced by `Either` and the `Failure` ADT. [`README.md`](../README.md) is the
+repository-level overview.
 
 
 ### Source code

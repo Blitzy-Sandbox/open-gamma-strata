@@ -588,4 +588,3 @@ object AdjustableDates {
       of(raw.adjustment, raw.unadjusted)
     }(rawDecoder)
 }
-

@@ -14,6 +14,7 @@ import scala.collection.immutable.Set
 import scala.collection.immutable.SortedMap
 import scala.collection.immutable.Vector
 
+import cats.Show
 import cats.data.NonEmptyChain
 import cats.data.Validated
 import cats.syntax.all._
@@ -785,32 +786,37 @@ class ValidateSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
     }
   }
 
-  test("matches rejects an argument of any size without echoing it unbounded or across lines") {
-    // No counterpart in the ported tests: the check being ported interpolated the argument it
-    // was handed into the message as it stood, so the size of the message was the size of the
-    // argument and a line break in the argument was a line break in the message. Both forms of
-    // the check are asserted, because both build their message here.
+  test("matches names the argument it rejected in full, and the failure renders bounded and on one line") {
+    // No counterpart in the ported tests: the check being ported interpolated the argument into
+    // the message as it stood, and this port does the same, so the wording is that one
+    // character for character. What the port adds is the boundary at which such a message is
+    // written out - the rendering of a failure bounds every part it writes and escapes anything
+    // that could forge a line. Both forms of the check are asserted, because both build their
+    // message here.
     val payload = "H" * 10000
     val bounded = Validate.matches("[A-Z]{2}".r, payload, Name)
     bounded should beFailureWith(FailureReason.INVALID)
-    // The echo is the rendering the message is built from, so the message is the fixed wording
-    // and the pattern plus at most `MaxDescribedInput + 3` characters of the argument, whatever
-    // its size - where it was once the whole ten thousand.
-    val message = messageOf(bounded)
-    message.length should be <=
-      "Argument 'name' with value '' must match pattern: [A-Z]{2}".length +
-        Failure.MaxDescribedInput + 3
-    message shouldBe
-      s"Argument 'name' with value '${"H" * Failure.MaxDescribedInput}...' must match pattern: [A-Z]{2}"
+    messageOf(bounded) shouldBe
+      s"Argument 'name' with value '$payload' must match pattern: [A-Z]{2}"
     messageOf(Validate.matches(ArgCheckTables.UpperCaseLetter, 1, 2, payload, Name, "[A-Z]{1,2}")) shouldBe
-      s"Argument 'name' with value '${"H" * Failure.MaxDescribedInput}...' must match pattern: [A-Z]{1,2}"
+      s"Argument 'name' with value '$payload' must match pattern: [A-Z]{1,2}"
+    // The rendering is where the size stops: a ten-thousand-character argument renders to a
+    // line of a few hundred characters, marked to say that there was more.
+    val rendered = Show[Failure].show(failuresOf(bounded).head)
+    rendered.length should be < 1000
+    rendered should startWith("INVALID: Argument 'name' with value 'HHH")
+    rendered should endWith("...")
 
-    // An argument holding a line break cannot put one in the message, so a line-oriented
-    // consumer of the message cannot be made to record a line the library did not report.
-    val injectedMessage = messageOf(Validate.matches("[A-Z]{7}".r, "EUR\nUSD", Name))
-    injectedMessage should not include "\n"
-    injectedMessage should not include "\r"
-    injectedMessage shouldBe "Argument 'name' with value 'EUR\\nUSD' must match pattern: [A-Z]{7}"
+    // An argument holding a line break is named as it stands and rendered on one line, so a
+    // line-oriented consumer of the rendering cannot be made to record a line the library did
+    // not report.
+    val injected = Validate.matches("[A-Z]{7}".r, "EUR\nUSD", Name)
+    messageOf(injected) shouldBe "Argument 'name' with value 'EUR\nUSD' must match pattern: [A-Z]{7}"
+    val injectedRendering = Show[Failure].show(failuresOf(injected).head)
+    injectedRendering should not include "\n"
+    injectedRendering should not include "\r"
+    injectedRendering shouldBe
+      "INVALID: Argument 'name' with value 'EUR\\nUSD' must match pattern: [A-Z]{7}"
 
     // And the message for an ordinary rejected argument is unchanged, character for character,
     // which is what makes the bound invisible to every caller but the adversarial one, and is

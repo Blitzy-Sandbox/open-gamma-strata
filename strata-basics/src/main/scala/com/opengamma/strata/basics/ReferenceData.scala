@@ -35,6 +35,14 @@ import com.opengamma.strata.collect.result.Failure
  * it and are correct for any implementation, so a source of reference data is written by
  * answering one question: what value, if any, is held for this identifier.
  *
+ * An implementation must answer with a value of the type the identifier refers to, and an
+ * implementation that holds values of several types at once has to establish that rather than
+ * assume it, because a store keyed by identifier is keyed by an erased one. The tool for it is
+ * the identifier's own witness, `ReferenceDataId.valueType`: narrowing the value found with
+ * it - which is what [[ImmutableReferenceData]] does - turns a value of another type into an
+ * absence instead of a mistyped answer. An implementation that produces its answer from a
+ * pattern on the identifier, as `HolidaySafeReferenceData` does, has established it already.
+ *
  * The trait is deliberately open rather than sealed. Reference data is an extension point of
  * this library: `HolidaySafeReferenceData` in the `date` package supplies a weekend-only
  * calendar for an identifier the underlying data does not know, an application backs its
@@ -337,6 +345,27 @@ object ReferenceData {
    * Extracted from [[ReferenceData.getValue]] so that the message and the attribute are
    * written once, as the Java original extracted the same message for the same reason.
    *
+   * ===The failure names the identifier as the identifier renders itself===
+   *
+   * The message quotes the identifier exactly as its own rendering gives it, and the `id`
+   * attribute carries that rendering whole; neither is shortened, escaped or rewritten on
+   * the way in. That is what a caller acting on a missing-data failure needs, since the
+   * question it has to answer is which item of reference data to supply and an identifier
+   * altered in the message no longer answers it, and it is what keeps this text identical to
+   * the text of the type being ported, which the tests and the migration manifest compare
+   * against.
+   *
+   * [[ReferenceDataId]] is an open contract, and nothing in it constrains `toString`: the
+   * rendering of an identifier defined by a host application is text this library neither
+   * produced nor can bound. Making such text safe to write out is therefore the business of
+   * writing a failure rather than of reporting one, and that is where this port performs it.
+   * The `Show[Failure]` instance, and the text form of every failure, which is defined as
+   * that instance, render the message and the key and the value of every attribute one
+   * bounded part at a time, escaping every character a line-oriented reader could act on. So
+   * no rendering of this failure spans more than one line or grows with the size of the
+   * identifier, whatever a host's `toString` returns (CWE-117), while the failure itself
+   * keeps the whole of what it was built with for the code that means to act on it.
+   *
    * @param id  the identifier that could not be found
    * @return the failure describing the missing reference data
    */
@@ -355,27 +384,39 @@ object ReferenceData {
  * and the reference data assembled by an application from its own securities and calendars
  * are all values of this type.
  *
- * ===The store is closed, and that is what makes a lookup sound===
+ * ===What makes a lookup sound: closure in, and a checked narrowing out===
  *
  * [[findValue]] answers with a value of the type its identifier promises, and it does so
- * with a cast. It has to: one store holds values of many types at once, so it is keyed by a
- * type-erased identifier and its values are erased along with them. That cast is sound only
- * while every value in the map sits under an identifier of its own type, and this type
- * guarantees it by closing every route a value could take into the map rather than by
- * testing values on the way out.
+ * without a cast. Two properties together are what make that true, and neither would be
+ * enough alone: the store is closed on the way in, and a value is narrowed by the asking
+ * identifier's own witness on the way out.
  *
- * So the map is not handed in, and it is not handed out. Reference data is supplied as
+ * '''The way in.''' The map is not handed in. Reference data is supplied as
  * [[ReferenceData.Entry]] values - which pair an identifier only with a value of its own
  * type - or through [[ImmutableReferenceData.ofMap]] as a map whose key type is required to
  * be an identifier '''of''' its value type, and the store is then derived here, each entry
  * being filed under the identifier the entry itself carries. Nothing accepts a map of erased
  * identifiers to values: not the constructor, which is private and takes entries, and not
- * any factory, in this package or another. Nothing returns one either, the map being a
- * private field of a final class with no accessor, no `unapply` and no `copy`. So a value
- * cannot be filed under an identifier of another type by any route, in any language, and
- * that closure is the whole of the argument for the cast in [[findValue]]: it is not a
- * convention this file asks its callers to respect, because no caller is given the means to
- * break it.
+ * any factory, in this package or another. So a value cannot be filed under an identifier of
+ * another type by any route, in any language.
+ *
+ * '''The way out.''' Closure is not by itself enough, because the store is keyed by an
+ * identifier whose type argument is erased, a map lookup compares keys with ordinary
+ * `equals`, and [[ReferenceDataId]] is deliberately open. A family parameterized in its
+ * value type - which the trait permits, and which a host writes as soon as it has two kinds
+ * of data to name - therefore has two instantiations that are one key: `GenericId[String]("x")`
+ * and `GenericId[Int]("x")` are equal, one case class over one field with the type argument
+ * erased. Filing is still correct in that situation, since each entry pairs its own types;
+ * retrieval is what needs the second half. So the value found is narrowed by
+ * `ReferenceDataId.valueType`, the witness the asking identifier carries, and a value of
+ * another type is reported as absent rather than returned mistyped. That narrowing is one
+ * type test and involves no reflection - a witness is a pattern, not a class token - and it
+ * is what the Java original performed with `Class.isInstance` at construction time.
+ *
+ * The store is published as an immutable view, [[values]], and reading it takes nothing away
+ * from either half: a caller that reads erased values cannot file one, and a caller that
+ * retrieves through an identifier is checked by that identifier's witness regardless of what
+ * it has read.
  *
  * Combining two stores is the one operation that needs the entries of a store other than
  * itself, and it stays inside the type for that reason: [[combinedWith]] merges the two maps
@@ -393,15 +434,20 @@ object ReferenceData {
  * The Java original was a Joda bean: it validated each entry by asking the identifier for
  * the `Class` of the data it referred to and testing the value against it, it published the
  * store through a `getValues()` property, and it was serializable in both the Joda-Beans
- * and the Java-serialization senses. None of that is ported. The type check is unnecessary
- * for the reason given above; the property has no counterpart, because a store of erased
- * values is exactly what must not be handed out if the absence of that check is to mean
- * anything, and a caller reads a store through [[findValue]] and
- * [[ReferenceData.containsValue]] instead; and this type has no JSON codec because its
- * store is heterogeneous, the value type of an entry being known only through its
- * identifier, so no encoder for an arbitrary store can exist. The one kind of reference data
- * this library does serialize - a holiday calendar - carries its own codec, so a store can
- * be rebuilt from serialized calendars by a caller that knows which identifiers it expects.
+ * and the Java-serialization senses.
+ *
+ * The property '''is''' ported, under the name it had: [[values]] is the same read-only view
+ * of the same mapping, as an immutable Scala map. What is not ported is the reflective
+ * validation, which the entry type and the witness narrowing of [[findValue]] replace between
+ * them - the check is performed by the compiler where the value goes in, and by an ordinary
+ * type test where it comes out, in neither case by reading a `Class`.
+ *
+ * Serialization is not ported in either sense. Java serialization is supported by no type of
+ * this port, and this type has no JSON codec because its store is heterogeneous, the value
+ * type of an entry being known only through its identifier, so no encoder for an arbitrary
+ * store can exist. The one kind of reference data this library does serialize - a holiday
+ * calendar - carries its own codec, so a store can be rebuilt from serialized calendars by a
+ * caller that knows which identifiers it expects.
  *
  * No typeclass instances are declared for this type. It is a container of reference data
  * rather than a value of the domain, and the `equals` below is what compares two stores.
@@ -421,11 +467,47 @@ final class ImmutableReferenceData private (entries: Iterable[ReferenceData.Entr
    * so that combining two stores can hand the merged entries back to the constructor, which
    * is why no operation of this type needs a map of erased identifiers to values.
    *
-   * The field is private and has no accessor, and the class is final, so the map does not
-   * leave this type.
+   * The field is private and the class is final, so the entries themselves do not leave this
+   * type: what a caller reads is [[values]], the projection of this map onto the values, which
+   * is a view and not a route in - construction remains the entry-based path above.
    */
   private val store: Map[ReferenceDataId[_], ReferenceData.Entry[_]] =
     entries.iterator.map(entry => (entry.id: ReferenceDataId[_]) -> (entry: ReferenceData.Entry[_])).toMap
+
+  /**
+   * The reference data this store holds, as an immutable map of value by identifier.
+   *
+   * This is the counterpart of the Java `getValues()` property, under the name it had, and it
+   * is how a store is '''inspected''' rather than interrogated: [[findValue]] answers one
+   * question about one identifier, while a caller that has to enumerate what it was given - to
+   * report it, to re-file a subset of it, or to assert over it - needs the mapping itself.
+   *
+   * The values are typed as `Any`, which is all a heterogeneous store can say about them: an
+   * entry's value type is known only through its identifier, and the type argument of an
+   * erased key is not recoverable from the key. A caller that knows which identifier it wants
+   * reads the value at its proper type through [[findValue]], which is also what turns this
+   * view back into typed data:
+   *
+   * {{{
+   * val calendars: Iterable[HolidayCalendar] =
+   *   data.values.keys.collect { case id: HolidayCalendarId => id }.flatMap(data.findValue)
+   * }}}
+   *
+   * Publishing it takes nothing away from what makes a lookup sound, for the reason given on
+   * this class: it is a read-only projection, so no route into the store is opened and the
+   * entry-based construction path is untouched, and retrieval is checked by the asking
+   * identifier's witness in any case. The map is a `scala.collection.immutable.Map`, so a
+   * caller cannot alter what it reads, and the keys are the identifiers the entries carry, so
+   * `values(id)` and `findValue(id)` name the same datum.
+   *
+   * It is derived from the private map once, on first use, rather than rebuilt per call: a
+   * store is immutable, so the projection cannot go stale, and a caller that reads it in a
+   * loop pays for it once.
+   *
+   * @return the reference data values, keyed by the identifier each is held under
+   */
+  lazy val values: Map[ReferenceDataId[_], Any] =
+    store.iterator.map { case (id, entry) => (id, entry.value: Any) }.toMap
 
   /**
    * Finds the reference data value associated with the specified identifier.
@@ -435,43 +517,86 @@ final class ImmutableReferenceData private (entries: Iterable[ReferenceData.Entr
    * @return the reference data value, empty if this store holds none for the identifier
    */
   override def findValue[T](id: ReferenceDataId[T]): Option[T] =
-    // This is the one cast in this module, and it is sound rather than merely convenient.
-    // The store is keyed by a type-erased identifier because it holds values of many types
-    // at once, but every value in it arrived inside a `ReferenceData.Entry[T]` - from the
-    // entry-based factories, from `of(id, value)`, from `ofMap`, whose key type is bounded
-    // by `ReferenceDataId` of its value type, or from a merge of two stores built that way -
-    // and an entry binds the type of its value to the type parameter of its identifier. The
-    // key it is filed under is that same identifier, read from the entry here rather than
-    // supplied alongside it. So the value found under an identifier of type
-    // `ReferenceDataId[T]` is a `T`, which is what the Java original established at
-    // construction time by testing the value against a `Class` obtained from the identifier.
-    // Removing that reflective check is the point of the `Entry` type and of the closed
-    // construction path; see the port's construction policy.
-    store.get(id).map(_.value.asInstanceOf[T])
+    // There is no cast here, and there is nothing left for one to do. Two facts make the
+    // value returned a `T`. Every value in the store arrived inside a
+    // `ReferenceData.Entry[T]` - from the entry-based factories, from `of(id, value)`, from
+    // `ofMap`, whose key type is bounded by `ReferenceDataId` of its value type, or from a
+    // merge of two stores built that way - so it was filed under an identifier of its own
+    // type. And the identifier that asks narrows what it finds with its own witness, so a
+    // value filed by an identifier that merely compares equal to this one - which two
+    // instantiations of a generic identifier family do, the type argument being erased - is
+    // reported as absent rather than handed back at the wrong type. The narrowing is one
+    // type test, the witness being a pattern rather than a class token, so this performs no
+    // reflection; see `ReferenceDataType`.
+    store.get(id).flatMap(entry => id.valueType.narrow(entry.value))
 
   /**
    * Combines this reference data with another.
    *
-   * Where the other set of reference data is also a materialised store, the two maps are
-   * merged into a single store rather than chained, so a lookup against the result stays one
-   * map lookup however many times reference data has been combined. The entries of this
-   * store win a clash, which is the same preference the general implementation on
-   * [[ReferenceData]] expresses by consulting this side first; the merge is written in that
-   * direction - the other side's entries first, then this side's over them - for exactly
-   * that reason.
+   * Where the other set of reference data is also a materialised store, and merging the two
+   * maps would answer exactly as chaining them does, the two maps are merged into a single
+   * store rather than chained, so a lookup against the result stays one map lookup however
+   * many times reference data has been combined. The entries of this store win a clash, which
+   * is the same preference the general implementation on [[ReferenceData]] expresses by
+   * consulting this side first; the merge is written in that direction - the other side's
+   * entries first, then this side's over them - for exactly that reason.
    *
    * Any other implementation is combined the general way, by wrapping both in a
    * [[CombinedReferenceData]], because there is no map to merge: the other side computes its
    * answers, and the whole point of an implementation such as `HolidaySafeReferenceData` is
    * that it answers for identifiers no finite map could enumerate.
    *
+   * ===Why the merge is conditional===
+   *
+   * A merge is keyed by the identifier, and an identifier's type argument is erased, so two
+   * identifiers that refer to data of '''different''' types can be one key: a host's
+   * `GenericId[String]("shared")` and `GenericId[Int]("shared")` compare equal. Where each is
+   * held by a different store, merging discards one of the two values, and the lookup that
+   * asks for the discarded one finds the surviving value, rejects it with its own witness -
+   * correctly, it being of the other type - and reports nothing, although the value it asked
+   * for was supplied. Chaining loses nothing: each store is consulted in turn and narrows what
+   * it holds with the identifier that asked, so the store that holds the value of the right
+   * type answers.
+   *
+   * So the merge is taken only when [[narrowsAlike]] holds, which is the condition under which
+   * the two are '''indistinguishable''': no key both stores hold refers to data of a different
+   * type on the two sides. Under it, every lookup answers identically either way - for a key
+   * only this store holds, or held by both, the merged store answers with this store's value
+   * and so does the chain, this side being consulted first and narrowing successfully; for a
+   * key only the other store holds, the merged store carries that entry unchanged and the
+   * chain reaches it on the second consultation. The optimisation therefore never decides
+   * anything, which is what an optimisation is allowed to do.
+   *
    * @param other  the other reference data
    * @return the combined reference data, preferring the values of this one
    */
   override def combinedWith(other: ReferenceData): ReferenceData =
     other match {
-      case lower: ImmutableReferenceData => layeredOver(lower)
+      case lower: ImmutableReferenceData if narrowsAlike(lower) => layeredOver(lower)
       case _ => super.combinedWith(other)
+    }
+
+  /**
+   * Checks whether merging another store into this one would answer as chaining them does.
+   *
+   * It holds when no identifier the two stores share refers to data of a different type on the
+   * two sides, which is the condition [[combinedWith]] merges under and the reasoning behind it
+   * is recorded there. Only shared keys are examined: an entry no key of this store collides
+   * with survives any merge, whichever side it came from.
+   *
+   * Witnesses are compared by '''identity''' rather than by equality, which is the
+   * conservative direction: two witnesses that are the same object narrow the same way by
+   * construction, while two that merely compare equal - the equality being by name - could in
+   * principle recognise different types and would then make the merge lose a value. A family
+   * whose `valueType` answers with a fresh witness each time is simply never merged, and
+   * chaining is the behaviour every implementation of [[ReferenceData]] has anyway.
+   *
+   * @param lower  the store that would be merged underneath this one
+   * @return true if merging the two would answer exactly as chaining them
+   */
+  private def narrowsAlike(lower: ImmutableReferenceData): Boolean =
+    lower.store.forall {
+      case (id, _) => store.get(id).forall(mine => mine.id.valueType eq id.valueType)
     }
 
   /**
@@ -486,6 +611,10 @@ final class ImmutableReferenceData private (entries: Iterable[ReferenceData.Entr
    *
    * It reads the other store's map directly, which is why it is a method of this class: the
    * map is private to the type, and no caller could perform this merge even if it wanted to.
+   *
+   * It is reached only where [[narrowsAlike]] holds, so the value a merge drops on a shared key
+   * is one the surviving entry answers for identically. Calling it without that condition would
+   * lose data, which is why the condition sits on the one call site rather than here.
    *
    * @param lower  the store whose entries this store's entries are laid over
    * @return the merged store
@@ -564,6 +693,23 @@ object ImmutableReferenceData {
    * duplicated identifier ordered by its rendering, so that the failure is determined by the
    * set of entries and not by the order they arrived in. Supplying no entries is not a
    * failure and yields a store equal to [[empty]].
+   *
+   * ===Why naming every duplicated identifier costs nothing===
+   *
+   * The message and the `duplicateIds` attribute hold the rendering of each duplicated
+   * identifier in full, so the size of the failure is linear in the ambiguous part of the
+   * caller's own entry list. Nothing is amplified by that. The caller already holds every
+   * identifier it passed; the failure is a value handed back to it rather than something
+   * this library writes anywhere; and the one point at which any of that text becomes a line
+   * of a log or a report - the `Show[Failure]` instance, which is also the text form of a
+   * failure - renders each part bounded in length and with every character a line-oriented
+   * reader could act on escaped, as `ReferenceData.notFound` describes. Reporting fewer of
+   * the duplicates would leave the caller to rediscover the rest one construction at a time
+   * and would buy no safety that the rendering does not already provide.
+   *
+   * The sort belongs to the contract rather than to presentation: it is what makes the
+   * failure a function of the set of entries, so the same ambiguity is reported as the same
+   * value however the caller assembled its list, and a test may state the expected text.
    *
    * @param entries  the reference data entries
    * @return the reference data holding exactly the entries, or the failure describing the

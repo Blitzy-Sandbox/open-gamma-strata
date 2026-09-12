@@ -16,6 +16,8 @@ import cats.syntax.all._
 import io.circe.Decoder
 import io.circe.DecodingFailure
 import io.circe.HCursor
+import io.circe.Json
+import io.circe.JsonObject
 import io.circe.generic.semiauto.deriveDecoder
 
 import org.scalatest.funsuite.AsyncFunSuite
@@ -124,16 +126,46 @@ import com.opengamma.strata.collect.result.FailureReason
  * population the baseline is required to carry, including that all three distinct
  * `minorUnitDigits` values and the seventy-four-currency sweeps are present.
  *
- * ===The one place the capture left a rate unregistered===
+ * ===The document's shape is declared rather than assumed===
  *
- * `MultiCurrencyAmountArray.convertedTo` is captured with neither a `rate` nor a `rates` key:
- * `capture-baseline.jsh` line 7698 passes `FxRate.of(GBP, USD, 1.6)` to it without registering
- * that rate on the row. The rate is not invented here to compensate. It is resolved from the
- * '''document-wide''' rate registry - every `rates` entry of every row and of every entry, in
- * document order - which holds exactly that rate twice over, from the two rows that do register
- * it. The fixture is not edited, no literal rate appears in this file, and the resolution is
- * confined to entries that carry no rate of their own, so no `error` expectation can be satisfied
- * by it.
+ * Every object this spec reads - the row, an entry of each of the six expectation buckets, and each
+ * nested value - declares the key sets it is documented to carry as a [[KeySchema]] beside the
+ * model that describes it, and is read through [[ParityHarness.strictObject]], which checks those
+ * keys before the object is decoded. The models are permissive by construction and that is exactly
+ * why: a bucket holds several operations, so every operand field is optional, and a decoder with
+ * optional fields reads an entry that has gained a key, lost one or had one renamed just as
+ * happily as the documented one. The gained key would be ignored, the lost operand would become
+ * `None`, the check would then measure a smaller operation or none at all, and a newly captured
+ * expectation would go unmeasured while the report still read `failed == 0`. The declared key sets
+ * are the ones the six committed rows carry, measured from the document - ten shapes in
+ * `currencyAmountResults`, eight in `moneyResults`, nine in `bigMoneyResults`, twelve in
+ * `currencyAmountArrayResults`, nine in `multiCurrencyAmountResults` and eleven in
+ * `multiCurrencyAmountArrayResults`, each of them naming its operation in `op` and stating exactly
+ * one of `result` and `error` - and the third test of this suite proves that every shape is
+ * refused when a key is added, removed or renamed.
+ *
+ * The two money buckets have two schemas rather than one. `Money` and `BigMoney` were captured
+ * through the same writer into the same model, but they hold different operations - only `BigMoney`
+ * records `roundToScale`, only `Money` records a conversion through a rate list - so each bucket is
+ * read against its own key sets, and the row decoder names the decoder of each bucket explicitly
+ * instead of leaving the choice to an implicit lookup that would find one decoder for both.
+ *
+ * ===Where a replayed rate comes from===
+ *
+ * Every captured conversion names the rates it was replayed with, so each is replayed against
+ * its own - including `MultiCurrencyAmountArray.convertedTo`, whose entry carries the `rates`
+ * key the capture writes beside it. For an entry that names none the rate is resolved, rather
+ * than invented here to compensate, from the '''document-wide''' rate registry - every `rates`
+ * entry of every row and of every entry, in document order. The fixture is not edited, no
+ * literal rate appears in this file, and the resolution is confined to entries that carry no
+ * rate of their own, so no `error` expectation can be satisfied by it.
+ *
+ * That registry is assembled '''by the driver''', not by the suite: [[ParityHarness.runFixtureWith]]
+ * decodes the rows, builds it under `attempt` inside the measurement, and on a failure publishes a
+ * report of `passed = 0` whose single discrepancy is attributed to `currency-math:setup` before
+ * leaving the verdict to [[ParityHarness.failIfAny]]. Building it in the suite ahead of the driver
+ * would raise before any report was written, and the counts Gate 3 reads have to survive exactly
+ * the run in which a captured rate has stopped being buildable (AAP section 0.6.1).
  *
  * ===Obligations===
  *
@@ -142,7 +174,7 @@ import com.opengamma.strata.collect.result.FailureReason
  * invented rule. The numbered obligations it does answer to are requirements of the user's prompt
  * carried by AAP sections 0.7, 0.8.1 and 0.10.1: Rule 2 (the tolerance above), Rule 5 (failures as
  * values), Rule 7 (`cats.effect` confined to this package, the demo and `collect.io.Resources` -
- * its use here is correct), Rule 9 (a warning-clean `-Werror` build with no suppression anywhere)
+ * its use here is correct), Rule 9 (a warning-clean build, warnings as errors, no suppression)
  * and Rule 10 (no collection, optional, iterator, stream or function type of the Java platform
  * library, and no mutable Scala collection; `DoubleArray` is built through its copy-safe public
  * factories, never through the module-private unchecked ones, which this module cannot reach).
@@ -154,9 +186,11 @@ import com.opengamma.strata.collect.result.FailureReason
  *
  * ===No timing===
  *
- * Nothing here asserts a duration, and the report it publishes carries none. The fixture is read
- * twice, once to collect the rate registry and once by the driver, which is deliberate: it keeps
- * every number this spec uses sourced from the document rather than from a constant in this file.
+ * Nothing here asserts a duration, and the report it publishes carries none. The measurement reads
+ * the document once, through the driver, and the rate registry is built from the rows the driver
+ * decoded, which keeps every number this spec uses sourced from the document rather than from a
+ * constant in this file. The population test below reads it a second time because it measures the
+ * coverage of the fixture rather than the port, and publishes no report.
  */
 class CurrencyMathParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
@@ -170,17 +204,19 @@ class CurrencyMathParitySpec extends AsyncFunSuite with AsyncIOSpec with Matcher
   test("currency arithmetic reproduces the Java baseline exactly") {
     for {
       // The registry is collected from the whole document before any row is measured, because one
-      // captured conversion names no rate of its own; see the class documentation.
-      rows <- ParityHarness.load[CurrencyMathRow](FixtureResource)
-      registry <- registryProvider(rows)
-      report <- ParityHarness.runFixture[CurrencyMathRow](FixtureName, FixtureResource)(row =>
-        checkRow(registry, row))
+      // captured conversion names no rate of its own; see the class documentation. It is built by
+      // the driver rather than here, so that a registry which cannot be built is an attributed
+      // failure in a published report instead of an exception raised before the report exists.
+      report <- ParityHarness.runFixtureWith[CurrencyMathRow, FxRateProvider](
+        FixtureName,
+        FixtureResource,
+        RowSchema)(rows => registryProvider(rows))((registry, row) => checkRow(registry, row))
       _ <- ParityHarness.failIfAny(report)
     } yield succeed
   }
 
   test("the fixture carries the population the currency-math baseline is required to measure") {
-    ParityHarness.load[CurrencyMathRow](FixtureResource).map { rows =>
+    ParityHarness.loadStrict[CurrencyMathRow](FixtureResource, RowSchema).map { rows =>
       val entryCount = rows.map(entryCountOf).sum
       val errorCount = rows.map(errorCountOf).sum
       withClue(
@@ -207,6 +243,36 @@ class CurrencyMathParitySpec extends AsyncFunSuite with AsyncIOSpec with Matcher
         // The four entries that pin the sign of a zero, without which the three different answers
         // the README describes would all be satisfied by a sign-blind port.
         signedZeroEntries(rows) should be >= MinimumSignedZeroEntries
+        succeed
+      }
+    }
+  }
+
+  /*
+   * The last two cases measure the two rules by which this spec reads the document rather than the
+   * port: a union-typed value states exactly one captured shape, and a description is accounted
+   * for in full. Both are input validation of the fixture, so both are measured over crafted
+   * values and neither reads a resource.
+   */
+  test("a union-typed value is decided by its shape and whole key set, not by declaration order") {
+    IO.pure(unionDecoderDiscrepancies).map(discrepancies => discrepancies shouldBe empty)
+  }
+
+  test("a captured description is accepted only when the grammar accounts for all of it") {
+    describedFormDiscrepancies.map(discrepancies => discrepancies shouldBe empty)
+  }
+
+  test("a captured object whose keys are not the documented ones is refused rather than measured") {
+    IO {
+      withClue(s"probed shapes: ${StrictShapes.map(_.label).mkString("; ")}: ") {
+        // Every nested value shape, one entry of each of the six buckets, and the row: the
+        // documented object decodes, and the same object with a key added, with a required key
+        // removed and with a key renamed is refused with the key named. Without this the declared
+        // key sets could be wired to nothing and the fixture would still measure green.
+        strictnessViolations shouldBe empty
+        // And the two money buckets, whose entries share one model, do not accept each other's
+        // shapes.
+        crossFamilyViolations shouldBe empty
         succeed
       }
     }
@@ -282,6 +348,12 @@ private[parity] object CurrencyMathParitySpec {
   // describes. The decoders are derived where the JSON keys are the field names and written out
   // where they are not: a money value carries its rendering under the key `toString`, which is not
   // a name a field may take.
+  //
+  // Every one of them reads its object through `ParityHarness.strictObject` against the key set
+  // declared beside it. A decoder on its own reads the fields it knows and ignores every other key
+  // of the object it is given, so a captured value that gained a field would decode into the same
+  // model and leave whatever that field carries unmeasured while the report still read zero
+  // failures. The key sets are the ones the six committed rows carry, measured from the document.
   //-------------------------------------------------------------------------
 
   /** A `CurrencyAmount`: `{"currency": "GBP", "amount": 100.0}`. */
@@ -307,23 +379,58 @@ private[parity] object CurrencyMathParitySpec {
   /** A rate a provider was built from: `{"pair": "GBP/USD", "rate": 1.6}`. */
   final case class RateValue(pair: String, rate: Double)
 
-  implicit val amountValueDecoder: Decoder[AmountValue] = deriveDecoder[AmountValue]
+  /** The schema of a captured `CurrencyAmount`, wherever one appears. */
+  val AmountValueSchema: KeySchema =
+    KeySchema.uniform("a captured CurrencyAmount", Set("currency", "amount"))
 
-  implicit val arrayValueDecoder: Decoder[ArrayValue] = deriveDecoder[ArrayValue]
+  /** The schema of a captured `CurrencyAmountArray`, wherever one appears. */
+  val ArrayValueSchema: KeySchema =
+    KeySchema.uniform("a captured CurrencyAmountArray", Set("currency", "values"))
+
+  /** The schema of a captured `Money` or `BigMoney`, wherever one appears. */
+  val MoneyValueSchema: KeySchema =
+    KeySchema.uniform("a captured Money or BigMoney", Set("currency", "amount", "toString"))
+
+  /** The schema of a captured `MultiCurrencyAmountArray` operand or expectation. */
+  val MultiArrayValueSchema: KeySchema =
+    KeySchema.uniform("a captured MultiCurrencyAmountArray", Set("size", "arrays"))
+
+  /**
+   * The schema of a registered multi-currency run, which is '''not''' the operand shape above.
+   *
+   * The seven input lists record a run without its size - the map factory derives that from the
+   * arrays - so an element of `multiArrays` carries `arrays` alone, and a registered run that
+   * gained a `size` key would be a capture whose registry had changed shape.
+   */
+  val MultiArrayInputSchema: KeySchema =
+    KeySchema.uniform("a registered multi-currency run", Set("arrays"))
+
+  /** The schema of a captured FX rate, in a row's registry or in an entry. */
+  val RateValueSchema: KeySchema =
+    KeySchema.uniform("a captured FX rate", Set("pair", "rate"))
+
+  implicit val amountValueDecoder: Decoder[AmountValue] =
+    ParityHarness.strictObject(AmountValueSchema)(deriveDecoder[AmountValue])
+
+  implicit val arrayValueDecoder: Decoder[ArrayValue] =
+    ParityHarness.strictObject(ArrayValueSchema)(deriveDecoder[ArrayValue])
 
   implicit val moneyValueDecoder: Decoder[MoneyValue] =
-    Decoder.instance(cursor =>
+    ParityHarness.strictObject(MoneyValueSchema)(Decoder.instance(cursor =>
       for {
         currency <- cursor.get[String]("currency")
         amount <- cursor.get[String]("amount")
         text <- cursor.get[String]("toString")
-      } yield MoneyValue(currency, amount, text))
+      } yield MoneyValue(currency, amount, text)))
 
-  implicit val multiArrayValueDecoder: Decoder[MultiArrayValue] = deriveDecoder[MultiArrayValue]
+  implicit val multiArrayValueDecoder: Decoder[MultiArrayValue] =
+    ParityHarness.strictObject(MultiArrayValueSchema)(deriveDecoder[MultiArrayValue])
 
-  implicit val multiArrayInputDecoder: Decoder[MultiArrayInput] = deriveDecoder[MultiArrayInput]
+  implicit val multiArrayInputDecoder: Decoder[MultiArrayInput] =
+    ParityHarness.strictObject(MultiArrayInputSchema)(deriveDecoder[MultiArrayInput])
 
-  implicit val rateValueDecoder: Decoder[RateValue] = deriveDecoder[RateValue]
+  implicit val rateValueDecoder: Decoder[RateValue] =
+    ParityHarness.strictObject(RateValueSchema)(deriveDecoder[RateValue])
 
   //-------------------------------------------------------------------------
   // The expectation of one entry.
@@ -385,11 +492,151 @@ private[parity] object CurrencyMathParitySpec {
   // Three keys carry more than one shape, because the Java members they were captured from are
   // overloaded: an amount array is added to another array or to a single amount, a multi-currency
   // run to another run or to a single multi-currency amount, and a run's expectation is a run, a
-  // converted single-currency array or a bare list of values. Each union is decoded by shape
-  // alone, which is unambiguous here because the alternatives have disjoint required keys - an
-  // array carries `values`, an amount carries `amount`, a run carries `size` - or are told apart
-  // by being a JSON array rather than an object.
+  // converted single-currency array or a bare list of values.
+  //
+  // Every one of the five unions below is decoded by [[unionDecoder]], which decides the
+  // alternative from the document and never from the order the alternatives are declared in. A
+  // chain of alternative decoders cannot do that: a derived product decoder ignores a key it does
+  // not know, so an object carrying the keys of two alternatives is accepted by whichever one is
+  // tried first and the sibling's fields are discarded without a word - a captured expectation
+  // silently replaced by a smaller one, which is the class of defect this whole fixture exists to
+  // detect. The rule enforced here instead is:
+  //
+  //  - the JSON shape selects first, so a JSON array, a JSON string and a JSON object are told
+  //    apart before any field is read, and a shape no alternative accepts is a decoding failure
+  //    naming every accepted form;
+  //  - an object must carry '''exactly''' one alternative's key set. An object with an unknown
+  //    key, a missing key, or the keys of two alternatives matches none of them and is a decoding
+  //    failure that quotes the keys it carries, the accepted key sets and the cursor path.
+  //
+  // Exact-key strictness is also what keeps a money value - `{currency, amount, toString}`, which
+  // has its own decoder and belongs to no union - out of an operand position it would otherwise
+  // satisfy the amount half of.
   //-------------------------------------------------------------------------
+
+  /**
+   * The JSON shape that selects one alternative of a captured union.
+   *
+   * A shape is a '''complete''' description of what the capture writes for its alternative, not a
+   * necessary condition on it: an object shape names the whole key set rather than the keys that
+   * must be present, which is what makes two object alternatives mutually exclusive instead of
+   * merely ordered.
+   */
+  private sealed trait UnionShape {
+
+    /** How this alternative reads in a decoding failure, in full. */
+    def describe: String
+  }
+
+  private object UnionShape {
+
+    /** Selected by the value being a JSON array, of which a union has at most one alternative. */
+    case object ArrayShape extends UnionShape {
+      val describe: String = "a JSON array"
+    }
+
+    /** Selected by the value being a JSON string, of which a union has at most one alternative. */
+    case object StringShape extends UnionShape {
+      val describe: String = "a JSON string"
+    }
+
+    /**
+     * Selected by the value being a JSON object whose key set equals [[keys]] exactly.
+     *
+     * @param name  the captured shape's name, for the failure message
+     * @param keys  every key the capture writes for it, and no other
+     */
+    final case class ObjectShape(name: String, keys: Set[String]) extends UnionShape {
+      val describe: String =
+        s"$name, an object with exactly the keys {${keys.toVector.sorted.mkString(", ")}}"
+    }
+  }
+
+  /**
+   * One alternative of a captured union: the shape that selects it, and the decoder that reads it.
+   *
+   * @param shape  the shape the capture writes this alternative as
+   * @param decoder  the decoder of the alternative, already lifted into the union type
+   * @tparam A  the union type
+   */
+  private final case class UnionVariant[A](shape: UnionShape, decoder: Decoder[A])
+
+  /** The shape of a captured `ArrayValue`, which is the array half of two unions. */
+  private val ArrayValueShape: UnionShape =
+    UnionShape.ObjectShape("an array of amounts in one currency", Set("currency", "values"))
+
+  /** The shape of a captured `AmountValue`, which is the single-amount half of two unions. */
+  private val AmountValueShape: UnionShape =
+    UnionShape.ObjectShape("a single amount", Set("currency", "amount"))
+
+  /** The shape of a captured `MultiArrayValue`, which is the run half of two unions. */
+  private val MultiArrayValueShape: UnionShape =
+    UnionShape.ObjectShape("a multi-currency run", Set("size", "arrays"))
+
+  /**
+   * Decodes a union by deciding the alternative before reading a field of it.
+   *
+   * The one place in this file that resolves a union, so that the rule is stated once and every
+   * union-typed key of the document is held to it. The decision is made from the value's shape and,
+   * for an object, from its '''whole''' key set, and it is a decoding failure unless exactly one
+   * alternative claims the value. Nothing falls back to a later alternative, so no captured field
+   * can be discarded by an earlier one.
+   *
+   * @param label  what is being decoded, for the failure message
+   * @param variants  the alternatives, whose shapes are mutually exclusive by construction
+   * @tparam A  the union type
+   * @return a decoder of the union; it fails, naming the accepted forms and the cursor path, for a
+   *         value that is not exactly one of them
+   */
+  private def unionDecoder[A](label: String, variants: Vector[UnionVariant[A]]): Decoder[A] =
+    Decoder.instance { cursor =>
+      val json = cursor.value
+      val claimed =
+        json.asObject match {
+          case Some(obj) =>
+            val keys = obj.keys.toSet
+            variants.filter(variant =>
+              variant.shape match {
+                case UnionShape.ObjectShape(_, accepted) => accepted == keys
+                case _ => false
+              })
+          case None if json.isArray => variants.filter(_.shape == UnionShape.ArrayShape)
+          case None if json.isString => variants.filter(_.shape == UnionShape.StringShape)
+          case None => Vector.empty
+        }
+      claimed match {
+        case Vector(variant) => variant.decoder(cursor)
+        case _ => Left(DecodingFailure(unionFailureMessage(label, json, variants), cursor.history))
+      }
+    }
+
+  /**
+   * The message of a union that the document does not state exactly one alternative of.
+   *
+   * It quotes what was found - the key set of an object, the shape of anything else - alongside
+   * every accepted form, because the reader of a failing gate has the fixture and this file in
+   * front of them and needs to know which of the two moved.
+   *
+   * @param label  what was being decoded
+   * @param json  the value found
+   * @param variants  the alternatives that were accepted
+   * @tparam A  the union type
+   * @return the message
+   */
+  private def unionFailureMessage[A](
+      label: String,
+      json: Json,
+      variants: Vector[UnionVariant[A]]): String = {
+    val found =
+      json.asObject match {
+        case Some(obj) => s"an object with the keys {${obj.keys.toVector.sorted.mkString(", ")}}"
+        case None if json.isArray => "a JSON array"
+        case None if json.isString => "a JSON string"
+        case None => s"the value ${json.noSpaces}"
+      }
+    s"$label does not state exactly one captured shape: found $found, and the accepted shapes " +
+      s"are ${variants.map(_.shape.describe).mkString("; ")}"
+  }
 
   /** The right-hand operand, or the expectation, of a single-currency amount array operation. */
   sealed trait ArrayOperand
@@ -404,9 +651,13 @@ private[parity] object CurrencyMathParitySpec {
   }
 
   implicit val arrayOperandDecoder: Decoder[ArrayOperand] =
-    arrayValueDecoder
-      .map[ArrayOperand](ArrayOperand.Run(_))
-      .or(amountValueDecoder.map[ArrayOperand](ArrayOperand.Single(_)))
+    unionDecoder[ArrayOperand](
+      "the operand or expectation of an amount-array operation",
+      Vector(
+        UnionVariant(ArrayValueShape, arrayValueDecoder.map[ArrayOperand](ArrayOperand.Run(_))),
+        UnionVariant(
+          AmountValueShape,
+          amountValueDecoder.map[ArrayOperand](ArrayOperand.Single(_)))))
 
   /** The construction input of an amount array: a literal list of values, or a description. */
   sealed trait ArrayInput
@@ -421,9 +672,15 @@ private[parity] object CurrencyMathParitySpec {
   }
 
   implicit val arrayInputDecoder: Decoder[ArrayInput] =
-    Decoder[Vector[Double]]
-      .map[ArrayInput](ArrayInput.Values(_))
-      .or(Decoder[String].map[ArrayInput](ArrayInput.Described(_)))
+    unionDecoder[ArrayInput](
+      "the construction input of an amount-array operation",
+      Vector(
+        UnionVariant(
+          UnionShape.ArrayShape,
+          Decoder[Vector[Double]].map[ArrayInput](ArrayInput.Values(_))),
+        UnionVariant(
+          UnionShape.StringShape,
+          Decoder[String].map[ArrayInput](ArrayInput.Described(_)))))
 
   /** The expectation of a multi-currency amount operation: every amount, or a single one. */
   sealed trait MultiOperand
@@ -438,9 +695,15 @@ private[parity] object CurrencyMathParitySpec {
   }
 
   implicit val multiOperandDecoder: Decoder[MultiOperand] =
-    Decoder[Vector[AmountValue]]
-      .map[MultiOperand](MultiOperand.Amounts(_))
-      .or(amountValueDecoder.map[MultiOperand](MultiOperand.Single(_)))
+    unionDecoder[MultiOperand](
+      "the expectation of a MultiCurrencyAmount operation",
+      Vector(
+        UnionVariant(
+          UnionShape.ArrayShape,
+          Decoder[Vector[AmountValue]].map[MultiOperand](MultiOperand.Amounts(_))),
+        UnionVariant(
+          AmountValueShape,
+          amountValueDecoder.map[MultiOperand](MultiOperand.Single(_)))))
 
   /** The right-hand operand of a multi-currency run operation: another run, or one amount. */
   sealed trait MultiArrayOperand
@@ -455,9 +718,15 @@ private[parity] object CurrencyMathParitySpec {
   }
 
   implicit val multiArrayOperandDecoder: Decoder[MultiArrayOperand] =
-    multiArrayValueDecoder
-      .map[MultiArrayOperand](MultiArrayOperand.Run(_))
-      .or(Decoder[Vector[AmountValue]].map[MultiArrayOperand](MultiArrayOperand.Amounts(_)))
+    unionDecoder[MultiArrayOperand](
+      "the right-hand operand of a MultiCurrencyAmountArray operation",
+      Vector(
+        UnionVariant(
+          MultiArrayValueShape,
+          multiArrayValueDecoder.map[MultiArrayOperand](MultiArrayOperand.Run(_))),
+        UnionVariant(
+          UnionShape.ArrayShape,
+          Decoder[Vector[AmountValue]].map[MultiArrayOperand](MultiArrayOperand.Amounts(_)))))
 
   /** The expectation of a multi-currency run operation. */
   sealed trait MultiArrayResult
@@ -475,10 +744,18 @@ private[parity] object CurrencyMathParitySpec {
   }
 
   implicit val multiArrayResultDecoder: Decoder[MultiArrayResult] =
-    multiArrayValueDecoder
-      .map[MultiArrayResult](MultiArrayResult.Run(_))
-      .or(arrayValueDecoder.map[MultiArrayResult](MultiArrayResult.Converted(_)))
-      .or(Decoder[Vector[Double]].map[MultiArrayResult](MultiArrayResult.Values(_)))
+    unionDecoder[MultiArrayResult](
+      "the expectation of a MultiCurrencyAmountArray operation",
+      Vector(
+        UnionVariant(
+          MultiArrayValueShape,
+          multiArrayValueDecoder.map[MultiArrayResult](MultiArrayResult.Run(_))),
+        UnionVariant(
+          ArrayValueShape,
+          arrayValueDecoder.map[MultiArrayResult](MultiArrayResult.Converted(_))),
+        UnionVariant(
+          UnionShape.ArrayShape,
+          Decoder[Vector[Double]].map[MultiArrayResult](MultiArrayResult.Values(_)))))
 
   //-------------------------------------------------------------------------
   // The five entry models, one per expectation bucket - the two money buckets share theirs,
@@ -489,7 +766,164 @@ private[parity] object CurrencyMathParitySpec {
   // that no derivation produces. An entry that carries an operand this spec does not expect for
   // its operation is reported by the check, not by the decoder: reading the document is one
   // concern and recognising an operation is another.
+  //
+  // Optional fields are exactly why each bucket declares a key schema. A model whose operands are
+  // all optional decodes an entry that has lost a key, gained one or had one renamed just as
+  // happily as the documented one - the lost operand becomes `None`, the gained key is ignored -
+  // and the check would then measure a smaller operation, or none, while the report read zero
+  // failures. So the documented key sets of each bucket are declared below, measured from the six
+  // committed rows, and `ParityHarness.strictObject` applies them before the entry is decoded.
+  // They are variants rather than one key set because a bucket holds several operations: `op` and
+  // exactly one of `result` and `error` appear in every one of them, and the rest is the operand
+  // list of that particular operation.
   //-------------------------------------------------------------------------
+
+  /**
+   * A documented entry shape whose expectation is a value: its own operand keys, plus the `op`
+   * every captured entry names its operation in and the `result` this kind states.
+   *
+   * @param name  the shape's name, which is the operation it was captured from
+   * @param keys  the operand keys, without `op` and `result`
+   * @return the variant
+   */
+  private def valueVariant(name: String, keys: String*): (String, Set[String]) =
+    name -> (keys.toSet + "op" + "result")
+
+  /**
+   * A documented entry shape whose expectation is a refusal, which carries `error` where the
+   * corresponding value shape carries `result`.
+   *
+   * @param name  the shape's name, which is the operation it was captured from
+   * @param keys  the operand keys, without `op` and `error`
+   * @return the variant
+   */
+  private def errorVariant(name: String, keys: String*): (String, Set[String]) =
+    name -> (keys.toSet + "op" + "error")
+
+  /**
+   * The schema of one entry of `currencyAmountResults`.
+   *
+   * The ten key sets the ninety committed entries of that bucket carry. The two that name
+   * `doubleToLongBits` are entries that pin the sign of a zero, and `minorUnitDigits` with
+   * `captureOnly` marks the sub-minor-unit sweep.
+   */
+  val CurrencyAmountEntrySchema: KeySchema =
+    KeySchema.variants(
+      "a captured CurrencyAmount operation",
+      valueVariant("scaled", "left", "scalar"),
+      valueVariant("scaled-sub-minor-unit", "left", "scalar", "minorUnitDigits", "captureOnly"),
+      valueVariant("scaled-with-bits", "left", "scalar", "doubleToLongBits"),
+      valueVariant("unary", "left"),
+      valueVariant("combined", "left", "right"),
+      valueVariant("converted", "left", "rate", "target"),
+      valueVariant("built-with-bits", "input", "doubleToLongBits"),
+      errorVariant("refused-combination", "left", "right"),
+      errorVariant("refused-conversion", "left", "rate", "target"),
+      errorVariant("refused-construction", "input"))
+
+  /**
+   * The schema of one entry of `moneyResults`.
+   *
+   * The eight key sets the hundred committed `Money` entries carry. This is '''not''' the schema
+   * of the `bigMoneyResults` bucket below: the two were captured through the same writer and hold
+   * different operations, so a `Money` entry that carried the `scale` and `roundingMode` of
+   * `BigMoney.roundToScale` would be an entry in the wrong bucket rather than a new shape.
+   */
+  val MoneyEntrySchema: KeySchema =
+    KeySchema.variants(
+      "a captured Money operation",
+      valueVariant("built", "currency", "amount", "minorUnitDigits", "captureOnly"),
+      valueVariant("widened", "left"),
+      valueVariant("scaled", "left", "scalar"),
+      valueVariant("combined", "left", "right"),
+      valueVariant("converted", "left", "rate", "target"),
+      valueVariant("converted-by-provider", "left", "rates", "target"),
+      errorVariant("refused-combination", "left", "right"),
+      errorVariant("refused-conversion", "left", "rate", "target"))
+
+  /**
+   * The schema of one entry of `bigMoneyResults`.
+   *
+   * The nine key sets the hundred and fifteen committed `BigMoney` entries carry, of which
+   * `rounded-to-scale` and `narrowed` are the two this bucket has and the `Money` bucket does not.
+   */
+  val BigMoneyEntrySchema: KeySchema =
+    KeySchema.variants(
+      "a captured BigMoney operation",
+      valueVariant("built", "currency", "amount", "minorUnitDigits", "captureOnly"),
+      valueVariant("narrowed", "left", "minorUnitDigits", "captureOnly"),
+      valueVariant("narrowed-plain", "left"),
+      valueVariant("rounded-to-scale", "left", "scale", "roundingMode"),
+      valueVariant("scaled", "left", "scalar"),
+      valueVariant("combined", "left", "right"),
+      valueVariant("converted", "left", "rate", "target"),
+      errorVariant("refused-combination", "left", "right"),
+      errorVariant("refused-conversion", "left", "rate", "target"))
+
+  /**
+   * The schema of one entry of `currencyAmountArrayResults`.
+   *
+   * The twelve key sets the twenty-one committed entries carry - the widest inventory of the six
+   * buckets, because this is the family whose construction, element access, element-wise
+   * arithmetic, mapping and conversion were all captured.
+   */
+  val CurrencyAmountArrayEntrySchema: KeySchema =
+    KeySchema.variants(
+      "a captured CurrencyAmountArray operation",
+      valueVariant("built", "currency", "input"),
+      valueVariant("built-with-size", "currency", "input", "size"),
+      valueVariant("built-with-bits", "currency", "input", "doubleToLongBits"),
+      valueVariant("element-with-bits", "left", "index", "doubleToLongBits"),
+      valueVariant("combined", "left", "right"),
+      valueVariant("scaled", "left", "scalar", "composed"),
+      valueVariant("mapped", "left", "mapAmountsFn", "composed"),
+      valueVariant("converted", "left", "rate", "target"),
+      errorVariant("refused-combination", "left", "right"),
+      errorVariant("refused-construction", "input"),
+      errorVariant("refused-construction-with-size", "input", "size"),
+      errorVariant("refused-conversion", "left", "rates", "target"))
+
+  /**
+   * The schema of one entry of `multiCurrencyAmountResults`.
+   *
+   * The nine key sets the eleven committed entries carry. Two of them name their operand as a
+   * described `input` rather than as a typed list, which is what the capture wrote for a list the
+   * seven typed input lists could not hold.
+   */
+  val MultiCurrencyAmountEntrySchema: KeySchema =
+    KeySchema.variants(
+      "a captured MultiCurrencyAmount operation",
+      valueVariant("built", "amounts"),
+      valueVariant("built-from-description", "input"),
+      valueVariant("combined", "left", "right"),
+      valueVariant("scaled", "left", "scalar"),
+      valueVariant("mapped", "left", "mapAmountsFn"),
+      valueVariant("looked-up", "currency", "left"),
+      valueVariant("converted-by-provider", "left", "rates", "target"),
+      errorVariant("refused-lookup", "currency", "left"),
+      errorVariant("refused-construction", "input"))
+
+  /**
+   * The schema of one entry of `multiCurrencyAmountArrayResults`.
+   *
+   * The eleven key sets the eighteen committed entries carry. `converted` names the rates it was
+   * replayed with, as every other captured conversion of this document does, so the key set
+   * declares them and the decoder reads them rather than passing over them.
+   */
+  val MultiCurrencyAmountArrayEntrySchema: KeySchema =
+    KeySchema.variants(
+      "a captured MultiCurrencyAmountArray operation",
+      valueVariant("built", "left"),
+      valueVariant("built-from-description", "input"),
+      valueVariant("built-from-description-with-size", "input", "size"),
+      valueVariant("combined", "left", "right"),
+      valueVariant("scaled", "left", "scalar", "composed"),
+      valueVariant("mapped", "left", "mapAmountsFn", "composed"),
+      valueVariant("looked-up", "currency", "left"),
+      valueVariant("converted", "left", "rates", "target"),
+      errorVariant("refused-combination", "left", "right"),
+      errorVariant("refused-lookup", "currency", "left"),
+      errorVariant("refused-construction", "input"))
 
   /** One captured `CurrencyAmount` operation. */
   final case class CurrencyAmountEntry(
@@ -505,8 +939,8 @@ private[parity] object CurrencyMathParitySpec {
       captureOnly: Boolean,
       expected: Expected[AmountValue])
 
-  implicit val currencyAmountEntryDecoder: Decoder[CurrencyAmountEntry] =
-    Decoder.instance(cursor =>
+  val currencyAmountEntryDecoder: Decoder[CurrencyAmountEntry] =
+    ParityHarness.strictObject(CurrencyAmountEntrySchema)(Decoder.instance(cursor =>
       for {
         op <- cursor.get[String]("op")
         left <- cursor.get[Option[AmountValue]]("left")
@@ -530,7 +964,7 @@ private[parity] object CurrencyMathParitySpec {
         minorUnitDigits,
         bits,
         captureOnly.getOrElse(false),
-        expected))
+        expected)))
 
   /**
    * One captured `Money` or `BigMoney` operation.
@@ -554,7 +988,13 @@ private[parity] object CurrencyMathParitySpec {
       captureOnly: Boolean,
       expected: Expected[MoneyValue])
 
-  implicit val moneyEntryDecoder: Decoder[MoneyEntry] =
+  /**
+   * The body both money buckets decode with, which the two schemas below are applied to.
+   *
+   * The two buckets share a model because `Money` and `BigMoney` were captured through the same
+   * writer, and they do not share a key schema because they hold different operations.
+   */
+  private val moneyEntryBody: Decoder[MoneyEntry] =
     Decoder.instance(cursor =>
       for {
         op <- cursor.get[String]("op")
@@ -587,6 +1027,14 @@ private[parity] object CurrencyMathParitySpec {
         captureOnly.getOrElse(false),
         expected))
 
+  /** One entry of `moneyResults`, read against the key sets that bucket documents. */
+  val moneyEntryDecoder: Decoder[MoneyEntry] =
+    ParityHarness.strictObject(MoneyEntrySchema)(moneyEntryBody)
+
+  /** One entry of `bigMoneyResults`, read against the key sets that bucket documents. */
+  val bigMoneyEntryDecoder: Decoder[MoneyEntry] =
+    ParityHarness.strictObject(BigMoneyEntrySchema)(moneyEntryBody)
+
   /** One captured `CurrencyAmountArray` operation. */
   final case class CurrencyAmountArrayEntry(
       op: String,
@@ -605,8 +1053,8 @@ private[parity] object CurrencyMathParitySpec {
       doubleToLongBits: Option[Long],
       expected: Expected[ArrayOperand])
 
-  implicit val currencyAmountArrayEntryDecoder: Decoder[CurrencyAmountArrayEntry] =
-    Decoder.instance(cursor =>
+  val currencyAmountArrayEntryDecoder: Decoder[CurrencyAmountArrayEntry] =
+    ParityHarness.strictObject(CurrencyAmountArrayEntrySchema)(Decoder.instance(cursor =>
       for {
         op <- cursor.get[String]("op")
         left <- cursor.get[Option[ArrayValue]]("left")
@@ -638,7 +1086,7 @@ private[parity] object CurrencyMathParitySpec {
         mapAmountsFn,
         composed.getOrElse(false),
         bits,
-        expected))
+        expected)))
 
   /** One captured `MultiCurrencyAmount` operation. */
   final case class MultiCurrencyAmountEntry(
@@ -654,8 +1102,8 @@ private[parity] object CurrencyMathParitySpec {
       mapAmountsFn: Option[String],
       expected: Expected[MultiOperand])
 
-  implicit val multiCurrencyAmountEntryDecoder: Decoder[MultiCurrencyAmountEntry] =
-    Decoder.instance(cursor =>
+  val multiCurrencyAmountEntryDecoder: Decoder[MultiCurrencyAmountEntry] =
+    ParityHarness.strictObject(MultiCurrencyAmountEntrySchema)(Decoder.instance(cursor =>
       for {
         op <- cursor.get[String]("op")
         amounts <- cursor.get[Option[Vector[AmountValue]]]("amounts")
@@ -679,7 +1127,7 @@ private[parity] object CurrencyMathParitySpec {
         target,
         rates,
         mapAmountsFn,
-        expected))
+        expected)))
 
   /** One captured `MultiCurrencyAmountArray` operation. */
   final case class MultiCurrencyAmountArrayEntry(
@@ -690,13 +1138,14 @@ private[parity] object CurrencyMathParitySpec {
       size: Option[Int],
       currency: Option[String],
       target: Option[String],
+      rates: Option[Vector[RateValue]],
       scalar: Option[Double],
       mapAmountsFn: Option[String],
       composed: Boolean,
       expected: Expected[MultiArrayResult])
 
-  implicit val multiCurrencyAmountArrayEntryDecoder: Decoder[MultiCurrencyAmountArrayEntry] =
-    Decoder.instance(cursor =>
+  val multiCurrencyAmountArrayEntryDecoder: Decoder[MultiCurrencyAmountArrayEntry] =
+    ParityHarness.strictObject(MultiCurrencyAmountArrayEntrySchema)(Decoder.instance(cursor =>
       for {
         op <- cursor.get[String]("op")
         left <- cursor.get[Option[MultiArrayValue]]("left")
@@ -705,6 +1154,7 @@ private[parity] object CurrencyMathParitySpec {
         size <- cursor.get[Option[Int]]("size")
         currency <- cursor.get[Option[String]]("currency")
         target <- cursor.get[Option[String]]("target")
+        rates <- cursor.get[Option[Vector[RateValue]]]("rates")
         scalar <- cursor.get[Option[Double]]("scalar")
         mapAmountsFn <- cursor.get[Option[String]]("mapAmountsFn")
         composed <- cursor.get[Option[Boolean]]("composed")
@@ -717,10 +1167,11 @@ private[parity] object CurrencyMathParitySpec {
         size,
         currency,
         target,
+        rates,
         scalar,
         mapAmountsFn,
         composed.getOrElse(false),
-        expected))
+        expected)))
 
   /**
    * One row: the identity, the Java test class it came from, the seven input lists and the six
@@ -749,7 +1200,82 @@ private[parity] object CurrencyMathParitySpec {
       multiCurrencyAmountArrayResults: Vector[MultiCurrencyAmountArrayEntry])
       extends ParityRow
 
-  implicit val currencyMathRowDecoder: Decoder[CurrencyMathRow] = deriveDecoder[CurrencyMathRow]
+  /**
+   * The schema of one '''row''' of `currency-math-baseline.json`.
+   *
+   * The fifteen keys the six committed rows carry, each of them on every row, which is why this is
+   * one variant with nothing optional: exact equality of key sets. A row that gains a key, loses
+   * one or renames one is refused by [[ParityHarness.loadStrict]] with the offending key named,
+   * rather than decoded into a model that has no field for it.
+   */
+  val RowSchema: KeySchema =
+    KeySchema.uniform(
+      "a currency-math baseline row",
+      Set(
+        "id",
+        "source",
+        "amounts",
+        "scalars",
+        "arrays",
+        "multiArrays",
+        "money",
+        "bigMoney",
+        "rates",
+        "currencyAmountResults",
+        "moneyResults",
+        "bigMoneyResults",
+        "currencyAmountArrayResults",
+        "multiCurrencyAmountResults",
+        "multiCurrencyAmountArrayResults"))
+
+  /**
+   * The row decoder, which names the decoder of every bucket explicitly.
+   *
+   * It is written out rather than derived for one reason: `moneyResults` and `bigMoneyResults`
+   * share the [[MoneyEntry]] model and do '''not''' share a key schema, so the bucket each entry
+   * is read against has to be decided here, where the bucket is known, rather than by an implicit
+   * lookup that would find one decoder for both. The seven input lists are read through the
+   * implicit decoders of their value shapes, each of which is strict in its own right.
+   */
+  implicit val currencyMathRowDecoder: Decoder[CurrencyMathRow] =
+    ParityHarness.strictObject(RowSchema)(Decoder.instance(cursor =>
+      for {
+        id <- cursor.get[String]("id")
+        source <- cursor.get[String]("source")
+        amounts <- cursor.get[Vector[AmountValue]]("amounts")
+        scalars <- cursor.get[Vector[Double]]("scalars")
+        arrays <- cursor.get[Vector[ArrayValue]]("arrays")
+        multiArrays <- cursor.get[Vector[MultiArrayInput]]("multiArrays")
+        money <- cursor.get[Vector[MoneyValue]]("money")
+        bigMoney <- cursor.get[Vector[MoneyValue]]("bigMoney")
+        rates <- cursor.get[Vector[RateValue]]("rates")
+        amountResults <- cursor.get("currencyAmountResults")(
+          Decoder.decodeVector(currencyAmountEntryDecoder))
+        moneyResults <- cursor.get("moneyResults")(Decoder.decodeVector(moneyEntryDecoder))
+        bigMoneyResults <- cursor.get("bigMoneyResults")(
+          Decoder.decodeVector(bigMoneyEntryDecoder))
+        runResults <- cursor.get("currencyAmountArrayResults")(
+          Decoder.decodeVector(currencyAmountArrayEntryDecoder))
+        multiResults <- cursor.get("multiCurrencyAmountResults")(
+          Decoder.decodeVector(multiCurrencyAmountEntryDecoder))
+        multiRunResults <- cursor.get("multiCurrencyAmountArrayResults")(
+          Decoder.decodeVector(multiCurrencyAmountArrayEntryDecoder))
+      } yield CurrencyMathRow(
+        id,
+        source,
+        amounts,
+        scalars,
+        arrays,
+        multiArrays,
+        money,
+        bigMoney,
+        rates,
+        amountResults,
+        moneyResults,
+        bigMoneyResults,
+        runResults,
+        multiResults,
+        multiRunResults)))
 
   //-------------------------------------------------------------------------
   // Building the operands.
@@ -857,62 +1383,258 @@ private[parity] object CurrencyMathParitySpec {
   // (capture README, section 6). Each description is read back here through the port's own
   // parsers, so the text is data rather than a special case: `"GBP 4"` is exactly the form
   // `CurrencyAmount.parse` accepts.
+  //
+  // Every parser below reads its description as an '''anchored''' grammar: the items it finds and
+  // the documented separators between them have to account for the whole of the trimmed text, and
+  // anything left over - a prefix, a suffix, a doubled or dangling separator, an empty item, or no
+  // item at all - is reported as a fixture disagreement through [[describedFormError]] and
+  // recorded against the row by the harness.
+  //
+  // Consuming only part of the text would be a parity-integrity defect rather than a convenience.
+  // A description is an '''operand''': text such as `"junk [EUR 4] trailing"` that yields the one
+  // group a search happens to find would be measured as if the capture had written `"[EUR 4]"`, so
+  // the row would compare a smaller operand against an expectation computed from the captured one
+  // and report the answer as parity. The grammars are therefore total in both directions - every
+  // form the capture writes is accepted, and nothing else is - and the accepted forms are:
+  //
+  //  - `"empty"`, the whole text, naming no amounts at all;
+  //  - `"GBP 4, USD 5"`, a comma-separated list of amounts, each `CurrencyAmount.parse`'s own
+  //    three-letter code, one space and numeral;
+  //  - `"[EUR 4], [GBP 21, USD 32, EUR 43], [EUR 44]"` and `"[], []"`, a comma-separated list of
+  //    bracketed groups, where a group holds a list of amounts and an '''empty''' group is
+  //    legitimate and names none;
+  //  - `"GBP[1,2,3], USD[1,2]"` and `"GBP[1,2,3] + USD[10,20,30]"`, a list of per-currency runs
+  //    separated by a comma or by a plus, where a run's brackets hold a list of numerals and may
+  //    also be empty.
   //-------------------------------------------------------------------------
 
-  /** The bracketed groups of a description such as `"[EUR 4], [GBP 21, USD 32, EUR 43], [EUR 44]"`. */
-  private val BracketGroup: Regex = """\[([^\]]*)\]""".r
+  /**
+   * The numeral production, which is the language `String.toDoubleOption` reads.
+   *
+   * Written out rather than narrowed to the integers the committed document happens to hold, so
+   * that a capture rendering a value through `Double.toString` - an exponent, a signed zero, a
+   * non-finite value - is read as the numeral it is and left to the port's own factories to accept
+   * or refuse. What it does not do is admit text that is not a numeral at all.
+   */
+  private val NumeralSource: String =
+    """[+-]?(?:Infinity|NaN|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"""
 
-  /** A currency and its values, as in `"GBP[1,2,3]"`. */
-  private val CurrencyRun: Regex = """([A-Za-z]{3})\[([^\]]*)\]""".r
+  /** One numeral of a bracketed value list. */
+  private val Numeral: Regex = NumeralSource.r
 
-  /** Whether a description names whole runs per currency rather than individual amounts. */
+  /** One amount, in exactly the form `CurrencyAmount.parse` accepts: `"GBP 4"`, `"USD -1.5"`. */
+  private val AmountTerm: Regex = s"""[A-Za-z]{3} $NumeralSource""".r
+
+  /** One bracketed group of a description such as `"[EUR 4], [GBP 21, USD 32, EUR 43]"`. */
+  private val BracketGroup: Regex = """\[([^\[\]]*)\]""".r
+
+  /** One currency and its values, as in `"GBP[1,2,3]"`. */
+  private val CurrencyRun: Regex = """([A-Za-z]{3})\[([^\[\]]*)\]""".r
+
+  /** The separator between the items of a captured list: a comma, with or without spacing. */
+  private val ItemSeparator: Regex = """\s*,\s*""".r
+
+  /** The separator between captured runs, which the capture writes as a comma or as a plus. */
+  private val RunSeparator: Regex = """\s*[,+]\s*""".r
+
+  /**
+   * Whether a description names whole runs per currency rather than individual amounts.
+   *
+   * The dispatch is a search rather than a whole-text test, and it is safe as such precisely
+   * because it decides nothing on its own: whichever of the two grammars it selects then has to
+   * account for the whole text, so a description that mixes the two forms or carries anything
+   * around them is refused by the branch it reaches rather than partially read by it. `"[EUR 4]
+   * junk"` names no run and is refused by the bracketed-group grammar; `"junk GBP[1,2]"` names one
+   * and is refused by the run grammar.
+   *
+   * @param text  the description the capture wrote
+   * @return true when the text names at least one per-currency run
+   */
   private def describesRuns(text: String): Boolean = CurrencyRun.findFirstIn(text).isDefined
 
-  /** The amounts a description such as `"GBP 4, USD 5"` names; `"empty"` names none. */
-  private def parseAmounts(text: String): IO[List[CurrencyAmount]] =
-    if (text.trim == EmptyDescription) {
-      IO.pure(Nil)
-    } else {
-      text
-        .split(",")
-        .toList
-        .map(_.trim)
-        .filter(_.nonEmpty)
-        .traverse(part => ParityHarness.raise(CurrencyAmount.parse(part)))
+  /**
+   * The items of a description, when the items and the separators account for all of it.
+   *
+   * This is the anchoring the four parsers share. The items are found by search and then have to
+   * '''tile''' the text: the first starts at its beginning, the last ends at its end, and every
+   * gap between two of them is one separator and nothing more. A text with no item at all is
+   * refused here too, so an empty or unrecognisable description cannot pass as a list of nothing -
+   * the three places where naming nothing is legitimate say so themselves, by testing for the
+   * `"empty"` description, for an empty group and for empty brackets before they ask for items.
+   *
+   * @param text  the trimmed description
+   * @param item  the production of one item, whose match is the item
+   * @param separator  the production of one separator, which must match a gap in full
+   * @return the items in the order the text lists them, of which there is at least one; otherwise
+   *         what the text carries beyond them
+   */
+  private def itemsOf(
+      text: String,
+      item: Regex,
+      separator: Regex): Either[String, List[Regex.Match]] =
+    item.findAllMatchIn(text).toList match {
+      case Nil => Left("it names no item of that form at all")
+      case items @ (first :: rest) =>
+        // The items are destructured rather than indexed, so the first and the last of them are
+        // read totally: this branch is the one where there is at least one.
+        val lastItem = rest.lastOption.getOrElse(first)
+        val gaps = items.zip(rest).map { case (left, right) =>
+          text.substring(left.end, right.start)
+        }
+        if (first.start > 0) {
+          Left(s"'${text.substring(0, first.start)}' precedes its first item")
+        } else if (lastItem.end < text.length) {
+          Left(s"'${text.substring(lastItem.end)}' follows its last item")
+        } else {
+          gaps.find(gap => !separator.matches(gap)) match {
+            case Some(gap) => Left(s"'$gap' separates two of its items and is not one separator")
+            case None => Right(items)
+          }
+        }
     }
 
-  /** The multi-currency amounts a description of bracketed groups names, one per group. */
-  private def parseMultiAmounts(text: String): IO[List[MultiCurrencyAmount]] =
-    BracketGroup
-      .findAllMatchIn(text)
-      .map(matched => matched.group(1))
-      .toList
-      .traverse(group =>
-        parseAmounts(group).flatMap(amounts => ParityHarness.raise(MultiCurrencyAmount.of(amounts))))
+  /**
+   * Reports a description the grammar of its production does not account for in full.
+   *
+   * @param production  the form the description was read as, as a reader of the report would name it
+   * @param text  the trimmed description
+   * @param reason  what the grammar found beyond the form
+   * @tparam A  the type the caller was reading
+   * @return a failed effect, which the harness records as a discrepancy of the row
+   */
+  private def describedFormError[A](production: String, text: String, reason: String): IO[A] =
+    IO.raiseError(
+      new IllegalStateException(
+        s"fixture disagreement: the description '$text' is not $production, because $reason"))
 
-  /** The runs a description such as `"GBP[1,2,3], USD[1,2]"` or `"GBP[1,2] + USD[3,4]"` names. */
-  private def parseRuns(text: String): IO[List[(Currency, DoubleArray)]] =
-    CurrencyRun
-      .findAllMatchIn(text)
-      .toList
-      .traverse(matched =>
-        for {
-          currency <- currencyOf(matched.group(1))
-          values <- parseValues(matched.group(2))
-        } yield (currency, DoubleArray.copyOf(values)))
+  /**
+   * The amounts a description such as `"GBP 4, USD 5"` names; `"empty"` names none.
+   *
+   * @param text  the description the capture wrote
+   * @return the amounts, built by the port's own parser; the effect fails when the text is not the
+   *         `"empty"` description and not a comma-separated list of amounts in full
+   */
+  private def parseAmounts(text: String): IO[List[CurrencyAmount]] = {
+    val trimmed = text.trim
+    if (trimmed == EmptyDescription) IO.pure(Nil) else parseAmountList(trimmed)
+  }
 
-  /** The values a comma-separated numeral list names, which may be empty. */
-  private def parseValues(text: String): IO[Vector[Double]] =
-    text
-      .split(",")
-      .toVector
-      .map(_.trim)
-      .filter(_.nonEmpty)
-      .traverse(part =>
-        IO.fromOption(part.toDoubleOption)(
-          new IllegalStateException(
-            s"fixture disagreement: '$part' is not a numeral, and a captured description holds " +
-              "only numerals between its brackets")))
+  /**
+   * The amounts a non-empty comma-separated list names, which is the production a description and
+   * a bracketed group share.
+   *
+   * @param text  the trimmed list, which names at least one amount
+   * @return the amounts; the effect fails when the text is not that list in full
+   */
+  private def parseAmountList(text: String): IO[List[CurrencyAmount]] =
+    itemsOf(text, AmountTerm, ItemSeparator) match {
+      case Right(items) =>
+        items.traverse(item => ParityHarness.raise(CurrencyAmount.parse(item.matched)))
+      case Left(reason) =>
+        describedFormError("a comma-separated list of amounts such as 'GBP 4, USD 5'", text, reason)
+    }
+
+  /**
+   * The multi-currency amounts a description of bracketed groups names, one per group.
+   *
+   * @param text  the description the capture wrote
+   * @return the amounts, one per group in the order the text lists them; the effect fails when the
+   *         text is not a comma-separated list of bracketed groups in full, or when a group names
+   *         amounts the port refuses to hold together
+   */
+  private def parseMultiAmounts(text: String): IO[List[MultiCurrencyAmount]] = {
+    val trimmed = text.trim
+    itemsOf(trimmed, BracketGroup, ItemSeparator) match {
+      case Right(groups) => groups.traverse(group => parseGroup(group.group(1)))
+      case Left(reason) =>
+        describedFormError(
+          "a comma-separated list of bracketed groups such as '[EUR 4], [GBP 21, USD 32]'",
+          trimmed,
+          reason)
+    }
+  }
+
+  /**
+   * The multi-currency amount one bracketed group names, where `"[]"` names one holding nothing.
+   *
+   * The empty group is the one item of a list that legitimately names no amount - the capture
+   * writes `"[], []"` for the run of two `MultiCurrencyAmount.empty()` elements, the case that
+   * pins a size carrying no currency at all - so it is tested for here rather than being reached
+   * by a list grammar that would have to accept an empty item everywhere to admit it.
+   *
+   * @param content  the text between one group's brackets
+   * @return the amount; the effect fails when the group is neither empty nor a list of amounts in
+   *         full, or when the port refuses the amounts it names
+   */
+  private def parseGroup(content: String): IO[MultiCurrencyAmount] = {
+    val trimmed = content.trim
+    val amounts =
+      if (trimmed.isEmpty) IO.pure(List.empty[CurrencyAmount]) else parseAmountList(trimmed)
+    amounts.flatMap(list => ParityHarness.raise(MultiCurrencyAmount.of(list)))
+  }
+
+  /**
+   * The runs a description such as `"GBP[1,2,3], USD[1,2]"` or `"GBP[1,2] + USD[3,4]"` names.
+   *
+   * Both separators the capture uses are accepted, because both appear in the committed document -
+   * the map factory's input is written with commas and the total's with a plus - and neither is
+   * accepted twice over or on its own.
+   *
+   * @param text  the description the capture wrote
+   * @return the runs in the order the text lists them, each with the currency the port built from
+   *         its code; the effect fails when the text is not a list of runs in full, when a code is
+   *         not one of the closed currency family, or when a run's brackets hold something other
+   *         than numerals
+   */
+  private def parseRuns(text: String): IO[List[(Currency, DoubleArray)]] = {
+    val trimmed = text.trim
+    itemsOf(trimmed, CurrencyRun, RunSeparator) match {
+      case Right(runs) =>
+        runs.traverse(run =>
+          for {
+            currency <- currencyOf(run.group(1))
+            values <- parseValues(run.group(2))
+          } yield (currency, DoubleArray.copyOf(values)))
+      case Left(reason) =>
+        describedFormError(
+          "a list of per-currency runs such as 'GBP[1,2,3], USD[1,2]', separated by a comma or a plus",
+          trimmed,
+          reason)
+    }
+  }
+
+  /**
+   * The values a comma-separated numeral list names, which may be empty.
+   *
+   * Empty brackets name no value, which is what `"[]"` means; `"1,,2"` and `"1,"` name a value
+   * list with a hole in it and are refused rather than read as the values that surround it.
+   *
+   * @param text  the text between one run's brackets
+   * @return the values in the order the text lists them; the effect fails when the text is neither
+   *         empty nor a comma-separated list of numerals in full
+   */
+  private def parseValues(text: String): IO[Vector[Double]] = {
+    val trimmed = text.trim
+    if (trimmed.isEmpty) {
+      IO.pure(Vector.empty[Double])
+    } else {
+      itemsOf(trimmed, Numeral, ItemSeparator) match {
+        case Right(values) =>
+          // The numeral production is the language `toDoubleOption` reads, so the option is read
+          // through `fromOption` to keep this total rather than because a match can fail to parse.
+          values.toVector.traverse(value =>
+            IO.fromOption(value.matched.toDoubleOption)(
+              new IllegalStateException(
+                s"fixture disagreement: '${value.matched}' is not a numeral, and a captured " +
+                  "description holds only numerals between its brackets")))
+        case Left(reason) =>
+          describedFormError(
+            "a comma-separated list of numerals, or nothing at all",
+            trimmed,
+            reason)
+      }
+    }
+  }
 
   //-------------------------------------------------------------------------
   // The rate providers.
@@ -1308,13 +2030,14 @@ private[parity] object CurrencyMathParitySpec {
         }
       case "convertedTo" => checkMoneyConversion(entry, fallback)
       case "toBigMoney" =>
-        // The port expresses the widening on the companion of the wider type rather than as a
-        // method of the narrower one, so `BigMoney.of(money)` is what this captured call replays.
+        // The port publishes the widening under the captured name, so the method the capture
+        // recorded is the method replayed here; `BigMoney.of(money)` is the same conversion named
+        // from the wider companion, and the unit suites assert that the two agree value for value.
         (entry.left, entry.expected) match {
           case (Some(leftValue), Expected.Value(expected)) =>
             moneyOf(leftValue).map(left =>
               compareMoney(s"${entry.op}.left", left, leftValue) :::
-                compareBigMoney(entry.op, BigMoney.of(left), expected))
+                compareBigMoney(entry.op, left.toBigMoney, expected))
           case _ =>
             IO.pure(unrecognised(s"the Money '${entry.op}' entry", "no value and expectation"))
         }
@@ -2061,8 +2784,9 @@ private[parity] object CurrencyMathParitySpec {
         for {
           left <- multiRunOf(leftValue)
           targetCurrency <- currencyOf(target)
+          provider <- rateProviderFor(entry.rates, fallback)
         } yield {
-          val converted = left.convertedTo(targetCurrency, fallback)
+          val converted = left.convertedTo(targetCurrency, provider)
           entry.expected match {
             case Expected.Value(MultiArrayResult.Converted(expected)) =>
               ParityHarness.assertRight(entry.op, converted)(actual =>
@@ -2314,4 +3038,586 @@ private[parity] object CurrencyMathParitySpec {
   def signedZeroEntries(rows: Vector[CurrencyMathRow]): Int =
     rows.flatMap(_.currencyAmountResults).count(entry => entry.doubleToLongBits.isDefined) +
       rows.flatMap(_.currencyAmountArrayResults).count(entry => entry.doubleToLongBits.isDefined)
+
+  //-------------------------------------------------------------------------
+  // The two schema rules, which the last two tests of the suite assert.
+  //
+  // A union is exactly one captured shape ([[unionDecoder]]) and a description is accounted for in
+  // full ([[itemsOf]]). Both rules exist to stop a malformed fixture from being measured as a
+  // smaller but valid one, and neither is observable from the committed document, which satisfies
+  // both - so they are measured here over crafted values instead. Nothing below reads a fixture or
+  // performs any I/O: the forms that must be accepted are the ones the committed document carries,
+  // written out, and the forms that must be refused are the malformations the rules exist for.
+  //-------------------------------------------------------------------------
+
+  /** The discrepancy of a decoding the union schema must refuse. */
+  private def refusesShape[A](label: String, outcome: Decoder.Result[A]): List[String] =
+    ParityHarness.assertLeft(s"$label, which the union schema must refuse", outcome)
+
+  /**
+   * The discrepancy of a refusal whose message must quote what it found.
+   *
+   * The message is part of the rule rather than decoration: an ambiguous object is refused so that
+   * whoever reads the failing gate can see which keys the document carried, and a refusal that
+   * does not say so leaves them to guess.
+   *
+   * @param label  what was decoded
+   * @param outcome  the decoding
+   * @param quoted  the text the refusal must carry
+   * @tparam A  the union type
+   * @return the discrepancy, or nothing when it was refused with that text
+   */
+  private def refusesNaming[A](
+      label: String,
+      outcome: Decoder.Result[A],
+      quoted: String): List[String] =
+    outcome match {
+      case Left(failure) if failure.message.contains(quoted) => Nil
+      case Left(failure) =>
+        List(s"$label: the refusal must quote '$quoted', and it reads '${failure.message}'")
+      case Right(value) =>
+        List(s"$label: the union schema must refuse it, and it decoded as $value")
+    }
+
+  /** The discrepancy of a decoding the union schema must accept as one named alternative. */
+  private def decodesAs[A](label: String, outcome: Decoder.Result[A], expected: A): List[String] =
+    ParityHarness.assertExact[Decoder.Result[A]](label, outcome, Right(expected))
+
+  /**
+   * Measures the five union decoders against the shapes the capture writes and the shapes it
+   * cannot.
+   *
+   * Every alternative of every union is decoded from the shape the committed document writes it
+   * as, and every malformation the strict rule exists for is offered to the union it could have
+   * been mistaken for: an object carrying the keys of two alternatives - which a chain of
+   * alternative decoders accepts as whichever comes first, discarding the sibling's fields - one
+   * carrying an unknown key, one missing a key, a money value in an operand position, and a value
+   * of a shape no alternative accepts.
+   *
+   * @return every case whose outcome was not the one the schema states; empty when it holds
+   */
+  def unionDecoderDiscrepancies: List[String] = {
+    val arrayValue = ArrayValue("GBP", Vector(1.0, 2.0))
+    val amountValue = AmountValue("GBP", 4.0)
+    val multiArrayValue = MultiArrayValue(2, Vector(arrayValue))
+    val arrayJson =
+      Json.obj(
+        "currency" -> Json.fromString("GBP"),
+        "values" -> Json.arr(Json.fromDoubleOrNull(1.0), Json.fromDoubleOrNull(2.0)))
+    val amountJson =
+      Json.obj("currency" -> Json.fromString("GBP"), "amount" -> Json.fromDoubleOrNull(4.0))
+    val moneyJson = amountJson.deepMerge(Json.obj("toString" -> Json.fromString("GBP 4")))
+    val runJson = Json.obj("size" -> Json.fromInt(2), "arrays" -> Json.arr(arrayJson))
+    val valuesJson = Json.arr(Json.fromDoubleOrNull(1.0), Json.fromDoubleOrNull(2.0))
+    val amountsJson = Json.arr(amountJson)
+    val textJson = Json.fromString("GBP 4, USD 5")
+    val arrayAndAmountJson = arrayJson.deepMerge(amountJson)
+    val runAndArrayJson = runJson.deepMerge(arrayJson)
+    val arrayWithUnknownKeyJson = arrayJson.deepMerge(Json.obj("scale" -> Json.fromInt(2)))
+    val incompleteArrayJson = Json.obj("currency" -> Json.fromString("GBP"))
+    // An amount-array operand: an array of amounts or one amount, and nothing else.
+    decodesAs(
+      "an array in an amount-array operand position",
+      arrayOperandDecoder.decodeJson(arrayJson),
+      ArrayOperand.Run(arrayValue)) :::
+      decodesAs(
+        "an amount in an amount-array operand position",
+        arrayOperandDecoder.decodeJson(amountJson),
+        ArrayOperand.Single(amountValue)) :::
+      refusesNaming(
+        "an operand carrying the keys of both alternatives",
+        arrayOperandDecoder.decodeJson(arrayAndAmountJson),
+        "{amount, currency, values}") :::
+      refusesShape(
+        "an operand carrying an unknown key",
+        arrayOperandDecoder.decodeJson(arrayWithUnknownKeyJson)) :::
+      refusesShape(
+        "an operand missing a key of every alternative",
+        arrayOperandDecoder.decodeJson(incompleteArrayJson)) :::
+      refusesShape(
+        "a money value in an amount-array operand position",
+        arrayOperandDecoder.decodeJson(moneyJson)) :::
+      refusesShape(
+        "a JSON array in an amount-array operand position",
+        arrayOperandDecoder.decodeJson(valuesJson)) :::
+      // An amount-array construction input: a list of values or a description, told apart by shape.
+      decodesAs(
+        "a list of values as a construction input",
+        arrayInputDecoder.decodeJson(valuesJson),
+        ArrayInput.Values(Vector(1.0, 2.0))) :::
+      decodesAs(
+        "a description as a construction input",
+        arrayInputDecoder.decodeJson(textJson),
+        ArrayInput.Described("GBP 4, USD 5")) :::
+      refusesShape(
+        "an object as a construction input",
+        arrayInputDecoder.decodeJson(arrayJson)) :::
+      // A MultiCurrencyAmount expectation: every amount, or one of them.
+      decodesAs(
+        "a list of amounts as a MultiCurrencyAmount expectation",
+        multiOperandDecoder.decodeJson(amountsJson),
+        MultiOperand.Amounts(Vector(amountValue))) :::
+      decodesAs(
+        "one amount as a MultiCurrencyAmount expectation",
+        multiOperandDecoder.decodeJson(amountJson),
+        MultiOperand.Single(amountValue)) :::
+      refusesShape(
+        "a money value as a MultiCurrencyAmount expectation",
+        multiOperandDecoder.decodeJson(moneyJson)) :::
+      refusesShape(
+        "an object carrying the keys of two alternatives as a MultiCurrencyAmount expectation",
+        multiOperandDecoder.decodeJson(arrayAndAmountJson)) :::
+      // A MultiCurrencyAmountArray operand: another run, or the amounts of one index.
+      decodesAs(
+        "a run as a MultiCurrencyAmountArray operand",
+        multiArrayOperandDecoder.decodeJson(runJson),
+        MultiArrayOperand.Run(multiArrayValue)) :::
+      decodesAs(
+        "a list of amounts as a MultiCurrencyAmountArray operand",
+        multiArrayOperandDecoder.decodeJson(amountsJson),
+        MultiArrayOperand.Amounts(Vector(amountValue))) :::
+      refusesShape(
+        "a run carrying the keys of an array as well",
+        multiArrayOperandDecoder.decodeJson(runAndArrayJson)) :::
+      refusesShape(
+        "a number as a MultiCurrencyAmountArray operand",
+        multiArrayOperandDecoder.decodeJson(Json.fromInt(4))) :::
+      // A MultiCurrencyAmountArray expectation: a run, a converted array, or bare values.
+      decodesAs(
+        "a run as a MultiCurrencyAmountArray expectation",
+        multiArrayResultDecoder.decodeJson(runJson),
+        MultiArrayResult.Run(multiArrayValue)) :::
+      decodesAs(
+        "a converted array as a MultiCurrencyAmountArray expectation",
+        multiArrayResultDecoder.decodeJson(arrayJson),
+        MultiArrayResult.Converted(arrayValue)) :::
+      decodesAs(
+        "a list of values as a MultiCurrencyAmountArray expectation",
+        multiArrayResultDecoder.decodeJson(valuesJson),
+        MultiArrayResult.Values(Vector(1.0, 2.0))) :::
+      refusesNaming(
+        "an expectation carrying the keys of the run and the array alternatives",
+        multiArrayResultDecoder.decodeJson(runAndArrayJson),
+        "{arrays, currency, size, values}") :::
+      refusesShape(
+        "an amount as a MultiCurrencyAmountArray expectation",
+        multiArrayResultDecoder.decodeJson(amountJson)) :::
+      refusesShape(
+        "a null as a MultiCurrencyAmountArray expectation",
+        multiArrayResultDecoder.decodeJson(Json.Null))
+  }
+
+  /** The currency and value of every parsed amount, which is what an accepted form is compared as. */
+  private def amountPairs(amounts: List[CurrencyAmount]): List[(String, Double)] =
+    amounts.map(amount => (amount.currency.name, amount.amount))
+
+  /** Measures a description the grammar must read as a list of amounts. */
+  private def acceptsAmounts(text: String, expected: List[(String, Double)]): IO[List[String]] =
+    parseAmounts(text).map(amounts =>
+      ParityHarness.assertExact(s"the description '$text'", amountPairs(amounts), expected))
+
+  /** Measures a description the grammar must read as bracketed groups of amounts. */
+  private def acceptsGroups(
+      text: String,
+      expected: List[List[(String, Double)]]): IO[List[String]] =
+    parseMultiAmounts(text).map(groups =>
+      ParityHarness.assertExact(
+        s"the description '$text'",
+        groups.map(group => amountPairs(group.getAmounts.toList)),
+        expected))
+
+  /** Measures a description the grammar must read as per-currency runs. */
+  private def acceptsRuns(
+      text: String,
+      expected: List[(String, List[Double])]): IO[List[String]] =
+    parseRuns(text).map(runs =>
+      ParityHarness.assertExact(
+        s"the description '$text'",
+        runs.map { case (currency, values) => (currency.name, values.toList) },
+        expected))
+
+  /** Measures the text between one run's brackets, which the grammar must read as values. */
+  private def acceptsValues(text: String, expected: Vector[Double]): IO[List[String]] =
+    parseValues(text).map(values =>
+      ParityHarness.assertExact(s"the value list '$text'", values, expected))
+
+  /**
+   * The descriptions the anchored grammars must refuse, each named as it reads.
+   *
+   * Every case is text that a search-and-extract parser accepts as a '''smaller''' operand than
+   * the one it carries, or as no operand at all: leading and trailing text around a form the
+   * capture does write, a missing separator, a doubled one, a dangling one, an empty item, a
+   * description offered to the other branch of the run dispatch, and text naming nothing.
+   */
+  private def refusedDescriptions: List[(String, IO[Any])] =
+    List(
+      ("the empty description", parseAmounts("")),
+      ("an amount list with a doubled separator", parseAmounts("GBP 1,,USD 2")),
+      ("an amount list with a dangling separator", parseAmounts("GBP 1, ")),
+      ("an amount list of separators alone", parseAmounts(",,")),
+      ("an amount list with text before it", parseAmounts("junk GBP 1")),
+      ("an amount list with text after it", parseAmounts("GBP 1 junk")),
+      ("a group list with text before it", parseMultiAmounts("junk [EUR 4] trailing")),
+      ("a group list with text after it", parseMultiAmounts("[EUR 4] junk")),
+      ("a group list with no separator", parseMultiAmounts("[EUR 4] [GBP 1]")),
+      ("a group list with a doubled separator", parseMultiAmounts("[EUR 4],, [GBP 1]")),
+      ("a group list with a malformed group", parseMultiAmounts("[EUR 4], [GBP 1")),
+      ("an empty group list", parseMultiAmounts("")),
+      ("a run list with text before it", parseRuns("junk GBP[1,2]")),
+      ("a run list with text after it", parseRuns("GBP[1,2] junk")),
+      ("a run list with no separator", parseRuns("GBP[1,2] USD[3]")),
+      ("a run list with two separators", parseRuns("GBP[1,2],+ USD[3]")),
+      ("a group list offered to the run grammar", parseRuns("[EUR 4], [GBP 1]")),
+      ("a value list with a doubled separator", parseValues("1,,2")),
+      ("a value list with a dangling separator", parseValues("1,")),
+      ("a value list with no separator", parseValues("1 2")),
+      ("a value list of text", parseValues("junk")))
+
+  /**
+   * The branch of the description dispatch each form reaches, which is what makes the two grammars
+   * jointly total: the run grammar is reached by exactly the forms that name a run.
+   */
+  private def dispatchDiscrepancies: List[String] =
+    List(
+      ("GBP[1,2,3], USD[1,2]", true),
+      ("GBP[1,2,3] + USD[10,20,30]", true),
+      ("junk GBP[1,2]", true),
+      ("[EUR 4], [GBP 21, USD 32, EUR 43], [EUR 44]", false),
+      ("[], []", false),
+      ("[EUR 4] junk", false),
+      ("GBP 4, USD 5", false),
+      (EmptyDescription, false)).flatMap { case (text, runs) =>
+      ParityHarness.assertExact(s"the run dispatch of '$text'", describesRuns(text), runs)
+    }
+
+  /**
+   * Measures the four description grammars against every form the committed document writes and
+   * against text that only partially matches one of them.
+   *
+   * The accepted cases are the eight description strings the committed fixture carries, with what
+   * each names written out, together with the empty and populated value lists a run's brackets
+   * hold, so that a grammar tightened past what the capture writes fails here rather than in a row
+   * of the measurement. The refused cases are [[refusedDescriptions]].
+   *
+   * @return every case whose outcome was not the one the grammar states; empty when it holds
+   */
+  def describedFormDiscrepancies: IO[List[String]] =
+    for {
+      empty <- acceptsAmounts(EmptyDescription, Nil)
+      twoAmounts <- acceptsAmounts("GBP 4, USD 5", List(("GBP", 4.0), ("USD", 5.0)))
+      threeAmounts <- acceptsAmounts(
+        "GBP 1, USD 2, GBP 3",
+        List(("GBP", 1.0), ("USD", 2.0), ("GBP", 3.0)))
+      sameCurrency <- acceptsAmounts("GBP 100, GBP 200", List(("GBP", 100.0), ("GBP", 200.0)))
+      groups <- acceptsGroups(
+        "[EUR 4], [GBP 21, USD 32, EUR 43], [EUR 44]",
+        List(
+          List(("EUR", 4.0)),
+          List(("EUR", 43.0), ("GBP", 21.0), ("USD", 32.0)),
+          List(("EUR", 44.0))))
+      emptyGroups <- acceptsGroups("[], []", List(Nil, Nil))
+      commaRuns <- acceptsRuns(
+        "GBP[1,2,3], USD[1,2]",
+        List(("GBP", List(1.0, 2.0, 3.0)), ("USD", List(1.0, 2.0))))
+      plusRuns <- acceptsRuns(
+        "GBP[1,2,3] + USD[10,20,30]",
+        List(("GBP", List(1.0, 2.0, 3.0)), ("USD", List(10.0, 20.0, 30.0))))
+      noValues <- acceptsValues("", Vector.empty)
+      values <- acceptsValues("1,2,3", Vector(1.0, 2.0, 3.0))
+      refused <- refusedDescriptions.traverse { case (label, effect) =>
+        effect.attempt.map(outcome =>
+          ParityHarness.assertLeft(s"$label, which the grammar must refuse", outcome))
+      }
+    } yield dispatchDiscrepancies ::: empty ::: twoAmounts ::: threeAmounts ::: sameCurrency :::
+      groups ::: emptyGroups ::: commaRuns ::: plusRuns ::: noValues ::: values ::: refused.flatten
+
+  //-------------------------------------------------------------------------
+  // The strictness of the declared key sets, which the third test of the suite asserts.
+  //
+  // A schema that is declared and not applied reads exactly like one that is, and the difference
+  // only shows on a document nobody has captured yet - which is the document the declaration
+  // exists for. So each shape is probed here on a hand-built object rather than on the fixture:
+  // the documented shape must decode, and the same object with a key added, with one of its keys
+  // removed and with one of its keys renamed must each be refused with the offending key named.
+  // Nothing here replays an operation or compares a number; these are properties of the decoders.
+  //
+  // The key each probe removes is chosen so that the smaller key set matches no other documented
+  // variant of the same shape. Removing `scalar` from a scaled CurrencyAmount entry, for one,
+  // leaves exactly the documented unary shape and is properly accepted, which is a property of the
+  // captured inventory rather than a weakness of the check.
+  //-------------------------------------------------------------------------
+
+  /** The key an added-key probe puts on an object, which no documented variant knows. */
+  private val UnknownProbeKey: String = "parityProbeUnknownKey"
+
+  /** The suffix a renamed-key probe gives the key it renames. */
+  private val RenamedProbeSuffix: String = "Renamed"
+
+  /**
+   * One documented object shape of the fixture, with the decoder that reads it.
+   *
+   * @param label  what the shape is, for the message of a failed probe
+   * @param documented  an object of exactly the documented shape
+   * @param required  a key of that shape whose removal matches no other documented variant
+   * @param decode  reads the shape, answering with the refusal where there is one
+   */
+  final case class StrictShape(
+      label: String,
+      documented: JsonObject,
+      required: String,
+      decode: Json => Decoder.Result[Unit])
+
+  /** A captured `CurrencyAmount`, as the capture writes one. */
+  private def amountObject(currency: String, amount: Double): JsonObject =
+    JsonObject("currency" -> Json.fromString(currency), "amount" -> Json.fromDoubleOrNull(amount))
+
+  /** A captured `CurrencyAmountArray`. */
+  private def arrayObject(currency: String, values: Vector[Double]): JsonObject =
+    JsonObject(
+      "currency" -> Json.fromString(currency),
+      "values" -> Json.arr(values.map(value => Json.fromDoubleOrNull(value)): _*))
+
+  /** A captured `Money` or `BigMoney`, whose amount is a decimal string. */
+  private def moneyObject(currency: String, amount: String): JsonObject =
+    JsonObject(
+      "currency" -> Json.fromString(currency),
+      "amount" -> Json.fromString(amount),
+      "toString" -> Json.fromString(s"$currency $amount"))
+
+  /** A captured `MultiCurrencyAmountArray` operand, which states its size. */
+  private def runObject(currency: String, values: Vector[Double]): JsonObject =
+    JsonObject(
+      "size" -> Json.fromInt(values.size),
+      "arrays" -> Json.arr(Json.fromJsonObject(arrayObject(currency, values))))
+
+  /** A captured FX rate. */
+  private def rateObject(pair: String, rate: Double): JsonObject =
+    JsonObject("pair" -> Json.fromString(pair), "rate" -> Json.fromDoubleOrNull(rate))
+
+  /** The `BigMoney.roundToScale` shape, which the `Money` bucket documents no variant of. */
+  private val DocumentedBigMoneyRounding: JsonObject =
+    JsonObject(
+      "op" -> Json.fromString("roundToScale"),
+      "left" -> Json.fromJsonObject(moneyObject("AUD", "100.125")),
+      "scale" -> Json.fromInt(2),
+      "roundingMode" -> Json.fromString("HALF_UP"),
+      "result" -> Json.fromJsonObject(moneyObject("AUD", "100.13")))
+
+  /** The `Money.convertedTo` shape that names a rate list, which `BigMoney` documents none of. */
+  private val DocumentedMoneyProviderConversion: JsonObject =
+    JsonObject(
+      "op" -> Json.fromString("convertedTo"),
+      "left" -> Json.fromJsonObject(moneyObject("GBP", "100.00")),
+      "rates" -> Json.arr(Json.fromJsonObject(rateObject("GBP/USD", 1.6))),
+      "target" -> Json.fromString("USD"),
+      "result" -> Json.fromJsonObject(moneyObject("USD", "160.00")))
+
+  /** An object of exactly the documented row shape, whose buckets hold no entry. */
+  private val DocumentedRow: JsonObject =
+    JsonObject(
+      "id" -> Json.fromString("currency-amount"),
+      "source" -> Json.fromString("com.opengamma.strata.basics.currency.CurrencyAmountTest"),
+      "amounts" -> Json.arr(Json.fromJsonObject(amountObject("GBP", 100.0))),
+      "scalars" -> Json.arr(Json.fromDoubleOrNull(3.5)),
+      "arrays" -> Json.arr(Json.fromJsonObject(arrayObject("GBP", Vector(1.0, 2.0)))),
+      "multiArrays" -> Json.arr(),
+      "money" -> Json.arr(),
+      "bigMoney" -> Json.arr(),
+      "rates" -> Json.arr(Json.fromJsonObject(rateObject("GBP/USD", 1.6))),
+      "currencyAmountResults" -> Json.arr(),
+      "moneyResults" -> Json.arr(),
+      "bigMoneyResults" -> Json.arr(),
+      "currencyAmountArrayResults" -> Json.arr(),
+      "multiCurrencyAmountResults" -> Json.arr(),
+      "multiCurrencyAmountArrayResults" -> Json.arr())
+
+  /** Builds a probe from the decoder the fixture is read with. */
+  private def shapeOf[A](
+      label: String,
+      decoder: Decoder[A],
+      documented: JsonObject,
+      required: String): StrictShape =
+    StrictShape(label, documented, required, json => decoder.decodeJson(json).map(_ => ()))
+
+  /**
+   * The shapes the suite proves the strictness of: every nested value shape, one entry of every
+   * one of the six expectation buckets, and the row itself.
+   */
+  val StrictShapes: Vector[StrictShape] =
+    Vector(
+      shapeOf(
+        "a captured CurrencyAmount",
+        amountValueDecoder,
+        amountObject("GBP", 100.0),
+        "amount"),
+      shapeOf(
+        "a captured CurrencyAmountArray",
+        arrayValueDecoder,
+        arrayObject("GBP", Vector(1.0, 2.0, 3.0)),
+        "values"),
+      shapeOf(
+        "a captured Money or BigMoney",
+        moneyValueDecoder,
+        moneyObject("AUD", "100.12"),
+        "toString"),
+      shapeOf(
+        "a captured MultiCurrencyAmountArray",
+        multiArrayValueDecoder,
+        runObject("GBP", Vector(1.0, 2.0)),
+        "size"),
+      shapeOf(
+        "a registered multi-currency run",
+        multiArrayInputDecoder,
+        JsonObject(
+          "arrays" -> Json.arr(Json.fromJsonObject(arrayObject("GBP", Vector(1.0, 2.0))))),
+        "arrays"),
+      shapeOf("a captured FX rate", rateValueDecoder, rateObject("GBP/USD", 1.6), "pair"),
+      shapeOf(
+        "a currencyAmountResults entry",
+        currencyAmountEntryDecoder,
+        JsonObject(
+          "op" -> Json.fromString("multipliedBy"),
+          "left" -> Json.fromJsonObject(amountObject("GBP", 100.0)),
+          "scalar" -> Json.fromDoubleOrNull(3.5),
+          "result" -> Json.fromJsonObject(amountObject("GBP", 350.0))),
+        "left"),
+      shapeOf(
+        "a moneyResults entry",
+        moneyEntryDecoder,
+        JsonObject(
+          "op" -> Json.fromString("plus"),
+          "left" -> Json.fromJsonObject(moneyObject("GBP", "100.00")),
+          "right" -> Json.fromJsonObject(moneyObject("GBP", "25.50")),
+          "result" -> Json.fromJsonObject(moneyObject("GBP", "125.50"))),
+        "left"),
+      shapeOf(
+        "a bigMoneyResults entry",
+        bigMoneyEntryDecoder,
+        DocumentedBigMoneyRounding,
+        "scale"),
+      shapeOf(
+        "a currencyAmountArrayResults entry",
+        currencyAmountArrayEntryDecoder,
+        JsonObject(
+          "op" -> Json.fromString("plus"),
+          "left" -> Json.fromJsonObject(arrayObject("GBP", Vector(1.0, 2.0))),
+          "right" -> Json.fromJsonObject(arrayObject("GBP", Vector(3.0, 4.0))),
+          "result" -> Json.fromJsonObject(arrayObject("GBP", Vector(4.0, 6.0)))),
+        "right"),
+      shapeOf(
+        "a multiCurrencyAmountResults entry",
+        multiCurrencyAmountEntryDecoder,
+        JsonObject(
+          "op" -> Json.fromString("plus"),
+          "left" -> Json.arr(Json.fromJsonObject(amountObject("GBP", 100.0))),
+          "right" -> Json.arr(Json.fromJsonObject(amountObject("USD", 25.0))),
+          "result" -> Json.arr(
+            Json.fromJsonObject(amountObject("GBP", 100.0)),
+            Json.fromJsonObject(amountObject("USD", 25.0)))),
+        "right"),
+      shapeOf(
+        "a multiCurrencyAmountArrayResults entry",
+        multiCurrencyAmountArrayEntryDecoder,
+        JsonObject(
+          "op" -> Json.fromString("plus"),
+          "left" -> Json.fromJsonObject(runObject("GBP", Vector(1.0, 2.0))),
+          "right" -> Json.fromJsonObject(runObject("GBP", Vector(3.0, 4.0))),
+          "result" -> Json.fromJsonObject(runObject("GBP", Vector(4.0, 6.0)))),
+        "left"),
+      shapeOf("a currency-math baseline row", currencyMathRowDecoder, DocumentedRow, "rates"))
+
+  /**
+   * Decodes every probed shape and its three mutations, answering with everything that did not
+   * hold.
+   *
+   * @return one message per shape and mutation that behaved differently from the strictness rule,
+   *         empty where every shape is read exactly as its declared key set says
+   */
+  def strictnessViolations: List[String] = StrictShapes.toList.flatMap(shapeViolations)
+
+  /** The four probes of one shape: the documented object, and its three mutations. */
+  private def shapeViolations(shape: StrictShape): List[String] = {
+    val documented =
+      shape.decode(Json.fromJsonObject(shape.documented)) match {
+        case Right(_) => Nil
+        case Left(failure) =>
+          List(
+            s"${shape.label}: the documented shape was refused, so the declared key set does not " +
+              s"describe the fixture: ${failure.message}")
+      }
+    val renamedKey = shape.required + RenamedProbeSuffix
+    val renamed = shape.documented
+      .remove(shape.required)
+      .add(renamedKey, shape.documented(shape.required).getOrElse(Json.Null))
+    val missing = s"is missing {${shape.required}}"
+    documented :::
+      refusalNaming(
+        shape,
+        s"'$UnknownProbeKey' added",
+        shape.documented.add(UnknownProbeKey, Json.fromString("unmeasured")),
+        UnknownProbeKey) :::
+      refusalNaming(shape, s"'${shape.required}' removed", shape.documented.remove(shape.required), missing) :::
+      refusalNaming(shape, s"'${shape.required}' renamed to '$renamedKey'", renamed, renamedKey) :::
+      refusalNaming(shape, s"'${shape.required}' renamed to '$renamedKey'", renamed, missing)
+  }
+
+  /**
+   * Checks that one mutated object is refused, with a message carrying the given fragment.
+   *
+   * The fragment is the offending key, or the harness's own `is missing {key}` phrasing for a key
+   * that was taken away: a refusal that does not say which key it is about would leave whoever
+   * reads the failure to diff two documents by hand.
+   */
+  private def refusalNaming(
+      shape: StrictShape,
+      mutation: String,
+      mutated: JsonObject,
+      naming: String): List[String] =
+    shape.decode(Json.fromJsonObject(mutated)) match {
+      case Right(_) =>
+        List(
+          s"${shape.label}: the same object with $mutation was accepted, so the declared key set " +
+            "is not enforced and what that key carries would go unmeasured")
+      case Left(failure) if failure.message.contains(naming) => Nil
+      case Left(failure) =>
+        List(
+          s"${shape.label}: the same object with $mutation was refused without naming " +
+            s"'$naming': ${failure.message}")
+    }
+
+  /**
+   * Checks that the two money buckets do not accept each other's shapes.
+   *
+   * `Money` and `BigMoney` were captured through one writer into one model, so this is the
+   * property that keeps the two key schemas doing work: an entry that carries the operands of the
+   * other bucket's operation is an entry in the wrong bucket, and measuring it as one of this
+   * bucket's own would measure the wrong operation.
+   *
+   * @return one message per bucket that accepted the other's shape, empty where neither did
+   */
+  def crossFamilyViolations: List[String] =
+    refusedBy(
+      "moneyResults",
+      moneyEntryDecoder,
+      "the BigMoney 'roundToScale' shape",
+      DocumentedBigMoneyRounding) :::
+      refusedBy(
+        "bigMoneyResults",
+        bigMoneyEntryDecoder,
+        "the Money 'convertedTo' shape that names a rate list",
+        DocumentedMoneyProviderConversion)
+
+  /** Checks that one bucket's decoder refuses an object of another bucket's shape. */
+  private def refusedBy(
+      bucket: String,
+      decoder: Decoder[MoneyEntry],
+      shape: String,
+      candidate: JsonObject): List[String] =
+    decoder.decodeJson(Json.fromJsonObject(candidate)) match {
+      case Left(_) => Nil
+      case Right(_) =>
+        List(
+          s"the '$bucket' schema accepted $shape, so an entry that belongs to the other bucket " +
+            "would be measured as one of this bucket's own")
+    }
 }

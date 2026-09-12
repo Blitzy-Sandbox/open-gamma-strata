@@ -8,8 +8,6 @@ package com.opengamma.strata.basics.date
 import java.time.DayOfWeek
 import java.time.LocalDate
 
-import scala.util.matching.Regex
-
 import cats.Hash
 import cats.Order
 import cats.Show
@@ -322,20 +320,24 @@ object BusinessDayConvention {
    *
    * Each expression is matched insensitively to case by the name lookup, which is why they are
    * written here in the mixed case of the original rows rather than folded by hand.
+   *
+   * The rows are the source of each expression rather than a compiled expression, and are handed
+   * to the name lookup in that form, which compiles each of them once - insensitively to case,
+   * and only when this family first parses a name.
    */
-  private val LenientPatterns: List[(Regex, String)] =
+  private val LenientSources: List[(String, String)] =
     List(
-      "F".r -> "Following",
-      "Follow".r -> "Following",
-      "M".r -> "ModifiedFollowing",
-      "MF".r -> "ModifiedFollowing",
-      "Mod(ified)?[_ ]?(Follow(ing)?)?".r -> "ModifiedFollowing",
-      "P".r -> "Preceding",
-      "MP".r -> "ModifiedPreceding",
-      "Mod(ified)?[_ ]?Preceding".r -> "ModifiedPreceding",
-      "Mod(ified)?[_ ]?(Follow(ing)?)?[_ ]?Bi[_ ]?Monthly".r -> "ModifiedFollowingBiMonthly",
-      "None".r -> "NoAdjust",
-      "NO_ADJUST".r -> "NoAdjust"
+      "F" -> "Following",
+      "Follow" -> "Following",
+      "M" -> "ModifiedFollowing",
+      "MF" -> "ModifiedFollowing",
+      "Mod(ified)?[_ ]?(Follow(ing)?)?" -> "ModifiedFollowing",
+      "P" -> "Preceding",
+      "MP" -> "ModifiedPreceding",
+      "Mod(ified)?[_ ]?Preceding" -> "ModifiedPreceding",
+      "Mod(ified)?[_ ]?(Follow(ing)?)?[_ ]?Bi[_ ]?Monthly" -> "ModifiedFollowingBiMonthly",
+      "None" -> "NoAdjust",
+      "NO_ADJUST" -> "NoAdjust"
     )
 
   /**
@@ -348,17 +350,17 @@ object BusinessDayConvention {
    * published rather than looked up. Nothing is read from a class or from the class path, so the
    * name space of the family is fixed when this file is compiled.
    *
-   * The instance also carries the tables themselves - `lenientPatterns`, `externalNamesRaw` and
+   * The instance also carries the tables themselves - `lenientSources`, `externalNamesRaw` and
    * `alternateNames` - which is how a caller or a specification reads the transcribed data back
    * without this object having to publish it twice.
    *
    * @return the name lookup for the seven conventions
    */
   implicit val namedEnum: NamedEnum[BusinessDayConvention] =
-    NamedEnum.of(
+    NamedEnum.ofSources(
       values,
       Map.empty,
-      LenientPatterns,
+      LenientSources,
       Map("FpML" -> FpMLNames, "SWIFT" -> SwiftNames),
       "BusinessDayConvention")
 

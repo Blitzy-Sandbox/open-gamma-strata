@@ -19,7 +19,9 @@ import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.prop.TableFor2
 import org.scalatest.prop.TableFor3
 import org.scalatest.prop.TableFor4
+import org.scalatestplus.scalacheck.ScalaCheckDrivenPropertyChecks
 
+import com.opengamma.strata.basics.Arbitraries.genEdgeFxRate
 import com.opengamma.strata.basics.currency.Currency.AUD
 import com.opengamma.strata.basics.currency.Currency.CAD
 import com.opengamma.strata.basics.currency.Currency.EUR
@@ -36,10 +38,17 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * Test [[FxRate]], ported from the Java `FxRateTest`.
  *
  * The original holds twenty-four test methods - twenty-two plain and two driven by a data
- * provider - and so does this suite, under the names it gave them, so that a Java test method
- * and a test of this suite stay in one-to-one correspondence in the migration manifest. The two
- * data-driven methods stay '''one''' test each, with the rows of the original provider held in a
- * table inside them, so that each contributes a single test case rather than one per row.
+ * provider - and this suite holds every one of them under the name it gave them, so that a Java
+ * test method and a test of this suite stay in one-to-one correspondence in the migration
+ * manifest. The two data-driven methods stay '''one''' test each, with the rows of the original
+ * provider held in a table inside them, so that each contributes a single test case rather than
+ * one per row.
+ *
+ * Beside those ported methods the suite holds the cases this port adds for behaviour the original
+ * never reached, each carrying a descriptive name rather than a Java one and each explained where
+ * it is declared. The last of the suite is one of them: it covers the two rates outside the real
+ * numbers that this type admits, which no test of the original and no generator of this port
+ * reached, and the paragraph below says why it exists.
  *
  * ===Three failure modes, kept apart===
  *
@@ -102,6 +111,17 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * the identity of a value is the pair of rates that differ in nothing else, which the original
  * also had.
  *
+ * The two rates ''outside'' the real numbers that this type nonetheless admits are covered by one
+ * test of this port's own, the last of the suite. `FxRate.of` checks `!(rate <= 0.0)`, which
+ * passes a rate that is not a number and accepts a positive infinity while rejecting both zeros
+ * and a negative infinity, so those two are values of the type and its equality, its hashing and
+ * its document form all have to answer for them. The test is driven by the shared edge generator
+ * of the module's generator source, which is the same generator the typeclass law suite runs its
+ * `FxRate` rule sets over, so the two audits see one set of values. The property-based sweep over
+ * every codec of the module lives in the module's JSON round-trip spec and is another unit's file;
+ * the JSON half of the edge coverage is therefore asserted here, beside the equality half it
+ * belongs with.
+ *
  * ===What is asserted elsewhere===
  *
  * The typeclass law suites, the compile-time sweep over the construction surface of every
@@ -114,7 +134,11 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * @see [[FxRate]] for the type under test
  * @see [[CurrencyPair]] for the pair, whose `cross` decides which cross rates exist
  */
-final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
+final class FxRateSpec
+    extends AnyFunSuite
+    with Matchers
+    with TableDrivenPropertyChecks
+    with ScalaCheckDrivenPropertyChecks {
 
   /**
    * A value of a type unrelated to a rate, for the equality assertion that needs one.
@@ -673,43 +697,52 @@ final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropert
   }
 
   /**
-   * Asserts that rejected text is quoted back bounded and on one line, in both wordings.
+   * Asserts that rejected text is named in full and rendered bounded and on one line, in both
+   * wordings.
    *
-   * No counterpart in the Java test class, and none was possible: the original interpolated the
-   * text it was handed into the exception it threw, as it stood, so the size of the message was
-   * the size of the input and a line break in the input was a line break in the message. This
-   * port reports the rejection as a value, and the text it names is rendered rather than
-   * reproduced. Both wordings are asserted, because both quote the text.
+   * No counterpart in the Java test class: the original interpolated the text it was handed into
+   * the exception it threw, as it stood, and this port names it the same way in the failure it
+   * returns. What the port adds is the boundary at which a failure is written out, where every
+   * part is bounded and anything that could forge a line is escaped. Both wordings are asserted,
+   * because both quote the text.
    */
-  test("parsing rejects text of any size without echoing it unbounded or across lines") {
+  test("parsing names rejected text in full, and the failure renders bounded and on one line") {
     // Ten thousand characters the expression does not match: the invalid-rate wording.
     val payload = "H" * 10000
     val bounded: FailureOr[FxRate] = FxRate.parse(payload)
     bounded should beFailureWith(FailureReason.PARSING)
-    // The echo is the rendering the message is built from, so the message is the fixed wording
-    // plus at most `MaxDescribedInput + 3` characters of the text, whatever its size - where it
-    // was once the whole ten thousand.
-    val message = bounded.left.toOption.map(failure => failure.message).getOrElse("")
-    message.length should be <= "Invalid rate: ".length + Failure.MaxDescribedInput + 3
-    message shouldBe s"Invalid rate: ${"H" * Failure.MaxDescribedInput}..."
+    val failure = bounded.left.toOption.getOrElse(fail("expected a failure"))
+    failure.message shouldBe s"Invalid rate: $payload"
+    // The rendering is where the size stops, and it marks what it left out.
+    val rendered = Show[Failure].show(failure)
+    rendered.length should be < 1000
+    rendered should startWith("PARSING: Invalid rate: HHH")
+    rendered should endWith("...")
 
     // Text the expression matches and that then names no legal rate reaches the other wording,
-    // which is bounded by the same rendering: the rate group admits digits, so a rate written
-    // with ten thousand zeroes after the point matches and is then rejected as a zero rate.
+    // named in full and bounded by the same rendering: the rate group admits digits, so a rate
+    // written with ten thousand zeroes after the point matches and is then rejected as a zero
+    // rate.
     val longZero = s"EUR/GBP 0.${"0" * 10000}"
     val matched: FailureOr[FxRate] = FxRate.parse(longZero)
     matched should beFailureWith(FailureReason.PARSING)
     matched.left.toOption.map(failure => failure.message) shouldBe
-      Some(s"Unable to parse rate: EUR/GBP 0.${"0" * (Failure.MaxDescribedInput - 10)}...")
+      Some(s"Unable to parse rate: $longZero")
+    Show[Failure]
+      .show(matched.left.toOption.getOrElse(fail("expected a failure")))
+      .length should be < 1000
 
-    // Text holding a line break cannot put one in the message, so a line-oriented consumer of
-    // the message cannot be made to record a line the library did not report.
+    // Text holding a line break is named as it stands and rendered on one line, so a
+    // line-oriented consumer of the rendering cannot be made to record a line the library did
+    // not report.
     val injected = FxRate.parse("EUR\nUSD 1.25")
     injected should beFailureWith(FailureReason.PARSING)
-    val injectedMessage = injected.left.toOption.map(failure => failure.message).getOrElse("")
-    injectedMessage should not include "\n"
-    injectedMessage should not include "\r"
-    injectedMessage shouldBe "Invalid rate: EUR\\nUSD 1.25"
+    val injectedFailure = injected.left.toOption.getOrElse(fail("expected a failure"))
+    injectedFailure.message shouldBe "Invalid rate: EUR\nUSD 1.25"
+    val injectedRendering = Show[Failure].show(injectedFailure)
+    injectedRendering should not include "\n"
+    injectedRendering should not include "\r"
+    injectedRendering shouldBe "PARSING: Invalid rate: EUR\\nUSD 1.25"
 
     // And the messages for ordinary rejected text are unchanged, character for character, which
     // is what makes the bound invisible to every caller but the adversarial one.
@@ -823,6 +856,58 @@ final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropert
     // and the pair is written as its text form rather than as a nested object, which is the codec
     // the pair itself publishes and what keeps the document readable
     test.asJson.hcursor.get[String]("pair") shouldBe Right("EUR/USD")
+  }
+
+  /**
+   * Asserts the two non-finite rates the type admits, over the shared edge generator.
+   *
+   * The Java test reached finite rates only, and so did every generator of this port until the
+   * equality, hashing and document form of these two values were found to be untested. They are
+   * values of the type: the check `FxRate.of` applies is `!(rate <= 0.0)`, under which a rate that
+   * is not a number passes - `NaN <= 0.0` is false - and a positive infinity passes for the plain
+   * reason that it exceeds zero, while both signed zeros and a negative infinity are rejected.
+   *
+   * Three things are asserted of every rate the generator draws, and each is a property a
+   * regression could break without failing anything else in the suite: the rate survives the
+   * round trip through its document form, where the two values JSON has no number for are written
+   * as tagged strings; a rate rebuilt through the factory from the same pair and rate is equal to
+   * it and hashes with it, which for a rate that is not a number holds only because the equality
+   * compares bit patterns; and the rendering is the text form of the value.
+   *
+   * The generator is the one the typeclass law suite runs its `FxRate` rule sets over, so a rate
+   * this test admits is a rate those laws are checked over as well. The assertions that follow
+   * the property pin the two values by hand and state the three the domain excludes, because a
+   * property cannot say which values are absent - and the exclusions are half of what the domain
+   * is.
+   */
+  test("every rate the type admits survives its document form and hashes with its equal") {
+    forAll(genEdgeFxRate, minSuccessful(200)) { (rate: FxRate) =>
+      val rebuilt: FxRate = unwrap(FxRate.of(rate.pair, rate.rate))
+      rate.asJson.as[FxRate] shouldBe Right(rate)
+      rate.equals(rebuilt) shouldBe true
+      Hash[FxRate].eqv(rate, rebuilt) shouldBe true
+      Hash[FxRate].hash(rate) shouldBe Hash[FxRate].hash(rebuilt)
+      Show[FxRate].show(rate) shouldBe rate.toString
+    }
+
+    // the two non-finite rates the generator draws, stated as values so that each document is
+    // pinned as written text rather than only as a value that survives a cycle
+    val notANumber: FxRate = rateOf(GBP, USD, Double.NaN)
+    val infinite: FxRate = rateOf(GBP, USD, Double.PositiveInfinity)
+    notANumber.asJson.noSpaces shouldBe """{"pair":"GBP/USD","rate":"NaN"}"""
+    infinite.asJson.noSpaces shouldBe """{"pair":"GBP/USD","rate":"Infinity"}"""
+
+    // a rate that is not a number equals itself, where the primitive comparison would not
+    (Double.NaN == Double.NaN) shouldBe false
+    notANumber.equals(rateOf(GBP, USD, Double.NaN)) shouldBe true
+    Hash[FxRate].eqv(notANumber, rateOf(GBP, USD, Double.NaN)) shouldBe true
+    notANumber.hashCode shouldBe rateOf(GBP, USD, Double.NaN).hashCode
+    Hash[FxRate].eqv(notANumber, infinite) shouldBe false
+
+    // and the three edge values the domain excludes, which is why the generator never draws one
+    FxRate.of(GBP, USD, Double.NegativeInfinity).isLeft shouldBe true
+    FxRate.of(GBP, USD, 0.0d).isLeft shouldBe true
+    FxRate.of(GBP, USD, -0.0d).isLeft shouldBe true
   }
 
   //-----------------------------------------------------------------------

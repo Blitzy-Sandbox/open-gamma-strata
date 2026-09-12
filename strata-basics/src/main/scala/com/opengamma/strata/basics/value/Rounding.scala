@@ -13,10 +13,10 @@ import cats.Show
 import cats.syntax.apply._
 
 import io.circe.Decoder
-import io.circe.DecodingFailure
 import io.circe.Encoder
 import io.circe.Json
 import io.circe.generic.semiauto.deriveDecoder
+import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.collect.ArgCheck
@@ -302,12 +302,17 @@ sealed abstract case class HalfUp private (decimalPlaces: Int, fraction: Int) ex
 }
 
 /**
- * The factories, validation and instance cache of [[HalfUp]].
+ * The factories, validation, instance cache and typeclass instances of [[HalfUp]].
  *
  * Every way of obtaining an instance is here, and each of the two public ones reports the
  * reasons its inputs describe no convention instead of throwing, which is what makes the type
  * impossible to hold in an invalid state. The messages are those of the Java original, word
  * for word, so a caller that logs one sees what it saw before.
+ *
+ * The two typeclass instances at the foot of this object - a `Hash` and a `Show`, the pair every
+ * value type of this port carries - are the family's instances restated at the type of the
+ * member, which is what the invariance of those typeclasses requires; [[Rounding]] keeps its own
+ * pair for a value typed as the family, and the two agree by construction.
  */
 object HalfUp {
 
@@ -461,6 +466,40 @@ object HalfUp {
       fraction >= 0 && fraction <= MaxFraction,
       fraction,
       Failure.Invalid(FractionMessage))
+
+  //-------------------------------------------------------------------------
+  /**
+   * The hashing and equality of half-up rounding conventions.
+   *
+   * This is the same equality [[Rounding.hash]] offers - the universal `equals` and `hashCode` of
+   * the value, which for this member are its two fields - declared a second time at this type
+   * because `cats.Hash` is '''invariant''': `Hash[Rounding]` is not a `Hash[HalfUp]`, so a caller
+   * holding a value typed as the member rather than as the family could not summon one from the
+   * family's instance. Both declarations are therefore needed, and neither is ambiguous with the
+   * other: a summon at `Rounding` can only be answered by the family's instance and a summon at
+   * `HalfUp` only by this one, and because both are `Hash.fromUniversalHashCode` the two can never
+   * disagree about a value they both see.
+   *
+   * This type is a validated value type of its own right in the port's construction inventory,
+   * which is why the instance is required here rather than left to the family: every `[R]`, `[V]`,
+   * `[N]`, `[S]` and `[T]` type carries `Hash` and `Show`, and `Rounding.HalfUp` is named in that
+   * inventory as a `[V]` type beside `Rounding` itself as an `[S]` one.
+   *
+   * @return the hashing of half-up rounding conventions
+   */
+  implicit val hash: Hash[HalfUp] = Hash.fromUniversalHashCode[HalfUp]
+
+  /**
+   * The rendering of half-up rounding conventions as text.
+   *
+   * Renders what `toString` renders - `Round to 4dp`, or `Round to 1/32 of 4dp` where there is a
+   * fractional part - which is the form of the Java original, so the two ways of putting a
+   * convention into a message agree whether the value is typed as the member or as the family.
+   * Declared here for the same reason the hashing above is: `cats.Show` is invariant as well.
+   *
+   * @return the rendering of a half-up rounding convention
+   */
+  implicit val show: Show[HalfUp] = Show.show(_.toString)
 }
 
 /**
@@ -487,12 +526,6 @@ object Rounding {
 
   /** The JSON key of the half-up convention. */
   private val HalfUpKey: String = "HalfUp"
-
-  /** The JSON field holding the number of decimal places. */
-  private val DecimalPlacesField: String = "decimalPlaces"
-
-  /** The JSON field holding the fraction of the smallest decimal place. */
-  private val FractionField: String = "fraction"
 
   /** The rejection of a document that is not one of the two shapes of the family. */
   private val UnknownShapeMessage: String =
@@ -602,38 +635,84 @@ object Rounding {
 
   //-------------------------------------------------------------------------
   /**
-   * The raw field shape the half-up decoder reads before validation.
+   * The raw field shape both instances of the half-up member are derived over.
    *
-   * Decoding a validated type is two steps: read the fields, then hand them to the factory that
-   * decides whether they describe a value. This product is the first step, and it exists only
-   * for that purpose - it is private, it is never returned, and nothing but the decoder below
-   * builds one.
+   * A type whose constructor is not public cannot be derived over directly, and decoding a
+   * validated type is two steps: read the fields, then hand them to the factory that decides
+   * whether they describe a value. This product is the shape those fields have, and both
+   * directions of the member below go through it. Its field names are the JSON keys, and they
+   * are the names of the two properties the Java bean declared, in that order, which is what
+   * keeps the derived shape and the type from drifting apart. It exists only for that purpose:
+   * it is private, it is never returned, and nothing but the two instances below builds or
+   * reads one.
    *
    * @param decimalPlaces  the number of decimal places, unvalidated
    * @param fraction  the fraction of the smallest decimal place, unvalidated
    */
   private final case class Raw(decimalPlaces: Int, fraction: Int)
 
-  /** The derived decoder of the raw field shape, used by the validating decoder below. */
+  /** The derived decoder of the raw field shape, used by the member decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /**
-   * The encoder of the fields of the half-up convention, written out field by field because the
-   * constructor of a validated type is not public and so its shape cannot be derived.
-   */
-  private val halfUpEncoder: Encoder[HalfUp] =
-    Encoder.forProduct2[HalfUp, Int, Int](DecimalPlacesField, FractionField)(halfUp =>
-      (halfUp.decimalPlaces, halfUp.fraction))
+  /** The derived encoder of the raw field shape, used by the member encoder below. */
+  private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
   /**
-   * The decoder of the fields of the half-up convention, which validates them exactly as a
-   * caller's arguments are validated, so a document naming a number of decimal places or a
-   * fraction outside the permitted range is rejected rather than decoded.
+   * The encoding of the fields of the half-up convention.
+   *
+   * The shape is derived over the raw product above and a convention is contramapped into it,
+   * which is the idiom every type of this port whose constructor is not public uses - derive
+   * the product of the fields, then state how a value maps onto it - so the keys and their
+   * order come from one place and are not written out a second time here.
+   *
+   * The instance is private, and deliberately so. The codec this port publishes is the
+   * family's, listed once in its inventory of codec-bearing types; the two member instances
+   * exist for the derivations below to find and add nothing to the public surface. Anything
+   * holding a convention holds it at the type of the family, which is the type the published
+   * codec covers.
    */
-  private val halfUpDecoder: Decoder[HalfUp] =
+  private implicit val halfUpEncoder: Encoder[HalfUp] =
+    rawEncoder.contramap[HalfUp](halfUp => Raw(halfUp.decimalPlaces, halfUp.fraction))
+
+  /**
+   * The decoding of the fields of the half-up convention, which validates them exactly as a
+   * caller's arguments are validated, so a document naming a number of decimal places or a
+   * fraction outside the permitted range is rejected rather than decoded, and one whose two
+   * fields are both wrong is rejected for both reasons at once.
+   *
+   * It is private for the same reason its counterpart above is.
+   */
+  private implicit val halfUpDecoder: Decoder[HalfUp] =
     Codecs.validatedDecoder[Raw, HalfUp] { raw =>
       HalfUp.ofFractionalDecimalPlaces(raw.decimalPlaces, raw.fraction)
     }(rawDecoder)
+
+  /**
+   * The encoding of the fields of the convention that makes no change, which is derived and
+   * writes the empty object, that convention having no field to write.
+   *
+   * It is private for the same reason the two instances above are.
+   */
+  private implicit val noRoundingEncoder: Encoder[com.opengamma.strata.basics.value.NoRounding.type] =
+    deriveEncoder[com.opengamma.strata.basics.value.NoRounding.type]
+
+  /**
+   * The decoding of the fields of the convention that makes no change, which accepts the empty
+   * object its encoding writes and nothing else.
+   *
+   * This one payload is stated rather than derived, because a derivation would accept any
+   * object at all: a member with no field reads no field, so every field a document carried
+   * would be ignored and `{"NoRounding":{"decimalPlaces":2}}` would decode to this convention
+   * while what it asked for was silently discarded. The payload is therefore required to be an
+   * object holding nothing, and a number, a string, an array, the literal denoting an absent
+   * value or an object carrying any field is a decoding failure naming the shape this member
+   * has.
+   *
+   * It is private for the same reason the instances above are.
+   */
+  private implicit val noRoundingDecoder: Decoder[com.opengamma.strata.basics.value.NoRounding.type] =
+    Decoder[Json].emap(payload =>
+      payload.asObject.filter(_.isEmpty).map(_ => NoRounding).toRight(NoRoundingPayloadMessage))
 
   /**
    * The JSON encoding of rounding conventions.
@@ -646,37 +725,61 @@ object Rounding {
    * {"HalfUp":{"decimalPlaces":2,"fraction":0}}
    * }}}
    *
-   * The encoding is written out here rather than derived, because the half-up convention is a
-   * validated type whose constructor is not public; the shape produced is the one a derivation
-   * would have produced. No field is optional, so there is nothing to drop from the output, and
-   * the match over the closed family is checked by the compiler for exhaustiveness.
+   * The wrapper and both payloads are derived when this file is compiled, from the family and
+   * from the member instances above, so no part of the encoding inspects a class while the
+   * program runs and the keys are stated in one place each. The result is wrapped so that a
+   * field holding no value would be omitted, which is the policy every product of this port
+   * follows - no field of either member is optional, so the wrapping changes nothing about the
+   * bytes of this type and exists so that the policy holds without exception.
    *
    * @return the JSON encoding of a rounding convention
    */
-  implicit val encoder: Encoder[Rounding] = Encoder.instance[Rounding] {
-    case halfUp: HalfUp => Json.obj(HalfUpKey -> halfUpEncoder(halfUp))
-    case NoRounding => Json.obj(NoRoundingKey -> Json.obj())
-  }
+  implicit val encoder: Encoder[Rounding] = Codecs.dropNulls(deriveEncoder[Rounding])
+
+  /**
+   * The derived decoding of the family, reached once the gate below has accepted the shape of
+   * the document.
+   *
+   * It reads the one field of the wrapper, selects the member its name denotes, and hands the
+   * value of that field to the member's own decoder above, so a document is accepted only when
+   * both halves of the shape match: the fields of the half-up convention are validated by its
+   * own factory, and the convention that makes no change requires the empty object.
+   */
+  private val derivedDecoder: Decoder[Rounding] = deriveDecoder[Rounding]
+
+  /**
+   * The gate that states the shape of the family before any member is read.
+   *
+   * The derivation alone would accept a document carrying both member keys, taking whichever it
+   * examined first, and would answer a document naming no member with a message phrased in
+   * terms of the representation the derivation is built on rather than in terms of this family.
+   * This gate reads the document as a whole first and requires an object holding exactly one
+   * field whose name is one of the two members; anything else - no field, several fields, a
+   * field naming no member, or a document that is not an object at all - is refused here,
+   * against the document cursor, with the message the family states for its own shape.
+   */
+  private val shapeGate: Decoder[Unit] =
+    Decoder[Json].emap { document =>
+      document.asObject.map(_.keys.toList) match {
+        case Some(NoRoundingKey :: Nil) | Some(HalfUpKey :: Nil) => Right(())
+        case _ => Left(UnknownShapeMessage)
+      }
+    }
 
   /**
    * The JSON decoding of rounding conventions.
    *
-   * This is the inverse of the encoding above. The document has to be an object holding exactly
-   * one field, whose name selects the member; a document holding no field, several fields, or a
-   * field naming no member of the family is rejected, as is one that is not an object at all.
+   * This is the inverse of the encoding above: the shape gate accepts the wrapper, and the
+   * derived decoding then reads the same document and builds the member the one field names.
+   * Both steps run against the same cursor, the second only if the first accepted it, so the
+   * document is examined twice and no copy of it is made for the gate.
    *
-   * The name of that one field selects the member, and the value of the field is then read as
-   * that member's own payload rather than ignored, so a document is accepted only when both
-   * halves of the shape match. The convention that makes no change has no fields, so its
-   * payload is the empty object the encoder writes and nothing else: `{"NoRounding":{}}`
-   * decodes, while a payload that is a number, a string, an array, the JSON literal denoting an
-   * absent value, or an object carrying any field at all - `{"NoRounding":123}`,
-   * `{"NoRounding":{"decimalPlaces":2}}` and their like - is rejected, the last of those because
-   * a field it carries would otherwise be silently dropped. The fields of the half-up
-   * convention are validated by its own factory, so an out-of-range document is a decoding
-   * failure carrying every reason it was rejected for rather than a value the factory would
-   * never have built, and a half-up payload that is not an object at all is rejected by that
-   * same decoder.
+   * A shape that names no member of the family is rejected by the gate, and a payload that
+   * does not match the member its key names is rejected by that member's decoder: an
+   * out-of-range half-up document is a decoding failure carrying every reason its fields were
+   * rejected for rather than a value the factory would never have built, a half-up payload
+   * that is not an object at all names no field to validate and is refused on those grounds,
+   * and the convention that makes no change accepts `{"NoRounding":{}}` and nothing else.
    *
    * The history of a rejection is that of the cursor the failure was found at - the member
    * cursor for a payload that does not match its member, the document cursor for a shape that
@@ -685,16 +788,5 @@ object Rounding {
    *
    * @return the JSON decoding of a rounding convention
    */
-  implicit val decoder: Decoder[Rounding] = Decoder.instance { cursor =>
-    cursor.keys.map(_.toList) match {
-      case Some(NoRoundingKey :: Nil) =>
-        val member = cursor.downField(NoRoundingKey)
-        member.focus.flatMap(_.asObject) match {
-          case Some(fields) if fields.isEmpty => Right(NoRounding)
-          case _ => Left(DecodingFailure(NoRoundingPayloadMessage, member.history))
-        }
-      case Some(HalfUpKey :: Nil) => cursor.downField(HalfUpKey).as[HalfUp](halfUpDecoder)
-      case _ => Left(DecodingFailure(UnknownShapeMessage, cursor.history))
-    }
-  }
+  implicit val decoder: Decoder[Rounding] = shapeGate.flatMap(_ => derivedDecoder)
 }

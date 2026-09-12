@@ -75,6 +75,7 @@ import com.opengamma.strata.basics.date.Tenor.TENOR_4W
 import com.opengamma.strata.basics.date.Tenor.TENOR_5M
 import com.opengamma.strata.basics.date.Tenor.TENOR_6M
 import com.opengamma.strata.basics.date.TenorAdjustment
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 import com.opengamma.strata.collect.testkit.TestHelper.date
@@ -204,6 +205,24 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
   private def lookup(name: String): IborIndex =
     IborIndex.valueOf(name).getOrElse(fail(s"No Ibor index is published under: $name"))
 
+  /**
+   * Unwraps the value of a successful result, failing the assertion when it reports a failure.
+   *
+   * The resolution of an index reports a failure when reference data cannot supply a calendar,
+   * and the bodies below resolve against the standard data, where every calendar they name is
+   * present. A failure there is a defect to be reported as a failed assertion rather than as an
+   * error escaping the body, which is what this does.
+   *
+   * @param result  the result to unwrap
+   * @tparam A  the type of the value
+   * @return the value of a successful result
+   */
+  private def valueOf[A](result: Either[Failure, A]): A =
+    result match {
+      case Right(value) => value
+      case Left(failure) => fail(s"the operation reported a failure: $failure")
+    }
+
   //-------------------------------------------------------------------------
   test("test_gbpLibor3m") {
     val test = lookup("GBP-LIBOR-3M")
@@ -244,11 +263,22 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
       date(2014, 10, 13).atTime(LocalTime.of(11, 55)).atZone(ZoneId.of("Europe/London"))
     // resolve - the resolved calculation of a fixing produces what the per-fixing factory does,
     // and the observation is built only through that factory, so the two results are compared
-    // as results rather than one of them being unwrapped
+    // as results rather than one of them being unwrapped. Both published routes to the
+    // resolution are asserted: `IborIndex.resolve`, which is where the index being ported
+    // declared it, and `IborIndexObservation.resolve`, which is where this port implements it.
     val fixing: LocalDate = date(2014, 10, 13)
     IborIndexObservation.of(test, fixing, RefData) should beSuccess
     IborIndexObservation.resolve(test, RefData).map(observe => observe(fixing)) shouldBe
       IborIndexObservation.of(test, fixing, RefData)
+    test.resolve(RefData).map(observe => observe(fixing)) shouldBe
+      IborIndexObservation.of(test, fixing, RefData)
+    // and the dependent dates of the resolved route, field by field, since the equality of an
+    // observation reads the index and the fixing date alone
+    val resolved = valueOf(test.resolve(RefData))(fixing)
+    val direct = valueOf(IborIndexObservation.of(test, fixing, RefData))
+    resolved.effectiveDate shouldBe direct.effectiveDate
+    resolved.maturityDate shouldBe direct.maturityDate
+    resolved.yearFraction shouldBe direct.yearFraction
   }
 
   test("test_getFloatingRateName") {
@@ -309,11 +339,20 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     // fixing time and zone
     test.calculateFixingDateTime(date(2014, 10, 13)) shouldBe
       date(2014, 10, 13).atTime(LocalTime.of(11, 55)).atZone(ZoneId.of("Europe/London"))
-    // resolve
+    // resolve, through both published routes; an index whose fixing and effective dates live in
+    // different calendars is the case where a single resolution could diverge from the
+    // per-fixing derivation, so the dependent dates are compared field by field as well
     val fixing: LocalDate = date(2014, 10, 27)
     IborIndexObservation.of(test, fixing, RefData) should beSuccess
     IborIndexObservation.resolve(test, RefData).map(observe => observe(fixing)) shouldBe
       IborIndexObservation.of(test, fixing, RefData)
+    test.resolve(RefData).map(observe => observe(fixing)) shouldBe
+      IborIndexObservation.of(test, fixing, RefData)
+    val resolved = valueOf(test.resolve(RefData))(fixing)
+    val direct = valueOf(IborIndexObservation.of(test, fixing, RefData))
+    resolved.effectiveDate shouldBe direct.effectiveDate
+    resolved.maturityDate shouldBe direct.maturityDate
+    resolved.yearFraction shouldBe direct.yearFraction
   }
 
   test("test_euribor3m") {
@@ -397,6 +436,17 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     test.currency shouldBe JPY
     test.name shouldBe "JPY-TIBOR-EUROYEN-3M"
     test.tenor shouldBe TENOR_3M
+    // The euroyen rate ceased to be published, and this is the inactive edge of this suite: the
+    // subject carries `active = false`, where every other explicit `active` assertion in this
+    // file expects true. The flag is asserted here because nothing else in the suite asserts a
+    // false one - a transcription that dropped it, or defaulted it to true, would otherwise pass,
+    // and it would change which tenors the euroyen floating rate family reports as available.
+    // All thirteen euroyen rows are asserted, not only the three-month one the Java method named.
+    test.active shouldBe false
+    val euroyen: List[IborIndex] =
+      IborIndex.values.toList.filter(index => index.name.startsWith("JPY-TIBOR-EUROYEN"))
+    euroyen should have size 13
+    euroyen.foreach(index => withClue(s"${index.name}: ")(index.active shouldBe false))
     test.fixingCalendar shouldBe JPTO
     test.fixingDateOffset shouldBe DaysAdjustment.ofBusinessDays(-2, JPTO)
     test.effectiveDateOffset shouldBe DaysAdjustment.ofBusinessDays(2, JPTO)

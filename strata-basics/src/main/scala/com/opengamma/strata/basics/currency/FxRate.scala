@@ -430,14 +430,10 @@ object FxRate {
    * on - named only the text, and keeping the failure to that one message keeps it comparable and
    * its serialized form stable.
    *
-   * Both wordings name the rendering of the text through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so each is bounded in length
-   * and has its control characters escaped. A message reaches a log or a report, and the text
-   * handed to this method came from outside the library, so it must not be able to forge a line
-   * of that log or to make the message as large as the input. Text within the bound and free of
-   * control characters - every spelling of a rate among them - is quoted exactly as it was
-   * given, so the wording of an ordinary rejection is unchanged; only a longer or a
-   * line-breaking input is now described rather than reproduced.
+   * Both wordings name the text as it was given, so each reads as the original's did. The text
+   * came from outside the library, so bounding it and escaping what it may hold belong to the
+   * writing of a failure, which [[com.opengamma.strata.collect.result.Failure.show]] and the
+   * text form of a failure perform for every part they write.
    *
    * @param rateStr  the rate as text, in the form `AAA/BBB RATE`, in any case
    * @return the FX rate the text names, or the failure describing why it names none
@@ -453,9 +449,9 @@ object FxRate {
         } yield fxRate
         // the text is rendered rather than interpolated as it stands, which bounds both messages
         // and keeps them to one line while leaving an in-bound spelling quoted as it was given
-        parsed.toRight(Failure.Parsing(s"Unable to parse rate: ${Failure.describeInput(rateStr)}"))
+        parsed.toRight(Failure.Parsing(s"Unable to parse rate: $rateStr"))
       case _ =>
-        Left(Failure.Parsing(s"Invalid rate: ${Failure.describeInput(rateStr)}"))
+        Left(Failure.Parsing(s"Invalid rate: $rateStr"))
     }
 
   //-------------------------------------------------------------------------

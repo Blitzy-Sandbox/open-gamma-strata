@@ -41,10 +41,18 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * Test [[Schedule]], ported from the Java `ScheduleTest`.
  *
  * This is a one-to-one port: each of the Java class's thirty-seven test methods has a test of the
- * same name here, in the same order, and no test has been added, split off or dropped. The Java
- * class parameterised nothing, so every method became one plain `test("…")` block, which is what
+ * same name here, in the same order, and none has been split off or dropped. The Java class
+ * parameterised nothing, so every method became one plain `test("…")` block, which is what
  * keeps the method-level traceability recorded in `manifest/java-test-mapping.csv` exact - the
  * acceptance gate joins that file to the JUnit XML on the suite class and the test name.
+ *
+ * Two tests are '''added''', at the end of the merging block and of the accessor block, each
+ * stating something this port does that the Java class had no method for:
+ * `test_merge_groupSizeTooLargeToMultiply` (a group size too large to multiply the frequency by is
+ * a failure value rather than an `ArithmeticException`) and `test_period_indexedAccess` (indexed
+ * access agrees with the period list it is served from, whatever order the indices are read in).
+ * Adding a test cannot disturb the traceability join, which runs from a manifest row to a test
+ * case, so a test case that no row names costs nothing.
  *
  * ===How the shape of the port changes the assertions===
  *
@@ -130,6 +138,22 @@ class ScheduleSpec extends AnyFunSuite with Matchers with ResultMatchers {
     result.fold(failures => fail(rejectionMessage("schedule", failures)), schedule => schedule)
 
   /**
+   * Reads the failures out of an outcome that is expected to hold some.
+   *
+   * The counterpart of [[sched]], for the cases that assert what the factory refused rather than
+   * what it built: the chain is flattened into a list so that the number of reasons and the text
+   * of each can be asserted, and an outcome that unexpectedly holds a schedule is a defect in the
+   * assertion and is reported as one rather than being silently read as no reasons at all.
+   *
+   * @param result  the outcome of a validated factory, expected to have been refused
+   * @return the failures the factory reported, in the order it reported them
+   */
+  private def rejectionsOf(result: ResultNec[Schedule]): List[Failure] =
+    result.fold(
+      failures => failures.toNonEmptyList.toList,
+      schedule => fail(s"Expected the factory to refuse its input but it built: $schedule"))
+
+  /**
    * The message reporting that a value this spec builds was rejected by its factory.
    *
    * @param subject  what was being built
@@ -205,6 +229,45 @@ class ScheduleSpec extends AnyFunSuite with Matchers with ResultMatchers {
       sched(Schedule.of(NonEmptyList.one(P1_STUB), Frequency.P1M, RollConventions.DAY_17))
     smallest.size shouldBe 1
     smallest.periods shouldBe NonEmptyList.one(P1_STUB)
+
+    // The other invariant of the type is the one the bean documented and did not check: the
+    // periods run from earliest to latest. It belongs to this case because it is the other half
+    // of what the factory decides, and because nothing else in the Java class exercised it - the
+    // bean accepted a reversed list and every member that reads the periods then read a list
+    // that is not a time line. Here the factory refuses it, reporting one failure for each
+    // ordering that does not hold: the unadjusted pair and the adjusted pair are two statements
+    // about the same list, so a wholly reversed pair reports both.
+    val reversed: ResultNec[Schedule] =
+      Schedule.of(NonEmptyList.of(P2_NORMAL, P1_STUB), Frequency.P1M, RollConventions.DAY_17)
+    reversed should beFailureWith(FailureReason.INVALID)
+    val reasons: List[Failure] = rejectionsOf(reversed)
+    reasons should have size 2
+    reasons.map(failure => failure.message).mkString("; ") should include(
+      "the periods must run from earliest to latest")
+    reasons.count(failure => failure.message.contains("the unadjusted end date")) shouldBe 1
+    reasons.count(failure => failure.message.contains("the adjusted end date")) shouldBe 1
+
+    // Three periods in reverse are two misplaced pairs, and each is reported, so a caller
+    // correcting one is told about the other rather than meeting it on the next attempt.
+    val allReversed: ResultNec[Schedule] =
+      Schedule.of(
+        NonEmptyList.of(P3_NORMAL, P2_NORMAL, P1_STUB),
+        Frequency.P1M,
+        RollConventions.DAY_17)
+    rejectionsOf(allReversed) should have size 4
+
+    // What the check does not require is adjacency, which the bean explicitly allowed and this
+    // port continues to allow: a gap between one period and the next is accepted, and so is the
+    // adjacency of a generated schedule, where each period begins on the day the one before it
+    // ended.
+    Schedule.of(
+      NonEmptyList.of(P1_STUB, P3_NORMAL),
+      Frequency.P1M,
+      RollConventions.DAY_17) should beSuccess
+    Schedule.of(
+      NonEmptyList.of(P1_STUB, P2_NORMAL, P3_NORMAL),
+      Frequency.P1M,
+      RollConventions.DAY_17) should beSuccess
   }
 
   test("test_ofTerm") {
@@ -509,6 +572,50 @@ class ScheduleSpec extends AnyFunSuite with Matchers with ResultMatchers {
     info.periodEndDate(P3_NORMAL.endDate) shouldBe None
   }
 
+  test("test_period_indexedAccess") {
+    // This case has no Java counterpart: the Java bean held its periods in an `ImmutableList`,
+    // which answers an indexed access at once, while `periods` here is a `cats.data.NonEmptyList`
+    // and the type serves positional access from an unpublished `Vector` of the same periods. The
+    // case is what pins that representation to the list it caches - every index, read in three
+    // different orders, and every positional member, against `periods.toList`.
+    val all: List[SchedulePeriod] =
+      List(P1_STUB, P2_NORMAL, P3_NORMAL, P4_NORMAL, P5_NORMAL, P6_NORMAL)
+    val test: Schedule = sched(
+      Schedule.of(
+        NonEmptyList.of(P1_STUB, P2_NORMAL, P3_NORMAL, P4_NORMAL, P5_NORMAL, P6_NORMAL),
+        Frequency.P1M,
+        RollConventions.DAY_17))
+
+    test.periods.toList shouldBe all
+    test.size shouldBe all.size
+    (0 until test.size).map(index => test.period(index)).toList shouldBe all
+    (test.size - 1 to 0 by -1).map(index => test.period(index)).toList shouldBe all.reverse
+    List(3, 0, 5, 1, 4, 2).map(index => test.period(index)) shouldBe
+      List(3, 0, 5, 1, 4, 2).map(index => all(index))
+    test.firstPeriod shouldBe all.head
+    test.lastPeriod shouldBe all.last
+    test.period(0) shouldBe test.firstPeriod
+    test.period(test.size - 1) shouldBe test.lastPeriod
+    test.regularPeriods shouldBe all.tail
+    test.unadjustedDates.toList shouldBe
+      all.head.unadjustedStartDate :: all.map(_.unadjustedEndDate)
+
+    // The index bounds are still a caller contract, refused rather than reported, and reading a
+    // valid index after a refused one still answers - the representation is not disturbed by it.
+    assertThrows[IllegalArgumentException](test.period(-1))
+    assertThrows[IllegalArgumentException](test.period(all.size))
+    test.period(2) shouldBe all(2)
+
+    // A single-period schedule answers the same three questions consistently, which is the other
+    // end of the range the cache serves.
+    val single: Schedule = Schedule.ofTerm(P1_STUB)
+    single.size shouldBe 1
+    single.period(0) shouldBe P1_STUB
+    single.firstPeriod shouldBe P1_STUB
+    single.lastPeriod shouldBe P1_STUB
+    single.regularPeriods shouldBe List(P1_STUB)
+  }
+
 
   //-------------------------------------------------------------------------
   test("test_mergeToTerm") {
@@ -801,6 +908,63 @@ class ScheduleSpec extends AnyFunSuite with Matchers with ResultMatchers {
     messageOf(result) shouldBe expectedMessage
   }
 
+  test("test_merge_groupSizeTooLargeToMultiply") {
+    // This case has no Java counterpart, for the reason recorded in the scaladoc of this spec: the
+    // group size is multiplied into the frequency's period by `Period.multipliedBy`, which
+    // multiplies each component exactly and raises `ArithmeticException` where the product does
+    // not fit. In Java that escaped both merges - and escaped the path that refuses a group size
+    // too, since the refusal message named the multiplied frequency and so multiplied again. Here
+    // it is a failure value like every other data-dependent failure of these two methods.
+    // The frequency is quarterly here, and deliberately: `Period.multipliedBy` multiplies each
+    // component of the period, so a one-month frequency multiplied by the largest group size an
+    // `Int` can hold still fits, while a three-month one does not. The overflow is a property of
+    // the frequency and the group size together, which is why the case states both.
+    val test: Schedule = sched(
+      Schedule.of(
+        NonEmptyList.of(P2_NORMAL, P3_NORMAL, P4_NORMAL, P5_NORMAL, P6_NORMAL),
+        Frequency.P3M,
+        RollConventions.DAY_17))
+
+    val overflowing: Int = Int.MaxValue
+    val fromMerge: FailureOr[Schedule] =
+      test.merge(overflowing, P2_NORMAL.unadjustedStartDate, P6_NORMAL.unadjustedEndDate)
+    val fromMergeRegularForwards: FailureOr[Schedule] = test.mergeRegular(overflowing, true)
+    val fromMergeRegularBackwards: FailureOr[Schedule] = test.mergeRegular(overflowing, false)
+
+    List(fromMerge, fromMergeRegularForwards, fromMergeRegularBackwards).foreach { refusal =>
+      refusal should beFailureWith(FailureReason.INVALID)
+      messageOf(refusal) shouldBe
+        s"Unable to merge schedule, 'groupSize' of $overflowing is too large to multiply the " +
+          "frequency 'P3M' by"
+    }
+
+    // `merge` multiplies only after it has matched its two dates, so a date matching nothing in
+    // the schedule is still reported with the ported message and is not displaced by the overflow.
+    messageOf(test.merge(overflowing, JUL_03, P6_NORMAL.unadjustedEndDate)) should startWith(
+      s"Unable to merge schedule, firstRegularStartDate $JUL_03 " +
+        "does not match any date in the underlying schedule")
+
+    // A group size that multiplies without overflowing but names no frequency this library
+    // expresses is still reported, by the factory that builds the merged frequency, so the two
+    // failures of the multiplication are distinct and both are values.
+    val overlong: FailureOr[Schedule] = test.mergeRegular(100000, true)
+    overlong should beFailureWith(FailureReason.INVALID)
+    messageOf(overlong) shouldBe "Period must not exceed 1000 years"
+
+    // The two early returns still answer before anything is multiplied, which is what keeps a
+    // group size of one and a single-period schedule total whatever the group size would do to
+    // the frequency.
+    test.mergeRegular(1, true) shouldBe Right(test)
+    test.merge(1, P2_NORMAL.unadjustedStartDate, P6_NORMAL.unadjustedEndDate) shouldBe Right(test)
+    val single: Schedule = Schedule.ofTerm(P1_STUB)
+    single.mergeRegular(overflowing, true) shouldBe Right(single)
+    single.mergeRegular(overflowing, false) shouldBe Right(single)
+    single.merge(
+      overflowing,
+      P1_STUB.unadjustedStartDate,
+      P1_STUB.unadjustedEndDate) shouldBe Right(single)
+  }
+
   //-------------------------------------------------------------------------
   test("test_toAdjusted") {
     val period1: SchedulePeriod = sp(SchedulePeriod.of(JUN_15, SEP_17))
@@ -1004,6 +1168,26 @@ class ScheduleSpec extends AnyFunSuite with Matchers with ResultMatchers {
         """"frequency":"P1M","rollConvention":"Day17"}"""
     decode[Schedule](outOfOrder).fold(
       error => error shouldBe a[DecodingFailure],
+      schedule => fail(s"Expected a decoding failure but a schedule was produced: $schedule"))
+
+    // A document whose periods are each valid but whose list runs backwards is the other
+    // invariant, and it is the reason the decoder builds through the validated factory: a payload
+    // is the route by which a reversed list would otherwise enter the program, and everything
+    // that reads a schedule - the day count accruing over it, the stub classification, a value
+    // schedule resolving a step against it - reads the periods as a time line. The failure names
+    // both orderings that do not hold.
+    val reversedDocument: String =
+      """{"periods":[""" +
+        """{"startDate":"2014-07-17","endDate":"2014-08-16",""" +
+        """"unadjustedStartDate":"2014-07-17","unadjustedEndDate":"2014-08-17"},""" +
+        """{"startDate":"2014-07-03","endDate":"2014-07-17",""" +
+        """"unadjustedStartDate":"2014-07-04","unadjustedEndDate":"2014-07-17"}],""" +
+        """"frequency":"P1M","rollConvention":"Day17"}"""
+    decode[Schedule](reversedDocument).fold(
+      error => {
+        error shouldBe a[DecodingFailure]
+        error.getMessage should include("the periods must run from earliest to latest")
+      },
       schedule => fail(s"Expected a decoding failure but a schedule was produced: $schedule"))
 
     // The non-empty invariant of the period list, a missing property, a frequency that names no

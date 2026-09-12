@@ -62,6 +62,22 @@ import io.circe.generic.semiauto.deriveEncoder
  * The attribute names are ordinary strings, chosen by the code that reports the failure;
  * there is no enumeration of permitted names to consult or extend.
  *
+ * ===Messages quote what was rejected; the rendering neutralises it===
+ *
+ * A message names the value it is about as that value stands - the whole of the currency
+ * code, identifier, name, numeral or definition that was rejected - which is what the
+ * library being ported did and what makes a failure worth acting on: the caller correcting
+ * its input is handed back exactly what the library refused, and code that has to compare,
+ * re-report or serialize a failure reads it from `message` and `attributes` unchanged.
+ *
+ * Text that reached the library from outside it is therefore inside the model, and making it
+ * safe to write out is the act of writing it out. That happens in one place, [[Failure.show]]
+ * and the text form every member delegates to it: each part of a failure is rendered bounded
+ * in length and free of any character a line-oriented reader could act on, so a value
+ * supplied from outside cannot forge a line of a log that holds the failure (CWE-117) or make
+ * that line as large as itself. A message and an attribute of a realistic size render to
+ * themselves character for character, so a reader sees what the reporter wrote.
+ *
  * ===Choosing a member===
  *
  * The member is chosen by what went wrong, and the port keeps to one convention so that a
@@ -180,6 +196,25 @@ sealed trait Failure {
    * @return a copy of this failure carrying the transformed message
    */
   final def mapMessage(f: String => String): Failure = rebuild(f(message), attributes)
+
+  /**
+   * Returns the text form of this failure, which is the rendering [[Failure.show]] defines.
+   *
+   * A failure is written out in one form and one only, whether that happens through the
+   * instance, through interpolation, or through a library that calls this method: the reason,
+   * the message, and the attributes in key order, each part bounded in length and carrying no
+   * character that could forge a line. Delegating here rather than leaving each member the
+   * text form its class would generate is what makes that true of every path - a failure
+   * cannot be written out in a form that has not been neutralised, which is the property the
+   * rendering exists for.
+   *
+   * The fields remain reachable as themselves: `reason`, `message` and `attributes` answer
+   * with what the failure was built with, and the JSON form encodes that. This method is for
+   * reading.
+   *
+   * @return the rendering of this failure
+   */
+  final override def toString: String = Failure.show.show(this)
 }
 
 /**
@@ -417,68 +452,69 @@ object Failure {
 
   //-------------------------------------------------------------------------
   /**
-   * The greatest number of characters of caller-supplied text that [[Failure.describeInput]]
-   * renders, before the marker that stands for what was left out.
+   * The greatest number of characters of one part of a failure - its message, or the key or
+   * the value of one of its attributes - that the rendering below writes, before the marker
+   * that stands for what was left out.
    *
-   * The bound and the `...` marker are the ones `java.time.format.DateTimeFormatter` applies
-   * to the text it could not parse, so a failure reporting unparsable text is as long as the
-   * failure of the underlying parse it stands in for, and no longer.
+   * The bound belongs to the rendering and not to the failure: a failure carries the whole of
+   * the text it was built with, and this is the size at which the text form of that failure
+   * stops writing one part of it. It is set well above every message this library writes for
+   * a definition of a realistic size - the longest of them, a schedule definition attached to
+   * a rejected schedule, is a few hundred characters - and far below the size of the text a
+   * caller can hand to a parse, so a rendered failure stays a line that can be read while no
+   * value supplied from outside can come to dominate it.
    */
-  val MaxDescribedInput: Int = 64
+  private val MaxRenderedPart: Int = 512
 
   /**
-   * Renders text supplied by a caller for inclusion in the message of a failure, bounded in
-   * length and free of anything that could forge a line.
+   * Renders one part of a failure - its message, or an attribute key or value - for a reader,
+   * bounded in length and free of anything that could forge a line.
    *
-   * A message is written to be read, and the places that read one - a log, a report, a line
-   * of a console - are line-oriented and of finite size. Text that reached the library from
-   * outside it therefore cannot be interpolated into a message as it stands, and this method
-   * is what the message constructors that echo such text interpolate instead. Two properties
-   * hold of what it returns, whatever it was given:
+   * The places a failure is read - a log, a report, a line of a console - are line-oriented
+   * and of finite size, and a failure quotes the values it is about, some of which reached
+   * the library from outside it. Neutralising such text is therefore the act of writing it
+   * out rather than the act of reporting the failure, and this is where the library performs
+   * it: [[Failure.show]] and the text form of every member render each part through this
+   * method. Two properties hold of what it returns, whatever it was given:
    *
-   *  - '''The rendering is bounded.''' Units of the input are taken while the rendered text
-   *    stays within [[Failure.MaxDescribedInput]] characters, and the three characters `...`
-   *    are appended when any of the input is left over, so the result is at most
-   *    `MaxDescribedInput + 3` characters long. A message can consequently not be made large
-   *    by handing a large value to the operation that reports the failure - a ten-thousand
-   *    character input renders to sixty-seven characters, not to ten thousand.
+   *  - '''The rendering is bounded.''' Units of the part are taken while the rendered text
+   *    stays within [[MaxRenderedPart]] characters, and the three characters `...` are
+   *    appended when any of it is left over, so the result is at most `MaxRenderedPart + 3`
+   *    characters long. A rendered failure can consequently not be made large by handing a
+   *    large value to the operation that reported it - a ten-thousand character input renders
+   *    to five hundred and fifteen characters, not to ten thousand.
    *  - '''The rendering is a single line.''' A line feed renders as the two characters `\n`,
    *    a carriage return as `\r` and a tab as `\t`; every other character for which
    *    `Character.isISOControl` holds, together with U+2028 LINE SEPARATOR and U+2029
    *    PARAGRAPH SEPARATOR, renders as a six-character `\uXXXX` escape with lower-case
    *    hexadecimal digits. Text that arrived from outside can therefore not introduce a line
-   *    of its own into a log holding the message, which is the one way a failure message
-   *    could otherwise be used to state something the library did not report.
+   *    of its own into a log holding the failure, which is the one way a failure could
+   *    otherwise be used to state something the library did not report (CWE-117).
    *
    * Every other character renders as itself, so ordinary text, punctuation, accented letters
    * and CJK are untouched. A high surrogate followed by a low surrogate is taken as one unit
    * and rendered as it stands, so an emoji survives whole and truncation never splits a pair;
-   * a surrogate standing on its own is not a character and renders as an escape. Text that is
-   * within the bound and holds none of the escaped characters therefore renders to itself,
-   * exactly - the property that lets this method be applied to a message that already reads
-   * the way it should without changing what that message says:
+   * a surrogate standing on its own is not a character and renders as an escape. A part that
+   * is within the bound and holds none of the escaped characters therefore renders to itself,
+   * exactly - which is why the rendering of every ordinary failure reads as the message its
+   * reporter wrote, character for character.
    *
-   * {{{
-   * Failure.describeInput("Rubbish")       // "Rubbish", unchanged
-   * Failure.describeInput("3M\nINJECTED")  // "3M\\nINJECTED", one line
-   * Failure.describeInput("A" * 10000)     // 64 letters followed by "..."
-   * }}}
+   * The method is private because rendering is what this type does with a failure at the
+   * point of writing one out, not something a caller performs on the values it reports: a
+   * message is built with the value it rejected interpolated as it stands, exactly as in the
+   * library being ported, and [[Failure.message]] and [[Failure.attributes]] hand that value
+   * back whole to code that means to act on it rather than read it.
    *
-   * Rendering is the reporter's act and not this type's. A failure carries whatever message
-   * it was built with, and nothing here inspects or rewrites one, so a reporter that means to
-   * echo text verbatim still can; the parse paths of the library that echo text they were
-   * handed call this method at the point they interpolate it.
-   *
-   * @param text  the text to render, as it was supplied
-   * @return the bounded, single-line rendering of that text
+   * @param text  the part to render, as the failure carries it
+   * @return the bounded, single-line rendering of that part
    */
-  def describeInput(text: String): String = {
+  private def renderPart(text: String): String = {
     // The rendering is assembled a unit at a time - a surrogate pair counting as one - and
     // stops as soon as the next unit would carry it past the bound, which is what keeps a
     // pair whole and an escape entire. Threading the text rendered so far through a
     // tail-recursive step rather than accumulating into a mutable local keeps the method
     // free of assignment; both the intermediate and the final strings are bounded by
-    // `MaxDescribedInput`, so the concatenation costs no more than assembling the result in
+    // `MaxRenderedPart`, so the concatenation costs no more than assembling the result in
     // one pass would.
     @tailrec
     def rendering(index: Int, rendered: String): String =
@@ -491,7 +527,7 @@ object Failure {
             index + 1 < text.length &&
             Character.isLowSurrogate(text.charAt(index + 1))
         val unit = if (pairsWithNext) text.substring(index, index + 2) else describeChar(head)
-        if (rendered.length + unit.length > MaxDescribedInput) {
+        if (rendered.length + unit.length > MaxRenderedPart) {
           rendered + "..."
         } else {
           rendering(index + (if (pairsWithNext) 2 else 1), rendered + unit)
@@ -502,7 +538,7 @@ object Failure {
   }
 
   // Renders one character: the three control characters that have a short escape keep it,
-  // because a reader recognises them; anything else that must not reach a message as itself
+  // because a reader recognises them; anything else that must not be written out as itself
   // becomes a fixed-width escape; and every other character stands as it is.
   private def describeChar(ch: Char): String =
     if (ch == '\n') {
@@ -560,18 +596,36 @@ object Failure {
    * }}}
    *
    * The rendering is a function of the value alone, and the attributes are held in key
-   * order, so the same failure always renders the same way. This instance carries the
-   * rendering rather than `toString`, which each member keeps in its generated form so that
-   * a failure inspected while debugging still shows its class and fields.
+   * order, so the same failure always renders the same way.
+   *
+   * ===Every part is bounded and on one line===
+   *
+   * This is the boundary at which a failure becomes text, and it is where the library
+   * neutralises what it is about to write: the message and the key and the value of every
+   * attribute each go through [[renderPart]], so each is at most `MaxRenderedPart + 3`
+   * characters long and holds no character a line-oriented reader could act on. A failure
+   * quoting a currency code, an identifier, a name or a definition that a caller supplied -
+   * text nothing bounds and nothing constrains - therefore cannot forge a line of a log that
+   * holds it (CWE-117) or make that line as large as the value it quotes, however the failure
+   * itself was built. A message and an attribute of a realistic size render to themselves,
+   * character for character, so this costs the reading of an ordinary failure nothing.
+   *
+   * The failure keeps what it was built with: [[Failure.message]] and
+   * [[Failure.attributes]] answer with the whole of the text, which is what code acting on a
+   * failure - matching on it, testing it, re-reporting it - reads, and what the JSON encoding
+   * writes, that form escaping a control character as the JSON grammar requires. The text
+   * form of every member is this rendering, so writing a failure out cannot bypass it.
    *
    * @return the rendering of a failure
    */
   implicit val show: Show[Failure] = Show.show { failure =>
-    val rendered = s"${failure.reason.name}: ${failure.message}"
+    val rendered = s"${failure.reason.name}: ${renderPart(failure.message)}"
     if (failure.attributes.isEmpty) {
       rendered
     } else {
-      val attributes = failure.attributes.iterator.map { case (key, value) => s"$key=$value" }
+      val attributes = failure.attributes.iterator.map { case (key, value) =>
+        s"${renderPart(key)}=${renderPart(value)}"
+      }
       s"$rendered [${attributes.mkString(", ")}]"
     }
   }

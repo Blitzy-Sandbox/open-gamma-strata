@@ -65,23 +65,19 @@ import com.opengamma.strata.collect.array.DoubleArray
  *   - two finite values no further apart than the tolerance are equal, and values further
  *     apart are not - so two finite values any distance apart are equal at an infinite
  *     tolerance;
- *   - each infinity is equal to itself at every tolerance, an infinite one included, because
- *     the two are the same value even though their difference is not a number. At a finite
- *     tolerance it is equal to nothing else - neither the other infinity nor any finite value
- *     is brought to it - and at an infinite tolerance it is equal to every value that is a
- *     number, the other infinity included, because an infinite magnitude does not exceed an
- *     infinite tolerance. An infinite tolerance is a statement that nothing is to be
- *     distinguished rather than a very large ordinary tolerance, and that is asserted as such;
+ *   - each infinity is equal to itself and to no other value, at any tolerance, an infinite
+ *     tolerance included: neither the other infinity nor any finite value is brought to it.
+ *     An infinite tolerance is exhausted by the finite case alone, so it is a statement that
+ *     no two finite values are to be distinguished rather than one that nothing is, and that
+ *     is asserted as such;
  *   - negative zero and positive zero are equal, at any tolerance;
- *   - a not-a-number value is equal to another not-a-number value, at every tolerance
- *     including a zero one, and to nothing else at any tolerance. It has no distance from any
- *     value, so no tolerance reaches it, and the pair is admitted by the clause that asks
- *     whether both values are not a number rather than by any measurement. Reflexivity of the
- *     comparison therefore holds for every value without exception, which is also what the
- *     bit-for-bit structural equality of this library's array wrappers answers, so the fuzzy
- *     and the structural contract agree here rather than standing apart. The forms that
- *     compare against zero cannot reach that clause, since zero is a number, so a
- *     not-a-number value is never effectively zero however large the tolerance;
+ *   - a not-a-number value is equal to nothing, itself included, however large the tolerance.
+ *     It has no distance from any value, so no tolerance reaches it, and reflexivity of the
+ *     comparison therefore holds exactly for the values that are not not-a-number. Bit-for-bit
+ *     structural equality is a different contract and does keep such a value reflexive; the
+ *     two stand side by side deliberately. The forms that compare against zero follow from the
+ *     same cases with zero as the second value, so neither a not-a-number value nor an
+ *     infinity is ever effectively zero, however large the tolerance;
  *   - a tolerance that is negative, or that is not a number, is a caller error and is reported
  *     as one, by all three comparison members, ahead of any comparison - so an empty array and
  *     a mismatched pair of arrays report it too. Negative zero is not a negative tolerance and
@@ -461,9 +457,11 @@ final class DoubleArrayMathSpec
   }
 
   test("the array comparison applies the scalar one element by element, edges included") {
-    DoubleArrayMath.fuzzyEquals(Array(Double.NaN), Array(Double.NaN), 1.0e-9) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Array(Double.NaN, 1.0), Array(Double.NaN, 1.0), 1.0e-9) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Array(Double.NaN, 2.0), Array(Double.NaN, 2.0 + 1.0e-10), 1.0e-9) shouldBe true
+    // a not-a-number element is equal to nothing, so an array holding one is unequal to an
+    // array holding one at the same index, and unequal to itself, at every tolerance
+    DoubleArrayMath.fuzzyEquals(Array(Double.NaN), Array(Double.NaN), 1.0e-9) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Array(Double.NaN, 1.0), Array(Double.NaN, 1.0), 1.0e-9) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Array(Double.NaN, 2.0), Array(Double.NaN, 2.0 + 1.0e-10), 1.0e-9) shouldBe false
     DoubleArrayMath.fuzzyEquals(Array(Double.NaN), Array(1.0), 1.0e-9) shouldBe false
     DoubleArrayMath.fuzzyEquals(Array(1.0), Array(Double.NaN), 1.0e-9) shouldBe false
     DoubleArrayMath.fuzzyEquals(Array(-0.0), Array(0.0), 0.0) shouldBe true
@@ -475,10 +473,12 @@ final class DoubleArrayMathSpec
       Array(Double.PositiveInfinity),
       Array(Double.NegativeInfinity),
       Double.MaxValue) shouldBe false
+
+    // and an infinite tolerance is no exception: an infinity is equal only to the same infinity
     DoubleArrayMath.fuzzyEquals(
       Array(Double.PositiveInfinity),
       Array(Double.NegativeInfinity),
-      Double.PositiveInfinity) shouldBe true
+      Double.PositiveInfinity) shouldBe false
 
     // arrays of different lengths are unequal whatever their elements, and report it rather
     // than raising
@@ -486,9 +486,10 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEquals(Array(Double.NaN), Array(Double.NaN, Double.NaN), 1.0e-9) shouldBe false
   }
 
-  test("the zero comparison admits no not-a-number element, and an infinite element only at an infinite tolerance") {
-    // comparing against zero is comparing against a number, so the clause that makes two
-    // not-a-number values equal can never fire here
+  test("the zero comparison admits neither a not-a-number element nor an infinite one, at any tolerance") {
+    // comparing against zero applies the same three cases with zero as the second value, so a
+    // not-a-number element has no distance from zero and an infinite element is not the same
+    // infinity as zero, whatever the tolerance
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.NaN), 1.0e-9) shouldBe false
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.NaN), Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.NaN), Double.PositiveInfinity) shouldBe false
@@ -496,8 +497,11 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEqualsZero(Array(0.0, -0.0), 0.0) shouldBe true
     DoubleArrayMath.fuzzyEqualsZero(Array(1.0e-10), 1.0e-9) shouldBe true
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.PositiveInfinity), Double.MaxValue) shouldBe false
-    DoubleArrayMath.fuzzyEqualsZero(Array(Double.PositiveInfinity), Double.PositiveInfinity) shouldBe true
-    DoubleArrayMath.fuzzyEqualsZero(Array(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe true
+    DoubleArrayMath.fuzzyEqualsZero(Array(Double.PositiveInfinity), Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEqualsZero(Array(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe false
+
+    // a finite element, however large, is brought to zero by an infinite tolerance
+    DoubleArrayMath.fuzzyEqualsZero(Array(1.0e300, -Double.MaxValue), Double.PositiveInfinity) shouldBe true
   }
 
   //-------------------------------------------------------------------------
@@ -537,7 +541,7 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEquals(-0.0, 0.0, 1.0e-8) shouldBe true
   }
 
-  test("each infinity is equal to itself at any tolerance, and to no other value at a finite one") {
+  test("each infinity is equal to itself and to no other value, at any tolerance") {
     DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.PositiveInfinity, 0.0) shouldBe true
     DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.NegativeInfinity, 0.0) shouldBe true
     DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.NegativeInfinity, Double.MaxValue) shouldBe false
@@ -545,37 +549,37 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, 1.0e300, Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEquals(1.0e300, Double.NegativeInfinity, Double.MaxValue) shouldBe false
 
-    // an identical pair of infinities is equal at an infinite tolerance as well, and by the
-    // clause that compares the two values rather than by the one that measures their distance:
-    // the distance between two identical infinities is not a number at all
+    // an infinite tolerance is no exception: it brings neither the other infinity nor any
+    // finite value to an infinity, because an infinity is equal only to the same infinity
+    // whatever the tolerance, and never by measuring a distance
     DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.PositiveInfinity, Double.PositiveInfinity) shouldBe
       true
     DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.NegativeInfinity, Double.PositiveInfinity) shouldBe
       true
+    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.NegativeInfinity, Double.PositiveInfinity) shouldBe
+      false
+    DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.PositiveInfinity, Double.PositiveInfinity) shouldBe
+      false
+    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, 1.0e300, Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, 0.0, Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEquals(0.0, Double.PositiveInfinity, Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, 0.0, Double.PositiveInfinity) shouldBe false
   }
 
-  test("an infinite tolerance makes any two values equal, an infinity and a finite value included") {
-    // no distance, finite or infinite, exceeds an infinite tolerance, so an infinite tolerance
-    // states that nothing is to be distinguished rather than being a very large finite one.
-    // This is the behaviour of the scalar comparison being reproduced, measured against it.
+  test("an infinite tolerance admits any two finite values, and still brings no infinity to another value") {
+    // no finite distance exceeds an infinite tolerance, so two finite values however far apart
+    // are equal under one; the two non-finite cases are decided before any distance is measured,
+    // so an infinite tolerance reaches neither of them
     DoubleArrayMath.fuzzyEquals(0.0, 1.0e300, Double.PositiveInfinity) shouldBe true
     DoubleArrayMath.fuzzyEquals(-Double.MaxValue, Double.MaxValue, Double.PositiveInfinity) shouldBe true
     DoubleArrayMath.fuzzyEquals(1.0, 2.0, Double.PositiveInfinity) shouldBe true
     DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, Double.NegativeInfinity, Double.PositiveInfinity) shouldBe
-      true
-    DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.PositiveInfinity, Double.PositiveInfinity) shouldBe
-      true
-    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, 1.0e300, Double.PositiveInfinity) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, 0.0, Double.PositiveInfinity) shouldBe true
-    DoubleArrayMath.fuzzyEquals(0.0, Double.PositiveInfinity, Double.PositiveInfinity) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, 0.0, Double.PositiveInfinity) shouldBe true
-
-    // a not-a-number value is the one thing an infinite tolerance does not bring to another
-    // value, because it has no distance from anything
+      false
+    DoubleArrayMath.fuzzyEquals(Double.PositiveInfinity, 0.0, Double.PositiveInfinity) shouldBe false
     DoubleArrayMath.fuzzyEquals(Double.NaN, 0.0, Double.PositiveInfinity) shouldBe false
   }
 
-  test("a not-a-number value is equal to no value other than another not-a-number value") {
+  test("a not-a-number value is equal to no different value, however large the tolerance") {
     DoubleArrayMath.fuzzyEquals(Double.NaN, 0.0, Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEquals(0.0, Double.NaN, Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEquals(Double.NaN, 1.0, 1.0e-8) shouldBe false
@@ -583,15 +587,16 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.NaN, Double.PositiveInfinity) shouldBe false
   }
 
-  test("two not-a-number values are equal to each other, at every tolerance") {
-    // this is the answer of the scalar comparison being reproduced, measured against it, and it
-    // is also the answer the bit-for-bit equality of the array wrappers gives, so a value
-    // holding one of these is equal to itself both exactly and within a tolerance
-    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, 0.0) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, -0.0) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, 1.0e-8) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, Double.MaxValue) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, Double.PositiveInfinity) shouldBe true
+  test("a not-a-number value is not equal to another not-a-number value, at any tolerance") {
+    // such a value has no distance from anything, itself included, so no tolerance reaches it.
+    // This is the one point at which the tolerance comparison and the bit-for-bit equality of
+    // the array wrappers deliberately disagree: bit equality reads the bit pattern and finds
+    // such a value equal to itself, and each answers the question it was asked
+    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, 0.0) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, -0.0) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, 1.0e-8) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, Double.MaxValue) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Double.NaN, Double.NaN, Double.PositiveInfinity) shouldBe false
   }
 
   test("a negative tolerance is rejected by every comparison member") {
@@ -644,15 +649,14 @@ final class DoubleArrayMathSpec
   // The array comparisons over the edges of the value space, and over lengths that differ.
 
   test("the comparison of two arrays sees every element, including the edges of the value space") {
-    // a not-a-number element matched by a not-a-number element at the same index is equal, and
-    // the infinity and the signed zero beside it are equal too, so the whole pair is equal
+    // one not-a-number element is enough to make the two arrays unequal, however the rest compare
     DoubleArrayMath.fuzzyEquals(
       Array(Double.NaN, Double.PositiveInfinity, -0.0),
       Array(Double.NaN, Double.PositiveInfinity, 0.0),
-      0.0) shouldBe true
+      0.0) shouldBe false
 
-    // the same pair without that element is equal as well, so no element of the three is one
-    // the comparison refuses
+    // the same pair without that element is equal, so it is the element and not the infinity or
+    // the signed zero that the comparison refuses
     DoubleArrayMath.fuzzyEquals(
       Array(Double.PositiveInfinity, -0.0),
       Array(Double.PositiveInfinity, 0.0),
@@ -661,8 +665,8 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEquals(
       Array(Double.PositiveInfinity),
       Array(Double.NegativeInfinity),
-      Double.PositiveInfinity) shouldBe true
-    DoubleArrayMath.fuzzyEquals(Array(Double.NaN), Array(Double.NaN), Double.PositiveInfinity) shouldBe true
+      Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEquals(Array(Double.NaN), Array(Double.NaN), Double.PositiveInfinity) shouldBe false
 
     // a not-a-number element against an element that is a number is unequal, whichever side it
     // is on and however large the tolerance
@@ -696,12 +700,10 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.PositiveInfinity), Double.MaxValue) shouldBe false
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.NegativeInfinity), Double.MaxValue) shouldBe false
 
-    // no finite tolerance brings an infinite element to zero, while an infinite tolerance
-    // admits every element that is a number, an infinite one included. A not-a-number element
-    // is the one element no tolerance brings to zero, because zero is a number and the clause
-    // that makes two not-a-number values equal therefore never fires here
-    DoubleArrayMath.fuzzyEqualsZero(Array(Double.PositiveInfinity), Double.PositiveInfinity) shouldBe true
-    DoubleArrayMath.fuzzyEqualsZero(Array(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe true
+    // no tolerance brings an infinite or a not-a-number element to zero, an infinite one
+    // included, while an infinite tolerance brings every finite element to zero however large
+    DoubleArrayMath.fuzzyEqualsZero(Array(Double.PositiveInfinity), Double.PositiveInfinity) shouldBe false
+    DoubleArrayMath.fuzzyEqualsZero(Array(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe false
     DoubleArrayMath.fuzzyEqualsZero(Array(Double.NaN), Double.PositiveInfinity) shouldBe false
     DoubleArrayMath.fuzzyEqualsZero(Array(1.0e300), Double.PositiveInfinity) shouldBe true
   }
@@ -1222,31 +1224,46 @@ final class DoubleArrayMathSpec
     }
   }
 
-  test("the comparison of a generated array with itself holds for every array, whatever it holds") {
-    // the comparison is reflexive over every element of the value space, so an array is equal
-    // to itself and to a copy of itself at every tolerance, whether it holds not-a-number
-    // elements, infinities or signed zeroes. That agrees with the bit-for-bit equality of the
-    // array wrappers, which also holds for such an array
+  test("the comparison of a generated array with itself holds exactly when no element is not-a-number") {
+    // the comparison is reflexive at every element of the value space except a not-a-number
+    // one, which has no distance from anything and is therefore equal to nothing, itself
+    // included. So an array is equal to itself, and to a copy of itself, exactly when it holds
+    // no such element - infinities and signed zeroes notwithstanding, since each infinity is
+    // equal to the same infinity and the two zeroes are no distance apart. The generator
+    // reaches all of those values, so the property is asserted over every one of them rather
+    // than over a filtered subset
     forAll(genDoubleArray) { array =>
       val values = elementsOf(array)
-      DoubleArrayMath.fuzzyEquals(values, values, 0.0) shouldBe true
-      DoubleArrayMath.fuzzyEquals(values, elementsOf(array), 0.0) shouldBe true
-      DoubleArrayMath.fuzzyEquals(values, elementsOf(array), 1.0) shouldBe true
+      val expected = !values.exists(value => value.isNaN)
+      DoubleArrayMath.fuzzyEquals(values, values, 0.0) shouldBe expected
+      DoubleArrayMath.fuzzyEquals(values, elementsOf(array), 0.0) shouldBe expected
+      DoubleArrayMath.fuzzyEquals(values, elementsOf(array), 1.0) shouldBe expected
       DoubleArrayMath.fuzzyEquals(values, values :+ 1.0, 1.0) shouldBe false
     }
   }
 
-  test("the scalar comparison is reflexive for every generated value, not-a-number included") {
+  test("the scalar comparison is reflexive for every generated value that is not not-a-number, and for no other") {
     forAll(genDouble) { value =>
-      DoubleArrayMath.fuzzyEquals(value, value, 0.0) shouldBe true
-      DoubleArrayMath.fuzzyEquals(value, value, 1.0e-8) shouldBe true
-      DoubleArrayMath.fuzzyEquals(value, value, Double.PositiveInfinity) shouldBe true
+      val expected = !value.isNaN
+      DoubleArrayMath.fuzzyEquals(value, value, 0.0) shouldBe expected
+      DoubleArrayMath.fuzzyEquals(value, value, 1.0e-8) shouldBe expected
+      DoubleArrayMath.fuzzyEquals(value, value, Double.PositiveInfinity) shouldBe expected
     }
   }
 
-  test("an infinite tolerance makes every generated pair of numbers equal, and only a not-a-number unequal") {
+  test("an infinite tolerance makes every generated pair of finite values equal, and no other pair") {
+    // an infinite tolerance is exhausted by the third case alone, which two finite values reach
+    // and no other pair does: where either value is not a number the answer is no, and where
+    // either is infinite the answer is yes only for the identical infinity
     forAll(genDouble, genDouble) { (a, b) =>
-      val expected = a.isNaN == b.isNaN
+      val expected =
+        if (a.isNaN || b.isNaN) {
+          false
+        } else if (a.isInfinite || b.isInfinite) {
+          a == b
+        } else {
+          true
+        }
       DoubleArrayMath.fuzzyEquals(a, b, Double.PositiveInfinity) shouldBe expected
     }
   }

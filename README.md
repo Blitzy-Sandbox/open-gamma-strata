@@ -103,7 +103,9 @@ Run this script to check the port against its acceptance gates:
 ```
 
 It is the single authoritative gate runner, intended to be run from a clean checkout on JDK 21.
+Beyond the JDK and sbt it needs git, python3 and the POSIX text utilities.
 It writes `target/gate-report.md` and exits non-zero if any automated gate fails.
+The one gate that is a manual approval rather than a measurement is recorded as reported.
 
 The [Scala migration note](SCALA_MIGRATION.md) records every ported `strata-collect` symbol with
 its Scala replacement, and every deliberate divergence from the Java behaviour.

@@ -297,13 +297,17 @@ object ValueAdjustment {
    * The modifying value is written through the single policy of this port for doubles, so a
    * value that is not a number and the two infinities appear as the strings `"NaN"`,
    * `"Infinity"` and `"-Infinity"` while a finite value is written as a JSON number, exactly
-   * to the bit. The type is written as the bare string of its canonical name. Neither field
-   * is optional, so there is no absent value to drop from the output and the encoding needs
-   * no post-processing.
+   * to the bit. The type is written as the bare string of its canonical name.
+   *
+   * The derived encoding is published through the wrapper that omits a field holding no value,
+   * which is the policy every product of this port follows. Neither field of this type is
+   * optional, so the wrapper changes nothing about the bytes it writes - and that is the
+   * point: the policy is applied here as it is everywhere, without an exception that a later
+   * optional field would have to notice.
    *
    * @return the JSON encoding of an adjustment
    */
-  implicit val encoder: Encoder.AsObject[ValueAdjustment] = deriveEncoder[ValueAdjustment]
+  implicit val encoder: Encoder[ValueAdjustment] = Codecs.dropNulls(deriveEncoder[ValueAdjustment])
 
   /**
    * The JSON decoding of adjustments.

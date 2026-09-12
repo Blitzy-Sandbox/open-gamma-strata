@@ -239,6 +239,78 @@ final class OvernightIndexObservationSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  test("test_resolve") {
+    // The batch route into the type. An Overnight rate is consumed as a run of daily fixings -
+    // compounded or averaged over a period - so the fixing calendar is resolved once here and the
+    // function that comes back derives the publication, effective and maturity dates and the year
+    // fraction of every fixing from it, consulting no reference data again. The single-shot
+    // factory is that function applied to one date, so the two agree by construction; what is
+    // asserted is that they agree in value, field by field, since the equality of this type reads
+    // the index and the fixing date alone and would hide a wrongly derived date.
+    val subjects: List[OvernightIndex] =
+      List(OvernightIndices.GBP_SONIA, OvernightIndices.CHF_TOIS, OvernightIndices.THB_THOR)
+    val fixingDates: List[LocalDate] =
+      List(FixingDate, FixingDate.plusDays(4L), FixingDate.plusDays(5L), FixingDate.plusMonths(10L))
+
+    subjects.foreach { index =>
+      val observe =
+        required(s"the resolved observation of ${index.name}")(
+          OvernightIndexObservation.resolve(index, RefData))
+      fixingDates.foreach { fixingDate =>
+        withClue(s"${index.name} on $fixingDate: ") {
+          val resolved = observe(fixingDate)
+          val direct = observationOf(index, fixingDate)
+          resolved shouldBe direct
+          resolved.index shouldBe index
+          resolved.fixingDate shouldBe fixingDate
+          resolved.publicationDate shouldBe direct.publicationDate
+          resolved.effectiveDate shouldBe direct.effectiveDate
+          resolved.maturityDate shouldBe direct.maturityDate
+          resolved.yearFraction shouldBe direct.yearFraction
+
+          // and each derived date is the one the index's own calculation reports, which is what
+          // the single resolution must not change: the publication and effective dates are shifts
+          // of the fixing date, the maturity date is a business day beyond the effective date
+          resolved.publicationDate shouldBe
+            required("the publication date")(index.calculatePublicationFromFixing(fixingDate, RefData))
+          resolved.effectiveDate shouldBe
+            required("the effective date")(index.calculateEffectiveFromFixing(fixingDate, RefData))
+          resolved.maturityDate shouldBe
+            required("the maturity date")(
+              index.calculateMaturityFromEffective(resolved.effectiveDate, RefData))
+          resolved.yearFraction shouldBe
+            index.dayCount.yearFraction(resolved.effectiveDate, resolved.maturityDate)
+        }
+      }
+    }
+
+    // The index whose effective date is a day beyond its fixing date is in the list above on
+    // purpose: it is the one published row where a maturity date derived from the fixing date
+    // rather than from the effective date would differ, so the agreement asserted for it is the
+    // agreement that matters.
+    val tois = observe(OvernightIndices.CHF_TOIS)(FixingDate)
+    tois.effectiveDate shouldBe tois.fixingDate.plusDays(1L)
+    tois.maturityDate shouldBe tois.effectiveDate.plusDays(1L)
+
+    // Reference data that cannot supply the fixing calendar is reported once, by the resolution
+    // itself, rather than by each fixing of the series - which is the reason the operation exists.
+    OvernightIndexObservation.resolve(OvernightIndices.GBP_SONIA, ReferenceData.empty) should
+      beFailureWith(FailureReason.MISSING_DATA)
+    OvernightIndexObservation.of(OvernightIndices.GBP_SONIA, FixingDate, ReferenceData.empty) should
+      beFailureWith(FailureReason.MISSING_DATA)
+  }
+
+  /**
+   * Resolves an index against the fixture reference data, failing the spec if it cannot be.
+   *
+   * @param index  the index to resolve
+   * @return the observation of a fixing of that index
+   */
+  private def observe(index: OvernightIndex): LocalDate => OvernightIndexObservation =
+    required(s"the resolved observation of ${index.name}")(
+      OvernightIndexObservation.resolve(index, RefData))
+
+  //-------------------------------------------------------------------------
   test("coverage") {
     // The Java sweeps `coverImmutableBean` and `coverBeanEquals` walked the properties of a bean
     // through its meta-bean and exercised its equality against a second, different bean. There is

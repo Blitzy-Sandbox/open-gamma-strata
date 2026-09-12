@@ -326,15 +326,12 @@ object Validate {
    * Validate.matches(SchemeRegex, scheme, "scheme")
    * }}}
    *
-   * The argument the failure quotes back is rendered through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
-   * and its control characters are escaped. A message reaches a log or a report, and the
-   * argument handed to this check is text that reached the library from outside it, so it must
-   * not be able to forge a line of that log or to make the message as large as the argument.
-   * An argument within the bound and free of control characters is quoted exactly as it was
-   * given, which is every argument an identifier or a code is built from, so the wording the
-   * original produced is unchanged for all of them; only a longer or a line-breaking argument
-   * is now described rather than reproduced.
+   * The failure quotes the argument back as it was given, which is the message the original
+   * produced, character for character: the caller correcting its input is handed exactly what
+   * the check refused. The argument reached the library from outside it, so writing it out is
+   * where it is made safe - the text form of a failure and
+   * [[com.opengamma.strata.collect.result.Failure.show]] bound every part they write and
+   * escape anything a line-oriented reader could act on.
    *
    * @param pattern  the pattern to check against
    * @param argument  the argument to check
@@ -361,12 +358,9 @@ object Validate {
    * three ways of failing share one message, as they do in the original, because what the
    * caller has to correct is the same in each case.
    *
-   * The argument the failure quotes back is rendered through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], exactly as in the form of
-   * this check above and for the same reason: the message is bounded in length and cannot be
-   * made to hold a line break, while an argument within the bound and free of control
-   * characters is quoted as it was given. The readable pattern is not rendered, being text
-   * this library supplies rather than text a caller did.
+   * The failure quotes the argument back as it was given, exactly as in the form of this check
+   * above and for the same reason: the message is the one the original produced, and bounding
+   * what it quotes belongs to the writing of a failure rather than to the building of one.
    *
    * @param matcher  the predicate that every character has to satisfy
    * @param minLength  the minimum length to allow
@@ -390,11 +384,10 @@ object Validate {
   }
 
   // extracted so that the wording exists once for both forms of the check; the value is
-  // rendered through `Failure.describeInput` rather than interpolated as it stands, which
-  // bounds the message and keeps it to one line, and leaves the wording of an in-bound,
-  // control-character-free value exactly as it was
+  // quoted as it stands, which is the wording of the check being ported, and bounding it for
+  // a reader is the business of writing the failure out rather than of building it
   private def matchesMsg(pattern: String, name: String, value: String): String =
-    s"Argument '$name' with value '${Failure.describeInput(value)}' must match pattern: $pattern"
+    s"Argument '$name' with value '$value' must match pattern: $pattern"
 
   //-------------------------------------------------------------------------
   /**

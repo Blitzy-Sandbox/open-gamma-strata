@@ -580,6 +580,31 @@ final class FixedScaleDecimalSpec extends AnyFunSuite with Matchers with ScalaCh
     messagesOf(rejectedAtBound) shouldBe List("Decimal string must not exceed 256 characters")
   }
 
+  test("parse rejects an exponent naming more digits than a decimal holds, without expanding it") {
+    // Twelve characters name a number of five hundred million digits. The text is read as a
+    // decimal before any scale is derived from it, so the bound the decimal applies to an
+    // exponent it cannot hold is the bound this factory inherits: the outcome is the decimal's
+    // own rejection, carried in this type's chain of failures, and it is reached without the
+    // power-of-ten expansion that bringing such a value to scale zero would perform. The clock
+    // is read for that second half - the work is proportional to the text supplied rather than
+    // to the number it names - and the bound is three orders of magnitude above the guarded
+    // path, so a loaded machine cannot make it flake.
+    val startedAt = System.nanoTime()
+    val outcome = FixedScaleDecimal.parse("1e500000000")
+    val elapsedMillis = (System.nanoTime() - startedAt) / 1000000L
+    outcome should beFailure
+    outcome should beFailureWith(FailureReason.INVALID)
+    messagesOf(outcome) shouldBe
+      List("Decimal value must not exceed 18 digits of precision at scale 0: 1E+500000000")
+    withClue(s"parsing '1e500000000' took ${elapsedMillis}ms: ") {
+      elapsedMillis should be < 5000L
+    }
+
+    // The same number reaching this type through `of` rather than through text is refused at
+    // the same place, since no decimal can be built from it to pair with a scale at all.
+    Decimal.of(new BigDecimal("1e500000000")).isLeft shouldBe true
+  }
+
   test("parse rejects text whose implied scale is beyond the maximum a decimal holds") {
     // Nineteen digits after the point imply a scale no decimal holds. The decimal itself is
     // read - rounded to the precision a decimal supports - and it is the scale that is

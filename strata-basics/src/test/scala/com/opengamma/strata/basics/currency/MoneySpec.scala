@@ -86,9 +86,10 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     [[com.opengamma.strata.collect.FixedScaleDecimal]], because pairing a decimal with a scale
  *     is rejected in general; for a money value it is always present, which is why every
  *     assertion below reads it with `haveValue`.
- *   - [[CurrencyAmount]] publishes no `toMoney`, so the round trip the original wrote as
- *     `base.toCurrencyAmount().toMoney()` is `Money.of(base.toCurrencyAmount)` here. The
- *     direction is the only thing that changed; the values are the same.
+ *   - [[CurrencyAmount.toMoney]] answers with an outcome where the original was total, because an
+ *     amount may be infinite and no decimal is, so the round trip the original wrote as
+ *     `base.toCurrencyAmount().toMoney()` is written in the same form here and read with
+ *     `haveValue`. The values are the same.
  *   - [[Money.compareTo]] returns the comparison of the currency codes as the platform gives it,
  *     where the original passed it through a chain that normalised every non-zero answer to `-1`
  *     or `1`. The sign is therefore asserted rather than the literal `-1` the original asserted,
@@ -343,7 +344,11 @@ final class MoneySpec extends AnyFunSuite with Matchers {
    * The two methods differ in their outcome, and the difference is real rather than stylistic:
    * mapping the decimal directly cannot produce a value the type does not hold, while a function
    * on `BigDecimal` can return a number needing more than eighteen digits, so that one answers
-   * with an outcome.
+   * with an outcome. The last row is that failure channel, and it is asserted here rather than
+   * deferred: a mapper returning `1E+30` names a number no decimal holds, and the outcome is a
+   * `Left` carrying `FailureReason.INVALID` with the message the decimal factory reports for it.
+   * Without that row a port could raise, truncate the digits or answer a wrong value for an
+   * oversized result and every other assertion of this suite would still pass.
    */
   test("testMapAmount") {
     val a: Money = moneyOf(GBP, 1.23d)
@@ -362,6 +367,12 @@ final class MoneySpec extends AnyFunSuite with Matchers {
     val dinar: Money = moneyOf(CCY_BHD, 1.23d)
     dinar.map(amount => amount.multipliedBy(decimal(0.3333d))) shouldBe moneyOf(CCY_BHD, 0.41d)
     dinar.map(amount => amount.multipliedBy(decimal(0.3333d))).currency shouldBe CCY_BHD
+
+    // a result no decimal holds is reported rather than raised, truncated or wrongly accepted
+    val oversized: FailureOr[Money] = a.mapAmount(amount => amount.multiply(new BigDecimal("1E+30")))
+    oversized should beFailureWith(FailureReason.INVALID)
+    oversized should haveFailureMessageMatching(
+      Regex.quote("Decimal value must not exceed 18 digits of precision at scale 0: 1.23E+30"))
   }
 
   //-------------------------------------------------------------------------
@@ -403,19 +414,39 @@ final class MoneySpec extends AnyFunSuite with Matchers {
   /**
    * Asserts the conversion to an inexact amount, and the round trip back.
    *
-   * The original wrote the return leg as `toCurrencyAmount().toMoney()`. [[CurrencyAmount]]
-   * publishes no such method in this port - the conversions between the two types are reached
-   * from this one, for the reason that type documents - so the round trip is written through
-   * [[Money.of]] here. It is the same two conversions in the same order.
+   * The original's two rows are the first two, in the original's form: the conversion out, and
+   * `toCurrencyAmount().toMoney()` back. The return leg answers with an outcome here - an amount
+   * may be infinite and no decimal is - so it is read with `haveValue` and is otherwise the
+   * method the original called. `Money.of(base.toCurrencyAmount)` is the same conversion named
+   * from this companion and is asserted alongside, because the two must agree.
+   *
+   * The rows after them are this suite's own. The conversion to [[BigMoney]] and the narrowing
+   * back are the other edge of the three-type graph: widening keeps every digit, since no
+   * currency quotes more than twelve places, so the round trip through the wider type is an
+   * identity for any money value - and `BigMoney.of(money)` and [[Money.toBigMoney]] are asserted
+   * to be one conversion under two names, as are `Money.of(bigMoney)` and `BigMoney.toMoney`.
    */
   test("testToCurrencyAmount") {
     val base: Money = moneyOf(GBP, 200.23d)
     base.toCurrencyAmount shouldBe unwrap(CurrencyAmount.of(GBP, 200.23d))
+    base.toCurrencyAmount.toMoney should haveValue(base)
     Money.of(base.toCurrencyAmount) should haveValue(base)
 
     // the currency survives the conversion, and a whole amount converts to a whole one
     base.toCurrencyAmount.currency shouldBe GBP
     MONEY_200_AUD.toCurrencyAmount shouldBe unwrap(CurrencyAmount.of(CCY_AUD, 200d))
+
+    // widening to the exact sibling keeps the amount, and narrowing it back returns this value
+    base.toBigMoney shouldBe BigMoney.of(base)
+    base.toBigMoney.amount shouldBe base.amount
+    Money.of(base.toBigMoney) shouldBe base
+    base.toBigMoney.toMoney shouldBe base
+
+    // narrowing a value finer than the currency quotes rounds half up, which is the one decision
+    // in the graph: sterling quotes two places, so the twelve-place tie moves away from zero
+    val finer: BigMoney = unwrap(BigMoney.of(GBP, new BigDecimal("1.005")))
+    Money.of(finer).amount shouldBe finer.toMoney.amount
+    Money.of(finer) shouldBe moneyOf(GBP, 1.01d)
   }
 
   //-------------------------------------------------------------------------

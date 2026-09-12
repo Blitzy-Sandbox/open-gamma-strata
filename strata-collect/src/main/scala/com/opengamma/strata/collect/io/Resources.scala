@@ -28,16 +28,21 @@ import cats.effect.Resource
  * global state. Each method returns a description of a read, and nothing touches the
  * classpath or the file system until that description is run.
  *
+ * The surface is those two reads and nothing else. Every other member of this object is
+ * private, so the byte ceiling, the two stream acquisitions and the shared read they feed
+ * are neither readable nor replaceable from outside: a caller chooses the source and
+ * nothing about how it is read.
+ *
  * ===Both reads are bounded===
  *
  * A reader that materialises whatever it is pointed at is a way to exhaust a heap with a
- * choice of argument, so neither method here does. [[MaxBytes]] is the documented ceiling,
- * it applies to both sources, and it is enforced '''while''' reading rather than checked
- * beforehand: one byte more than the ceiling is read, and a source that yields it fails the
- * effect naming the source and the limit. Consulting the size of a file first would prove
- * nothing, because a file can grow between the question and the read, and a classpath entry
- * has no size to consult at all. The ceiling therefore also bounds the decoded text, since
- * a character costs at least one byte.
+ * choice of argument, so neither method here does. The ceiling is 64 MiB, it applies to
+ * both sources, and it is enforced '''while''' reading rather than checked beforehand: one
+ * byte more than the ceiling is read, and a source that yields it fails the effect naming
+ * the source and the limit. Consulting the size of a file first would prove nothing,
+ * because a file can grow between the question and the read, and a classpath entry has no
+ * size to consult at all. The ceiling therefore also bounds the decoded text, since a
+ * character costs at least one byte.
  *
  * ===The decode is strict===
  *
@@ -85,8 +90,12 @@ object Resources {
    * read in this repository today is the day-count parity baseline at roughly 12.7 MiB, so
    * the ceiling leaves it a factor of five of headroom. Peak memory during a read is
    * therefore bounded too, at the bytes read plus the text decoded from them.
+   *
+   * It is an implementation bound and not part of the surface: a caller has nothing to do
+   * with it beyond receiving the failure that names it, so it is private to this object and
+   * documented here rather than exposed to be read.
    */
-  val MaxBytes: Int = 64 * 1024 * 1024
+  private val MaxBytes: Int = 64 * 1024 * 1024
 
   /**
    * Reads a classpath resource as UTF-8 text.
@@ -105,7 +114,7 @@ object Resources {
    * @return the content of the resource decoded as UTF-8; the effect fails with a
    *         [[java.io.FileNotFoundException]] naming the resource when the classpath
    *         holds no such entry, and with a [[java.io.IOException]] when the resource
-   *         exceeds [[MaxBytes]] or is not valid UTF-8
+   *         exceeds the 64 MiB ceiling described above or is not valid UTF-8
    */
   def readClasspathText(path: String): IO[String] = {
     val name = canonicalResourceName(path)
@@ -123,20 +132,19 @@ object Resources {
    * @return the content of the file decoded as UTF-8; the effect fails with the
    *         exception the platform reports, propagated unchanged: for an absent file that
    *         is [[java.nio.file.NoSuchFileException]], otherwise [[java.io.IOException]] -
-   *         which is also how exceeding [[MaxBytes]] and invalid UTF-8 are reported
+   *         which is also how exceeding the 64 MiB ceiling and invalid UTF-8 are reported
    */
   def readFileText(path: String): IO[String] =
     readManaged(s"file '$path'", openFileStream(path), MaxBytes)
 
   //-------------------------------------------------------------------------
-  // The shared read, and the two acquisitions it is given.
+  // The shared read, the pairing that owns its stream, and the two acquisitions.
   //
-  // These four members are visible across this package so that the spec beside this file
-  // can drive the production read with a stream of its own and observe that the stream is
-  // closed exactly once on each outcome. That is the one property of a reader which cannot
-  // be observed through the public surface - the class loader is chosen in here, so no
-  // caller can hand a classpath read a stream it can count - and a release finalizer no
-  // test can miss the absence of is a release finalizer that quietly stops existing.
+  // Each public reader is these four members composed: one read, bounded and decoded the
+  // same way whichever source it is given, over a stream whose close is paired with its
+  // acquisition, and one acquisition per source. All four are private to this object, as
+  // everything here other than the two readers is, so the readers cannot drift from one
+  // another and no caller reaches the read with a stream, or a limit, of its own.
   //-------------------------------------------------------------------------
 
   /**
@@ -147,7 +155,7 @@ object Resources {
    * @param maxBytes  the largest number of bytes to accept; a source yielding more fails
    * @return the decoded text
    */
-  private[io] def readManaged(source: String, open: IO[InputStream], maxBytes: Int): IO[String] =
+  private def readManaged(source: String, open: IO[InputStream], maxBytes: Int): IO[String] =
     managedStream(open).use(stream => readBoundedText(source, stream, maxBytes))
 
   /**
@@ -156,7 +164,7 @@ object Resources {
    * Release runs on every outcome of whatever uses the stream, so a read that fails part
    * way through, and one that is cancelled, both reclaim the handle.
    */
-  private[io] def managedStream(open: IO[InputStream]): Resource[IO, InputStream] =
+  private def managedStream(open: IO[InputStream]): Resource[IO, InputStream] =
     Resource.fromAutoCloseable(open)
 
   /**
@@ -165,14 +173,14 @@ object Resources {
    * Acquisition is the lookup itself, so an entry the classpath does not hold is reported
    * as a failed effect rather than as a stream that yields no bytes.
    */
-  private[io] def openClasspathStream(name: String): IO[InputStream] =
+  private def openClasspathStream(name: String): IO[InputStream] =
     IO.blocking(Option(classLoader.getResourceAsStream(name)))
       .flatMap(opened =>
         IO.fromOption(opened)(new FileNotFoundException(s"Classpath resource absent: $name"))
       )
 
   /** Acquires a file as a stream, failing the effect with whatever the platform reports. */
-  private[io] def openFileStream(path: String): IO[InputStream] =
+  private def openFileStream(path: String): IO[InputStream] =
     IO.blocking(Files.newInputStream(Paths.get(path)))
 
   //-------------------------------------------------------------------------

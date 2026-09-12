@@ -193,12 +193,17 @@ object ValueDerivatives {
    * Every double on the path - the value itself and each derivative - is written through the
    * single policy of this port for doubles, so a value that is not a number and the two
    * infinities appear as the strings `"NaN"`, `"Infinity"` and `"-Infinity"` while a finite
-   * value is written as a JSON number, exactly to the bit. Neither field is optional, so there
-   * is no absent value to drop from the output and the encoding needs no post-processing.
+   * value is written as a JSON number, exactly to the bit.
+   *
+   * The derived encoding is published through the wrapper that omits a field holding no value,
+   * which is the policy every product of this port follows. Neither field of this type is
+   * optional, so the wrapper changes nothing about the bytes it writes - and that is the point:
+   * the policy is applied here as it is everywhere, without an exception that a later optional
+   * field would have to notice.
    *
    * @return the JSON encoding of a value with derivatives
    */
-  implicit val encoder: Encoder.AsObject[ValueDerivatives] = deriveEncoder[ValueDerivatives]
+  implicit val encoder: Encoder[ValueDerivatives] = Codecs.dropNulls(deriveEncoder[ValueDerivatives])
 
   /**
    * The JSON decoding of values with derivatives.

@@ -97,6 +97,8 @@ import com.opengamma.strata.collect.result.Failure
  * directions. Widening a money value loses nothing, since the minor units of every currency of
  * the reference data are within twelve places; narrowing through [[toMoney]] rounds, and rounds
  * half up, so it is a genuine conversion rather than a reinterpretation of the same digits.
+ * [[CurrencyAmount.toBigMoney]] and [[Money.toBigMoney]] are the two widenings named from the
+ * other side and produce the same values as the factories here.
  *
  * This type is immutable and thread-safe: a value of it can be shared freely, and every operation
  * returns a new value rather than changing the one it was called on.
@@ -439,17 +441,18 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    * The amount is the nearest `Double` to the exact amount held here, so the conversion loses
    * precision in the direction one would expect of it and the currency is unchanged.
    *
-   * This is total, as it was in the implementation being ported. It is written as the total
-   * addition into a zero amount rather than through `CurrencyAmount.of`, which answers with an
-   * outcome: that factory rejects one thing only, a value that is not a number, and the amount of
-   * a decimal is always finite - so routing through it would put a failure branch that cannot be
-   * reached into the signature of an accessor whose answer always exists. Adding to a zero amount
-   * reaches the same total arithmetic of that type and returns the same value, since adding a
-   * positive zero to a finite number leaves it exactly as it was.
+   * This is total, as it was in the implementation being ported, and it is reached through the
+   * trusted constructor of that type rather than through `CurrencyAmount.of`, which answers with
+   * an outcome: that factory rejects one thing only, a value that is not a number, and the
+   * `Double` of a decimal is always finite - so routing through it would put a failure branch that
+   * cannot be reached into the signature of an accessor whose answer always exists. The trusted
+   * route performs the same normalisation and the same invariant check as every other way into
+   * that type, and allocates only the amount returned; the implementation being ported constructed
+   * the result once as well.
    *
    * @return the equivalent amount, held as a `Double`
    */
-  def toCurrencyAmount: CurrencyAmount = CurrencyAmount.zero(currency).plus(amount.doubleValue)
+  def toCurrencyAmount: CurrencyAmount = CurrencyAmount.ofTrusted(currency, amount.doubleValue)
 
   /**
    * Converts this value to the equivalent [[Money]].
@@ -460,14 +463,14 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    * currency quotes three digits, and `JPY 1234.567890123457` becomes `JPY 1235` because the yen
    * quotes none. A value whose amount is already within the currency's minor units is unchanged.
    *
-   * It is total, because rounding narrows an amount rather than refusing it, and it goes through
-   * the total decimal factory of [[Money]] - which applies exactly the rounding that type's own
-   * constructor applies, so the outcome is the value the implementation being ported produced from
-   * `Money.of(bigMoney)`.
+   * It is total, because rounding narrows an amount rather than refusing it, and it is written as
+   * the `Money.of` overload that takes a value of this type - the same delegation the
+   * implementation being ported wrote - so this method and that factory are one route with two
+   * names and can never disagree. [[Money.toBigMoney]] is the widening that reverses it.
    *
    * @return the equivalent money value, rounded to the currency's minor units
    */
-  def toMoney: Money = Money.of(currency, amount)
+  def toMoney: Money = Money.of(this)
 
   //-------------------------------------------------------------------------
   /**
@@ -785,13 +788,10 @@ object BigMoney {
    * only the text, and keeping the failure to that one message keeps two failures over the same
    * text equal and their serialized form stable.
    *
-   * Both wordings name the rendering of the text through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so each is bounded in length and
-   * has its control characters escaped. A message reaches a log or a report, and the text handed to
-   * this method came from outside the library, so it must not be able to forge a line of that log
-   * or to make the message as large as the input. Text within the bound and free of control
-   * characters - every spelling of a monetary value among them - is quoted exactly as it was given,
-   * so the wording of an ordinary rejection is unchanged.
+   * Both wordings name the text as it was given, so each reads as the original's did. The text
+   * came from outside the library, so bounding it and escaping what it may hold belong to the
+   * writing of a failure, which [[com.opengamma.strata.collect.result.Failure.show]] and the
+   * text form of a failure perform for every part they write.
    *
    * @param amountStr  the value as text, in the form `RON 200.2345`
    * @return the value the text names, or the failure describing why it names none
@@ -810,7 +810,7 @@ object BigMoney {
       } yield create(currency, amount)
       // the text is rendered rather than interpolated as it stands, which bounds the message and
       // keeps it to one line while leaving an in-bound spelling quoted as it was given
-      parsed.toRight(Failure.Parsing(s"Unable to parse amount: ${Failure.describeInput(amountStr)}"))
+      parsed.toRight(Failure.Parsing(s"Unable to parse amount: $amountStr"))
     }
   }
 
@@ -838,13 +838,12 @@ object BigMoney {
   /**
    * The failure reported for text whose shape does not admit a monetary value.
    *
-   * The text is rendered through [[Failure.describeInput]] rather than interpolated as it stands,
-   * which bounds the message and keeps it to one line; in-bound text free of control characters
-   * renders to itself, so the wording is unchanged for every spelling a caller would sensibly
-   * offer.
+   * The text is quoted as it stands, which is the wording the implementation being ported
+   * produced; bounding it and escaping what it may hold belong to the writing of a failure,
+   * which the text form of one and [[Failure.show]] perform for every part they write.
    */
   private def invalidFormat(amountStr: String): Failure =
-    Failure.Parsing(s"Unable to parse amount, invalid format: ${Failure.describeInput(amountStr)}")
+    Failure.Parsing(s"Unable to parse amount, invalid format: $amountStr")
 
   //-------------------------------------------------------------------------
   /**
@@ -956,15 +955,19 @@ object BigMoney {
    * `1.123456789012` and re-encodes as that - and that is a deliberate normalisation of input
    * rather than an inconsistency of the codec.
    *
-   * No checking decoder is needed, because the factory the payload is handed to cannot fail: were
-   * this routed through [[com.opengamma.strata.collect.json.Codecs.validatedDecoder]] the failure
-   * branch would be unreachable, so the plain mapping is both honest about that and identical to
-   * what [[Money]] does with the same two fields. What a document can still get wrong - a code
-   * naming no currency, or text naming no decimal - is rejected by the codecs of those two types as
-   * the fields are read.
+   * The payload reaches the factory through
+   * [[com.opengamma.strata.collect.json.Codecs.validatedDecoder]], the one construction gate every
+   * checking and every rounding type of this port decodes through, so this type is inside that
+   * policy rather than beside it: whatever is added to the gate - a further check, a different way
+   * of reporting a rejection - is inherited here without this file being touched, and [[Money]]
+   * reads the same two fields through the same gate. The factory the gate reaches is total, so no
+   * payload of the right shape is refused at that point, and the rounding to twelve decimal places
+   * described above still happens on the way in. What a document can get wrong is its fields: a
+   * code naming no currency, or text naming no decimal, is rejected by the codecs of those two
+   * types as the fields are read.
    *
    * @return the JSON decoding of a value of this type
    */
   implicit val decoder: Decoder[BigMoney] =
-    rawDecoder.map(raw => of(raw.currency, raw.amount))
+    Codecs.validatedDecoder[Raw, BigMoney](raw => Right(of(raw.currency, raw.amount)))(rawDecoder)
 }

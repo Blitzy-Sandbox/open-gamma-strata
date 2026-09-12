@@ -24,6 +24,7 @@ package com.opengamma.strata.collect.array {
   import cats.Show
 
   import org.scalacheck.Gen
+  import org.scalacheck.Shrink
   import org.scalatest.Assertion
   import org.scalatest.funsuite.AnyFunSuite
   import org.scalatest.matchers.should.Matchers
@@ -114,16 +115,6 @@ package com.opengamma.strata.collect.array {
    *  - values that do not fill the requested shape, and a function that returns a row of the wrong
    *    length, fail with `IllegalArgumentException` exactly as in the original, and the message of
    *    the original is preserved word for word, which this spec asserts rather than assumes;
-   *  - `copyOf` rejects an array whose rows differ in length, with `IllegalArgumentException`
-   *    naming the row that disagrees and both lengths, where the original copied such an array
-   *    and answered with a value that read past the end of a short row as soon as it was asked
-   *    for an element its shape promised. Rejecting is what makes rectangularity true of every
-   *    value a public factory produces, which every member addressing an element by row and
-   *    column relies on; the sibling factory taking a row function already rejected the same
-   *    condition. An array with no rows, or whose first row has no elements, is still the empty
-   *    matrix rather than a failure, as in the original. Rendering is total regardless, at each
-   *    row's own length, which is asserted through the adopting factory - the only remaining way
-   *    to hold rows of differing length;
    *  - a negative row count, column count or size fails with `IllegalArgumentException` naming the
    *    argument and its value, where the original let the allocation it had already begun raise a
    *    negative-size error of the platform's. Every factory checks its dimensions before it
@@ -146,7 +137,7 @@ package com.opengamma.strata.collect.array {
    *  - every zero-size result is the canonical empty instance, as in the original, so the helper
    *    below asserts that identity rather than merely a size of zero. The port canonicalises all
    *    three degenerate shapes - no rows, no columns, and a row count with no columns - to it, so
-   *    no matrix with rows of length zero exists to be tested.
+   *    no matrix whose column count is zero exists to be tested.
    *
    * ===Tolerances===
    *
@@ -538,56 +529,79 @@ package com.opengamma.strata.collect.array {
       assertMatrix(DoubleMatrix.copyOf(Array.ofDim[Double](2, 0)))
     }
 
-    test("copyOf_rejects_rows_that_differ_in_length") {
-      // A matrix is rectangular, and every member that addresses an element by row and column
-      // relies on that, so an array whose rows differ in length describes no matrix and is
-      // rejected instead of copied. Both orientations are asserted, because a row shorter than
-      // the first and a row longer than it are different failures of the same condition: the
-      // short row would leave the shape promising elements that are not there, and the long row
-      // would leave elements the shape does not reach. The Java original copied either without
-      // complaint, so this is the one point at which this factory is the stricter of the two
-      val shortSecondRow = Array(Array(1.0, 2.0), Array(1.0))
-      val shortFailure = intercept[IllegalArgumentException](DoubleMatrix.copyOf(shortSecondRow))
-      shortFailure.getMessage shouldBe "Array cannot be copied as row 1 is of length 1, expected 2"
+    test("copyOf_copies_rows_that_differ_in_length_as_the_original_does") {
+      // `copyOf` is a total factory and stays total for an array whose rows differ in length,
+      // which is what the Java original did with one: the shape comes from the first row, every
+      // row is cloned at its own length, and nothing is rejected, padded or truncated. Both
+      // orientations are asserted, because a row shorter than the first and a row longer than it
+      // are observed differently - a short row leaves the shape promising an element the row does
+      // not hold, and a long row keeps elements the shape does not reach
+      val shortSecondRow = Array(Array(1.0, 2.0), Array(3.0))
+      val fromShort = DoubleMatrix.copyOf(shortSecondRow)
+      fromShort.rowCount shouldBe 2
+      fromShort.columnCount shouldBe 2
+      fromShort.size shouldBe 4
 
-      val longSecondRow = Array(Array(1.0), Array(1.0, 2.0))
-      val longFailure = intercept[IllegalArgumentException](DoubleMatrix.copyOf(longSecondRow))
-      longFailure.getMessage shouldBe "Array cannot be copied as row 1 is of length 2, expected 1"
+      // every position inside the shape that the rows do hold reads back
+      fromShort.get(0, 0) shouldBe 1.0
+      fromShort.get(0, 1) shouldBe 2.0
+      fromShort.get(1, 0) shouldBe 3.0
 
-      // the failing row is named, wherever it is
-      val thirdRowFails =
-        intercept[IllegalArgumentException](
-          DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(3.0, 4.0), Array(5.0))))
-      thirdRowFails.getMessage shouldBe "Array cannot be copied as row 2 is of length 1, expected 2"
+      // and the one position the shape promises that the short row does not hold is read from
+      // that row, so it fails as an index error exactly as reading past the end of any array
+      // does. The type asserted is the one the runtime actually raises here
+      val beyondShortRow = intercept[ArrayIndexOutOfBoundsException](fromShort.get(1, 1))
+      beyondShortRow.getMessage shouldBe "Index 1 out of bounds for length 1"
 
-      // an empty row after a non-empty one is the same failure, since the shape comes from the
-      // first row
-      val emptyRowFails =
-        intercept[IllegalArgumentException](DoubleMatrix.copyOf(Array(Array(1.0), Array.emptyDoubleArray)))
-      emptyRowFails.getMessage shouldBe "Array cannot be copied as row 1 is of length 0, expected 1"
+      // the rows are cloned verbatim, so the copy holds rows of the same two lengths the input
+      // had, and rendering walks each at its own length
+      val fromShortRows = fromShort.toArray
+      fromShortRows(0).length shouldBe 2
+      fromShortRows(1).length shouldBe 1
+      fromShort.toString shouldBe "1.0 2.0\n3.0\n"
 
-      // the check leaves the array it was given alone, and nothing is copied before it fails
+      // the other orientation: a row longer than the first keeps its extra elements, which
+      // `toArray` hands back and which rendering shows, even though the column count does not
+      // reach them
+      val longSecondRow = Array(Array(1.0), Array(2.0, 3.0))
+      val fromLong = DoubleMatrix.copyOf(longSecondRow)
+      fromLong.rowCount shouldBe 2
+      fromLong.columnCount shouldBe 1
+      fromLong.size shouldBe 2
+      fromLong.get(0, 0) shouldBe 1.0
+      fromLong.get(1, 0) shouldBe 2.0
+      val fromLongRows = fromLong.toArray
+      fromLongRows(0).length shouldBe 1
+      fromLongRows(1).length shouldBe 2
+      fromLongRows(1)(1) shouldBe 3.0
+      fromLong.toString shouldBe "1.0\n2.0 3.0\n"
+
+      // neither input array is modified, and neither copy can be reached through its input
       shortSecondRow(0)(0) shouldBe 1.0
       shortSecondRow(0).length shouldBe 2
       shortSecondRow(1).length shouldBe 1
+      longSecondRow(1)(1) shouldBe 3.0
+      longSecondRow(1).length shouldBe 2
+      longSecondRow(0)(0) = 9.0
+      fromLong.get(0, 0) shouldBe 1.0
 
-      // a first row with no elements is the empty matrix rather than a failure, as in the Java
-      // original, because every factory funnels a zero dimension to the empty instance before
-      // any question of shape arises
+      // a first row with no elements is still the empty matrix, whatever follows it, because
+      // every factory funnels a zero dimension to the empty instance before any question of
+      // shape arises
       assertMatrix(DoubleMatrix.copyOf(Array(Array.emptyDoubleArray, Array(1.0))))
 
-      // rectangular input of every shape is copied as before
+      // and rectangular input of every shape is copied as before
       assertMatrix(DoubleMatrix.copyOf(Array(Array(1.0, 2.0, 3.0))), 1.0, 2.0, 3.0)
       assertMatrix(DoubleMatrix.copyOf(Array(Array(1.0), Array(2.0), Array(3.0))), 1.0, 2.0, 3.0)
     }
 
-    test("toString_renders_every_value_including_one_adopted_with_rows_of_differing_length") {
+    test("toString_renders_every_value_including_one_whose_rows_differ_in_length") {
       // Rendering is total: it walks each row at that row's own length, so no value can make it
-      // fail or hide an element. For every matrix a public factory can build the row length and
-      // the column count are the same, so this is observable only through the module-private
-      // factory that adopts its rows without copying or checking them - which is exactly the
-      // value whose rendering must not fail. The expected text is that of the Java original,
-      // which also rendered each row at its own length
+      // fail or hide an element. That is observable through either of the two factories which
+      // take their shape from the array they are given - the copying one and the module-private
+      // adopting one - since neither measures the rows that follow the first. The expected text
+      // is that of the Java original, which also rendered each row at its own length
+      DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(1.0))).toString shouldBe "1.0 2.0\n1.0\n"
       DoubleMatrix.ofUnsafe(Array(Array(1.0, 2.0), Array(1.0))).toString shouldBe "1.0 2.0\n1.0\n"
       DoubleMatrix.ofUnsafe(Array(Array(1.0), Array(1.0, 2.0))).toString shouldBe "1.0\n1.0 2.0\n"
       DoubleMatrix.ofUnsafe(Array(Array(1.0), Array.emptyDoubleArray, Array(2.0))).toString shouldBe
@@ -1707,6 +1721,153 @@ package com.opengamma.strata.collect.array {
         candidates.map(_.hashCode).distinct shouldBe List(matrix.hashCode)
         candidates.map(_.toString).distinct shouldBe List(matrix.toString)
       }
+    }
+
+    //-------------------------------------------------------------------------
+    // Properties at a shape the shared generators never reach. Every property above is written
+    // over matrices of at most five rows and five columns, which is the right default - a
+    // failing case shrinks to something readable - but a five-by-five matrix is small enough
+    // that a row walk and a column walk of the same length cannot be told apart, and its
+    // twenty-five elements never put a nested loop under strain. These two name the large
+    // generators explicitly, so the same claims are made again over thousands of elements in
+    // shapes that are mostly not square.
+
+    test("property_large_matrices_satisfy_the_element_wise_and_shape_claims") {
+      forAll(Arbitraries.genLargeFiniteDoubleMatrixPair) {
+        case (a: DoubleMatrix, b: DoubleMatrix) =>
+          a.rowCount should be >= 8
+          a.rowCount shouldBe b.rowCount
+          a.columnCount shouldBe b.columnCount
+          a.size shouldBe a.rowCount * a.columnCount
+
+          // the element-wise operations compute the operator at every position of the shape,
+          // which at a non-square shape also establishes that rows and columns are not confused
+          val positions = positionsOf(a)
+          positions.size shouldBe a.size
+          val sum = a.plus(b)
+          val difference = a.minus(b)
+          val scaled = a.multipliedBy(2.5)
+          val mapped = a.map(value => value * 3.0)
+          val combined = a.combine(b, (left, right) => left + right)
+          val indexed = a.mapWithIndex((row, column, value) => row * 1000.0 + column + value)
+          List(sum, difference, scaled, mapped, combined, indexed).foreach { result =>
+            result.rowCount shouldBe a.rowCount
+            result.columnCount shouldBe a.columnCount
+          }
+          val offenders = positions.filterNot { case (row, column) =>
+            val left = a.get(row, column)
+            val right = b.get(row, column)
+            sum.get(row, column) == left + right &&
+              difference.get(row, column) == left - right &&
+              scaled.get(row, column) == left * 2.5 &&
+              mapped.get(row, column) == left * 3.0 &&
+              combined.get(row, column) == left + right &&
+              indexed.get(row, column) == row * 1000.0 + column + left
+          }
+          offenders shouldBe empty
+
+          // transposition exchanges the two dimensions, moves every element to the mirrored
+          // position and is its own inverse at this size as at any other
+          val transposed = a.transpose
+          transposed.rowCount shouldBe a.columnCount
+          transposed.columnCount shouldBe a.rowCount
+          positions.filterNot { case (row, column) =>
+            transposed.get(column, row) == a.get(row, column)
+          } shouldBe empty
+          matrixHash.eqv(transposed.transpose, a) shouldBe true
+
+          // the total is the running sum over every element in row-major order
+          a.total shouldBe positions.foldLeft(0.0) { case (running, (row, column)) =>
+            running + a.get(row, column)
+          }
+
+          // and every element survives a round trip through the nested primitive array, through
+          // row and column extraction, and through the copying factory
+          val roundTripped = DoubleMatrix.copyOf(a.toArray)
+          matrixHash.eqv(roundTripped, a) shouldBe true
+          roundTripped.hashCode shouldBe hashOracle(a)
+          roundTripped.toString shouldBe textOracle(a)
+          (0 until a.rowCount).filterNot(row =>
+            a.row(row).toList == List.tabulate(a.columnCount)(column => a.get(row, column))
+          ) shouldBe empty
+          (0 until a.columnCount).filterNot(column =>
+            a.column(column).toList == List.tabulate(a.rowCount)(row => a.get(row, column))
+          ) shouldBe empty
+      }
+    }
+
+    test("property_large_square_matrices_multiply_and_transpose_as_the_small_ones_do") {
+      forAll(Arbitraries.genLargeSquareFiniteDoubleMatrix) { (matrix: DoubleMatrix) =>
+        matrix.rowCount should be >= 8
+        matrix.isSquare shouldBe true
+
+        // scaling by one and by minus one twice leave the value alone exactly, since neither
+        // multiplication loses a bit, and both walk every element of a matrix of thousands
+        matrixHash.eqv(matrix.multipliedBy(1.0), matrix) shouldBe true
+        matrixHash.eqv(matrix.multipliedBy(-1.0).multipliedBy(-1.0), matrix) shouldBe true
+
+        // the identity of this side agrees with a diagonal of ones, and the diagonal of the
+        // matrix is read from the positions where the two indices agree
+        val identity = DoubleMatrix.identity(matrix.rowCount)
+        matrixHash.eqv(identity, DoubleMatrix.diagonal(DoubleArray.filled(matrix.rowCount, 1.0))) shouldBe true
+        identity.size shouldBe matrix.rowCount * matrix.rowCount
+
+        // transposition is its own inverse, and a square transposition keeps the shape, so the
+        // mirrored read is over the same index range in both directions
+        val transposed = matrix.transpose
+        transposed.rowCount shouldBe matrix.rowCount
+        transposed.columnCount shouldBe matrix.columnCount
+        matrixHash.eqv(transposed.transpose, matrix) shouldBe true
+        positionsOf(matrix).filterNot { case (row, column) =>
+          transposed.get(column, row) == matrix.get(row, column)
+        } shouldBe empty
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    // The shared shrinkings of this type, over a value only `copyOf` can produce.
+    //
+    // `copyOf` shapes an array whose rows differ in length by its first row, as the Java
+    // original does, so a matrix can state a column count that one of its rows does not reach.
+    // The shrinkings of `Arbitraries` walk the stated shape to build their candidates, so they
+    // are asserted here to be total over such a value: were they to read a position that is not
+    // there, a property that failed on a ragged matrix would report an index failure raised by
+    // the minimisation instead of the counterexample it found. The generators of that file
+    // produce only rectangular matrices, so no property reaches this on its own - which is
+    // exactly why it is asserted directly.
+    //-------------------------------------------------------------------------
+    test("the shared matrix shrinking is total over a matrix whose rows differ in length") {
+      // a row shorter than the first: the shape promises an element row 1 does not hold
+      val shortSecondRow = DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5)))
+      shortSecondRow.rowCount shouldBe 2
+      shortSecondRow.columnCount shouldBe 2
+      Shrink.shrink(shortSecondRow)(Arbitraries.shrinkDoubleMatrix).toList shouldBe Nil
+
+      // a row longer than the first: the shape does not reach every element row 1 holds
+      val longSecondRow = DoubleMatrix.copyOf(Array(Array(1.5), Array(2.5, 3.5)))
+      Shrink.shrink(longSecondRow)(Arbitraries.shrinkDoubleMatrix).toList shouldBe Nil
+
+      // a rectangular matrix still shrinks, so the check above narrows the shrinking to the
+      // shape it cannot read rather than switching it off
+      val rectangular = DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5, 4.5)))
+      Shrink.shrink(rectangular)(Arbitraries.shrinkDoubleMatrix).toList should not be empty
+    }
+
+    test("the shared matrix-pair shrinking is total when either side has rows that differ in length") {
+      val ragged = DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5)))
+      val rectangular = DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5, 4.5)))
+
+      // either side being the value the shape cannot be read from is enough to reach the floor
+      Shrink.shrink((ragged, rectangular))(Arbitraries.shrinkDoubleMatrixPair).toList shouldBe Nil
+      Shrink.shrink((rectangular, ragged))(Arbitraries.shrinkDoubleMatrixPair).toList shouldBe Nil
+      Shrink.shrink((ragged, ragged))(Arbitraries.shrinkDoubleMatrixPair).toList shouldBe Nil
+
+      // and a pair of rectangular matrices still shrinks in lockstep
+      val candidates = Shrink.shrink((rectangular, rectangular))(Arbitraries.shrinkDoubleMatrixPair).toList
+      candidates should not be empty
+      candidates.filterNot { case (left, right) =>
+        left.rowCount == right.rowCount && left.columnCount == right.columnCount
+      } shouldBe empty
     }
 
   }

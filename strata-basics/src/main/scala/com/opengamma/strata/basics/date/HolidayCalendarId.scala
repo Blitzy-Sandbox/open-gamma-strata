@@ -19,6 +19,7 @@ import io.circe.KeyEncoder
 import com.opengamma.strata.basics.RefDataReader
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.ReferenceDataId
+import com.opengamma.strata.basics.ReferenceDataType
 import com.opengamma.strata.basics.Resolvable
 import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.basics.currency.CurrencyPair
@@ -84,10 +85,12 @@ import com.opengamma.strata.collect.result.Failure
  * about it.
  *
  * The accessor reporting the runtime type of the data the identifier refers to -
- * `getReferenceDataType` - is absent, along with the low-level query primitive that signalled
- * an absent value by returning a reference to nothing. Both are discussed on
- * [[ReferenceDataId]]: the type safety they supported at run time is supplied at compile time
- * by `ReferenceData.Entry`, and this port performs no reflection at all.
+ * `getReferenceDataType`, which returned `HolidayCalendar.class` - is replaced by [[valueType]],
+ * a witness that recognises a calendar by pattern instead of by class token. The low-level
+ * query primitive that signalled an absent value by returning a reference to nothing is
+ * absent altogether. Both are discussed on [[ReferenceDataId]]: filing is checked at compile
+ * time by `ReferenceData.Entry`, retrieval by the witness, and this port performs no
+ * reflection at all.
  *
  * The instance cache of the original is not ported either. It existed so that two identifiers
  * of the same name were the same object, which the original's resolution relied on because it
@@ -198,6 +201,20 @@ sealed abstract case class HolidayCalendarId private (name: String)
   override def toReader: RefDataReader[HolidayCalendar] = super[ReferenceDataId].toReader
 
   /**
+   * The witness by which reference data recognises a value this identifier may answer with.
+   *
+   * Every holiday calendar identifier refers to a [[HolidayCalendar]] - the composite ones
+   * included, a composite resolving to a calendar exactly as a simple identifier does - so
+   * the witness is the shared [[com.opengamma.strata.basics.ReferenceDataType.holidayCalendar]]
+   * rather than one per identifier. It is what `ImmutableReferenceData.findValue` narrows the
+   * value it finds with, and it is the non-reflective counterpart of the Java
+   * `getReferenceDataType()` this family overrode to return `HolidayCalendar.class`.
+   *
+   * @return the witness for a holiday calendar
+   */
+  override def valueType: ReferenceDataType[HolidayCalendar] = ReferenceDataType.holidayCalendar
+
+  /**
    * Combines this identifier with another, naming a calendar that observes both sets of
    * holidays.
    *
@@ -283,9 +300,9 @@ sealed abstract case class HolidayCalendarId private (name: String)
    * Written as a tail-recursive walk of the parts rather than as a traversal of them because
    * this is the path a date adjustment against a composite calendar takes on every date: a
    * traversal of an applicative would build a list of resolved calendars, and the deferred
-   * computations that sequence it, only to fold that list away again, and it was the largest
-   * source of garbage in the library. The walk allocates what it answers with and nothing else,
-   * and it reaches the same calendar by the same operations in the same order.
+   * computations that sequence it, only to fold that list away again. The walk allocates what
+   * it answers with and nothing else, and it reaches the same calendar by the same operations
+   * in the same order.
    *
    * @param parts  the parts of this composite identifier and how to read them together
    * @param refData  the reference data to resolve the parts against
@@ -345,10 +362,25 @@ sealed abstract case class HolidayCalendarId private (name: String)
    *
    * The message is the one the original produced, naming the part that was missing and the
    * identifier being resolved, and both are carried as attributes so that a caller can act on
-   * them without reading the message.
+   * them without reading the message. Both names appear in the message and in the attributes
+   * exactly as the identifiers hold them, because the wording is verbatim the text the type
+   * being ported raised for the same condition and reproducing it is the parity this port is
+   * held to, and because the caller supplying the reference data needs to see the identifier it
+   * failed to provide for as that identifier is written rather than an approximation of it.
+   *
+   * Neither name is constrained. Both come from [[HolidayCalendarId.of]], which is total and
+   * accepts any text, since which names an application files its calendars under is not this
+   * library's to judge, so a name may hold a line break, a control character or any length of
+   * text. That is exactly why the neutralising is not done here: bounding a value and escaping
+   * what it may hold belong to the act of writing a failure out, and
+   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure apply
+   * one bounded, single-line rendering to the message and to the key and value of every
+   * attribute. An identifier cannot therefore forge or inflate a line of a log holding this
+   * failure (CWE-117), while code that reads the failure to act on it rather than to display it
+   * still receives both names whole.
    *
    * @param component  the part that could not be resolved
-   * @return the failure describing the missing part
+   * @return the failure describing the missing part, naming both identifiers as they stand
    */
   private def partNotFound(component: HolidayCalendarId): Failure =
     Failure
@@ -687,10 +719,12 @@ object HolidayCalendarId {
    * [[byNameDescending]] and walked once more to drop the duplicates, which a sorted list puts
    * next to each other. What this replaced built a list of part names, a second list of
    * identifiers, a hash set to deduplicate them, a comparison function, an array to sort and a
-   * third list for the sorted result - most of the cost of naming a composite calendar, on a
-   * path that every read of such a calendar's name once took. Sorting keeps the work of a name
-   * of any length proportional to its parts times their logarithm, never their square, so a
-   * name written to be hostile is no more than long.
+   * third list for the sorted result. Three of those have no counterpart here: a part becomes
+   * an identifier as it is read rather than through an intermediate list of names, duplicates
+   * are dropped by adjacency in the sorted list rather than through a set, and the comparison
+   * is the shared one named above rather than one built for the call. Sorting keeps the work of
+   * a name of any length proportional to its parts times their logarithm, never their square,
+   * so a name written to be hostile is no more than long.
    *
    * @param uniqueName  the composite name, as it was written
    * @param separator  the separator to split around

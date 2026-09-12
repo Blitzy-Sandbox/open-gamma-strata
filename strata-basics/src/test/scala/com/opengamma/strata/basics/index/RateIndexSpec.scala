@@ -51,10 +51,12 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *    reference is written anywhere in this port, so the case is asserted as the spellings of an
  *    absent name that can actually be supplied - the empty name and a blank one.
  *
- * The Java class has neither a `coverage` method nor a serialization method, and this spec
- * accordingly has exactly the six tests the Java class has, under the Java method names: the
- * test inventory manifest joins every ported Java method to a test of this suite by name, so a
- * test invented here would answer to no row of it. The properties a `coverage` sweep would have
+ * The Java class has neither a `coverage` method nor a serialization method, so the six tests it
+ * does have are carried here under the Java method names, which is what the test inventory
+ * manifest joins by. One test is this port's own and answers to no row of the manifest:
+ * `test_standardLookups_probeOrder`, which pins the two families this union searches and the
+ * order it searches them in - a composition the Java class had no counterpart for, because its
+ * lookup was assembled from a resource at run time. The properties a `coverage` sweep would have
  * stood in for are not lost - the closedness of each family is swept across the module by
  * `NamedEnumClosedSpec` and the fidelity of the index data by `ReferenceDataManifestSpec`, and
  * the membership of this union is asserted in `test_of_lookup` below.
@@ -196,5 +198,41 @@ class RateIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     RateIndex.parse("") should beFailureWith(FailureReason.PARSING)
     RateIndex.valueOf("   ") shouldBe None
     RateIndex.parse("   ") should beFailureWith(FailureReason.PARSING)
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_standardLookups_probeOrder") {
+    // The two families this union searches, and the order it searches them in, asserted against
+    // the composition the production lookup actually uses. The Ibor and Overnight name spaces are
+    // disjoint, so no name of the published data can distinguish one probe order from another;
+    // what can be asserted, and is, is that the composition holds those two families at those two
+    // positions and that the entry points search it. The search rule itself - first hit wins, and
+    // no probe after it is reached - is asserted over supplied probes in `IndexSpec`.
+    val probes: List[RateIndex.Lookup] = RateIndex.standardLookups.toList
+    probes should have size 2
+
+    val iborName = IborIndices.GBP_LIBOR_3M.name
+    val overnightName = OvernightIndices.GBP_SONIA.name
+    probes.map(probe => probe(iborName).isDefined) shouldBe List(true, false)
+    probes.map(probe => probe(overnightName).isDefined) shouldBe List(false, true)
+    probes.head(iborName) shouldBe Some(IborIndices.GBP_LIBOR_3M)
+    probes(1)(overnightName) shouldBe Some(OvernightIndices.GBP_SONIA)
+
+    // The two families outside this union are claimed by neither probe, which is the membership
+    // of the composition and not merely of the entry point that searches it.
+    List(PriceIndices.GB_RPI.name, FxIndices.EUR_USD_ECB.name, "Rubbish").foreach { name =>
+      withClue(s"$name: ")(probes.flatMap(probe => probe(name)) shouldBe empty)
+    }
+
+    // The entry point searches that composition and nothing else, for every published name of
+    // both families and for text naming none.
+    val everyName: List[String] =
+      (IborIndex.values.toList ::: OvernightIndex.values.toList).map(_.name) :::
+        List(PriceIndices.GB_RPI.name, FxIndices.EUR_USD_ECB.name, "Rubbish", "")
+    everyName.foreach { name =>
+      withClue(s"$name: ") {
+        RateIndex.valueOf(name) shouldBe Index.firstMatch(name, RateIndex.standardLookups)
+      }
+    }
   }
 }

@@ -6,7 +6,6 @@
 package com.opengamma.strata.collect.json
 
 import java.time.DayOfWeek
-import java.time.LocalTime
 
 import cats.data.EitherNec
 import cats.data.NonEmptyChain
@@ -80,7 +79,7 @@ import com.opengamma.strata.collect.result.Failure
  * since the argument is the type's own factory. And a member that is not implicit cannot
  * take part in an implicit cycle, so the warnings that guard against one never arise.
  *
- * The five codecs that are driven purely by their type, and therefore have exactly one
+ * The four codecs that are driven purely by their type, and therefore have exactly one
  * sensible instance, are additionally offered as implicits by the nested `implicits`
  * object, which a derivation site imports to bring them into scope together.
  */
@@ -418,12 +417,12 @@ object Codecs {
    * The codec for a day of the week, represented by its constant name.
    *
    * Saturday is the JSON string `"SATURDAY"`. Of the date and time types this port uses in
-   * its fields, four - a date, a time zone, a period and a year with month - are taken from
-   * the JSON library unchanged and are deliberately not restated here, because what it
-   * produces for them is exactly what the policy of this port states. Two are not: the day of
-   * the week, which that library does not cover at all and which this codec supplies, and the
-   * time of day, which it covers in a longer form than the policy states and which
-   * `localTimeCodec` supplies below.
+   * its fields, five - a date, a time of day, a time zone, a period and a year with month -
+   * are taken from the JSON library unchanged and are deliberately not restated here, because
+   * what it produces for them is exactly what the policy of this port states. One is not: the
+   * day of the week, which that library does not cover at all and which this codec supplies.
+   * It is the only date or time codec the port declares itself, and the reason is the absence
+   * of a published instance rather than a disagreement with one.
    *
    * Decoding consults the closed set of days, which is built once when this object is
    * initialized. It deliberately does not ask the day type itself to interpret the text,
@@ -445,75 +444,6 @@ object Codecs {
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The codec for a time of day, represented by the shortest text that states it.
-   *
-   * Eleven o'clock is the JSON string `"11:00"`, half past eleven with thirty seconds is
-   * `"11:00:30"`, and a time carrying a fraction of a second states it, so nothing about a
-   * time is ever lost. This is the form the serialization policy of this port records, and
-   * the form the standard text of a time of day takes: the seconds field appears when it
-   * says something and is left out when it does not.
-   *
-   * ===Why this one is restated===
-   *
-   * The JSON library publishes codecs for the five date and time types this port carries in
-   * its fields, and four of them are adopted here unchanged because what they produce is
-   * exactly what the policy states. The time of day is the exception. Its published encoder
-   * formats through the standard pattern for such a time, whose seconds section is optional
-   * only when reading: a time of day always has a seconds field to offer, so the pattern
-   * always writes one, and eleven o'clock comes out as `"11:00:00"`. The policy of this port
-   * states `"11:00"`, and the policy is the contract, so the encoder is the port's own.
-   *
-   * Reading is a different matter and is taken from the library unchanged, because the
-   * published decoder already accepts every form the standard text allows - with the seconds
-   * field and without it, with a fraction of a second and without one. So a document written
-   * by this port, by the library, or by hand in either form is read back to the same time.
-   */
-  val localTimeCodec: Codec[LocalTime] = {
-    val encoder: Encoder[LocalTime] = Encoder.instance(time => Json.fromString(time.toString))
-    Codec.from(Decoder.decodeLocalTime, encoder)
-  }
-
-  //-------------------------------------------------------------------------
-  /**
-   * The greatest number of elements this port reads into an array of doubles.
-   *
-   * A ceiling is needed because the dimensions of a numeric payload are stated by the
-   * document rather than by the reader: without one, the size of the run of values this port
-   * allocates is chosen by whoever wrote the document. The value is far above anything the
-   * library itself produces - the largest run any captured fixture carries is a handful of
-   * elements, and the widest structure any type of this port holds is a square of currency
-   * rates - while bounding one array to eight megabytes of values.
-   */
-  val MaximumArrayElements: Int = 1 << 20
-
-  /** The greatest number of rows this port reads into a matrix of doubles. */
-  val MaximumMatrixRows: Int = 4096
-
-  /** The greatest number of elements in one row this port reads into a matrix of doubles. */
-  val MaximumMatrixColumns: Int = 4096
-
-  /**
-   * The greatest number of elements, across every row, this port reads into a matrix.
-   *
-   * The row and column ceilings bound each dimension on its own; this one bounds their
-   * product, which is what actually gets allocated. It is checked in a width that the
-   * product of two counts cannot exceed, so a payload cannot slip past the ceiling by
-   * stating dimensions whose product wraps around.
-   */
-  val MaximumMatrixElements: Int = 1 << 20
-
-  /**
-   * Reports a payload whose stated size is beyond what this port reads.
-   *
-   * @param what  what was counted, naming the ceiling that was exceeded
-   * @param declared  the count the payload states
-   * @param limit  the greatest count this port reads
-   * @return the message describing the refusal
-   */
-  private def beyondCeiling(what: String, declared: Long, limit: Int): String =
-    s"Expected at most $limit $what, but the payload states $declared"
-
   /** Renders a run of elements as a JSON array, each element through `taggedDouble`. */
   private def elementsJson(elements: Array[Double]): Json =
     Json.fromValues(elements.iterator.map(element => taggedDoubleEncoder(element)).toVector)
@@ -525,20 +455,12 @@ object Codecs {
   private val doubleElementsDecoder: Decoder[Array[Double]] =
     Decoder.decodeArray[Double](taggedDoubleDecoder, implicitly)
 
+  // every element of the payload is read, whatever length the payload states, and the run of
+  // values the element reader has just allocated becomes the contents of the result; a payload
+  // that is not an array, or one holding an element no double can hold, is reported by that same
+  // reader at the position where it occurred
   private val doubleArrayDecoder: Decoder[DoubleArray] =
-    Decoder.instance { cursor =>
-      // the length is taken from the payload before an element is read, so a document cannot
-      // choose how much this port allocates; a payload that is not an array falls through to
-      // the element reader, which reports it exactly as it always did
-      cursor.value.asArray match {
-        case Some(elements) if elements.size > MaximumArrayElements =>
-          Left(DecodingFailure(
-            beyondCeiling("elements in the array", elements.size.toLong, MaximumArrayElements),
-            cursor.history))
-        case _ =>
-          doubleElementsDecoder(cursor).map(elements => DoubleArray.ofUnsafe(elements))
-      }
-    }
+    doubleElementsDecoder.map(elements => DoubleArray.ofUnsafe(elements))
 
   /**
    * The codec for an immutable array of doubles, represented by a JSON array.
@@ -558,13 +480,17 @@ object Codecs {
    * public surface of these arrays stays copy-safe from end to end, and nothing here widens
    * it.
    *
-   * ===How much a document may ask for===
+   * ===What a document may state===
    *
-   * How long the array is, is stated by the document, so decoding measures the payload
-   * against `MaximumArrayElements` before it reads a single element. A longer payload is a
-   * decoding failure naming the ceiling, and nothing is allocated for it. The order matters:
-   * the ceiling is worth having only if it is applied before the work it bounds, since a
-   * refusal issued after the elements have been read has already paid for them.
+   * How long the array is, is stated by the document, and decoding accepts every length the
+   * encoder can produce. That symmetry is a requirement of this port's serialization contract
+   * rather than a preference: the factories that build one of these arrays are total over
+   * every length the run-time can allocate, so a decoder that refused a length above some
+   * figure of its own would make `decode(encode(x))` fail for values the port itself creates
+   * and writes - and for every value that carries one, whether as a run of sensitivities, a
+   * schedule of amounts or a row of currency rates. A payload is therefore rejected only when
+   * it is not an array at all, or when one of its elements is not a value a double can hold;
+   * both refusals come from the element reader, which names the offending position.
    */
   val doubleArrayCodec: Codec[DoubleArray] = Codec.from(doubleArrayDecoder, doubleArrayEncoder)
 
@@ -582,15 +508,15 @@ object Codecs {
     }
 
   /**
-   * Measures the shape a matrix payload states, before any of it is read.
+   * Reports a matrix payload whose rows disagree, before any of it is read.
    *
-   * Every conclusion here is drawn from the JSON as it already stands, and the order in which
-   * they are reached is itself part of the guard. How many rows the payload states is known
-   * without looking at any of them, so that count is compared with its ceiling first and a
-   * payload beyond it is refused without a single row having been examined. Only a payload
-   * whose row count is already known to be within the ceiling is walked to measure the widths
-   * of its rows - at most as many measurements as that ceiling allows - and only then are the
-   * width, the product of the two dimensions and the agreement between the rows decided.
+   * Every conclusion here is drawn from the JSON as it already stands: the widths of the rows
+   * are visible in the payload itself, so rows that cannot describe one rectangle are found
+   * and reported without a single element having been read, and therefore without any run of
+   * values having been allocated for a payload that was never going to produce a matrix. No
+   * dimension is compared against a figure of this object's own - a matrix of any shape the
+   * encoder can write is a matrix this decoder reads - and the only judgement made is whether
+   * the rows agree with each other.
    *
    * A row that is not an array has no width to offer and is passed over: what is wrong with
    * such a payload is the row itself, which the reader of that row reports precisely, at that
@@ -599,42 +525,27 @@ object Codecs {
    *
    * @param rowsJson  the rows the payload states
    * @param history  the position within the document, taken from the decoding cursor
-   * @return the refusal, or nothing if the stated shape is one this port reads
+   * @return the refusal, or nothing if the rows the payload states agree
    */
-  private def matrixShapeRefusal(
+  private def matrixRaggedRefusal(
       rowsJson: Vector[Json],
       history: List[CursorOp]): Option[DecodingFailure] = {
 
-    val rows = rowsJson.size
-    if (rows > MaximumMatrixRows) {
-      Some(DecodingFailure(beyondCeiling("rows in the matrix", rows.toLong, MaximumMatrixRows), history))
+    val measured = rowsJson.flatMap(row => row.asArray.map(elements => elements.size))
+    val columns = if (measured.isEmpty) 0 else measured.max
+    if (measured.size == rowsJson.size && measured.exists(size => size != columns)) {
+      Some(DecodingFailure(RaggedMatrixMessage, history))
     } else {
-      // reached only for a row count within the ceiling, so this walk and what it collects are
-      // bounded by that ceiling rather than by the payload
-      val measured = rowsJson.flatMap(row => row.asArray.map(elements => elements.size))
-      val columns = if (measured.isEmpty) 0 else measured.max
-      if (columns > MaximumMatrixColumns) {
-        Some(DecodingFailure(
-          beyondCeiling("elements in each row of the matrix", columns.toLong, MaximumMatrixColumns),
-          history))
-      } else if (rows.toLong * columns.toLong > MaximumMatrixElements.toLong) {
-        Some(DecodingFailure(
-          beyondCeiling("elements in the matrix", rows.toLong * columns.toLong, MaximumMatrixElements),
-          history))
-      } else if (measured.size == rows && measured.exists(size => size != columns)) {
-        Some(DecodingFailure(RaggedMatrixMessage, history))
-      } else {
-        None
-      }
+      None
     }
   }
 
   private val doubleMatrixDecoder: Decoder[DoubleMatrix] =
     Decoder.instance { cursor =>
-      // the shape comes from the payload, so it is measured against the ceilings and checked
-      // for square rows before a row is read; a payload that is not an array falls through to
-      // the row reader, which reports it exactly as it always did
-      val refusal = cursor.value.asArray.flatMap(rowsJson => matrixShapeRefusal(rowsJson, cursor.history))
+      // the shape comes from the payload, so the rows are checked against each other before any
+      // of them is read; a payload that is not an array falls through to the row reader, which
+      // reports it exactly as it always did
+      val refusal = cursor.value.asArray.flatMap(rowsJson => matrixRaggedRefusal(rowsJson, cursor.history))
       refusal match {
         case Some(failure) => Left(failure)
         case None =>
@@ -667,24 +578,26 @@ object Codecs {
    * the right answer for a caller inside the library and the wrong one for a document
    * arriving from outside it.
    *
-   * ===How much a document may ask for===
+   * ===What a document may state===
    *
-   * The shape of the matrix is stated by the document, and both of its dimensions are taken
-   * from the payload as it stands - before a row is read and therefore before any row of
-   * values is allocated. Three ceilings apply, `MaximumMatrixRows`, `MaximumMatrixColumns` and
-   * `MaximumMatrixElements` for their product, and a payload beyond any of them is a decoding
-   * failure naming the one it exceeded. The row count is the first thing compared with its
-   * ceiling, because it is the one dimension knowable without touching a row: a payload
-   * stating more rows than this port reads is refused before anything examines them, so the
-   * measuring that follows is bounded by the ceiling rather than by the document. Rows that
-   * disagree are found in that same bounded pass, so a ragged payload is refused without its
-   * rows having been read either.
+   * The shape of the matrix is stated by the document, and every shape the encoder can write
+   * is a shape this decoder reads: no dimension is compared against a figure of this object's
+   * own. That symmetry is a requirement of this port's serialization contract, for the reason
+   * given at `doubleArrayCodec` - the factories that assemble one of these matrices are total
+   * over every shape the run-time can allocate, so a decoder with a shape ceiling would make
+   * `decode(encode(x))` fail for a matrix the port itself creates and writes, and for every
+   * value that carries one, a matrix of currency rates included.
    *
-   * The rows are read only once the stated shape is one this port accepts, and the rows that
-   * result are measured once more before the matrix is assembled. That second look is not a
-   * repetition of the first: it is what keeps assembly total, since the factory reached at
-   * that point answers a row of the wrong length by raising an error rather than reporting
-   * one, and no payload may be able to reach it.
+   * The one judgement drawn from the stated shape is whether the rows agree with each other,
+   * and it is made from the payload as it stands - before a row is read and therefore before
+   * any row of values is allocated. A ragged payload is refused at that point, so nothing is
+   * read for a document that was never going to describe a rectangle.
+   *
+   * The rows are read only once they are known to agree, and the rows that result are measured
+   * once more before the matrix is assembled. That second look is not a repetition of the
+   * first: it is what keeps assembly total, since the factory reached at that point answers a
+   * row of the wrong length by raising an error rather than reporting one, and no payload may
+   * be able to reach it.
    *
    * The rows are handed to the existing factory that assembles a matrix from them, so the
    * nested structure that a matrix keeps internally is built in the one file that owns it.
@@ -700,13 +613,12 @@ object Codecs {
    * The codecs that are determined by their type alone, offered as implicits.
    *
    * A derivation site needs the codec of every field type in implicit scope, and for these
-   * five types there is exactly one sensible choice, so importing the members of this object
+   * four types there is exactly one sensible choice, so importing the members of this object
    * brings them all in at once. Doing it through an import is what makes the choice
    * deliberate and visible in the file that makes it, rather than ambient everywhere this
-   * object is mentioned - which matters most for the two types the JSON library also
-   * publishes an instance for, the double and the time of day: the instance here has to take
-   * precedence over the plain numeric one and over the longer form of a time, and an import
-   * is what gives it that precedence.
+   * object is mentioned - which matters most for the one type the JSON library also publishes
+   * an instance for, the double: the instance here has to take precedence over the plain
+   * numeric one, and an import is what gives it that precedence.
    *
    * The helpers that take an argument are not offered here, and cannot be: each of them
    * needs the factory of the type it serves, so it is always invoked by name.
@@ -718,9 +630,6 @@ object Codecs {
 
     /** A day of the week, by constant name. */
     implicit val dayOfWeekCodec: Codec[DayOfWeek] = Codecs.dayOfWeekCodec
-
-    /** A time of day, in the shortest text that states it. */
-    implicit val localTimeCodec: Codec[LocalTime] = Codecs.localTimeCodec
 
     /** An immutable array of doubles, as a JSON array. */
     implicit val doubleArrayCodec: Codec[DoubleArray] = Codecs.doubleArrayCodec

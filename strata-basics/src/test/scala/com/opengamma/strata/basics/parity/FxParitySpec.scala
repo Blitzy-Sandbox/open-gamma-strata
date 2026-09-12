@@ -9,8 +9,12 @@ import cats.effect.IO
 import cats.effect.testing.scalatest.AsyncIOSpec
 import cats.syntax.all._
 
+import io.circe.ACursor
 import io.circe.Decoder
+import io.circe.DecodingFailure
+import io.circe.Json
 import io.circe.generic.semiauto.deriveDecoder
+import io.circe.parser
 
 import org.scalatest.funsuite.AsyncFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -129,12 +133,28 @@ import com.opengamma.strata.collect.result.FailureReason
  *             "merged":{"currencies":["GBP","USD","EUR","CHF"],"rates":[[…],…]}}]}
  * }}}
  *
- * An entry carries either its expectation or an `error`, and the discriminator is per entry, so
- * one list may legitimately mix the two - `identity-and-single-rate-conversion` answers three
- * identity queries and refuses five genuine ones. The README also documents a variant that adds a
- * tenth top-level `error` key, sets `matrixState` to `null` and leaves the five lists empty, for a
- * definition the builder itself rejects. No committed row exercises it, and it is read and
- * measured all the same rather than left to break on the first one anybody captures.
+ * An entry carries '''exactly one''' of its expectation and an `error`, and the discriminator is
+ * per entry, so one list may legitimately mix the two - `identity-and-single-rate-conversion`
+ * answers three identity queries and refuses five genuine ones. "Exactly one" is read strictly
+ * rather than preferentially: an entry that declares both keys, and an entry that declares
+ * neither, are both refused by `expectedDecoder` instead of being resolved in favour of one of
+ * them, because resolving in favour of the `error` would measure a captured value as a refusal
+ * and report a pass for a comparison that never happened. A key that is present with a JSON
+ * `null` declares nothing, which is how the outcome an entry does not have is written by the
+ * sibling fixtures of this module.
+ *
+ * The README also documents a variant that adds a tenth top-level `error` key, sets `matrixState`
+ * to `null` and leaves the five lists empty, for a definition the builder itself rejects. No
+ * committed row exercises it, and it is read and measured all the same rather than left to break
+ * on the first one anybody captures.
+ *
+ * Those key sets are '''enforced''' rather than merely documented. Every shape of the document
+ * declares its keys as a [[KeySchema]] beside the model that reads it, the row's through
+ * [[ParityHarness.loadStrict]] and every nested object's through
+ * [[ParityHarness.strictObject]], so an object whose keys are not the documented ones is refused
+ * with the keys named instead of being decoded by a derived decoder that would ignore whatever it
+ * had gained - which would leave a newly captured expectation unmeasured while this report still
+ * read `failed == 0`. The last three tests of the suite hold those declarations to their word.
  *
  * ===Why the matrix is rebuilt in bulk===
  *
@@ -184,13 +204,13 @@ class FxParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
    */
   test("the FX matrix, rate, conversion, cross-rate and merge surfaces reproduce the Java baseline exactly") {
     ParityHarness
-      .runFixture[FxRow](FixtureName, FixtureResource)(checkRow)
+      .runFixture[FxRow](FixtureName, FixtureResource, RowSchema)(checkRow)
       .flatMap(report => ParityHarness.failIfAny(report))
       .as(succeed)
   }
 
   test("the fixture carries the population the FX baseline is required to measure") {
-    ParityHarness.load[FxRow](FixtureResource).map { rows =>
+    ParityHarness.loadStrict[FxRow](FixtureResource, RowSchema).map { rows =>
       val counted = Counts.combineAll(rows.map(_.counts))
       withClue(s"fixture rows: ${rows.size}; measured entries: $counted: ") {
         // The floors are the contract of the capture, restated on the consuming side so that a
@@ -240,6 +260,196 @@ class FxParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
           .filter(row =>
             row.matrixState.exists(state => state.currencies != row.firstAppearanceOrder))
           .map(_.id) shouldBe empty
+      }
+    }
+  }
+
+  test("an entry's outcome is read from exactly one declared key, and every other shape is refused") {
+    // This exercises the entry decoders over crafted entries rather than over the fixture,
+    // deliberately: every committed entry states exactly one outcome, so the committed document
+    // cannot demonstrate that the other shapes are refused, and the shape that matters most - an
+    // entry carrying both an `error` and its captured value - would otherwise be measured as a
+    // refusal, with the captured value never compared and the row still reported as passed. No
+    // resource is read and no report is written here, so this cannot affect the measurement above.
+    //
+    // Two layers decide an entry, and each is asserted where it decides. The declared key set of
+    // the shape is checked first, so an entry carrying both outcome keys, or neither of them by
+    // omission, satisfies no documented variant and is refused naming the keys. Inside a declared
+    // key set the entry decoder reads the outcome from the one key that states it, where a key
+    // present with JSON `null` states nothing - which is the layer the `null` cases below reach.
+    IO {
+      val queryPrefix = """{"base":"GBP","counter":"USD","""
+      val conversionPrefix = """{"currency":"GBP","amount":100.0,"target":"USD","""
+      val convertedAmount = """{"currency":"USD","amount":160.0}"""
+      val javaMessage = "IllegalArgumentException: No FX rate found for USD/EUR"
+
+      // The documented shapes. A query states the value key alone or the `error` key alone, both
+      // of which the capture holds; a conversion states the value key alone, which is the only
+      // shape of one the capture holds - all 42 committed conversions are answered and section 6
+      // documents no refused conversion, which is what `ConversionSchema` declares.
+      parser.decode[Query](s"""$queryPrefix"fxRate":1.6}""") shouldBe
+        Right(Query("GBP", "USD", Expected.Value(1.6d)))
+      parser.decode[Query](s"""$queryPrefix"$ErrorField":"$javaMessage"}""") shouldBe
+        Right(Query("GBP", "USD", Expected.Failed(javaMessage)))
+      parser.decode[Conversion](s"""$conversionPrefix"converted":$convertedAmount}""") shouldBe
+        Right(Conversion("GBP", 100.0d, "USD", Expected.Value(AmountValue("USD", 160.0d))))
+
+      // A conversion carrying an `error` instead is refused by its key set rather than read as a
+      // refusal: the shape is not one the capture documents, so an entry that has stopped
+      // agreeing with this spec is reported instead of being measured with a key nothing reads.
+      withClue("a conversion carrying an error: ") {
+        parser
+          .decode[Conversion](s"""$conversionPrefix"$ErrorField":"$javaMessage"}""")
+          .left
+          .map(_.getMessage) match {
+          case Left(message) =>
+            message should include("satisfy no documented variant")
+            message should include(s"unknown keys {$ErrorField}")
+            message should include("missing {converted}")
+          case Right(entry) => fail(s"a conversion carrying an error decoded as $entry")
+        }
+      }
+
+      // Both keys declared, for all five entry shapes, since the rule is one rule. This is the
+      // false-green case: before it, each of these decoded as a refusal and the captured value
+      // was discarded. A key set carrying both outcome keys satisfies no documented variant of
+      // any of the five, so each is refused naming the key that does not belong to the variant.
+      val bothDeclared =
+        Vector[(String, String, Either[io.circe.Error, Any])](
+          (
+            "queries",
+            "fxRate",
+            parser.decode[Query](s"""$queryPrefix"fxRate":1.6,"$ErrorField":"$javaMessage"}""")),
+          (
+            "conversions",
+            "converted",
+            parser.decode[Conversion](
+              s"""$conversionPrefix"converted":$convertedAmount,"$ErrorField":"$javaMessage"}""")),
+          (
+            "multi",
+            "multiConverted",
+            parser.decode[MultiConversion](
+              s"""{"amounts":[{"currency":"GBP","amount":1600.0}],"target":"USD",""" +
+                s""""multiConverted":{"currency":"USD","amount":2560.0},""" +
+                s""""$ErrorField":"$javaMessage"}""")),
+          (
+            "crosses",
+            "crossRate",
+            parser.decode[Cross](
+              s"""{"rate1":{"pair":"EUR/USD","rate":1.25},"rate2":{"pair":"USD/GBP","rate":0.8},""" +
+                s""""crossRate":{"pair":"EUR/GBP","rate":1.0},"$ErrorField":"$javaMessage"}""")),
+          (
+            "merges",
+            "merged",
+            parser.decode[Merge](
+              s"""{"other":[{"pair":"EUR/CHF","rate":1.2}],""" +
+                s""""merged":{"currencies":["GBP","USD"],"rates":[[1.0,1.6],[0.625,1.0]]},""" +
+                s""""$ErrorField":"$javaMessage"}""")))
+      bothDeclared.foreach { case (group, key, outcome) =>
+        withClue(s"a $group entry declaring both '$ErrorField' and '$key': ") {
+          outcome.left.map(_.getMessage) match {
+            case Left(message) =>
+              message should include("satisfy no documented variant")
+              message should include(ErrorField)
+              message should include(key)
+            case Right(entry) => fail(s"an entry declaring both outcomes decoded as $entry")
+          }
+        }
+      }
+
+      // Neither key declared. By omission the key set decides it, naming the outcome key the
+      // shape wanted and did not get; by `null` inside a key set the shape does document, the
+      // entry decoder decides it, because a key present and null declares nothing. Both are
+      // refusals, so an entry that states no outcome is never defaulted to either side.
+      val neitherByOmission =
+        Vector[(String, String, Either[io.circe.Error, Any])](
+          ("queries", "fxRate", parser.decode[Query]("""{"base":"GBP","counter":"USD"}""")),
+          (
+            "conversions",
+            "converted",
+            parser.decode[Conversion]("""{"currency":"GBP","amount":100.0,"target":"USD"}""")))
+      neitherByOmission.foreach { case (group, key, outcome) =>
+        withClue(s"a $group entry omitting both '$ErrorField' and '$key': ") {
+          outcome.left.map(_.getMessage) match {
+            case Left(message) =>
+              message should include("satisfy no documented variant")
+              message should include(s"missing {$key}")
+            case Right(entry) => fail(s"an entry declaring no outcome decoded as $entry")
+          }
+        }
+      }
+      withClue(s"a query whose '$ErrorField' is present and null: ") {
+        parser.decode[Query](s"""$queryPrefix"$ErrorField":null}""").left.map(_.getMessage) match {
+          case Left(message) =>
+            message should include(s"exactly one of '$ErrorField' and 'fxRate'")
+            message should include("declares neither")
+            message should include("present and null")
+          case Right(entry) => fail(s"a query stating no outcome decoded as $entry")
+        }
+      }
+
+      // A declared key is decoded from its own cursor, so an outcome stated with the wrong JSON
+      // type fails to decode instead of being read as the sibling outcome or as an absence.
+      withClue("an outcome stated with the wrong JSON type: ") {
+        parser.decode[Query](s"""$queryPrefix"fxRate":true}""").isLeft shouldBe true
+        parser.decode[Query](s"""$queryPrefix"$ErrorField":404}""").isLeft shouldBe true
+        parser
+          .decode[Conversion](s"""$conversionPrefix"converted":"USD 160.0"}""")
+          .isLeft shouldBe true
+      }
+      succeed
+    }
+  }
+
+  /*
+   * The three tests below measure the decoding rather than the port. A derived decoder reads the
+   * fields its model declares and ignores every other key, so a key the capture started emitting
+   * would be dropped in silence, the rows would decode perfectly and the report above would still
+   * read `failed == 0` over a fixture that was no longer being measured in full. Every shape of
+   * this document therefore declares its keys, and these tests hold that declaration to its word
+   * on hand-built objects: the documented shape is read, and the three ways a shape can drift -
+   * a key gained, a key lost, a key renamed - are refused by name.
+   */
+  test("every documented FX object shape is read under its declared keys and no others") {
+    IO {
+      val discrepancies = Shapes.toList.flatMap(shape => checkStrictness(shape))
+      withClue(s"${discrepancies.size} shape(s) not strictly decoded: ${discrepancies.mkString("; ")}: ") {
+        discrepancies shouldBe empty
+      }
+    }
+  }
+
+  test("an FX entry carrying both outcome keys, or neither, is refused by its key set") {
+    IO {
+      val discrepancies =
+        OutcomeShapes.toList.flatMap { case (shape, valueKey) => checkOutcomeKeys(shape, valueKey) }
+      withClue(s"${discrepancies.size} outcome key set(s) admitted: ${discrepancies.mkString("; ")}: ") {
+        discrepancies shouldBe empty
+      }
+    }
+  }
+
+  test("the FX row reads the documented tenth key and nothing beyond the nine") {
+    IO {
+      // The nine-key row and the tenth-key row are both documented, so both are read.
+      withClue(s"the nine-key row, carrying {${keysOf(RowSample).mkString(", ")}}, was refused: ") {
+        refusalOf(strictRowDecoder.decodeJson(RowSample)) shouldBe None
+      }
+      val rejectedDefinition = strictRowDecoder.decodeJson(RefusedRowSample)
+      withClue(s"the tenth-key row was refused: ${refusalOf(rejectedDefinition).getOrElse("")}: ") {
+        rejectedDefinition.map(row => (row.error.isDefined, row.matrixState, row.entryCounts.sum)) shouldBe
+          Right((true, None, 0))
+      }
+      // Nothing beyond those two shapes: an undocumented key is refused on either of them, by
+      // name, which is what keeps `optional` from being a hole in the row's key set.
+      val refusals =
+        List(RowSample, RefusedRowSample).flatMap(row =>
+          refusalOf(strictRowDecoder.decodeJson(withKey(row, AddedKey, Json.True))))
+      withClue(s"a row carrying '$AddedKey' was accepted: ") {
+        refusals.size shouldBe 2
+      }
+      withClue(s"a refusal does not name '$AddedKey': ${refusals.mkString("; ")}: ") {
+        refusals.filterNot(message => message.contains(AddedKey)) shouldBe empty
       }
     }
   }
@@ -351,7 +561,14 @@ private[parity] object FxParitySpec {
       "fx-rate-cross-rates")
 
   //-------------------------------------------------------------------------
-  // The row model.
+  // The row model. Every shape declares the keys it is documented to carry, as a [[KeySchema]]
+  // beside the model that reads them, and the decoders below apply those declarations: a derived
+  // decoder reads the fields its model has and ignores every other key, so without them a key the
+  // capture started emitting would be dropped in silence and the expectation it carried would go
+  // unmeasured while this report still read `failed == 0`. The declarations are section 6 of
+  // `tools/parity-capture/README.md` restated where the document is read, and the committed
+  // baseline is what they are held to: a schema that refuses a committed row is the schema that is
+  // wrong.
   //-------------------------------------------------------------------------
 
   /**
@@ -406,12 +623,25 @@ private[parity] object FxParitySpec {
   final case class RatePoint(pair: String, rate: Double)
 
   /**
+   * The keys of a [[RatePoint]], which every one of the four places it appears carries exactly:
+   * the entries of `matrix`, the two rates and the cross rate of a `crosses` entry, and the
+   * entries of a merge's `other`.
+   */
+  val RatePointSchema: KeySchema = KeySchema.uniform("rate point", Set("pair", "rate"))
+
+  /**
    * An amount in a currency, as `{"currency": "USD", "amount": 2560.0}`.
    *
    * @param currency  the currency code
    * @param amount  the amount
    */
   final case class AmountValue(currency: String, amount: Double)
+
+  /**
+   * The keys of an [[AmountValue]], carried by a conversion's `converted`, by each entry of a
+   * multi-currency conversion's `amounts` and by its `multiConverted`.
+   */
+  val AmountValueSchema: KeySchema = KeySchema.uniform("amount", Set("currency", "amount"))
 
   /**
    * The state of a built matrix: its currencies in matrix order, and its rates row by row.
@@ -435,6 +665,11 @@ private[parity] object FxParitySpec {
   }
 
   /**
+   * The keys of a [[MatrixState]], carried by a row's `matrixState` and by a merge's `merged`.
+   */
+  val MatrixStateSchema: KeySchema = KeySchema.uniform("matrix state", Set("currencies", "rates"))
+
+  /**
    * A rate query and its outcome, as `{"base": "GBP", "counter": "USD", "fxRate": 1.6}`.
    *
    * @param base  the base currency code
@@ -442,6 +677,21 @@ private[parity] object FxParitySpec {
    * @param fxRate  the rate the matrix answered, or the refusal
    */
   final case class Query(base: String, counter: String, fxRate: Expected[Double])
+
+  /**
+   * The keys of a [[Query]]: the two currencies, and exactly one of the two outcome keys.
+   *
+   * The two documented key sets are stated as two variants of one schema rather than as one key
+   * set with an optional outcome, which is what makes the outcome '''exclusive''' at the level of
+   * the keys: an entry carrying both `fxRate` and `error`, and an entry carrying neither, satisfy
+   * no variant and are refused before any value is read. The committed baseline holds 297 answered
+   * and 7 refused queries and nothing else.
+   */
+  val QuerySchema: KeySchema =
+    KeySchema.variants(
+      "query",
+      "answered" -> Set("base", "counter", "fxRate"),
+      "refused" -> Set("base", "counter", ErrorField))
 
   /**
    * A single-amount conversion and its outcome.
@@ -458,6 +708,18 @@ private[parity] object FxParitySpec {
       converted: Expected[AmountValue])
 
   /**
+   * The keys of a [[Conversion]].
+   *
+   * Every one of the 42 committed conversions was answered, and section 6 documents no captured
+   * refusal of one, so the answered key set is the only one declared. A conversion that ever
+   * carried an `error` instead would be refused here by name rather than decoded with its captured
+   * expectation unread - which is the outcome this schema exists to produce, since the alternative
+   * is a measurement that quietly stopped covering the entry.
+   */
+  val ConversionSchema: KeySchema =
+    KeySchema.uniform("conversion", Set("currency", "amount", "target", "converted"))
+
+  /**
    * A multi-currency conversion and its outcome.
    *
    * @param amounts  the amounts to convert, one per currency
@@ -470,6 +732,13 @@ private[parity] object FxParitySpec {
       multiConverted: Expected[AmountValue])
 
   /**
+   * The keys of a [[MultiConversion]], answered in all six committed entries for the reason
+   * [[ConversionSchema]] gives.
+   */
+  val MultiConversionSchema: KeySchema =
+    KeySchema.uniform("multi-currency conversion", Set("amounts", "target", "multiConverted"))
+
+  /**
    * A cross of two rates and its outcome.
    *
    * @param rate1  the first rate
@@ -477,6 +746,17 @@ private[parity] object FxParitySpec {
    * @param crossRate  the rate the cross produced, or the refusal
    */
   final case class Cross(rate1: RatePoint, rate2: RatePoint, crossRate: Expected[RatePoint])
+
+  /**
+   * The keys of a [[Cross]]: the two rates, and exactly one of the two outcome keys, for the
+   * reason [[QuerySchema]] gives. The committed baseline holds the eight agreeing permutations and
+   * the five documented failures.
+   */
+  val CrossSchema: KeySchema =
+    KeySchema.variants(
+      "cross",
+      "answered" -> Set("rate1", "rate2", "crossRate"),
+      "refused" -> Set("rate1", "rate2", ErrorField))
 
   /**
    * A merge with another matrix and its outcome.
@@ -487,6 +767,17 @@ private[parity] object FxParitySpec {
    * @param merged  the state of the matrix that resulted, or the refusal
    */
   final case class Merge(other: Vector[RatePoint], merged: Expected[MatrixState])
+
+  /**
+   * The keys of a [[Merge]]: the other matrix's definition, and exactly one of the two outcome
+   * keys, for the reason [[QuerySchema]] gives. Two of the four committed merges were answered and
+   * two - the disjoint matrix and the empty one - were refused.
+   */
+  val MergeSchema: KeySchema =
+    KeySchema.variants(
+      "merge",
+      "answered" -> Set("other", "merged"),
+      "refused" -> Set("other", ErrorField))
 
   /**
    * One scenario: a matrix definition, the state it built, and the operations replayed against it.
@@ -567,6 +858,41 @@ private[parity] object FxParitySpec {
   }
 
   /**
+   * The keys of an [[FxRow]]: the documented nine, and the documented tenth.
+   *
+   * Section 6 of `tools/parity-capture/README.md` states the nine keys every row carries - a list
+   * a scenario does not exercise is emitted empty rather than omitted - and one variant that
+   * '''adds''' `error` rather than removing any of them, for a definition the builder itself
+   * rejected, which also sets `matrixState` to `null` and leaves the five lists empty. All 14
+   * committed rows carry exactly the nine; none carries the tenth. It is therefore declared
+   * `optional` rather than as a second variant, which is exactly what that section prescribes: a
+   * schema demanding exactly nine keys would read today's fixture and break on the first rejected
+   * definition anybody captures, while this one reads both shapes and still refuses everything
+   * else. The exclusivity the tenth key implies - state or error, never both and never neither -
+   * is not a property of the key set and is measured by `checkShape`, which reports it as a row
+   * this spec cannot measure rather than as a discrepancy of the port.
+   *
+   * This is the schema [[ParityHarness.loadStrict]] applies to each row of the document while
+   * loading it; the schemas of the objects nested inside a row are applied by their own decoders,
+   * which is the only place their keys are visible.
+   */
+  val RowSchema: KeySchema =
+    KeySchema
+      .uniform(
+        "fx row",
+        Set(
+          "id",
+          "source",
+          "matrix",
+          "matrixState",
+          "queries",
+          "conversions",
+          "multi",
+          "crosses",
+          "merges"))
+      .withOptional(Set(ErrorField))
+
+  /**
    * What the fixture holds, as counted by the population test.
    *
    * @param matrixEntries  defining rate entries
@@ -637,18 +963,41 @@ private[parity] object FxParitySpec {
   }
 
   //-------------------------------------------------------------------------
-  // Decoders. Every product is derived; the four entry decoders are written by hand because an
-  // entry's expectation is one of two sibling keys rather than a field of its own.
+  // Decoders. Every product is derived; the five entry decoders are written by hand because an
+  // entry's expectation is exactly one of two sibling keys rather than a field of its own, and
+  // which of the two it is has to be established before either is read.
+  //
+  // Each one reads its object only after the object's keys have been checked against the schema
+  // declared beside its model, through `ParityHarness.strictObject`: the keys of a nested object
+  // are visible to its own decoder and nowhere else, so this is where that check belongs. The row
+  // decoder is wrapped in the same way, with `RowSchema`, which is the composition the loader
+  // summons while reading the document and the one the strictness tests decode through.
   //-------------------------------------------------------------------------
 
   /**
-   * Reads an entry's outcome from whichever of the two keys it carries.
+   * Reads an entry's outcome from the one key that states it, and refuses every other shape.
    *
-   * The `error` key is tried first and decides the answer when it holds a string, which is what
-   * makes the refusal the expectation rather than a missing value. A key that is absent - or
-   * present and `null`, the form the other fixtures of this module use - leaves the named
-   * expectation to be read, and an entry carrying neither fails to decode, which the harness
-   * reports as a fixture that no longer agrees with this spec.
+   * An entry states its outcome in '''exactly one''' of two sibling keys - the `error` of a
+   * refusal, or the named key of a value - which is the schema of section 6 of
+   * `tools/parity-capture/README.md` and of AAP section 0.6.1, and this decoder requires it
+   * rather than preferring one key over the other. Giving `error` precedence would accept an
+   * entry that carries '''both''' keys and would then never look at the captured value: the entry
+   * would be measured by asserting only that the port refused, that assertion would hold, and the
+   * value the capture recorded would be silently discarded. The row would be reported as passed
+   * while one of its comparisons had been retired - a false-green measurement, which is the one
+   * outcome a parity fixture must not be able to produce. Both keys are therefore inspected
+   * before either is read.
+   *
+   * A key '''declares''' an outcome only when it is present and holds something other than JSON
+   * `null` - see [[declared]] - so an absent key and a null-valued one mean the same thing here.
+   * That is what lets this read the `"error": null` form the sibling fixtures of this module write
+   * on a successful entry without treating those entries as declaring two outcomes.
+   *
+   * The single declared key is decoded from its own cursor, so an outcome stated with the wrong
+   * JSON type is a decoding failure rather than being read as the sibling outcome or as an
+   * absence. The two refusals - both keys declared, and neither - carry the names of the two keys
+   * and the cursor's history, so the harness reports a fixture that no longer agrees with this
+   * spec and names the entry it disagrees about.
    *
    * @param field  the name of the key carrying the value
    * @tparam A  the type of the value
@@ -656,64 +1005,464 @@ private[parity] object FxParitySpec {
    */
   private def expectedDecoder[A: Decoder](field: String): Decoder[Expected[A]] =
     Decoder.instance { cursor =>
-      cursor.get[Option[String]](ErrorField).flatMap {
-        case Some(message) => Right(Expected.Failed(message))
-        case None => cursor.get[A](field).map(value => Expected.Value(value))
+      val error = cursor.downField(ErrorField)
+      val value = cursor.downField(field)
+      (declared(error), declared(value)) match {
+        case (true, false) => error.as[String].map(message => Expected.Failed(message))
+        case (false, true) => value.as[A].map(captured => Expected.Value(captured))
+        case (true, true) => Left(DecodingFailure(unstatedOutcome(field, "both"), cursor.history))
+        case (false, false) =>
+          Left(DecodingFailure(unstatedOutcome(field, "neither"), cursor.history))
       }
     }
 
-  implicit val ratePointDecoder: Decoder[RatePoint] = deriveDecoder[RatePoint]
+  /**
+   * Whether the key a cursor points at declares an outcome.
+   *
+   * A key declares an outcome when it is present '''and''' holds something other than JSON
+   * `null`. Absence and `null` are deliberately the same answer: the fixtures of this module
+   * state the outcome an entry does not have either by omitting its key, which is what
+   * `fx-baseline.json` does, or by writing it as `null`, which is what `daycount-baseline.json`
+   * and `holiday-baseline.json` do on every successful entry. Reading a `null` as a declaration
+   * would make each of those entries state two outcomes and fail to decode without the document
+   * having changed, and reading an absent key as one would make every entry ambiguous.
+   *
+   * @param cursor  the cursor of the key, as `downField` answers it
+   * @return whether that key states an outcome
+   */
+  private def declared(cursor: ACursor): Boolean =
+    cursor.succeeded && !cursor.focus.exists(json => json.isNull)
 
-  implicit val amountValueDecoder: Decoder[AmountValue] = deriveDecoder[AmountValue]
+  /**
+   * The message for an entry that does not state exactly one outcome.
+   *
+   * It names '''both''' keys and what the entry did with them, because whoever reads this message
+   * is looking at a fixture and needs to know which key to add or remove; naming only the key that
+   * was read would leave the other one to be guessed. It also states the rule for a `null`, since
+   * an entry written in the sibling fixtures' style is the likeliest way to reach the second case.
+   *
+   * @param field  the name of the key carrying the value
+   * @param declaredKeys  what the entry declared, as `both` or `neither`
+   * @return the message
+   */
+  private def unstatedOutcome(field: String, declaredKeys: String): String =
+    s"an entry states its outcome in exactly one of '$ErrorField' and '$field', but this entry " +
+      s"declares $declaredKeys (a key that is absent, or present and null, declares nothing)"
 
-  implicit val matrixStateDecoder: Decoder[MatrixState] = deriveDecoder[MatrixState]
+  implicit val ratePointDecoder: Decoder[RatePoint] =
+    ParityHarness.strictObject(RatePointSchema)(deriveDecoder[RatePoint])
+
+  implicit val amountValueDecoder: Decoder[AmountValue] =
+    ParityHarness.strictObject(AmountValueSchema)(deriveDecoder[AmountValue])
+
+  implicit val matrixStateDecoder: Decoder[MatrixState] =
+    ParityHarness.strictObject(MatrixStateSchema)(deriveDecoder[MatrixState])
 
   implicit val queryDecoder: Decoder[Query] =
-    Decoder.instance { cursor =>
+    ParityHarness.strictObject(QuerySchema)(Decoder.instance { cursor =>
       for {
         base <- cursor.get[String]("base")
         counter <- cursor.get[String]("counter")
         fxRate <- expectedDecoder[Double]("fxRate").apply(cursor)
       } yield Query(base, counter, fxRate)
-    }
+    })
 
   implicit val conversionDecoder: Decoder[Conversion] =
-    Decoder.instance { cursor =>
+    ParityHarness.strictObject(ConversionSchema)(Decoder.instance { cursor =>
       for {
         currency <- cursor.get[String]("currency")
         amount <- cursor.get[Double]("amount")
         target <- cursor.get[String]("target")
         converted <- expectedDecoder[AmountValue]("converted").apply(cursor)
       } yield Conversion(currency, amount, target, converted)
-    }
+    })
 
   implicit val multiConversionDecoder: Decoder[MultiConversion] =
-    Decoder.instance { cursor =>
+    ParityHarness.strictObject(MultiConversionSchema)(Decoder.instance { cursor =>
       for {
         amounts <- cursor.get[Vector[AmountValue]]("amounts")
         target <- cursor.get[String]("target")
         converted <- expectedDecoder[AmountValue]("multiConverted").apply(cursor)
       } yield MultiConversion(amounts, target, converted)
-    }
+    })
 
   implicit val crossDecoder: Decoder[Cross] =
-    Decoder.instance { cursor =>
+    ParityHarness.strictObject(CrossSchema)(Decoder.instance { cursor =>
       for {
         rate1 <- cursor.get[RatePoint]("rate1")
         rate2 <- cursor.get[RatePoint]("rate2")
         crossRate <- expectedDecoder[RatePoint]("crossRate").apply(cursor)
       } yield Cross(rate1, rate2, crossRate)
-    }
+    })
 
   implicit val mergeDecoder: Decoder[Merge] =
-    Decoder.instance { cursor =>
+    ParityHarness.strictObject(MergeSchema)(Decoder.instance { cursor =>
       for {
         other <- cursor.get[Vector[RatePoint]]("other")
         merged <- expectedDecoder[MatrixState]("merged").apply(cursor)
       } yield Merge(other, merged)
+    })
+
+  /**
+   * The row's own fields, read once the keys are known to be the documented ones.
+   *
+   * Deliberately not implicit: nothing may summon a decoder for a row of this document that is
+   * not the strict one below, so the only reference to this value is the composition that makes
+   * it strict.
+   */
+  private val fxRowFields: Decoder[FxRow] = deriveDecoder[FxRow]
+
+  /**
+   * The row decoder with [[RowSchema]] applied, as the loader applies it while reading the
+   * document.
+   *
+   * This is the implicit a loader summons, so every path that reads a row of this document -
+   * [[ParityHarness.loadStrict]], which composes it with the same check again while reading, and
+   * the strictness tests of this suite, which decode hand-built objects off the loading path - is
+   * strict about keys by construction rather than by remembering to be.
+   */
+  implicit val strictRowDecoder: Decoder[FxRow] = ParityHarness.strictObject(RowSchema)(fxRowFields)
+
+  //-------------------------------------------------------------------------
+  // The documented shapes, as the strictness tests read them.
+  //
+  // Each shape below pairs its schema with an object that satisfies it and the decoder that reads
+  // it, so the tests can mutate one key of any shape and assert what happens instead of assuming
+  // it. The samples are hand-built rather than lifted out of the baseline: a sample taken from the
+  // document would move with the document, and what is being tested is this file's statement of
+  // what the document is allowed to say.
+  //-------------------------------------------------------------------------
+
+  /** A key no documented shape knows, standing for one a future capture starts emitting. */
+  val AddedKey: String = "capturedLater"
+
+  /**
+   * One documented object shape, as the strictness tests exercise it.
+   *
+   * @param name  the shape, as a message about it names it
+   * @param schema  the keys it is documented to carry
+   * @param sample  an object carrying exactly the keys of one variant, all of them required
+   * @param read  decodes an object of this shape, answering the refusal where it is refused
+   */
+  final case class Shape(
+      name: String,
+      schema: KeySchema,
+      sample: Json,
+      read: Json => Decoder.Result[Any])
+
+  object Shape {
+
+    /**
+     * A shape read by the decoder the fixture consumer uses for it.
+     *
+     * @param name  the shape, as a message about it names it
+     * @param schema  the keys it is documented to carry
+     * @param sample  an object carrying exactly the keys of one variant
+     * @param decoder  the decoder this file reads that shape with, strictness and all
+     * @tparam A  the model the shape decodes to
+     * @return the shape
+     */
+    def of[A](name: String, schema: KeySchema, sample: Json)(implicit decoder: Decoder[A]): Shape =
+      Shape(name, schema, sample, json => decoder.decodeJson(json))
+  }
+
+  /**
+   * A captured rate point.
+   *
+   * @param pair  the pair name
+   * @param rate  the rate
+   * @return the object the fixture would carry for it
+   */
+  private def ratePointOf(pair: String, rate: Double): Json =
+    Json.obj("pair" -> Json.fromString(pair), "rate" -> Json.fromDoubleOrNull(rate))
+
+  /**
+   * A captured amount.
+   *
+   * @param currency  the currency code
+   * @param value  the amount
+   * @return the object the fixture would carry for it
+   */
+  private def amountOf(currency: String, value: Double): Json =
+    Json.obj("currency" -> Json.fromString(currency), "amount" -> Json.fromDoubleOrNull(value))
+
+  /** The state of the `GBP/USD 1.6` matrix, as the fixture carries it. */
+  private val MatrixStateSample: Json =
+    Json.obj(
+      "currencies" -> Json.arr(Json.fromString("GBP"), Json.fromString("USD")),
+      "rates" -> Json.arr(
+        Json.arr(Json.fromDoubleOrNull(1.0), Json.fromDoubleOrNull(1.6)),
+        Json.arr(Json.fromDoubleOrNull(0.625), Json.fromDoubleOrNull(1.0))))
+
+  /** A rate query the Java implementation answered. */
+  private val AnsweredQuerySample: Json =
+    Json.obj(
+      "base" -> Json.fromString("GBP"),
+      "counter" -> Json.fromString("USD"),
+      "fxRate" -> Json.fromDoubleOrNull(1.6))
+
+  /** A rate query the Java implementation refused, the currency not being in the matrix. */
+  private val RefusedQuerySample: Json =
+    Json.obj(
+      "base" -> Json.fromString("USD"),
+      "counter" -> Json.fromString("EUR"),
+      ErrorField -> Json.fromString("IllegalArgumentException: No FX rate found for USD/EUR"))
+
+  /** A single-amount conversion the Java implementation answered. */
+  private val ConversionSample: Json =
+    Json.obj(
+      "currency" -> Json.fromString("GBP"),
+      "amount" -> Json.fromDoubleOrNull(100.0),
+      "target" -> Json.fromString("USD"),
+      "converted" -> amountOf("USD", 160.0))
+
+  /** A multi-currency conversion the Java implementation answered. */
+  private val MultiConversionSample: Json =
+    Json.obj(
+      "amounts" -> Json.arr(amountOf("GBP", 1600.0)),
+      "target" -> Json.fromString("USD"),
+      "multiConverted" -> amountOf("USD", 2560.0))
+
+  /** A cross the Java implementation answered, at the last digit the capture recorded. */
+  private val AnsweredCrossSample: Json =
+    Json.obj(
+      "rate1" -> ratePointOf("EUR/USD", 1.1428571428571428),
+      "rate2" -> ratePointOf("USD/GBP", 0.8),
+      "crossRate" -> ratePointOf("EUR/GBP", 0.9142857142857143))
+
+  /** A cross the Java implementation refused, the two rates having no unique common currency. */
+  private val RefusedCrossSample: Json =
+    Json.obj(
+      "rate1" -> ratePointOf("EUR/USD", 1.1428571428571428),
+      "rate2" -> ratePointOf("EUR/USD", 1.1428571428571428),
+      ErrorField -> Json.fromString(
+        "IllegalArgumentException: Currency pairs must have a single currency in common"))
+
+  /** A merge the Java implementation answered. */
+  private val AnsweredMergeSample: Json =
+    Json.obj("other" -> Json.arr(ratePointOf("USD/CHF", 1.2)), "merged" -> MatrixStateSample)
+
+  /** A merge the Java implementation refused, the two matrices sharing no currency. */
+  private val RefusedMergeSample: Json =
+    Json.obj(
+      "other" -> Json.arr(ratePointOf("EUR/CHF", 1.2)),
+      ErrorField -> Json.fromString(
+        "IllegalArgumentException: FxMatrix must contain a common currency to be merged"))
+
+  /** A row of the nine documented keys, carrying one entry in each of its five lists. */
+  val RowSample: Json =
+    Json.obj(
+      "id" -> Json.fromString("schema-sample"),
+      "source" -> Json.fromString("FxParitySpec.RowSample"),
+      "matrix" -> Json.arr(ratePointOf("GBP/USD", 1.6)),
+      "matrixState" -> MatrixStateSample,
+      "queries" -> Json.arr(AnsweredQuerySample, RefusedQuerySample),
+      "conversions" -> Json.arr(ConversionSample),
+      "multi" -> Json.arr(MultiConversionSample),
+      "crosses" -> Json.arr(AnsweredCrossSample, RefusedCrossSample),
+      "merges" -> Json.arr(AnsweredMergeSample, RefusedMergeSample))
+
+  /**
+   * The row of the documented tenth key: a definition the builder itself rejected.
+   *
+   * No committed row has this shape, and section 6 documents it, so it is stated here and read:
+   * `matrixState` is `null`, the five lists are empty, and the top-level `error` says why. It is
+   * held apart from [[Shapes]] because the mutations those shapes are put through remove one
+   * required key at a time, and this shape's tenth key is `optional` - removing it leaves the nine
+   * documented keys, which is the other documented shape and is accepted.
+   */
+  val RefusedRowSample: Json =
+    Json.obj(
+      "id" -> Json.fromString("schema-sample-rejected-definition"),
+      "source" -> Json.fromString("FxParitySpec.RefusedRowSample"),
+      "matrix" -> Json.arr(ratePointOf("GBP/USD", 1.6), ratePointOf("EUR/CHF", 1.2)),
+      "matrixState" -> Json.Null,
+      "queries" -> Json.arr(),
+      "conversions" -> Json.arr(),
+      "multi" -> Json.arr(),
+      "crosses" -> Json.arr(),
+      "merges" -> Json.arr(),
+      ErrorField -> Json.fromString(
+        "IllegalStateException: Unable to create FX Matrix from the input rates"))
+
+  /**
+   * Every documented shape whose sample carries only required keys, each with the decoder this
+   * file reads it with.
+   *
+   * The row is read through [[strictRowDecoder]] because that is the composition
+   * [[ParityHarness.loadStrict]] applies to a row of the document; every other shape is read
+   * through the implicit decoder the row decoder itself reaches for, so what these tests exercise
+   * is the decoding the measurement uses and not a second copy of it.
+   */
+  val Shapes: Vector[Shape] =
+    Vector(
+      Shape.of[FxRow]("row", RowSchema, RowSample)(strictRowDecoder),
+      Shape.of[RatePoint]("rate point", RatePointSchema, ratePointOf("GBP/USD", 1.6)),
+      Shape.of[AmountValue]("amount", AmountValueSchema, amountOf("USD", 160.0)),
+      Shape.of[MatrixState]("matrix state", MatrixStateSchema, MatrixStateSample),
+      Shape.of[Query]("answered query", QuerySchema, AnsweredQuerySample),
+      Shape.of[Query]("refused query", QuerySchema, RefusedQuerySample),
+      Shape.of[Conversion]("conversion", ConversionSchema, ConversionSample),
+      Shape.of[MultiConversion](
+        "multi-currency conversion",
+        MultiConversionSchema,
+        MultiConversionSample),
+      Shape.of[Cross]("answered cross", CrossSchema, AnsweredCrossSample),
+      Shape.of[Cross]("refused cross", CrossSchema, RefusedCrossSample),
+      Shape.of[Merge]("answered merge", MergeSchema, AnsweredMergeSample),
+      Shape.of[Merge]("refused merge", MergeSchema, RefusedMergeSample))
+
+  /**
+   * The three entry shapes whose outcome is one of two sibling keys, with the value key of each.
+   *
+   * These are the shapes where a key set can express an outcome that is not one - both keys, or
+   * neither - and the variants of their schemas are what refuse it.
+   */
+  val OutcomeShapes: Vector[(Shape, String)] =
+    Vector(
+      Shape.of[Query]("query", QuerySchema, AnsweredQuerySample) -> "fxRate",
+      Shape.of[Cross]("cross", CrossSchema, AnsweredCrossSample) -> "crossRate",
+      Shape.of[Merge]("merge", MergeSchema, AnsweredMergeSample) -> "merged")
+
+  /**
+   * Checks that a shape is read under its documented keys and under no others.
+   *
+   * The sample must be accepted, and three mutations of it must not be: a key no variant knows,
+   * which is the key a capture that started emitting one would add; each of its own keys removed,
+   * which is the key a capture stopped emitting; and each of its own keys renamed, which is both
+   * at once and the mutation a derived decoder is least able to notice, since the model still has
+   * a field for the old name. Each refusal must '''name''' the key concerned, because a refusal
+   * that does not is a refusal nobody can act on.
+   *
+   * @param shape  the documented shape
+   * @return everything that did not hold, in the order it was checked
+   */
+  def checkStrictness(shape: Shape): List[String] = {
+    val accepted = refusalOf(shape.read(shape.sample)) match {
+      case Some(message) =>
+        List(
+          s"${shape.name}: the documented sample, carrying " +
+            s"{${keysOf(shape.sample).mkString(", ")}}, was refused, so the declared schema " +
+            s"${shape.schema.describe} does not describe it: $message")
+      case None => Nil
+    }
+    val added =
+      requireRefusal(
+        shape,
+        s"with '$AddedKey' added",
+        withKey(shape.sample, AddedKey, Json.True),
+        AddedKey)
+    val mutated = keysOf(shape.sample).toList.flatMap { key =>
+      requireRefusal(shape, s"without '$key'", withoutKey(shape.sample, key), key) :::
+        requireRefusal(
+          shape,
+          s"with '$key' renamed to '${renamedOf(key)}'",
+          renamedKey(shape.sample, key, renamedOf(key)),
+          renamedOf(key))
+    }
+    accepted ::: added ::: mutated
+  }
+
+  /**
+   * Checks that an entry whose outcome is one of two keys carries exactly one of them.
+   *
+   * Both keys at once is the shape in which a captured value would be read as a refusal, or a
+   * captured refusal as a value, depending on which key the decoder consulted first; neither is
+   * the shape in which an entry carries no expectation at all. The variants of the schema admit
+   * one key set for each outcome and nothing else, so both refusals come from the key check
+   * itself, before any outcome is selected.
+   *
+   * @param shape  the entry shape, whose sample carries the value key
+   * @param valueKey  the key carrying the value when the operation was answered
+   * @return everything that did not hold
+   */
+  def checkOutcomeKeys(shape: Shape, valueKey: String): List[String] = {
+    val both = withKey(shape.sample, ErrorField, Json.fromString("IllegalArgumentException: both"))
+    val neither = withoutKey(shape.sample, valueKey)
+    requireRefusal(shape, s"carrying both '$valueKey' and '$ErrorField'", both, ErrorField) :::
+      requireRefusal(shape, s"carrying neither '$valueKey' nor '$ErrorField'", neither, valueKey)
+  }
+
+  /**
+   * Checks that one mutated object is refused, and that the refusal names the key concerned.
+   *
+   * @param shape  the documented shape the object is a mutation of
+   * @param label  what was done to the sample, for the message
+   * @param json  the mutated object
+   * @param key  the key whose presence or absence is what makes the object wrong
+   * @return the discrepancy, or nothing
+   */
+  private def requireRefusal(
+      shape: Shape,
+      label: String,
+      json: Json,
+      key: String): List[String] =
+    refusalOf(shape.read(json)) match {
+      case None =>
+        List(
+          s"${shape.name} $label: was accepted, so ${shape.schema.describe} is not being " +
+            s"enforced and whatever '$key' carries would go unmeasured")
+      case Some(message) if !message.contains(key) =>
+        List(
+          s"${shape.name} $label: was refused, but the refusal does not name '$key': $message")
+      case Some(_) => Nil
     }
 
-  implicit val fxRowDecoder: Decoder[FxRow] = deriveDecoder[FxRow]
+  /**
+   * The keys an object carries, which for a sample is the key set of the variant it satisfies.
+   *
+   * @param json  the object
+   * @return its keys in document order, or nothing for a value that is not an object
+   */
+  def keysOf(json: Json): Vector[String] =
+    json.asObject.fold(Vector.empty[String])(fields => fields.keys.toVector)
+
+  /**
+   * The same object with one more key.
+   *
+   * @param json  the object
+   * @param key  the key to add
+   * @param value  what to add under it
+   * @return the mutated object
+   */
+  def withKey(json: Json, key: String, value: Json): Json = json.mapObject(_.add(key, value))
+
+  /**
+   * The same object without one of its keys.
+   *
+   * @param json  the object
+   * @param key  the key to remove
+   * @return the mutated object
+   */
+  def withoutKey(json: Json, key: String): Json = json.mapObject(_.remove(key))
+
+  /**
+   * The same object with one of its keys renamed, its value unchanged.
+   *
+   * @param json  the object
+   * @param key  the key to rename
+   * @param renamed  the name to give it
+   * @return the mutated object
+   */
+  def renamedKey(json: Json, key: String, renamed: String): Json =
+    json.mapObject(fields => fields.remove(key).add(renamed, fields(key).getOrElse(Json.Null)))
+
+  /**
+   * The name a renamed key is given, which no documented variant knows.
+   *
+   * @param key  the documented key
+   * @return the name it is renamed to
+   */
+  private def renamedOf(key: String): String = s"${key}Renamed"
+
+  /**
+   * The message a decode was refused with, or nothing where it was accepted.
+   *
+   * @param result  the outcome of decoding one object
+   * @return the refusal's message
+   */
+  def refusalOf(result: Decoder.Result[Any]): Option[String] =
+    result.swap.toOption.map(failure => failure.message)
 
   //-------------------------------------------------------------------------
   // Measuring one row.

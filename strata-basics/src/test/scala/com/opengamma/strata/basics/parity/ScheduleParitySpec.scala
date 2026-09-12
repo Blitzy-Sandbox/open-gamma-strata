@@ -14,6 +14,7 @@ import cats.syntax.all._
 
 import io.circe.Decoder
 import io.circe.generic.semiauto.deriveDecoder
+import io.circe.parser.decode
 
 import org.scalatest.funsuite.AsyncFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -176,13 +177,13 @@ class ScheduleParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
    */
   test("periodic schedule generation reproduces the Java baseline exactly") {
     ParityHarness
-      .runFixture[ScheduleRow](FixtureName, FixtureResource)(checkRow)
+      .runFixture[ScheduleRow](FixtureName, FixtureResource, RowSchema)(checkRow)
       .flatMap(report => ParityHarness.failIfAny(report))
       .as(succeed)
   }
 
   test("the fixture carries the population the schedule baseline is required to measure") {
-    ParityHarness.load[ScheduleRow](FixtureResource).map { rows =>
+    ParityHarness.loadStrict[ScheduleRow](FixtureResource, RowSchema).map { rows =>
       val bySource = rows.groupBy(_.source).view.mapValues(_.size).toMap
       withClue(
         s"fixture rows: ${rows.size}; rows by source: " +
@@ -294,6 +295,126 @@ class ScheduleParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
           .map(_.id) shouldBe empty
         succeed
       }
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  // The strictness of the decoding.
+  //
+  // The two cases above establish that the declared schemas accept the committed document. They
+  // cannot establish that anything is refused, because a document that satisfies a schema carries
+  // no counter-example - and "nothing was refused" is indistinguishable from "nothing was
+  // checked", which is exactly the state this file was in when a derived decoder read the rows.
+  // So the three cases below decode hand-built documents through the real decoders: one row of
+  // each documented variant, then that row with a key added, a required key dropped and a key
+  // renamed, and the same three mutations of every nested object shape.
+  //-------------------------------------------------------------------------
+
+  test("each documented row shape decodes to the variant that describes it") {
+    IO {
+      SampleRows.foreach { case (variant, fields) =>
+        withClue(s"the hand-built '$variant' row: ") {
+          val row = decoded(fields)
+          // The variant the key check matched, which is the shape the measurement dispatches on.
+          row.variant shouldBe variant
+          // And the keys derived from it are the keys the document declares - the identity that
+          // lets `whenDeclared` keep "this row says nothing about that" apart from "this row was
+          // measured" without reading the cursor a second time.
+          row.declaredKeys shouldBe fields.map(_._1).toSet
+          // The two readings of "resolved" agree: the variant this row matched, and the seven
+          // expectation keys being present. A variant added on one side but not the other would
+          // separate them here.
+          row.isResolved shouldBe ResolvedExpectationKeys.subsetOf(row.declaredKeys)
+          row.isPartiallyResolved shouldBe false
+        }
+      }
+      succeed
+    }
+  }
+
+  test("a row whose key set is not a documented variant is refused, naming the key at fault") {
+    IO {
+      // The two keys the mutations below use must belong to every variant: dropping a key that
+      // only some variants declare would turn one documented shape into another and the row would
+      // be accepted, correctly, making the assertion the opposite of what it appears to be.
+      RowSchema.variants.foreach { case (variant, keys) =>
+        withClue(s"the keys of variant '$variant': ") {
+          keys should contain allOf (RowRequiredKey, RowRenamedKey)
+        }
+      }
+      SampleRows.foreach { case (variant, fields) =>
+        withClue(s"the '$variant' row with the undocumented key '$UndocumentedKey': ") {
+          refusalOf(withUnknownKey(fields)) should include(UndocumentedKey)
+        }
+        withClue(s"the '$variant' row with '$RowRequiredKey' dropped: ") {
+          refusalOf(without(fields, RowRequiredKey)) should include(RowRequiredKey)
+        }
+        withClue(s"the '$variant' row with '$RowRenamedKey' renamed: ") {
+          val message = refusalOf(renaming(fields, RowRenamedKey))
+          message should include(renamed(RowRenamedKey))
+          message should include(RowRenamedKey)
+        }
+      }
+      succeed
+    }
+  }
+
+  test("a nested captured object whose keys are not the documented ones is refused") {
+    IO {
+      NestedSamples.foreach { sample =>
+        // The mutated object, nested back into a row that carries one of its shape: a nested
+        // object's keys are only ever visible to its own decoder, so this is the only way to
+        // reach that check at all.
+        def nested(fields: SampleFields): SampleFields =
+          replacing(sample.host, sample.key, objectText(fields))
+        withClue(s"${sample.shape} under '${sample.key}' with '$UndocumentedKey' added: ") {
+          refusalOf(nested(withUnknownKey(sample.fields))) should include(UndocumentedKey)
+        }
+        withClue(s"${sample.shape} under '${sample.key}' with '${sample.required}' dropped: ") {
+          refusalOf(nested(without(sample.fields, sample.required))) should include(sample.required)
+        }
+        withClue(s"${sample.shape} under '${sample.key}' with '${sample.required}' renamed: ") {
+          val message = refusalOf(nested(renaming(sample.fields, sample.required)))
+          message should include(renamed(sample.required))
+          message should include(sample.required)
+        }
+      }
+      succeed
+    }
+  }
+
+  /**
+   * Decodes a hand-built document that is expected to be a row.
+   *
+   * @param fields  the document, key by key
+   * @return the row; the test fails when the document is refused
+   */
+  private def decoded(fields: SampleFields): ScheduleRow = {
+    val payload = objectText(fields)
+    decode[ScheduleRow](payload).fold(
+      failure => fail(s"the document '$payload' should have decoded: ${failure.getMessage}"),
+      identity)
+  }
+
+  /**
+   * Decodes a hand-built document that is expected to be refused, and answers the refusal.
+   *
+   * The message is returned rather than asserted here so that each caller states which key the
+   * refusal has to name: that the document was refused and that the refusal says what to do about
+   * it are two different properties, and a strictness test that only established the first would
+   * pass against a message naming nothing.
+   *
+   * @param fields  the document, key by key
+   * @return the refusal's message; the test fails when the document decodes
+   */
+  private def refusalOf(fields: SampleFields): String = {
+    val payload = objectText(fields)
+    decode[ScheduleRow](payload) match {
+      case Left(failure) => failure.getMessage
+      case Right(row) =>
+        fail(
+          s"the document '$payload' should have been refused, but decoded as the " +
+            s"'${row.variant}' variant")
     }
   }
 }
@@ -463,6 +584,17 @@ private[parity] object ScheduleParitySpec {
   }
 
   /**
+   * The documented key set of a captured business day adjustment.
+   *
+   * All 929 adjustment objects of the committed document - 879 row-level `businessDayAdjustment`,
+   * 22 `startDateBusinessDayAdjustment`, 2 `endDateBusinessDayAdjustment`, 6 inside an
+   * `overrideStartDate` and 20 inside a `replacedDefinition` - carry exactly these two keys, so
+   * the shape is uniform and nothing about it is optional.
+   */
+  val AdjustmentSchema: KeySchema =
+    KeySchema.uniform("a captured business day adjustment", Set("convention", "calendar"))
+
+  /**
    * An adjustable date as the fixture carries it.
    *
    * The adjustment is modelled as optional because the capture renders an absent one as JSON null
@@ -482,6 +614,18 @@ private[parity] object ScheduleParitySpec {
   }
 
   /**
+   * The documented key set of a captured adjustable date.
+   *
+   * Both keys are '''required''' although the adjustment is modelled as an `Option`: the capture
+   * writes an absent adjustment as JSON null rather than omitting the key (`jAdjustableDate`), and
+   * all six `overrideStartDate` objects of the committed document carry both. Declaring
+   * `adjustment` optional here would accept an object that had dropped the key, which is the case
+   * the `Option` cannot tell from a null and so the case that would go unmeasured.
+   */
+  val AdjustableDateSchema: KeySchema =
+    KeySchema.uniform("a captured adjustable date", Set("unadjusted", "adjustment"))
+
+  /**
    * One schedule period as the fixture carries it: the two unadjusted dates and the two adjusted.
    *
    * @param unadjustedStart  the unadjusted start date of the period
@@ -494,6 +638,19 @@ private[parity] object ScheduleParitySpec {
       unadjustedEnd: LocalDate,
       start: LocalDate,
       end: LocalDate)
+
+  /**
+   * The documented key set of a captured schedule period.
+   *
+   * One shape serves the three places a period appears - the 3,194 entries of the `periods` lists,
+   * the 83 `initialStub` objects and the 29 `finalStub` objects of the committed document - and
+   * every one of them carries all four dates. A stub the schedule does not have is written as JSON
+   * null, so it never reaches this decoder at all.
+   */
+  val PeriodSchema: KeySchema =
+    KeySchema.uniform(
+      "a captured schedule period",
+      Set("unadjustedStart", "unadjustedEnd", "start", "end"))
 
   /**
    * A periodic schedule definition as the fixture carries it: the eleven fields, in Java order.
@@ -553,6 +710,37 @@ private[parity] object ScheduleParitySpec {
     }
   }
 
+  /**
+   * The eleven input keys of a definition, which are also the eleven keys of a nested
+   * `replacedDefinition`.
+   *
+   * They are part of the key set of '''every''' row variant, null where unset, which is what lets
+   * one model read the inputs of all four row shapes (capture README, section 6).
+   */
+  val InputKeys: Set[String] = Set(
+    "startDate",
+    "endDate",
+    "frequency",
+    "businessDayAdjustment",
+    "startDateBusinessDayAdjustment",
+    "endDateBusinessDayAdjustment",
+    "stubConvention",
+    "rollConvention",
+    "firstRegularStartDate",
+    "lastRegularEndDate",
+    "overrideStartDate")
+
+  /**
+   * The documented key set of the nested `replacedDefinition`.
+   *
+   * This is the schema of a definition read as an object of its own, which in this document is the
+   * `replacedDefinition` of the ten resolved `data_replace` rows and nothing else. The same eleven
+   * keys at the '''top level''' of a row are not an object of their own - they sit among the row's
+   * other keys - so they are validated as part of the row's own key set instead; see
+   * [[definitionFieldsDecoder]].
+   */
+  val DefinitionSchema: KeySchema =
+    KeySchema.uniform("a captured schedule definition", InputKeys)
 
   /** The seven expectation keys a resolved row carries, all of them or none. */
   val ResolvedExpectationKeys: Set[String] = Set(
@@ -572,6 +760,77 @@ private[parity] object ScheduleParitySpec {
     "expectedLastRegularEndDate",
     "expectedRollConvention")
 
+  //-------------------------------------------------------------------------
+  // The key schema of a row.
+  //
+  // The document holds four row shapes and no others (capture README, section 6), so the four are
+  // declared here as the variants of one schema and every row is held to carrying exactly one of
+  // them. What that buys is the thing a derived decoder cannot do: a key the capture started
+  // emitting - a new expectation, a renamed column - is refused by name instead of being ignored,
+  // which is how it would otherwise go unmeasured while this suite still reported `failed == 0`.
+  //
+  // The key sets are composed from the constants above rather than restated, so the population
+  // test, the schema and the row model cannot drift apart; the counts in each comment are the
+  // committed document, measured.
+  //-------------------------------------------------------------------------
+
+  /** The name of the variant of the 572 rows that record a refusal. */
+  val ErrorVariant: String = "error"
+
+  /** The name of the variant of the one `data_replace` row whose replacement date is refused. */
+  val ErrorReplacementVariant: String = "error with a replaced start date"
+
+  /** The name of the variant of the 296 rows that record a resolved schedule. */
+  val ResolvedVariant: String = "resolved"
+
+  /** The name of the variant of the ten `data_replace` rows that record a replacement. */
+  val ResolvedReplacementVariant: String = "resolved replacement"
+
+  /**
+   * The four documented key sets of one row of `schedule-baseline.json`.
+   *
+   * Each variant is an '''exact''' key set: [[KeySchema]] requires every key of the variant to be
+   * present and admits nothing outside it, and no key of this document is optional, so a row
+   * satisfies a variant only by carrying precisely its keys. The four are therefore mutually
+   * exclusive even though `error` is a subset of `error with a replaced start date`, and the order
+   * they are declared in does not affect which one a row matches.
+   *
+   *  - `error` - the eleven inputs, `source` and `error`: 13 keys, 572 rows.
+   *  - `error with a replaced start date` - those 13 plus `replacedStartDate`: 14 keys, 1 row,
+   *    which is the only coverage of `replaceStartDate` refusing a date after the end date.
+   *  - `resolved` - the eleven inputs, `source` and the seven expectations: 19 keys, 296 rows.
+   *  - `resolved replacement` - those 19 plus `replacedStartDate` and the five replacement
+   *    expectations: 25 keys, 10 rows.
+   */
+  val RowSchema: KeySchema = KeySchema.variants(
+    "a row of parity/schedule-baseline.json",
+    ErrorVariant -> (InputKeys ++ Set("source", "error")),
+    ErrorReplacementVariant -> (InputKeys ++ Set("source", "error", "replacedStartDate")),
+    ResolvedVariant -> (InputKeys ++ Set("source") ++ ResolvedExpectationKeys),
+    ResolvedReplacementVariant ->
+      (InputKeys ++ Set("source", "replacedStartDate") ++ ResolvedExpectationKeys ++
+        ReplaceExpectationKeys))
+
+  /**
+   * The keys each variant of [[RowSchema]] declares, by variant name.
+   *
+   * A row's variant is the one `ParityHarness.strictVariant` matched it against, so it is always
+   * one of these four names and this lookup is total - the strictness test decodes a row of every
+   * variant and asserts that the keys it yields are the keys the document declares, which is what
+   * keeps [[ScheduleRow.declaredKeys]] a reading of the validated key set rather than a second,
+   * independent one.
+   */
+  val RowVariantKeys: Map[String, Set[String]] = RowSchema.variants.toMap
+
+  /**
+   * The two variants that carry the whole resolved expectation set.
+   *
+   * This is what [[ScheduleRow.isResolved]] dispatches on, and the strictness test holds it to
+   * agreeing with the key sets of [[RowSchema]] variant by variant, so a fifth variant could not
+   * be added without deciding which side of this line it falls on.
+   */
+  val ResolvedVariants: Set[String] = Set(ResolvedVariant, ResolvedReplacementVariant)
+
   /**
    * One row of `schedule-baseline.json`.
    *
@@ -579,14 +838,19 @@ private[parity] object ScheduleParitySpec {
    * capture writes them at the top level rather than nested; the same model reads the nested
    * `replacedDefinition`, which holds exactly those eleven keys.
    *
-   * ===Why the declared key set is carried===
+   * ===Why the matched variant is carried===
    *
    * Two of the expectations - `initialStub` and `finalStub` - are legitimately JSON null on a
    * resolved row, meaning "this schedule has no such stub", and three more of the `data_replace`
    * keys are nullable in the same way. An `Option` field cannot tell a null apart from a key that
-   * is not there, so the key set of the row object is decoded alongside the values. It is what
-   * [[isResolved]] is decided from, and it lets the population test hold the document to the key
-   * sets its schema states instead of inferring them from values that could be null either way.
+   * is not there, so which keys the row declares has to be known alongside the values.
+   *
+   * That is the variant of [[RowSchema]] the row was validated against, which is the one decision
+   * available here: the keys were checked before the row was decoded, the check answered with the
+   * variant they satisfy, and the variant's key set is therefore exactly the keys this row object
+   * carries - see [[declaredKeys]]. Reading the cursor's keys a second time, which is what this
+   * model did before, would let the row be dispatched on a shape that had not been validated and
+   * would admit a row with an undocumented key, whose new expectation nothing would then measure.
    *
    * @param definition  the eleven input fields, which every row carries
    * @param source  the Java test method or generated population this row came from
@@ -604,7 +868,7 @@ private[parity] object ScheduleParitySpec {
    * @param expectedLastRegularEndDate  the last regular end date of the replaced definition
    * @param expectedRollConvention  the roll convention of the replaced definition
    * @param error  the Java exception message, where the operation was refused
-   * @param declaredKeys  the keys this row object actually declares
+   * @param variant  the variant of [[RowSchema]] this row's key set was validated against
    */
   final case class ScheduleRow(
       definition: DefinitionRow,
@@ -623,7 +887,7 @@ private[parity] object ScheduleParitySpec {
       expectedLastRegularEndDate: Option[LocalDate],
       expectedRollConvention: Option[String],
       error: Option[String],
-      declaredKeys: Set[String])
+      variant: String)
       extends ParityRow {
 
     /**
@@ -640,10 +904,26 @@ private[parity] object ScheduleParitySpec {
       s"$source ${definition.render}$replacement"
     }
 
-    /** Whether this row declares the whole resolved expectation set. */
-    def isResolved: Boolean = ResolvedExpectationKeys.subsetOf(declaredKeys)
+    /**
+     * The keys this row object declares.
+     *
+     * The keys of the variant the row was validated against, which are exactly the keys the row
+     * carries: `ParityHarness.strictKeys` admits a row only when its key set is the variant's.
+     * The lookup is total because [[variant]] is a name that check returned.
+     */
+    def declaredKeys: Set[String] = RowVariantKeys(variant)
 
-    /** Whether this row declares some of the resolved expectation set but not all of it. */
+    /** Whether this row declares the whole resolved expectation set. */
+    def isResolved: Boolean = ResolvedVariants.contains(variant)
+
+    /**
+     * Whether this row declares some of the resolved expectation set but not all of it.
+     *
+     * No variant of [[RowSchema]] does, so this is the consuming-side statement that the four
+     * declared key sets each carry all seven expectation keys or none of them: a variant added
+     * with four of the seven would decode without complaint and would measure three fewer
+     * expectations than it appeared to, and the population test is where that is caught.
+     */
     def isPartiallyResolved: Boolean = {
       val declared = ResolvedExpectationKeys.intersect(declaredKeys)
       declared.nonEmpty && declared.size != ResolvedExpectationKeys.size
@@ -675,59 +955,97 @@ private[parity] object ScheduleParitySpec {
   }
 
   //-------------------------------------------------------------------------
-  // The decoders, in dependency order. Every one of them is derived at compile time except the
-  // row itself, which is written out because it reads the eleven input fields from its own
-  // cursor - they are the row's own keys, not a nested object - and because it captures the key
-  // set alongside the values.
+  // The decoders, in dependency order - which is also initialisation order, since each derivation
+  // picks up the implicits declared above it.
+  //
+  // Every field derivation is wrapped in `ParityHarness.strictObject`, so each captured object is
+  // held to its documented key set before it is decoded: a derived decoder on its own reads the
+  // fields its model declares and ignores the rest, which for a measurement means a newly captured
+  // expectation would be dropped in silence while the report still read `failed == 0`. The row
+  // itself is written out rather than derived, because it reads the eleven input fields from its
+  // own cursor - they are the row's own keys, not a nested object - and because it records which
+  // variant of `RowSchema` validated it.
   //-------------------------------------------------------------------------
 
   implicit val businessDayAdjustmentRowDecoder: Decoder[BusinessDayAdjustmentRow] =
-    deriveDecoder[BusinessDayAdjustmentRow]
+    ParityHarness.strictObject(AdjustmentSchema)(deriveDecoder[BusinessDayAdjustmentRow])
 
   implicit val adjustableDateRowDecoder: Decoder[AdjustableDateRow] =
-    deriveDecoder[AdjustableDateRow]
+    ParityHarness.strictObject(AdjustableDateSchema)(deriveDecoder[AdjustableDateRow])
 
-  implicit val periodRowDecoder: Decoder[PeriodRow] = deriveDecoder[PeriodRow]
+  implicit val periodRowDecoder: Decoder[PeriodRow] =
+    ParityHarness.strictObject(PeriodSchema)(deriveDecoder[PeriodRow])
 
-  implicit val definitionRowDecoder: Decoder[DefinitionRow] = deriveDecoder[DefinitionRow]
+  /**
+   * Reads the eleven input fields off whatever cursor it is given, without a key-set check.
+   *
+   * This is the form the '''row''' needs. The eleven inputs sit at the top level of a row rather
+   * than in an object of their own, so the cursor this decoder is handed there carries the row's
+   * other keys as well - `source`, `error`, the expectations - and holding it to
+   * [[DefinitionSchema]] would refuse every row in the document for carrying them. The keys of
+   * that cursor are not left unchecked, though: they are the row's own key set, which
+   * [[RowSchema]] validates in full before this decoder is reached.
+   */
+  val definitionFieldsDecoder: Decoder[DefinitionRow] = deriveDecoder[DefinitionRow]
 
-  implicit val scheduleRowDecoder: Decoder[ScheduleRow] = Decoder.instance { cursor =>
-    for {
-      definition <- cursor.as[DefinitionRow]
-      source <- cursor.get[String]("source")
-      unadjustedDates <- cursor.get[Option[Vector[LocalDate]]]("unadjustedDates")
-      adjustedDates <- cursor.get[Option[Vector[LocalDate]]]("adjustedDates")
-      periods <- cursor.get[Option[Vector[PeriodRow]]]("periods")
-      initialStub <- cursor.get[Option[PeriodRow]]("initialStub")
-      finalStub <- cursor.get[Option[PeriodRow]]("finalStub")
-      resolvedRollConvention <- cursor.get[Option[String]]("resolvedRollConvention")
-      resolvedFrequency <- cursor.get[Option[String]]("resolvedFrequency")
-      replacedStartDate <- cursor.get[Option[LocalDate]]("replacedStartDate")
-      replacedDefinition <- cursor.get[Option[DefinitionRow]]("replacedDefinition")
-      replacedUnadjustedDates <- cursor.get[Option[Vector[LocalDate]]]("replacedUnadjustedDates")
-      expectedStubConvention <- cursor.get[Option[String]]("expectedStubConvention")
-      expectedLastRegularEndDate <- cursor.get[Option[LocalDate]]("expectedLastRegularEndDate")
-      expectedRollConvention <- cursor.get[Option[String]]("expectedRollConvention")
-      error <- cursor.get[Option[String]]("error")
-    } yield ScheduleRow(
-      definition,
-      source,
-      unadjustedDates,
-      adjustedDates,
-      periods,
-      initialStub,
-      finalStub,
-      resolvedRollConvention,
-      resolvedFrequency,
-      replacedStartDate,
-      replacedDefinition,
-      replacedUnadjustedDates,
-      expectedStubConvention,
-      expectedLastRegularEndDate,
-      expectedRollConvention,
-      error,
-      cursor.keys.fold(Set.empty[String])(_.toSet))
-  }
+  /**
+   * Reads a definition that is an object of its own, whose key set is exactly the eleven inputs.
+   *
+   * This is the implicit the nested `replacedDefinition` is decoded through, and the only place a
+   * definition's own keys are visible.
+   */
+  implicit val definitionRowDecoder: Decoder[DefinitionRow] =
+    ParityHarness.strictObject(DefinitionSchema)(definitionFieldsDecoder)
+
+  /**
+   * Reads one row, having established which of the four documented shapes it has.
+   *
+   * `strictVariant` checks the row's key set against [[RowSchema]] and hands over the name of the
+   * variant it satisfies, so the shape this decoder records is the shape that was validated - one
+   * decision, made once. The `Option` fields then read the keys that variant declares and answer
+   * `None` for the ones it does not, as they always have; what has gone is the possibility of an
+   * undocumented key reaching this point at all.
+   */
+  implicit val scheduleRowDecoder: Decoder[ScheduleRow] =
+    ParityHarness.strictVariant(RowSchema) { variant =>
+      Decoder.instance { cursor =>
+        for {
+          definition <- definitionFieldsDecoder(cursor)
+          source <- cursor.get[String]("source")
+          unadjustedDates <- cursor.get[Option[Vector[LocalDate]]]("unadjustedDates")
+          adjustedDates <- cursor.get[Option[Vector[LocalDate]]]("adjustedDates")
+          periods <- cursor.get[Option[Vector[PeriodRow]]]("periods")
+          initialStub <- cursor.get[Option[PeriodRow]]("initialStub")
+          finalStub <- cursor.get[Option[PeriodRow]]("finalStub")
+          resolvedRollConvention <- cursor.get[Option[String]]("resolvedRollConvention")
+          resolvedFrequency <- cursor.get[Option[String]]("resolvedFrequency")
+          replacedStartDate <- cursor.get[Option[LocalDate]]("replacedStartDate")
+          replacedDefinition <- cursor.get[Option[DefinitionRow]]("replacedDefinition")
+          replacedUnadjustedDates <- cursor.get[Option[Vector[LocalDate]]]("replacedUnadjustedDates")
+          expectedStubConvention <- cursor.get[Option[String]]("expectedStubConvention")
+          expectedLastRegularEndDate <- cursor.get[Option[LocalDate]]("expectedLastRegularEndDate")
+          expectedRollConvention <- cursor.get[Option[String]]("expectedRollConvention")
+          error <- cursor.get[Option[String]]("error")
+        } yield ScheduleRow(
+          definition,
+          source,
+          unadjustedDates,
+          adjustedDates,
+          periods,
+          initialStub,
+          finalStub,
+          resolvedRollConvention,
+          resolvedFrequency,
+          replacedStartDate,
+          replacedDefinition,
+          replacedUnadjustedDates,
+          expectedStubConvention,
+          expectedLastRegularEndDate,
+          expectedRollConvention,
+          error,
+          variant)
+      }
+    }
 
   //-------------------------------------------------------------------------
   // The labels a discrepancy is filed under. Each one names the operation that produced the
@@ -1314,6 +1632,194 @@ private[parity] object ScheduleParitySpec {
     if (row.declaredKeys.contains(key)) messages else Nil
 
   //-------------------------------------------------------------------------
+  // The hand-built objects the strictness tests decode.
+  //
+  // The committed fixture proves that the declared schemas accept the document; it cannot prove
+  // that they refuse anything, because a document that satisfies them carries no counter-example.
+  // These are the counter-examples: one row of each documented variant, and one of each nested
+  // shape, built key by key so that a test can add a key, drop one or rename one and decode the
+  // result through the real decoders. They are text rather than models on purpose - a key set is
+  // exactly what a model cannot express - and they are assembled from single fields rather than
+  // written out whole so that a mutation is a list operation and not a hand edit of JSON.
+  //
+  // None of this is measured against Java: no captured expectation lives here, and no comparison
+  // is made. The values are plausible because a plausible row decodes past the key check and on
+  // into the fields, which is what makes the refusals attributable to the key check alone.
+  //-------------------------------------------------------------------------
+
+  /** A captured object under construction: its keys, each with the JSON text of its value. */
+  type SampleFields = Vector[(String, String)]
+
+  /** The JSON text of a string value. */
+  def quoted(value: String): String = "\"" + value + "\""
+
+  /** Renders hand-built fields as a JSON object, in the order they are given. */
+  def objectText(fields: SampleFields): String =
+    fields.map { case (key, value) => s"${quoted(key)}: $value" }.mkString("{", ", ", "}")
+
+  /** The key an undocumented capture is simulated with, which no shape of this document knows. */
+  val UndocumentedKey: String = "capturedAt"
+
+  /**
+   * The name a renamed key takes, which no shape of this document knows either.
+   *
+   * Deliberately not a superstring of the key it replaces: a refusal has to name the unknown key
+   * '''and''' the documented key that is now missing, and a test whose two assertions could both
+   * be satisfied by one fragment of the message would be making one of them for show.
+   */
+  def renamed(key: String): String = s"renamed${key.capitalize}"
+
+  /** The same fields with an undocumented key appended. */
+  def withUnknownKey(fields: SampleFields): SampleFields =
+    fields ++ Vector(UndocumentedKey -> quoted("2026-01-01T00:00:00Z"))
+
+  /** The same fields with one key dropped. */
+  def without(fields: SampleFields, key: String): SampleFields = fields.filterNot(_._1 == key)
+
+  /** The same fields with one key renamed, which both drops a documented key and adds an unknown one. */
+  def renaming(fields: SampleFields, key: String): SampleFields =
+    fields.map { case (name, value) => if (name == key) renamed(name) -> value else name -> value }
+
+  /** The same fields with one key's value replaced, which is how a mutated object is nested. */
+  def replacing(fields: SampleFields, key: String, value: String): SampleFields =
+    fields.map { case (name, existing) => if (name == key) name -> value else name -> existing }
+
+  /**
+   * A key every row variant declares.
+   *
+   * Dropping it cannot turn one documented row shape into another, which a key like
+   * `replacedStartDate` would: the 14-key error row without it '''is''' the 13-key error row, and
+   * a refusal test built on that key would be asserting the opposite of the truth. The strictness
+   * test asserts this membership rather than trusting it.
+   */
+  val RowRequiredKey: String = "frequency"
+
+  /** A second key every row variant declares, used for the rename. */
+  val RowRenamedKey: String = "source"
+
+  /** A captured business day adjustment, over the composite calendar a third of the grid uses. */
+  val SampleAdjustment: SampleFields =
+    Vector("convention" -> quoted("ModifiedFollowing"), "calendar" -> quoted(CompositeCalendar))
+
+  /** A captured adjustable date, with an adjustment of its own. */
+  val SampleAdjustableDate: SampleFields =
+    Vector("unadjusted" -> quoted("2014-06-17"), "adjustment" -> objectText(SampleAdjustment))
+
+  /** A captured schedule period. */
+  val SamplePeriod: SampleFields = Vector(
+    "unadjustedStart" -> quoted("2014-06-17"),
+    "unadjustedEnd" -> quoted("2014-07-17"),
+    "start" -> quoted("2014-06-17"),
+    "end" -> quoted("2014-07-17"))
+
+  /** The eleven inputs, which every row variant carries and a `replacedDefinition` repeats. */
+  val SampleInputs: SampleFields = Vector(
+    "startDate" -> quoted("2014-06-17"),
+    "endDate" -> quoted("2014-07-17"),
+    "frequency" -> quoted("P1M"),
+    "businessDayAdjustment" -> objectText(SampleAdjustment),
+    "startDateBusinessDayAdjustment" -> "null",
+    "endDateBusinessDayAdjustment" -> "null",
+    "stubConvention" -> quoted("LongInitial"),
+    "rollConvention" -> quoted("Day17"),
+    "firstRegularStartDate" -> "null",
+    "lastRegularEndDate" -> "null",
+    "overrideStartDate" -> objectText(SampleAdjustableDate))
+
+  /** The seven expectations of a resolved row, `finalStub` null as most resolved rows have it. */
+  val SampleResolvedExpectations: SampleFields = Vector(
+    "unadjustedDates" -> """["2014-06-17", "2014-07-17"]""",
+    "adjustedDates" -> """["2014-06-17", "2014-07-17"]""",
+    "periods" -> s"[${objectText(SamplePeriod)}]",
+    "initialStub" -> objectText(SamplePeriod),
+    "finalStub" -> "null",
+    "resolvedRollConvention" -> quoted("Day17"),
+    "resolvedFrequency" -> quoted("P1M"))
+
+  /** The five further expectations of a resolved `data_replace` row. */
+  val SampleReplaceExpectations: SampleFields = Vector(
+    "replacedDefinition" -> objectText(SampleInputs),
+    "replacedUnadjustedDates" -> """["2014-05-19", "2014-07-17"]""",
+    "expectedStubConvention" -> quoted("LongInitial"),
+    "expectedLastRegularEndDate" -> "null",
+    "expectedRollConvention" -> quoted("Day17"))
+
+  /**
+   * A row of the `error` variant: the eleven inputs, `source` and `error`.
+   *
+   * The roll convention is replaced by `IMM` so that the refusal quoted in `error` is the one
+   * these inputs really produce - 2014-06-17 is a Tuesday, and `IMM` rolls to the third Wednesday
+   * - which keeps a sample row a row the capture could have written.
+   */
+  val SampleErrorRow: SampleFields =
+    replacing(SampleInputs, "rollConvention", quoted("IMM")) ++ Vector(
+      "source" -> quoted(GridSource),
+      "error" -> quoted(
+        "ScheduleException: Date '2014-06-17' does not match roll convention 'IMM' when " +
+          "starting to roll forwards"))
+
+  /** A row of the `error with a replaced start date` variant: those 13 keys and one more. */
+  val SampleErrorReplacementRow: SampleFields = SampleInputs ++ Vector(
+    "source" -> quoted(ReplaceSource),
+    "replacedStartDate" -> quoted("2014-09-04"),
+    "error" -> quoted("IllegalArgumentException: Cannot alter leg to have start date after end date"))
+
+  /** A row of the `resolved` variant: the eleven inputs, `source` and the seven expectations. */
+  val SampleResolvedRow: SampleFields =
+    SampleInputs ++ Vector("source" -> quoted(GridSource)) ++ SampleResolvedExpectations
+
+  /** A row of the `resolved replacement` variant: those 19 keys and the six of a replacement. */
+  val SampleResolvedReplacementRow: SampleFields =
+    SampleInputs ++
+      Vector("source" -> quoted(ReplaceSource), "replacedStartDate" -> quoted("2014-05-19")) ++
+      SampleResolvedExpectations ++ SampleReplaceExpectations
+
+  /** The four documented row shapes, each with the variant name it is required to match. */
+  val SampleRows: Vector[(String, SampleFields)] = Vector(
+    ErrorVariant -> SampleErrorRow,
+    ErrorReplacementVariant -> SampleErrorReplacementRow,
+    ResolvedVariant -> SampleResolvedRow,
+    ResolvedReplacementVariant -> SampleResolvedReplacementRow)
+
+  /**
+   * One nested captured object, as the strictness test needs it.
+   *
+   * @param shape  what the object is, for the clue of a failure
+   * @param host  a row that carries this object, which the mutated one is nested into
+   * @param key  the key it rides under in that row
+   * @param fields  the object's own documented fields
+   * @param required  one key the object's schema requires, which the test drops and renames
+   */
+  final case class NestedSample(
+      shape: String,
+      host: SampleFields,
+      key: String,
+      fields: SampleFields,
+      required: String)
+
+  /** Every nested object shape of this document, each inside a row that carries it. */
+  val NestedSamples: Vector[NestedSample] = Vector(
+    NestedSample(
+      AdjustmentSchema.shape,
+      SampleResolvedRow,
+      "businessDayAdjustment",
+      SampleAdjustment,
+      "convention"),
+    NestedSample(
+      AdjustableDateSchema.shape,
+      SampleResolvedRow,
+      "overrideStartDate",
+      SampleAdjustableDate,
+      "unadjusted"),
+    NestedSample(PeriodSchema.shape, SampleResolvedRow, "initialStub", SamplePeriod, "start"),
+    NestedSample(
+      DefinitionSchema.shape,
+      SampleResolvedReplacementRow,
+      "replacedDefinition",
+      SampleInputs,
+      "frequency"))
+
+  //-------------------------------------------------------------------------
   // Two names used above, stated once.
   //-------------------------------------------------------------------------
 
@@ -1329,4 +1835,3 @@ private[parity] object ScheduleParitySpec {
   private val NoAdjustment: BusinessDayAdjustmentRow =
     BusinessDayAdjustmentRow("NoAdjust", "NoHolidays")
 }
-

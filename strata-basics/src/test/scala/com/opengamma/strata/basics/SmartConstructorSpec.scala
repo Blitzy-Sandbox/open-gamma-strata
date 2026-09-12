@@ -141,12 +141,26 @@ import com.opengamma.strata.basics.value.ValueStepSequence
  * SequenceDate  HolidayCalendarId  ImmutableHolidayCalendar  RollConvention.ofDayOfMonth
  * }}}
  *
- * Three of the validated entries have '''no''' rejecting factory in this port, and the tests for
- * them say so rather than inventing one: `DaysAdjustment`, `Schedule` and `ValueSchedule` carry
- * every invariant they have in the types of their fields, so their factories are total and the
- * data-dependent failures of those types belong to their methods. That is a fact about the port
- * worth asserting - a later change that added a rejecting path to one of them would have to
- * change the test that records its totality.
+ * Three of the validated entries carry a condition that the shape of their fields cannot state,
+ * so it is worth naming what each of their factories refuses and where this file asserts it:
+ *
+ *  - `DaysAdjustment.of` refuses a day count of zero paired with an addition calendar other than
+ *    the no-holidays identifier, because a business-day addition of zero days names no day. Its
+ *    four '''named''' factories are total, and they are total because each of them lands inside
+ *    the field space `of` accepts - `ofCalendarDays` fixes the addition calendar, and both
+ *    `ofBusinessDays` forms drop it for a zero day count - which this file proves by running
+ *    every value they build back through `of` rather than assuming it.
+ *  - `Schedule.of` refuses a list of periods that does not run from earliest to latest, reporting
+ *    the unadjusted and the adjusted date pair of each misplaced pair separately. A gap between
+ *    one period and the next is allowed, as is one period ending on the day the next begins, so
+ *    the positive controls below assert those two as well as the rejections.
+ *  - `ValueSchedule.of` refuses two steps that name one position (one period index, or one date)
+ *    with different adjustments, once per position so named. Two steps naming a position with the
+ *    '''same''' adjustment agree rather than contradict, and are accepted.
+ *
+ * The data-dependent failures those three types report from their '''methods''' - resolving a
+ * calendar identifier, merging or adjusting a schedule, resolving a definition against a schedule
+ * of periods - belong to `FailableSurfaceSpec` and are not repeated here.
  */
 final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
 
@@ -288,6 +302,41 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     info(s"[N] covered: ${NormalisingTypes.mkString(", ")}")
   }
 
+  test("every type the coverage lists name has a test of this suite registered against it") {
+    // What the counts above cannot say. The two lists are names, and the tests that exercise
+    // those names are written separately, so a test deleted or renamed leaves the counts intact
+    // and the list still claiming coverage of a type nothing exercises. This ties the two
+    // together the only way a heterogeneous suite can be tied together without rewriting it:
+    // the names ScalaTest actually holds are compared with the names the lists claim.
+    //
+    // A type is claimed by a test whose name begins with it - the convention every test of the
+    // groups below follows - or, for a member of a type, by a test of that type naming the
+    // member, which is how `DayCount.Bus252` is claimed by `DayCount.ofBus252 ...`. The three
+    // derived observations share one test, since they share the one failure they can report, and
+    // that test is required by name so that deleting it fails here rather than going unnoticed.
+    val sharedObservationTest = "the three derived observations"
+    val sharedObservationTypes =
+      Set("IborIndexObservation", "OvernightIndexObservation", "FxIndexObservation")
+    withClue(s"the test named '$sharedObservationTest ...' must exist: ")(
+      testNames.exists(name => name.startsWith(sharedObservationTest)) shouldBe true)
+
+    def claimedByATest(entry: String): Boolean =
+      if (sharedObservationTypes.contains(entry)) {
+        testNames.exists(name => name.startsWith(sharedObservationTest))
+      } else if (testNames.exists(name => name.startsWith(entry))) {
+        true
+      } else {
+        entry.split('.').toList match {
+          case owner :: member :: Nil =>
+            testNames.exists(name => name.startsWith(s"$owner.") && name.contains(member))
+          case _ => false
+        }
+      }
+
+    withClue("every name the coverage lists claim is exercised by a test of this suite: ")(
+      (ValidatedTypes ++ NormalisingTypes).filterNot(claimedByATest) shouldBe empty)
+  }
+
   //-------------------------------------------------------------------------
   // Group one: the validated types. One test per type, one case per distinct invalid input, and
   // the reason of each asserted by value so that two different faults cannot quietly become the
@@ -420,23 +469,62 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     MarketTenor.parse("ON") should beSuccess
   }
 
-  test("DaysAdjustment construction is total, so it has no invalid input to reject") {
-    // The AAP tags this type [V], and the tag is about its representation - it has no public
-    // apply and no copy - rather than about a rejecting factory. Both of its factories are
-    // total, exactly as in the library being ported: a day count is any integer, and a calendar
-    // identifier is a name rather than a resolved calendar, so nothing about the arguments can
-    // be wrong. The data-dependent failure of the type is the resolution of that identifier,
-    // which is a method and belongs to FailableSurfaceSpec. Recording the totality here is what
-    // makes a later change that added a rejecting path visible.
+  test("DaysAdjustment.of rejects a day count of zero paired with an addition calendar") {
+    // The one thing about the three fields of an adjustment that can be wrong, and the condition
+    // the class being ported stated in the same words: the addition calendar is what makes the
+    // days business days, so a count of zero paired with one asks for a walk of zero business
+    // days, which names no day at all. The identifier is a name rather than a resolved calendar,
+    // so whether it resolves is a question for the reference data and belongs to a method.
+    val zeroAgainstACalendar: ResultNec[DaysAdjustment] =
+      DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)
+    zeroAgainstACalendar should beFailureWith(FailureReason.INVALID)
+    // one cause and one only: nothing else about the fields can be wrong - a count is any
+    // integer and either calendar may be composite - so there is no second cause to accumulate
+    failuresOf(zeroAgainstACalendar) should have size 1
+    failuresOf(zeroAgainstACalendar).head shouldBe a[Failure.Invalid]
+    messagesOf(zeroAgainstACalendar).head should include(HolidayCalendarIds.GBLO.name)
+    DaysAdjustment.of(0, HolidayCalendarId.of("GBLO+USNY"), BusinessDayAdjustment.NONE) should
+      beFailureWith(FailureReason.INVALID)
+
+    // the positive controls: the same pairing with a count that is not zero is an addition that
+    // walks business days, and a count of zero against the no-holidays identifier is the
+    // adjustment that moves nothing - so the factory is discriminating rather than refusing
+    DaysAdjustment.of(2, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE) should beSuccess
+    DaysAdjustment.of(-2, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE) should beSuccess
+    DaysAdjustment.of(0, HolidayCalendarIds.NO_HOLIDAYS, BusinessDayAdjustment.NONE) should
+      haveValue(DaysAdjustment.NONE)
+
+    // The four named factories are total, and what makes that correct is that each of them lands
+    // inside the field space `of` accepts: `ofCalendarDays` fixes the addition calendar to the
+    // no-holidays identifier, and both `ofBusinessDays` forms drop it for a count of zero. That
+    // is asserted rather than assumed - every value they build is run back through `of` and has
+    // to be accepted unchanged, so the two construction routes cannot drift apart.
+    val follow: BusinessDayAdjustment =
+      BusinessDayAdjustment.of(BusinessDayConventions.FOLLOWING, HolidayCalendarIds.USNY)
+    val built: List[DaysAdjustment] =
+      List(
+        DaysAdjustment.ofCalendarDays(3),
+        DaysAdjustment.ofCalendarDays(-3),
+        DaysAdjustment.ofCalendarDays(0, follow),
+        DaysAdjustment.ofBusinessDays(2, HolidayCalendarIds.GBLO),
+        DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.GBLO),
+        DaysAdjustment.ofBusinessDays(2, HolidayCalendarIds.GBLO, follow),
+        DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.GBLO, follow),
+        DaysAdjustment.NONE)
+    built.map(value => DaysAdjustment.of(value.days, value.calendar, value.adjustment)) shouldBe
+      built.map(value => Right(value))
+
+    // and the rejected pairing is reachable through none of them: every zero-day value names the
+    // no-holidays identifier as its addition calendar. The two-argument business-day form is
+    // where the calendar a caller named survives the rewrite - it becomes the trailing
+    // adjustment, which is the interpretable reading of the request `of` refuses.
+    built.filter(value => value.days == 0).map(value => value.calendar).distinct shouldBe
+      List(HolidayCalendarIds.NO_HOLIDAYS)
+    DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.GBLO).adjustment.calendar shouldBe
+      HolidayCalendarIds.GBLO
     DaysAdjustment.ofCalendarDays(3).days shouldBe 3
-    DaysAdjustment.ofCalendarDays(-3).days shouldBe -3
-    DaysAdjustment.ofBusinessDays(2, HolidayCalendarIds.GBLO).calendar shouldBe HolidayCalendarIds.GBLO
-    DaysAdjustment
-      .ofBusinessDays(
-        2,
-        HolidayCalendarIds.GBLO,
-        BusinessDayAdjustment.of(BusinessDayConventions.FOLLOWING, HolidayCalendarIds.USNY))
-      .days shouldBe 2
+    DaysAdjustment.ofBusinessDays(2, HolidayCalendarIds.GBLO).calendar shouldBe
+      HolidayCalendarIds.GBLO
   }
 
   test("PeriodAdjustment.of rejects a period holding days paired with a month-based convention") {
@@ -502,18 +590,76 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     SchedulePeriod.of(jul04, jul18, jul04, jul18) should beSuccess
   }
 
-  test("Schedule.of accepts every well-typed input, because its one invariant is carried by a type") {
-    // The bean being ported validated that its list of periods was not empty; here that is the
-    // type of the field, so the factory has nothing left to decide. It keeps the outcome-bearing
-    // return of a validated type because that is the shape its decoder builds through and the
-    // shape a caller reads at every other type - and no input is invented to make the channel
-    // look used. The failing derivations of a schedule are merge, mergeRegular and toAdjusted,
-    // which are methods and belong to FailableSurfaceSpec.
-    val period: SchedulePeriod = accepted(SchedulePeriod.of(jul04, jul18))
-    val built: ResultNec[Schedule] =
-      Schedule.of(NonEmptyList.one(period), Frequency.P2W, RollConventions.DAY_4)
-    built should beSuccess
-    accepted(built).periods shouldBe NonEmptyList.one(period)
+  test("Schedule.of rejects periods that do not run from earliest to latest, and allows gaps") {
+    // The bean being ported validated that its list of periods was not empty - which is the type
+    // of the field here - and documented, without checking, that the periods ran from earliest to
+    // latest. This factory checks it, because every member that reads the periods reads them as a
+    // time line: the schedule is the ScheduleInfo a day count accrues against, periodEndDate
+    // answers with the first period containing a date, stub classification reads the first and
+    // last period, and a value schedule resolves a step by finding the period whose boundary it
+    // names. A list that is not a time line makes all of those answer wrongly rather than fail.
+    val july: SchedulePeriod = accepted(SchedulePeriod.of(jul04, jul18))
+    val august: SchedulePeriod = accepted(SchedulePeriod.of(date(2014, 8, 1), date(2014, 8, 15)))
+    val september: SchedulePeriod = accepted(SchedulePeriod.of(date(2014, 9, 1), date(2014, 9, 15)))
+
+    // accumulating: a misplaced pair is wrong under both pairs of dates and both are reported,
+    // because they are two statements about one list and a caller correcting the unadjusted dates
+    // is helped by knowing whether the adjusted dates are wrong too
+    val reversedPair: ResultNec[Schedule] =
+      Schedule.of(NonEmptyList.of(august, july), Frequency.P1M, RollConventions.DAY_15)
+    reversedPair should beFailureWith(FailureReason.INVALID)
+    failuresOf(reversedPair) should have size 2
+    failuresOf(reversedPair).head shouldBe a[Failure.Invalid]
+    val pairMessages: List[String] = messagesOf(reversedPair)
+    pairMessages.count(message => message.contains("the unadjusted end date")) shouldBe 1
+    pairMessages.count(message => message.contains("the adjusted end date")) shouldBe 1
+    // each failure names the pair it rejected, by position in the list and by date
+    val reported: String = pairMessages.mkString("; ")
+    reported should include("2014-08-15")
+    reported should include("2014-07-04")
+    reported should include("index 0")
+    reported should include("index 1")
+
+    // every misplaced pair is reported rather than only the first, so a list held backwards
+    // reports each of its consecutive pairs under each pair of dates
+    val reversedRun: ResultNec[Schedule] =
+      Schedule.of(NonEmptyList.of(september, august, july), Frequency.P1M, RollConventions.DAY_15)
+    failuresOf(reversedRun) should have size 4
+    reasonsOf(reversedRun).distinct shouldBe List(FailureReason.INVALID)
+    val runMessages: List[String] = messagesOf(reversedRun)
+    runMessages.distinct should have size 4
+    runMessages.count(message => message.contains("the unadjusted end date")) shouldBe 2
+    runMessages.count(message => message.contains("the adjusted end date")) shouldBe 2
+
+    // the two pairs of dates are checked independently, so a list whose unadjusted dates are in
+    // order and whose adjusted dates overlap reports the one statement that is false of it. Only
+    // a business day adjustment can produce such a list, which is why the adjusted pair is
+    // checked at all.
+    val adjustedOverlap: ResultNec[Schedule] =
+      Schedule.of(
+        NonEmptyList.of(
+          accepted(SchedulePeriod.of(jul04, date(2014, 7, 21), jul04, jul18)),
+          accepted(SchedulePeriod.of(jul18, date(2014, 8, 1), jul18, date(2014, 8, 1)))),
+        Frequency.P2W,
+        RollConventions.DAY_4)
+    adjustedOverlap should beFailureWith(FailureReason.INVALID)
+    failuresOf(adjustedOverlap) should have size 1
+    messagesOf(adjustedOverlap).head should include("the adjusted end date")
+
+    // the positive controls. One period is a time line whatever its dates, there being no pair to
+    // compare; a gap between one period and the next is allowed exactly as the bean allowed it,
+    // since a schedule may describe accrual that pauses; and one period ending on the day the
+    // next begins is the ordinary case, which is why the check is order rather than strict order.
+    val one: ResultNec[Schedule] =
+      Schedule.of(NonEmptyList.one(july), Frequency.P2W, RollConventions.DAY_4)
+    one should beSuccess
+    accepted(one).periods shouldBe NonEmptyList.one(july)
+    Schedule.of(NonEmptyList.of(july, august), Frequency.P1M, RollConventions.DAY_15) should
+      beSuccess
+    Schedule.of(
+      NonEmptyList.of(july, accepted(SchedulePeriod.of(jul18, date(2014, 8, 1)))),
+      Frequency.P2W,
+      RollConventions.DAY_4) should beSuccess
   }
 
   test("PeriodicSchedule.of rejects a definition whose dates are out of order") {
@@ -580,15 +726,68 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     ValueStep.of(jul04, adjustment).date shouldBe Some(jul04)
   }
 
-  test("ValueSchedule.of accepts every well-typed input, because its invariants live in its fields") {
-    // As for Schedule: the AAP's [V] tag describes the representation, and every condition of
-    // the type is carried by the types of its three fields. The failing operation of a value
-    // schedule is resolveValues, which needs a schedule to resolve against and is therefore a
-    // method rather than construction.
-    val step: ValueStep = accepted(ValueStep.of(1, ValueAdjustment.ofDeltaAmount(-2000d)))
-    ValueSchedule.of(100d).initialValue shouldBe 100d
-    ValueSchedule.of(100d, List(step)).steps shouldBe List(step)
-    ValueSchedule.of(100d, List.empty[ValueStep], None).stepSequence shouldBe None
+  test("ValueSchedule.of rejects two steps naming one position with different adjustments") {
+    // The half of the contradiction the bean being ported reported only on resolution that needs
+    // no schedule to see: a position is a period index or a date, whichever the step carries, and
+    // two steps carrying the same one ask a single point of the time line for two different
+    // values whatever schedule they are later resolved against. The other half - a step named by
+    // an index and a step named by the boundary date of that period - is a question about the
+    // periods and stays with resolveValues, which is FailableSurfaceSpec's.
+    val replace300: ValueAdjustment = ValueAdjustment.ofReplace(300d)
+    val replace400: ValueAdjustment = ValueAdjustment.ofReplace(400d)
+    val atIndex1: ValueStep = accepted(ValueStep.of(1, replace300))
+    val alsoAtIndex1: ValueStep = accepted(ValueStep.of(1, replace400))
+    val atJul04: ValueStep = ValueStep.of(jul04, replace300)
+    val alsoAtJul04: ValueStep = ValueStep.of(jul04, replace400)
+
+    val index: ResultNec[ValueSchedule] = ValueSchedule.of(200d, List(atIndex1, alsoAtIndex1))
+    index should beFailureWith(FailureReason.INVALID)
+    failuresOf(index) should have size 1
+    failuresOf(index).head shouldBe a[Failure.Invalid]
+    messagesOf(index).head should include("period index 1")
+
+    val dated: ResultNec[ValueSchedule] = ValueSchedule.of(200d, atJul04, alsoAtJul04)
+    dated should beFailureWith(FailureReason.INVALID)
+    failuresOf(dated) should have size 1
+    messagesOf(dated).head should include("date 2014-07-04")
+
+    // accumulating: each doubly named position is a cause of its own, so a definition that
+    // contradicts itself at an index and at a date reports both rather than the first of them
+    val both: ResultNec[ValueSchedule] =
+      ValueSchedule.of(200d, List(atIndex1, alsoAtIndex1, atJul04, alsoAtJul04), None)
+    failuresOf(both) should have size 2
+    reasonsOf(both).distinct shouldBe List(FailureReason.INVALID)
+    messagesOf(both) should contain allElementsOf messagesOf(index)
+    messagesOf(both) should contain allElementsOf messagesOf(dated)
+    messagesOf(both).distinct should have size 2
+
+    // The positive controls. Two steps at one position asking for the same adjustment agree
+    // rather than contradict, and are accepted exactly as the bean being ported accepted them:
+    // the value changes once, to the value both steps ask for. An index and a date are different
+    // positions here, so a definition naming one of each is built and judged on resolution.
+    val twice: ResultNec[ValueSchedule] = ValueSchedule.of(200d, List(atIndex1, atIndex1))
+    twice should beSuccess
+    accepted(twice).steps shouldBe List(atIndex1, atIndex1)
+    ValueSchedule.of(200d, List(atIndex1, atJul04), None) should beSuccess
+
+    // the remaining overloads: one naming no step, and one naming a single step, name no position
+    // twice and so cannot reach the check. They report through the same channel all the same,
+    // because a caller of a validated factory of this port reads one shape at every type.
+    val sequence: ValueStepSequence =
+      accepted(
+        ValueStepSequence.of(jul04, jul18, Frequency.P1M, ValueAdjustment.ofDeltaAmount(-100d)))
+    accepted(ValueSchedule.of(100d)).initialValue shouldBe 100d
+    accepted(ValueSchedule.of(100d, List.empty[ValueStep], None)).stepSequence shouldBe None
+    accepted(ValueSchedule.of(100d, List(atIndex1))).steps shouldBe List(atIndex1)
+    accepted(ValueSchedule.of(100d, sequence)).stepSequence shouldBe Some(sequence)
+
+    // the two `with` operations re-validate, which is what the [V] policy of AAP section 0.3.3
+    // requires of a field-wise modification: the steps they are given are the caller's, so they
+    // route through the factory and answer with its outcome rather than with a schedule
+    val base: ValueSchedule = accepted(ValueSchedule.of(200d, List(atIndex1)))
+    base.withSteps(List(atIndex1, alsoAtIndex1)) should beFailureWith(FailureReason.INVALID)
+    accepted(base.withSteps(List(atJul04))).steps shouldBe List(atJul04)
+    accepted(base.withStepSequence(sequence)).stepSequence shouldBe Some(sequence)
   }
 
   test("ValueStepSequence.of rejects dates out of order and an adjustment that replaces the value") {
@@ -1258,10 +1457,12 @@ object SmartConstructorSpec {
   /**
    * The validated types of AAP section 0.3.3, in the order that section lists them.
    *
-   * Each has a test in the suite. The three whose factories are total in this port -
-   * `DaysAdjustment`, `Schedule` and `ValueSchedule` - are listed here all the same, because the
-   * kind describes the representation of a type rather than the presence of a rejecting factory,
-   * and their tests record the totality.
+   * Each has a test in the suite naming the inputs its factory refuses. The three whose condition
+   * is a relation between fields rather than a property of one - `DaysAdjustment`, whose day count
+   * has to agree with its addition calendar; `Schedule`, whose periods have to run from earliest
+   * to latest; and `ValueSchedule`, whose steps must not name one position twice with different
+   * adjustments - are no different in kind: each is checked by its `of`, and the class-level
+   * documentation of the suite says what each of the three refuses.
    */
   private val ValidatedTypes: List[String] =
     List(

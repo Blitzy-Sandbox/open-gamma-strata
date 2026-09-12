@@ -9,6 +9,7 @@ import java.time.LocalDate
 
 import cats.Hash
 import cats.Show
+import cats.data.NonEmptyList
 
 import io.circe.Json
 import io.circe.parser.decode
@@ -20,6 +21,9 @@ import org.scalatest.matchers.should.Matchers
 
 import com.opengamma.strata.basics.schedule.Frequency
 import com.opengamma.strata.basics.schedule.RollConventions
+import com.opengamma.strata.basics.schedule.Schedule
+import com.opengamma.strata.basics.schedule.SchedulePeriod
+import com.opengamma.strata.collect.array.DoubleArray
 import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.result.ResultNec
@@ -30,10 +34,31 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * Test [[ValueStepSequence]].
  *
  * This is a one-to-one port of the Java test class `ValueStepSequenceTest`: each of its seven
- * test methods has a test of the same name here, in the same order, and no test is added, split
- * or renamed. Every date, frequency and adjustment the Java test named is named here too, as a
+ * test methods has a test of the same name here, in the same order, and no test is split or
+ * renamed. Every date, frequency and adjustment the Java test named is named here too, as a
  * literal rather than as something recomputed, because the whole value of a ported test is that
  * it agrees with the implementation it was written against.
+ *
+ * ===The six tests that are not ports===
+ *
+ * `test_resolve_atMaximumSteps` and `test_resolve_beyondMaximumSteps` have no Java counterpart
+ * because the behaviour they cover has none: [[ValueStepSequence.resolve]] bounds its expansion
+ * at [[ValueStepSequence.MaximumStepCount]] steps, where the original expanded whatever span its
+ * dates and frequency described. They are written as a pair straddling the ceiling by one step,
+ * which is what makes them evidence of both halves of that bound - that a sequence filling the
+ * ceiling still resolves, and that the one step past it is reported rather than expanded.
+ *
+ * The four that follow them cover the other behaviour the original did not have: the date
+ * arithmetic of a resolution is '''guarded''', so a sequence whose dates sit at the edge of the
+ * range `java.time` represents is answered rather than raised out of. They are written as a set
+ * of four because the edge is reached in four distinguishable ways, and only two of them are
+ * failures - `test_resolve_equalDatesAtMaximumDate` resolves a sequence whose two dates are both
+ * the last date the calendar holds, which is the case a walk must not ask for a successor in;
+ * `test_resolve_dateRangeOverflow` covers the two that genuinely need a date past the end of the
+ * range, one in a rolling step and one in the adjustment of an endpoint;
+ * `test_resolve_nearMinimumDate` covers the other end of the range, which fails nothing because
+ * the walk only moves forward; and `test_resolve_dateRangeOverflow_throughValueSchedule` asserts
+ * the same outcomes on the public path a caller outside this package reaches resolution through.
  *
  * ===What the port changes, and why===
  *
@@ -47,7 +72,9 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  *     pinned both by pattern and word for word against the Java text. None of the three is a
  *     caller-contract precondition - the order of two dates, the type of an adjustment and
  *     whether a frequency divides a span all depend on the data supplied - so no exception is
- *     expected anywhere in this spec and none is intercepted.
+ *     expected anywhere in this spec and none is intercepted. The date-range tests below make
+ *     that claim an assertion rather than an omission: they state `noException should be thrownBy`
+ *     over the very calls the ported implementation raised from.
  *   - `coverage` called `coverImmutableBean`, a reflective sweep over the properties of a bean
  *     through its meta-bean. There is no meta-bean and no reflective property access here, so its
  *     substance is asserted directly on the two instances the Java test swept: the accessors, the
@@ -63,7 +90,9 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * ===Resolution is reached directly, as it was in Java===
  *
  * `resolve` is visible within this package rather than publicly, exactly as the ported method
- * was package-private, and three of the seven tests call it. That is legal from here because a
+ * was package-private, and eight of the thirteen tests call it directly - a ninth reaches it
+ * through the public [[ValueSchedule.resolveValues]], which is the only route a caller outside
+ * this package has. That is legal from here because a
  * Scala access qualifier names a package rather than a compilation unit or a module: this spec
  * declares the package the type declares, so the member is in scope. Nothing is added to the
  * production type to make these tests possible, and nothing is reached by reflection.
@@ -75,7 +104,8 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * accumulation (`SmartConstructorSpec`), the inventory of failure-returning methods
  * (`FailableSurfaceSpec`), the proof that no validated type has a public `apply` or `copy`
  * (`ApiSurfaceSpec`), and the property-based codec round trip over every codec-bearing type
- * (`json/JsonRoundTripSpec`). This spec stays with the seven ported methods.
+ * (`json/JsonRoundTripSpec`). This spec stays with the seven ported methods and the six cases
+ * that cover what the port added to `resolve`.
  */
 final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
@@ -121,6 +151,86 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
   private val FrequencyMismatch: String =
     "ValueStepSequence lastStepDate did not match frequency 'P12M' using roll convention 'None', " +
       "2016-10-20 != 2016-04-20"
+
+  //-------------------------------------------------------------------------
+  /**
+   * The first date of the two bounded-expansion cases below.
+   *
+   * The pair of them straddles the ceiling by one step: a daily frequency from this date reaches
+   * [[LastDateAtCeiling]] on its hundred-thousandth step and [[LastDateBeyondCeiling]] on the one
+   * after that, so the two cases differ in exactly the one step that decides the outcome.
+   */
+  private val CeilingFirstDate: LocalDate = date(2016, 4, 20)
+
+  /**
+   * The last date of a daily sequence of exactly [[ValueStepSequence.MaximumStepCount]] steps.
+   *
+   * This is `2016-04-20` plus one day short of the ceiling, so the walk lands on it having
+   * produced exactly as many steps as the ceiling allows.
+   */
+  private val LastDateAtCeiling: LocalDate = date(2290, 2, 2)
+
+  /** The last date of a daily sequence of one step more than the ceiling allows. */
+  private val LastDateBeyondCeiling: LocalDate = date(2290, 2, 3)
+
+  /**
+   * The message reported when the dates and frequency describe more steps than the ceiling.
+   *
+   * This message belongs to the port rather than to the Java original, which expanded whatever
+   * span it was given, so it is transcribed from the implementation for the same reason the
+   * ported messages are: to keep a change to its wording from passing unnoticed. It names the
+   * limit as well as the two adjusted dates and the frequency, because the limit is the part a
+   * caller cannot work out from its own arguments.
+   */
+  private val ExpansionBeyondCeiling: String =
+    "ValueStepSequence frequency 'P1D' from 2016-04-20 to 2290-02-03 using roll convention " +
+      "'None' expands to more than the maximum of 100000 steps"
+
+  //-------------------------------------------------------------------------
+  /**
+   * The message reported when the arithmetic of a resolution leaves the range of dates.
+   *
+   * This message belongs to the port rather than to the Java original, which performed the same
+   * arithmetic unguarded and let `java.time` raise out of a method that otherwise reported its
+   * outcome as a value. It names the frequency, which is what a rolling step adds, and the
+   * convention, which is what adjusts the result and can itself move a date off the end of the
+   * range; it names neither date, because either of them can be the one at fault.
+   *
+   * This first form is that of the rolling-step case below, a monthly frequency under the
+   * convention that adjusts nothing.
+   */
+  private val MonthlyOverflow: String =
+    "ValueStepSequence frequency 'P1M' using roll convention 'None' moved outside the range of " +
+      "supported dates"
+
+  /**
+   * The same message for the endpoint-adjustment case below, a day-of-week convention.
+   *
+   * `LocalDate.MAX` is a Friday, so the 'DayMon' convention - which moves a date '''forward''' to
+   * the next Monday - cannot adjust it without leaving the range. That is the second way a
+   * resolution reaches the edge of the calendar, and it is reached before the walk begins.
+   */
+  private val DailyMondayOverflow: String =
+    "ValueStepSequence frequency 'P1D' using roll convention 'DayMon' moved outside the range of " +
+      "supported dates"
+
+  /**
+   * The schedule the public-path case below resolves a value schedule against.
+   *
+   * One period of January 2014 under the convention that adjusts nothing is enough: what that
+   * case is about is which channel the outcome comes back through, and the sequences it resolves
+   * name dates at the end of the calendar, so no period of any plausible schedule contains them.
+   * The convention matters and is deliberately 'None': the sequence is expanded under the
+   * convention of the '''schedule''', and a day-of-month convention would pull the dates of the
+   * sequence back to the first of the month and so resolve arithmetic that is the point of the
+   * case.
+   */
+  private val ScheduleFixture: Schedule =
+    ok(
+      Schedule.of(
+        NonEmptyList.of(ok(SchedulePeriod.of(date(2014, 1, 1), date(2014, 2, 1)))),
+        Frequency.P1M,
+        RollConventions.NONE))
 
   //-------------------------------------------------------------------------
   /**
@@ -193,12 +303,35 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
       held => held)
 
   /**
+   * Reads the value out of a factory outcome that is expected to hold one.
+   *
+   * This is [[sequence]] for the types the public-path case below builds its target schedule
+   * from - a schedule period and a schedule - whose factories report their outcome as a value for
+   * the same reason the factory of this type does. A fixture that fails is a defect in this spec
+   * and is reported as one, naming the failures.
+   *
+   * @param result  the outcome of a factory, expected to hold a value
+   * @return the value the outcome holds
+   * @tparam A  the type the factory builds
+   */
+  private def ok[A](result: ResultNec[A]): A =
+    result.fold(
+      failures => fail(s"invalid fixture: ${failures.toChain.toList.map(_.message).mkString("; ")}"),
+      held => held)
+
+  /**
    * The message of a resolution that is expected to have failed.
+   *
+   * The outcome is read generically in the value it would have held, because the failures of a
+   * resolution are asserted on two channels here: the steps [[ValueStepSequence.resolve]] returns
+   * and the values [[ValueSchedule.resolveValues]] returns, which is where the public-path case
+   * below reads its failure from.
    *
    * @param result  the outcome of resolution, expected to hold a failure
    * @return the message of that failure
+   * @tparam A  the type the resolution would have produced
    */
-  private def failureMessage(result: FailureOr[List[ValueStep]]): String =
+  private def failureMessage[A](result: FailureOr[A]): String =
     result.fold(
       failure => failure.message,
       held => fail(s"the sequence resolved where a failure was expected: $held"))
@@ -369,6 +502,204 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
     // The step supplied is not returned alongside the failure: a resolution that fails produces
     // no list at all, so a caller cannot mistake a partial one for a whole one.
     result.toOption shouldBe None
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_resolve_atMaximumSteps") {
+    // A daily frequency over a span of one day short of a hundred thousand: the largest
+    // expansion the ceiling of this port allows, and the case that proves the ceiling does not
+    // bite on a sequence that is merely large. The dates and the frequency are legal arguments -
+    // neither is checked against any schedule at construction - so the only thing deciding the
+    // outcome is the step count, and here it is exactly the limit.
+    val test: ValueStepSequence =
+      sequence(ValueStepSequence.of(CeilingFirstDate, LastDateAtCeiling, Frequency.P1D, Adj))
+
+    val result: FailureOr[List[ValueStep]] = test.resolve(List.empty, RollConventions.NONE)
+    result should beSuccess
+
+    // Every date of the walk produced a step, the first and the last of them being the two dates
+    // of the sequence, which is what makes the count above the count of the expansion rather
+    // than of something the ceiling truncated.
+    val steps: List[ValueStep] = resolved(result)
+    steps.size shouldBe ValueStepSequence.MaximumStepCount
+    steps.head shouldBe ValueStep.of(CeilingFirstDate, Adj)
+    steps.last shouldBe ValueStep.of(LastDateAtCeiling, Adj)
+    steps.forall(_.value == Adj) shouldBe true
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_resolve_beyondMaximumSteps") {
+    // The same sequence with its last date one day later, which is one step more than the
+    // ceiling allows. The Java original expanded any span it was given, building a step object
+    // for each date; a caller is free to name dates centuries apart and a daily frequency, so
+    // that expansion is work and allocation decided by data (CWE-400). This port refuses it.
+    val test: ValueStepSequence =
+      sequence(ValueStepSequence.of(CeilingFirstDate, LastDateBeyondCeiling, Frequency.P1D, Adj))
+
+    val result: FailureOr[List[ValueStep]] = test.resolve(List.empty, RollConventions.NONE)
+    result should beFailure
+    result should beFailureWith(FailureReason.INVALID)
+    result should haveFailureMessageMatching(".*expands to more than the maximum of 100000 steps")
+
+    // The message names the limit that was crossed, word for word, so a caller reading a report
+    // learns the bound rather than only that its arguments were too large.
+    failureMessage(result) shouldBe ExpansionBeyondCeiling
+    result.toOption shouldBe None
+
+    // And the refusal is reached from a span no amount of iteration could finish: a daily
+    // sequence ending at the last date the calendar holds describes hundreds of billions of
+    // steps. This case returning at all is the evidence that the ceiling bounds the walk itself
+    // rather than the list it produces - an expansion that materialised first would still be
+    // running, and would exhaust the heap long before it stopped.
+    val unbounded: ValueStepSequence =
+      sequence(ValueStepSequence.of(CeilingFirstDate, LocalDate.MAX, Frequency.P1D, Adj))
+    val unboundedResult: FailureOr[List[ValueStep]] =
+      unbounded.resolve(List.empty, RollConventions.NONE)
+    unboundedResult should beFailureWith(FailureReason.INVALID)
+    unboundedResult should haveFailureMessageMatching(
+      ".*expands to more than the maximum of 100000 steps")
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_resolve_equalDatesAtMaximumDate") {
+    // The two dates of a sequence are checked against each other and against nothing else, so a
+    // sequence whose first and last date are both the last date the calendar holds is a legal
+    // value - `test_of_invalid` above pins that equal dates are in order - and resolving it is a
+    // legal thing for a caller to ask for. Under the convention that adjusts nothing, the walk
+    // starts on that date, which is also the date it has to reach, so the answer is a single step
+    // there.
+    val test: ValueStepSequence =
+      sequence(ValueStepSequence.of(LocalDate.MAX, LocalDate.MAX, Frequency.P1D, Adj))
+
+    val result: FailureOr[List[ValueStep]] = test.resolve(List.empty, RollConventions.NONE)
+    result should beSuccess
+
+    val steps: List[ValueStep] = resolved(result)
+    steps.size shouldBe 1
+    steps shouldBe List(ValueStep.of(LocalDate.MAX, Adj))
+    steps.head.date shouldBe Some(LocalDate.MAX)
+    steps.head.value shouldBe Adj
+
+    // This is the case that decides where the walk stops. A walk that stepped past the date it
+    // had reached in order to establish that it was finished would ask the convention for the day
+    // after the last date the calendar holds, and `java.time` raises rather than answering; the
+    // walk of this port accepts a date equal to the adjusted last date and stops there, which
+    // reaches the same list by never asking. The single step above is that list, and it arriving
+    // at all - rather than as a raised `DateTimeException` - is what this test pins.
+    noException should be thrownBy test.resolve(List.empty, RollConventions.NONE)
+
+    // The steps supplied are still kept and the generated step still follows them, so stopping at
+    // the end of the range is the ordinary answer of the ordinary path rather than a special case.
+    val baseStep: ValueStep = ValueStep.of(date(2016, 1, 20), ValueAdjustment.ofReplace(500.0d))
+    resolved(test.resolve(List(baseStep), RollConventions.NONE)) shouldBe
+      List(baseStep, ValueStep.of(LocalDate.MAX, Adj))
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_resolve_dateRangeOverflow") {
+    // A sequence that genuinely needs a date the calendar cannot hold, which is the case the one
+    // above is not: a monthly frequency from the day before the last date has to step a month
+    // past the end of the range to discover whether it has finished, and that arithmetic has no
+    // answer. The Java implementation let `java.time` raise it out of a resolution that reports
+    // everything else as a value; this port reports it, and the reason is a member of the closed
+    // family of reasons like every other failure of this type.
+    val stepping: ValueStepSequence =
+      sequence(
+        ValueStepSequence.of(LocalDate.MAX.minusDays(1), LocalDate.MAX, Frequency.P1M, Adj))
+
+    val steppingResult: FailureOr[List[ValueStep]] =
+      stepping.resolve(List.empty, RollConventions.NONE)
+    steppingResult should beFailure
+    steppingResult should beFailureWith(FailureReason.INVALID)
+    steppingResult should haveFailureMessageMatching(
+      ".*moved outside the range of supported dates")
+    failureMessage(steppingResult) shouldBe MonthlyOverflow
+
+    // It is a failure rather than a raised exception, which is the whole point, and it carries no
+    // partial list of steps.
+    noException should be thrownBy stepping.resolve(List.empty, RollConventions.NONE)
+    steppingResult.toOption shouldBe None
+
+    // The second way a resolution reaches the edge of the calendar is the adjustment of an
+    // endpoint, before any walking happens: a day-of-week convention moves a date forward to the
+    // next matching day, and `LocalDate.MAX` is a Friday, so adjusting it to a Monday leaves the
+    // range. Both endpoints are adjusted and both are guarded; this sequence reaches it on the
+    // first of them.
+    val adjusting: ValueStepSequence =
+      sequence(ValueStepSequence.of(LocalDate.MAX, LocalDate.MAX, Frequency.P1D, Adj))
+
+    val adjustingResult: FailureOr[List[ValueStep]] =
+      adjusting.resolve(List.empty, RollConventions.DAY_MON)
+    adjustingResult should beFailure
+    adjustingResult should beFailureWith(FailureReason.INVALID)
+    failureMessage(adjustingResult) shouldBe DailyMondayOverflow
+    noException should be thrownBy adjusting.resolve(List.empty, RollConventions.DAY_MON)
+    adjustingResult.toOption shouldBe None
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_resolve_nearMinimumDate") {
+    // The other end of the range fails nothing, and this is the test that says so: the walk only
+    // ever moves forward, so a sequence starting on the first date the calendar holds has the
+    // whole of the calendar in front of it. Both a daily and a monthly frequency resolve there,
+    // with the dates stated as offsets from `LocalDate.MIN` so that the assertion is about the
+    // walk rather than about the spelling of a year of nine digits.
+    val daily: ValueStepSequence =
+      sequence(
+        ValueStepSequence.of(LocalDate.MIN, LocalDate.MIN.plusDays(2), Frequency.P1D, Adj))
+    resolved(daily.resolve(List.empty, RollConventions.NONE)) shouldBe List(
+      ValueStep.of(LocalDate.MIN, Adj),
+      ValueStep.of(LocalDate.MIN.plusDays(1), Adj),
+      ValueStep.of(LocalDate.MIN.plusDays(2), Adj))
+
+    val monthly: ValueStepSequence =
+      sequence(
+        ValueStepSequence.of(LocalDate.MIN, LocalDate.MIN.plusMonths(3), Frequency.P1M, Adj))
+    resolved(monthly.resolve(List.empty, RollConventions.NONE)).map(_.date) shouldBe List(
+      Some(LocalDate.MIN),
+      Some(LocalDate.MIN.plusMonths(1)),
+      Some(LocalDate.MIN.plusMonths(2)),
+      Some(LocalDate.MIN.plusMonths(3)))
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_resolve_dateRangeOverflow_throughValueSchedule") {
+    // Resolution is reached from outside this package through [[ValueSchedule.resolveValues]],
+    // which is public, and that is the path a caller sees: a sequence held by a value schedule is
+    // expanded under the roll convention of the schedule the values are resolved against, and the
+    // failure of the expansion is the failure of the resolution. So the guard has to hold on this
+    // path too, and this is where that is asserted rather than inferred from the calls above.
+    val overflowing: ValueSchedule =
+      ok(
+        ValueSchedule.of(
+          1000.0d,
+          sequence(
+            ValueStepSequence.of(LocalDate.MAX.minusDays(1), LocalDate.MAX, Frequency.P1M, Adj))))
+
+    val result: FailureOr[DoubleArray] = overflowing.resolveValues(ScheduleFixture)
+    result should beFailure
+    result should beFailureWith(FailureReason.INVALID)
+    failureMessage(result) shouldBe MonthlyOverflow
+    noException should be thrownBy overflowing.resolveValues(ScheduleFixture)
+    result.toOption shouldBe None
+
+    // And the sequence of the case above - equal dates at the last date the calendar holds -
+    // comes back through the same channel as a value rather than as a raised exception. It
+    // resolves to its single step, and the failure reported is the ordinary one for a step that
+    // falls outside every period of the schedule it is resolved against, which is what a step at
+    // the end of the calendar is for the January 2014 schedule here.
+    val atMaximum: ValueSchedule =
+      ok(
+        ValueSchedule.of(
+          1000.0d,
+          sequence(ValueStepSequence.of(LocalDate.MAX, LocalDate.MAX, Frequency.P1D, Adj))))
+
+    val atMaximumResult: FailureOr[DoubleArray] = atMaximum.resolveValues(ScheduleFixture)
+    atMaximumResult should beFailure
+    atMaximumResult should beFailureWith(FailureReason.INVALID)
+    atMaximumResult should haveFailureMessageMatching(
+      ".*ValueStep date is after the end of the schedule.*")
+    noException should be thrownBy atMaximum.resolveValues(ScheduleFixture)
   }
 
   //-------------------------------------------------------------------------

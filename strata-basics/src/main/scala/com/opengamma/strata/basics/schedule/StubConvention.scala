@@ -7,6 +7,7 @@ package com.opengamma.strata.basics.schedule
 
 import java.time.LocalDate
 import java.time.temporal.ChronoField
+import java.time.temporal.ChronoUnit
 
 import cats.Hash
 import cats.Order
@@ -111,6 +112,12 @@ import com.opengamma.strata.collect.result.Failure
  *  - '''Java serialization is gone.''' No member is serializable through the Java mechanism. JSON
  *    is the wire form, through the codec on the companion, and a member is written as the bare
  *    string of its name.
+ *  - '''The smart threshold is measured rather than stepped.''' The ported `isStubLong` of the two
+ *    smart conventions asked whether seven days after the first date falls after the second, which
+ *    raises `DateTimeException` for a first date within seven days of `LocalDate.MAX`. This port
+ *    asks the equivalent question of the gap itself - whether fewer than seven days separate the
+ *    two dates - which is total over the whole of `LocalDate` and therefore cannot take a member of
+ *    this family outside the error channel of the schedule generation that calls it (AAP 0.3.3).
  *
  * @param name  the unique name of the convention, which is its identity in text and on the wire
  * @see [[RollConvention]] for the convention a stub convention implies
@@ -801,8 +808,8 @@ object StubConvention {
    * The length below which the two smart conventions absorb a stub into its neighbour.
    *
    * Seven days is the threshold the library being ported used, and it is exclusive: a stub of
-   * exactly seven days is retained. It is held as a `Long` because that is the type
-   * `LocalDate.plusDays` takes, so no numeric widening occurs at the one call site.
+   * exactly seven days is retained. It is held as a `Long` because that is the type the day count
+   * between two dates is measured in at the one call site, so no numeric widening occurs there.
    */
   private val SmartStubThresholdDays: Long = 7L
 
@@ -814,6 +821,26 @@ object StubConvention {
    * [[DefinitionAttribute]] so that a report can name the definition that was rejected without
    * the message having to embed it. The definition is taken by name and is evaluated here, which
    * is to say only on the path that actually rejects.
+   *
+   * ===Why the definition is attached exactly as it was rendered===
+   *
+   * The text is attached as the caller rendered it, with nothing dropped, shortened or escaped,
+   * because the attribute replaces the field the ported exception carried: the caller of this
+   * family is [[PeriodicSchedule]], which passes its own `toString`, and a report naming the
+   * rejected definition or a test comparing it with the definition that was supplied reads a
+   * summary rather than the definition itself if this method alters the text.
+   *
+   * That text is not constrained by this library. A schedule definition embeds a business day
+   * adjustment, which names a holiday calendar identifier whose name is accepted as given, so the
+   * definition may hold a line feed, a control character, or several thousand characters of
+   * anything. Making such text safe to write out belongs to the writing of the failure rather than
+   * to its construction, and that is where this port performs it: the
+   * [[com.opengamma.strata.collect.result.Failure.show]] instance, which is also the text form of
+   * every failure, bounds each part it writes - the message and the key and the value of every
+   * attribute - and escapes every character a line-oriented reader could act on. A definition
+   * attached here can consequently not forge a line of a log or a report that holds the failure
+   * (CWE-117), nor inflate that line to the size of the definition, while the attribute itself
+   * still answers with the whole of what was rendered.
    *
    * @param message  the message of the ported exception, verbatim
    * @param definition  the text the rejected schedule definition renders to
@@ -876,16 +903,22 @@ object StubConvention {
   /**
    * Decides whether the gap between two dates is shorter than the smart threshold.
    *
-   * This is the rule both smart conventions apply, written once: the stub is absorbed when the
-   * second date falls before the seventh day after the first, so a gap of exactly seven days is
-   * retained and any shorter gap - including a reversed pair, whose second date is earlier still -
-   * is absorbed. The dates are unadjusted, as they are in the library being ported.
+   * This is the rule both smart conventions apply, written once: the stub is absorbed when fewer
+   * than seven days separate the two dates, so a gap of exactly seven days is retained and any
+   * shorter gap - including a reversed pair, whose day count is negative - is absorbed. The dates
+   * are unadjusted, as they are in the library being ported.
+   *
+   * The question is asked of the '''gap''' rather than by stepping seven days forward from the
+   * first date, and the two are the same question by epoch-day algebra: `date1 + 7 > date2` holds
+   * exactly when `date2 - date1 < 7` does. Measuring is what makes this member total, where
+   * stepping raised for a first date within seven days of `LocalDate.MAX`; the schedule generation
+   * that asks it answers with `Either`, and a failure that depends on the dates of a definition
+   * belongs in that channel rather than in an exception (AAP 0.3.3).
    *
    * @param date1  the first date of the candidate stub
    * @param date2  the second date of the candidate stub
    * @return true if the gap is shorter than seven days
    */
   private def isShorterThanSmartThreshold(date1: LocalDate, date2: LocalDate): Boolean =
-    date1.plusDays(SmartStubThresholdDays).isAfter(date2)
+    ChronoUnit.DAYS.between(date1, date2) < SmartStubThresholdDays
 }
-

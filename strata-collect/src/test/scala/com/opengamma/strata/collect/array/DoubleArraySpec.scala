@@ -128,12 +128,12 @@ package com.opengamma.strata.collect.array {
    *    checked before anything is allocated, where the original let the allocation itself raise
    *    `NegativeArraySizeException`. That puts every size and shape failure of the array and
    *    matrix types into one exception type, which the matrix factories already used;
-   *  - `equalWithTolerance` agrees with `equals` about a not-a-number element: an array holding
-   *    one is equal within any tolerance to an array holding one at the same index, exactly as
-   *    it is under bit-for-bit structural equality, so the fuzzy and the structural contracts
-   *    answer alike here rather than contradicting one another. This is the behaviour of the
-   *    scalar comparison the port reproduces, measured against it; the contract itself belongs
-   *    to the comparison this delegates to, whose own spec owns it;
+   *  - `equalWithTolerance` never matches a not-a-number element: an array holding one is not
+   *    equal within any tolerance to an array holding one at the same index, because no tolerance
+   *    reaches such a value. Bit-for-bit structural equality - `equals`, `hashCode` and the
+   *    lookups built on them - does keep such an element reflexive, and that asymmetry between
+   *    the two contracts is deliberate: both are asserted here, side by side. The fuzzy contract
+   *    itself belongs to the comparison this delegates to, whose own spec owns it;
    *  - `ofUnsafe` and `toArrayUnsafe` are visible only inside this module, where the original
    *    exposed both to every caller. This spec is inside the module and exercises both positively;
    *    the prohibition outside it is proved from a probe object in a sibling package;
@@ -290,10 +290,9 @@ package com.opengamma.strata.collect.array {
     }
 
     test("test_of") {
-      // the original declared arity-specific factories up to eight values, which exist to spare
-      // a caller a sequence and a second array per call, and the port declares the same ones.
-      // Every arity is exercised here, the ninth included, where a call reaches the form that
-      // takes any number of values
+      // the original declared ten arity-specific factories, which exist to spare a caller an
+      // array allocation; the port has one varargs factory, so each arity the original declared
+      // is exercised here through it, from none up to nine values
       assertContent(DoubleArray.of())
       assertContent(DoubleArray.of(1.0), 1.0)
       assertContent(DoubleArray.of(1.0, 2.0), 1.0, 2.0)
@@ -312,12 +311,15 @@ package com.opengamma.strata.collect.array {
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
     }
 
-    test("test_of_arities_and_varargs_answer_alike") {
-      // the eight factories that take their values one parameter at a time have to answer
-      // exactly what the form taking any number of values answers, since a caller chooses
-      // between them only by how the call is written. Each arity is compared against the same
-      // values expanded from a sequence, which reaches the other form
-      val values = List(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5)
+    test("test_of_is_one_varargs_factory_over_every_arity") {
+      // The port collapses the original's arity family into one member taking any number of
+      // values, so a call listing its values out and a call expanding a sequence reach the same
+      // factory and must therefore answer alike. This asserts that at every arity the original
+      // declared, which is what establishes that nothing was lost by collapsing them, and that
+      // no arity-specific member remains: an overload of a different arity would make one of
+      // these pairs disagree only if it computed something different, so the comparison is made
+      // against values the sequence supplies rather than against a restated expectation
+      val values = List(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5)
       DoubleArray.of(1.5) shouldBe DoubleArray.of(values.take(1): _*)
       DoubleArray.of(1.5, 2.5) shouldBe DoubleArray.of(values.take(2): _*)
       DoubleArray.of(1.5, 2.5, 3.5) shouldBe DoubleArray.of(values.take(3): _*)
@@ -325,10 +327,12 @@ package com.opengamma.strata.collect.array {
       DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5) shouldBe DoubleArray.of(values.take(5): _*)
       DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5, 6.5) shouldBe DoubleArray.of(values.take(6): _*)
       DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5) shouldBe DoubleArray.of(values.take(7): _*)
-      DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5) shouldBe DoubleArray.of(values: _*)
+      DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5) shouldBe DoubleArray.of(values.take(8): _*)
+      DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5) shouldBe DoubleArray.of(values: _*)
 
-      // the empty call is the shared empty instance, by identity, as an expansion of an empty
-      // sequence also is
+      // a call supplying no values is the shared empty instance, by identity, as an expansion of
+      // an empty sequence is - the one varargs member has to keep that, since it is the only
+      // route to an empty array through this factory
       DoubleArray.of() should be theSameInstanceAs DoubleArray.EMPTY
       DoubleArray.of(List.empty[Double]: _*) should be theSameInstanceAs DoubleArray.EMPTY
 
@@ -343,7 +347,7 @@ package com.opengamma.strata.collect.array {
         Double.MaxValue,
         Double.MinValue)
 
-      // each of them holds an array of its own: two calls with the same values are equal values
+      // every call holds an array of its own: two calls with the same values are equal values
       // that share nothing, and neither can be reached through the other
       val first = DoubleArray.of(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
       val second = DoubleArray.of(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
@@ -805,6 +809,27 @@ package com.opengamma.strata.collect.array {
       test1.combineReduce(test2, (total, a, b) => total + a * b) shouldBe
         0.5 + 2.0 * 0.6 + 3.0 * 0.7
       assertDifferentSizes(test1.combineReduce(DoubleArray.EMPTY, (total, a, b) => total + a * b))
+
+      // two empty arrays agree on size, so the reduction is performed rather than refused, and it
+      // has no index to visit: the answer is the identity the reduction starts from, exactly zero,
+      // and the operator is never called. The operator used here fails the test if it is called at
+      // all, which is what proves the second half - a counter left unasserted would not
+      DoubleArray.EMPTY.combineReduce(
+        DoubleArray.EMPTY,
+        (_, _, _) => fail("the operator must not be invoked")) shouldBe 0.0
+
+      // and the same holds for an empty array reached through a factory rather than the constant,
+      // since every route to an empty array answers with that one instance
+      DoubleArray.of().combineReduce(
+        DoubleArray.filled(0),
+        (_, _, _) => fail("the operator must not be invoked")) shouldBe 0.0
+
+      // the zero is the exact identity and not merely a value near it, and it is positive zero,
+      // which is the running total the reduction is documented to start from
+      bitsOf(
+        DoubleArray.EMPTY.combineReduce(
+          DoubleArray.EMPTY,
+          (_, _, _) => fail("the operator must not be invoked"))) shouldBe bitsOf(0.0)
     }
 
     //-------------------------------------------------------------------------
@@ -1158,17 +1183,21 @@ package com.opengamma.strata.collect.array {
     }
 
     test("ieee_tolerance_comparison_of_nan") {
-      // The tolerance comparison is delegated, and it treats a not-a-number value as equal to a
-      // not-a-number value: an array holding one is therefore equal, within any tolerance, to an
-      // array holding one at the same index. It is asserted here because it is the same answer
-      // the bitwise equality asserted above gives, so the fuzzy and the structural contracts
-      // agree on such an element rather than disagreeing; the fuzzy contract itself belongs to
-      // the comparison, whose own spec owns it.
+      // The tolerance comparison is delegated, and it matches no not-a-number value at all: such
+      // a value has no distance from anything, so no tolerance reaches it and an array holding
+      // one is not equal to an array holding one at the same index. It is asserted here because
+      // it is the opposite of the bitwise equality asserted above, where such an element is
+      // reflexive; the two contracts deliberately disagree at this one element, each answering
+      // the question it was asked, and the fuzzy contract itself belongs to the comparison, whose
+      // own spec owns it.
       val nan = DoubleArray.of(1.0, Double.NaN)
-      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), 0.0) shouldBe true
-      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), Double.PositiveInfinity) shouldBe true
-      nan.equalWithTolerance(nan, 0.01) shouldBe true
-      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN + 1.0), 0.01) shouldBe true
+      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), 0.0) shouldBe false
+      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), Double.PositiveInfinity) shouldBe false
+      nan.equalWithTolerance(nan, 0.01) shouldBe false
+      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN + 1.0), 0.01) shouldBe false
+
+      // while bit-for-bit equality is reflexive at that same element, which is the disagreement
+      // stated above, written out
       (nan == DoubleArray.of(1.0, Double.NaN)) shouldBe true
 
       // an element that is a number, matched against one that is not, is unequal however large
@@ -1182,23 +1211,28 @@ package com.opengamma.strata.collect.array {
       nan.equalZeroWithTolerance(0.01) shouldBe false
       nan.equalZeroWithTolerance(Double.PositiveInfinity) shouldBe false
 
-      // an array of numbers is equal to itself within a tolerance as well
+      // an array of numbers is equal to itself within a tolerance as well, so it is the element
+      // and not the delegation that refuses the comparison
       val finite = DoubleArray.of(1.0, 2.0)
       finite.equalWithTolerance(DoubleArray.of(1.0, 2.0), 0.0) shouldBe true
 
-      // each infinity is equal to itself under any tolerance; at a finite tolerance it is equal
-      // to nothing else, while an infinite tolerance leaves nothing to distinguish and so brings
-      // the other infinity, and every finite value, to it
+      // each infinity is equal to itself under any tolerance, an infinite one included, and to
+      // nothing else - neither the other infinity nor any finite value, zero among them
       val positive = DoubleArray.of(Double.PositiveInfinity)
       positive.equalWithTolerance(DoubleArray.of(Double.PositiveInfinity), 0.0) shouldBe true
       positive.equalWithTolerance(DoubleArray.of(Double.PositiveInfinity), Double.PositiveInfinity) shouldBe true
       positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), 0.01) shouldBe false
       positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), Double.MaxValue) shouldBe false
-      positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe true
-      positive.equalWithTolerance(DoubleArray.of(0.0), Double.PositiveInfinity) shouldBe true
+      positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe false
+      positive.equalWithTolerance(DoubleArray.of(0.0), Double.PositiveInfinity) shouldBe false
       positive.equalZeroWithTolerance(0.01) shouldBe false
       positive.equalZeroWithTolerance(Double.MaxValue) shouldBe false
-      positive.equalZeroWithTolerance(Double.PositiveInfinity) shouldBe true
+      positive.equalZeroWithTolerance(Double.PositiveInfinity) shouldBe false
+
+      // and two finite arrays, however far apart, are equal at an infinite tolerance, which is
+      // the one edge the infinite tolerance does reach
+      finite.equalWithTolerance(DoubleArray.of(1.0e300, -1.0e300), Double.PositiveInfinity) shouldBe true
+      finite.equalZeroWithTolerance(Double.PositiveInfinity) shouldBe true
 
       // the tolerance itself is checked, as a caller-contract invariant: a negative tolerance and
       // a not-a-number tolerance are both caller errors rather than comparisons that answer false
@@ -1419,6 +1453,71 @@ package com.opengamma.strata.collect.array {
         candidates.map(candidate => arrayHash.eqv(candidate, a)) shouldBe candidates.map(_ => true)
         candidates.map(_.hashCode).distinct shouldBe List(a.hashCode)
         candidates.map(_.toString).distinct shouldBe List(a.toString)
+      }
+    }
+
+    //-------------------------------------------------------------------------
+    // Properties at a size the shared generators never reach. The properties above are written
+    // over arrays of at most sixteen elements, which is the right default - a failing case
+    // shrinks to something readable - but it leaves every loop in this type exercised only over
+    // a handful of indices. These two name the large generators explicitly, so the same claims
+    // are made again over hundreds of elements: an element-wise loop that is wrong only past
+    // some length, an accessor that reads one index too few, or a copy that stops short would
+    // show up here and nowhere else.
+
+    test("property_large_arrays_satisfy_the_element_wise_and_reduction_claims") {
+      forAll(Arbitraries.genLargeFiniteDoubleArrayPair) {
+        case (a: DoubleArray, b: DoubleArray) =>
+          a.size should be >= 64
+          a.size shouldBe b.size
+
+          // the element-wise operations compute the operator at every index, first to last
+          val expectedPlus = List.tabulate(a.size)(index => a.get(index) + b.get(index))
+          a.plus(b).toList shouldBe expectedPlus
+          a.minus(b).toList shouldBe List.tabulate(a.size)(index => a.get(index) - b.get(index))
+          a.multipliedBy(2.5).toList shouldBe a.toList.map(value => value * 2.5)
+          a.combine(b, (left, right) => left + right).toList shouldBe expectedPlus
+
+          // mapping and tabulating reach every index as well, which the identity of the two
+          // establishes over the whole length rather than over a prefix of it
+          a.map(value => value * 3.0).toList shouldBe a.toList.map(value => value * 3.0)
+          DoubleArray.tabulate(a.size)(index => a.get(index)).toList shouldBe a.toList
+          a.mapWithIndex((index, value) => index.toDouble + value).toList shouldBe
+            List.tabulate(a.size)(index => index.toDouble + a.get(index))
+
+          // the reductions accumulate over every element in index order
+          a.sum shouldBe a.toList.foldLeft(0.0)((total, value) => total + value)
+          a.reduce(0.0, (total, value) => total + value) shouldBe a.sum
+          a.combineReduce(b, (total, left, right) => total + left * right) shouldBe
+            List.tabulate(a.size)(index => a.get(index) * b.get(index)).foldLeft(0.0)(_ + _)
+          a.min shouldBe a.toList.min
+          a.max shouldBe a.toList.max
+
+          // and the whole length survives a round trip through the primitive array, through the
+          // sub-array at both bounds and through concatenation
+          Arrays.equals(DoubleArray.copyOf(a.toArray).toArray, a.toArray) shouldBe true
+          arrayHash.eqv(a.subArray(0, a.size), a) shouldBe true
+          a.concat(b).size shouldBe (a.size + b.size)
+          Arrays.equals(a.concat(b).toArray, a.toArray ++ b.toArray) shouldBe true
+      }
+    }
+
+    test("property_large_arrays_satisfy_the_equality_and_rendering_claims_with_edge_elements") {
+      forAll(Arbitraries.genLargeDoubleArray) { (a: DoubleArray) =>
+        a.size should be >= 64
+
+        // equality, hashing and rendering agree with the primitive oracles over the whole length,
+        // with several IEEE-754 edge elements present rather than at most one
+        val copy = DoubleArray.copyOf(a.toArray)
+        arrayHash.eqv(copy, a) shouldBe true
+        copy.hashCode shouldBe Arrays.hashCode(a.toArray)
+        copy.toString shouldBe Arrays.toString(a.toArray)
+
+        // and the sorted order still agrees with the primitive sort at this length, where the
+        // sort has enough elements to take more than one pass
+        val expected = a.toArray
+        Arrays.sort(expected)
+        Arrays.equals(a.sorted.toArray, expected) shouldBe true
       }
     }
   }

@@ -15,7 +15,9 @@ import cats.effect.IO
 import cats.syntax.all._
 
 import io.circe.Decoder
+import io.circe.DecodingFailure
 import io.circe.Encoder
+import io.circe.HCursor
 import io.circe.generic.semiauto.deriveEncoder
 import io.circe.parser.parse
 import io.circe.syntax._
@@ -68,13 +70,34 @@ final case class ParityFailure(id: String, message: String)
  * emphatically no duration. Gate 3 copies `rows` and `passed` into `target/gate-report.md`
  * verbatim and requires `failed` to be zero.
  *
- * ===How the counts relate===
+ * ===The counting convention is one convention, across both modules===
  *
- * `rows` counts fixture rows. `passed` counts the rows that produced no message at all. `failed`
- * counts '''discrepancies''', not rows, because one row can differ in several fields at once and
- * each of them is worth reporting. `passed + failed` therefore equals `rows` only when no row
- * differs in more than one way, and `failed == 0` is equivalent to `passed == rows`, which is the
- * condition the gate actually asserts.
+ * All '''six''' parity reports mean the same thing by the same key, and that is a contract rather
+ * than a coincidence. Gate 3 reads `daycount`, `schedule`, `fx`, `currency-math` and `holiday`
+ * from this module and `double-array` from `strata-collect`, prints their `rows` and `passed`
+ * side by side in one table, and a reader comparing two lines of that table has to be comparing
+ * the same quantity. The convention is:
+ *
+ *  - `rows` is the number of fixture rows evaluated.
+ *  - `passed` is the number of those rows that matched the Java baseline in '''every''' respect.
+ *  - `failed` is the number of '''discrepancies''' found over all rows, not the number of rows
+ *    that differ: one row can differ in several fields at once and each of them is worth
+ *    reporting.
+ *  - `failures` carries those discrepancies. This module publishes all of them; a module that
+ *    caps the list says so in the list itself and still reports the true total in `failed`.
+ *
+ * `passed + failed` therefore equals `rows` only when no row differs in more than one way, while
+ * `failed == 0` is always equivalent to `passed == rows` - which is the condition the gate
+ * asserts. `strata-collect` cannot import this file, because the build's dependency edge runs
+ * from `strata-basics` to `strata-collect` and never the other way, so its `DoubleArrayParitySpec`
+ * restates this convention and asserts it of the report it publishes; the invariants that hold it
+ * to the letter of it are [[ParityHarness.contractViolations]], which both modules check.
+ *
+ * The number of individual '''checks''' a run executed is deliberately not a field here. It is
+ * not comparable between fixtures - a day-count row is one number, a double-array row is
+ * ninety-odd - and the five keys are fixed by the gate. Where the count of executed checks is the
+ * evidence that a fixture was measured rather than skipped, the spec that owns the fixture
+ * asserts it directly against the shapes it decoded.
  *
  * @param fixture  the fixture stem, which is also the name of the report file
  * @param rows  the number of fixture rows evaluated
@@ -88,6 +111,83 @@ final case class ParityReport(
     passed: Int,
     failed: Int,
     failures: Vector[ParityFailure])
+
+/**
+ * The keys a documented object shape of a captured fixture may carry.
+ *
+ * ===Why a fixture consumer needs this===
+ *
+ * A derived JSON decoder reads the fields its model declares and ignores every other key of the
+ * object it is given. That is the right default for a wire format that evolves, and precisely the
+ * wrong one for a measurement: a key the capture starts emitting - a new expectation, a new
+ * operand, a renamed field - would be dropped in silence, the rows would decode perfectly, the
+ * report would show `failed == 0`, and Gate 3 would publish a pass over a fixture that was no
+ * longer being measured in full. Declaring the key set closes that gap in the only place it can
+ * be closed: before the object is decoded, where the keys are still visible.
+ *
+ * ===What a schema is===
+ *
+ * One or more '''variants''', each a name and the exact set of keys an object of that variant
+ * carries, plus the keys that are optional in every variant. A key set satisfies the schema when
+ * some variant's keys are all present and nothing outside that variant's keys and the optional
+ * ones is. The matching variant's name is returned, so a hand-written decoder can dispatch on the
+ * same decision that validated the object instead of making it a second time.
+ *
+ * The captured baselines are uniform documents - every row of a fixture carries the same keys,
+ * present and possibly null, rather than omitting the ones it has nothing to say about - so most
+ * schemas here are a single variant with no optional keys, which is exact equality of key sets.
+ * Variants exist for the documents that genuinely have more than one row shape, and `optional`
+ * for the nested objects that genuinely omit a key.
+ *
+ * @param shape  what is being decoded, for the message of a refusal
+ * @param variants  the documented key sets, tried in order, of which there is at least one
+ * @param optional  keys permitted in addition to every variant's own
+ */
+final case class KeySchema(
+    shape: String,
+    variants: Vector[(String, Set[String])],
+    optional: Set[String]) {
+
+  require(variants.nonEmpty, s"a key schema names at least one variant; '$shape' names none")
+
+  /** The same schema, with these keys permitted in addition to every variant's own. */
+  def withOptional(keys: Set[String]): KeySchema = copy(optional = optional ++ keys)
+
+  /**
+   * The name of the first documented variant the given key set satisfies.
+   *
+   * @param keys  the keys the object actually carries
+   * @return the variant's name, or nothing when no variant is satisfied
+   */
+  def matching(keys: Set[String]): Option[String] =
+    variants.collectFirst {
+      case (name, expected) if expected.subsetOf(keys) && keys.subsetOf(expected ++ optional) => name
+    }
+
+  /** Every key any variant of this schema knows, including the optional ones. */
+  def known: Set[String] = variants.foldLeft(optional)((all, variant) => all ++ variant._2)
+
+  /** The schema as one line of a refusal message. */
+  def describe: String = {
+    val rendered = variants.map { case (name, expected) => s"$name{${render(expected)}}" }
+    val extra = if (optional.isEmpty) "" else s", with {${render(optional)}} optional in each"
+    s"${rendered.mkString(" | ")}$extra"
+  }
+
+  /** Renders a key set in sorted order, so a message is the same from one run to the next. */
+  private def render(keys: Set[String]): String = keys.toVector.sorted.mkString(", ")
+}
+
+object KeySchema {
+
+  /** A shape whose objects all carry exactly these keys. */
+  def uniform(shape: String, keys: Set[String]): KeySchema =
+    KeySchema(shape, Vector(shape -> keys), Set.empty)
+
+  /** A shape with several documented key sets, tried in the order given. */
+  def variants(shape: String, variants: (String, Set[String])*): KeySchema =
+    KeySchema(shape, variants.toVector, Set.empty)
+}
 
 /**
  * The shared measurement apparatus of the five parity specs of this module.
@@ -172,6 +272,19 @@ final case class ParityReport(
  * every `Double` and `Option[Double]` of the document reads a tagged value with no ambiguity. The
  * policy matters in practice rather than in theory: `fx-baseline.json` carries a `JPY/CAD` rate of
  * `0.0` whose reciprocal is `Infinity`.
+ *
+ * ===Decoding is strict about keys===
+ *
+ * A derived decoder reads the fields its model declares and ignores every other key of the object
+ * it is given, which for a measurement is the wrong default: a key the capture starts emitting
+ * would be dropped in silence, every row would decode, the report would read `failed == 0`, and
+ * Gate 3 would publish a pass over a fixture no longer measured in full. So every object of a
+ * captured document is checked against a declared [[KeySchema]] before it is decoded. A consumer
+ * declares the '''row''' schema where it loads - [[loadStrict]], or the [[runFixture]] form that
+ * takes a schema - and wraps the decoder of every object '''nested''' in a row with
+ * [[strictObject]] or [[strictVariant]], which is the only place a nested object's keys are
+ * visible. `ReferenceDataManifestSpec`, which reads the captured manifest rather than a row array,
+ * uses the same two wrappers.
  */
 object ParityHarness {
 
@@ -267,6 +380,98 @@ object ParityHarness {
         new IllegalStateException(failures.toChain.toList.map(_.message).mkString("; "))))
 
   //-------------------------------------------------------------------------
+  // The strict schema layer.
+  //
+  // Every object of a captured document - a row, and every object nested inside one - is checked
+  // against its documented key set before it is decoded. A derived decoder reads the fields its
+  // model declares and ignores the rest, so without this layer a key the capture started emitting
+  // would be dropped in silence and the expectation it carried would go unmeasured while the
+  // report still read `failed == 0`. The check is a function of the keys alone, so it costs one
+  // set comparison per object and is applied in the one place where the keys are still visible.
+  //
+  // These members are public because the fixture consumers of this module are not all in this
+  // package: `ReferenceDataManifestSpec` sits beside it in `com.opengamma.strata.basics` and
+  // decodes the captured manifest through the same helper, which is the point - one strictness
+  // rule, one message, one place to change it. `strata-collect` cannot reach them at all, because
+  // the build's dependency edge runs from `strata-basics` to `strata-collect`; its own parity spec
+  // restates the rule, as it already restates the tolerance rule and the report writer.
+  //-------------------------------------------------------------------------
+
+  /**
+   * Checks one JSON object against its documented key set.
+   *
+   * Two refusals are possible and they are different facts. A value that is not an object at all
+   * is reported as such, naming what the document has instead: a nested object that has become a
+   * string is a fixture that no longer agrees with the spec, not a field that failed to decode. A
+   * key set that matches no documented variant is reported with the keys the object carries that
+   * no variant knows, the keys each variant wanted and did not get, and the schema itself, so the
+   * message says what to do about it without opening the document beside it.
+   *
+   * @param schema  the documented shape
+   * @param cursor  the object being decoded
+   * @return the name of the variant the object satisfies, or the refusal
+   */
+  def strictKeys(schema: KeySchema, cursor: HCursor): Decoder.Result[String] =
+    cursor.keys match {
+      case None =>
+        Left(
+          DecodingFailure(
+            s"expected a JSON object for ${schema.shape}, whose documented shape is " +
+              s"${schema.describe}; the document carries ${cursor.value.name} here",
+            cursor.history))
+      case Some(keys) =>
+        val present = keys.toSet
+        schema.matching(present) match {
+          case Some(variant) => Right(variant)
+          case None =>
+            val unknown = (present -- schema.known).toVector.sorted
+            val missing = schema.variants
+              .map { case (name, expected) => s"$name is missing {${(expected -- present).toVector.sorted.mkString(", ")}}" }
+              .mkString("; ")
+            Left(
+              DecodingFailure(
+                s"${schema.shape} carries the keys {${present.toVector.sorted.mkString(", ")}}, " +
+                  s"which satisfy no documented variant of ${schema.describe}: " +
+                  s"unknown keys {${unknown.mkString(", ")}}, and $missing. A captured object " +
+                  "whose keys are not the documented ones is a fixture that has stopped agreeing " +
+                  "with this spec: decoding it anyway would leave whatever the new key carries " +
+                  "unmeasured while the report still read zero failures",
+                cursor.history))
+        }
+    }
+
+  /**
+   * Wraps a decoder so that the object is checked against its documented key set first.
+   *
+   * This is the form every derived decoder of a fixture consumer takes:
+   *
+   * {{{
+   * implicit val rowDecoder: Decoder[Row] =
+   *   ParityHarness.strictObject(RowSchema)(deriveDecoder[Row])
+   * }}}
+   *
+   * @param schema  the documented shape
+   * @param decoder  the decoder to apply once the keys are known to be the documented ones
+   * @return the strict decoder
+   */
+  def strictObject[A](schema: KeySchema)(decoder: Decoder[A]): Decoder[A] =
+    Decoder.instance(cursor => strictKeys(schema, cursor).flatMap(_ => decoder(cursor)))
+
+  /**
+   * Wraps a family of decoders, choosing between them by the variant the object satisfies.
+   *
+   * The variant is decided once, by the check that validated the keys, and handed to the chooser;
+   * a consumer therefore cannot dispatch on one reading of the object while having validated
+   * another, which is the failure mode a separate `if (keys contains …)` would reintroduce.
+   *
+   * @param schema  the documented shape, whose variants the chooser must cover
+   * @param decoder  the decoder to use for a given variant name
+   * @return the strict decoder
+   */
+  def strictVariant[A](schema: KeySchema)(decoder: String => Decoder[A]): Decoder[A] =
+    Decoder.instance(cursor => strictKeys(schema, cursor).flatMap(variant => decoder(variant)(cursor)))
+
+  //-------------------------------------------------------------------------
   // Loading a fixture.
   //-------------------------------------------------------------------------
 
@@ -301,6 +506,13 @@ object ParityHarness {
    * asserts its own before it evaluates anything, and a row that fails one is reported as a
    * fixture that no longer agrees with the spec rather than as a discrepancy of the port.
    *
+   * This form declares '''no''' row schema, so the rows are decoded by the model's own decoder
+   * alone. It exists for a row model that deliberately reads a subset of the document - the
+   * harness's own contract tests use one, a two-field probe that is run against every committed
+   * baseline - and a measuring spec must not use it: [[loadStrict]] is the form that states the
+   * keys the document is expected to carry, and every fixture consumer of this package and of
+   * `com.opengamma.strata.basics` goes through that one.
+   *
    * @param resource  the classpath name of the fixture, relative to the test resource root and
    *                  without a leading separator, for example `parity/daycount-baseline.json`
    * @return the decoded rows in fixture order, of which there is at least one; the effect fails
@@ -310,17 +522,41 @@ object ParityHarness {
   def load[A: Decoder](resource: String): IO[Vector[A]] =
     Resources
       .readClasspathText(resource)
-      .flatMap(text => decodeRows[A](resource, text, MaxFixtureCharacters, MaxFixtureRows))
+      .flatMap(text => decodeRowsIn[A](resource, text, MaxFixtureCharacters, MaxFixtureRows, None))
 
   /**
-   * Decodes one fixture document under explicit bounds.
+   * Reads and decodes a captured baseline whose row keys are declared.
+   *
+   * This is [[load]] with the document's own shape stated, and it is what a measuring spec uses.
+   * Every row is checked against `schema` '''before''' it is decoded, so a row that has gained a
+   * key, lost one, or changed shape is refused with the keys named rather than decoded into a
+   * model that has no field for it - which is how a newly captured expectation would otherwise go
+   * unmeasured while the report still read zero failures. The check names the offending row by
+   * its index in the document.
+   *
+   * A consumer declares the schema of the '''row''' here and the schema of every object
+   * '''nested''' in a row with [[strictObject]] or [[strictVariant]] where that object's decoder
+   * is built, because only the decoder of a nested object ever sees its keys.
+   *
+   * @param resource  the classpath name of the fixture
+   * @param schema  the documented key sets of one row of this fixture
+   * @return the decoded rows in fixture order, of which there is at least one
+   */
+  def loadStrict[A: Decoder](resource: String, schema: KeySchema): IO[Vector[A]] =
+    Resources
+      .readClasspathText(resource)
+      .flatMap(text =>
+        decodeRowsIn[A](resource, text, MaxFixtureCharacters, MaxFixtureRows, Some(schema)))
+
+  /**
+   * Decodes one fixture document under explicit bounds, with no row schema declared.
    *
    * The order of the four steps is the point of the method: each bound is applied before the work
    * it bounds. The length of the text is known without parsing it, the length of the array is
    * known without decoding its elements, and only a document that has passed both is turned into
    * row models. The bounds are parameters rather than constants read from scope so that this
    * decision can be tested at a size a test can afford, on exactly the code the fixtures go
-   * through; [[load]] supplies the real ceilings.
+   * through; [[load]] and [[loadStrict]] supply the real ceilings.
    *
    * @param resource  the name of the fixture, for the failure messages
    * @param text  the document
@@ -333,6 +569,29 @@ object ParityHarness {
       text: String,
       maxCharacters: Int,
       maxRows: Int): IO[Vector[A]] =
+    decodeRowsIn[A](resource, text, maxCharacters, maxRows, None)
+
+  /**
+   * Decodes one fixture document under explicit bounds, against an optional row schema.
+   *
+   * The schema, where one is declared, is applied by wrapping the row decoder rather than by a
+   * separate pass over the document: the keys of a row are then checked immediately before that
+   * row is decoded, and a refusal carries the cursor path, which names the row's index. That is
+   * the same strictness layer a nested object gets, applied at the outermost level.
+   *
+   * @param resource  the name of the fixture, for the failure messages
+   * @param text  the document
+   * @param maxCharacters  the longest document accepted
+   * @param maxRows  the largest number of rows accepted
+   * @param schema  the documented key sets of one row, where the caller declares them
+   * @return the decoded rows in document order, of which there is at least one
+   */
+  private[parity] def decodeRowsIn[A: Decoder](
+      resource: String,
+      text: String,
+      maxCharacters: Int,
+      maxRows: Int,
+      schema: Option[KeySchema]): IO[Vector[A]] =
     for {
       _ <- refuse(
         text.length > maxCharacters,
@@ -354,7 +613,8 @@ object ParityHarness {
         rows.size > maxRows,
         s"the parity fixture '$resource' holds ${rows.size} rows, which is beyond the $maxRows " +
           "this harness measures")
-      decoded <- IO.fromEither(Decoder[Vector[A]].decodeJson(json))
+      rowDecoder = schema.fold(Decoder[A])(declared => strictObject[A](declared)(Decoder[A]))
+      decoded <- IO.fromEither(Decoder.decodeVector(rowDecoder).decodeJson(json))
     } yield decoded
 
   /** Fails the effect with the given explanation when the condition holds. */
@@ -583,9 +843,16 @@ object ParityHarness {
    * exists. That is also why the report is written here, before this method returns and therefore
    * before [[failIfAny]] can end the test.
    *
-   * The counting convention is the one documented on [[ParityReport]]: `passed` counts rows,
-   * `failed` counts discrepancies, and their sum exceeds `rows` when a row differs in more than
-   * one field.
+   * The counting convention is the one documented on [[ParityReport]] and shared with the
+   * `double-array` report of `strata-collect`: `passed` counts rows that matched in every
+   * respect, `failed` counts discrepancies, and their sum exceeds `rows` when a row differs in
+   * more than one field. The counts are checked against [[contractViolations]] before they are
+   * written.
+   *
+   * The rows are loaded through [[loadStrict]], so the schema is not optional here: a row that
+   * has gained a key, lost one or changed shape is refused by name instead of being decoded into
+   * a model that has no field for it, which is how a newly captured expectation would otherwise
+   * go unmeasured while this report still read zero failures.
    *
    * The report is written to `<parity.report.dir>/<fixture>.json`. The five stems this module uses
    * are `daycount`, `schedule`, `fx`, `currency-math` and `holiday` - each the name of the
@@ -594,14 +861,46 @@ object ParityHarness {
    *
    * @param fixture  the fixture stem, which names both the measurement and the report file
    * @param resource  the classpath name of the captured baseline
+   * @param schema  the documented key sets of one row of that baseline
    * @param check  the comparisons to apply to one row, answering with everything that differed
    * @return the published report; the effect fails only when the report directory is not
-   *         configured as an absolute path, when the fixture cannot be read, is empty or does not
-   *         decode, or when the report cannot be written
+   *         configured as an absolute path, when the fixture cannot be read, is empty, does not
+   *         carry the declared keys or does not decode, or when the report cannot be written
    */
-  def runFixture[R <: ParityRow: Decoder](fixture: String, resource: String)(
+  def runFixture[R <: ParityRow: Decoder](fixture: String, resource: String, schema: KeySchema)(
       check: R => IO[List[String]]): IO[ParityReport] =
-    reportDir.flatMap(directory => runFixtureIn(directory, fixture, resource)(check))
+    runFixtureWith[R, Unit](fixture, resource, schema)(_ => IO.unit)((_, row) => check(row))
+
+  /**
+   * Measures a whole fixture that needs something built from the whole document first.
+   *
+   * A few fixtures cannot be measured row by row from the row alone: one captured operation names
+   * no rate of its own and is replayed against the rates the document as a whole registers, so
+   * something has to be assembled from every row before the first row can be checked. Building it
+   * in the spec, before the driver runs, is what this method exists to prevent: a port regression
+   * that made one captured input unbuildable would then raise before any report was written, and
+   * a failing parity run would leave Gate 3 with no counts at all - exactly the case the counts
+   * exist for.
+   *
+   * So `setup` runs '''inside''' the measurement, under [[cats.effect.IO.attempt]]. When it
+   * succeeds, every row is checked against what it produced. When it fails, the failure becomes
+   * one attributed discrepancy in a report of `passed = 0` - no row was measured, which is what
+   * the counting convention then says - the report is written like any other, and the verdict is
+   * left to [[failIfAny]], which fails the spec with the artefact already on disk.
+   *
+   * @param fixture  the fixture stem, which names both the measurement and the report file
+   * @param resource  the classpath name of the captured baseline
+   * @param schema  the documented key sets of one row of that baseline
+   * @param setup  what the row checks need, built from the whole document
+   * @param check  the comparisons to apply to one row, given that
+   * @return the published report
+   */
+  def runFixtureWith[R <: ParityRow: Decoder, S](
+      fixture: String,
+      resource: String,
+      schema: KeySchema)(setup: Vector[R] => IO[S])(check: (S, R) => IO[List[String]]): IO[ParityReport] =
+    reportDir.flatMap(directory =>
+      runFixtureWithIn[R, S](directory, fixture, resource, Some(schema))(setup)(check))
 
   /**
    * Measures a whole fixture and publishes the result into a named directory.
@@ -622,13 +921,161 @@ object ParityHarness {
       directory: Path,
       fixture: String,
       resource: String)(check: R => IO[List[String]]): IO[ParityReport] =
+    runFixtureWithIn[R, Unit](directory, fixture, resource, None)(_ => IO.unit)((_, row) => check(row))
+
+  /**
+   * The one implementation of the measurement, of which every other driver form is a special
+   * case.
+   *
+   * The order of the four steps is the contract: the rows are decoded, the shared context is
+   * built under `attempt` so that its failure is report content rather than an escape, every row
+   * is measured in document order, and the report is written before this method returns and
+   * therefore before any verdict can be reached. The counts it publishes are checked against
+   * [[contractViolations]] on the way out, which is what keeps this module and `strata-collect`
+   * publishing the same five keys with the same meaning.
+   *
+   * @param directory  the directory the report is written to, which is created if absent
+   * @param fixture  the fixture stem, which names both the measurement and the report file
+   * @param resource  the classpath name of the captured baseline
+   * @param schema  the documented key sets of one row, where the caller declares them
+   * @param setup  what the row checks need, built from the whole document
+   * @param check  the comparisons to apply to one row, given that
+   * @return the published report
+   */
+  private[parity] def runFixtureWithIn[R <: ParityRow: Decoder, S](
+      directory: Path,
+      fixture: String,
+      resource: String,
+      schema: Option[KeySchema])(setup: Vector[R] => IO[S])(
+      check: (S, R) => IO[List[String]]): IO[ParityReport] =
     for {
-      rows <- load[R](resource)
-      outcomes <- rows.traverse(row => check(row).attempt.map(outcome => discrepancies(row, outcome)))
-      failures = outcomes.flatten
-      report = ParityReport(fixture, rows.size, outcomes.count(_.isEmpty), failures.size, failures)
-      _ <- writeReportTo(directory, report)
+      rows <- schema.fold(load[R](resource))(declared => loadStrict[R](resource, declared))
+      prepared <- setup(rows).attempt
+      report <- prepared match {
+        case Right(context) =>
+          rows
+            .traverse(row =>
+              check(context, row).attempt.map(outcome => discrepancies(row, outcome)))
+            .map(outcomes =>
+              ParityReport(
+                fixture,
+                rows.size,
+                outcomes.count(_.isEmpty),
+                outcomes.map(_.size).sum,
+                outcomes.flatten))
+        case Left(error) => IO.pure(setupFailureReport(fixture, rows.size, error))
+      }
+      _ <- publish(directory, report)
     } yield report
+
+  /**
+   * The report of a run whose shared context could not be built.
+   *
+   * No row was measured, so `passed` is zero and the single discrepancy is attributed to the
+   * setup rather than to a row: attributing it to a row would name a row that is not at fault,
+   * and leaving it unattributed would put an entry in the report that says nothing about where to
+   * look. The identity is the fixture stem with `:setup`, which no captured row carries.
+   *
+   * @param fixture  the fixture stem
+   * @param rows  the number of rows the document held, all of them unmeasured
+   * @param error  what building the context failed with
+   * @return the report to publish
+   */
+  private def setupFailureReport(fixture: String, rows: Int, error: Throwable): ParityReport = {
+    val failure =
+      ParityFailure(
+        s"$fixture:setup",
+        s"the shared context this fixture is measured against could not be built, so none of " +
+          s"its $rows rows was measured: ${describe(error)}")
+    ParityReport(fixture, rows, 0, 1, Vector(failure))
+  }
+
+  /**
+   * Writes a report, once its counts have been checked against the shared convention.
+   *
+   * The check comes first, and its failure is not a parity result: counts that contradict the
+   * convention are a defect in this harness, and publishing them would put a number into
+   * `target/gate-report.md` that means something other than what the column says. There is
+   * nothing worth publishing in that case, so the effect fails naming the violation instead.
+   *
+   * @param directory  the directory to write into
+   * @param report  the report to publish
+   * @return nothing; the effect fails when the counts are inconsistent or the write fails
+   */
+  private def publish(directory: Path, report: ParityReport): IO[Unit] =
+    contractViolations(report) match {
+      case Nil => writeReportTo(directory, report).void
+      case violations =>
+        IO.raiseError(
+          new IllegalStateException(
+            s"the parity report for '${report.fixture}' does not satisfy the counting convention " +
+              s"both modules publish under: ${violations.mkString("; ")}"))
+    }
+
+  /**
+   * The ways in which a report can contradict the counting convention.
+   *
+   * The convention is documented on [[ParityReport]] and is shared with the `double-array` report
+   * that `strata-collect` publishes, which restates these same invariants and asserts them of its
+   * own report. They are stated here as a list rather than as an assertion so that both a harness
+   * guard and a spec can use them, and so that a violation names itself. There are four:
+   *
+   *  - '''The counts are in range.''' `passed` counts rows, so it is between zero and `rows`, and
+   *    neither it nor `failed` nor `rows` is negative.
+   *  - '''A clean report measured something, and measured all of it.''' `failed == 0` says every
+   *    comparison matched, which is only meaningful over at least one row and requires `passed`
+   *    to be all of them. This is the invariant that stops an empty or abandoned run from being
+   *    read as a pass - the condition Gate 3 asserts is `failed == 0`, so a run that measured
+   *    nothing must not be able to publish it.
+   *  - '''A discrepancy is described.''' When `failed` is positive the report lists at least one
+   *    discrepancy and never more than it counts, so a module that caps its list still reports
+   *    the true total.
+   *  - '''A discrepancy belongs to a row that did not pass.''' When something differed and rows
+   *    were measured, `passed` is short of `rows`.
+   *
+   * The last three are what admit the two shapes a report takes when the measurement could not be
+   * completed, both of which are worth publishing and neither of which is a pass: a run whose
+   * shared context could not be built (`rows` rows, none passed, one discrepancy naming the
+   * setup) and, in `strata-collect`, a run whose fixture could not even be read (`rows = 0`, none
+   * passed, one discrepancy naming the refusal).
+   *
+   * @param report  the report to check
+   * @return every violation found, or nothing when the report is consistent
+   */
+  private[parity] def contractViolations(report: ParityReport): List[String] = {
+    val inRange =
+      if (report.rows >= 0 && report.passed >= 0 && report.passed <= report.rows &&
+        report.failed >= 0) {
+        Nil
+      } else {
+        List(
+          s"the counts are out of range: ${report.passed} passed and ${report.failed} failed " +
+            s"over ${report.rows} rows")
+      }
+    val cleanRunMeasuredEverything =
+      if (report.failed != 0 || (report.rows >= 1 && report.passed == report.rows)) Nil
+      else
+        List(
+          s"the report claims no discrepancy while ${report.passed} of ${report.rows} rows " +
+            "passed; a clean report has at least one row and every one of them passing, because " +
+            "'failed == 0' is the condition the gate reads as parity")
+    val discrepanciesDescribed =
+      if (report.failed == 0 || (report.failures.nonEmpty && report.failures.size <= report.failed)) {
+        Nil
+      } else {
+        List(
+          s"the report counts ${report.failed} discrepancies and lists ${report.failures.size}; " +
+            "a report lists at least one of the discrepancies it counts and never more than it " +
+            "counts")
+      }
+    val attributedToAFailingRow =
+      if (report.failed == 0 || report.rows == 0 || report.passed < report.rows) Nil
+      else
+        List(
+          s"the report counts ${report.failed} discrepancies while all ${report.rows} rows " +
+            "passed; a discrepancy belongs to a row that did not pass")
+    inRange ::: cleanRunMeasuredEverything ::: discrepanciesDescribed ::: attributedToAFailingRow
+  }
 
   /**
    * Fails the calling spec when a report holds any discrepancy.

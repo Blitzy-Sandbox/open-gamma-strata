@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics.currency
 
+import scala.collection.AbstractIndexedSeqView
+
 import cats.Hash
 import cats.Show
 import cats.syntax.apply._
@@ -135,11 +137,26 @@ sealed abstract case class CurrencyAmountArray private (currency: Currency, valu
    * that stops early never builds the rest. [[toList]] is the eager form, for a caller that
    * wants every amount at once.
    *
+   * The traversal is over the indices of the array, each value being read with the primitive
+   * accessor of [[DoubleArray]] as its amount is built, rather than over the generic iterator
+   * of the values: a generic iterator of numbers would box every element of the run and unbox
+   * it again on the way into the amount, which is precisely the cost of one object per number
+   * that this type exists to avoid. Reading by index is also what makes this and [[get]] one
+   * behaviour rather than two - the amount at an index is the same amount either way.
+   *
+   * The indices themselves are not carried through a function of the index either. A traversal
+   * written as a mapped range of indices would hand each index to a function whose argument is
+   * an amount rather than a number, and this language has no primitive specialisation for that
+   * shape, so every index would be boxed on its way into the function - the same cost as boxing
+   * the values, moved to the other operand. The traversal is therefore an indexed view whose
+   * element accessor takes the index as a primitive, and the iterator of that view reads it
+   * straight through: a consumed element costs the one amount it answers with and nothing else.
+   *
    * @return the amounts of this array in index order, built as they are read
    * @throws java.lang.IllegalArgumentException if a value read from the array is not a number,
    *   raised as the amount is built rather than when the iterator is obtained
    */
-  def iterator: Iterator[CurrencyAmount] = values.iterator.map(amountOf)
+  def iterator: Iterator[CurrencyAmount] = new CurrencyAmountArray.Amounts(this).iterator
 
   /**
    * Returns the amounts of this array as a list.
@@ -304,19 +321,24 @@ sealed abstract case class CurrencyAmountArray private (currency: Currency, valu
    * Pairs a value of this array with the currency of this array.
    *
    * This is the route every member producing amounts takes, and it is deliberately the total
-   * one: the zero amount of the currency has its number replaced by the value, which is exactly
-   * the construction the `get` of the type being ported performed. The checking factory of
-   * [[CurrencyAmount]] is not used, because it would widen reading an element into a failure
-   * channel that the type being ported did not have and that the inventory of this port does
-   * not list. A value that is not a number consequently raises the documented invariant of
-   * [[CurrencyAmount]], as it did there.
+   * one: it goes through the trusted construction path of [[CurrencyAmount]], the one its own
+   * arithmetic goes through, which performs that type's whole invariant - a negative zero is
+   * normalised to a positive zero and a value that is not a number is refused - and allocates
+   * exactly the amount it returns. The checking factory of [[CurrencyAmount]] is not used,
+   * because it would widen reading an element into a failure channel that the type being ported
+   * did not have and that the inventory of this port does not list. A value that is not a number
+   * consequently raises the documented invariant of [[CurrencyAmount]], as it did there.
+   *
+   * Building the amount directly rather than replacing the number of a zero amount is what
+   * keeps reading a run of amounts to one object per amount read: the replacement route
+   * allocated a zero amount and a function capturing the value on top of the amount it
+   * answered with, three objects where the type being ported allocated one.
    *
    * @param value  the value to pair with the currency of this array
    * @return the amount holding that value in the currency of this array
    * @throws java.lang.IllegalArgumentException if the value is not a number
    */
-  private def amountOf(value: Double): CurrencyAmount =
-    CurrencyAmount.zero(currency).mapAmount(_ => value)
+  private def amountOf(value: Double): CurrencyAmount = CurrencyAmount.create(currency, value)
 
   /**
    * Checks that the other array can be combined with this one element by element.
@@ -493,10 +515,12 @@ object CurrencyAmountArray {
    *   describe one
    */
   def of(amounts: Iterable[CurrencyAmount]): ResultNec[CurrencyAmountArray] = {
-    // the collection is read into a list once: it may be a lazy or a single-use collection,
-    // and it is traversed three times below - for the emptiness check, for its currencies and
-    // for its values
-    val requested = amounts.toList
+    // the collection is read into an indexed vector once: it may be a lazy or a single-use
+    // collection, and it is read three times below - for the emptiness check, for its
+    // currencies and for its values. It is held indexed rather than linked because the values
+    // are taken by index: that is what lets the primitive array of the result be filled
+    // straight from the amounts, with no collection of boxed numbers in between
+    val requested: Vector[CurrencyAmount] = amounts.toVector
     val present = Validate.notEmpty(requested, AmountsField)
     // the currencies are de-duplicated first, so the check is that the amounts name one
     // currency rather than that there is one amount, and at most two of them are ever read
@@ -504,10 +528,19 @@ object CurrencyAmountArray {
       Collections.ensureOnlyOne(requested.iterator.map(_.currency).distinct))
     (present, single)
       .mapN((checked, _) =>
-        // reached only when both checks passed, so `checked` holds at least one amount and
-        // every amount in it is in the currency the second check found: the currency of the
-        // first amount is therefore the currency of all of them
-        create(checked.head.currency, DoubleArray.copyOf(requested.map(_.amount))))
+        // reached only when both checks passed, so `checked` - which is the vector itself,
+        // carried through the check at the wider type the check declares - holds at least one
+        // amount and every amount in it is in the currency the second check found: the
+        // currency of the first amount is therefore the currency of all of them.
+        //
+        // The values are tabulated by index off the vector rather than mapped into a
+        // collection of numbers and copied: the function handed to `tabulate` is an
+        // `Int => Double`, which this language compiles to the primitive specialisation of a
+        // one-argument function, so each amount's number is written straight into the array of
+        // the result and none of them is boxed on the way
+        create(
+          checked.head.currency,
+          DoubleArray.tabulate(requested.size)(index => requested(index).amount)))
       .toEither
   }
 
@@ -550,16 +583,23 @@ object CurrencyAmountArray {
       .notNegativeOrZero(size, SizeField)
       .toEither
       .flatMap { checkedSize =>
-        // one evaluation per index, in index order, and the amounts are held while their
-        // currencies are examined so that no index is evaluated twice
-        val produced = Vector.tabulate(checkedSize)(valueFunction)
+        // one evaluation per index, in index order, and the amounts are held indexed while
+        // their currencies are examined so that no index is evaluated twice and so that their
+        // values can afterwards be read by index
+        val produced: Vector[CurrencyAmount] = Vector.tabulate(checkedSize)(valueFunction)
         // the size is at least one, so there is an amount at index zero and its currency is the
         // currency every other amount is required to be in
         val currency = produced.head.currency
         val differing = produced.iterator.map(_.currency).filter(_ != currency).distinct
         Collections
           .toNonEmptyChain(differing.map(other => differingCurrencies(currency, other)))
-          .toLeft(create(currency, DoubleArray.copyOf(produced.map(_.amount))))
+          // the values are tabulated by index off the amounts already in hand, for the reason
+          // the collection form above gives: an `Int => Double` is the primitive
+          // specialisation of a one-argument function, so no number is boxed between the
+          // amount that holds it and the array of the result. The array is built only when the
+          // outcome carries no failure, `toLeft` taking its argument by name
+          .toLeft(
+            create(currency, DoubleArray.tabulate(checkedSize)(index => produced(index).amount)))
       }
 
   //-------------------------------------------------------------------------
@@ -577,6 +617,36 @@ object CurrencyAmountArray {
    */
   private def create(currency: Currency, values: DoubleArray): CurrencyAmountArray =
     new CurrencyAmountArray(currency, values) {}
+
+  /**
+   * The amounts of an array, as an indexed view that builds each amount as it is read.
+   *
+   * This is what [[CurrencyAmountArray.iterator]] and therefore
+   * [[CurrencyAmountArray.toList]] traverse, and it exists for one reason: the standard library
+   * iterator of an indexed view asks the view for its element with the index as a '''primitive''',
+   * `apply(index: Int)`, and answers with the element itself. Nothing in the traversal is
+   * therefore boxed - not the value, which is read from the [[DoubleArray]] through its primitive
+   * accessor, and not the index, which a traversal written as a mapped range of indices would box
+   * on its way into the mapping function, since a function from a number to an object has no
+   * primitive specialisation in this language. A consumed element costs exactly the one amount it
+   * answers with.
+   *
+   * It is a ''view'' rather than a sequence of amounts: nothing is materialised when it is built,
+   * each amount is produced by the read that asks for it, and a caller that stops early never
+   * builds the rest - which is the promise [[CurrencyAmountArray.iterator]] makes. The amount at
+   * an index is [[CurrencyAmountArray.get]], so a traversal and a direct read are one behaviour,
+   * including the invariant of [[CurrencyAmount]] that a value which is not a number raises as
+   * its amount is built.
+   *
+   * @param array  the array whose amounts this view presents
+   */
+  private final class Amounts(array: CurrencyAmountArray)
+      extends AbstractIndexedSeqView[CurrencyAmount] {
+
+    override def length: Int = array.size
+
+    override def apply(index: Int): CurrencyAmount = array.get(index)
+  }
 
   /**
    * The failure reported when two arrays that have to be combined differ in size.

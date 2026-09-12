@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics.index
 
+import java.time.LocalDate
+
 import cats.Eq
 import cats.Hash
 import cats.Order
@@ -39,7 +41,8 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * one shared table, declared once below, and each of the four methods keeps its own test
  * driven from it rather than becoming eight tests of its own.
  *
- * Sixteen tests are declared here, in the order the Java class declared them.
+ * Sixteen tests are declared here in the order the Java class declared them, and the seven of
+ * the folded table section described below follow them.
  *
  * ===Why this family is the interesting one===
  *
@@ -107,8 +110,19 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * request, carried by AAP §0.7 and §0.8.1, and not entries of such a document; their absence
  * is not a licence to assert less.
  *
- * @see [[FxIndexDataSpec]] for the transcription of the sixteen published rows, which this
- *   spec deliberately does not repeat
+ * ===The published index table, folded in===
+ *
+ * A final section, after the ported methods and marked as such, asserts the '''structure''' of
+ * the transcribed table this family creates its members from, `FxIndexData`. The test
+ * inventory of AAP §0.3.1 lists thirteen index specs and none for that table - the Java
+ * sources have no test class for it, because there it was a comma separated resource a loader
+ * read from the class path on first use - so what a consumer of the table relies on is
+ * asserted here, in the spec of the family the table produces. The row-for-row transcription
+ * of the sixteen published rows is deliberately not repeated in either place: it is compared
+ * against the Java-captured reference data by `ReferenceDataManifestSpec`, column by column
+ * and in published order. The reasoning is repeated at the section, and its tests are named
+ * `data_*` rather than after a Java method, because `manifest/java-test-mapping.csv` maps no
+ * Java method to any of them.
  */
 class FxIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
@@ -398,16 +412,30 @@ class FxIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     // resolve
     //
     // The Java method resolved the index into a function over fixing dates and asserted that
-    // applying it agreed with observing the fixing directly. This port splits that into the
-    // index resolving its calendars once - which is the whole point of the operation - and the
-    // observation type building the result, so the two are composed here exactly as the
-    // observation type documents. Resolution answers with a value, so the comparison is between
-    // two outcomes; it is also asserted to be a success, without which two failures would
-    // compare equal and the assertion would say nothing.
-    val observationOf = test.resolveWith(RefData)(FxIndexObservation.create(test, _, _))
-    val fromResolution = observationOf.map(build => build(date(2014, 5, 6)))
+    // applying it agreed with observing the fixing directly, and this port publishes that
+    // operation under the same name: `FxIndex.resolve` resolves the fixing calendar and the
+    // maturity offset once and answers with the function. Resolution answers with a value, so
+    // the comparison is between two outcomes; it is also asserted to be a success, without which
+    // two failures would compare equal and the assertion would say nothing.
+    val fixing: LocalDate = date(2014, 5, 6)
+    val fromResolution = test.resolve(RefData).map(build => build(fixing))
     fromResolution should beSuccess
-    fromResolution shouldBe FxIndexObservation.of(test, date(2014, 5, 6), RefData)
+    fromResolution shouldBe FxIndexObservation.of(test, fixing, RefData)
+
+    // The same resolution reached from the type it produces, which is where this port implements
+    // it, and the maturity date of the resolved value compared explicitly - the equality of an
+    // observation reads the index and the fixing date only, so a maturity date derived wrongly
+    // by the resolved route would be invisible to the comparison above.
+    FxIndexObservation.resolve(test, RefData).map(build => build(fixing)) shouldBe fromResolution
+    val resolved: FxIndexObservation =
+      test.resolve(RefData).map(build => build(fixing)).getOrElse(fail("the index did not resolve"))
+    resolved.fixingDate shouldBe fixing
+    resolved.maturityDate shouldBe
+      test.calculateMaturityFromFixing(fixing, RefData).getOrElse(fail("no maturity date"))
+
+    // A calendar the reference data does not hold is reported as a failure by the resolution
+    // itself rather than per fixing, which is the point of resolving once.
+    test.resolve(ReferenceData.empty) should beFailureWith(FailureReason.MISSING_DATA)
   }
 
   test("test_dates") {
@@ -685,5 +713,152 @@ class FxIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     Json.fromString("USD/CAD").as[FxIndex].isLeft shouldBe true
     Json.fromString("EUR/USD").as[FxIndex].isLeft shouldBe true
     Json.obj("name" -> Json.fromString("EUR/CHF-ECB")).as[FxIndex].isLeft shouldBe true
+  }
+
+  //-------------------------------------------------------------------------
+  // The published index table this family is created from, `FxIndexData`, is asserted below. It
+  // is asserted in this spec because the Java sources have no test class for that data - in the
+  // original it was a comma separated resource that a loader read from the class path on first
+  // use, and what the Java `FxIndexTest` asserted about it was the fields of the indices the
+  // loader produced - so the test inventory of this port maps no spec to it. Here the sixteen
+  // rows are Scala literals fixed at compile time, so the table can be asserted directly, and
+  // the spec of the family it produces is where that belongs.
+  //
+  // This table is worth more than most: because the fallback that minted an index for an
+  // unconfigured currency pair is deliberately not ported (Conflict 7, asserted in
+  // `test_of_lookup_parse_currency` above), the table alone fixes which pairs an FX index exists
+  // for, so adding or omitting a row changes the public API rather than merely a lookup. The
+  // rows themselves, with all six of their columns and in published order, are compared against
+  // the Java-captured reference data by `ReferenceDataManifestSpec`, which is the stronger
+  // statement of the two and is not repeated here.
+  //
+  // What the tests below pin is the structure a consumer of the table depends on and that
+  // comparison does not state: the distinctness of the names that identify the rows; the derived
+  // lookups agreeing with the rows they are built from; the normalisation of a composite calendar
+  // identifier, which the literals of the table deliberately leave to the identifier factory
+  // exactly as the Java parser did, so that the column text `EUTA+CHZU` yields the identifier
+  // named `CHZU+EUTA`; the calendars and settlement lags the rows group into; and the one
+  // currency pair that two rows share, which is why an index cannot be identified by its pair
+  // alone.
+  //-------------------------------------------------------------------------
+  test("data_names_areDistinct") {
+    // A name is the identity of an index throughout this library, so two rows sharing one would
+    // make the lookup below lose a row without any other symptom.
+    FxIndexData.rows should have size 16
+    FxIndexData.rows.map(_.name).distinct should have size 16
+  }
+
+  test("data_byName_holdsEveryRowUnderItsCanonicalNameOnly") {
+    FxIndexData.byName should have size 16
+    FxIndexData.rows.foreach { row =>
+      withClue(s"${row.name}: ") {
+        FxIndexData.byName.get(row.name) shouldBe Some(row)
+      }
+    }
+    FxIndexData.byName.keySet shouldBe FxIndexData.rows.map(_.name).toSet
+
+    // The keys are the canonical names alone. Registering each name a second time in upper case
+    // was how the registry of the original answered a case-insensitive lookup, and an alternate
+    // name - the original declared exactly one, for the Indian rupee index, which `test_inr`
+    // above asserts the resolution of - is a property of the family's lookup rather than of a
+    // row, so neither appears here.
+    FxIndexData.byName.get("eur/usd-ecb") shouldBe None
+    FxIndexData.byName.get("EUR/USD-ECB ") shouldBe None
+    FxIndexData.byName.get("USD/INR-RBIB-INR01") shouldBe None
+    FxIndexData.byName.get("Rubbish") shouldBe None
+  }
+
+  test("data_compositeFixingAndMaturityCalendarsAreNormalised") {
+    // The literals of the table are the text of the resource column, and normalisation - the
+    // parts deduplicated and sorted by name - is the identifier's business, which is precisely
+    // how the Java parser handed each column to it. So the maturity calendar of the first row is
+    // named `CHZU+EUTA` although the resource wrote `EUTA+CHZU`, and a consumer reading the
+    // identifier sees the sorted form. Each expectation below was adjudicated against the
+    // published Java jar.
+    FxIndexData.byName.get("EUR/CHF-ECB").map(_.maturityCalendar.name) shouldBe Some("CHZU+EUTA")
+    FxIndexData.byName.get("EUR/GBP-ECB").map(_.maturityCalendar.name) shouldBe Some("EUTA+GBLO")
+    FxIndexData.byName.get("EUR/JPY-ECB").map(_.maturityCalendar.name) shouldBe Some("EUTA+JPTO")
+    FxIndexData.byName.get("EUR/USD-ECB").map(_.maturityCalendar.name) shouldBe Some("EUTA+USNY")
+    FxIndexData.byName.get("USD/CHF-WM").map(_.maturityCalendar.name) shouldBe Some("CHZU+USNY")
+    FxIndexData.byName.get("EUR/USD-WM").map(_.maturityCalendar.name) shouldBe Some("EUTA+USNY")
+    FxIndexData.byName.get("GBP/USD-WM").map(_.maturityCalendar.name) shouldBe Some("GBLO+USNY")
+    FxIndexData.byName.get("USD/JPY-WM").map(_.maturityCalendar.name) shouldBe Some("JPTO+USNY")
+    FxIndexData.byName.get("USD/THB-VWAP-THB01").map(_.fixingCalendar.name) shouldBe Some("SGSI+THBA")
+    FxIndexData.byName.get("USD/THB-VWAP-THB01").map(_.maturityCalendar.name) shouldBe Some("SGSI+THBA")
+
+    // the two rows whose maturity calendar is the same combination written in the opposite order
+    // therefore carry the same identifier, which is what normalisation is for
+    FxIndexData.byName.get("EUR/USD-ECB").map(_.maturityCalendar) shouldBe
+      FxIndexData.byName.get("EUR/USD-WM").map(_.maturityCalendar)
+  }
+
+  test("data_fixingCalendars") {
+    // The four European Central Bank rates fix on the euro settlement calendar and the four
+    // WM/Reuters rates on the New York calendar; the eight remaining rates fix on the calendar of
+    // the market that publishes them, seven of which this library ships no holidays for - because
+    // the original shipped none either - so those indices resolve against the standard reference
+    // data with a missing-data failure exactly as they did there, which is what `test_dates`
+    // above asserts for the Colombian peso row.
+    FxIndexData.rows.filter(_.name.endsWith("-ECB")).map(_.fixingCalendar).distinct shouldBe
+      Vector(HolidayCalendarIds.EUTA)
+    FxIndexData.rows.filter(_.name.endsWith("-WM")).map(_.fixingCalendar).distinct shouldBe
+      Vector(HolidayCalendarIds.USNY)
+
+    val industry = FxIndexData.rows.filterNot(row => row.name.endsWith("-ECB") || row.name.endsWith("-WM"))
+    industry should have size 8
+    industry.map(_.fixingCalendar.name) shouldBe
+      Vector("CLSA", "CNBE", "COBO", "INMU", "KRSE", "SGSI", "SGSI+THBA", "TWTA")
+    // each of those fixes and matures on the same calendar
+    industry.forall(row => row.fixingCalendar == row.maturityCalendar) shouldBe true
+  }
+
+  test("data_maturityDays") {
+    // Every rate matures two business days after its fixing except two: the Colombian peso index
+    // matures on the fixing date itself and the Chilean peso index one business day later.
+    FxIndexData.rows.map(_.maturityDays).distinct.sorted shouldBe Vector(0, 1, 2)
+    FxIndexData.byName.get("USD/COP-TRM-COP02").map(_.maturityDays) shouldBe Some(0)
+    FxIndexData.byName.get("USD/CLP-DOLAR-OBS-CLP10").map(_.maturityDays) shouldBe Some(1)
+    FxIndexData.rows.filter(_.maturityDays == 2) should have size 14
+  }
+
+  test("data_byCurrencyPair_groupsTheRowsSharingAPair") {
+    // Fifteen groups over sixteen rows, because the euro/dollar rate is published twice - by the
+    // European Central Bank and by WM/Reuters. That is why an index cannot be identified by its
+    // pair alone, and why the family resolves a pair to the matching row of lowest name; the
+    // selection rule belongs to the family rather than to this table and is asserted in
+    // `test_of_lookup_currency_pair_from_extendedEnum` above, so what is asserted here is that
+    // both rows are present, in declaration order.
+    FxIndexData.byCurrencyPair should have size 15
+
+    val eurUsd = CurrencyPair.of(Currency.EUR, Currency.USD)
+    FxIndexData.byCurrencyPair.get(eurUsd).map(_.map(_.name)) shouldBe Some(Vector("EUR/USD-ECB", "EUR/USD-WM"))
+
+    // every other pair holds exactly one row, and every row is reachable through its own pair
+    FxIndexData.byCurrencyPair.foreach {
+      case (pair, grouped) =>
+        withClue(s"$pair: ") {
+          grouped should not be empty
+          grouped.forall(_.currencyPair == pair) shouldBe true
+          if (pair != eurUsd) {
+            grouped should have size 1
+          }
+        }
+    }
+    FxIndexData.byCurrencyPair.values.flatten.map(_.name).toVector.sorted shouldBe
+      FxIndexData.rows.map(_.name).sorted
+    // the pair of a row is written base then counter, exactly as its name reads
+    FxIndexData.rows.foreach { row =>
+      withClue(s"${row.name}: ") {
+        row.name should startWith(row.currencyPair.toString)
+      }
+    }
+  }
+
+  test("data_iterationOrderIsStable") {
+    // A consumer reading these tables twice has to see the same thing both times, whatever
+    // private lookups are derived from them.
+    FxIndexData.rows shouldBe FxIndexData.rows
+    FxIndexData.byName.toVector shouldBe FxIndexData.byName.toVector
+    FxIndexData.byCurrencyPair.toVector shouldBe FxIndexData.byCurrencyPair.toVector
   }
 }

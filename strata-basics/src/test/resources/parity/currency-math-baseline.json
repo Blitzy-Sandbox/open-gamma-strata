@@ -4923,7 +4923,12 @@
     ],
     "money": [],
     "bigMoney": [],
-    "rates": [],
+    "rates": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      }
+    ],
     "currencyAmountResults": [],
     "moneyResults": [],
     "bigMoneyResults": [],
@@ -5333,6 +5338,12 @@
           ]
         },
         "target": "USD",
+        "rates": [
+          {
+            "pair": "GBP/USD",
+            "rate": 1.6
+          }
+        ],
         "result": {
           "currency": "USD",
           "values": [11.6, 23.2, 34.8]

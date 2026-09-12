@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics
 
+import cats.Show
+
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
@@ -51,6 +53,13 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * purpose these constants exist for, and nothing else in the module checks it, so a value
  * holding a character a scheme may not hold would otherwise be found by whichever caller
  * first tried to build an identifier with it.
+ *
+ * Two further tests sit beside that pair, named for the property they pin rather than for a
+ * Java method because the original has no equivalent. Each states the policy both helpers
+ * follow where they quote text a caller supplied: the failure carries the whole of what was
+ * refused, in the wording the Java method produced, while the bound on the size of the
+ * diagnostic and the escaping of anything that could forge a line of a log belong to the
+ * rendering of the failure.
  *
  * Each of the two tests keeps the name of the Java method it comes from, and the whole of a
  * Java method stays one test here, which is what keeps the method-level traceability of the
@@ -124,6 +133,36 @@ class StandardSchemesSpec extends AnyFunSuite with Matchers with TableDrivenProp
     val outcome = StandardId.of(scheme, value)
     outcome should beSuccess
     outcome.getOrElse(fail(s"StandardId.of('$scheme', '$value') was expected to name an identifier"))
+  }
+
+  /**
+   * How every message about the length of a market identifier code begins.
+   *
+   * The wording is the one the Java method produced, and it is written out here rather than
+   * assembled, so a change to it fails the assertions below rather than being carried into
+   * them.
+   */
+  private val MicLengthPrefix: String = "MIC must have 4 characters, but was "
+
+  /**
+   * Builds the failure the factory reports over a market identifier code it refuses.
+   *
+   * The two checks of the factory accumulate, so a code that is both the wrong length and
+   * unusable inside an identifier value is reported by two failures rather than one.
+   * Selecting the failure about the length by its wording, instead of taking the sole member
+   * of a chain, is what lets the cases below hand the factory an adversarial code and still
+   * assert against the failure they mean.
+   *
+   * @param exchangeMic  the market identifier code the factory is expected to refuse
+   * @return the failure reporting the length of that code
+   */
+  private def refusedMic(exchangeMic: String): Failure = {
+    val outcome = StandardSchemes.createTicMic("ULVR", exchangeMic)
+    outcome should beFailureWith(FailureReason.INVALID)
+    outcome.left.toOption
+      .flatMap(failures => failures.find(failure => failure.message.startsWith(MicLengthPrefix)))
+      .getOrElse(
+        fail(s"createTicMic was expected to refuse a MIC of ${exchangeMic.length} characters"))
   }
 
   //-------------------------------------------------------------------------
@@ -207,34 +246,33 @@ class StandardSchemesSpec extends AnyFunSuite with Matchers with TableDrivenProp
   }
 
   /**
-   * Asserts that a rejected identifier is quoted back bounded and on one line.
+   * Asserts that a rejected identifier is named in full and rendered bounded and on one line.
    *
    * Beyond the Java test: the value part of an identifier is caller-supplied text that nothing
-   * bounds, so the rendering of an identifier is unbounded text reaching a message, and the
-   * method being ported interpolated the whole of it into the exception it threw. This port
-   * reports the rejection as a value and renders the identifier rather than reproducing it.
+   * bounds, and the method being ported interpolated the whole of it into the exception it
+   * threw. This port names it the same way in the failure it returns, and bounds it where the
+   * failure is written out.
    */
-  test("splitting rejects an identifier of any size without echoing it unbounded") {
+  test("splitting names a rejected identifier in full, and the failure renders bounded") {
     // An identifier whose value is ten thousand characters and holds no separator: a perfectly
     // legal identifier, and not a TICMIC.
     val payload = "H" * 10000
     val bounded = StandardSchemes.splitTicMic(identifier("TICMIC", payload))
     bounded should beFailureWith(FailureReason.PARSING)
-    // The echo is the rendering the message is built from, so the message is the fixed wording
-    // plus at most `MaxDescribedInput + 3` characters of the identifier, whatever its size -
-    // where it was once the whole ten thousand.
-    val message = bounded.left.toOption.map(failure => failure.message).getOrElse("")
-    message.length should be <=
-      "Invalid TICMIC identifier: ".length + Failure.MaxDescribedInput + 3
-    // The rendering is of `toString`, so the scheme and the separator are the first seven
-    // characters of what is quoted and the value fills the rest of the bound.
-    message shouldBe
-      s"Invalid TICMIC identifier: TICMIC~${"H" * (Failure.MaxDescribedInput - 7)}..."
-    // A line break cannot reach the message either, though no identifier can hold one: the
-    // characters a value may hold stop below the space, so this property is held by the
-    // rendering and by the type together rather than by the rendering alone.
-    message should not include "\n"
-    message should not include "\r"
+    val failure = bounded.left.toOption.getOrElse(fail("expected a failure"))
+    // The message quotes the identifier as `toString` writes it, whole.
+    failure.message shouldBe s"Invalid TICMIC identifier: TICMIC~$payload"
+    // The rendering is where the size stops, and it marks what it left out.
+    val rendered = Show[Failure].show(failure)
+    rendered.length should be < 1000
+    rendered should startWith("PARSING: Invalid TICMIC identifier: TICMIC~HHH")
+    rendered should endWith("...")
+    // A line break can reach neither the message nor the rendering here, though for two
+    // different reasons: the characters a value may hold stop below the space, and a rendering
+    // escapes any that could forge a line.
+    failure.message should not include "\n"
+    rendered should not include "\n"
+    rendered should not include "\r"
 
     // And the message for an ordinary rejected identifier is unchanged, character for
     // character, which is what makes the bound invisible to every caller but the adversarial
@@ -244,5 +282,61 @@ class StandardSchemesSpec extends AnyFunSuite with Matchers with TableDrivenProp
       .left
       .toOption
       .map(failure => failure.message) shouldBe Some("Invalid TICMIC identifier: TICMIC~ULVR")
+  }
+
+  /**
+   * Asserts that a rejected market identifier code is named in full and rendered bounded and
+   * on one line.
+   *
+   * Beyond the Java test: a market identifier code is text a caller supplied, and the method
+   * being ported wrote the whole of it into the exception it threw. This port keeps that
+   * wording character for character in the failure it returns, so a caller is handed exactly
+   * what it has to correct, and it is the rendering of the failure that bounds the text and
+   * escapes what a line-oriented reader could act on. Both halves are asserted together,
+   * because either one on its own would serve the caller or the log but not both.
+   */
+  test("creating names a rejected market identifier code in full, and the failure renders bounded") {
+    // A code holding a line feed. The message carries that line feed as it stands, and the
+    // rendering writes it as the two characters of an escape, so the failure occupies a single
+    // line however it reaches a log.
+    val lineFeed = refusedMic("XL\nON")
+    lineFeed.message shouldBe "MIC must have 4 characters, but was XL\nON"
+    val renderedLineFeed = Show[Failure].show(lineFeed)
+    renderedLineFeed shouldBe "INVALID: MIC must have 4 characters, but was XL\\nON"
+    // The text form of a failure is that same rendering, so writing one out cannot bypass the
+    // escaping by asking for its text instead.
+    lineFeed.toString shouldBe renderedLineFeed
+    renderedLineFeed.linesIterator.size shouldBe 1
+    renderedLineFeed.exists(character => character.isControl) shouldBe false
+
+    // A carriage return is neutralised the same way, and it is the one a reader that ends a
+    // line on it would otherwise act on.
+    val carriageReturn = refusedMic("XL\rON")
+    carriageReturn.message shouldBe "MIC must have 4 characters, but was XL\rON"
+    val renderedCarriageReturn = Show[Failure].show(carriageReturn)
+    renderedCarriageReturn shouldBe "INVALID: MIC must have 4 characters, but was XL\\rON"
+    carriageReturn.toString shouldBe renderedCarriageReturn
+    renderedCarriageReturn.linesIterator.size shouldBe 1
+    renderedCarriageReturn.exists(character => character.isControl) shouldBe false
+
+    // Ten thousand characters. The message holds all of them, since that is the code the
+    // caller has to correct, while the rendering stops far short of them and marks what it
+    // left out. The ceiling asserted is a size a reader can take in rather than the constant
+    // the renderer holds, so this pins the property and not the number.
+    val payload = "H" * 10000
+    val oversized = refusedMic(payload)
+    oversized.message shouldBe s"MIC must have 4 characters, but was $payload"
+    val renderedOversized = Show[Failure].show(oversized)
+    renderedOversized.length should be < 1000
+    renderedOversized should startWith("INVALID: MIC must have 4 characters, but was HHH")
+    renderedOversized should endWith("...")
+    oversized.toString shouldBe renderedOversized
+
+    // And an ordinary rejected code reads as the Java wording character for character, in the
+    // failure and in its rendering alike, which is what makes the bound invisible to every
+    // caller but the adversarial one.
+    val shortMic = refusedMic("LSE")
+    shortMic.message shouldBe "MIC must have 4 characters, but was LSE"
+    Show[Failure].show(shortMic) shouldBe "INVALID: MIC must have 4 characters, but was LSE"
   }
 }

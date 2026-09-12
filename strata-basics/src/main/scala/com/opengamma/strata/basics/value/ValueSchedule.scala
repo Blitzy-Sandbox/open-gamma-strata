@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics.value
 
+import java.time.LocalDate
+
 import cats.Hash
 import cats.Show
 import cats.data.NonEmptyList
@@ -19,6 +21,9 @@ import com.opengamma.strata.basics.schedule.RollConvention
 import com.opengamma.strata.basics.schedule.Schedule
 import com.opengamma.strata.basics.schedule.SchedulePeriod
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.ResultNec
+import com.opengamma.strata.collect.Validate
+import com.opengamma.strata.collect.ValidatedFailures
 import com.opengamma.strata.collect.array.DoubleArray
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
@@ -42,30 +47,37 @@ import com.opengamma.strata.collect.result.Failure
  * represents an amount of money then the currency is specified separately. If the value represents
  * a rate then a 5% rate is expressed as 0.05.
  *
- * ===Construction is total; resolution is where a definition is judged===
+ * ===Construction is validated; resolution judges the pairing with a schedule===
  *
  * The constructor of this type is private and there is no `apply` or `copy`, so the factories of
- * the companion are the only way to obtain a schedule - the shape every type of this port whose
- * construction is checked uses. Here, though, '''none of those factories reports a failure''':
- * every one of them is total, exactly as every factory of the Java bean being ported was, and
- * that is a deliberate part of the contract rather than a check left out.
+ * the companion are the only way to obtain a schedule, and '''every one of them reports its
+ * outcome''': each `of` overload, and each of the two `with` operations, answers `ResultNec` - a
+ * definition or a non-empty chain of failures - which is the shape every validated type of this
+ * port answers with.
  *
- * The reason is that a definition can only be judged against the schedule it is resolved against,
- * and the schedule is not known until then. Two steps naming the same period index are the clear
- * case: they may agree, in which case the definition is sound, or disagree, in which case it is
- * not, and nothing about the pair decides which until the periods are in hand. A step naming a
- * date is the same story - whether the date is a period boundary is a question about the schedule.
- * The Java original therefore accepted both and reported neither, and the ported test suite
- * asserts that behaviour directly: a schedule holding two steps at index 1 with different
- * adjustments is '''built''' successfully and fails only when it is resolved. Adding a
- * construction-time check would reject values the original accepted and would contradict that
- * test, so the failable surface of this type is [[resolveValues]] alone.
+ * One condition is decided at construction, and it is the half of the Java original's
+ * contradiction that needs no schedule to see: '''two steps that name the same position with
+ * different adjustments'''. A position is a period index or a date, whichever the step carries,
+ * and two steps carrying the same one ask for two different values at a single point of the time
+ * line whatever schedule they are later resolved against - so the definition is refused here,
+ * once per position that is doubly named, rather than accepted and refused later. Two steps
+ * naming the same position with the '''same''' adjustment are not a contradiction and are
+ * accepted, exactly as the original accepted them: the value changes once, to the value both
+ * steps ask for.
  *
- * That single failable operation reports three classes of failure, all of them properties of the
- * pairing of a definition with a schedule rather than of either alone: a step positioned beyond
- * the last period of the schedule, two steps resolving to the same period with different
- * adjustments, and a step positioned on a date that is not a period boundary and that would
- * change the value if it were applied where it falls.
+ * Everything else about a definition remains a question about the schedule it is resolved
+ * against, and [[resolveValues]] is where those are answered. It reports three classes of
+ * failure, all of them properties of the pairing rather than of either side alone: a step
+ * positioned beyond the last period of the schedule, a step and another step resolving to the
+ * same period with different adjustments - which is the part of the contradiction only a schedule
+ * can see, a step named by index and a step named by the date of that period's boundary - and a
+ * step positioned on a date that is not a period boundary and that would change the value if it
+ * were applied where it falls.
+ *
+ * The divergence from the Java bean is therefore narrow and is recorded in `SCALA_MIGRATION.md`:
+ * a pair of steps whose positions are identical is rejected when the definition is built rather
+ * than when it is resolved. It is the same contradiction, reported at the earliest point at which
+ * it is decidable, and no definition the original resolved successfully is refused here.
  *
  * ===Equality===
  *
@@ -173,6 +185,14 @@ sealed abstract case class ValueSchedule private (
    * a running scan and checks the set-aside steps by traversal. No stage holds mutable state, and
    * the result is the same array of values the original built in place.
    *
+   * The periods are indexed '''once''' here, into a [[ValueStep.PeriodIndex]] that the second and
+   * fourth stages both resolve against. That is the one structural difference from the original,
+   * and it is a difference of cost rather than of behaviour: the original searched the period list
+   * afresh for every step, once or twice to place it and once more to find the period an unplaced
+   * one falls in, so a definition of `m` steps cost `m` walks of the `n` periods - and a
+   * definition whose sequence expands to a step per period cost `n` of them. Building the index
+   * first answers each of those searches from a map or a binary search instead.
+   *
    * @param periods  the periods of the schedule, in schedule order
    * @param rollConv  the roll convention of the schedule
    * @return the values, one for each schedule period, or the failure
@@ -183,9 +203,10 @@ sealed abstract case class ValueSchedule private (
     for {
       resolvedSteps <- stepSequence.fold[FailureOr[List[ValueStep]]](Right(steps))(sequence =>
         sequence.resolve(steps, rollConv))
-      assignment <- assignSteps(resolvedSteps, periods)
-      values = periodValues(assignment.slots, periods.size)
-      _ <- checkUnassignedSteps(assignment.unassignedSteps, periods, values)
+      periodIndex = ValueStep.PeriodIndex.of(periods)
+      assignment <- assignSteps(resolvedSteps, periodIndex)
+      values = periodValues(assignment.slots, periodIndex.size)
+      _ <- checkUnassignedSteps(assignment.unassignedSteps, periodIndex, values)
     } yield DoubleArray.copyOf(values)
 
   /**
@@ -197,13 +218,13 @@ sealed abstract case class ValueSchedule private (
    * original raised: the earliest in that order.
    *
    * @param resolvedSteps  the steps to assign, including any expanded from a sequence
-   * @param periods  the periods of the schedule, in schedule order
+   * @param periods  the index over the periods of the schedule, built once for this resolution
    * @return the assignment of adjustments to periods together with the steps that resolved to no
    *   period, or the failure describing the first step that could not be assigned
    */
   private def assignSteps(
       resolvedSteps: List[ValueStep],
-      periods: NonEmptyList[SchedulePeriod]): FailureOr[ValueSchedule.StepAssignment] =
+      periods: ValueStep.PeriodIndex): FailureOr[ValueSchedule.StepAssignment] =
     resolvedSteps.foldM[FailureOr, ValueSchedule.StepAssignment](
       ValueSchedule.StepAssignment.Empty)((assignment, step) => assignStep(assignment, step, periods))
 
@@ -222,14 +243,14 @@ sealed abstract case class ValueSchedule private (
    *
    * @param assignment  the assignment built from the steps seen so far
    * @param step  the step to assign
-   * @param periods  the periods of the schedule, in schedule order
+   * @param periods  the index over the periods of the schedule, built once for this resolution
    * @return the assignment including this step, or the failure describing why this step cannot be
    *   assigned
    */
   private def assignStep(
       assignment: ValueSchedule.StepAssignment,
       step: ValueStep,
-      periods: NonEmptyList[SchedulePeriod]): FailureOr[ValueSchedule.StepAssignment] =
+      periods: ValueStep.PeriodIndex): FailureOr[ValueSchedule.StepAssignment] =
     step.findIndex(periods).flatMap {
       case None => Right(assignment.withUnassignedStep(step))
       case Some(index) =>
@@ -271,14 +292,14 @@ sealed abstract case class ValueSchedule private (
    * are checked in the order they were given, so the failure reported is the earliest of them.
    *
    * @param unassignedSteps  the steps that resolved to no period, in the order they were given
-   * @param periods  the periods of the schedule, in schedule order
+   * @param periods  the index over the periods of the schedule, built once for this resolution
    * @param values  the value of each period, in schedule order
    * @return nothing where every such step changes nothing, or the failure describing the first
    *   that does not
    */
   private def checkUnassignedSteps(
       unassignedSteps: List[ValueStep],
-      periods: NonEmptyList[SchedulePeriod],
+      periods: ValueStep.PeriodIndex,
       values: Vector[Double]): FailureOr[Unit] =
     unassignedSteps.traverse_(step => checkUnassignedStep(step, periods, values))
 
@@ -290,13 +311,13 @@ sealed abstract case class ValueSchedule private (
    * altogether is reported by the step itself.
    *
    * @param step  the step to check
-   * @param periods  the periods of the schedule, in schedule order
+   * @param periods  the index over the periods of the schedule, built once for this resolution
    * @param values  the value of each period, in schedule order
    * @return nothing where this step changes nothing, or the failure describing the change it makes
    */
   private def checkUnassignedStep(
       step: ValueStep,
-      periods: NonEmptyList[SchedulePeriod],
+      periods: ValueStep.PeriodIndex,
       values: Vector[Double]): FailureOr[Unit] =
     step.findPreviousIndex(periods).flatMap { index =>
       values
@@ -342,12 +363,15 @@ sealed abstract case class ValueSchedule private (
    * caller that holds a schedule and wants the same initial value and sequence with different
    * steps. It is not a `copy`: this type has none, and the two `with` operations here are
    * deliberately the whole of its field-wise modification, so that every route to a value still
-   * runs through a factory of the companion.
+   * runs through a factory of the companion - and therefore through the check that factory
+   * performs, which is why this operation reports an outcome rather than a schedule: the steps
+   * are the caller's and may contradict one another.
    *
    * @param steps  the steps defining the change in the value
-   * @return the schedule holding the specified steps
+   * @return the schedule holding the specified steps, or the failures describing the positions
+   *   two of those steps both name with different adjustments
    */
-  def withSteps(steps: List[ValueStep]): ValueSchedule =
+  def withSteps(steps: List[ValueStep]): ResultNec[ValueSchedule] =
     ValueSchedule.of(initialValue, steps, stepSequence)
 
   /**
@@ -358,10 +382,15 @@ sealed abstract case class ValueSchedule private (
    * original allowed only through its builder, and the one its `resolveValues` test for a
    * sequence alongside a step exercises.
    *
+   * The steps of this schedule are carried over unchanged, and they were checked when it was
+   * built, so this operation cannot report a failure of its own - it reports through the same
+   * channel as [[withSteps]] because it routes through the same factory, and because a caller
+   * chaining the two reads one shape rather than two.
+   *
    * @param stepSequence  the sequence of steps changing the value
    * @return the schedule holding the specified sequence
    */
-  def withStepSequence(stepSequence: ValueStepSequence): ValueSchedule =
+  def withStepSequence(stepSequence: ValueStepSequence): ResultNec[ValueSchedule] =
     ValueSchedule.of(initialValue, steps, Some(stepSequence))
 
   //-------------------------------------------------------------------------
@@ -499,20 +528,22 @@ object ValueSchedule {
    * The wording is that of the Java original, naming the unadjusted start date of the period the
    * two steps collided in and the whole definition they came from.
    *
-   * @param periods  the periods of the schedule, in schedule order
+   * @param periods  the index over the periods of the schedule, built once for this resolution
    * @param index  the index of the period the two steps resolved to
    * @param definition  the definition being resolved, named in the message as the original named
    *   it
    * @return the message
    */
   private def duplicateStepMessage(
-      periods: NonEmptyList[SchedulePeriod],
+      periods: ValueStep.PeriodIndex,
       index: Int,
       definition: ValueSchedule): String = {
     // the index came from resolving a step against these very periods, so it names one of them;
     // the empty rendering below is unreachable and is written rather than read out of the option
-    // so that building a message cannot itself fail
-    val startDate = periods.toList.lift(index).map(_.unadjustedStartDate.toString).getOrElse("")
+    // so that building a message cannot itself fail. The date is read from the index rather than
+    // from a list rebuilt here, so no walk of the periods remains on the path that reports a
+    // failure - building a message is not a place to spend the schedule a second time
+    val startDate = periods.unadjustedStartDateAt(index).map(_.toString).getOrElse("")
     "Invalid ValueSchedule, two steps resolved to the same schedule period starting on " +
       s"$startDate, schedule defined as $definition"
   }
@@ -596,20 +627,37 @@ object ValueSchedule {
 
 
   //-------------------------------------------------------------------------
-  /** A value schedule that always has the value zero. */
-  val ALWAYS_0: ValueSchedule = of(0d)
+  /**
+   * A value schedule that always has the value zero.
+   *
+   * It holds no step and no sequence, so there is nothing about it to check and it is built
+   * through the trusted constructor rather than through a factory that reports an outcome - a
+   * constant of this library is not a value a caller has to unwrap.
+   */
+  val ALWAYS_0: ValueSchedule = create(0d, Nil, None)
 
-  /** A value schedule that always has the value one. */
-  val ALWAYS_1: ValueSchedule = of(1d)
+  /**
+   * A value schedule that always has the value one.
+   *
+   * Built as [[ValueSchedule.ALWAYS_0]] is, and for the same reason.
+   */
+  val ALWAYS_1: ValueSchedule = create(1d, Nil, None)
 
   //-------------------------------------------------------------------------
   /**
    * Obtains an instance from a single value that does not change over time.
    *
+   * A definition holding no step names no position, so this overload cannot report the one
+   * condition construction decides and always answers with a definition. It answers through the
+   * same channel as its siblings all the same, because a caller reading a validated factory of
+   * this port reads one shape at every type and a schedule of values is not the place to break
+   * that - and because the overload set would otherwise hand back two different kinds of thing
+   * depending on which argument list was used.
+   *
    * @param value  a single value that does not change over time
    * @return the value schedule
    */
-  def of(value: Double): ValueSchedule = create(value, Nil, None)
+  def of(value: Double): ResultNec[ValueSchedule] = of(value, Nil, None)
 
   /**
    * Obtains an instance from an initial value and a list of changes.
@@ -623,10 +671,11 @@ object ValueSchedule {
    *
    * @param initialValue  the initial value used for the first period
    * @param steps  the full definition of how the value changes over time
-   * @return the value schedule
+   * @return the value schedule, or the failures describing the positions two steps both name with
+   *   different adjustments
    */
-  def of(initialValue: Double, steps: List[ValueStep]): ValueSchedule =
-    create(initialValue, steps, None)
+  def of(initialValue: Double, steps: List[ValueStep]): ResultNec[ValueSchedule] =
+    of(initialValue, steps, None)
 
   /**
    * Obtains an instance from an initial value and one or more changes.
@@ -645,10 +694,14 @@ object ValueSchedule {
    * @param initialValue  the initial value used for the first period
    * @param firstStep  the first change in the value
    * @param restSteps  the remaining changes in the value, in the order they are to be resolved
-   * @return the value schedule
+   * @return the value schedule, or the failures describing the positions two steps both name with
+   *   different adjustments
    */
-  def of(initialValue: Double, firstStep: ValueStep, restSteps: ValueStep*): ValueSchedule =
-    create(initialValue, firstStep :: restSteps.toList, None)
+  def of(
+      initialValue: Double,
+      firstStep: ValueStep,
+      restSteps: ValueStep*): ResultNec[ValueSchedule] =
+    of(initialValue, firstStep :: restSteps.toList, None)
 
   /**
    * Obtains an instance from an initial value and a sequence of steps.
@@ -658,10 +711,10 @@ object ValueSchedule {
    *
    * @param initialValue  the initial value used for the first period
    * @param stepSequence  the full definition of how the value changes over time
-   * @return the value schedule
+   * @return the value schedule, which a sequence alone cannot make contradictory
    */
-  def of(initialValue: Double, stepSequence: ValueStepSequence): ValueSchedule =
-    create(initialValue, Nil, Some(stepSequence))
+  def of(initialValue: Double, stepSequence: ValueStepSequence): ResultNec[ValueSchedule] =
+    of(initialValue, Nil, Some(stepSequence))
 
   /**
    * Obtains an instance from an initial value, a list of changes and a sequence of steps.
@@ -671,18 +724,102 @@ object ValueSchedule {
    * ported, which was the only way that bean could express individual steps and a sequence at
    * once. Doing so is possible but not recommended, as the documentation of the type says, and
    * where it is done the steps and the sequence must resolve to different dates; a clash between
-   * them is reported by [[ValueSchedule.resolveValues]] rather than here.
+   * them is reported by [[ValueSchedule.resolveValues]] rather than here, because whether two
+   * dates fall in one period is a question about the schedule.
+   *
+   * It is also the factory the four overloads above delegate to, so the check below is the
+   * construction-time judgement of every route into the type: a position named by two steps with
+   * different adjustments is refused, once per such position.
+   *
+   * {{{
+   * ValueSchedule.of(200d, List(stepAt1Replacing300, stepAt1Replacing300), None)  // Right
+   * ValueSchedule.of(200d, List(stepAt1Replacing300, stepAt1Replacing400), None)  // Left
+   * }}}
    *
    * @param initialValue  the initial value used for the first period
    * @param steps  the full definition of how the value changes over time
    * @param stepSequence  the sequence of steps changing the value, if the schedule holds one
-   * @return the value schedule
+   * @return the value schedule, or the failures describing the positions two steps both name with
+   *   different adjustments
    */
   def of(
       initialValue: Double,
       steps: List[ValueStep],
-      stepSequence: Option[ValueStepSequence]): ValueSchedule =
-    create(initialValue, steps, stepSequence)
+      stepSequence: Option[ValueStepSequence]): ResultNec[ValueSchedule] =
+    checkedSteps(steps)
+      .map(_ => create(initialValue, steps, stepSequence))
+      .toEither
+
+  /**
+   * Checks that no position is named by two steps asking for different adjustments.
+   *
+   * A step names its position either by a period index or by a date - [[ValueStep.of]] requires
+   * exactly one of the two - so the position is that choice, and steps are grouped by it. A group
+   * holding more than one '''distinct''' adjustment is a contradiction: whatever schedule the
+   * definition is later resolved against, those steps resolve to a single period and ask it for
+   * different values. A group holding one adjustment several times is not, and passes; the
+   * comparison is the equality of [[ValueAdjustment]], which compares its double by bit pattern
+   * just as the bean equality of the original did, so two steps agree here exactly where the
+   * original's own duplicate check found them to agree.
+   *
+   * Grouping is by the position '''as written''': a step at index 1 and a step dated on the
+   * boundary of period 1 are different positions here, because deciding that they are the same
+   * requires the schedule, and that pairing is reported by [[ValueSchedule.resolveValues]]
+   * instead. The groups are visited in the order the positions first appear among the steps, so
+   * the failures are reported in the order a reader of the definition meets them.
+   *
+   * That order is read off the grouping pass rather than searched for afterwards. Each step is
+   * paired with its own position in the list before grouping, and `groupBy` on a `List` keeps
+   * the members of a group in the order they were drawn from it, so the head of a group carries
+   * the index at which its position first appeared and ordering the groups is a sort on a number
+   * already in hand. Searching the list for each group's head instead would rescan it once per
+   * group, which is quadratic in the number of positions, and both this method and the decoder
+   * that calls it accept a step list of any length from a caller or a document, so that cost is
+   * one an untrusted input could choose.
+   *
+   * @param steps  the steps of the definition being built
+   * @return a passing outcome, or one failure for each position two steps both name with
+   *   different adjustments
+   */
+  private def checkedSteps(steps: List[ValueStep]): ValidatedFailures[Unit] =
+    steps.zipWithIndex
+      .groupBy { case (step, _) => step.periodIndex.toLeft(step.date) }
+      .toList
+      .sortBy { case (_, group) => group.head._2 }
+      .map { case (position, group) =>
+        val adjustments: List[ValueAdjustment] = group.map { case (step, _) => step.value }.distinct
+        Validate.isFalse(
+          adjustments.sizeIs > 1,
+          duplicatePositionMessage(position, adjustments))
+      }
+      .sequence_
+
+  /**
+   * The message reporting a position that two steps name with different adjustments.
+   *
+   * The text names the position as the step wrote it - an index or a date - and the adjustments
+   * that were asked for at it, so a caller sees which two steps to reconcile without reading the
+   * definition back out of the failure.
+   *
+   * @param position  the position two steps named, an index on the left or a date on the right
+   * @param adjustments  the distinct adjustments asked for at that position, of which there is
+   *   more than one
+   * @return the message
+   */
+  private def duplicatePositionMessage(
+      position: Either[Int, Option[LocalDate]],
+      adjustments: List[ValueAdjustment]): String = {
+    val where: String = position match {
+      case Left(index) => s"period index $index"
+      case Right(Some(date)) => s"date $date"
+      case Right(None) =>
+        // unreachable: `ValueStep.of` requires exactly one of the two positions, so a step with
+        // neither cannot exist and this branch names the shape rather than describing a value
+        "no position"
+    }
+    s"Unable to create ValueSchedule, two steps name $where with different adjustments: " +
+      adjustments.mkString(", ")
+  }
 
   //-------------------------------------------------------------------------
   /**
@@ -807,16 +944,22 @@ object ValueSchedule {
    * value has to be present and is read through the same policy that wrote it; the steps and the
    * sequence are optional in the document, an omitted array of steps reading as no steps.
    *
-   * Construction cannot fail, so nothing beyond the shape of the payload is checked here: a
-   * payload of the right shape always yields a schedule, and an encoded schedule decodes back to
-   * one equal to it - including one whose initial value is not a number, which the bit-pattern
-   * equality of this type makes equal to itself. Whether the decoded definition can be resolved
-   * against some schedule of periods is a separate question, answered by
-   * [[ValueSchedule.resolveValues]] and not by this decoder, exactly as it is for a schedule a
-   * caller built by hand.
+   * The fields are handed to the '''validated''' factory [[ValueSchedule.of]] rather than being
+   * wrapped unchecked, so a document whose steps name one position with two different adjustments
+   * is a decoding failure carrying the reasons that factory gives - a document being precisely the
+   * route by which such a definition would otherwise arrive from outside the program. Every
+   * definition this port can build passes that check, so the round trip is unaffected: an encoded
+   * schedule decodes back to one equal to it, including one whose initial value is not a number,
+   * which the bit-pattern equality of this type makes equal to itself.
+   *
+   * Whether the decoded definition can be resolved against some schedule of periods is a separate
+   * question, answered by [[ValueSchedule.resolveValues]] and not by this decoder, exactly as it is
+   * for a schedule a caller built by hand.
    *
    * @return the JSON decoding of schedules
    */
   implicit val decoder: Decoder[ValueSchedule] =
-    rawDecoder.map(raw => of(raw.initialValue, raw.steps.getOrElse(Nil), raw.stepSequence))
+    Codecs.validatedDecoder[Raw, ValueSchedule] { raw =>
+      of(raw.initialValue, raw.steps.getOrElse(Nil), raw.stepSequence)
+    }(rawDecoder)
 }

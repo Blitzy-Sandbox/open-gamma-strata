@@ -17,11 +17,12 @@ import com.opengamma.strata.collect.ArgCheck
 /**
  * An immutable two-dimensional array of doubles.
  *
- * In mathematical terms this is a two-dimensional matrix. An instance wraps a rectangular
- * primitive array of doubles - every row has the same length - and offers the operations a
- * matrix needs: element access by row and column, row and column extraction, scaling, mapping,
- * element-wise arithmetic against another matrix of the same shape, reduction, transposition
- * and copy-on-write update. Each of those answers with a new value and leaves its inputs alone:
+ * In mathematical terms this is a two-dimensional matrix. An instance wraps a nested primitive
+ * array of doubles - rectangular in every ordinary case, every row having the same length - and
+ * offers the operations a matrix needs: element access by row and column, row and column
+ * extraction, scaling, mapping, element-wise arithmetic against another matrix of the same shape,
+ * reduction, transposition and copy-on-write update. Each of those answers with a new value and
+ * leaves its inputs alone:
  *
  * {{{
  * val base = DoubleMatrix.of(2, 2, 1.0, 2.0, 3.0, 4.0)
@@ -31,11 +32,20 @@ import com.opengamma.strata.collect.ArgCheck
  *
  * ===Shape===
  *
- * A matrix is rectangular and its shape is fixed at construction. Every factory funnels a zero
- * row count or a zero column count to the single empty instance, which has no rows at all, so
- * no value can ever have rows of length zero: a matrix is either empty or has at least one
- * element in every row. `size` is the total number of elements, computed once at construction
- * rather than on each call, exactly as the Java original precomputes it.
+ * A matrix has a row count and a column count, both fixed at construction, and every member that
+ * addresses an element by row and column is defined in terms of them. Every factory funnels a
+ * zero row count or a zero column count to the single empty instance, which has no rows at all,
+ * so no value can ever have a first row of length zero: a matrix is either empty or has at least
+ * one element in its first row. `size` is the row count times the column count, computed once at
+ * construction rather than on each call, exactly as the Java original precomputes it.
+ *
+ * Every factory that is given a column count measures each row against it, so the rows of the
+ * values they build all have that length. The two factories that instead take their shape from an
+ * array - `copyOf` and the module-private `ofUnsafe` - read the column count off the first row
+ * and copy or adopt the remaining rows as they are, which is what the Java original did: an array
+ * whose rows differ in length therefore yields a matrix shaped by its first row, and addressing a
+ * position a short row does not hold fails as an index error on that row. That is the one way a
+ * value of this type can be other than rectangular, and it is documented on `copyOf` in full.
  *
  * ===The stored array never escapes===
  *
@@ -94,9 +104,8 @@ import com.opengamma.strata.collect.ArgCheck
  * below:
  *
  *   - a shape violation - a negative row, column or size count, values that do not fill the
- *     requested shape, a function that returns a row of the wrong length, an array of rows that
- *     differ in length, or two matrices that have to match in shape and do not - is raised as an
- *     `IllegalArgumentException` through
+ *     requested shape, a function that returns a row of the wrong length, or two matrices that
+ *     have to match in shape and do not - is raised as an `IllegalArgumentException` through
  *     `ArgCheck`, carrying the message of the Java original word for word wherever that original
  *     threw one directly. A negative dimension is the one case where the port reports a
  *     different type from the Java original, which let the runtime raise
@@ -635,9 +644,10 @@ final class DoubleMatrix private (
    *
    * The form is that of the Java original: each row holds its elements separated by single
    * spaces and is followed by a line break, so a two by two matrix renders over two lines and
-   * the empty matrix renders as empty text. Each row is rendered at its own length, which is
-   * the column count of the matrix for every value a public factory can build and is what
-   * makes this member total for every value at all.
+   * the empty matrix renders as empty text. Each row is rendered at its own length, exactly as
+   * the Java original rendered it, which is the column count of the matrix in every ordinary
+   * case and is what makes this member total for a value shaped by a first row the other rows
+   * do not match.
    *
    * Like the Java original, this appends to one buffer, which is what keeps the rendering free
    * of per-element and per-row garbage: appending a `Double` to a string builder takes the
@@ -664,12 +674,13 @@ final class DoubleMatrix private (
   // appends one row from the column upwards, each element separated by a space and the last
   // followed by the line break that terminates every row, including the last row of the matrix
   //
-  // The row is rendered at its own length rather than at the column count of the matrix. For
-  // every matrix a public factory of this type can build the two are the same, a matrix being
-  // rectangular; the distinction is what makes rendering total for a value adopted without
-  // copying through the module-private factory, where a row of another length would otherwise
-  // be rendered short of its elements or read past its end. The Java original rendered each row
-  // at its own length for the same reason, so this is its behaviour and not a divergence.
+  // The row is rendered at its own length rather than at the column count of the matrix. In the
+  // ordinary case the two are the same; the distinction is what makes rendering total for a
+  // value whose rows do not all match its first - one taken from a ragged array by `copyOf`, or
+  // adopted without copying through the module-private factory - where a row of another length
+  // would otherwise be rendered short of its elements or read past its end. The Java original
+  // rendered each row at its own length for the same reason, so this is its behaviour and not a
+  // divergence.
   @tailrec
   private def appendRow(
       builder: java.lang.StringBuilder,
@@ -702,12 +713,12 @@ final class DoubleMatrix private (
  * function had been called would already have run a caller's code, so an argument that can never
  * produce a matrix would still be able to consume resources. The factories that take their shape
  * from an array they are given - `copyOf`, `ofUnsafe` and `diagonal` - need no such check,
- * because an array's length cannot be negative; `copyOf` instead checks that the rows it is
- * given agree in length, which is the same question asked of an array rather than of a number,
- * and asks it before copying anything.
+ * because an array's length cannot be negative, and none of the three has a stated column count
+ * to measure a row against: each takes the shape the array it is given describes, which for
+ * `copyOf` and `ofUnsafe` is the length of the array and the length of its first row.
  *
- * Every factory funnels a zero row count or a zero column count to `EMPTY`, so a matrix with
- * rows of length zero cannot be built, and a caller may recognise the empty result by identity
+ * Every factory funnels a zero row count or a zero column count to `EMPTY`, so a matrix whose
+ * column count is zero cannot be built, and a caller may recognise the empty result by identity
  * as well as by equality.
  */
 object DoubleMatrix {
@@ -1123,9 +1134,10 @@ object DoubleMatrix {
    * allocated, or otherwise published nowhere else, and must never be modified afterwards.
    * Inside the module that condition is met and checkable by reading the call site.
    *
-   * The rows must all be the same length, which is deliberately not validated: the shape is
-   * taken from the first row, as the Java original takes it, and a caller that hands over a
-   * ragged array gets a matrix whose behaviour is undefined.
+   * The rows are expected to be the same length, which is deliberately not validated: the shape
+   * is taken from the first row, as the Java original takes it. A caller that hands over an array
+   * whose rows differ in length gets exactly what `copyOf` gives for such an array, described in
+   * full there - a matrix shaped by its first row, whose rows keep their own lengths.
    *
    * @param array  the rows to adopt, which the caller must never modify
    * @return a matrix wrapping the specified rows
@@ -1144,48 +1156,33 @@ object DoubleMatrix {
    * Obtains an instance by copying an array of rows.
    *
    * Both the array of rows and each row within it are copied and never modified, so the caller
-   * may go on using them. The shape is taken from the first row, and every other row has to
-   * agree with it: an array whose rows differ in length describes no matrix and is rejected
-   * rather than copied. An array with no rows, or whose first row has no elements, is the empty
-   * matrix, exactly as in the Java original.
+   * may go on using them. The shape is taken from the first row: the row count is the length of
+   * the array and the column count is the length of its first row. An array with no rows, or
+   * whose first row has no elements, is the empty matrix.
    *
-   * Rejecting a ragged array is the one point at which this factory is stricter than the Java
-   * original, which copied such an array and answered with a value that read past the end of a
-   * short row as soon as it was asked for an element the shape promised. The strictness is what
-   * makes rectangularity - which the rest of this type documents, and which `get`, `row`,
-   * `column`, `total` and every element-wise operation rely on - true of every value a public
-   * factory can produce. The sibling factory taking a row function already rejected the same
-   * condition, so this closes the one way into the type that did not.
+   * This is a total factory, and it stays total for an array whose rows differ in length, which
+   * is what the Java original did with one: the shape is still that of the first row, and each
+   * row is copied at its own length rather than being padded, truncated or rejected. Such a
+   * value is the one value of this type that is not rectangular, and the consequence is the
+   * consequence the Java original had - a position the shape promises but a short row does not
+   * hold is read from that row and fails as an index error, exactly as reading past the end of
+   * any array does, while `toString` renders each row at its own length and so shows an
+   * over-long row in full. Every other public factory of this type derives its shape from
+   * numbers it is given and checks the rows against them, so no other route reaches the
+   * condition; a caller with an array of uncertain shape that wants it refused rather than
+   * copied has `ofArrays`, which measures each row against a column count the caller states.
    *
    * @param array  the rows to copy
-   * @return a matrix holding the elements of the specified rows
-   * @throws IllegalArgumentException if the rows of the array differ in length
+   * @return a matrix holding the elements of the specified rows, shaped by its first row
    */
   def copyOf(array: Array[Array[Double]]): DoubleMatrix = {
     val rows = array.length
     if (rows == 0 || array(0).length == 0) {
       EMPTY
     } else {
-      val columns = array(0).length
-      checkRectangular(array, columns, 1)
-      new DoubleMatrix(deepClone(array), rows, columns)
+      new DoubleMatrix(deepClone(array), rows, array(0).length)
     }
   }
-
-  // checks that every row from the index upwards is as long as the first, in row order
-  //
-  // The check starts at the second row because the first is what defines the shape, and it runs
-  // before anything is copied, so an array that describes no matrix costs no allocation. The
-  // module-private adopting factory stays deliberately unchecked, as its own documentation
-  // states, and is the only way a value of this type can hold rows of differing length.
-  @tailrec
-  private def checkRectangular(array: Array[Array[Double]], columns: Int, row: Int): Unit =
-    if (row < array.length) {
-      ArgCheck.isTrue(
-        array(row).length == columns,
-        s"Array cannot be copied as row $row is of length ${array(row).length}, expected $columns")
-      checkRectangular(array, columns, row + 1)
-    }
 
   // copies an array of rows, cloning each row, so that the result shares nothing with the input
   private def deepClone(input: Array[Array[Double]]): Array[Array[Double]] = {

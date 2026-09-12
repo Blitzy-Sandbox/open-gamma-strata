@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics.currency
 
+import java.util.concurrent.atomic.AtomicInteger
+
 import scala.collection.immutable.SortedMap
 import scala.util.matching.Regex
 
@@ -73,9 +75,23 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *     suite builds, because [[assertMCA]] - the port of the original's private helper of the same
  *     name - asserts it on every call, exactly as the original did.
  *
- * No test of this file asserts a thrown exception: the numeric invariant of the arithmetic, which
+ * None of the fifty-four asserts a thrown exception: the numeric invariant of the arithmetic, which
  * is the one throw this type documents, is asserted in the root `SmartConstructorSpec` alongside
- * every other numeric edge of the port.
+ * every other numeric edge of the port. One of the five pins described below does assert it, for
+ * the aggregation path specifically, because that path adds numbers rather than amounts and so has
+ * to reach the invariant itself.
+ *
+ * ===Five pins this port adds===
+ *
+ * After the fifty-four there is a short section with no method of the original behind it. The
+ * original's aggregation was a `Collector` and its traversal a stream, so the properties that
+ * decide whether an aggregate is faithful - which order the amounts of one currency are added in,
+ * that aggregating in one pass agrees with combining pairwise, that the numeric invariant is
+ * reached on the aggregation path, and how far a conversion traverses before an unavailable rate
+ * decides it - were properties of that machinery rather than of the API and went unstated. Each
+ * pin names what it pins, asserts the exact bit pattern where a floating point association is at
+ * stake, and is deliberately outside the one-to-one correspondence of the fifty-four with the
+ * migration manifest.
  *
  * ===Substitutions, and why each is the faithful port===
  *
@@ -163,7 +179,7 @@ final class MultiCurrencyAmountSpec extends AnyFunSuite with Matchers {
   /**
    * The two-amount value the original rebuilt locally in every absent-argument test.
    *
-   * It is hoisted into one fixture here because seventeen tests refer to it and none of them
+   * It is hoisted into one fixture here because eleven tests refer to it and none of them
    * changes it - the type is immutable, so one value serves them all.
    */
   private val MTA: MultiCurrencyAmount = multiOf(CA1, CA2)
@@ -979,6 +995,192 @@ final class MultiCurrencyAmountSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  // The tests below have no method of the original behind them. They pin the numbers and the
+  // traversals of the aggregation and the conversion, which the original's own tests left implicit
+  // because they were properties of a collector and of a stream rather than of an API. Each is
+  // named for what it pins rather than for a Java method, so the one-to-one correspondence of the
+  // fifty-four tests above with the migration manifest is unaffected.
+  //-------------------------------------------------------------------------
+  /**
+   * Pins the order the aggregate adds a repeated currency in, to the last bit.
+   *
+   * Every route that merges - [[MultiCurrencyAmount.total]], the three
+   * [[MultiCurrencyAmount.plus]] members, [[MultiCurrencyAmount.mapCurrencyAmounts]] and
+   * `Monoid[MultiCurrencyAmount].combineAll` - adds what arrives to what has accumulated, in the
+   * order the amounts arrive. The three numbers here are chosen so that the two associations of
+   * the same sum '''differ in their last bit''': added left to right they give
+   * `0.6000000000000001` and added right to left `0.6`. An implementation that reordered the
+   * additions, or that seeded the sum with a zero instead of the first amount, would produce the
+   * other number and fail here, which is what makes this a pin on the arithmetic rather than a
+   * restatement of it.
+   *
+   * The association is also the one the captured parity baseline of this port was recorded under,
+   * so a change of it would move that baseline as well as this test.
+   */
+  test("the aggregate adds a repeated currency left to right, to the last bit") {
+    val first: CurrencyAmount = amountOf(CCY1, 0.1d)
+    val second: CurrencyAmount = amountOf(CCY1, 0.2d)
+    val third: CurrencyAmount = amountOf(CCY1, 0.3d)
+
+    // the two associations of the same three numbers, which differ in their last bit
+    val leftToRight: Double = 0.6000000000000001d
+    (0.1d + 0.2d) + 0.3d shouldBe leftToRight
+    0.1d + (0.2d + 0.3d) shouldBe 0.6d
+    leftToRight should not be 0.6d
+
+    // total, and the two single-amount forms of plus
+    bitsOf(MultiCurrencyAmount.total(List(first, second, third)), CCY1) shouldBe bits(leftToRight)
+    bitsOf(multiOf(first).plus(CCY1, 0.2d).plus(CCY1, 0.3d), CCY1) shouldBe bits(leftToRight)
+    bitsOf(multiOf(first).plus(second).plus(third), CCY1) shouldBe bits(leftToRight)
+
+    // the whole-value form of plus, and the aggregate over whole values
+    bitsOf(multiOf(first).plus(multiOf(second)).plus(multiOf(third)), CCY1) shouldBe
+      bits(leftToRight)
+    bitsOf(
+      Monoid[MultiCurrencyAmount].combineAll(
+        List(multiOf(first), multiOf(second), multiOf(third))),
+      CCY1) shouldBe bits(leftToRight)
+
+    // and the mapping that moves three currencies onto one, which merges in currency-code order
+    val spread: MultiCurrencyAmount =
+      multiOf(amountOf(CCY1, 0.1d), amountOf(CCY2, 0.2d), amountOf(CCY3, 0.3d))
+    bitsOf(spread.mapCurrencyAmounts(amount => amountOf(USD, amount.amount)), USD) shouldBe
+      bits(leftToRight)
+  }
+
+  /**
+   * Pins that aggregating in one pass agrees with combining the same values pairwise.
+   *
+   * `combineAll` aggregates a collection of whole values in a single pass over their amounts,
+   * while `combine` adds two values at a time; both are published, so the two must not be able to
+   * disagree. The values here overlap in two currencies and hold numbers whose sums are not exact
+   * in binary, so an aggregate that added them in a different order or through a different number
+   * of intermediate roundings would show up as a differing bit pattern rather than as an
+   * approximate mismatch. The comparison is made entry by entry on the bits, and on the whole
+   * values, which compare their amounts by bit pattern too.
+   */
+  test("combineAll agrees with folding combine over the same values, entry by entry") {
+    val additive: Monoid[MultiCurrencyAmount] = Monoid[MultiCurrencyAmount]
+    val values: List[MultiCurrencyAmount] = List(
+      multiOf(amountOf(CCY1, 0.1d), amountOf(CCY2, 1.1d)),
+      multiOf(amountOf(CCY1, 0.2d), amountOf(CCY3, 2.2d)),
+      multiOf(amountOf(CCY2, 0.3d), amountOf(CCY3, 3.3d)),
+      multiOf(amountOf(CCY1, 0.4d)))
+
+    val aggregated: MultiCurrencyAmount = additive.combineAll(values)
+    val folded: MultiCurrencyAmount = values.foldLeft(additive.empty)(additive.combine)
+
+    aggregated.toMap.keysIterator.toList shouldBe folded.toMap.keysIterator.toList
+    folded.toMap.foreach { case (currency, amount) =>
+      withClue(s"$currency: ") {
+        bitsOf(aggregated, currency) shouldBe bits(amount)
+      }
+    }
+    aggregated shouldBe folded
+  }
+
+  /**
+   * Pins that the aggregate still applies the numeric invariant of an amount.
+   *
+   * The aggregation adds numbers rather than amounts, so the one check every amount of this
+   * library passes has to be reached on that path too. Two infinities of opposite sign added
+   * together produce a value that is not a number, which no amount may hold, and every merging
+   * route raises the invariant of [[CurrencyAmount]] with the wording that type reports. A
+   * negative zero, the other half of the same invariant, is normalised away by every route that
+   * takes a number from outside.
+   *
+   * This is the one test of this suite that asserts a throw, and it is here rather than only in
+   * the root `SmartConstructorSpec` because what it pins is the aggregation path of this type:
+   * the general numeric edges of every type of the port stay in that suite.
+   */
+  test("the aggregate keeps the numeric invariant of an amount") {
+    val positive: CurrencyAmount = amountOf(CCY1, Double.PositiveInfinity)
+    val negative: CurrencyAmount = amountOf(CCY1, Double.NegativeInfinity)
+    val notNumber: String = "Argument 'amount' must not be NaN"
+
+    the[IllegalArgumentException] thrownBy MultiCurrencyAmount.total(
+      List(positive, negative)) should have message notNumber
+    the[IllegalArgumentException] thrownBy multiOf(positive).plus(
+      CCY1,
+      Double.NegativeInfinity) should have message notNumber
+    the[IllegalArgumentException] thrownBy multiOf(positive).plus(
+      negative) should have message notNumber
+    the[IllegalArgumentException] thrownBy multiOf(positive).plus(
+      multiOf(negative)) should have message notNumber
+    the[IllegalArgumentException] thrownBy Monoid[MultiCurrencyAmount].combineAll(
+      List(multiOf(positive), multiOf(negative))) should have message notNumber
+    the[IllegalArgumentException] thrownBy multiOf(positive, amountOf(CCY2, 1d)).mapAmounts(
+      amount => amount - amount) should have message notNumber
+
+    // an infinity on its own is an amount, so the invariant fires on the sum and not before
+    bitsOf(MultiCurrencyAmount.total(List(positive, positive)), CCY1) shouldBe
+      bits(Double.PositiveInfinity)
+
+    // and the other half of the invariant: a negative zero arriving from outside is normalised
+    bitsOf(unwrap(MultiCurrencyAmount.of(CCY1, -0d)), CCY1) shouldBe bits(0d)
+    bitsOf(multiOf(CA1).mapAmounts(_ => -0d), CCY1) shouldBe bits(0d)
+    bitsOf(unwrap(MultiCurrencyAmount.of(Map(CCY1 -> -0d))), CCY1) shouldBe bits(0d)
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * Pins that a conversion asks for no rate after the first one it cannot get.
+   *
+   * A conversion of a value holding several amounts needs a rate for every one of them, so a
+   * single unavailable rate decides the outcome and nothing after it can change it - a partial
+   * total would be a number with no meaning. The provider here counts its lookups and refuses the
+   * second currency in code order, so the count states exactly how far the traversal ran: two
+   * lookups for three amounts. The failure returned is the one the provider reported for that
+   * currency, not for a later one.
+   */
+  test("convertedTo asks for no rate after the first one the provider cannot supply") {
+    val provider: CountingRateProvider = new CountingRateProvider((base, counter) =>
+      if (base == CCY1 && counter == USD) {
+        Right(2.5d)
+      } else {
+        Left(Failure.CurrencyConversion(s"No rate is available for $base/$counter"))
+      })
+    val test: MultiCurrencyAmount = multiOf(CA1, CA2, CA3)
+
+    val converted: FailureOr[CurrencyAmount] = test.convertedTo(USD, provider)
+    converted should beFailureWith(FailureReason.CURRENCY_CONVERSION)
+    converted should haveFailureMessageMatching(Regex.quote("No rate is available for CAD/USD"))
+    provider.callCount shouldBe 2
+  }
+
+  /**
+   * Pins the order a conversion totals in, to the last bit, and that it asks once per amount.
+   *
+   * The converted amounts are added from zero in the alphabetical order of their currency codes.
+   * The rates here are chosen so that the sum in that order, `0.6000000000000001`, differs in its
+   * last bit from the sum in the reverse order, `0.6`, so a traversal that visited the amounts in
+   * any other order would fail here. The count pins the other half of the contract: every amount
+   * the value holds costs exactly one lookup, none is asked for twice, and the identity is asked
+   * for like any other - which is why a value of more than one amount needs a provider that
+   * answers for a currency against itself.
+   */
+  test("convertedTo totals the converted amounts in currency-code order, to the last bit") {
+    val rates: Map[Currency, Double] = Map(CCY1 -> 0.1d, CCY2 -> 0.2d, CCY3 -> 0.3d)
+    val provider: CountingRateProvider = new CountingRateProvider((base, counter) =>
+      if (counter == USD) {
+        rates.get(base).toRight(Failure.CurrencyConversion(s"No rate is available for $base/USD"))
+      } else {
+        Left(Failure.CurrencyConversion(s"No rate is available for $base/$counter"))
+      })
+    val test: MultiCurrencyAmount =
+      multiOf(amountOf(CCY1, 1d), amountOf(CCY2, 1d), amountOf(CCY3, 1d))
+
+    // the two orders of the same three terms, which differ in their last bit
+    ((0d + 0.1d) + 0.2d) + 0.3d shouldBe 0.6000000000000001d
+    ((0d + 0.3d) + 0.2d) + 0.1d shouldBe 0.6d
+
+    val converted: CurrencyAmount = unwrap(test.convertedTo(USD, provider))
+    converted.currency shouldBe USD
+    bits(converted.amount) shouldBe bits(0.6000000000000001d)
+    provider.callCount shouldBe 3
+  }
+
+  //-------------------------------------------------------------------------
   /**
    * Asserts of a value everything the original's private helper of this name asserted of one.
    *
@@ -1060,4 +1262,77 @@ final class MultiCurrencyAmountSpec extends AnyFunSuite with Matchers {
    */
   private def amountOf(currency: Currency, amount: Double): CurrencyAmount =
     unwrap(CurrencyAmount.of(currency, amount))
+
+  /**
+   * Returns the bit pattern of the amount a value holds of the specified currency.
+   *
+   * The pins added by this port compare amounts by their bit pattern rather than by `==`, because
+   * what they are asserting is the association of a floating point sum: two numbers that differ in
+   * their last bit are the two outcomes such a pin distinguishes, and `shouldBe` on a `Double`
+   * would report them as "0.6 was not equal to 0.6". A currency the value does not hold fails the
+   * test naming it, rather than being read as a zero that would make the comparison meaningless.
+   *
+   * @param value  the value to read the amount from
+   * @param currency  the currency whose amount is wanted
+   * @return the bit pattern of the amount held of that currency
+   */
+  private def bitsOf(value: MultiCurrencyAmount, currency: Currency): Long =
+    bits(
+      value.toMap.getOrElse(
+        currency,
+        fail(s"Expected an amount of $currency but the value held $value")))
+
+  /**
+   * Returns the bit pattern of a number.
+   *
+   * @param amount  the number to read the bit pattern of
+   * @return the bit pattern of that number
+   */
+  private def bits(amount: Double): Long = java.lang.Double.doubleToLongBits(amount)
+
+  /**
+   * A rate provider that answers with a function and counts how often it was asked.
+   *
+   * This is what the conversion pins observe. A conversion of a value holding several amounts
+   * needs one rate per amount, and the two things worth asserting about the traversal - that it
+   * stops at the first rate it cannot get, and that it asks exactly once for each amount - are
+   * both statements about the number of lookups rather than about the result, so the provider has
+   * to be able to report that number.
+   *
+   * The counter is an `AtomicInteger`, as it is in `LazyFxRateProviderSpec`: it keeps the suite
+   * free of mutable fields and of mutable collections, as the rest of this port is, and it counts
+   * correctly however the provider is called. A fresh instance is built by each test, so no count
+   * depends on which test ran first.
+   *
+   * @param rates  the function that answers a pair, or reports that no rate is available for it
+   */
+  private final class CountingRateProvider(rates: (Currency, Currency) => Either[Failure, Double])
+      extends FxRateProvider {
+
+    /** The number of lookups this provider has been asked for. */
+    private val calls: AtomicInteger = new AtomicInteger(0)
+
+    /**
+     * Answers the pair with the function this provider holds, counting the lookup.
+     *
+     * @param baseCurrency  the base currency, to convert from
+     * @param counterCurrency  the counter currency, to convert to
+     * @return whatever the function answers for the pair
+     */
+    override def fxRate(
+        baseCurrency: Currency,
+        counterCurrency: Currency): Either[Failure, Double] = {
+      // Bound to a wildcard because the new count is of no interest here; the tests read it
+      // through callCount.
+      val _ = calls.incrementAndGet()
+      rates(baseCurrency, counterCurrency)
+    }
+
+    /**
+     * Returns the number of lookups this provider has been asked for.
+     *
+     * @return the lookup count, zero if it has never been asked
+     */
+    def callCount: Int = calls.get()
+  }
 }

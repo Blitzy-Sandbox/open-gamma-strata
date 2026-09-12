@@ -59,7 +59,9 @@ import com.opengamma.strata.collect.array.DoubleArray
  *
  * It adds no tolerance-based numeric comparison. The arithmetic of the derivative array belongs
  * to `DoubleArray`, whose own spec and parity fixture in `strata-collect` measure it against the
- * Java baseline; here the array is only carried, read and compared.
+ * Java baseline; here the array is only carried, read and compared. Beyond the three ported
+ * methods it holds one test, which pins the codec policy the encoder of this type is published
+ * under.
  */
 final class ValueDerivativesSpec extends AnyFunSuite with Matchers {
 
@@ -228,5 +230,31 @@ final class ValueDerivativesSpec extends AnyFunSuite with Matchers {
       ValueDerivatives.of(Double.PositiveInfinity, DoubleArray.of(1.0d, Double.PositiveInfinity))
     nonFinite.asJson shouldBe json(ExpectedNonFiniteJson)
     decode[ValueDerivatives](nonFinite.asJson.noSpaces) shouldBe Right(nonFinite)
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_serialization_dropNullsPolicy") {
+    // Every product encoder of this port is published through the wrapper that omits a field
+    // holding no value, and this type is no exception to that policy. Neither of its two fields
+    // is optional, so the wrapper removes nothing from these documents; what is asserted is that
+    // no field of an encoded instance holds the literal that denotes an absent value, which is
+    // the observable half of the policy and would begin to fail were a field ever to write one.
+    def absentValuedFields(value: ValueDerivatives): List[String] =
+      value.asJson.asObject.toList.flatMap(fields =>
+        fields.toList.collect { case (fieldName, field) if field.isNull => fieldName })
+
+    absentValuedFields(ValueDerivatives.of(Value, Derivatives)) shouldBe empty
+    absentValuedFields(ValueDerivatives.of(Value, DoubleArray.of())) shouldBe empty
+    absentValuedFields(ValueDerivatives.of(Double.NaN, DoubleArray.of(Double.NaN))) shouldBe empty
+
+    // The other half is which instance is published, and the two assertions below state it
+    // exactly. The wrapper post-processes the document a derivation produced, so what it returns
+    // is an `Encoder` and cannot be an `Encoder.AsObject`: the encoder in implicit scope being an
+    // `Encoder` and not an `Encoder.AsObject` is therefore the statement that the derivation is
+    // published through the wrapper rather than directly. The positive control is asserted
+    // alongside the refusal, because a refusal on its own would also be satisfied by there being
+    // no encoder in scope at all.
+    assertCompiles("implicitly[io.circe.Encoder[ValueDerivatives]]")
+    assertDoesNotCompile("implicitly[io.circe.Encoder.AsObject[ValueDerivatives]]")
   }
 }

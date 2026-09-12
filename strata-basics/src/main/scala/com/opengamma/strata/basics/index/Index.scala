@@ -125,42 +125,99 @@ object Index {
   private val FamilyName: String = "Index"
 
   /**
+   * One family's probe, as a union of families consumes it: the family's own exact, alias-aware
+   * lookup by name, widened to this trait.
+   *
+   * A family declares its lookup over its own type - the Ibor family answers with an
+   * `Option[IborIndex]` - and conforms to this type by that type being an index, which is checked
+   * where the probe is supplied to a composition. A family that ceased to be an index would
+   * therefore be reported by the compiler, at [[Index.standardLookups]], rather than quietly
+   * dropping out of the searched set.
+   */
+  type Lookup = String => Option[Index]
+
+  /**
    * Looks up an index of any family by name, answering with nothing when no family has it.
    *
-   * The four families are searched in the order documented on this object and the first member
-   * found is returned. The lookup is exact and alias-aware, so an alternate spelling such as
-   * `USD-FEDFUND` resolves while text differing only in case does not resolve unless the
-   * family registers that spelling; use [[parse]] to obtain a failure rather than an absent
-   * value.
+   * This is [[Index.firstMatch]] applied to [[Index.standardLookups]]: the four families are
+   * probed in the order that value declares and the first member found is returned. The lookup is
+   * exact and alias-aware, so an alternate spelling such as `USD-FEDFUND` resolves while text
+   * differing only in case does not resolve unless the family registers that spelling; use
+   * [[parse]] to obtain a failure rather than an absent value.
    *
    * @param name  the index name, such as `GBP-LIBOR-3M`, `EUR-ESTR`, `GB-RPI` or `EUR/USD-ECB`
    * @return the index of that name, or nothing when no family publishes it
    */
-  def valueOf(name: String): Option[Index] = {
-    val ibor: Option[Index] = IborIndex.valueOf(name)
-    ibor
-      .orElse(OvernightIndex.valueOf(name))
-      .orElse(PriceIndex.valueOf(name))
-      .orElse(FxIndex.valueOf(name))
-  }
+  def valueOf(name: String): Option[Index] = firstMatch(name, standardLookups)
+
+  /**
+   * The composition of family probes this union searches, in the order documented above: Ibor
+   * index, Overnight index, price index, then exchange-rate index.
+   *
+   * This is the one place in this object that names the four families, and it is what [[valueOf]]
+   * and [[parse]] search, so the order a caller observes and the order stated here cannot come
+   * apart. A caller needing a different set - the rate families alone, say, or a probe of its own
+   * ahead of them - composes one and passes it to [[Index.firstMatch]] rather than reimplementing
+   * the search.
+   *
+   * It is a method rather than a field, and the elements of the sequence it returns are supplied
+   * by name, so obtaining the composition forces none of the four companions and each is forced
+   * only when its own probe is reached: resolving an Ibor index initialises the Ibor family alone.
+   * A strict sequence here would force all four on the first lookup, which is what the note on
+   * initialisation order in `FloatingRate.scala` explains must not happen.
+   *
+   * @return the four family probes, in probe order, each produced when it is first reached
+   */
+  def standardLookups: LazyList[Lookup] =
+    ((name: String) => IborIndex.valueOf(name)) #::
+      ((name: String) => OvernightIndex.valueOf(name)) #::
+      ((name: String) => PriceIndex.valueOf(name)) #::
+      ((name: String) => FxIndex.valueOf(name)) #::
+      LazyList.empty[Lookup]
 
   /**
    * Parses text naming an index of any family, reporting a failure when it names none.
    *
    * This is [[valueOf]] with an absent value reported as
    * [[com.opengamma.strata.collect.result.Failure.Parsing]], carrying the message the
-   * implementation being ported used for the error it raised in the same situation. The text
-   * the failure names is rendered through
-   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so a message reaching a log
-   * or a report is bounded in length and cannot forge a line of it.
+   * implementation being ported used for the error it raised in the same situation, quoting the
+   * text as it stands. Writing a failure out is where that text is bounded and escaped:
+   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure do it
+   * for every part they write, so a message reaching a log cannot forge a line of it.
    *
    * @param name  the text to parse, such as `GBP-LIBOR-3M`
    * @return the index that the text names, or a failure describing the text that named none
    */
   def parse(name: String): Either[Failure, Index] =
-    valueOf(name).toRight(Failure.Parsing(s"$FamilyName name not found: ${Failure.describeInput(name)}"))
+    valueOf(name).toRight(Failure.Parsing(s"$FamilyName name not found: $name"))
 
   //-------------------------------------------------------------------------
+  /**
+   * Searches an explicitly supplied composition of probes and answers the first value one of them
+   * finds.
+   *
+   * This is the ordered union rule of this package, written once: the probes are tried in the
+   * order they are supplied, each is reached only if the ones before it found nothing, and the
+   * first value found is the answer. It is stated over any probe type rather than over an index,
+   * because the rule has nothing to do with what an index is, and stating it this way is what
+   * lets it be read and tested with no family involved - a composition of probes over any type
+   * at all exercises the same code the four unions of this package run on.
+   *
+   * Every union of this package routes through it: [[Index.valueOf]], [[RateIndex.valueOf]],
+   * [[FloatingRateIndex.valueOf]] and, over the floating rates, `FloatingRate.tryParseWith`, each
+   * over its own `standardLookups`. Supplying a sequence whose elements are themselves by-name -
+   * the `LazyList` each of those compositions returns is one - additionally defers producing each
+   * probe until it is reached, which is what keeps a family's companion from being loaded by a
+   * search that never consults it.
+   *
+   * @tparam A  the type of value the probes answer with
+   * @param name  the text to search for, such as `GBP-LIBOR-3M`
+   * @param lookups  the probes to search, in the order they are to be tried
+   * @return the value the first matching probe found, or nothing when none of them matched
+   */
+  private[index] def firstMatch[A](name: String, lookups: Seq[String => Option[A]]): Option[A] =
+    lookups.iterator.map(lookup => lookup(name)).find(_.isDefined).flatten
+
   /**
    * Reports a breach of an invariant of this module's own reference data, fail-fast.
    *
@@ -300,103 +357,200 @@ sealed trait FloatingRateIndex extends Index with FloatingRate {
  * of rates, `GBP-LIBOR`. The second has to be converted into an index before it can be used,
  * and the conversion needs a tenor - the family says nothing about the period a rate covers -
  * so the operation being ported takes the tenor to use and falls back to the family's own
- * default tenor when none is supplied.
+ * default tenor when none is supplied. That is the difference between the lookup and the parses
+ * of this object: [[FloatingRateIndex.valueOf]] answers for an index name and for nothing else,
+ * while the parses accept a family name as well.
  *
- * That conversion is the property of the floating rate family, which holds the index name a
- * tenor is appended to and the kind of rate it describes; it is not a property of this
- * hierarchy. [[FloatingRateIndex.tryParseWith]] is therefore the rule alone - search the two
- * name spaces, pass a concrete index through, and hand a family to the conversion it was given
- * - stated over the conversion rather than over any particular one, which is the same
- * separation [[FloatingRate.tryParseWith]] makes between the search and the composition it
- * searches. A caller pairs it with the conversion the family publishes:
+ * The four parsing entry points are those of the interface being ported, in its order, with the
+ * absent tenor it accepted expressed as the overload that does not take one:
  *
  * {{{
- * FloatingRateIndex.tryParseWith(text, family => family.toFloatingRateIndex(tenor).toOption)
+ * FloatingRateIndex.parse("GBP-LIBOR-3M")                     // Right(GBP-LIBOR-3M)
+ * FloatingRateIndex.parse("GBP-LIBOR")                     // Right(GBP-LIBOR-3M), the default tenor
+ * FloatingRateIndex.parse("GBP-LIBOR", Tenor.TENOR_6M)        // Right(GBP-LIBOR-6M)
+ * FloatingRateIndex.tryParse("GBP-LIBOR")                     // Some(GBP-LIBOR-3M)
+ * FloatingRateIndex.tryParse("GBP-LIBOR", Tenor.TENOR_6M)     // Some(GBP-LIBOR-6M)
+ * FloatingRateIndex.tryParse("rubbish")                       // None
  * }}}
  *
- * Both operations report a conversion that did not produce an index the same way they report
- * text that named nothing: [[FloatingRateIndex.tryParseWith]] with an absent value and
- * [[FloatingRateIndex.parseWith]] with a failure. The implementation being ported raised an
- * error from the conversion instead, and the message of that error is the message of the
- * failure the conversion itself reports.
+ * The conversion of a family is the property of the floating rate family, which holds the index
+ * name a tenor is appended to and the kind of rate it describes; it is not a property of this
+ * hierarchy. [[FloatingRateIndex.parseWith]] is therefore the rule alone - search the two name
+ * spaces, pass a concrete index through, and hand a family to the conversion it was given -
+ * stated over the conversion rather than over any particular one, which is the same separation
+ * [[FloatingRate.tryParseWith]] makes between the search and the composition it searches. It and
+ * its absent-valued twin are visible to this package alone, the tenor being the only choice a
+ * caller has and the overloads above being that choice.
+ *
+ * A conversion that produced no index is reported as the failure the conversion itself reports,
+ * which is the message the implementation being ported raised from it; text that named nothing at
+ * all is reported as the failure of [[FloatingRate.parse]], whose message is the one that
+ * implementation used for the same error.
  */
 object FloatingRateIndex {
 
   /**
-   * The label this abstraction reports in the failure of [[parse]].
+   * One family's probe, as a union of families consumes it; see [[Index.Lookup]], of which this
+   * is the narrowing to the families whose figure is a floating rate.
    */
-  private val FamilyName: String = "FloatingRateIndex"
+  type Lookup = String => Option[FloatingRateIndex]
 
   /**
    * Looks up a concrete floating rate index by name, answering with nothing when none has it.
    *
-   * The Ibor, Overnight and Price families are searched in that order and the first member
-   * found is returned; an exchange-rate index is never answered with, because it is not a
-   * floating rate index. The lookup is exact and alias-aware.
+   * This is [[Index.firstMatch]] applied to [[FloatingRateIndex.standardLookups]]: the Ibor,
+   * Overnight and price families are probed in that order and the first member found is
+   * returned; an exchange-rate index is never answered with, because it is not a floating rate
+   * index. The lookup is exact and alias-aware, and it is the operation the interface being
+   * ported published as `of`.
+   *
+   * Text naming a family of rates rather than one index - `GBP-LIBOR` rather than
+   * `GBP-LIBOR-3M` - names no index and is therefore absent here. [[tryParse]] and [[parse]] are
+   * the operations that accept it, converting the family with a tenor.
    *
    * @param name  the index name, such as `GBP-LIBOR-3M`, `EUR-ESTR` or `GB-RPI`
    * @return the index of that name, or nothing when none of the three families publishes it
    */
-  def valueOf(name: String): Option[FloatingRateIndex] = {
-    val ibor: Option[FloatingRateIndex] = IborIndex.valueOf(name)
-    ibor
-      .orElse(OvernightIndex.valueOf(name))
-      .orElse(PriceIndex.valueOf(name))
-  }
+  def valueOf(name: String): Option[FloatingRateIndex] = Index.firstMatch(name, standardLookups)
 
   /**
-   * Parses text naming a concrete floating rate index, reporting a failure when it names none.
+   * The composition of family probes this union searches, in the order documented above: Ibor
+   * index, Overnight index, then price index.
    *
-   * @param name  the text to parse, such as `GBP-LIBOR-3M`
-   * @return the index that the text names, or a failure describing the text that named none
+   * This is the one place in this object that names the three families, and it is what [[valueOf]]
+   * searches. It is a method whose elements are supplied by name for the reason given on
+   * [[Index.standardLookups]].
+   *
+   * @return the three family probes, in probe order, each produced when it is first reached
    */
-  def parse(name: String): Either[Failure, FloatingRateIndex] =
-    valueOf(name).toRight(Failure.Parsing(s"$FamilyName name not found: ${Failure.describeInput(name)}"))
+  def standardLookups: LazyList[Lookup] =
+    ((name: String) => IborIndex.valueOf(name)) #::
+      ((name: String) => OvernightIndex.valueOf(name)) #::
+      ((name: String) => PriceIndex.valueOf(name)) #::
+      LazyList.empty[Lookup]
+
+  //-------------------------------------------------------------------------
+  /**
+   * Parses text naming either a concrete floating rate index or a family of rates, reporting a
+   * failure when it names neither.
+   *
+   * The text is resolved through [[FloatingRate.parse]], which searches the three index families
+   * and then the published floating rate names, in that order. Text naming a concrete index -
+   * `GBP-LIBOR-3M`, `EUR-ESTR`, `GB-RPI` - answers with that index. Text naming a family of rates
+   * - `GBP-LIBOR` - answers with the member of that family at the family's own default tenor,
+   * because a family says nothing about the period a rate covers and one has to be chosen; use
+   * [[parse(indexStr:String,defaultIborTenor:com\.opengamma\.strata\.basics\.date\.Tenor)*]] to
+   * choose it.
+   *
+   * A family that cannot produce an index - a price family, which has no tenor to append, or an
+   * Ibor family with no member at the tenor asked for - reports the failure of that conversion
+   * rather than a failure of this parse, so the message names what could not be converted. Text
+   * naming nothing at all is reported as
+   * [[com.opengamma.strata.collect.result.Failure.Parsing]] carrying the message the
+   * implementation being ported used for the error it raised in the same situation.
+   *
+   * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
+   * @return the index the text names, or the failure describing why it names none
+   */
+  def parse(indexStr: String): Either[Failure, FloatingRateIndex] =
+    parseWith(indexStr, family => family.toFloatingRateIndex)
+
+  /**
+   * Parses text naming either a concrete floating rate index or a family of rates, using the
+   * supplied tenor for an Ibor family, and reporting a failure when it names neither.
+   *
+   * This is [[parse(indexStr:String)*]] with the tenor to append to an Ibor family supplied by the
+   * caller instead of taken from the family: `FloatingRateIndex.parse("GBP-LIBOR", Tenor.TENOR_6M)`
+   * answers with `GBP-LIBOR-6M`. The tenor is used only when the text names a family; text naming
+   * a concrete index answers with that index, whose tenor is its own. The implementation being
+   * ported took the tenor as an argument that could be absent, defaulting to the family's own; the
+   * two overloads of this port are those two cases, so that no absent value has to be passed.
+   *
+   * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
+   * @param defaultIborTenor  the tenor to use when the text names an Ibor family of rates
+   * @return the index the text names, or the failure describing why it names none
+   */
+  def parse(indexStr: String, defaultIborTenor: Tenor): Either[Failure, FloatingRateIndex] =
+    parseWith(indexStr, family => family.toFloatingRateIndex(defaultIborTenor))
+
+  /**
+   * Tries to parse text naming either a concrete floating rate index or a family of rates,
+   * answering with nothing when it names neither.
+   *
+   * This is [[parse(indexStr:String)*]] with the failure reported as an absent value, for a caller
+   * that has its own answer for text it does not recognise.
+   *
+   * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
+   * @return the index the text names, or nothing when it names none
+   */
+  def tryParse(indexStr: String): Option[FloatingRateIndex] =
+    tryParseWith(indexStr, family => family.toFloatingRateIndex.toOption)
+
+  /**
+   * Tries to parse text naming either a concrete floating rate index or a family of rates, using
+   * the supplied tenor for an Ibor family, and answering with nothing when it names neither.
+   *
+   * This is
+   * [[parse(indexStr:String,defaultIborTenor:com\.opengamma\.strata\.basics\.date\.Tenor)*]] with
+   * the failure reported as an absent value.
+   *
+   * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
+   * @param defaultIborTenor  the tenor to use when the text names an Ibor family of rates
+   * @return the index the text names, or nothing when it names none
+   */
+  def tryParse(indexStr: String, defaultIborTenor: Tenor): Option[FloatingRateIndex] =
+    tryParseWith(indexStr, family => family.toFloatingRateIndex(defaultIborTenor).toOption)
+
+  //-------------------------------------------------------------------------
+  /**
+   * Parses text naming either a concrete floating rate index or a family of rates, converting a
+   * family with the supplied conversion.
+   *
+   * This is the rule the four entry points above are built from, stated over the conversion
+   * rather than over one particular one: the text is resolved through [[FloatingRate.parse]], a
+   * concrete index is passed through unchanged, and a family is handed to `convert`, which
+   * decides which member of the family the caller meant and reports its own failure when it can
+   * decide on none. It is visible to this package alone - the choice of tenor is the only degree
+   * of freedom a caller has, and the two `parse` overloads are that choice.
+   *
+   * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
+   * @param convert  the conversion of a floating rate family into one of its indices
+   * @return the index the text names, or the failure describing why it names none
+   */
+  private[index] def parseWith(
+      indexStr: String,
+      convert: FloatingRateName => Either[Failure, FloatingRateIndex]): Either[Failure, FloatingRateIndex] =
+    FloatingRate.parse(indexStr).flatMap {
+      case index: FloatingRateIndex => Right(index)
+      case family: FloatingRateName => convert(family)
+      // `FloatingRate` is deliberately open, so a value of a third implementor kind may reach
+      // this point. Such a value names no member of this closed hierarchy, which is what the
+      // failure says.
+      case other =>
+        Left(Failure.Parsing(s"Floating rate index not known: ${other.name}"))
+    }
 
   /**
    * Tries to parse text naming either a concrete floating rate index or a family of rates,
    * converting a family with the supplied conversion.
    *
-   * The text is resolved through [[FloatingRate.tryParse]], which searches the three index
-   * families and then the floating rate names, in that order. A concrete index is passed
-   * through unchanged; a family is handed to `convert`, which decides which member of the
-   * family the caller meant. Text naming neither, and a conversion that produced no index, both
-   * answer with nothing.
+   * This is [[parseWith]] with both failure channels reported as an absent value: text naming
+   * nothing, and a conversion that produced no index, are answered the same way. It is visible to
+   * this package alone, for the reason given on [[parseWith]].
    *
    * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
    * @param convert  the conversion of a floating rate family into one of its indices
    * @return the index the text names, or nothing when it names none or the conversion produced
    *   none
    */
-  def tryParseWith(
+  private[index] def tryParseWith(
       indexStr: String,
       convert: FloatingRateName => Option[FloatingRateIndex]): Option[FloatingRateIndex] =
     FloatingRate.tryParse(indexStr).flatMap {
       case index: FloatingRateIndex => Some(index)
       case family: FloatingRateName => convert(family)
-      // `FloatingRate` is deliberately open, so a value of a third implementor kind may reach
-      // this point. Such a value names no member of this closed hierarchy, which is exactly
-      // what an absent answer says.
       case _ => None
     }
-
-  /**
-   * Parses text naming either a concrete floating rate index or a family of rates, converting a
-   * family with the supplied conversion and reporting a failure when nothing was named.
-   *
-   * This is [[tryParseWith]] with an absent value reported as
-   * [[com.opengamma.strata.collect.result.Failure.Parsing]], carrying the message the
-   * implementation being ported used for the error it raised in the same situation.
-   *
-   * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR`
-   * @param convert  the conversion of a floating rate family into one of its indices
-   * @return the index the text names, or a failure describing the text that named none
-   */
-  def parseWith(
-      indexStr: String,
-      convert: FloatingRateName => Option[FloatingRateIndex]): Either[Failure, FloatingRateIndex] =
-    tryParseWith(indexStr, convert)
-      .toRight(Failure.Parsing(s"Floating rate index not known: ${Failure.describeInput(indexStr)}"))
 
   //-------------------------------------------------------------------------
   /**
@@ -475,16 +629,37 @@ object RateIndex {
   private val FamilyName: String = "RateIndex"
 
   /**
+   * One family's probe, as a union of families consumes it; see [[Index.Lookup]], of which this
+   * is the narrowing to the families whose figure is a rate of interest.
+   */
+  type Lookup = String => Option[RateIndex]
+
+  /**
    * Looks up an index of an interest rate by name, answering with nothing when neither family
    * has it.
+   *
+   * This is [[Index.firstMatch]] applied to [[RateIndex.standardLookups]]: the Ibor family is
+   * probed, then the Overnight family, and the first member found is returned.
    *
    * @param name  the index name, such as `GBP-LIBOR-3M` or `EUR-ESTR`
    * @return the index of that name, or nothing when neither family publishes it
    */
-  def valueOf(name: String): Option[RateIndex] = {
-    val ibor: Option[RateIndex] = IborIndex.valueOf(name)
-    ibor.orElse(OvernightIndex.valueOf(name))
-  }
+  def valueOf(name: String): Option[RateIndex] = Index.firstMatch(name, standardLookups)
+
+  /**
+   * The composition of family probes this union searches, in the order documented above: Ibor
+   * index, then Overnight index.
+   *
+   * This is the one place in this object that names the two families, and it is what [[valueOf]]
+   * and [[parse]] search. It is a method whose elements are supplied by name for the reason given
+   * on [[Index.standardLookups]].
+   *
+   * @return the two family probes, in probe order, each produced when it is first reached
+   */
+  def standardLookups: LazyList[Lookup] =
+    ((name: String) => IborIndex.valueOf(name)) #::
+      ((name: String) => OvernightIndex.valueOf(name)) #::
+      LazyList.empty[Lookup]
 
   /**
    * Parses text naming an index of an interest rate, reporting a failure when it names none.
@@ -493,7 +668,7 @@ object RateIndex {
    * @return the index that the text names, or a failure describing the text that named none
    */
   def parse(name: String): Either[Failure, RateIndex] =
-    valueOf(name).toRight(Failure.Parsing(s"$FamilyName name not found: ${Failure.describeInput(name)}"))
+    valueOf(name).toRight(Failure.Parsing(s"$FamilyName name not found: $name"))
 }
 
 //-------------------------------------------------------------------------
@@ -679,23 +854,48 @@ sealed abstract class IborIndex private[index] (
     } yield maturityDate
 
   /**
-   * Resolves the index against reference data once and answers with the calculation of the
-   * dates of a fixing.
+   * Resolves the index against reference data once and answers with the observation of a fixing.
    *
-   * A caller computing the dates of many fixings of one index should not resolve a calendar per
-   * fixing, so this resolves the fixing calendar and both date adjusters up front and hands
-   * back a function that consults no reference data at all: given a fixing date it moves it
-   * onto the next fixing date, applies the effective offset, applies the maturity offset to
+   * This is the operation the bean being ported declared for the case that matters to a caller
+   * building a series: observing many fixings of one index must not resolve a holiday calendar
+   * per fixing. The fixing calendar and both date offsets are resolved here, once, and the
+   * function handed back consults no reference data at all - given a fixing date it moves the
+   * date onto the next fixing date, applies the effective offset, applies the maturity offset to
    * that result, computes the year fraction of the resulting period on the day count of the
-   * index, and hands the four values to `build`. That separation of the resolution from the
-   * per-fixing calculation is the whole point of the design being ported and is preserved here.
+   * index, and builds the observation from the four values.
+   *
+   * For any fixing date the function produces exactly what [[IborIndexObservation.of]] produces
+   * for the same index, fixing date and reference data: it is one derivation performed by this
+   * index in both cases, and the only difference is when the calendars are resolved. The same
+   * operation is published on the type it produces, as [[IborIndexObservation.resolve]], which
+   * is where its implementation lives; this method is that call and exists because the
+   * hierarchy being ported declared it here.
+   *
+   * @param refData  the reference data to resolve the fixing calendar and the offsets against
+   * @return the observation of a fixing of this index, or a failure when a calendar could not be
+   *   resolved
+   */
+  final def resolve(refData: ReferenceData): Either[Failure, LocalDate => IborIndexObservation] =
+    IborIndexObservation.resolve(this, refData)
+
+  /**
+   * Resolves the index against reference data once and answers with the calculation of the
+   * dates of a fixing, over any construction of a result.
+   *
+   * This is the body of [[resolve]] with the construction of the result left to the caller, and
+   * it is visible to this package alone: [[resolve]] is the operation callers hold, and this is
+   * the one place the resolution and the per-fixing calculation are written. A caller computing
+   * the dates of many fixings of one index should not resolve a calendar per fixing, so this
+   * resolves the fixing calendar and both date adjusters up front and hands back a function that
+   * consults no reference data at all: given a fixing date it moves it onto the next fixing date,
+   * applies the effective offset, applies the maturity offset to that result, computes the year
+   * fraction of the resulting period on the day count of the index, and hands the four values to
+   * `build`. That separation of the resolution from the per-fixing calculation is the whole point
+   * of the design being ported and is preserved here.
    *
    * The values handed to `build` are, in order, the fixing date exactly as supplied - not the
    * fixing date it was moved onto, since that is the date the caller asked about - the
-   * effective date, the maturity date, and the year fraction between the latter two. The
-   * function is stated over `build` rather than over one particular result so that the
-   * observation of a fixing, which lives with the type that represents it, can be produced by
-   * this single resolution without this hierarchy naming that type.
+   * effective date, the maturity date, and the year fraction between the latter two.
    *
    * @param refData  the reference data to resolve the calendar and the offsets against
    * @param build  the construction of the result from the fixing date, the effective date, the
@@ -704,7 +904,7 @@ sealed abstract class IborIndex private[index] (
    * @return the calculation of a fixing's dates, or a failure when a calendar could not be
    *   resolved
    */
-  final def resolveWith[A](refData: ReferenceData)(
+  private[index] final def resolveWith[A](refData: ReferenceData)(
       build: (LocalDate, LocalDate, LocalDate, Double) => A): Either[Failure, LocalDate => A] =
     for {
       fixingCal <- fixingCalendar.resolve(refData)
@@ -1155,6 +1355,56 @@ sealed abstract class OvernightIndex private[index] (
       effectiveDate: LocalDate,
       refData: ReferenceData): Either[Failure, LocalDate] =
     shifted(effectiveDate, 1, refData)
+
+  /**
+   * Resolves the index against reference data once and answers with the calculation of the dates
+   * of a fixing, over any construction of a result.
+   *
+   * Every date an observation of an Overnight index derives is a shift of business days of one
+   * calendar - the fixing calendar of this index - so a caller building a series of observations
+   * has no reason to resolve that calendar per fixing, let alone three times per fixing, which is
+   * what reaching the three calculations above in turn costs. This resolves it once and hands
+   * back a function that consults no reference data at all: given a fixing date it moves the date
+   * onto the next fixing date, shifts that by the publication offset and by the effective offset,
+   * shifts the effective date on by the one business day the borrowing lasts, measures the year
+   * fraction of the period between the last two on the day count of the index, and hands the five
+   * values to `build`.
+   *
+   * The dates are those of [[calculatePublicationFromFixing]], [[calculateEffectiveFromFixing]]
+   * and [[calculateMaturityFromEffective]], step for step, so a value built through this function
+   * and a value built through those calculations agree; the fixing date handed to `build` is the
+   * one the caller supplied rather than the fixing date it was moved onto, because that is the
+   * date the caller asked about.
+   *
+   * It is visible to this package alone. The operation a caller holds is
+   * [[OvernightIndexObservation.resolve]], which is this method with the construction of an
+   * observation supplied, and [[OvernightIndexObservation.of]] is that function applied to a
+   * single date. The hierarchy being ported declares `resolve` on the Ibor and the exchange-rate
+   * families and on neither of the other two, so this port declares none here either, and the
+   * single resolution a series needs is published with the type it produces.
+   *
+   * @param refData  the reference data to resolve the fixing calendar against
+   * @param build  the construction of the result from the fixing date, the publication date, the
+   *   effective date, the maturity date and the year fraction of the period between the last two
+   * @tparam A  the type of the result built per fixing date
+   * @return the calculation of a fixing's dates, or a failure when the calendar could not be
+   *   resolved
+   */
+  private[index] final def resolveWith[A](refData: ReferenceData)(
+      build: (LocalDate, LocalDate, LocalDate, LocalDate, Double) => A)
+      : Either[Failure, LocalDate => A] =
+    fixingCalendar.resolve(refData).map { fixingCal => (fixingDate: LocalDate) =>
+      val onFixing = fixingCal.nextOrSame(fixingDate)
+      val publicationDate = fixingCal.shift(onFixing, publicationDateOffset)
+      val effectiveDate = fixingCal.shift(onFixing, effectiveDateOffset)
+      val maturityDate = fixingCal.shift(fixingCal.nextOrSame(effectiveDate), 1)
+      build(
+        fixingDate,
+        publicationDate,
+        effectiveDate,
+        maturityDate,
+        dayCount.yearFraction(effectiveDate, maturityDate))
+    }
 
   /**
    * Shifts a date by a number of business days of the fixing calendar.
@@ -1650,22 +1900,45 @@ sealed abstract class FxIndex private[index] (
     }
 
   /**
-   * Resolves the index against reference data once and answers with the calculation of the
-   * dates of a fixing.
+   * Resolves the index against reference data once and answers with the observation of a fixing.
    *
-   * A caller computing the dates of many fixings of one index should not resolve a calendar per
-   * fixing, so this resolves the fixing calendar and the maturity adjuster up front and hands
-   * back a function that consults no reference data at all: given a fixing date it moves it
-   * onto the next fixing date and applies the maturity offset to that. That separation of the
-   * resolution from the per-fixing calculation is the whole point of the design being ported
-   * and is preserved here.
+   * This is the operation the bean being ported declared for the case that matters to a caller
+   * building a series: observing many fixings of one index must not resolve a holiday calendar
+   * per fixing. The fixing calendar and the maturity offset are resolved here, once, and the
+   * function handed back consults no reference data at all - given a fixing date it moves the
+   * date onto the next fixing date, applies the maturity offset to that, and builds the
+   * observation from the fixing date the caller asked about and the settlement date it implies.
+   *
+   * For any fixing date the function produces exactly what [[FxIndexObservation.of]] produces
+   * for the same index, fixing date and reference data: it is one derivation performed by this
+   * index in both cases, and the only difference is when the calendars are resolved. The same
+   * operation is published on the type it produces, as [[FxIndexObservation.resolve]], which is
+   * where its implementation lives; this method is that call and exists because the hierarchy
+   * being ported declared it here.
+   *
+   * @param refData  the reference data to resolve the fixing calendar and the offset against
+   * @return the observation of a fixing of this index, or a failure when a calendar could not be
+   *   resolved
+   */
+  final def resolve(refData: ReferenceData): Either[Failure, LocalDate => FxIndexObservation] =
+    FxIndexObservation.resolve(this, refData)
+
+  /**
+   * Resolves the index against reference data once and answers with the calculation of the
+   * dates of a fixing, over any construction of a result.
+   *
+   * This is the body of [[resolve]] with the construction of the result left to the caller, and
+   * it is visible to this package alone: [[resolve]] is the operation callers hold, and this is
+   * the one place the resolution and the per-fixing calculation are written. A caller computing
+   * the dates of many fixings of one index should not resolve a calendar per fixing, so this
+   * resolves the fixing calendar and the maturity adjuster up front and hands back a function
+   * that consults no reference data at all: given a fixing date it moves it onto the next fixing
+   * date and applies the maturity offset to that. That separation of the resolution from the
+   * per-fixing calculation is the whole point of the design being ported and is preserved here.
    *
    * The values handed to `build` are, in order, the fixing date exactly as supplied - not the
    * fixing date it was moved onto, since that is the date the caller asked about - and the date
-   * a conversion at that fixing settles on. The function is stated over `build` rather than
-   * over one particular result so that the observation of a fixing, which lives with the type
-   * that represents it, can be produced by this single resolution without this hierarchy naming
-   * that type.
+   * a conversion at that fixing settles on.
    *
    * @param refData  the reference data to resolve the calendar and the offset against
    * @param build  the construction of the result from the fixing date and the settlement date
@@ -1673,7 +1946,7 @@ sealed abstract class FxIndex private[index] (
    * @return the calculation of a fixing's dates, or a failure when a calendar could not be
    *   resolved
    */
-  final def resolveWith[A](refData: ReferenceData)(
+  private[index] final def resolveWith[A](refData: ReferenceData)(
       build: (LocalDate, LocalDate) => A): Either[Failure, LocalDate => A] =
     for {
       fixingCal <- fixingCalendar.resolve(refData)
@@ -1916,15 +2189,15 @@ object FxIndex {
   /**
    * The failure reported when text or a pair of currencies names no published index.
    *
-   * The message is the one the implementation being ported raised, and the text it quotes is
-   * rendered through [[com.opengamma.strata.collect.result.Failure.describeInput]], so a
-   * message reaching a log or a report is bounded in length and cannot forge a line of it.
+   * The message is the one the implementation being ported raised, quoting the text as it
+   * stands; [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure
+   * bound and escape it when the failure is written out.
    *
    * @param described  the text or the pair of currencies that named no index
    * @return the failure to report
    */
   private def unableToCreate(described: String): Failure =
-    Failure.Parsing(s"Unable to create FX index from ${Failure.describeInput(described)}")
+    Failure.Parsing(s"Unable to create FX index from $described")
 
   /**
    * Finds the latest fixing date on or before a candidate whose conversion settles no later
@@ -1988,4 +2261,3 @@ object FxIndex {
    */
   implicit val codec: Codec[FxIndex] = Codecs.namedEnumCodec
 }
-

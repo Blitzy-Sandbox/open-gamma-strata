@@ -25,6 +25,7 @@ import com.opengamma.strata.basics.date.DayCounts
 import com.opengamma.strata.basics.date.HolidayCalendarId
 import com.opengamma.strata.basics.date.HolidayCalendarIds
 import com.opengamma.strata.basics.date.StandardHolidayCalendars
+import com.opengamma.strata.basics.date.Tenor
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 import com.opengamma.strata.collect.testkit.TestHelper.date
@@ -197,6 +198,85 @@ class OvernightIndexSpec extends AnyFunSuite with Matchers with TableDrivenPrope
     test.defaultFixedLegDayCount shouldBe DayCounts.ACT_360
     FloatingRateName.valueOf("CHF-SARON") shouldBe Some(test.floatingRateName)
     test.toString shouldBe "CHF-SARON"
+  }
+
+  test("test_chfTois") {
+    // The inactive edge of this family, and the only member of it: the Tomorrow/Next rate was
+    // replaced by SARON and its row carries `active = false`, where every other explicit
+    // `active` assertion in this suite expects true. Its effective offset of one day is the
+    // other reason it is asserted in full - it is the only published row whose effective date is
+    // not the fixing date, so a transcription that defaulted either field would pass every other
+    // test in this file. Elsewhere the member is reached only as a constant, which says nothing
+    // about the row behind it. Expected values are the `CHF-TOIS` row of the published data.
+    val test = lookup("CHF-TOIS")
+    test shouldBe OvernightIndices.CHF_TOIS
+    test.name shouldBe "CHF-TOIS"
+    test.currency shouldBe Currency.CHF
+    test.active shouldBe false
+    test.fixingCalendar shouldBe HolidayCalendarIds.CHZU
+    test.publicationDateOffset shouldBe 0
+    test.effectiveDateOffset shouldBe 1
+    test.dayCount shouldBe DayCounts.ACT_360
+    test.defaultFixedLegDayCount shouldBe DayCounts.ACT_360
+    test.tenor shouldBe Tenor.TENOR_1D
+    FloatingRateName.valueOf("CHF-TOIS") shouldBe Some(test.floatingRateName)
+    test.toString shouldBe "CHF-TOIS"
+
+    // It is the sole inactive member of the family, so the flag discriminates rather than being
+    // uniform, and every other member is active.
+    OvernightIndex.values.toList.filter(index => !index.active) shouldBe List(test)
+
+    // The effective offset is observable in the dates the member derives: the effective date is
+    // one business day after the fixing date and the maturity date one business day after that,
+    // which is what distinguishes this row from every other published one.
+    test.calculateEffectiveFromFixing(date(2014, 10, 13), RefData) should haveValue(date(2014, 10, 14))
+    test.calculatePublicationFromFixing(date(2014, 10, 13), RefData) should haveValue(date(2014, 10, 13))
+    test.calculateMaturityFromFixing(date(2014, 10, 13), RefData) should haveValue(date(2014, 10, 15))
+    test.calculateFixingFromEffective(date(2014, 10, 14), RefData) should haveValue(date(2014, 10, 13))
+  }
+
+  test("test_resolvedObservation") {
+    // The batch route of this family, which is where a series of fixings is observed from: the
+    // fixing calendar is resolved once, and the function that comes back derives the publication,
+    // effective and maturity dates and the year fraction of every fixing from it. What is
+    // asserted is that it agrees with the per-fixing factory field by field - the equality of an
+    // observation reads the index and the fixing date alone, so the derived values have to be
+    // compared explicitly - and over dates that exercise the interesting cases: a business day,
+    // a Saturday, a Sunday and a day before a holiday. The subjects are the sterling rate, whose
+    // publication offset is one day, and the Tomorrow/Next rate, whose effective offset is one.
+    List(lookup("GBP-SONIA"), lookup("CHF-TOIS"), lookup("THB-THOR")).foreach { index =>
+      val observe = OvernightIndexObservation
+        .resolve(index, RefData)
+        .getOrElse(fail(s"${index.name} did not resolve against the standard reference data"))
+      List(date(2014, 10, 13), date(2014, 10, 11), date(2014, 10, 12), date(2014, 12, 24))
+        .foreach { fixingDate =>
+          withClue(s"${index.name} on $fixingDate: ") {
+            val resolved = observe(fixingDate)
+            val direct = OvernightIndexObservation
+              .of(index, fixingDate, RefData)
+              .getOrElse(fail("the per-fixing factory reported a failure"))
+            resolved shouldBe direct
+            resolved.fixingDate shouldBe fixingDate
+            resolved.publicationDate shouldBe direct.publicationDate
+            resolved.effectiveDate shouldBe direct.effectiveDate
+            resolved.maturityDate shouldBe direct.maturityDate
+            resolved.yearFraction shouldBe direct.yearFraction
+            // and the dates are those of the index's own calculations, which is what the
+            // single resolution must not change
+            resolved.publicationDate shouldBe
+              index.calculatePublicationFromFixing(fixingDate, RefData).getOrElse(fail("no date"))
+            resolved.effectiveDate shouldBe
+              index.calculateEffectiveFromFixing(fixingDate, RefData).getOrElse(fail("no date"))
+            resolved.maturityDate shouldBe
+              index.calculateMaturityFromFixing(fixingDate, RefData).getOrElse(fail("no date"))
+          }
+        }
+    }
+
+    // Reference data that holds no calendar is reported once, by the resolution, rather than per
+    // fixing - which is the whole reason the operation exists.
+    OvernightIndexObservation.resolve(lookup("GBP-SONIA"), ReferenceData.empty) should
+      beFailureWith(FailureReason.MISSING_DATA)
   }
 
   test("test_getFloatingRateName") {
