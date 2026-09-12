@@ -27,6 +27,7 @@ import com.opengamma.strata.basics.currency.Currency.CAD
 import com.opengamma.strata.basics.currency.Currency.EUR
 import com.opengamma.strata.basics.currency.Currency.GBP
 import com.opengamma.strata.basics.currency.Currency.USD
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
@@ -336,6 +337,65 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
     }
 
     intercept[NullPointerException](CurrencyAmount.parse(null))
+  }
+
+  /**
+   * Asserts that rejected text is quoted back bounded and on one line, in both wordings.
+   *
+   * No counterpart in the Java test class, and none was possible: the original interpolated the
+   * text it was handed into the exception it threw, as it stood, so the size of the message was
+   * the size of the input and a line break in the input was a line break in the message. This
+   * port reports the rejection as a value, and the text it names is rendered rather than
+   * reproduced. Both wordings are asserted, because both quote the text.
+   */
+  test("parsing rejects text of any size without echoing it unbounded or across lines") {
+    // Ten thousand characters with no separator at the fourth position: the invalid-format
+    // wording, which is the wording reached before anything is read from the text.
+    val payload = "H" * 10000
+    val bounded: FailureOr[CurrencyAmount] = CurrencyAmount.parse(payload)
+    bounded should beFailureWith(FailureReason.PARSING)
+    // The echo is the rendering the message is built from, so the message is the fixed wording
+    // plus at most `MaxDescribedInput + 3` characters of the text, whatever its size - where it
+    // was once the whole ten thousand.
+    val message = bounded.left.toOption.map(failure => failure.message).getOrElse("")
+    message.length should be <=
+      "Unable to parse amount, invalid format: ".length + Failure.MaxDescribedInput + 3
+    message shouldBe
+      s"Unable to parse amount, invalid format: ${"H" * Failure.MaxDescribedInput}..."
+
+    // The same payload behind a well-formed prefix reaches the other wording, which is bounded
+    // by the same rendering.
+    val longAmount: FailureOr[CurrencyAmount] = CurrencyAmount.parse(s"AUD $payload")
+    longAmount should beFailureWith(FailureReason.PARSING)
+    longAmount.left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse amount: AUD ${"H" * (Failure.MaxDescribedInput - 4)}...")
+
+    // Text holding a line break cannot put one in the message, so a line-oriented consumer of
+    // the message cannot be made to record a line the library did not report. The line break is
+    // placed to reach each wording in turn: at the separator position for the format failure,
+    // and inside the amount part for the unparsable-amount failure.
+    val injectedFormat = CurrencyAmount.parse("AUD\n1.5")
+    injectedFormat should beFailureWith(FailureReason.PARSING)
+    val injectedFormatMessage =
+      injectedFormat.left.toOption.map(failure => failure.message).getOrElse("")
+    injectedFormatMessage should not include "\n"
+    injectedFormatMessage should not include "\r"
+    injectedFormatMessage shouldBe "Unable to parse amount, invalid format: AUD\\n1.5"
+
+    val injectedAmount = CurrencyAmount.parse("AUD 1.5\nINJECTED")
+    injectedAmount should beFailureWith(FailureReason.PARSING)
+    val injectedAmountMessage =
+      injectedAmount.left.toOption.map(failure => failure.message).getOrElse("")
+    injectedAmountMessage should not include "\n"
+    injectedAmountMessage should not include "\r"
+    injectedAmountMessage shouldBe "Unable to parse amount: AUD 1.5\\nINJECTED"
+
+    // And the messages for ordinary rejected text are unchanged, character for character, which
+    // is what makes the bound invisible to every caller but the adversarial one.
+    CurrencyAmount.parse("AUD").left.toOption.map(failure => failure.message) shouldBe
+      Some("Unable to parse amount, invalid format: AUD")
+    CurrencyAmount.parse("AUD aa").left.toOption.map(failure => failure.message) shouldBe
+      Some("Unable to parse amount: AUD aa")
   }
 
   //-------------------------------------------------------------------------

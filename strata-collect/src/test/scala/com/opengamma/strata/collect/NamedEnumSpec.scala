@@ -498,6 +498,12 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
     beyondTheBound.length shouldBe LongestSampleKey + LenientMargin + 1
     val parsed: ResultNec[SampleNamed] = greedyRewrite.parse(beyondTheBound)
     parsed should beFailureWith(FailureReason.PARSING)
+    // The text is quoted back in full here, and deliberately so: the message renders the text
+    // through `Failure.describeInput`, and this input - forty-one characters of no control
+    // character - is within that rendering's bound, so it renders to itself. The two bounds
+    // are independent of each other, and this row is where that is visible: text the lenient
+    // stage refuses to rewrite is still short enough to be reported as it stands.
+    beyondTheBound.length should be <= Failure.MaxDescribedInput
     failuresOf(parsed) shouldBe
       List(Failure.Parsing(s"GreedyRewrite name not found: $beyondTheBound"))
     failuresOf(parsed).head.attributes shouldBe empty
@@ -512,8 +518,12 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
       haveValue(SampleNamed.STANDARD)
     rewritesAnything.parse("A" * (LongestSampleKey + LenientMargin + 1)) should beFailure
     rewritesAnything.parse("A" * 40000) should beFailure
+    // The message quotes the rendering of the text rather than the text, so forty thousand
+    // characters are reported as the first `MaxDescribedInput` of them followed by the marker
+    // that stands for the rest: the message a family reports is bounded by the family and by
+    // the rendering together, and neither bound is a function of how much text arrived.
     failuresOf(rewritesAnything.parse("A" * 40000)).head.message shouldBe
-      s"RewritesAnything name not found: ${"A" * 40000}"
+      s"RewritesAnything name not found: ${"A" * Failure.MaxDescribedInput}..."
   }
 
   test("the bound is the family's own data plus the margin, so a family of longer names rewrites longer text") {
@@ -542,6 +552,36 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
     longSourceRewrite.parse("MORE" + "_" * (sourceLength + LenientMargin - 4)) should
       haveValue(SampleNamed.MORE)
     longSourceRewrite.parse("MORE" + "_" * (sourceLength + LenientMargin - 3)) should beFailure
+  }
+
+  test("parsing rejects text of any size without echoing it unbounded or across lines") {
+    // No counterpart in the ported tests: the lookup being ported interpolated the text it was
+    // handed into the message of the error it raised, as it stood, so the size of that message
+    // was the size of the input and a line break in the input was a line break in the message.
+    // This operation is the one every family parses through, so the property is asserted here
+    // once for all of them.
+    val payload = "H" * 10000
+    val bounded: ResultNec[SampleNamed] = sample.parse(payload)
+    bounded should beFailureWith(FailureReason.PARSING)
+    // The echo is the rendering the message is built from, so the message is the fixed wording
+    // plus at most `MaxDescribedInput + 3` characters of the input, whatever its size - where
+    // it was once the whole ten thousand.
+    val message = failuresOf(bounded).head.message
+    message.length should be <= "SampleNamed name not found: ".length + Failure.MaxDescribedInput + 3
+    message shouldBe s"SampleNamed name not found: ${"H" * Failure.MaxDescribedInput}..."
+
+    // Text holding a line break cannot put one in the message, so a line-oriented consumer of
+    // the message cannot be made to record a line the library did not report.
+    val injected: ResultNec[SampleNamed] = sample.parse("EUR\nUSD")
+    injected should beFailureWith(FailureReason.PARSING)
+    val injectedMessage = failuresOf(injected).head.message
+    injectedMessage should not include "\n"
+    injectedMessage should not include "\r"
+    injectedMessage shouldBe "SampleNamed name not found: EUR\\nUSD"
+
+    // And the message for an ordinary rejected name is unchanged, character for character,
+    // which is what makes the bound invisible to every caller but the adversarial one.
+    failuresOf(sample.parse("Rubbish")).head.message shouldBe "SampleNamed name not found: Rubbish"
   }
 
   //-------------------------------------------------------------------------

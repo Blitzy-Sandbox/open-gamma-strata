@@ -183,6 +183,15 @@ object StandardId {
    * StandardId.of("{", "")   // Left(two failures: one for the scheme, one for the value)
    * }}}
    *
+   * Each part a failure quotes back is rendered through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so every message is bounded
+   * in length and has its control characters escaped. A message reaches a log or a report, and
+   * the two parts handed to this factory came from outside the library, so neither must be
+   * able to forge a line of that log or to make the message as large as the part. A part within
+   * the bound and free of control characters is quoted exactly as it was given, so the wording
+   * of an ordinary rejection is unchanged; only a longer or a line-breaking part is now
+   * described rather than reproduced.
+   *
    * @param scheme  the scheme of the identifier, not empty
    * @param value  the value of the identifier, not empty
    * @return the identifier, or the failures describing why the parts were not acceptable
@@ -203,13 +212,25 @@ object StandardId {
    * The failures of the two parts are presented as one, because text is a single thing to
    * correct: several causes are joined into one message and no cause is dropped.
    *
+   * The text a failure quotes back - whether this method's own wording for text holding no
+   * separator, or the wording of the part checks it delegates to - is rendered through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
+   * and its control characters are escaped. A message reaches a log or a report, and the text
+   * handed to this method came from outside the library, so it must not be able to forge a
+   * line of that log or to make the message as large as the input. Text within the bound and
+   * free of control characters - every rendering of an identifier among them - is quoted
+   * exactly as it was given, so the wording of an ordinary rejection is unchanged; only a
+   * longer or a line-breaking input is now described rather than reproduced.
+   *
    * @param str  the identifier text to parse
    * @return the identifier, or the failure describing why the text names none
    */
   def parse(str: String): FailureOr[StandardId] = {
     val separator = str.indexOf("~")
     if (separator < 0) {
-      Left(Failure.Parsing(s"Invalid identifier format: $str"))
+      // the text is rendered rather than interpolated as it stands, which bounds the message
+      // and keeps it to one line while leaving in-bound text quoted as it was given
+      Left(Failure.Parsing(s"Invalid identifier format: ${Failure.describeInput(str)}"))
     } else {
       of(str.substring(0, separator), str.substring(separator + 1))
         .left
@@ -324,6 +345,12 @@ object StandardId {
    * failure alone. Accumulation happens across the scheme and the value, which are the two
    * arguments the caller supplied, and this keeps each of them to a single failure.
    *
+   * The value is rendered through [[Failure.describeInput]] rather than interpolated as it
+   * stands, which bounds the message and keeps it to one line; an in-bound value free of
+   * control characters renders to itself, so the wording is unchanged for every value a caller
+   * would sensibly offer. The check the leading-space test follows renders its own argument the
+   * same way, so both failures of this part are bounded alike.
+   *
    * @param value  the value to check
    * @return the value, or the failure describing why it is not acceptable
    */
@@ -334,7 +361,9 @@ object StandardId {
         Validate.cond(
           !checked.startsWith(" "),
           checked,
-          Failure.Invalid(s"Invalid initial space in value '$checked' must match regex '$ValueRegex'")))
+          Failure.Invalid(
+            s"Invalid initial space in value '${Failure.describeInput(checked)}' " +
+              s"must match regex '$ValueRegex'")))
 
   /**
    * The codec both JSON instances are taken from.

@@ -33,6 +33,7 @@ import com.opengamma.strata.basics.currency.Currency.NZD
 import com.opengamma.strata.basics.currency.Currency.SEK
 import com.opengamma.strata.basics.currency.Currency.USD
 import com.opengamma.strata.basics.currency.Currency.XAU
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
@@ -361,6 +362,41 @@ final class CurrencyPairSpec extends AnyFunSuite with Matchers with TableDrivenP
     }
   }
 
+  /**
+   * Asserts that rejected text is quoted back bounded and on one line.
+   *
+   * No counterpart in the Java test class, and none was possible: the original interpolated the
+   * text it was handed into the exception it threw, as it stood, so the size of the message was
+   * the size of the input and a line break in the input was a line break in the message. This
+   * port reports the rejection as a value, and the text it names is rendered rather than
+   * reproduced.
+   */
+  test("parsing rejects text of any size without echoing it unbounded or across lines") {
+    val payload = "H" * 10000
+    val bounded = CurrencyPair.parse(payload)
+    bounded should beFailureWith(FailureReason.PARSING)
+    // The echo is the rendering the message is built from, so the message is the fixed wording
+    // plus at most `MaxDescribedInput + 3` characters of the text, whatever its size - where it
+    // was once the whole ten thousand.
+    val message = bounded.left.toOption.map(failure => failure.message).getOrElse("")
+    message.length should be <= "Invalid currency pair: ".length + Failure.MaxDescribedInput + 3
+    message shouldBe s"Invalid currency pair: ${"H" * Failure.MaxDescribedInput}..."
+
+    // Text holding a line break cannot put one in the message, so a line-oriented consumer of
+    // the message cannot be made to record a line the library did not report.
+    val injected = CurrencyPair.parse("EUR\nUSD")
+    injected should beFailureWith(FailureReason.PARSING)
+    val injectedMessage = injected.left.toOption.map(failure => failure.message).getOrElse("")
+    injectedMessage should not include "\n"
+    injectedMessage should not include "\r"
+    injectedMessage shouldBe "Invalid currency pair: EUR\\nUSD"
+
+    // And the message for ordinary rejected text is unchanged, character for character, which is
+    // what makes the bound invisible to every caller but the adversarial one.
+    CurrencyPair.parse("AUD:GBP").left.toOption.map(failure => failure.message) shouldBe
+      Some("Invalid currency pair: AUD:GBP")
+  }
+
   //-------------------------------------------------------------------------
   test("test_inverse") {
     val test = CurrencyPair.of(GBP, USD)
@@ -607,7 +643,11 @@ final class CurrencyPairSpec extends AnyFunSuite with Matchers with TableDrivenP
   //-------------------------------------------------------------------------
   // Mapping from the Java test class, for the record: all twenty-seven annotated methods are
   // present above under their Java names and none is dropped, and the two that were driven
-  // by a data provider are one test each holding their whole table. One of the twenty-seven,
+  // by a data provider are one test each holding their whole table. The twenty-eighth case
+  // above, "parsing rejects text of any size without echoing it unbounded or across lines",
+  // has no Java counterpart and is named descriptively for that reason: it states how this
+  // port quotes rejected text - bounded and on one line - where the Java method interpolated
+  // the whole of it into the exception it threw. One of the twenty-seven,
   // `test_serialization`, is additionally recorded in the migration manifest as consolidated
   // into `com.opengamma.strata.basics.json.JsonRoundTripSpec`, under the name
   // `CurrencyPair_test_serialization`: the property-based round trip over every codec-bearing

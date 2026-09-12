@@ -487,6 +487,15 @@ object Currency {
    * upper case letters, guessing zero minor units and USD triangulation, where this returns a
    * `Failure` whose reason is `PARSING`.
    *
+   * The code the failure quotes back is rendered through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
+   * and its control characters are escaped. A message reaches a log or a report, and the code
+   * handed to this factory came from outside the library, so it must not be able to forge a
+   * line of that log or to make the message as large as the input. A code within the bound and
+   * free of control characters - every three letter code among them - is quoted exactly as it
+   * was given, so the wording of an ordinary rejection is unchanged; only a longer or a
+   * line-breaking input is now described rather than reproduced.
+   *
    * @param currencyCode  the three letter currency code, upper case
    * @return the currency with that code, or the failure describing why the family has none
    */
@@ -508,7 +517,10 @@ object Currency {
    * }}}
    *
    * The failure of a code the family does not hold is the same failure [[of]] reports, and the
-   * text it names is the folded text that was looked up.
+   * text it names is the folded text that was looked up - rendered, as [[of]] renders it,
+   * through [[com.opengamma.strata.collect.result.Failure.describeInput]], so that the message
+   * is bounded in length and cannot be made to hold a line of its own. Text within the bound
+   * and free of control characters is quoted exactly as it was folded.
    *
    * @param currencyCode  the three letter currency code, in any case
    * @return the currency the text names, or the failure describing why it names none
@@ -524,11 +536,16 @@ object Currency {
    * while decoding a document. The failure deliberately carries no attributes, which makes two
    * failures over the same text equal and therefore directly comparable in a test.
    *
+   * The code is rendered through [[Failure.describeInput]] rather than interpolated as it
+   * stands, which bounds the message and keeps it to one line; an in-bound code free of
+   * control characters renders to itself, so the wording is unchanged for every code a caller
+   * would sensibly offer.
+   *
    * @param currencyCode  the code that was rejected, as it was looked up
-   * @return the failure naming the family and the code
+   * @return the failure naming the family and the rendering of the code
    */
   private def notFound(currencyCode: String): Failure =
-    Failure.Parsing(s"$FamilyName name not found: $currencyCode")
+    Failure.Parsing(s"$FamilyName name not found: ${Failure.describeInput(currencyCode)}")
 
   /**
    * The set of currencies that are in active use.

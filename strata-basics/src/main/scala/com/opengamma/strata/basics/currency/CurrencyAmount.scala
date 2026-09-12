@@ -533,6 +533,15 @@ object CurrencyAmount {
    * named only the text, and keeping the failure to that one message keeps two failures over the
    * same text equal and their serialized form stable.
    *
+   * Both wordings name the rendering of the text through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so each is bounded in length
+   * and has its control characters escaped. A message reaches a log or a report, and the text
+   * handed to this method came from outside the library, so it must not be able to forge a line
+   * of that log or to make the message as large as the input. Text within the bound and free of
+   * control characters - every spelling of an amount among them - is quoted exactly as it was
+   * given, so the wording of an ordinary rejection is unchanged; only a longer or a
+   * line-breaking input is now described rather than reproduced.
+   *
    * @param amountStr  the amount as text, in the form `AAA 12.34`
    * @return the amount the text names, or the failure describing why it names none
    */
@@ -550,7 +559,9 @@ object CurrencyAmount {
           parsedAmount <- amountText.toDoubleOption
           value <- of(currency, parsedAmount).toOption
         } yield value
-        parsed.toRight(Failure.Parsing(s"Unable to parse amount: $amountStr"))
+        // the text is rendered rather than interpolated as it stands, which bounds the message
+        // and keeps it to one line while leaving an in-bound spelling quoted as it was given
+        parsed.toRight(Failure.Parsing(s"Unable to parse amount: ${Failure.describeInput(amountStr)}"))
       }
     }
 
@@ -579,9 +590,16 @@ object CurrencyAmount {
     new CurrencyAmount(currency, normalised) {}
   }
 
-  /** The failure reported for text whose shape does not admit an amount. */
+  /**
+   * The failure reported for text whose shape does not admit an amount.
+   *
+   * The text is rendered through [[Failure.describeInput]] rather than interpolated as it
+   * stands, which bounds the message and keeps it to one line; in-bound text free of control
+   * characters renders to itself, so the wording is unchanged for every spelling a caller
+   * would sensibly offer.
+   */
   private def invalidFormat(amountStr: String): Failure =
-    Failure.Parsing(s"Unable to parse amount, invalid format: $amountStr")
+    Failure.Parsing(s"Unable to parse amount, invalid format: ${Failure.describeInput(amountStr)}")
 
   /**
    * Renders an amount without a fractional part when it is a whole number.

@@ -672,6 +672,53 @@ final class FxRateSpec extends AnyFunSuite with Matchers with TableDrivenPropert
     }
   }
 
+  /**
+   * Asserts that rejected text is quoted back bounded and on one line, in both wordings.
+   *
+   * No counterpart in the Java test class, and none was possible: the original interpolated the
+   * text it was handed into the exception it threw, as it stood, so the size of the message was
+   * the size of the input and a line break in the input was a line break in the message. This
+   * port reports the rejection as a value, and the text it names is rendered rather than
+   * reproduced. Both wordings are asserted, because both quote the text.
+   */
+  test("parsing rejects text of any size without echoing it unbounded or across lines") {
+    // Ten thousand characters the expression does not match: the invalid-rate wording.
+    val payload = "H" * 10000
+    val bounded: FailureOr[FxRate] = FxRate.parse(payload)
+    bounded should beFailureWith(FailureReason.PARSING)
+    // The echo is the rendering the message is built from, so the message is the fixed wording
+    // plus at most `MaxDescribedInput + 3` characters of the text, whatever its size - where it
+    // was once the whole ten thousand.
+    val message = bounded.left.toOption.map(failure => failure.message).getOrElse("")
+    message.length should be <= "Invalid rate: ".length + Failure.MaxDescribedInput + 3
+    message shouldBe s"Invalid rate: ${"H" * Failure.MaxDescribedInput}..."
+
+    // Text the expression matches and that then names no legal rate reaches the other wording,
+    // which is bounded by the same rendering: the rate group admits digits, so a rate written
+    // with ten thousand zeroes after the point matches and is then rejected as a zero rate.
+    val longZero = s"EUR/GBP 0.${"0" * 10000}"
+    val matched: FailureOr[FxRate] = FxRate.parse(longZero)
+    matched should beFailureWith(FailureReason.PARSING)
+    matched.left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse rate: EUR/GBP 0.${"0" * (Failure.MaxDescribedInput - 10)}...")
+
+    // Text holding a line break cannot put one in the message, so a line-oriented consumer of
+    // the message cannot be made to record a line the library did not report.
+    val injected = FxRate.parse("EUR\nUSD 1.25")
+    injected should beFailureWith(FailureReason.PARSING)
+    val injectedMessage = injected.left.toOption.map(failure => failure.message).getOrElse("")
+    injectedMessage should not include "\n"
+    injectedMessage should not include "\r"
+    injectedMessage shouldBe "Invalid rate: EUR\\nUSD 1.25"
+
+    // And the messages for ordinary rejected text are unchanged, character for character, which
+    // is what makes the bound invisible to every caller but the adversarial one.
+    FxRate.parse("AUD 1.25").left.toOption.map(failure => failure.message) shouldBe
+      Some("Invalid rate: AUD 1.25")
+    FxRate.parse("EUR/GBP 0").left.toOption.map(failure => failure.message) shouldBe
+      Some("Unable to parse rate: EUR/GBP 0")
+  }
+
   //-------------------------------------------------------------------------
   test("test_equals_hashCode") {
     val a1 = rateOf(AUD, GBP, 1.25d)

@@ -19,7 +19,9 @@ import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.prop.TableFor1
 import org.scalatest.prop.TableFor2
 
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
+import com.opengamma.strata.collect.result.ResultNec
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
@@ -185,6 +187,23 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
   private def failureCount(scheme: String, value: String): Option[Int] =
     StandardId.of(scheme, value).swap.toOption.map(failures => failures.toNonEmptyList.size)
 
+  /**
+   * Reads the messages an outcome of the two-part factory reports, in the order they
+   * accumulated.
+   *
+   * The counterpart of [[failureCount]] for the tests that assert the wording of a rejection
+   * rather than its arity, and it asserts the arity as well by being compared against a list:
+   * a message list of one says that exactly one failure was reported.
+   *
+   * @param outcome  the outcome expected to carry failures
+   * @return the message of each failure, in order, or nothing when the parts named an
+   *   identifier
+   */
+  private def messagesOf(outcome: ResultNec[StandardId]): List[String] =
+    outcome.swap.toOption
+      .map(failures => failures.toNonEmptyList.toList.map(failure => failure.message))
+      .getOrElse(List.empty[String])
+
   //-------------------------------------------------------------------------
   test("test_factory_String_String") {
     val test = identifier("scheme:/+foo", "value")
@@ -341,6 +360,74 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     // as an identifier whose rendering would differ from the text it came from.
     StandardId.parse("a~b~c") should beFailure
     StandardId.parse("a~b~c") should haveFailureMessageMatching(".*'b~c'.*")
+  }
+
+  /**
+   * Asserts that rejected text is quoted back bounded and on one line, at both factories.
+   *
+   * No counterpart in the Java test class, and none was possible: the original interpolated the
+   * text it was handed into the exception it threw, as it stood, so the size of the message was
+   * the size of the input and a line break in the input was a line break in the message. This
+   * port reports the rejection as a value, and the text it names is rendered rather than
+   * reproduced. Three messages quote caller text here and all three are asserted: the
+   * no-separator wording of `parse`, the two part checks `of` performs, and the leading-space
+   * check that follows the character check of a value.
+   */
+  test("both factories reject text of any size without echoing it unbounded or across lines") {
+    // The parse wording, over text holding no separator at all.
+    val payload = "H" * 10000
+    val bounded = StandardId.parse(payload)
+    bounded should beFailureWith(FailureReason.PARSING)
+    // The echo is the rendering the message is built from, so the message is the fixed wording
+    // plus at most `MaxDescribedInput + 3` characters of the text, whatever its size - where it
+    // was once the whole ten thousand.
+    val message = bounded.left.toOption.map(failure => failure.message).getOrElse("")
+    message.length should be <= "Invalid identifier format: ".length + Failure.MaxDescribedInput + 3
+    message shouldBe s"Invalid identifier format: ${"H" * Failure.MaxDescribedInput}..."
+
+    // The two part checks of the other factory, reached with a part of the same size built from
+    // a character neither part admits, since ten thousand letters are a perfectly good scheme
+    // and a perfectly good value.
+    val rejectedPart = "{" * 10000
+    val badScheme = StandardId.of(rejectedPart, "value")
+    badScheme should beFailure
+    messagesOf(badScheme) shouldBe
+      List(s"Argument 'scheme' with value '${"{" * Failure.MaxDescribedInput}...' " +
+        "must match pattern: [A-Za-z0-9:/+.=_%-]+")
+    val badValue = StandardId.of(SCHEME, rejectedPart)
+    badValue should beFailure
+    messagesOf(badValue) shouldBe
+      List(s"Argument 'value' with value '${"{" * Failure.MaxDescribedInput}...' " +
+        "must match pattern: [!-z][ -z]+")
+
+    // And the leading-space check, which quotes the value it was handed as well.
+    val leadingSpace = StandardId.of(SCHEME, " " + payload)
+    leadingSpace should beFailure
+    messagesOf(leadingSpace) shouldBe
+      List(s"Invalid initial space in value ' ${"H" * (Failure.MaxDescribedInput - 1)}...' " +
+        "must match regex '[!-z][ -z]+'")
+
+    // Text holding a line break cannot put one in any of the messages, so a line-oriented
+    // consumer of them cannot be made to record a line the library did not report.
+    val injected = StandardId.parse("Scheme\nvalue")
+    injected should beFailureWith(FailureReason.PARSING)
+    val injectedMessage = injected.left.toOption.map(failure => failure.message).getOrElse("")
+    injectedMessage should not include "\n"
+    injectedMessage should not include "\r"
+    injectedMessage shouldBe "Invalid identifier format: Scheme\\nvalue"
+    val injectedValue = StandardId.of(SCHEME, "va\nlue")
+    injectedValue should beFailure
+    messagesOf(injectedValue) shouldBe
+      List("Argument 'value' with value 'va\\nlue' must match pattern: [!-z][ -z]+")
+
+    // And the messages for ordinary rejected text are unchanged, character for character, which
+    // is what makes the bound invisible to every caller but the adversarial one.
+    StandardId.parse("Scheme").left.toOption.map(failure => failure.message) shouldBe
+      Some("Invalid identifier format: Scheme")
+    messagesOf(StandardId.of("{", "value")) shouldBe
+      List("Argument 'scheme' with value '{' must match pattern: [A-Za-z0-9:/+.=_%-]+")
+    messagesOf(StandardId.of(SCHEME, " 123")) shouldBe
+      List("Invalid initial space in value ' 123' must match regex '[!-z][ -z]+'")
   }
 
   //-------------------------------------------------------------------------

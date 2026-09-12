@@ -37,6 +37,7 @@ import org.scalatest.prop.TableFor7
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 
 import com.opengamma.strata.collect.Arbitraries._
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
@@ -793,7 +794,10 @@ class DecimalSpec
     ("1+23", "Decimal string is invalid: '1+23'"),
     ("--123", "Decimal string is invalid: '--123'"),
     ("A", "Decimal string is invalid: 'A'"),
-    ("\n", "Decimal string is invalid: '\n'"),
+    // the one row whose text holds a control character, so the one row whose message is not
+    // the text as it stands: the rejection renders the text through `Failure.describeInput`,
+    // which escapes a line feed to the two characters `\n` and keeps the message to one line
+    ("\n", "Decimal string is invalid: '\\n'"),
     ("..", "Decimal string is invalid: '..'"),
     ("1..2", "Decimal string is invalid: '1..2'"),
     ("1.-2", "Decimal string is invalid: '1.-2'"),
@@ -884,6 +888,45 @@ class DecimalSpec
       assertRow(text(str), unscaled, scale)
       assertTextAgrees(str)
     }
+  }
+
+  test("parsing rejects text of any size without echoing it unbounded or across lines") {
+    // No counterpart in the ported tests: the type being ported interpolated the text it was
+    // handed into the message of the error it raised, as it stood. Two guards bound the message
+    // here and they are independent: text longer than the type reads is rejected by its own
+    // guard before a numeral is quoted, and whatever text does reach the quoting is rendered
+    // through `Failure.describeInput`.
+    val payload = "H" * 10000
+    val bounded: FailureOr[Decimal] = Decimal.of(payload)
+    bounded should beFailureWith(FailureReason.PARSING)
+    // The length guard owns this message, so it names the limit rather than the text - which is
+    // the strongest form of the bound: text of any size is reported without being echoed at all.
+    bounded.left.map(failure => failure.message) shouldBe
+      Left("Decimal string must not exceed 256 characters")
+
+    // Text within the length guard is echoed, and that echo is the bounded rendering: a numeral
+    // as long as the type reads renders to at most `MaxDescribedInput + 3` characters of itself.
+    val longNumeral = "1" * 200 + "Z"
+    val echoed: FailureOr[Decimal] = Decimal.of(longNumeral)
+    echoed should beFailureWith(FailureReason.PARSING)
+    val echoedMessage = echoed.left.toOption.map(failure => failure.message).getOrElse("")
+    echoedMessage.length should be <=
+      "Decimal string is invalid: ''".length + Failure.MaxDescribedInput + 3
+    echoedMessage shouldBe s"Decimal string is invalid: '${"1" * Failure.MaxDescribedInput}...'"
+
+    // Text holding a line break cannot put one in the message, so a line-oriented consumer of
+    // the message cannot be made to record a line the library did not report.
+    val injected: FailureOr[Decimal] = Decimal.of("1.5\nINJECTED")
+    injected should beFailureWith(FailureReason.PARSING)
+    val injectedMessage = injected.left.toOption.map(failure => failure.message).getOrElse("")
+    injectedMessage should not include "\n"
+    injectedMessage should not include "\r"
+    injectedMessage shouldBe "Decimal string is invalid: '1.5\\nINJECTED'"
+
+    // And the message for an ordinary malformed numeral is unchanged, character for character,
+    // which is what makes the bound invisible to every caller but the adversarial one.
+    Decimal.of("not-a-number").left.map(failure => failure.message) shouldBe
+      Left("Decimal string is invalid: 'not-a-number'")
   }
 
   test("text naming more than the type holds is still decided by BigDecimal") {

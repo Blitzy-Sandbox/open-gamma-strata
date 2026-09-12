@@ -207,6 +207,21 @@ trait NamedEnum[A <: Named] {
    * such an expression - every one of them is anchored to a literal shape of a fixed
    * size - so the bound closes the case before a family realises it rather than after.
    *
+   * ===The text the failure quotes back===
+   *
+   * The text the failure names is rendered through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
+   * and its control characters are escaped. A message reaches a log or a report, and the text
+   * handed to this method came from outside the library, so it must not be able to forge a
+   * line of that log or to make the message as large as the input. This narrows the ported
+   * behaviour, which echoed the text unbounded: for any text within the bound and free of
+   * control characters - every name of every family among them - the message is the one the
+   * ported lookup produced, character for character, and it is only a longer or a
+   * line-breaking input that is now described rather than reproduced.
+   *
+   * Every family resolves its names through this one operation, so the property holds of each
+   * of them rather than of some of them, and a family added later inherits it.
+   *
    * @param name  the text to parse
    * @return the member the text names, or the failure describing why it names none
    */
@@ -671,11 +686,16 @@ object NamedEnum {
     /**
      * The failure reported for text that names no member.
      *
+     * The text is rendered through [[Failure.describeInput]] rather than interpolated as it
+     * stands, so the message is bounded in length and holds no character that could forge a
+     * line of a log carrying it. Text within the bound and free of control characters renders
+     * to itself, so the wording a caller sees for an ordinary rejected name is unchanged.
+     *
      * @param name  the text that was rejected, as it was supplied
-     * @return the failure naming the family and the text
+     * @return the failure naming the family and the rendering of the text
      */
     private def notFound(name: String): NonEmptyChain[Failure] =
-      NonEmptyChain.one(Failure.Parsing(s"$familyName name not found: $name"))
+      NonEmptyChain.one(Failure.Parsing(s"$familyName name not found: ${Failure.describeInput(name)}"))
 
     override def externalNameGroups: Set[String] = externals.keySet
 

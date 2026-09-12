@@ -785,6 +785,40 @@ class ValidateSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
     }
   }
 
+  test("matches rejects an argument of any size without echoing it unbounded or across lines") {
+    // No counterpart in the ported tests: the check being ported interpolated the argument it
+    // was handed into the message as it stood, so the size of the message was the size of the
+    // argument and a line break in the argument was a line break in the message. Both forms of
+    // the check are asserted, because both build their message here.
+    val payload = "H" * 10000
+    val bounded = Validate.matches("[A-Z]{2}".r, payload, Name)
+    bounded should beFailureWith(FailureReason.INVALID)
+    // The echo is the rendering the message is built from, so the message is the fixed wording
+    // and the pattern plus at most `MaxDescribedInput + 3` characters of the argument, whatever
+    // its size - where it was once the whole ten thousand.
+    val message = messageOf(bounded)
+    message.length should be <=
+      "Argument 'name' with value '' must match pattern: [A-Z]{2}".length +
+        Failure.MaxDescribedInput + 3
+    message shouldBe
+      s"Argument 'name' with value '${"H" * Failure.MaxDescribedInput}...' must match pattern: [A-Z]{2}"
+    messageOf(Validate.matches(ArgCheckTables.UpperCaseLetter, 1, 2, payload, Name, "[A-Z]{1,2}")) shouldBe
+      s"Argument 'name' with value '${"H" * Failure.MaxDescribedInput}...' must match pattern: [A-Z]{1,2}"
+
+    // An argument holding a line break cannot put one in the message, so a line-oriented
+    // consumer of the message cannot be made to record a line the library did not report.
+    val injectedMessage = messageOf(Validate.matches("[A-Z]{7}".r, "EUR\nUSD", Name))
+    injectedMessage should not include "\n"
+    injectedMessage should not include "\r"
+    injectedMessage shouldBe "Argument 'name' with value 'EUR\\nUSD' must match pattern: [A-Z]{7}"
+
+    // And the message for an ordinary rejected argument is unchanged, character for character,
+    // which is what makes the bound invisible to every caller but the adversarial one, and is
+    // why the parity section below still reads one wording off both halves of the vocabulary.
+    messageOf(Validate.matches("[A-Z]+".r, "OG1", Name)) shouldBe
+      "Argument 'name' with value 'OG1' must match pattern: [A-Z]+"
+  }
+
   //-------------------------------------------------------------------------
   // notBlank.
 

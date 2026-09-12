@@ -25,6 +25,7 @@ import org.scalatest.prop.TableFor2
 import org.scalatest.prop.TableFor3
 
 import com.opengamma.strata.collect.Decimal
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
@@ -396,6 +397,22 @@ final class CurrencySpec extends AnyFunSuite with Matchers with TableDrivenPrope
       failure => fail(s"Expected a currency for '$text' but was Failure: ${failure.message}"),
       currency => currency)
 
+  /**
+   * Reads the message of an outcome that is expected to have failed.
+   *
+   * The counterpart of the two helpers above for the tests that assert the wording of a
+   * rejection rather than a resolved currency: a successful outcome is reported as a failed
+   * assertion naming the currency it found, so a test asserting a message cannot pass by
+   * accident on an outcome that had none.
+   *
+   * @param outcome  the outcome expected to carry a failure
+   * @return the message of that failure
+   */
+  private def messageOf(outcome: FailureOr[Currency]): String =
+    outcome.fold(
+      failure => failure.message,
+      currency => fail(s"Expected a failure but found the currency '$currency'"))
+
   //-------------------------------------------------------------------------
   test("test_constants") {
     forAll(dataConstants) { (code: String, currency: Currency) =>
@@ -548,6 +565,42 @@ final class CurrencySpec extends AnyFunSuite with Matchers with TableDrivenPrope
         Currency.parse(input) should beFailureWith(FailureReason.PARSING)
       }
     }
+  }
+
+  /**
+   * Asserts that a rejected code is quoted back bounded and on one line.
+   *
+   * No counterpart in the Java test class, and none was possible: the original minted a currency
+   * for any three upper-case letters and threw for anything else, interpolating the text it was
+   * handed into the exception as it stood, so the size of the message was the size of the input
+   * and a line break in the input was a line break in the message. This port reports the
+   * rejection as a value, and the text it names is rendered rather than reproduced.
+   */
+  test("both factories reject a code of any size without echoing it unbounded or across lines") {
+    val payload = "H" * 10000
+    val bounded: FailureOr[Currency] = Currency.of(payload)
+    bounded should beFailureWith(FailureReason.PARSING)
+    // The echo is the rendering the message is built from, so the message is the fixed wording
+    // plus at most `MaxDescribedInput + 3` characters of the code, whatever its size - where it
+    // was once the whole ten thousand.
+    val message = messageOf(bounded)
+    message.length should be <= "Currency name not found: ".length + Failure.MaxDescribedInput + 3
+    message shouldBe s"Currency name not found: ${"H" * Failure.MaxDescribedInput}..."
+    // `parse` folds the text and then resolves it exactly as `of` does, so it is bounded by the
+    // same rendering; the fold of this payload is the payload.
+    messageOf(Currency.parse(payload)) shouldBe message
+
+    // A code holding a line break cannot put one in the message, so a line-oriented consumer of
+    // the message cannot be made to record a line the library did not report.
+    val injected = messageOf(Currency.of("EUR\nUSD"))
+    injected should not include "\n"
+    injected should not include "\r"
+    injected shouldBe "Currency name not found: EUR\\nUSD"
+
+    // And the message for an ordinary rejected code is unchanged, character for character, which
+    // is what makes the bound invisible to every caller but the adversarial one.
+    messageOf(Currency.of("AAA")) shouldBe "Currency name not found: AAA"
+    messageOf(Currency.parse("zyx")) shouldBe "Currency name not found: ZYX"
   }
 
   //-------------------------------------------------------------------------

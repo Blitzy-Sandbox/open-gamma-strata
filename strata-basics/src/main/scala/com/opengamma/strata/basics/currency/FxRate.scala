@@ -430,6 +430,15 @@ object FxRate {
    * on - named only the text, and keeping the failure to that one message keeps it comparable and
    * its serialized form stable.
    *
+   * Both wordings name the rendering of the text through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so each is bounded in length
+   * and has its control characters escaped. A message reaches a log or a report, and the text
+   * handed to this method came from outside the library, so it must not be able to forge a line
+   * of that log or to make the message as large as the input. Text within the bound and free of
+   * control characters - every spelling of a rate among them - is quoted exactly as it was
+   * given, so the wording of an ordinary rejection is unchanged; only a longer or a
+   * line-breaking input is now described rather than reproduced.
+   *
    * @param rateStr  the rate as text, in the form `AAA/BBB RATE`, in any case
    * @return the FX rate the text names, or the failure describing why it names none
    */
@@ -442,9 +451,11 @@ object FxRate {
           parsedRate <- rateText.toDoubleOption
           fxRate <- of(CurrencyPair.of(base, counter), parsedRate).toOption
         } yield fxRate
-        parsed.toRight(Failure.Parsing(s"Unable to parse rate: $rateStr"))
+        // the text is rendered rather than interpolated as it stands, which bounds both messages
+        // and keeps them to one line while leaving an in-bound spelling quoted as it was given
+        parsed.toRight(Failure.Parsing(s"Unable to parse rate: ${Failure.describeInput(rateStr)}"))
       case _ =>
-        Left(Failure.Parsing(s"Invalid rate: $rateStr"))
+        Left(Failure.Parsing(s"Invalid rate: ${Failure.describeInput(rateStr)}"))
     }
 
   //-------------------------------------------------------------------------

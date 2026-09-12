@@ -10,6 +10,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.prop.TableFor2
 
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
@@ -203,5 +204,45 @@ class StandardSchemesSpec extends AnyFunSuite with Matchers with TableDrivenProp
     val micNotFourCharacters = StandardSchemes.splitTicMic(identifier("TICMIC", "ABC@BOB"))
     micNotFourCharacters should beFailureWith(FailureReason.PARSING)
     micNotFourCharacters should haveFailureMessageMatching(".*TICMIC~ABC@BOB.*")
+  }
+
+  /**
+   * Asserts that a rejected identifier is quoted back bounded and on one line.
+   *
+   * Beyond the Java test: the value part of an identifier is caller-supplied text that nothing
+   * bounds, so the rendering of an identifier is unbounded text reaching a message, and the
+   * method being ported interpolated the whole of it into the exception it threw. This port
+   * reports the rejection as a value and renders the identifier rather than reproducing it.
+   */
+  test("splitting rejects an identifier of any size without echoing it unbounded") {
+    // An identifier whose value is ten thousand characters and holds no separator: a perfectly
+    // legal identifier, and not a TICMIC.
+    val payload = "H" * 10000
+    val bounded = StandardSchemes.splitTicMic(identifier("TICMIC", payload))
+    bounded should beFailureWith(FailureReason.PARSING)
+    // The echo is the rendering the message is built from, so the message is the fixed wording
+    // plus at most `MaxDescribedInput + 3` characters of the identifier, whatever its size -
+    // where it was once the whole ten thousand.
+    val message = bounded.left.toOption.map(failure => failure.message).getOrElse("")
+    message.length should be <=
+      "Invalid TICMIC identifier: ".length + Failure.MaxDescribedInput + 3
+    // The rendering is of `toString`, so the scheme and the separator are the first seven
+    // characters of what is quoted and the value fills the rest of the bound.
+    message shouldBe
+      s"Invalid TICMIC identifier: TICMIC~${"H" * (Failure.MaxDescribedInput - 7)}..."
+    // A line break cannot reach the message either, though no identifier can hold one: the
+    // characters a value may hold stop below the space, so this property is held by the
+    // rendering and by the type together rather than by the rendering alone.
+    message should not include "\n"
+    message should not include "\r"
+
+    // And the message for an ordinary rejected identifier is unchanged, character for
+    // character, which is what makes the bound invisible to every caller but the adversarial
+    // one.
+    StandardSchemes
+      .splitTicMic(identifier("TICMIC", "ULVR"))
+      .left
+      .toOption
+      .map(failure => failure.message) shouldBe Some("Invalid TICMIC identifier: TICMIC~ULVR")
   }
 }

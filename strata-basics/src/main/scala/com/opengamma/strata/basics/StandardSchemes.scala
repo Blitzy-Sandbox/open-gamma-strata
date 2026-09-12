@@ -319,6 +319,14 @@ object StandardSchemes {
    * method being ported: a value of the right shape is split whatever scheme it was filed
    * under.
    *
+   * The identifier the failure quotes back is rendered through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
+   * and its control characters are escaped. A message reaches a log or a report, and the value
+   * part of an identifier is text a caller supplied and is bounded by nothing, so it must not
+   * be able to make the message as large as itself. An identifier whose rendering is within
+   * the bound is quoted exactly as [[StandardId.toString]] writes it, which is every
+   * identifier of a realistic size, so the wording of an ordinary rejection is unchanged.
+   *
    * @param ticMic  the TICMIC identifier
    * @return the Ticker and the MIC, or the failure describing why the identifier is not a
    *   TICMIC
@@ -329,7 +337,9 @@ object StandardSchemes {
     if (splitPos < 0 ||
       value.length < MinimumTicMicLength ||
       splitPos != value.length - (MicLength + 1)) {
-      Left(Failure.Parsing(s"Invalid TICMIC identifier: $ticMic"))
+      // the rendering of the identifier is bounded rather than interpolated as it stands, the
+      // value part of an identifier being caller-supplied text of unbounded length
+      Left(Failure.Parsing(s"Invalid TICMIC identifier: ${Failure.describeInput(ticMic.toString)}"))
     } else {
       Right((value.substring(0, splitPos), value.substring(splitPos + 1)))
     }

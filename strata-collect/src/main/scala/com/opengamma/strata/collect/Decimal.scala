@@ -917,6 +917,14 @@ object Decimal {
    *     numeral is input rather than an exceptional condition, and building an exception to
    *     catch it cost more than reading the text does.
    *
+   * The text an unreadable-numeral failure quotes back is rendered through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so its control characters
+   * are escaped and a line break in the text cannot put one in the message; the length of the
+   * message was already bounded by the guard above, which rejects text longer than the type
+   * reads before any numeral is quoted. Text within that bound and free of control characters
+   * is quoted exactly as it was given, so the wording of an ordinary malformed numeral is the
+   * one the ported type reported, character for character.
+   *
    * @param str  the text to read
    * @return the decimal the text names, or the failure describing why it names none
    */
@@ -1098,9 +1106,14 @@ object Decimal {
       case Left(_) => invalidText(str)
     }
 
-  // reports text that names no number, in the one wording every unreadable text is reported by
+  // reports text that names no number, in the one wording every unreadable text is reported
+  // by; the text is rendered through `Failure.describeInput` rather than interpolated as it
+  // stands. The length of the message was already bounded here - `of(String)` rejects text
+  // longer than `MAX_TEXT_LENGTH` before this branch is reachable - so what the rendering
+  // closes is the other facet: a line break in the text can no longer put one in the message,
+  // and a numeral that is merely unreadable is quoted exactly as it was given
   private def invalidText(str: String): Either[Failure, Decimal] =
-    Left(Failure.Parsing(s"Decimal string is invalid: '$str'"))
+    Left(Failure.Parsing(s"Decimal string is invalid: '${Failure.describeInput(str)}'"))
 
   //-------------------------------------------------------------------------
   // creates from a value already truncated to the supported precision
