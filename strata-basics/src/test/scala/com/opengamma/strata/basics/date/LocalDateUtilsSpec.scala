@@ -136,13 +136,28 @@ class LocalDateUtilsSpec extends AnyFunSuite with Matchers {
     LocalDateUtils.dates(sample, sample.plusDays(3L)).toList shouldBe
       List(sample, sample.plusDays(1L), sample.plusDays(2L))
 
-    // Every helper answers identically when called twice with the same argument, so none of them
-    // depends on state left behind by an earlier call - including `dates`, whose iterator is
-    // single-use while the method itself hands out a fresh one on each call.
-    LocalDateUtils.doy(sample) shouldBe LocalDateUtils.doy(sample)
-    LocalDateUtils.plusDays(sample, 45) shouldBe LocalDateUtils.plusDays(sample, 45)
+    // Every helper answers from its arguments alone, so calling one twice with the same argument
+    // answers the same twice and depends on no state left behind by the earlier call - the claim
+    // the reflective utility-class check stood for. Each of the two calls is measured against an
+    // expectation of its own rather than against the other: first the answer for this date
+    // written as a literal - 2015 is not a leap year, so 2015-03-31 is its ninetieth day, forty
+    // five days later is 2015-05-15, and the two dates are forty five days apart - and then the
+    // `java.time` operation the helper is a hand-written fast path for. Comparing the two calls
+    // with each other instead would hold for every implementation of these helpers, including a
+    // wrong one.
+    LocalDateUtils.doy(sample) shouldBe 90
+    LocalDateUtils.doy(sample) shouldBe sample.getDayOfYear
+    LocalDateUtils.plusDays(sample, 45) shouldBe LocalDate.of(2015, 5, 15)
+    LocalDateUtils.plusDays(sample, 45) shouldBe sample.plusDays(45L)
+    LocalDateUtils.daysBetween(sample, sample.plusDays(45L)) shouldBe 45L
+    // Both sides are `Long`, as in `test_daysBetween`, so the comparison performs no widening.
     LocalDateUtils.daysBetween(sample, sample.plusDays(45L)) shouldBe
-      LocalDateUtils.daysBetween(sample, sample.plusDays(45L))
+      (sample.plusDays(45L).toEpochDay - sample.toEpochDay)
+
+    // `dates` is the one member for which comparing two calls with each other asserts something
+    // no expectation of a single call can: its result is an iterator, and an iterator is
+    // single-use, so reading the same list out of it twice succeeds only if the method hands out
+    // a fresh iterator on each call rather than one it retains between calls.
     LocalDateUtils.dates(sample, sample.plusDays(3L)).toList shouldBe
       LocalDateUtils.dates(sample, sample.plusDays(3L)).toList
   }

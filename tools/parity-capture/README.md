@@ -6,16 +6,25 @@ Scala port of `strata-collect` and `strata-basics`.
 It contains exactly two files:
 
 * `capture-baseline.jsh` — a JShell script that runs against the Maven-built *Java* Strata jars
-  and emits six numerical parity fixtures plus one reference-data manifest.
-* `README.md` — this document: the procedure, the fixture schemas and the manifest schema.
+  and emits six numerical parity fixtures, one reference-data manifest and — from the Java *test*
+  sources — the `java-test-mapping.csv` traceability document.
+* `README.md` — this document: the procedure, the fixture schemas, the manifest schema and the
+  test-mapping schema.
 
-The JSON documents the script emits are the deliverable, and they belong in the two Scala modules'
-test resources. **Six of the seven are committed**: the five `strata-basics` parity fixtures and
-the `strata-collect` one, listed in section 4. The seventh, `reference-data-manifest.json`, is
-produced by every run but is **not committed at this revision** — section 4 records the path it
-belongs at, section 7 documents its schema, and *Known limitations at this revision* in section 3
-records it as outstanding. The script is retained so that the baselines can be **regenerated and
-audited** by a third party, and this README is what that third party follows.
+The eight documents the script emits are the deliverable, and they belong in the two Scala
+modules' test resources. **All eight are committed**: the five `strata-basics` parity fixtures,
+the `strata-collect` one, `reference-data-manifest.json` and `java-test-mapping.csv` — listed
+with their paths in section 4, their schemas in sections 6 and 7. The script is retained so that
+the baselines can be **regenerated and audited** by a third party, and this README is what that
+third party follows.
+
+One of the eight is also an **input**. `java-test-mapping.csv` carries three columns of human
+mapping decisions that no scanner can derive — which Scala spec absorbed a consolidated Java
+test, why a test was dropped — so the capture reads those columns back from the committed file and
+re-emits them verbatim while deriving the rest from the Java test sources. A capture therefore
+re-verifies the whole document and refuses to publish one it cannot reproduce byte for byte, which
+is what makes a 1,876-row traceability artefact auditable rather than merely present. Section 7
+states that contract.
 
 No user-specified rules govern this file, so it is held to enterprise-standard best practice
 instead: every number is traceable to a file, nothing is claimed that was not observed, and each
@@ -48,16 +57,18 @@ removing them here does not improve purity; it only makes the capture impossible
 root is yours to choose, and that is the part no check covers.** The acceptance gate requires
 `git status --porcelain -- modules examples eclipse pom.xml src .github` to stay empty. The Maven
 build writes only into `target/`, which is git-ignored
-(`.gitignore:13`). The script writes exactly the seven **relative** paths in section 4, resolved
-against the output root: `guardOutputPath` checks each one at run time, rejecting an absolute
+(`.gitignore:13`). The script writes exactly the eight **relative** paths in section 4, resolved
+against the output root: `guardedOutputTarget` checks each one at run time, rejecting an absolute
 path, any path containing `..` or a backslash, any path whose first segment is `modules`,
-`examples`, `eclipse`, `src`, `.github` or `project`, and any path that is not one of the seven
+`examples`, `eclipse`, `src`, `.github` or `project`, and any path that is not one of the eight
 declared destinations. The root those paths are resolved against is vetted too:
-the root comes from the `parity.out.dir` system property (default `.`), and `outputRoot` rejects a
+the root comes from the `parity.out.dir` system property (default `.`), and `outputRoot` **refuses
+a root that sits inside a checkout without being that checkout's root before it creates
+anything** — so a root such as `modules/probe` is refused *and leaves no directory behind* rather
+than quietly writing a `strata-basics/…` tree where the boundary gate forbids one — then rejects a
 symbolic link at **any** component of it, creates the missing components one at a time, requires
-the result to equal its own canonical form, and refuses a root that sits inside a checkout without
-being that checkout's root — so a root such as `modules` is refused rather than quietly writing a
-`strata-basics/…` tree where the boundary gate forbids one. Run from the repository root with the
+the result to equal its own canonical form, and re-asserts the placement on the canonical path,
+because canonicalisation can move a path into a checkout. Run from the repository root with the
 default, or point it at a scratch directory you own (section 3), and confirm with `git status`
 afterwards. The Java
 sources, tests and resources under `modules/**` are read-only reference material: they are the
@@ -78,9 +89,10 @@ So the baseline is captured, not written:
 
 1. build the untouched Maven modules once;
 2. run `capture-baseline.jsh` against the resulting jars;
-3. commit the JSON documents it emits — six of the seven are in the tree today (section 4);
-4. let the Scala specs assert against them — two consumers exist, and the rest are still to be
-   written (section 4, and *Known limitations at this revision* in section 3).
+3. commit the documents it emits — all eight are in the tree today (section 4);
+4. let the Scala specs assert against them — three consumers exist, and the five basics parity
+   specs are still to be written (section 4, and *Known limitations at this revision* in
+   section 3).
 
 Two consequences follow, and both matter more than they look.
 
@@ -104,12 +116,19 @@ Two consequences follow, and both matter more than they look.
   already provides a JDK 21 executor (`.circleci/config.yml:36-38`, image `cimg/openjdk:21.0`).
 * **Apache Maven**, to build the two Java modules.
 * **A clean checkout**, and a shell whose working directory is the **repository root** — the
-  paths below, including the script's default output root, are repository-root relative.
+  paths below, including the script's default output root, are repository-root relative. The
+  capture reads two things from that checkout: the Java test sources under
+  `modules/basics/src/test/java` and `modules/collect/src/test/java`, and the committed
+  `java-test-mapping.csv`, whose mapping columns it cannot invent (section 7). A checkout missing
+  either stops the capture with a diagnostic instead of publishing a document it cannot verify.
+  Capturing from a directory that is not the repository root works, with
+  `-R-Dparity.repo.dir=<checkout root>` (section 3).
 * Roughly 1 GB of free heap for the capture JVM (`-R-Xmx900m` is what the script is run with), and
-  disk for the documents: one capture writes **19,792,844 bytes** at this revision, and the six
-  documents already committed occupy **24,003,436 bytes**. Capturing into a scratch root beside
-  them — which is how section 3 verifies a run — therefore needs both, so allow **at least 60 MB**
-  free. Re-measure these figures whenever a fixture's coverage changes.
+  disk for the documents: one capture writes **24,618,855 bytes** at this revision, and the eight
+  documents already committed occupy exactly the same **24,618,855 bytes** — they *are* what a
+  capture writes. Capturing into a scratch root beside them — which is how section 3 verifies a
+  run — therefore needs both, so allow **at least 60 MB** free. Re-measure these figures whenever
+  a document's coverage changes.
 
 No network access is needed once Maven's dependencies are cached, and no database, service or
 container is involved.
@@ -221,7 +240,7 @@ imports a few lines later fail exactly as they would have. So read the *first* b
 rather than the last. The run still fails closed — the capture driver checks the preflight result
 before building anything, so nothing is written and the exit status is non-zero.
 
-**Output root.** The script writes the seven documents **relative** to the value of the
+**Output root.** The script writes the eight documents **relative** to the value of the
 `parity.out.dir` system property, whose default is `.` — the current directory, expected to be the
 repository root. Pass it through JShell's `-R` prefix to write elsewhere. Capturing into a
 directory you own and then comparing is the safe way to inspect a run before it touches the
@@ -239,6 +258,16 @@ skips step 2 — never leave `$SCRATCH` unset, or `"$SCRATCH/out"` resolves to `
 created it here rather than in step 2, `trap 'rm -rf -- "$SCRATCH"' EXIT` cleans it up on the way
 out.
 
+**Repository root.** The two things the capture *reads* from the checkout — the Java test sources
+under `modules/**` and the committed `java-test-mapping.csv` — come from the `parity.repo.dir`
+system property, whose default is also `.`. It is deliberately **not** `parity.out.dir`: the
+mapping is read from the repository and written to the output root, which is what lets the
+scratch-root dry run above still verify the committed document. Pass
+`-R-Dparity.repo.dir=/path/to/checkout` when the capture is launched from somewhere other than the
+repository root. The value must be a checkout root — a directory holding both `build.sbt` and
+`modules/` — and a value that is not is refused in seconds, before any fixture is built, rather
+than silently scanning nothing.
+
 **Comparing a capture with what is committed.** Compare the exact documents, one at a time, in
 both modules — not directory trees. `$OUT/strata-basics` holds only the generated
 `src/test/resources/…` subtree, so `diff -r "$OUT/strata-basics" strata-basics` reports every
@@ -252,7 +281,8 @@ for f in strata-basics/src/test/resources/parity/daycount-baseline.json \
          strata-basics/src/test/resources/parity/currency-math-baseline.json \
          strata-basics/src/test/resources/parity/holiday-baseline.json \
          strata-collect/src/test/resources/parity/double-array-baseline.json \
-         strata-basics/src/test/resources/manifest/reference-data-manifest.json; do
+         strata-basics/src/test/resources/manifest/reference-data-manifest.json \
+         strata-basics/src/test/resources/manifest/java-test-mapping.csv; do
   if [ ! -e "$f" ]; then
     echo "not committed: $f"
   elif cmp -s "$OUT/$f" "$f"; then
@@ -264,10 +294,10 @@ done
 ```
 
 `cmp -s` exits 0 when two files match, so the loop's own lines are the report; drop `-s` to have
-`cmp` name the first differing byte. At this revision the loop prints `identical` for five
-documents, `DIFFERS` for `daycount-baseline.json` and `not committed` for the manifest — exactly
-what the *Verification record* below measured and the limitations after it explain. Any other
-result is a finding: investigate it before you replace a committed file.
+`cmp` name the first differing byte. At this revision the loop prints `identical` for **all
+eight** documents — exactly what the *Verification record* below measured. Anything else is a
+finding: a `DIFFERS` line, or a `not committed` line for a document section 4 lists as committed,
+is something to investigate before you replace a committed file.
 
 **Exit status.** Zero only when every document was built *and* every self-check passed; non-zero
 on any check failure, count mismatch, preflight failure or exception in the driver. The documents
@@ -277,27 +307,33 @@ exception raised while the documents are being built — writes **nothing at all
 touched and none can be left half-valid. A failure prints one line per failing check, naming the
 fixture, the row and the expected/actual/delta/tolerance.
 
-Once the flush begins, that no longer holds, and the distinction is worth reading carefully because
-the flush runs inside the same driver. The seven documents are written one after another to their
-final paths, with no staging directory and no rollback, so an I/O failure part way through — a full
-disk, a read-only destination, an interrupted run — leaves the documents written before it new and
-the rest untouched. The driver catches the exception and the run still exits non-zero, so a non-zero
-status alone does **not** tell you nothing was written: check. Recovery is the same as for any
-failed run — compare against what is committed with the loop above, then re-run. This is a property
-of the script as it stands at this revision, pinned in the limitations subsection below.
+Once the flush begins the guarantee changes shape, and the distinction is worth reading carefully.
+The flush is itself a transaction: it validates all eight destinations, writes each document to
+`<target>.capture-tmp-<pid>.new` and verifies it by reading the bytes back, publishes by moving any
+existing target aside to `.old` and renaming the verified temporary into place — both renames being
+atomic within one directory — deletes the backups only once every target is published, and rolls
+back to the previous generation on any failure before rethrowing, so the run still exits non-zero.
+What it does not claim is a single atomic swap of all eight documents: a process **killed** between
+two publish moves leaves a mixed generation on disk, which is the one case where a non-zero status
+does not mean nothing was written. That state is never silent — the `.old` and `.new` files stay
+where they are, the next run refuses to publish over them and names them, and `git status` shows
+the same thing because the documents are tracked. Recovery is the same as for any failed run —
+compare against what is committed with the loop above, then re-run. Limitation 3 below draws the
+same boundary from the script's side.
 
-**Progress output.** The run prints the JDK version, the resolved output root, the random seed,
+**Progress output.** The run prints the JDK version, the resolved output root, the resolved
+repository root, the random seed,
 one line per document, then a summary table of `rows`, `checks`, `errRows` (rows whose expectation
 is a Java failure) and `capOnly` (rows — or, in `currency-math`, expectation entries — deliberately
 without a Java constant to check against; limitation 6 below records the one place that tally and
 the fixture's own marker disagree), and finally the path and size of each document written.
 
-**Safety.** Run every step from the repository root. The capture writes only the seven relative
+**Safety.** Run every step from the repository root. The capture writes only the eight relative
 paths listed in section 4, resolved against the output root, and refuses any other relative path —
 including anything whose first segment is `modules`, `examples`, `eclipse`, `src`, `.github` or
 `project`, as section 0 describes; Maven writes only into git-ignored `target/`. The one input the
-script cannot vet for you is the root itself, so when you pass a non-default `parity.out.dir` keep
-it inside a directory you own, and run
+script cannot vet for you is the *choice* of an absolute root outside every checkout, so when you
+pass a non-default `parity.out.dir` keep it inside a directory you own, and run
 `git status --porcelain -- modules examples eclipse pom.xml src .github` afterwards: empty is the
 acceptance gate, and it is a one-second check. With the default root, or any root outside the
 repository, nothing in this procedure modifies the Java tree; a root that points inside the
@@ -312,7 +348,7 @@ statement about a script's output stays checkable:
 | Pinned to | Value |
 |---|---|
 | Measured against | the revision of the script whose hash is the next row |
-| `capture-baseline.jsh` | sha256 `6a952af08dadfd16ef6058f2f423e79bdc9443cdf203d2fbe44ad40eec72a700` |
+| `capture-baseline.jsh` | sha256 `67f50664d22635d4080938d741dbfe24c272b3b22a6dd1081b5861d5b4950a08` |
 | Toolchain | OpenJDK 21.0.12.1 (Temurin 21.0.12.1+1 LTS), Apache Maven 3.9.16 |
 
 The script hash is the anchor: check it with
@@ -321,26 +357,31 @@ commands below rather than trusting the numbers that follow them.
 
 Commands run, in this order:
 
-1. Step 1 as printed above (`… package`) — `BUILD SUCCESS`, exit 0, 37.9 s against warm Maven
-   caches, producing `strata-collect-2.12.74-SNAPSHOT.jar` (428,082 bytes) and
-   `strata-basics-2.12.74-SNAPSHOT.jar` (570,411 bytes).
+1. Step 1 as printed above (`… package`) — `BUILD SUCCESS`, exit 0, 10.7 s against warm Maven
+   caches, producing `strata-collect-2.12.74-SNAPSHOT.jar` and
+   `strata-basics-2.12.74-SNAPSHOT.jar`. Their byte sizes are deliberately not quoted here: a jar's
+   size moves with its manifest, so it is not a property worth pinning — what matters is that both
+   files exist at the paths step 1 names and that the capture's preflight then finds every class it
+   needs.
 2. `dependency:build-classpath` for `modules/collect` and for `modules/basics`, each into a
    private scratch file — exit 0 both times. The collect classpath is purely third-party (Guava,
    `failureaccess`, Joda-Beans, Joda-Convert, plus the test-scope JUnit/AssertJ/Mockito jars); the
-   basics classpath resolves `strata-collect` and its test-jar **from the local repository**, which
-   is the caveat route (a) states above.
-3. The capture three times, each into its own scratch output root, with the route-(c) classpath.
-   Every run printed `all checks passed`, wrote seven documents and exited 0, at `-R-Xmx900m`.
+   basics classpath resolves `strata-collect` **and its test-jar** from
+   `~/.m2/repository/com/opengamma/strata/strata-collect/…`, i.e. **from the local repository** —
+   measured here, and the caveat route (a) states above.
+3. The capture twice, each into its own scratch output root, with the route-(b) classpath (the two
+   freshly built module jars plus the third-party jars of item 2). Both runs printed `all checks
+   passed`, wrote eight documents and exited 0, at `-R-Xmx900m`; the timed run took 58 s.
 4. `git status --porcelain -- modules examples eclipse pom.xml src .github` — no output, before and
-   after.
+   after every run, including the refused-root probes of limitation 4.
 
 Route (a)'s `install` line was **not** run: both artifacts were already in this environment's
 local repository, and installing them again is what routes (b) and (c) exist to avoid. So route (a)
 is documented and its classpath step measured, while its first line is unverified here.
 
-**The three captures produced byte-identical documents** — `diff -r` over the three output roots,
-all seven documents, no differences. That is the determinism contract of section 5 demonstrated
-rather than asserted, on one JDK; the limitations below say what it does not extend to.
+**The two captures produced byte-identical documents** — `diff -r` over the two output roots, all
+eight documents, no differences. That is the determinism contract of section 5 demonstrated rather
+than asserted, on one JDK; the limitations below say what it does not extend to.
 
 The script's own summary, as printed by each run. `rows` and `checks` are what the script counted,
 `errRows` the rows whose expectation is a Java failure, and `capOnly` the entries with no Java
@@ -355,11 +396,12 @@ constant to check against:
 | `holiday` | 3,846 | 50,561 | 2 | 0 |
 | `manifest` | 1 | 52 | 0 | 0 |
 | `schedule` | 879 | 320 | 573 | 769 |
-| **TOTAL** | **23,145** | **198,881** | | |
+| `test-mapping` | 1,876 | 7,660 | 0 | 0 |
+| **TOTAL** | **25,021** | **206,541** | | |
 
-The day-count emitter now produces the committed fixture's 18,356 rows, and all six committed
-documents are reproduced byte for byte; the comparison follows. The totals move whenever a fixture
-is extended, so read them as this revision's reading rather than a fixed figure, and note how
+All eight committed documents are reproduced byte for byte; the comparison follows. The totals move
+whenever a document is extended, so read them as this revision's reading rather than a fixed
+figure, and note how
 uneven the `checks` column is — `schedule` states 320 checks against 879 rows, because most of a
 schedule row's expectations have no Java constant to check against and are counted under
 `capOnly`.
@@ -374,39 +416,49 @@ What the run produced, against what is committed:
 | `currency-math-baseline.json` | 123,318 | 123,318 | identical |
 | `holiday-baseline.json` | 9,287,428 | 9,287,428 | identical |
 | `double-array-baseline.json` | 90,821 | 90,821 | identical |
-| `reference-data-manifest.json` | 254,640 | — | not committed |
+| `reference-data-manifest.json` | 254,640 | 254,640 | identical |
+| `java-test-mapping.csv` | 316,382 | 316,382 | identical |
 
 sha256 of the committed documents: `daycount` `52ec04ee…`, `schedule` `a313f9c2…`, `fx`
-`9c3f9d00…`, `currency-math` `fe711eee…`, `holiday` `e71adc59…`, `double-array` `a9e5ff95…`. The
-capture reproduces all six hash for hash; its uncommitted manifest is `a6d285dd…`.
+`9c3f9d00…`, `currency-math` `fe711eee…`, `holiday` `e71adc59…`, `double-array` `a9e5ff95…`,
+`reference-data-manifest` `a6d285dd…`, `java-test-mapping` `f420a5da…`. The capture reproduces all
+eight hash for hash.
 
 The failure path was measured too, with a deliberately incomplete classpath (the `strata-collect`
-jar alone): the preflight's fourteen lines named all twelve missing classes **first**, 1,608
-further JShell error lines followed it, the run exited 1 and wrote **zero** files.
+jar alone): the preflight's twenty-one lines named all twelve missing classes **first**, then
+several thousand JShell errors followed it (4,156 lines at this revision) as JShell carried on
+loading the snippets, the run exited 1, the output root was **never created** and **zero** files
+were written. The line count is incidental and moves with JShell's diagnostics; the load-bearing
+properties are the three that follow it — preflight first, non-zero exit, nothing written.
 
 #### Known limitations at this revision
 
 Each item below is a property of the script and of the committed set at the revision pinned above,
 not of the procedure in general, and each says how to check whether it still holds.
 
-1. **`reference-data-manifest.json` is not committed.** Every run emits it — 254,640 bytes, the 29
-   top-level keys of section 7, every count asserted — but the file is absent from the working
-   tree, and the spec that would compare it with the Scala data objects does not exist either, so
-   nothing currently reads it. Capture it when you need the Java-side enumeration of the reference
-   data; committing it, and writing that spec, is outstanding work.
-   Check: `ls strata-basics/src/test/resources/manifest/`.
+1. **`java-test-mapping.csv` is an input as well as an output.** Its three mapping columns are
+   human decisions no scanner can derive, so the capture reads them from the committed document and
+   re-emits them verbatim: on a checkout where the file is missing the capture stops and says so
+   rather than publishing 1,876 rows of empty decisions, and a mapping column you edit by hand is
+   carried through unchanged by the next capture. Everything else about the document *is* verified
+   on every run — the class and method inventory against `modules/**`, the row order, the format,
+   the status taxonomy, the anchor counts and the byte-for-byte result (section 7). The practical
+   consequence: this document is refreshed by editing the mapping columns and re-capturing, never
+   by regenerating it from nothing. Check: delete one data row from a copy of the tree, point the
+   capture at it with `-R-Dparity.repo.dir`, and confirm it aborts naming the unmapped Java method
+   and writes nothing.
 
-2. **`reference-data-manifest.json` is the only document with no committed counterpart.** All six
-   committed fixtures — `daycount-baseline.json` included — are regenerated byte for byte by the
-   checked-in script, so a re-capture is a valid way to refresh any of them, and a document that
-   comes back `DIFFERS` is a finding rather than the expected state. The day-count section emits
-   the committed 18,356-row document with the uniform twelve-key row shape, a unique `id` on every
-   row and `scheduleInfo` always an object. Check: capture into a scratch root and run the
-   comparison loop above; all six printing `identical` is the expected state.
+2. **Every committed document is regenerated byte for byte, so a `DIFFERS` line is a finding.** All
+   eight — `daycount-baseline.json` included — come back identical from a run of the checked-in
+   script, so a re-capture is a valid way to refresh any of them, and a document that comes back
+   `DIFFERS` is something to investigate rather than the expected state. The day-count section
+   emits the committed 18,356-row document with the uniform twelve-key row shape, a unique `id` on
+   every row and `scheduleInfo` always an object. Check: capture into a scratch root and run the
+   comparison loop above; all eight printing `identical` is the expected state.
 
-3. **The flush is a transaction, but seven files in three directories cannot be replaced in one
+3. **The flush is a transaction, but eight files in three directories cannot be replaced in one
    filesystem operation.** Documents are staged in memory and every check runs first, so a failure
-   before the flush writes nothing. The flush itself then validates all seven destinations, takes a
+   before the flush writes nothing. The flush itself then validates all eight destinations, takes a
    no-follow handle on each directory and refuses to proceed if an earlier run left artefacts
    there; writes each document to `<target>.capture-tmp-<pid>.new` with `CREATE_NEW` and verifies
    it by reading the bytes back; publishes by moving any existing target aside to `.old` and
@@ -419,24 +471,32 @@ not of the procedure in general, and each says how to check whether it still hol
    re-run as step 3 describes.
 
 4. **The output root is validated, and an absolute root still writes wherever it points.**
-   `guardOutputPath` vets the seven relative suffixes, and `outputRoot` vets the root they resolve
-   against: every component is rejected if it is a symbolic link, the missing components are created
-   one at a time rather than through `createDirectories`, the result must equal its own canonical
-   form, and a root inside a checkout that is not that checkout's root is refused — so a root such
-   as `modules` is rejected instead of breaking the repository-boundary gate. What remains yours is
-   the choice itself: an absolute root outside the repository writes there, which is exactly how the
-   verification above captured into a scratch directory. Run the `git status --porcelain` check after
-   any non-default run.
+   `guardedOutputTarget` vets the eight relative suffixes, and `outputRoot` vets the root they
+   resolve against, in this order: a root inside a checkout that is not that checkout's root is
+   refused **before any directory is created**, every component is then rejected if it is a
+   symbolic link, the missing components are created one at a time rather than through
+   `createDirectories`, the result must equal its own canonical form, and the placement is
+   re-asserted on the canonical path, because canonicalisation can move a path into a checkout.
+   The order matters and was measured: `-R-Dparity.out.dir=modules/probe` exits 1 with the
+   "inside the checkout rooted at …" refusal, writes no file **and leaves no `modules/probe`
+   directory behind**, and the same holds for a nested root such as `$PWD/probe/nested`; a nested
+   root outside any checkout is still created and used, which is how the verification above
+   captured into a scratch directory. What remains yours is the choice itself: an absolute root
+   outside the repository writes there. Run the `git status --porcelain` check after any
+   non-default run anyway — it is a one-second check and the boundary gate is what it protects.
 
 5. **Two orderings come from reflection, so byte-identity is claimed only within one JDK.** The
    day-count list is built from `DayCounts.class.getDeclaredFields()` and every manifest constant
    array from `holder.getDeclaredFields()`. Java SE specifies no order for the array those methods
    return, so a different JDK 21 build — or the same one after the Java jars are recompiled — may
-   order the day-count rows and the manifest's `*Constants.names` arrays differently. The three
+   order the day-count rows and the manifest's `*Constants.names` arrays differently. The two
    runs measured above, on one JDK, were byte-identical; that is the evidence, and it does not
    extend to another JDK. If a re-capture differs *only* in the order of those arrays, this
    dependency is why: compare the arrays sorted before concluding anything. A difference anywhere
-   else is a finding — investigate it before committing.
+   else is a finding — investigate it before committing. This caveat covers those two arrays and
+   nothing more: `java-test-mapping.csv` is ordered by fully-qualified class name and Java source
+   position, with every directory walk sorted explicitly, so no filesystem or reflection order
+   reaches it.
 
 6. **The `capOnly` summary column counts more entries than carry the marker.** For
    `currency-math` the summary reports 228 while the fixture carries `"captureOnly": true` on 173
@@ -444,18 +504,22 @@ not of the procedure in general, and each says how to check whether it still hol
    the field being emitted. The marker in the fixture is the contract a consumer reads; the column
    is a run-time counter. Do not derive one from the other.
 
-7. **Most consumers of these fixtures do not exist yet.** Present: `ParityHarness.scala`,
-   `strata-collect/src/test/scala/com/opengamma/strata/collect/parity/DoubleArrayParitySpec.scala`
-   and `collect.io.Resources.readClasspathText`. Absent: the five basics parity specs,
-   `ReferenceDataManifestSpec.scala`, `scripts/verify-gates.sh` (so nothing yet aggregates the
-   parity reports into `target/gate-report.md`), the `scala_build21` CI job and
-   `SCALA_MIGRATION.md`. Five of the six committed fixtures are therefore pinned data waiting for
-   the specs that will read them — which is why a schema change here is cheap today and expensive
-   later. Section 4 lists both sides of that split.
+7. **Most consumers of these documents do not exist yet.** Present: `ParityHarness.scala` with its
+   own `ParityHarnessSpec`,
+   `strata-collect/src/test/scala/com/opengamma/strata/collect/parity/DoubleArrayParitySpec.scala`,
+   `strata-basics/src/test/scala/com/opengamma/strata/basics/ReferenceDataManifestSpec.scala` —
+   which asserts the ported Scala data objects against `reference-data-manifest.json` — and
+   `collect.io.Resources.readClasspathText`. Absent: the five basics parity specs, and
+   `scripts/verify-gates.sh`, so nothing yet aggregates the parity reports into
+   `target/gate-report.md`. So the five basics parity fixtures are still pinned data waiting for
+   the specs that will *assert* them: `ParityHarnessSpec` decodes all five through
+   `ParityHarness.load`, which pins the schemas below against the harness, but no basics spec yet
+   compares a Java value with a Scala one. That is why a schema change here is cheap today and
+   expensive later. Section 4 lists both sides of the split.
 
 ### 4. Outputs
 
-Seven documents, all UTF-8, LF-terminated, with exactly one trailing newline. The `Committed`
+Eight documents, all UTF-8, LF-terminated, with exactly one trailing newline. The `Committed`
 column is the state at this revision, not a plan:
 
 | Path | Committed | Contents |
@@ -466,23 +530,27 @@ column is the state at this revision, not a plan:
 | `strata-basics/src/test/resources/parity/currency-math-baseline.json` | yes | `CurrencyAmount`, `Money`, `BigMoney`, `MultiCurrencyAmount` and the two amount-array types |
 | `strata-basics/src/test/resources/parity/holiday-baseline.json` | yes | Per-calendar, per-year holiday sets and date-arithmetic samples |
 | `strata-collect/src/test/resources/parity/double-array-baseline.json` | yes | `DoubleArray` and `DoubleMatrix` operation results |
-| `strata-basics/src/test/resources/manifest/reference-data-manifest.json` | **no** — emitted by every run, not yet in the tree | The reference-data manifest: every ported data table, enumerated from Java, with asserted counts |
+| `strata-basics/src/test/resources/manifest/reference-data-manifest.json` | yes | The reference-data manifest: every ported data table, enumerated from Java, with asserted counts |
+| `strata-basics/src/test/resources/manifest/java-test-mapping.csv` | yes | Method-level test traceability: one row per Java test method, with the Scala spec and test name that replaced it. The one document that is also an **input** (section 7) |
 
-Consumers — a schema change breaks these, so change both sides together. Two exist today:
+Consumers — a schema change breaks these, so change both sides together. Three exist today:
 
 * `strata-basics/src/test/scala/com/opengamma/strata/basics/parity/ParityHarness.scala` — loads a
-  fixture and applies the tolerance rule. Present, and not yet used by any basics spec.
+  fixture and applies the tolerance rule. Present, with its own `ParityHarnessSpec`, which decodes
+  all five basics fixtures through it; no basics spec yet asserts a value against one.
 * `strata-collect/src/test/scala/com/opengamma/strata/collect/parity/DoubleArrayParitySpec.scala` —
-  present, and the one spec that reads its fixture today.
+  present, and the one parity spec that reads its fixture today.
+* `strata-basics/src/test/scala/com/opengamma/strata/basics/ReferenceDataManifestSpec.scala` —
+  present, and the consumer of `reference-data-manifest.json`: it asserts that the ported Scala
+  data objects equal the manifest, key by key and row by row, and declares explicitly which
+  manifest keys have no Scala counterpart yet, so the remaining gap is visible rather than silent.
 
-The rest are planned and **absent at this revision**, so nothing currently asserts against the
-other six documents:
+The rest are planned and **absent at this revision**:
 
 * `strata-basics/src/test/scala/com/opengamma/strata/basics/parity/DayCountParitySpec.scala`,
   `ScheduleParitySpec.scala`, `FxParitySpec.scala`, `CurrencyMathParitySpec.scala`,
   `HolidayCalendarParitySpec.scala`.
-* `strata-basics/src/test/scala/com/opengamma/strata/basics/ReferenceDataManifestSpec.scala`, which
-  is to assert that the Scala data objects equal the manifest.
+* `scripts/verify-gates.sh`, which is to aggregate the parity reports the specs write.
 
 Both existing consumers read their resource through `collect.io.Resources.readClasspathText` and
 decode it with circe, and the planned ones are specified to do the same — which is what makes
@@ -490,15 +558,16 @@ every field name and nesting decision in sections 6 and 7 a compile-time contrac
 side once they land. Until then the schemas below are the only statement of that contract, so keep
 them exact.
 
-The six committed documents are the deliverable and are committed alongside the Scala code; the
-manifest and the specs listed above are the outstanding work, itemised in *Known limitations at
-this revision*. This script is what regenerates the documents — with the day-count exception
-recorded there.
+All eight documents are the deliverable and are committed alongside the Scala code; the specs
+listed above as absent are the outstanding work, itemised in *Known limitations at this revision*.
+This script is what regenerates every one of them, byte for byte.
 
 ### 5. Encoding conventions
 
-These conventions are the contract across the Java→Scala boundary. The capture writes them and the
-circe decoders read them, so neither side may change one alone.
+These conventions are the contract across the Java→Scala boundary for the **seven JSON documents**.
+The capture writes them and the circe decoders read them, so neither side may change one alone.
+`java-test-mapping.csv` is not JSON and has its own format rules, stated with its schema in
+section 7; the determinism bullet below is the one item that governs it too.
 
 * **Doubles at full precision.** Finite values are written with `Double.toString`, the shortest
   representation that round-trips exactly — so `0.16942884946478032`, never a formatted or
@@ -538,7 +607,7 @@ circe decoders read them, so neither side may change one alone.
   indentation and buys nothing, since the unit anyone reads or diffs there is the row. It is the
   same deterministic writer (`Jn.writeCompact`) with newlines and padding omitted — key order,
   escaping and number rendering are unchanged, and the document still ends with exactly one
-  newline. Every other document is pretty-printed as described above.
+  newline. Every other JSON document is pretty-printed as described above.
 
 **The two-tolerance rule.** These are not interchangeable, and conflating them is a real trap:
 
@@ -554,17 +623,19 @@ correct. Each check in the script names the tolerance it used, and prints it on 
 
 ### 6. Fixture schemas
 
-Each fixture is a **JSON array of row objects**. Every row carries a `source` field naming the
-Java test method or the generated population it came from, which is what makes a failure
-attributable.
+Each fixture is a **JSON array of row objects**. In the five fixtures that carry one, a `source`
+field names the Java test method or the generated population the row came from, which is what
+makes a failure attributable — `daycount-baseline.json` (47 distinct values),
+`schedule-baseline.json` (16), `fx-baseline.json` (14), `currency-math-baseline.json` (6) and
+`holiday-baseline.json` (6). `double-array-baseline.json` carries no `source` key at all; its
+provenance is encoded in its `id` prefixes instead (`javatest-*`, `random-*`, `ieee-*`).
 
-**Row identity differs by fixture, and a decoder has to know which case it is in.** Four fixtures
-carry an explicit, unique `id`, and that is the name a parity report prints: `daycount-baseline.json`
-(on all 18,356 rows), `holiday-baseline.json` (all 3,846), `fx-baseline.json` (all 14) and
-`currency-math-baseline.json` (all 6). The other two do not:
+**Row identity differs by fixture, and a decoder has to know which case it is in.** Five fixtures
+carry an explicit, unique `id`, and that is the name a parity report prints:
+`daycount-baseline.json` (on all 18,356 rows), `holiday-baseline.json` (all 3,846),
+`fx-baseline.json` (all 14), `currency-math-baseline.json` (all 6) and
+`double-array-baseline.json` (all 43). One does not:
 
-* `double-array-baseline.json` needs none — each of its 14 rows has a distinct `source`, so
-  `source` *is* the identity.
 * `schedule-baseline.json` has neither an `id` nor a distinct `source`: 879 rows share 16 `source`
   values, and `grid.combinations` alone accounts for 768 of them. A consumer therefore derives a
   row's identity from `source` **plus the eleven input fields *and* `replacedStartDate` where the
@@ -789,7 +860,7 @@ whereas the port binds the `StandardHolidayCalendars` constants directly. These 
 evidence that the substitution is behaviour-preserving; `SFE` and `IMMNZD`, which use no calendar,
 are the control group.
 
-Observed: 879 rows, 311 checks, 573 `error` rows.
+Observed: 879 rows, 320 checks, 573 `error` rows.
 
 #### `fx-baseline.json`
 
@@ -862,7 +933,7 @@ Input population — fourteen rows:
   currency). It runs over an empty matrix definition, since a cross rate is a property of `FxRate`
   alone.
 
-Observed: 14 rows, 77 checks, 14 `error` entries, 4 capture-only rows. Capture-time tolerances:
+Observed: 14 rows, 100 checks, 14 `error` entries, 4 capture-only rows. Capture-time tolerances:
 exact for directly supplied rates, their reciprocals and the identity rate, `1e-6`
 (`FxMatrixTest.TOLERANCE`) for triangulated crosses. A query or cross the Java implementation must
 reject is asserted to fail, not merely recorded — so the `error` entries are expectations the Java
@@ -1057,7 +1128,7 @@ Input population, distinguished by `source`:
   answers nor falls back but throws, so `holidays` is `null` and `error` carries the message Java
   produces, on the row and on all three samples.
 
-**Observed: 3,846 rows, 50,305 checks, 2 `error` rows, 8.9 MB** (3,848 lines: the two brackets and
+**Observed: 3,846 rows, 50,561 checks, 2 `error` rows, 8.9 MB** (3,848 lines: the two brackets and
 one row each). That size is expected of a golden fixture with this coverage, and the coverage is
 not negotiable — `GlobalHolidayCalendarsSpec` ports the 201 Java year-rows verbatim, and this
 document covers every remaining year, which is the only thing that pins the monthly-bitmask
@@ -1106,17 +1177,20 @@ contributes 382 capture-time checks against 24 capture-only entries, and the har
 `DoubleArrayTest` and `DoubleMatrixTest` are re-asserted at those tests' own `DELTA` of `1e-14`
 alongside the rows.
 
-### 7. Manifest schema
+### 7. Manifest and test-mapping schemas
+
+#### `reference-data-manifest.json`
 
 `reference-data-manifest.json` is a single object, not a row array. It enumerates every reference
 data table from the **Java** side with **every count asserted during capture**, so a resource
 edited under the port cannot silently reshape it. The document below is what a run produces —
 254,640 bytes with exactly these 29 top-level keys, measured at the revision pinned in section 3 —
-and it is **not committed** at this revision, nor is the `ReferenceDataManifestSpec` that is to
-assert the ported Scala data objects equal it exactly. So the key names and the nesting below are
-the specification that spec will be written against: renaming a key, flattening an object or
-turning an ordered array into a map changes what it will have to read, and until it exists nothing
-detects such a change automatically.
+and it is committed, with `ReferenceDataManifestSpec` asserting that the ported Scala data objects
+equal it: 19 of the 29 keys are compared against a Scala data table today, content *and* order,
+and the other 10 are declared pending inside that spec, each naming the port file that will cover
+it, so the gap is visible and shrinks under a test rather than in a comment. The key names and the
+nesting below are therefore a contract on both sides — renaming a key, flattening an object or
+turning an ordered array into a map breaks that spec, which is exactly what it is for.
 
 Top-level keys, in the order they are written:
 
@@ -1165,17 +1239,85 @@ Three of these deserve a word, because their shape encodes behaviour:
   upper-case key for every mixed-case alternate. `OvernightIndex` is the case in point: 10 INI rows
   become 13 API entries.
 
+#### `java-test-mapping.csv`
+
+The method-level traceability document: one row per Java test method, carrying the Scala spec and
+test name that replaced it and the status of that decision. It is what an auditor reads to answer
+"which Scala test covers this Java test, and if none, why", and what the test-scope gate reads to
+prove the port's test coverage is at least the Java suite's.
+
+It is a header line plus **1,876 data rows**, RFC-4180 with five fields per row, US-ASCII, LF line
+endings, exactly one trailing newline, 316,382 bytes at this revision. A field is quoted only when
+it contains a comma or a double quote, and a contained quote is doubled — at this revision 80
+lines are quoted, all of them for commas inside a `scala_test_name`.
+
+| Column | Contents |
+|---|---|
+| `java_test_class` | fully-qualified Java test class, for example `com.opengamma.strata.basics.date.DayCountTest` |
+| `java_test_method` | the test method's name; an overloaded name carries its erased parameter types, `name(Type;Type)` |
+| `scala_spec` | the fully-qualified Scala spec that covers it, or empty |
+| `scala_test_name` | the test name inside that spec, or empty. It is frequently a sentence rather than the Java identifier — 454 rows rename the test — which is why this column cannot be derived |
+| `status` | `ported`, `consolidated:<spec>`, `partial:<reason>` or `dropped:<reason>` |
+
+**What is derived, and what is read back.** Columns 1-2, the row order and the format are facts
+about the Java sources, so the capture derives them on every run: it scans every `*Test.java`
+under `modules/basics/src/test/java` (72 classes, 1,223 test methods) plus the 24
+`com.opengamma.strata.collect` test classes the port maps (653 methods), declared as a literal
+list in the script rather than taken from the document being verified, so the document cannot
+certify its own class set. Rows are emitted by ascending fully-qualified class name and, within a
+class, in **Java source order**; a method counts when it carries `@Test` or `@ParameterizedTest`,
+after comments and string literals are blanked, so an annotation named in a comment or a string is
+not a test. Columns 3-5 are mapping decisions, read from the committed document keyed by
+(class, method) and re-emitted verbatim.
+
+**The taxonomy the capture enforces**, with the counts it asserts:
+
+* `ported` — 1,446 rows, each naming both a spec and a test name; the status carries no suffix.
+* `consolidated:<spec>` — 293 rows whose Java test was absorbed by a spec that covers several, for
+  example `JsonRoundTripSpec` taking every `test_serialization`; 9 distinct target specs.
+* `partial:<reason>` — 118 rows, and only from `GuavateTest` (71) and `MapStreamTest` (47), whose
+  members the port carries only where `strata-basics` uses them.
+* `dropped:<reason>` — 19 rows, and only from the exclusions the plan names: the five test classes
+  of machinery that is not ported (`HolidayCalendarIniLookupTest`, `FailureExceptionTest`,
+  `FailureItemExceptionTest`, `IllegalArgFailureExceptionTest`, `ParseFailureExceptionTest`) and
+  the one `ImmutableHolidayCalendarTest` row for the legacy Joda JSON fixture.
+* A `partial` or `dropped` row leaves both mapping columns **empty** — 137 rows do — and a
+  `ported` or `consolidated` row must fill both. 86 distinct Scala specs are named in total.
+
+A capture aborts, having written nothing, on: a Java test method with no row; a row naming no Java
+method; a duplicate `(class, method)`; a status outside the four forms; an empty mapping column on
+a `ported`/`consolidated` row or a non-empty one on a `partial`/`dropped` row; a `partial` row
+outside the two Guavate/MapStream classes or a `dropped` row outside the exclusions; any of the
+anchor counts above; and a rebuilt document that differs from the committed one, reported with the
+line number and both renderings.
+
+**So how do you change it?** Edit the mapping columns of the committed document — when a spec
+lands, gets renamed, or absorbs another test — then re-capture and confirm the comparison loop
+prints `identical`. Never regenerate it from nothing: columns 3-5 exist only in that file. If the
+Java tree ever changes, the capture tells you exactly which methods gained or lost a row, which is
+the one situation where rows are added or deleted by hand.
+
 ### 8. Notes for maintainers
 
 Each of the following silently corrupts a baseline if forgotten, and each is a verified property
 of the Java sources this capture reads — not a style preference. Check them before changing how
 anything is captured.
 
-* **Every committed fixture is regenerable, so a diff after a re-capture is a finding.** All six —
-  `daycount-baseline.json` included — come back byte for byte from a run of the checked-in script at
-  the schemas section 6 documents. Re-capture freely, but compare document by document as step 3
-  describes, and treat any difference as something to investigate before committing rather than as
-  the new baseline.
+* **Every committed document is regenerable, so a diff after a re-capture is a finding.** All
+  eight — `daycount-baseline.json` included — come back byte for byte from a run of the checked-in
+  script at the schemas sections 6 and 7 document. Re-capture freely, but compare document by
+  document as step 3 describes, and treat any difference as something to investigate before
+  committing rather than as the new baseline.
+
+* **A Java test method is `@Test` or `@ParameterizedTest` in the source, not everything that looks
+  like one.** The test-mapping scan blanks comments and string, character and text-block bodies
+  before matching, because both appear in the Java tests: an annotation quoted in a comment or
+  inside a string is not a test method, and counting it shifts every anchor count. Two further
+  traps in the same scan: a `@MethodSource("data_x")` provider is *not* a test (the walk continues
+  past further annotations to the method the annotation applies to), and a test-method name that
+  occurs twice in one class must carry its erased parameter types in **both** rows — one bare name
+  and one signature would leave one of the two methods unmapped while the row count still matched.
+  `DecimalTest.testValuesOfBigDecimal` is the only such pair in the tree today.
 
 * **Public API only.** A `.jsh` script runs in the unnamed package, so the package-private classes
   the Java tests reach by sharing their package are **unreachable** here:
@@ -1255,6 +1397,7 @@ anything is captured.
 
 For the wider context, `build.sbt` defines the module layout and the sbt commands, and
 `strata-collect/README.md` describes the ported collect subset. The list of deliberate divergences
-from the Java behaviour belongs in `SCALA_MIGRATION.md`, which does not exist at this revision, and
-the repository's [root README](../../README.md) does not yet carry a Scala-port section — so until
-those land, this document and `strata-collect/README.md` are the context that exists.
+from the Java behaviour belongs in `SCALA_MIGRATION.md`, and the repository's
+[root README](../../README.md) is where the Scala port is introduced; consult both for anything
+this document treats as settled. What is stated here is only what was measured against the script
+and the documents in this directory.

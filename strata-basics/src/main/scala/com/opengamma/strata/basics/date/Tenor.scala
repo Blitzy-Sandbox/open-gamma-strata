@@ -524,6 +524,16 @@ object Tenor {
    * the underlying factory has several reasons, they are combined into one, because a parse has
    * a single error channel.
    *
+   * The text the parsing failure quotes back is rendered through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
+   * and its control characters are escaped. A message reaches a log or a report, and the text
+   * handed to this method came from outside the library, so it must not be able to forge a
+   * line of that log or to make the message as large as the input. Text within the bound and
+   * free of control characters is quoted exactly as it was given, which is the common case. The
+   * library being ported echoed no part of the text here at all - it let the failure of the
+   * underlying period parse surface instead - so bounding what this port echoes moves towards
+   * that behaviour rather than away from it.
+   *
    * @param toParse  the text to parse
    * @return the tenor the text names, or the failure describing why it names none
    */
@@ -531,7 +541,7 @@ object Tenor {
     val prefixed = if (toParse.startsWith("P")) toParse else s"P$toParse"
     Try(Period.parse(prefixed)).toEither match {
       case Right(period) => of(period).left.map(Failure.collapse)
-      case Left(_) => Left(Failure.Parsing(s"Unable to parse tenor: '$toParse'"))
+      case Left(_) => Left(Failure.Parsing(s"Unable to parse tenor: '${Failure.describeInput(toParse)}'"))
     }
   }
 

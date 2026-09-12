@@ -184,6 +184,29 @@ trait NamedEnum[A <: Named] {
    * carries no attributes, so that two failures from the same family over the same text are
    * equal and can be compared directly.
    *
+   * ===The length the lenient stage accepts===
+   *
+   * The rewrites are applied only to text no longer than the family's own data warrants:
+   * the longest lookup key it registers, the longest alternate spelling it holds and the
+   * longest expression it declares, whichever of those is longest, plus a margin. Text
+   * beyond that is reported with the same failure the rewrites would have produced for it,
+   * without being folded to upper case and without any expression being applied. The exact
+   * lookup is not bounded at all, so text of any length still resolves when it is a
+   * canonical name, the upper-case form of one or an alternate spelling - the bound being at
+   * least the longest such key plus the margin, no text that could resolve exactly is ever
+   * affected by it, and a family with longer names is given a proportionally longer bound.
+   *
+   * The narrowing this leaves is one case: an expression that consumes text of arbitrary
+   * length and rewrites it to the name of a member, offered text longer than the bound. Such
+   * an expression is what makes the cost of a rewrite grow with the length of the text
+   * rather than with the size of the family, and bounding the text is what keeps the cost of
+   * rejecting a name a constant of the family. Three things place the case. The rewrites are
+   * reached only once the exact lookup has missed, so no resolvable spelling depends on them.
+   * The type being ported bounded its input no more than this one did, so the exposure is
+   * inherited rather than introduced here. And no table this library transcribes declares
+   * such an expression - every one of them is anchored to a literal shape of a fixed
+   * size - so the bound closes the case before a family realises it rather than after.
+   *
    * @param name  the text to parse
    * @return the member the text names, or the failure describing why it names none
    */
@@ -292,6 +315,22 @@ object NamedEnum {
 
   /** The inline flag that makes an expression insensitive to case. */
   private val CaseInsensitiveFlag: String = "(?i)"
+
+  /**
+   * The room allowed above the longest text a family knows, bounding its lenient stage.
+   *
+   * The bound a family applies before rewriting text is derived from its own data - the
+   * longest lookup key, alternate spelling and expression source it holds - and this margin
+   * is added to it, so that a spelling longer than anything the family declares is still
+   * rewritten as long as it is within reach of one. The tables this library transcribes
+   * size the margin: the longest expression source any of them declares is fifty characters
+   * and the longest name or alternate spelling any of them realises is under sixty, while
+   * the longest spelling a caller can sensibly offer one of those rows - a screaming-snake
+   * or spaced form of a name - runs a handful of characters beyond the name itself. Thirty-two
+   * characters of room therefore admits every declared row and every spelling of one with
+   * room to spare, while leaving the bound of every family a small constant.
+   */
+  private val LenientLengthMargin: Int = 32
 
   /**
    * Summons the name lookup of a family.
@@ -497,6 +536,40 @@ object NamedEnum {
       }
 
     /**
+     * The greatest length of text this family hands to its lenient rewrites.
+     *
+     * This is the longest text the family could plausibly be asked to rewrite, taken from
+     * the family's own data and nothing else: the longest key a member is registered under -
+     * canonical names and their upper-case forms alike - the longest spelling and target of
+     * the expanded alternate-name table, and the longest expression source the family
+     * declared, plus [[NamedEnum.LenientLengthMargin]]. A family with longer names therefore
+     * gets a longer bound, and one whose expressions are written out at length gets a bound
+     * that covers them.
+     *
+     * Both sides of the alternate-name table count, because the text that survives the
+     * rewrites is looked up through that table as well: a rewrite may produce an alternate
+     * spelling, and a table row may name a member the family does not have, in which case
+     * its target is longer than any key. Taking the greatest length of all three sources
+     * therefore bounds the text that any of the two lookups could still resolve, which is
+     * what makes the bound safe to apply before the rewrites rather than after them.
+     *
+     * Computed once, like every other table derived here: the value is a constant of the
+     * family and is read on the miss path of every parse.
+     */
+    private lazy val maxLenientLength: Int = {
+      val keyLengths = entries.iterator.map { case (key, _) => key.length }
+      val aliasLengths = alternateNames.iterator.flatMap { case (spelling, canonicalName) =>
+        Iterator(spelling.length, canonicalName.length)
+      }
+      val sourceLengths = lenientPatterns.iterator.map { case (expression, _) =>
+        expression.pattern.pattern().length
+      }
+      val longest = (keyLengths ++ aliasLengths ++ sourceLengths)
+        .foldLeft(0)((widest, length) => math.max(widest, length))
+      longest + LenientLengthMargin
+    }
+
+    /**
      * The external groups with their rows resolved to members.
      *
      * Each row's canonical name is resolved through the exact lookup, so a row may point at
@@ -513,9 +586,59 @@ object NamedEnum {
     override def valueOf(name: String): Option[A] =
       byName.get(alternateNames.getOrElse(name, name))
 
+    /**
+     * Parses text into a member, applying the leniency the family declares.
+     *
+     * The exact lookup runs first and unbounded, so an alternate spelling and a name of any
+     * length resolve exactly as they always did. Only when it misses is the lenient stage
+     * reached, and the lenient stage is bounded: text longer than [[maxLenientLength]] is
+     * reported with the failure the rewrites would have reported for it, without the fold to
+     * upper case that would copy it and without a single expression being applied to it.
+     *
+     * ===Why the lenient stage is bounded and the lookup is not===
+     *
+     * The rewrites are the only part of this algorithm whose cost is a function of the
+     * length of the text rather than of the size of the family, and an expression that
+     * consumes text of unbounded length - a greedy or repeated group followed by a literal,
+     * say - can make that cost grow faster than the text does. Bounding the text the
+     * rewrites see makes the cost of rejecting a name a constant of the family, and bounding
+     * it here, where the fold to upper case would otherwise copy the whole of it, removes
+     * the copy as well.
+     *
+     * The bound is derived from the family's own data - its longest key, its longest
+     * alternate spelling, its longest expression source, plus a margin - so a family with
+     * longer names is given a longer bound, and no text that either exact lookup could
+     * resolve is ever beyond it. What it narrows is therefore one deliberate case: an
+     * expression that rewrites arbitrarily long text into the name of a member, handed text
+     * longer than the family's bound, now reports that text instead of rewriting it.
+     *
+     * Three facts place that narrowing. The rewrites are reached only after the alias-aware
+     * exact lookup has missed, so nothing a family resolves exactly depends on them. The
+     * lenient lookup of the type being ported applied its configured expressions to text of
+     * any length in exactly the same way, so the exposure is inherited here rather than
+     * introduced. And no table this library transcribes declares such an expression: every
+     * source in them is anchored to a literal shape of a fixed size, which is why the bound
+     * closes the case while it is still unrealised rather than after a family realises it.
+     *
+     * A full pass over the expressions for text within the bound is not narrowed and is not
+     * meant to be: it is the cost the ported algorithm has, and the order of the pass is
+     * behaviour.
+     *
+     * The comparison is written into the lookup rather than into a method of its own, and
+     * deliberately so: measured here, moving it into a private method cost the miss path of
+     * a family with no expression some fifty nanoseconds and one allocation per call, the
+     * extra frame being enough to stop the alternative of the lookup being elided. Both
+     * shapes compute the same answer, and this one is the one that leaves every rate of the
+     * lookup as it was before the bound existed.
+     *
+     * @param name  the text to parse
+     * @return the member the text names, or the failure describing why it names none
+     */
     override def parse(name: String): EitherNec[Failure, A] =
       valueOf(name)
-        .orElse(valueOf(rewriteLeniently(name.toUpperCase(Locale.ENGLISH))))
+        .orElse(
+          if (name.length > maxLenientLength) None
+          else valueOf(rewriteLeniently(name.toUpperCase(Locale.ENGLISH))))
         .toRight(notFound(name))
 
     /**

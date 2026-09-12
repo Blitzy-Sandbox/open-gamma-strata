@@ -212,12 +212,23 @@ object FloatingRate {
    * interface used for the error it raised in the same situation. The returned type is the
    * same as `collect.FailureOr[FloatingRate]`, spelled out here for readability.
    *
+   * The text the failure names is rendered through
+   * [[com.opengamma.strata.collect.result.Failure.describeInput]], so it is bounded in length
+   * and its control characters are escaped. A message reaches a log or a report, and the text
+   * handed to this method came from outside the library, so it must not be able to forge a
+   * line of that log or to make the message as large as the input. This narrows the ported
+   * behaviour, which echoed the text unbounded: for any text within the bound and free of
+   * control characters - every name of a floating rate among them - the message is the one the
+   * ported interface produced, character for character, and it is only a longer or a
+   * line-breaking input that is now described rather than reproduced.
+   *
    * @param indexStr  the text to parse, such as `GBP-LIBOR-3M` or `GBP-LIBOR-BBA`
    * @return the floating rate that the text names, or a failure describing the text that
    *   named none
    */
   def parse(indexStr: String): Either[Failure, FloatingRate] =
-    tryParse(indexStr).toRight(Failure.Parsing(s"Floating rate index not known: $indexStr"))
+    tryParse(indexStr).toRight(
+      Failure.Parsing(s"Floating rate index not known: ${Failure.describeInput(indexStr)}"))
 
   /**
    * Tries to parse text naming a floating rate, of either kind, answering with nothing when

@@ -411,6 +411,36 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     }
   }
 
+  test("parsing rejects text of any size without echoing it unbounded or across lines") {
+    // No Java counterpart: the Java method let the failure of `Period.parse` surface, so it
+    // echoed none of the text it was given, while this port reports a failure of its own that
+    // quotes the text back. Quoting is useful - the caller is told what could not be read -
+    // and it is bounded and escaped, because the message reaches a log or a report and the
+    // text reached the library from outside it.
+    val payload = "A" * 10000
+    val bounded = Tenor.parse(payload)
+    bounded should beFailureWith(FailureReason.PARSING)
+    // The echo is bounded by the rendering the message is built from, so the message is the
+    // fixed text plus at most `MaxDescribedInput + 3` characters of the input, whatever its
+    // size - where it was once the whole ten thousand.
+    val message = bounded.left.toOption.map(_.message).getOrElse("")
+    message.length should be <= "Unable to parse tenor: ''".length + Failure.MaxDescribedInput + 3
+    message should startWith("Unable to parse tenor:")
+
+    // A payload holding a line break cannot put one in the message, so a line-oriented
+    // consumer of the message cannot be made to record a line the library did not report.
+    val injected = Tenor.parse("3M\nINJECTED")
+    injected should beFailureWith(FailureReason.PARSING)
+    val injectedMessage = injected.left.toOption.map(_.message).getOrElse("")
+    injectedMessage should not include "\n"
+    injectedMessage shouldBe "Unable to parse tenor: '3M\\nINJECTED'"
+
+    // And the message for an ordinary rejected input is unchanged, character for character,
+    // which is what makes the bound invisible to every caller but the adversarial one.
+    Tenor.parse("Rubbish").left.toOption.map(_.message) shouldBe
+      Some("Unable to parse tenor: 'Rubbish'")
+  }
+
   //-------------------------------------------------------------------------
   test("test_getPeriod") {
     TENOR_3D.period shouldBe Period.ofDays(3)
@@ -673,7 +703,10 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
   //-------------------------------------------------------------------------
   // Mapping from the Java test class, for the record: all twenty-three annotated methods
   // are represented above under their Java names, and none is dropped, so the method-level
-  // traceability of the migration stays one to one.
+  // traceability of the migration stays one to one. The twenty-fourth case above,
+  // "parsing rejects text of any size without echoing it unbounded or across lines", has no
+  // Java counterpart and is named descriptively for that reason: it states how this port
+  // quotes rejected text - bounded and on one line - where the Java method quoted none of it.
   //
   // One of the twenty-three is nevertheless consolidated in the mapping file, and the two
   // facts are separate. `java-test-mapping.csv` records `TenorTest.test_serialization`

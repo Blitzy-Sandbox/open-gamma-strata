@@ -5,6 +5,7 @@
  */
 package com.opengamma.strata.collect.result
 
+import scala.annotation.tailrec
 import scala.collection.immutable.SortedMap
 
 import cats.Hash
@@ -412,6 +413,123 @@ object Failure {
       failure.attributes.foldLeft(merged) { case (acc, (key, value)) => acc.updated(key, value) }
     }
     of(reason, message, attributes)
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * The greatest number of characters of caller-supplied text that [[Failure.describeInput]]
+   * renders, before the marker that stands for what was left out.
+   *
+   * The bound and the `...` marker are the ones `java.time.format.DateTimeFormatter` applies
+   * to the text it could not parse, so a failure reporting unparsable text is as long as the
+   * failure of the underlying parse it stands in for, and no longer.
+   */
+  val MaxDescribedInput: Int = 64
+
+  /**
+   * Renders text supplied by a caller for inclusion in the message of a failure, bounded in
+   * length and free of anything that could forge a line.
+   *
+   * A message is written to be read, and the places that read one - a log, a report, a line
+   * of a console - are line-oriented and of finite size. Text that reached the library from
+   * outside it therefore cannot be interpolated into a message as it stands, and this method
+   * is what the message constructors that echo such text interpolate instead. Two properties
+   * hold of what it returns, whatever it was given:
+   *
+   *  - '''The rendering is bounded.''' Units of the input are taken while the rendered text
+   *    stays within [[Failure.MaxDescribedInput]] characters, and the three characters `...`
+   *    are appended when any of the input is left over, so the result is at most
+   *    `MaxDescribedInput + 3` characters long. A message can consequently not be made large
+   *    by handing a large value to the operation that reports the failure - a ten-thousand
+   *    character input renders to sixty-seven characters, not to ten thousand.
+   *  - '''The rendering is a single line.''' A line feed renders as the two characters `\n`,
+   *    a carriage return as `\r` and a tab as `\t`; every other character for which
+   *    `Character.isISOControl` holds, together with U+2028 LINE SEPARATOR and U+2029
+   *    PARAGRAPH SEPARATOR, renders as a six-character `\uXXXX` escape with lower-case
+   *    hexadecimal digits. Text that arrived from outside can therefore not introduce a line
+   *    of its own into a log holding the message, which is the one way a failure message
+   *    could otherwise be used to state something the library did not report.
+   *
+   * Every other character renders as itself, so ordinary text, punctuation, accented letters
+   * and CJK are untouched. A high surrogate followed by a low surrogate is taken as one unit
+   * and rendered as it stands, so an emoji survives whole and truncation never splits a pair;
+   * a surrogate standing on its own is not a character and renders as an escape. Text that is
+   * within the bound and holds none of the escaped characters therefore renders to itself,
+   * exactly - the property that lets this method be applied to a message that already reads
+   * the way it should without changing what that message says:
+   *
+   * {{{
+   * Failure.describeInput("Rubbish")       // "Rubbish", unchanged
+   * Failure.describeInput("3M\nINJECTED")  // "3M\\nINJECTED", one line
+   * Failure.describeInput("A" * 10000)     // 64 letters followed by "..."
+   * }}}
+   *
+   * Rendering is the reporter's act and not this type's. A failure carries whatever message
+   * it was built with, and nothing here inspects or rewrites one, so a reporter that means to
+   * echo text verbatim still can; the parse paths of the library that echo text they were
+   * handed call this method at the point they interpolate it.
+   *
+   * @param text  the text to render, as it was supplied
+   * @return the bounded, single-line rendering of that text
+   */
+  def describeInput(text: String): String = {
+    // The rendering is assembled a unit at a time - a surrogate pair counting as one - and
+    // stops as soon as the next unit would carry it past the bound, which is what keeps a
+    // pair whole and an escape entire. Threading the text rendered so far through a
+    // tail-recursive step rather than accumulating into a mutable local keeps the method
+    // free of assignment; both the intermediate and the final strings are bounded by
+    // `MaxDescribedInput`, so the concatenation costs no more than assembling the result in
+    // one pass would.
+    @tailrec
+    def rendering(index: Int, rendered: String): String =
+      if (index >= text.length) {
+        rendered
+      } else {
+        val head = text.charAt(index)
+        val pairsWithNext =
+          Character.isHighSurrogate(head) &&
+            index + 1 < text.length &&
+            Character.isLowSurrogate(text.charAt(index + 1))
+        val unit = if (pairsWithNext) text.substring(index, index + 2) else describeChar(head)
+        if (rendered.length + unit.length > MaxDescribedInput) {
+          rendered + "..."
+        } else {
+          rendering(index + (if (pairsWithNext) 2 else 1), rendered + unit)
+        }
+      }
+
+    rendering(0, "")
+  }
+
+  // Renders one character: the three control characters that have a short escape keep it,
+  // because a reader recognises them; anything else that must not reach a message as itself
+  // becomes a fixed-width escape; and every other character stands as it is.
+  private def describeChar(ch: Char): String =
+    if (ch == '\n') {
+      "\\n"
+    } else if (ch == '\r') {
+      "\\r"
+    } else if (ch == '\t') {
+      "\\t"
+    } else if (escapesAsUnicode(ch)) {
+      unicodeEscape(ch)
+    } else {
+      ch.toString
+    }
+
+  // The characters that have no short escape and cannot be rendered as themselves: every ISO
+  // control character other than the three above, the two Unicode separators that a reader
+  // may treat as ending a line, and a surrogate standing on its own, which is half of a
+  // character and turns into a replacement glyph wherever the message is written.
+  private def escapesAsUnicode(ch: Char): Boolean =
+    Character.isISOControl(ch) || ch == '\u2028' || ch == '\u2029' || Character.isSurrogate(ch)
+
+  // The six-character escape of a character. The digits are the lower-case hexadecimal ones
+  // `Integer.toHexString` produces, padded to four so that the width of an escape is fixed
+  // and the bound above can be reasoned about without knowing which character was escaped.
+  private def unicodeEscape(ch: Char): String = {
+    val digits = Integer.toHexString(ch.toInt)
+    s"\\u${"0" * (4 - digits.length)}$digits"
   }
 
   /**

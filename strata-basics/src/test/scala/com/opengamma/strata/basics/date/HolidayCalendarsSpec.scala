@@ -561,6 +561,96 @@ class HolidayCalendarsSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  test("test_compositeIdentifierComposedOnce") {
+    // A composite calendar's identifier follows from the identifiers of its parts, which are
+    // fixed when the composite is built, so it is composed at most once and then held. That is
+    // observable without timing anything: the same object comes back from every read. It has to
+    // be, because composing it parses and normalises a joined name, and `name`, `toString`, the
+    // `Show` rendering and the JSON form all read it - a composite calendar used in anger reads
+    // its identifier far more often than it is built.
+    val combined: HolidayCalendar = HolidayCalendars.FRI_SAT.combinedWith(HolidayCalendars.SAT_SUN)
+    val linked: HolidayCalendar = HolidayCalendars.FRI_SAT.linkedWith(HolidayCalendars.SAT_SUN)
+    val nested: HolidayCalendar = combined.combinedWith(HolidayCalendars.THU_FRI)
+
+    combined.id should be theSameInstanceAs combined.id
+    linked.id should be theSameInstanceAs linked.id
+    nested.id should be theSameInstanceAs nested.id
+
+    // What is held is the identifier the parts name, unchanged by being held: the combination of
+    // the two identifiers, normalised as every composite name is, and the name every read of the
+    // calendar reports.
+    combined.id shouldBe HolidayCalendarIds.FRI_SAT.combinedWith(HolidayCalendarIds.SAT_SUN)
+    combined.id.name shouldBe "Fri/Sat+Sat/Sun"
+    combined.name shouldBe "Fri/Sat+Sat/Sun"
+    combined.toString shouldBe "HolidayCalendar[Fri/Sat+Sat/Sun]"
+    linked.id shouldBe HolidayCalendarIds.FRI_SAT.linkedWith(HolidayCalendarIds.SAT_SUN)
+    linked.id.name shouldBe "Fri/Sat~Sat/Sun"
+    nested.id.name shouldBe "Fri/Sat+Sat/Sun+Thu/Fri"
+
+    // Two composites built separately are equal and name the same identifier, and an identifier
+    // is a value, so nothing about holding one makes two equal composites behave differently.
+    val again: HolidayCalendar = HolidayCalendars.FRI_SAT.combinedWith(HolidayCalendars.SAT_SUN)
+    again shouldBe combined
+    again.id shouldBe combined.id
+    again.hashCode shouldBe combined.hashCode
+
+    // The identifier of a composite is independent of the order its parts were given in, while
+    // the composite itself is not - the order is part of the value. Both are asserted in
+    // `coverage_combined`; repeated here because holding the identifier could only have broken
+    // the first of them.
+    HolidayCalendars.SAT_SUN.combinedWith(HolidayCalendars.FRI_SAT).id shouldBe combined.id
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_compositeResolution") {
+    // Resolving a composite identifier reads its parts together, and does so on every call - it
+    // is the path a date adjustment against a composite calendar takes. What it answers with is
+    // asserted here: the parts combined in the order the normalised name gives, so `GBLO+USNY`
+    // is the `GBLO` calendar combined with the `USNY` one whichever way round it was written.
+    val gblo: ImmutableHolidayCalendar =
+      ImmutableHolidayCalendar.of(HolidayCalendarIds.GBLO, List(MON_2014_07_14), List(SATURDAY, SUNDAY))
+    val usny: ImmutableHolidayCalendar =
+      ImmutableHolidayCalendar.of(HolidayCalendarIds.USNY, List(FRI_2014_07_11), List(SATURDAY, SUNDAY))
+    val data: ReferenceData = store(
+      ReferenceData.Entry(HolidayCalendarIds.GBLO, gblo),
+      ReferenceData.Entry(HolidayCalendarIds.USNY, usny))
+
+    val resolved = HolidayCalendarId.of("USNY+GBLO").resolve(data)
+    resolved should haveValue(gblo.combinedWith(usny))
+    resolved.map(calendar => calendar.name) should haveValue("GBLO+USNY")
+
+    // The combination observes both sets of holidays, which is the whole point of resolving the
+    // parts together rather than answering with one of them.
+    resolved.map(calendar => calendar.isHoliday(MON_2014_07_14)) should haveValue(true)
+    resolved.map(calendar => calendar.isHoliday(FRI_2014_07_11)) should haveValue(true)
+    resolved.map(calendar => calendar.isBusinessDay(THU_2014_07_10)) should haveValue(true)
+
+    // Resolution is repeatable, and reading the resolved calendar's identifier gives the
+    // identifier that was resolved.
+    HolidayCalendarId.of("GBLO+USNY").resolve(data) shouldBe resolved
+    resolved.map(calendar => calendar.id) should haveValue(HolidayCalendarId.of("GBLO+USNY"))
+
+    // A part the data does not hold ends the resolution, and the failure names both that part and
+    // the identifier being resolved - the context a caller needs to know which of several
+    // calendars was missing and what was being built from it. A composite is all or nothing: no
+    // calendar assembled from some of its parts is returned.
+    val missing = HolidayCalendarId.of("GBLO+XXZZ+USNY").resolve(data)
+    missing should beFailureWith(FailureReason.MISSING_DATA)
+    missing.swap.map(failure => failure.attributes.get("id")) shouldBe Right(Some("XXZZ"))
+    missing.swap.map(failure => failure.attributes.get("compositeId")) shouldBe Right(Some("GBLO+USNY+XXZZ"))
+
+    // Where the data holds the whole composite name, that calendar is used as it stands and the
+    // parts are not read at all - a host supplying a pre-combined calendar is answered with it.
+    val preCombined: ImmutableHolidayCalendar =
+      ImmutableHolidayCalendar.of(HolidayCalendarId.of("GBLO+USNY"), List(THU_2014_07_10), List(SATURDAY, SUNDAY))
+    val whole: ReferenceData = store(
+      ReferenceData.Entry(HolidayCalendarIds.GBLO, gblo),
+      ReferenceData.Entry(HolidayCalendarIds.USNY, usny),
+      ReferenceData.Entry(HolidayCalendarId.of("GBLO+USNY"), preCombined))
+    HolidayCalendarId.of("USNY+GBLO").resolve(whole) should haveValue(preCombined)
+  }
+
+  //-------------------------------------------------------------------------
   test("test_serialization") {
     // The Java method asserted a Java-serialization round trip of the four constants and of
     // one composite. No type of this port supports Java serialization, so the equivalent is

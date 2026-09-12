@@ -6,8 +6,6 @@
 package com.opengamma.strata.collect
 
 import scala.annotation.tailrec
-import scala.collection.immutable.List
-import scala.collection.immutable.Map
 import scala.collection.immutable.SortedMap
 import scala.collection.immutable.VectorMap
 
@@ -66,6 +64,21 @@ import com.opengamma.strata.collect.result.Failure
  * this API. A key type that has only a standard library ordering reaches these members
  * through `cats.Order.fromOrdering`.
  *
+ * ===How a map-shaped result is assembled===
+ *
+ * Four members build a map one element at a time - the three forms of `toSortedMap` and
+ * `groupByPreservingOrder` - and each of them accumulates into a mutable map of the standard
+ * library that is created inside the method body, is reachable from nothing else, and is read
+ * exactly once at the end to freeze the immutable result the member returns. That is the only
+ * mutability in this file and it is deliberate: an immutable map updated once per element
+ * copies the path to the entry it changes on every element, which measured close to a kilobyte
+ * of garbage for every element of an input of ten thousand distinct keys, where building the
+ * map once costs one node per distinct key. Nothing about the result changes - the same type,
+ * the same ordering, the same iteration order, the same failure on a repeated key - and the
+ * accumulator is an implementation detail in the strictest sense: it appears in no signature,
+ * no field and no returned value, so no caller can observe that it existed. Each member says
+ * below which mutable map it uses and what that map contributes beyond a cheaper assembly.
+ *
  * ===What has no counterpart here===
  *
  * The members of the two classes that the dependent module uses, and what each becomes:
@@ -95,6 +108,11 @@ import com.opengamma.strata.collect.result.Failure
  * safe to use from any number of threads. A member that takes an `IterableOnce` consumes it
  * once and never retains it, so a caller that passes an iterator must not use that iterator
  * afterwards - the usual contract of a single-use collection.
+ *
+ * The accumulators described above do not qualify that. Each one is created by the invocation
+ * that fills it, is never published, and is unreachable the moment the member returns, so two
+ * threads calling the same member at the same time share nothing and two successive calls
+ * cannot see one another's work.
  *
  * @see [[com.opengamma.strata.collect.result.Failure Failure]] for the failure these helpers report
  */
@@ -224,7 +242,7 @@ object Collections {
    * @return the map of key to element, or a failure if two elements produced the same key
    */
   def toSortedMap[A, K: Order](items: IterableOnce[A], key: A => K): Either[Failure, SortedMap[K, A]] =
-    collectUnique(items.iterator.map(item => (key(item), item)), emptySortedMap[K, A])
+    collectUnique(items.iterator.map(item => (key(item), item)))
 
   /**
    * Builds a sorted map from the specified collection, keyed and valued by the specified
@@ -254,7 +272,7 @@ object Collections {
       items: IterableOnce[A],
       key: A => K,
       value: A => V): Either[Failure, SortedMap[K, V]] =
-    collectUnique(items.iterator.map(item => (key(item), value(item))), emptySortedMap[K, V])
+    collectUnique(items.iterator.map(item => (key(item), value(item))))
 
   /**
    * Builds a sorted map from the specified collection, combining the values of elements that
@@ -291,57 +309,93 @@ object Collections {
       items: IterableOnce[A],
       key: A => K,
       value: A => V,
-      merge: (V, V) => V): SortedMap[K, V] =
-    items.iterator.foldLeft(emptySortedMap[K, V]) { (accumulated, item) =>
-      val itemKey = key(item)
-      val itemValue = value(item)
-      accumulated.updated(itemKey, accumulated.get(itemKey).fold(itemValue)(merge(_, itemValue)))
-    }
+      merge: (V, V) => V): SortedMap[K, V] = {
+    val ordering = orderingOf[K]
+    // The accumulator is a sorted mutable map of this invocation's own, ordered by the same
+    // ordering as the result and frozen into it on the last line. Merging is a read of the
+    // value held for the key followed by a write of the combined value, which is one search of
+    // the tree and one write into it rather than a copy of the path to that entry.
+    val accumulated = scala.collection.mutable.TreeMap.empty[K, V](ordering)
+    val remaining = items.iterator
+    // The traversal is a tail-recursive local rather than a `foreach`, and for a reason that
+    // is not style: a function literal that captured the accumulator would be compiled to a
+    // synthetic method taking it as a public argument, putting a mutable type into a member
+    // signature of this object, whereas this local is compiled to a loop inside a private
+    // one. Nothing here is a mutable variable - the only thing that changes is the map.
+    @tailrec
+    def mergeRemaining(): Unit =
+      if (remaining.hasNext) {
+        val item = remaining.next()
+        val itemKey = key(item)
+        val itemValue = value(item)
+        accumulated.update(itemKey, accumulated.get(itemKey).fold(itemValue)(merge(_, itemValue)))
+        mergeRemaining()
+      }
+    mergeRemaining()
+    SortedMap.from(accumulated)(ordering)
+  }
 
   /**
-   * Returns the empty sorted map for a key type that has an order.
+   * Returns the standard library ordering of a key type from the order it publishes.
    *
    * This is the single place where the order of the key type is turned into the standard
    * library ordering that a sorted map is built with, so every member above sorts its result
-   * the same way. The ordering is passed explicitly rather than made implicit locally, which
-   * keeps the conversion visible at the one point it happens.
+   * the same way - and, where a member builds its result through a sorted accumulator, that
+   * accumulator and the result it is frozen into are given the very same ordering. The
+   * ordering is passed explicitly rather than made implicit locally, which keeps the
+   * conversion visible at the one point it happens.
    *
    * @tparam K  the type of the keys, which must have an order
-   * @tparam V  the type of the values
-   * @return the empty map, ordered by the order of the key type
+   * @return the standard library ordering derived from the order of the key type
    */
-  private def emptySortedMap[K: Order, V]: SortedMap[K, V] =
-    SortedMap.empty[K, V](Order[K].toOrdering)
+  private def orderingOf[K: Order]: Ordering[K] = Order[K].toOrdering
 
   /**
    * Accumulates key and value pairs into a sorted map, stopping at the first repeated key.
    *
-   * The recursion is in tail position and is compiled to a loop, so this holds no mutable
-   * state and traverses a collection of any size without consuming stack. Emptiness of the
-   * map is not enough to detect a repeat - `contains` is asked of each key before it is
-   * added, because a later pair would otherwise silently replace an earlier one, which is
-   * precisely the condition being reported.
+   * Both unique forms of `toSortedMap` are written in terms of this method, so neither the
+   * assembly nor the failure can drift between them. The pairs arrive as an iterator that the
+   * caller built by mapping over its own collection, and they are pulled one at a time: a
+   * repeat stops the traversal where it is found, and neither the element that produced the
+   * repeat nor anything after it is read again - which is what makes the promise that a
+   * failing call leaves the rest of a single-use collection untouched.
    *
-   * @tparam K  the type of the keys
+   * Emptiness of the map is not enough to detect a repeat - `contains` is asked of each key
+   * before it is added, because a later pair would otherwise silently replace an earlier one,
+   * which is precisely the condition being reported.
+   *
+   * The pairs accumulate into a sorted mutable map created here, which nothing outside this
+   * method can reach and which is read once to freeze the immutable result; an immutable
+   * sorted map updated once per pair would instead copy the path to the entry it added for
+   * every pair. The recursion that drives it is in tail position and is compiled to a loop, so
+   * a collection of any size is traversed without consuming stack, and the local it updates is
+   * the accumulator itself rather than a mutable variable.
+   *
+   * @tparam K  the type of the keys, which must have an order
    * @tparam V  the type of the values
-   * @param remaining  the pairs still to add
-   * @param accumulated  the map built from the pairs already added
+   * @param remaining  the pairs to add, pulled one at a time and consumed no further than the
+   *   first repeated key
    * @return the completed map, or a failure naming the first repeated key
    */
-  @tailrec
-  private def collectUnique[K, V](
-      remaining: Iterator[(K, V)],
-      accumulated: SortedMap[K, V]): Either[Failure, SortedMap[K, V]] =
-    if (!remaining.hasNext) {
-      Right(accumulated)
-    } else {
-      val (itemKey, itemValue) = remaining.next()
-      if (accumulated.contains(itemKey)) {
-        Left(duplicateKey(itemKey))
+  private def collectUnique[K: Order, V](
+      remaining: Iterator[(K, V)]): Either[Failure, SortedMap[K, V]] = {
+    val ordering = orderingOf[K]
+    val accumulated = scala.collection.mutable.TreeMap.empty[K, V](ordering)
+    @tailrec
+    def addRemaining(): Either[Failure, SortedMap[K, V]] =
+      if (!remaining.hasNext) {
+        Right(SortedMap.from(accumulated)(ordering))
       } else {
-        collectUnique(remaining, accumulated.updated(itemKey, itemValue))
+        val (itemKey, itemValue) = remaining.next()
+        if (accumulated.contains(itemKey)) {
+          Left(duplicateKey(itemKey))
+        } else {
+          accumulated.update(itemKey, itemValue)
+          addRemaining()
+        }
       }
-    }
+    addRemaining()
+  }
 
   /**
    * Returns the failure reported when two elements produce the same key.
@@ -393,6 +447,18 @@ object Collections {
    * result is constant time per key for the same reason: a key is looked up by hash rather
    * than by walking a chain of entries whose length is the number of groups.
    *
+   * The pass that precedes that assembly is over a mutable insertion-ordered map of this
+   * invocation's own - a `LinkedHashMap`, created here, updated only from here and read once
+   * to build the `VectorMap` returned. The choice of a mutable map is for the same reason as
+   * the choice of `VectorMap` over `ListMap`: an immutable map updated once per element copies
+   * the path to the entry it changes on every element, which is an allocation per element
+   * proportional to the depth of the map rather than to the group it adds to - close to a
+   * kilobyte per element on an input of ten thousand distinct keys, where this pass allocates
+   * one entry per distinct key and one cell per element. Insertion order is what the mutable
+   * map contributes beyond that: updating the group of a key already present leaves that key
+   * where it was, so the order the map iterates in is the order of first encounter and the
+   * keys no longer have to be carried, reversed and looked up again alongside the groups.
+   *
    * @tparam A  the type of the elements
    * @tparam K  the type of the keys
    * @param items  the collection to group, consumed once
@@ -400,24 +466,38 @@ object Collections {
    * @return the groups, keyed in order of first encounter, each in order of arrival
    */
   def groupByPreservingOrder[A, K](items: IterableOnce[A])(key: A => K): VectorMap[K, NonEmptyList[A]] = {
-    // The fold carries the keys in reverse order of first encounter alongside the groups, so
-    // that neither prepending a key nor prepending an element to its group costs more than a
-    // constant. Both are reversed once, at the end.
-    val (reversedKeys, groups) =
-      items.iterator.foldLeft((List.empty[K], Map.empty[K, NonEmptyList[A]])) {
-        case ((keysSoFar, groupsSoFar), item) =>
-          val itemKey = key(item)
-          groupsSoFar.get(itemKey) match {
-            case Some(group) => (keysSoFar, groupsSoFar.updated(itemKey, item :: group))
-            case None => (itemKey :: keysSoFar, groupsSoFar.updated(itemKey, NonEmptyList.one(item)))
-          }
+    // Each group accumulates in reverse order of arrival, so that prepending an element to it
+    // costs a constant however long the group already is. Every group is reversed once, in the
+    // single pass over the accumulator that assembles the result below.
+    val groups = scala.collection.mutable.LinkedHashMap.empty[K, NonEmptyList[A]]
+    val remaining = items.iterator
+    // Tail-recursive rather than a `foreach` for the reason given in the merging form of
+    // `toSortedMap`: a function literal capturing the accumulator would carry a mutable type
+    // into a synthetic member signature of this object, and a local compiled to a loop does
+    // not. There is no mutable variable in it either - the map is the only thing that changes.
+    @tailrec
+    def groupRemaining(): Unit =
+      if (remaining.hasNext) {
+        val item = remaining.next()
+        val itemKey = key(item)
+        groups.get(itemKey) match {
+          case Some(group) => groups.update(itemKey, item :: group)
+          case None => groups.update(itemKey, NonEmptyList.one(item))
+        }
+        groupRemaining()
       }
-    // Every key in the list was inserted into the groups by the same step that recorded it,
-    // so the lookup below always finds a group; it is written as a lookup that may find
-    // nothing so that the member is total whatever happens to the fold above.
-    VectorMap.from(
-      reversedKeys.reverseIterator
-        .flatMap(groupKey => groups.get(groupKey).map(group => groupKey -> group.reverse)))
+    groupRemaining()
+    // The accumulator iterates its keys in the order they were first inserted, which is the
+    // order of first encounter, so the result takes them in the order it receives them. The
+    // accumulator itself is not reachable from the result and is unreachable altogether once
+    // this method returns - the groups are immutable, so the ones handed over unchanged are
+    // shared rather than copied. A group of one element is in arrival order already and is
+    // handed over as it is: reversing it would answer an equal list and allocate a second one
+    // for every element of an input whose keys are all distinct, which is the shape that costs
+    // the most to begin with.
+    VectorMap.from(groups.iterator.map { case (groupKey, group) =>
+      (groupKey, if (group.tail.isEmpty) group else group.reverse)
+    })
   }
 
   //-------------------------------------------------------------------------

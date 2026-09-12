@@ -51,6 +51,14 @@ import com.opengamma.strata.collect.result.Failure
  * val many = adjustment.resolve(ReferenceData.standard).map(adjuster => dates.map(adjuster.adjust))
  * }}}
  *
+ * Which form to use is worth a thought where the calendar is '''composite''' - `GBLO+USNY`, say.
+ * Resolving such an identifier looks each of its parts up and reads the results together, so
+ * [[adjust]] repeats that assembly for every date it is given, while [[resolve]] and `toReader`
+ * do it once and hand back an adjuster that costs the same per date as a single calendar's. The
+ * difference is a few times the cost of an adjustment for a simple calendar and an order of
+ * magnitude for a composite one; a schedule of dates should therefore resolve once, and
+ * [[adjust]] is for the single date and for the caller who holds no resolved calendar.
+ *
  * A resolved adjuster is bound to the calendar it was resolved against and does not follow later
  * changes to the reference data, which is the caveat [[com.opengamma.strata.basics.Resolvable]]
  * documents for every resolved form.

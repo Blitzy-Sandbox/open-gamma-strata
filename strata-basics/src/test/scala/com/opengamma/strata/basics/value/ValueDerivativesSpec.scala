@@ -162,12 +162,33 @@ final class ValueDerivativesSpec extends AnyFunSuite with Matchers {
 
     // Equality compares the value by its bit pattern - the `doubleToLongBits` equality that
     // Joda-Beans used and that this port preserves - so a not-a-number value is equal to itself
-    // and an instance carrying one equals an equal instance. The justification is the bit-level
-    // comparison itself, not the platform comparison of two doubles, which reports the opposite
+    // and an instance carrying one equals an equal instance. The fact asserted underneath it is
+    // `java.lang.Double.compare`, the total ordering of doubles that bit-pattern equality agrees
+    // with, and not the platform comparison of two doubles with `==`, which reports the opposite
     // for this input and would make the assertion pass for the wrong reason.
     ValueDerivatives.of(Double.NaN, Derivatives) shouldBe ValueDerivatives.of(Double.NaN, Derivatives)
     java.lang.Double.compare(Double.NaN, Double.NaN) shouldBe 0
-    java.lang.Double.doubleToLongBits(Double.NaN) shouldBe java.lang.Double.doubleToLongBits(Double.NaN)
+    // The same claim carried through every equality-bearing member of the type, on two instances
+    // built independently of each other: the second names its not-a-number as an arithmetic
+    // expression rather than as the constant, and holds a fresh array of its own rather than the
+    // shared fixture - the shape the second instance of the Java `coverBeanEquals` call had - so
+    // the two instances share no object and the assertions are about the equality of this type,
+    // which compares every not-a-number as one value and compares the array element by element,
+    // rather than about reference identity. The two spellings of not-a-number are interchangeable
+    // here precisely because of that first property. `Hash` is asserted alongside the platform
+    // equality because it is this type's single equality-bearing instance and the two have to
+    // agree, and the hashes are asserted equal because equal instances that hash differently
+    // would be broken in every hashed collection.
+    val notANumber = ValueDerivatives.of(Double.NaN, Derivatives)
+    val sameNotANumber = ValueDerivatives.of(0.0d / 0.0d, DoubleArray.of(1.0d, 2.0d, 3.0d))
+    sameNotANumber shouldBe notANumber
+    Hash[ValueDerivatives].eqv(sameNotANumber, notANumber) shouldBe true
+    sameNotANumber.hashCode shouldBe notANumber.hashCode
+    // and the converse, without which the assertions above could be satisfied by an equality
+    // that accepts anything: an instance carrying a not-a-number value is unequal to the
+    // numeric fixture, under both members alike.
+    notANumber should not be test
+    Hash[ValueDerivatives].eqv(notANumber, test) shouldBe false
 
     // The other half of that same equality: the two zeroes have different bit patterns, so they
     // are different values here, where the platform comparison calls them equal.

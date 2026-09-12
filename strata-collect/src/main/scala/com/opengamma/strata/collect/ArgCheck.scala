@@ -50,6 +50,18 @@ import com.opengamma.strata.collect.array.Matrix
  * Because of that split this object is the single place in either module where a throw is
  * written. Any other file that has to enforce an invariant calls a check here.
  *
+ * One boundary within the first kind is worth stating, because the numeric array types of
+ * this module sit on both sides of it. A violation of ''shape'' - a negative size or
+ * dimension asked of a factory, two arrays that have to match in length and do not, a
+ * sub-array boundary beyond the end of an array, an array of matrix rows that differ in
+ * length, or the smallest element of an array that has none - is checked here, before
+ * anything is allocated or read, and is therefore reported as this object's exception. A
+ * violation of ''index'' - a single element addressed outside an array - is left to the array
+ * access itself, which raises the index exception of the runtime: a check in front of it
+ * would change the exception a caller sees for no gain, since the access reports the same
+ * fault at the same instant, and the Java original reported it the same way. `DoubleArray`
+ * and `DoubleMatrix` record which of their members falls on which side.
+ *
  * ===Deliberate differences from the Java original===
  *
  * The Java class that this is ported from returned the checked argument, so that a check
@@ -832,13 +844,14 @@ object ArgCheck {
    * is not negative.
    *
    * The array-oriented forms of the comparison live with the rest of the array arithmetic, in
-   * `DoubleArrayMath`, and a reader comparing the two should expect them to differ: that
-   * object states the migration plan's reading of a fuzzy comparison, under which a
-   * not-a-number value is equal to nothing at all and each infinity is equal only to itself
-   * at any tolerance, including an infinite one. This local zero test deliberately keeps the
-   * Java behaviour instead, because the Java check is the authority for these two checks and
-   * their messages. They are also deliberately not called from here: that object checks its
-   * own arguments through this one, and calling back into it would tie the two together in a
+   * `DoubleArrayMath`, and both reproduce the same numeric helper, so a reader comparing the
+   * two should expect them to answer alike. That object's comparison carries one clause this
+   * one does not - two values that are both not a number are equal to each other - and the
+   * clause cannot fire against zero, because zero is a number. For the comparison made here,
+   * against zero, the two are therefore the same function of the value and the tolerance on
+   * every input, a not-a-number argument and an infinity included. They are nonetheless
+   * deliberately kept separate rather than one calling the other: that object checks its own
+   * tolerance through this one, and calling back into it would tie the two together in a
    * cycle.
    *
    * @param argument  the value to test

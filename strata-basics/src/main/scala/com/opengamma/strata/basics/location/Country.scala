@@ -133,11 +133,15 @@ sealed abstract case class Country private (code: String) {
    * The failure is `MissingData` because the reference data holds no row for the code, and
    * its message is the one the type being ported used.
    *
+   * The lookup goes through the hash index of the reference data rather than through its
+   * published sorted table, so it costs one probe rather than a descent of the sorted table;
+   * the answer is the same either way, the two being built from one transcription.
+   *
    * @return the three letter code, or the failure describing that there is none
    */
   def code3Char: Either[Failure, String] =
-    CountryData.alpha2ToAlpha3
-      .get(code)
+    CountryData
+      .alpha3CodeOf(code)
       .toRight(Failure.MissingData(s"Unknown country: $code"))
 
   /**
@@ -431,7 +435,12 @@ object Country {
    *
    * Because the causes are alternatives rather than things that can both be true of one
    * input - text that is not well formed is never looked up - the result reports a single
-   * failure rather than the accumulating form used by `of`.
+   * failure rather than the accumulating form used by `of`. The shape check therefore runs
+   * first and the translation only on what it passed, which is also why the lookup may take
+   * the code as given.
+   *
+   * The translation goes through the hash index of the reference data rather than through its
+   * published sorted table, for the reason given on [[code3Char]].
    *
    * @param countryCode  the three letter country code, upper case ASCII
    * @return the country, or the failure describing why the code was rejected
@@ -443,8 +452,8 @@ object Country {
       .left
       .map(Failure.collapse)
       .flatMap(code =>
-        CountryData.alpha3ToAlpha2
-          .get(code)
+        CountryData
+          .alpha2CodeOf(code)
           .toRight(Failure.Parsing(s"Unknown country code: $code"))
           .map(unsafe))
 

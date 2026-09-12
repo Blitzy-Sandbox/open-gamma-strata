@@ -28,6 +28,12 @@ package com.opengamma.strata.basics.index
  * a concrete index, are ported together with the index families themselves. Until then the family
  * is a closed set with nothing in it, so a lookup by name finds nothing.
  *
+ * When the conversions arrive, the default rate of a currency is reached through
+ * `FloatingRateNameData.defaultIborExternalNameOf` and
+ * `FloatingRateNameData.defaultOvernightExternalNameOf`, which answer a currency with the external
+ * name of its default rate in one map hit, rather than through the ordered tables those accessors
+ * read, which are published in the order the reference data manifest compares.
+ *
  * @see [[FloatingRate]] for the abstraction this shares with a concrete index
  * @see [[FloatingRateType]] for the kind of rate a floating rate name describes
  */

@@ -896,6 +896,27 @@ object Decimal {
    * digit for digit with this route. Text naming no number, text longer than the type accepts,
    * and a number too large to hold are each reported as a failure.
    *
+   * Agreeing with that route does not require taking it. After the two guards on the text
+   * itself, one pass over the characters - the pre-filter the ported type carries for the same
+   * reason - classifies the text into exactly three outcomes:
+   *
+   *   - a plain numeral, being an optional leading sign, at least one ASCII digit, at most one
+   *     decimal point, no more than eighteen significant digits and a scale of no more than
+   *     eighteen, is evaluated by the pass itself and finished through `ofScaled`, which
+   *     applies the normalisation every factory applies. No `BigDecimal` is built, because for
+   *     this shape the pass and `BigDecimal` provably read the same value.
+   *   - text carrying an exponent, a unicode decimal digit, more than eighteen significant
+   *     digits or a scale beyond eighteen is read by `BigDecimal` and converted by
+   *     `of(BigDecimal)`. These are the shapes whose value, or whose truncation, the pass does
+   *     not decide, so the semantics above remain those of `BigDecimal` rather than an
+   *     imitation of them.
+   *   - text that no `BigDecimal` could read - any other character, a second decimal point, a
+   *     sign that is neither the leading one nor part of an exponent, an exponent that is not
+   *     an optional sign followed by digits, or no digit at all - is reported as a failure by
+   *     the pass itself. Nothing is thrown and nothing is caught on this path: a malformed
+   *     numeral is input rather than an exceptional condition, and building an exception to
+   *     catch it cost more than reading the text does.
+   *
    * @param str  the text to read
    * @return the decimal the text names, or the failure describing why it names none
    */
@@ -905,10 +926,20 @@ object Decimal {
     } else if (str.length > MAX_TEXT_LENGTH) {
       Left(Failure.Parsing(s"Decimal string must not exceed $MAX_TEXT_LENGTH characters"))
     } else {
-      Try(new BigDecimal(str)).toEither match {
-        case Right(value) => of(value)
-        case Left(_) => Left(Failure.Parsing(s"Decimal string is invalid: '$str'"))
-      }
+      // the leading sign is taken here rather than in the pass, which therefore treats every
+      // sign it meets as the mid-text sign that no numeral carries
+      val first = str.charAt(0)
+      val negative = first == '-'
+      val start = if (negative || first == '+') 1 else 0
+      scanText(
+        str,
+        start,
+        if (negative) -1L else 1L,
+        precision = 0,
+        scale = 0,
+        unscaled = 0L,
+        afterPoint = false,
+        anyDigit = false)
     }
 
   /**
@@ -943,6 +974,133 @@ object Decimal {
    * @return the decimal the text names, or the failure describing why it names none
    */
   def parse(str: String): Either[Failure, Decimal] = of(str)
+
+  //-------------------------------------------------------------------------
+  // the character pass of of(String), and the two endings it does not evaluate itself.
+  //
+  // The pass exists for the two reasons the scanner of the ported type exists: the numeral of
+  // a quote or of a market data file is evaluated without building a `BigDecimal` that is then
+  // thrown away, and text that names no number is reported without constructing an exception
+  // to catch. It decides only the shapes whose outcome provably agrees with
+  // `new BigDecimal(str)` followed by `of(BigDecimal)` - a numeral within the precision and the
+  // scale of the type, which both routes read as the same unscaled value and scale - and hands
+  // every other shape to exactly that route, so `of(String)` carries one set of semantics
+  // however the text is spelled.
+  //
+  // The counting mirrors the loop of the ported scanner: a leading zero contributes no
+  // significant digit but a zero after the point still occupies a place, so `0.001` is 1 at
+  // scale 3, `1.10` is 110 at scale 2 before `ofScaled` normalises it, `1.` is 1 at scale 0
+  // and `.5` is 5 at scale 1.
+  //
+  // @param str  the text being read
+  // @param index  the position of the next character to read
+  // @param sign  -1 when the text carried a leading minus, 1 otherwise
+  // @param precision  the significant digits accumulated so far, leading zeroes not counted
+  // @param scale  the number of digits read after the decimal point so far
+  // @param unscaled  the digits accumulated so far, as a whole number without its sign
+  // @param afterPoint  true once the decimal point has been read
+  // @param anyDigit  true once any ASCII digit has been read, which is what an exponent needs
+  //   in front of it and what separates a numeral from text such as "-", "." or "+."
+  @tailrec
+  private def scanText(
+      str: String,
+      index: Int,
+      sign: Long,
+      precision: Int,
+      scale: Int,
+      unscaled: Long,
+      afterPoint: Boolean,
+      anyDigit: Boolean): Either[Failure, Decimal] =
+
+    if (index >= str.length) {
+      // the pass reached the end of a numeral it evaluated, so the accumulated parts are the
+      // value; text holding no digit at all names no number
+      if (anyDigit) ofScaled(unscaled * sign, scale) else invalidText(str)
+    } else {
+      val ch = str.charAt(index)
+      if (ch >= '0' && ch <= '9') {
+        val digit = (ch - '0').toLong
+        val significant = precision > 0 || digit > 0L
+        val nextPrecision = if (significant) precision + 1 else precision
+        val nextScale = if (afterPoint) scale + 1 else scale
+        if (nextPrecision > MAX_PRECISION || nextScale > MAX_SCALE) {
+          // the numeral names more than the type holds, so what survives of it is a question
+          // about truncation, and `of(BigDecimal)` is the one answer to that question
+          bigDecimalText(str)
+        } else {
+          scanText(
+            str,
+            index + 1,
+            sign,
+            nextPrecision,
+            nextScale,
+            if (significant) unscaled * 10L + digit else unscaled,
+            afterPoint,
+            anyDigit = true)
+        }
+      } else if (ch == '.') {
+        // one point separates the two halves of a numeral; a second one makes it text
+        if (afterPoint) {
+          invalidText(str)
+        } else {
+          scanText(str, index + 1, sign, precision, scale, unscaled, afterPoint = true, anyDigit)
+        }
+      } else if (ch == 'e' || ch == 'E') {
+        // an exponent moves the point by an amount this pass does not apply, so text whose
+        // exponent `BigDecimal` could read is read there - including an exponent too large to
+        // apply, which is a value it rejects rather than text it cannot read
+        if (anyDigit && isExponentTail(str, index + 1)) {
+          bigDecimalText(str)
+        } else {
+          invalidText(str)
+        }
+      } else if (Character.isDigit(ch)) {
+        // a unicode decimal digit outside ASCII is a digit to `BigDecimal`, and reading it
+        // there is what keeps the digit rules of this factory the digit rules of `BigDecimal`
+        bigDecimalText(str)
+      } else {
+        invalidText(str)
+      }
+    }
+
+  // true when the text from the given position is the tail of an exponent: an optional single
+  // sign followed by at least one digit and nothing else.
+  //
+  // This is the acceptance test rather than the rejection test, and deliberately so: a tail
+  // this answers true for is handed to `BigDecimal`, whose reading of it is the outcome, while
+  // a tail it answers false for is one `BigDecimal` could not read at all. The digits are
+  // tested with `Character.isDigit`, as the digits of the numeral are, because `BigDecimal`
+  // reads a unicode digit in an exponent as readily as in a mantissa.
+  private def isExponentTail(str: String, from: Int): Boolean = {
+    val signed = from < str.length && (str.charAt(from) == '+' || str.charAt(from) == '-')
+    val start = if (signed) from + 1 else from
+    start < str.length && isDigitRun(str, start)
+  }
+
+  // true when every character from the given position on is a decimal digit; an empty run
+  // answers true, the caller above being what establishes that there is a digit to read
+  @tailrec
+  private def isDigitRun(str: String, index: Int): Boolean =
+    if (index >= str.length) {
+      true
+    } else if (Character.isDigit(str.charAt(index))) {
+      isDigitRun(str, index + 1)
+    } else {
+      false
+    }
+
+  // reads text through `BigDecimal`, the route every shape the pass does not evaluate itself
+  // takes; text `BigDecimal` refuses is reported as the failure of this factory, and the pass
+  // above exists so that the common malformed numeral never reaches this branch
+  private def bigDecimalText(str: String): Either[Failure, Decimal] =
+    Try(new BigDecimal(str)).toEither match {
+      case Right(value) => of(value)
+      case Left(_) => invalidText(str)
+    }
+
+  // reports text that names no number, in the one wording every unreadable text is reported by
+  private def invalidText(str: String): Either[Failure, Decimal] =
+    Left(Failure.Parsing(s"Decimal string is invalid: '$str'"))
 
   //-------------------------------------------------------------------------
   // creates from a value already truncated to the supported precision

@@ -35,7 +35,15 @@ import scala.collection.immutable.{SortedMap, SortedSet}
  *
  * Every row is pinned against the Java-captured reference-data manifest by
  * `ReferenceDataManifestSpec`, which compares this table with the manifest row for row, so a
- * mistranscribed row is caught independently of any self-consistency check.
+ * mistranscribed row is caught independently of any self-consistency check. That comparison is
+ * why the published members keep their sorted types and their order: the order is part of what is
+ * compared, and `Country.availableCountries` iterates [[alpha2Codes]] in it.
+ *
+ * The two directions a caller actually looks up - alpha-3 to alpha-2 and back - are therefore
+ * served by [[alpha2CodeOf]] and [[alpha3CodeOf]], which read private hash indexes built from the
+ * published maps and sitting beside them. The published tables order and are compared; the indexes
+ * answer in constant time, as the Java `ImmutableBiMap` did; neither can disagree with the other,
+ * because both come from the one transcription.
  *
  * All members are immutable values, and this object is therefore thread-safe.
  */
@@ -313,8 +321,11 @@ object CountryData {
   /**
    * The ISO-3166 alpha-3 country codes mapped to their alpha-2 equivalents, keyed by alpha-3 code.
    *
-   * Contains all 251 rows of the original data. `Country.of3Char` resolves a three-letter code
-   * through this map.
+   * Contains all 251 rows of the original data, in ascending order of alpha-3 code. This is the
+   * published, order-bearing form of the table: it is what the reference-data manifest comparison
+   * reads and what a reader diffs against the original data. `Country.of3Char` resolves a
+   * three-letter code through [[alpha2CodeOf]], which answers from a hash index of these same 251
+   * rows, so a lookup pays no tree descent while this table keeps its order.
    */
   val alpha3ToAlpha2: SortedMap[String, String] = SortedMap.from(rows)
 
@@ -323,9 +334,10 @@ object CountryData {
    *
    * The inverse of [[alpha3ToAlpha2]], derived from it and therefore guaranteed to agree with it.
    * The relation is a bijection, so the inverse is total over [[alpha2Codes]] and unambiguous,
-   * which is what the Java `ImmutableBiMap.inverse()` provided. `Country.code3Char` reads this
-   * map, and a two-letter code that is absent from it - `EU` being the notable case - has no
-   * alpha-3 equivalent to return.
+   * which is what the Java `ImmutableBiMap.inverse()` provided. This is the published,
+   * order-bearing form of that inverse; `Country.code3Char` asks [[alpha3CodeOf]], which answers
+   * from a hash index of these same rows, and a two-letter code that is absent from them - `EU`
+   * being the notable case - has no alpha-3 equivalent to return.
    */
   val alpha2ToAlpha3: SortedMap[String, String] =
     SortedMap.from(alpha3ToAlpha2.iterator.map { case (alpha3, alpha2) => alpha2 -> alpha3 })
@@ -333,7 +345,12 @@ object CountryData {
   /**
    * The 251 known ISO-3166 alpha-3 country codes, in ascending order.
    *
-   * The key view of [[alpha3ToAlpha2]].
+   * The key view of [[alpha3ToAlpha2]]. This set is an ordered view for iteration and for
+   * comparison - listing the codes, and diffing them against the original data or the
+   * reference-data manifest - and a sorted set is the right shape for that. It is deliberately
+   * not a membership table: asking whether a three-letter code is known is
+   * `alpha2CodeOf(code).isDefined`, which is a single hash probe, so no further table is added
+   * here for a question already answered in constant time.
    */
   val alpha3Codes: SortedSet[String] = SortedSet.from(alpha3ToAlpha2.keys)
 
@@ -343,6 +360,74 @@ object CountryData {
    * The value view of [[alpha3ToAlpha2]]. Note that this is the set of codes present in the
    * original data, not the set of codes a `Country` may carry: any two-letter code is a valid
    * country code, so this set is the domain of the alpha-3 conversions only.
+   *
+   * Like [[alpha3Codes]], this is an ordered view for iteration and for comparison, and its order
+   * is load-bearing: `Country.availableCountries` iterates it to build a set ordered by code. A
+   * membership test belongs on the hash index instead - `alpha3CodeOf(code).isDefined` - so this
+   * set is never the thing a lookup descends, and no further table is added for it.
    */
   val alpha2Codes: SortedSet[String] = SortedSet.from(alpha3ToAlpha2.values)
+
+  //-------------------------------------------------------------------------
+  /**
+   * The alpha-3 to alpha-2 rows as a hash table, held for lookup rather than for iteration.
+   *
+   * [[alpha3ToAlpha2]] is a `SortedMap`, which is a red-black tree at run time, so resolving a
+   * code through it is a descent of several comparisons over the 251 rows rather than one hash
+   * probe. The Java table this object replaces was a memoised Guava `ImmutableBiMap`
+   * (`Country.java:45-50`), a hash table serving both directions, and this index restores that
+   * cost for the alpha-3 direction while leaving the published table exactly as it is - its order
+   * is what the reference-data manifest compares, so the fast path is added beside it rather than
+   * in place of it.
+   *
+   * It is derived from the already-built [[alpha3ToAlpha2]], not from a second pass over [[rows]],
+   * for the reason recorded above: a second transcription is a second opportunity to be wrong.
+   * `iterator.toMap` over a map of this size yields a `scala.collection.immutable.HashMap` of the
+   * same 251 entries, so the index cannot hold anything the published table does not.
+   *
+   * Being private, it is invisible to the manifest comparison, which reads the published table.
+   * [[alpha2CodeOf]] is its only reader.
+   */
+  private val alpha3ToAlpha2Index: Map[String, String] = alpha3ToAlpha2.iterator.toMap
+
+  /**
+   * The alpha-2 to alpha-3 rows as a hash table, held for lookup rather than for iteration.
+   *
+   * The counterpart of [[alpha3ToAlpha2Index]] for the other direction, derived from the published
+   * [[alpha2ToAlpha3]] by the same reasoning and with the same relationship to it: same entries,
+   * no order, constant-time `get`. [[alpha3CodeOf]] is its only reader.
+   */
+  private val alpha2ToAlpha3Index: Map[String, String] = alpha2ToAlpha3.iterator.toMap
+
+  /**
+   * Returns the alpha-2 code equivalent to the supplied ISO-3166 alpha-3 code.
+   *
+   * This is the lookup behind `Country.of3Char`, and it answers exactly what
+   * `alpha3ToAlpha2.get` answers - the same value for each of the 251 known codes and nothing for
+   * any other - in constant time. The argument is taken as given: nothing here checks the shape
+   * of the code, because the caller has already rejected anything that is not three upper-case
+   * letters, and an unknown but well formed code is a miss rather than an error.
+   *
+   * It is visible to this package and no wider, so the published surface of this object is the
+   * four tables above and nothing else.
+   *
+   * @param alpha3Code  the three letter country code to resolve
+   * @return the equivalent two letter code, or none if the data holds no row for it
+   */
+  private[location] def alpha2CodeOf(alpha3Code: String): Option[String] =
+    alpha3ToAlpha2Index.get(alpha3Code)
+
+  /**
+   * Returns the alpha-3 code equivalent to the supplied ISO-3166 alpha-2 code.
+   *
+   * This is the lookup behind `Country.code3Char`, and it answers exactly what
+   * `alpha2ToAlpha3.get` answers in constant time. A well formed two-letter code that the data
+   * does not hold - `EU`, and every code outside the standard - is a miss, which is the caller's
+   * cue that the country has no three letter form.
+   *
+   * @param alpha2Code  the two letter country code to resolve
+   * @return the equivalent three letter code, or none if the data holds no row for it
+   */
+  private[location] def alpha3CodeOf(alpha2Code: String): Option[String] =
+    alpha2ToAlpha3Index.get(alpha2Code)
 }

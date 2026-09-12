@@ -8,10 +8,21 @@
  *  A JShell script (JDK 21) that runs against the Maven-built *Java* Strata
  *  jars and emits the six numerical parity baseline fixtures plus the
  *  reference-data manifest that pin the behaviour of the Scala port of
- *  `strata-collect` / `strata-basics`.
+ *  `strata-collect` / `strata-basics`, and - from the Java TEST sources -
+ *  the `java-test-mapping.csv` traceability document that pins its test
+ *  scope.
  *
- *  The seven JSON documents are the deliverable; this script is retained so
- *  that the baseline can be regenerated and audited by a third party.
+ *  The eight documents are the deliverable: seven JSON documents and one CSV.
+ *  This script is retained so that they can be regenerated and audited by a
+ *  third party.
+ *
+ *  The CSV is the one document that is also an INPUT. Its first two columns,
+ *  its row order and its format are derived from the Java test sources under
+ *  `modules/**` on every run, while its three mapping columns are human
+ *  decisions that are read back from the committed file and re-emitted
+ *  verbatim, so a capture re-verifies the whole document and refuses to
+ *  publish one it cannot reproduce byte for byte. Section 14 states the
+ *  derivation rules and the taxonomy it enforces.
  *
  *  This is a developer / audit tool. It lives OUTSIDE both sbt modules and is
  *  on no sbt source root, so it is compiled by nothing and shipped in nothing.
@@ -32,14 +43,14 @@
  *  -------------------
  *  This script READS `modules/**` (through the classpath and the classpath
  *  resources inside the jars) and NEVER writes there. Writes are confined to
- *  the seven output paths listed in `OUTPUT_*` below, and that is enforced at
- *  run time rather than by convention: `outputRoot` canonicalises
- *  `parity.out.dir`, refuses a symbolic link at ANY component of it and
- *  refuses a root that sits inside a checkout without being its root (so
- *  `-Dparity.out.dir=modules` is rejected, not obeyed), and
- *  `guardedOutputTarget` then requires each path to be one of the seven
- *  declared literals, to stay under the canonical root, and to have no
- *  symbolic link at any component.
+ *  the eight output paths listed in `OUTPUT_*` below, and that is enforced at
+ *  run time rather than by convention: `outputRoot` REFUSES A ROOT THAT SITS
+ *  INSIDE A CHECKOUT WITHOUT BEING ITS ROOT BEFORE IT CREATES ANYTHING (so
+ *  `-Dparity.out.dir=modules` is rejected, not obeyed, and leaves no
+ *  directory behind), refuses a symbolic link at ANY component of it, and
+ *  re-asserts the placement after canonicalisation; `guardedOutputTarget`
+ *  then requires each path to be one of the eight declared literals, to stay
+ *  under the canonical root, and to have no symbolic link at any component.
  *
  *  HOW TO RUN
  *  ----------
@@ -94,13 +105,23 @@
  *     expansion would break the moment one appeared.
  *
  *     Either route prints a per-fixture summary and exits 0 only when every
- *     check passed AND all seven documents were written; see the FAIL-FAST
+ *     check passed AND all eight documents were written; see the FAIL-FAST
  *     CONTRACT below.
  *
- *  3. Optional: choose where the fixtures are written (default: the current
+ *  3. Optional: choose where the documents are written (default: the current
  *     directory, which is expected to be the repository root):
  *
  *       jshell ... -R-Dparity.out.dir=/tmp/parity-out ...
+ *
+ *  4. Optional: choose the checkout the Java test sources and the committed
+ *     `java-test-mapping.csv` are READ from (default: the current directory,
+ *     which must be a checkout root - it is validated, so a capture launched
+ *     from the wrong place says so instead of scanning nothing):
+ *
+ *       jshell ... -R-Dparity.repo.dir=/path/to/checkout ...
+ *
+ *     It is independent of `parity.out.dir`, which is why a dry run into a
+ *     scratch directory still verifies the committed mapping.
  *
  *  See `tools/parity-capture/README.md` for the full procedure, the fixture
  *  schemas and the manifest schema.
@@ -1034,6 +1055,7 @@ String OUTPUT_CURRENCY_MATH = "strata-basics/src/test/resources/parity/currency-
 String OUTPUT_HOLIDAY = "strata-basics/src/test/resources/parity/holiday-baseline.json";
 String OUTPUT_DOUBLE_ARRAY = "strata-collect/src/test/resources/parity/double-array-baseline.json";
 String OUTPUT_MANIFEST = "strata-basics/src/test/resources/manifest/reference-data-manifest.json";
+String OUTPUT_JAVA_TEST_MAPPING = "strata-basics/src/test/resources/manifest/java-test-mapping.csv";
 
 /**
  * Directories this script must never write into. The repository boundary is
@@ -1064,15 +1086,22 @@ boolean isCheckoutRoot(Path directory) {
 /**
  * Rejects an output root that sits INSIDE a checkout without being its root.
  *
- * The seven output paths are relative, so a root of `modules` would write to
+ * The eight output paths are relative, so a root of `modules` would write to
  * `modules/strata-basics/src/test/resources/...` - inside a tree this project
  * must leave untouched, and creating directories there breaks the repository
  * boundary check (`git status --porcelain -- modules examples eclipse pom.xml
  * src .github` has to stay empty). Testing the first path component against a
  * name list cannot catch `modules/basics` or `strata-basics`; walking upward
- * from the canonical root catches every one of them, and still allows the two
- * roots that make sense: the checkout root itself, and any directory outside a
+ * from the root catches every one of them, and still allows the two roots
+ * that make sense: the checkout root itself, and any directory outside a
  * checkout (which is how a dry run into a scratch directory works).
+ *
+ * It asks only whether an ANCESTOR is a checkout root, through
+ * `Files.isRegularFile` / `Files.isDirectory` - which answer false for what
+ * does not exist - so it is safe on a path no component of which exists yet.
+ * That is what lets `outputRoot` apply it BEFORE it creates anything: a
+ * refused root must leave no directory behind, least of all inside the tree
+ * the refusal exists to protect.
  */
 void requireOutputRootPlacement(Path root) {
   for (Path cursor = root.getParent(); cursor != null; cursor = cursor.getParent()) {
@@ -1090,29 +1119,45 @@ void requireOutputRootPlacement(Path root) {
  * Canonicalising alone is not containment (CWE-59). `toRealPath` would happily
  * report `/run/lock` for a declared `/var/run/lock` and carry on, so the whole
  * generation would land somewhere the caller never named - silently, because
- * the resolved path is perfectly valid. So the components are checked BEFORE
- * anything is created:
+ * the resolved path is perfectly valid. So the root is checked BEFORE
+ * anything is created, and the checks are ordered so that a REFUSAL CREATES
+ * NOTHING:
  *
- *  1. every component of the declared root, from the filesystem root down, is
+ *  1. the DECLARED root must not sit inside a checkout without being its
+ *     root. This is first because it is the one refusal that would otherwise
+ *     leave a footprint: the check below it creates the missing components,
+ *     so asserting placement after them would refuse `parity.out.dir=modules`
+ *     correctly and still have created `modules/qa-probe` inside the tree
+ *     this script must not write into. The test needs no component to exist
+ *     (see `requireOutputRootPlacement`), so nothing is lost by doing it on
+ *     the declared path;
+ *  2. every component of the declared root, from the filesystem root down, is
  *     rejected if it is a symbolic link - including the root's own last
  *     component, and including ancestors, which is the case canonicalisation
  *     hides. The walk stops at the first component that does not exist yet,
  *     because what does not exist cannot be a link, and the components created
  *     below are created one at a time and re-checked;
- *  2. the missing components are created individually, never through
+ *  3. the missing components are created individually, never through
  *     `createDirectories`, which would traverse a link that appeared during
  *     the walk;
- *  3. the result must equal its own canonical form, which after 1 it does -
+ *  4. the result must equal its own canonical form, which after 2 it does -
  *     the equality is asserted rather than assumed, so a filesystem that
  *     aliases paths some other way (a case-insensitive mount, a bind mount)
  *     is refused instead of quietly redirecting the output;
- *  4. it must not sit inside a checkout without being its root.
+ *  5. the placement is asserted AGAIN, on the canonical path. 1 and 5 are not
+ *     redundant: canonicalisation can move a path into a checkout, and only
+ *     the canonical form of the root is what the documents are written under.
+ *     Keeping both means neither a declared nor a resolved path can reach a
+ *     forbidden tree, and the declared one cannot even create a directory in
+ *     it on the way to being refused.
  */
 Path outputRoot() throws IOException {
   if (OUTPUT_ROOT_PATH != null) {
     return OUTPUT_ROOT_PATH;
   }
   Path declared = Paths.get(OUT_ROOT).toAbsolutePath().normalize();
+  // Step 1: before a single directory is created.
+  requireOutputRootPlacement(declared);
   Path cursor = declared.getRoot();
   if (cursor == null) {
     throw new IllegalStateException("parity.out.dir has no filesystem root: " + declared);
@@ -1143,6 +1188,8 @@ Path outputRoot() throws IOException {
     throw new IllegalStateException("parity.out.dir is not canonical: " + declared
         + " resolves to " + canonical + " - pass the resolved path instead");
   }
+  // Step 5: the same assertion on the canonical path, which is the one the
+  // documents are actually written under.
   requireOutputRootPlacement(canonical);
   OUTPUT_ROOT_PATH = canonical;
   return OUTPUT_ROOT_PATH;
@@ -1156,8 +1203,8 @@ Path outputRoot() throws IOException {
  *  1. the relative string must be plain - no absolute prefix, no `..`, no
  *     backslash - and its first component must not be a repository area this
  *     script must never write into;
- *  2. it must be one of the seven declared output literals, so a typo cannot
- *     invent an eighth destination;
+ *  2. it must be one of the eight declared output literals, so a typo cannot
+ *     invent a ninth destination;
  *  3. resolved against the CANONICAL root and normalised, it must still start
  *     with that root, so no combination of root and relative path can escape;
  *  4. no existing component of the path may be a symbolic link, and the target
@@ -1184,7 +1231,8 @@ Path guardedOutputTarget(String relativePath) throws IOException {
       || relativePath.equals(OUTPUT_CURRENCY_MATH)
       || relativePath.equals(OUTPUT_HOLIDAY)
       || relativePath.equals(OUTPUT_DOUBLE_ARRAY)
-      || relativePath.equals(OUTPUT_MANIFEST);
+      || relativePath.equals(OUTPUT_MANIFEST)
+      || relativePath.equals(OUTPUT_JAVA_TEST_MAPPING);
   if (!declared) {
     throw new IllegalStateException("Not a declared output path: " + relativePath);
   }
@@ -1252,6 +1300,21 @@ void stageDocument(String relativePath, Jn root) throws IOException {
 void stageRowsPerLineDocument(String relativePath, JArray rows) throws IOException {
   guardedOutputTarget(relativePath);
   PENDING_DOCUMENTS.put(relativePath, jsonRowsPerLineDocument(rows));
+}
+
+/**
+ * Stages an already-rendered text document.
+ *
+ * Used by the one document that is not JSON - `java-test-mapping.csv`, built
+ * in Section 14 - so that it travels through the SAME validation, staging and
+ * publication transaction as the seven JSON documents rather than being
+ * written by a second, weaker path. The text is rendered by its builder, which
+ * owns its format (US-ASCII, LF endings, RFC-4180 quoting); this method adds
+ * no formatting of its own.
+ */
+void stageTextDocument(String relativePath, String text) throws IOException {
+  guardedOutputTarget(relativePath);
+  PENDING_DOCUMENTS.put(relativePath, text);
 }
 
 /**
@@ -1536,13 +1599,13 @@ void rollbackFlush(List<FlushEntry> entries) {
  * was.
  *
  * `Files.writeString` straight onto each target cannot do that: it truncates
- * before it writes, so an I/O error or an interrupt half way through the seven
+ * before it writes, so an I/O error or an interrupt half way through the eight
  * files leaves earlier files new, later files old, and the file being written
  * truncated - a tree that looks like a baseline and is not one.
  *
  * The five phases below are the transaction:
  *
- *  1. validate all seven destinations before a single byte is written, create
+ *  1. validate all eight destinations before a single byte is written, create
  *     their parents one link-checked component at a time, take a no-follow
  *     handle on each directory, and refuse to proceed if an earlier run left
  *     artefacts there;
@@ -1560,11 +1623,12 @@ void rollbackFlush(List<FlushEntry> entries) {
  *     rethrows, so the driver records a failure and the exit status is
  *     non-zero.
  *
- * WHAT THIS DOES NOT CLAIM. Seven files in three directories cannot be
+ * WHAT THIS DOES NOT CLAIM. Eight files in three directories cannot be
  * replaced in one filesystem operation: a directory swap is the only primitive
- * that would, and it is unavailable here because the manifest directory also
- * holds `java-test-mapping.csv`, which this script does not produce, and
- * because the three directories are separate trees. So a process KILLED
+ * that would, and it is unavailable here because the three directories are
+ * separate trees in two sbt modules - no single swap reaches all of them - and
+ * because a swap replaces a directory WHOLE, so it would delete whatever else
+ * those directories come to hold. So a process KILLED
  * between two of the publish moves - SIGKILL, a power loss - leaves a mixed
  * generation on disk. What the transaction guarantees is that such a state is
  * never silent: the interrupted run's `.old` and `.new` files stay where they
@@ -1913,8 +1977,8 @@ String errorMessage(Throwable thrown) {
  * declares one, so its appearance is itself a defect.
  *
  * The allow-list is closed on purpose, and it is wide enough for the behaviour
- * that exists: the seven documents this script writes contain exactly six
- * distinct throwable types - UnsupportedOperationException (1028 occurrences),
+ * that exists: the seven JSON documents this script writes contain exactly
+ * six distinct throwable types - UnsupportedOperationException (1028 occurrences),
  * ScheduleException (565), IllegalArgumentException (103),
  * IllegalStateException (2), IndexOutOfBoundsException (1) and
  * ArrayIndexOutOfBoundsException (1) - every one of them on the list. Widening
@@ -10069,9 +10133,1011 @@ Jn buildManifest() {
 }
 
 /* ===========================================================================
- * SECTION 14 - THE DRIVER
+ * SECTION 14 - DOCUMENT 8 OF 8: java-test-mapping.csv
  *
- * All seven documents are built in memory, every self-check runs, and only
+ * The method-level traceability document the test-scope gate reads: one row
+ * per `@Test` / `@ParameterizedTest` method of every Java test class the port
+ * is held against, carrying the Scala spec and test name that replaced it and
+ * the status of that decision.
+ *
+ * WHAT "CAPTURED" MEANS FOR THIS DOCUMENT
+ * ---------------------------------------
+ * Columns 1-2 (`java_test_class`, `java_test_method`), the row order and the
+ * format are FACTS ABOUT THE JAVA SOURCES, so they are derived here from
+ * `modules/**` on every run, exactly as the six fixtures are derived from the
+ * Java implementation. Columns 3-5 (`scala_spec`, `scala_test_name`,
+ * `status`) are MAPPING DECISIONS no scanner can derive - which spec absorbed
+ * a consolidated test, why a test was dropped - so they are read from the
+ * committed document, keyed by (class, method), and re-emitted verbatim.
+ *
+ * The document is therefore a FIXED POINT rather than a generated file: this
+ * script owns the inventory, the ordering, the format and the taxonomy; a
+ * human owns the mapping. A capture rebuilds the whole document and aborts
+ * unless the result is byte-identical to the committed one, so a Java test
+ * method added, renamed or removed under the port, a row naming no Java
+ * method, a duplicate row, a status outside the taxonomy and a mistranscribed
+ * row are all caught by the run that produces the fixtures - which is what
+ * makes a 1,876-row artefact auditable rather than merely present.
+ *
+ * It follows that the committed document is an INPUT as well as an output: on
+ * a checkout where it is absent the capture stops and says so, because
+ * columns 3-5 cannot be invented. That is deliberate; the alternative is a
+ * capture that silently publishes 1,876 rows of empty mapping decisions.
+ *
+ * WHAT IS SCANNED
+ * ---------------
+ *   * every `*Test.java` under `modules/basics/src/test/java` - 72 classes
+ *     with 1,223 test methods, the anchor counts asserted below;
+ *   * the 24 `com.opengamma.strata.collect` test classes the port maps,
+ *     declared as a literal list here rather than inferred from the document
+ *     being verified, so that the document cannot certify its own class set.
+ *
+ * DETERMINISM
+ * -----------
+ * Classes are emitted in ascending fully-qualified-name order and methods in
+ * Java source order, so no directory-iteration order can reach the output:
+ * the recursive source walk sorts each directory's entries explicitly, and
+ * the inventory is a TreeMap.
+ * ===========================================================================
+ */
+
+String FX_TEST_MAPPING = "test-mapping";
+
+/**
+ * The checkout the Java test sources and the committed mapping are read from.
+ *
+ * Defaults to the current directory, which is where both documented routes
+ * run the capture from; `-Dparity.repo.dir=<checkout root>` covers a capture
+ * launched from elsewhere. It is NOT `parity.out.dir`: the mapping is read
+ * from the repository and written to the output root, which is what lets a
+ * dry run into a scratch directory still verify the committed document.
+ */
+String REPO_DIR = System.getProperty("parity.repo.dir", ".");
+
+/** The checkout root, resolved and validated once. `null` until first use. */
+Path REPO_ROOT_PATH = null;
+
+/**
+ * Resolves `parity.repo.dir` to an absolute checkout root.
+ *
+ * Validated with the same two-marker `isCheckoutRoot` test the output-root
+ * guard uses, so a capture launched from the wrong working directory fails
+ * with one clear message instead of scanning an empty tree and then reporting
+ * 1,223 test methods as missing - a diagnostic that would send the reader
+ * looking for a mapping defect that is not there.
+ */
+Path repositoryRoot() {
+  if (REPO_ROOT_PATH != null) {
+    return REPO_ROOT_PATH;
+  }
+  Path declared = Paths.get(REPO_DIR).toAbsolutePath().normalize();
+  if (!isCheckoutRoot(declared)) {
+    throw new IllegalStateException("parity.repo.dir is not a Strata checkout root: " + declared
+        + " (a checkout root holds both build.sbt and modules/) - run the capture from the"
+        + " repository root, or pass -Dparity.repo.dir=<checkout root>");
+  }
+  REPO_ROOT_PATH = declared;
+  return REPO_ROOT_PATH;
+}
+
+/** The Java test trees the mapping covers, relative to the checkout root. */
+String MAPPING_BASICS_TEST_ROOT = "modules/basics/src/test/java";
+String MAPPING_COLLECT_TEST_ROOT = "modules/collect/src/test/java";
+
+/** The package every mapped collect test class sits in or under. */
+String MAPPING_COLLECT_PACKAGE = "com.opengamma.strata.collect";
+
+/**
+ * The collect test classes the port maps, as names relative to
+ * `com.opengamma.strata.collect`.
+ *
+ * A LITERAL rather than a scan: `modules/collect/src/test/java` holds tests
+ * for the collect symbols the port deliberately leaves behind (0.2.2 -
+ * `timeseries`, `concurrent`, `function`, `IntArray`, ...), so "every
+ * `*Test.java`" is the wrong set here. It is equally not read from the
+ * document being verified: a document that supplied its own class set could
+ * lose a class silently, which is the one failure this check exists to catch.
+ */
+String[] MAPPED_COLLECT_TEST_CLASSES = {
+    "ArgCheckerTest",
+    "DecimalTest",
+    "DoubleArrayMathTest",
+    "FixedScaleDecimalTest",
+    "GuavateTest",
+    "MapStreamTest",
+    "TestHelperTest",
+    "TypedStringTest",
+    "array.DoubleArrayTest",
+    "array.DoubleMatrixTest",
+    "io.ResourceLocatorTest",
+    "named.CombinedExtendedEnumTest",
+    "named.EnumNamesTest",
+    "named.ExtendedEnumTest",
+    "named.NamedTest",
+    "result.FailureExceptionTest",
+    "result.FailureItemExceptionTest",
+    "result.FailureItemTest",
+    "result.FailureItemsTest",
+    "result.FailureReasonTest",
+    "result.IllegalArgFailureExceptionTest",
+    "result.ParseFailureExceptionTest",
+    "result.ResultTest",
+    "result.ValueWithFailuresTest",
+};
+
+/** The document's header line, which is part of its contract. */
+String MAPPING_HEADER = "java_test_class,java_test_method,scala_spec,scala_test_name,status";
+
+/** The five columns, named for the diagnostics below. */
+String[] MAPPING_COLUMNS =
+    {"java_test_class", "java_test_method", "scala_spec", "scala_test_name", "status"};
+
+// --- The independently verified expectations. Every one of them is asserted,
+// --- so a drift in the Java tests or in the mapping aborts the capture rather
+// --- than reshaping the document.
+int MAPPING_EXPECTED_BASICS_CLASSES = 72;      // AAP 0.1.1 anchor
+int MAPPING_EXPECTED_BASICS_METHODS = 1223;    // AAP 0.1.1 anchor
+int MAPPING_EXPECTED_COLLECT_CLASSES = 24;     // the mapped collect subset
+int MAPPING_EXPECTED_COLLECT_METHODS = 653;    // the 1,876 rows less the 1,223
+int MAPPING_EXPECTED_ROWS = 1876;
+int MAPPING_EXPECTED_PORTED = 1446;
+int MAPPING_EXPECTED_CONSOLIDATED = 293;
+int MAPPING_EXPECTED_PARTIAL = 118;
+int MAPPING_EXPECTED_DROPPED = 19;
+int MAPPING_EXPECTED_UNMAPPED_ROWS = 137;      // partial + dropped, both columns empty
+int MAPPING_EXPECTED_DISTINCT_SPECS = 86;      // distinct NON-EMPTY scala_spec values
+int MAPPING_EXPECTED_SPEC_VALUES = 87;         // the same set counting "" as a value
+int MAPPING_EXPECTED_CONSOLIDATION_TARGETS = 9;
+
+/** The four statuses, as bare names; three of them carry a `:<reason>` tail. */
+String MAPPING_STATUS_PORTED = "ported";
+String MAPPING_STATUS_CONSOLIDATED = "consolidated";
+String MAPPING_STATUS_PARTIAL = "partial";
+String MAPPING_STATUS_DROPPED = "dropped";
+
+/**
+ * The only classes a `partial` row may belong to.
+ *
+ * `partial` means "a member of a collect helper that strata-basics does not
+ * use", which is true of exactly these two classes and of nothing else; a
+ * `partial` anywhere else is a test quietly written off.
+ */
+String[] MAPPING_PARTIAL_CLASSES = {
+    "com.opengamma.strata.collect.GuavateTest",
+    "com.opengamma.strata.collect.MapStreamTest",
+};
+
+/**
+ * The only classes a `dropped` row may belong to: the five Java test classes
+ * excluded with their subjects in 0.2.2.
+ */
+String[] MAPPING_DROPPED_CLASSES = {
+    "com.opengamma.strata.basics.date.HolidayCalendarIniLookupTest",
+    "com.opengamma.strata.collect.result.FailureExceptionTest",
+    "com.opengamma.strata.collect.result.FailureItemExceptionTest",
+    "com.opengamma.strata.collect.result.IllegalArgFailureExceptionTest",
+    "com.opengamma.strata.collect.result.ParseFailureExceptionTest",
+};
+
+/**
+ * The one further `dropped` row 0.2.2 allows: the single method of a RETAINED
+ * class that exercises the legacy `ImmutableHolidayCalendar-Old.json` wire
+ * format, which the port does not reproduce. Named method by method rather
+ * than class by class, so that the rest of that class stays covered.
+ */
+String MAPPING_DROPPED_LEGACY_CLASS =
+    "com.opengamma.strata.basics.date.ImmutableHolidayCalendarTest";
+String MAPPING_DROPPED_LEGACY_METHOD = "test_readOldJodaFormat";
+
+/**
+ * One `@Test` / `@ParameterizedTest` method, as the scanner found it.
+ *
+ * The parameter types are carried for every method, not only the overloaded
+ * ones, because whether a name is overloaded is a property of the class and is
+ * not known until it has been scanned whole.
+ */
+final class JavaTestMethod {
+  final String name;
+  final List<String> parameterTypes;
+
+  JavaTestMethod(String name, List<String> parameterTypes) {
+    this.name = name;
+    this.parameterTypes = parameterTypes;
+  }
+
+  /** `name(Type;Type)` - the form an overloaded method is recorded under. */
+  String signature() {
+    StringBuilder sb = new StringBuilder(name).append('(');
+    for (int i = 0; i < parameterTypes.size(); i++) {
+      if (i > 0) {
+        sb.append(';');
+      }
+      sb.append(parameterTypes.get(i));
+    }
+    return sb.append(')').toString();
+  }
+}
+
+/** End of the Java identifier starting at `from`, or `from` if there is none. */
+int identifierEnd(String text, int from) {
+  int i = from;
+  if (i < text.length() && Character.isJavaIdentifierStart(text.charAt(i))) {
+    i++;
+    while (i < text.length() && Character.isJavaIdentifierPart(text.charAt(i))) {
+      i++;
+    }
+  }
+  return i;
+}
+
+/** First position at or after `from` that is not whitespace. */
+int skipWhitespace(String text, int from) {
+  int i = from;
+  while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
+    i++;
+  }
+  return i;
+}
+
+/**
+ * Position just past the bracket that closes the one at `from`.
+ *
+ * Nesting is counted, so a nested generic argument list such as
+ * `<Map<String, List<X>>>` and an annotation's own argument list are skipped
+ * whole rather than at their first closing bracket.
+ */
+int skipBalanced(String text, int from, char open, char close) {
+  int depth = 0;
+  int i = from;
+  while (i < text.length()) {
+    char c = text.charAt(i);
+    if (c == open) {
+      depth++;
+    } else if (c == close) {
+      depth--;
+      if (depth == 0) {
+        return i + 1;
+      }
+    }
+    i++;
+  }
+  throw new IllegalStateException("unbalanced '" + open + "' at offset " + from);
+}
+
+/**
+ * Replaces every comment and every string / character literal BODY with
+ * spaces, preserving offsets and line structure.
+ *
+ * This is what stops an annotation that is only MENTIONED - in a Javadoc
+ * comment, in a commented-out method, in a string that documents an
+ * annotation - from being counted as a test method. Offsets are preserved
+ * (one space per removed character, newlines kept) so that a diagnostic can
+ * still quote a line number.
+ *
+ * Handles every form JDK 21 has: the line comment, the block comment, the
+ * text block, the double-quoted string and the single-quoted character
+ * literal, the last two including their backslash escapes. An unterminated
+ * one is a source file this scanner must not guess about, so it throws.
+ */
+String stripCommentsAndLiterals(String source) {
+  StringBuilder out = new StringBuilder(source.length());
+  int i = 0;
+  int n = source.length();
+  while (i < n) {
+    char c = source.charAt(i);
+    if (c == '/' && i + 1 < n && source.charAt(i + 1) == '/') {
+      while (i < n && source.charAt(i) != '\n') {
+        out.append(' ');
+        i++;
+      }
+    } else if (c == '/' && i + 1 < n && source.charAt(i + 1) == '*') {
+      out.append("  ");
+      i += 2;
+      while (i + 1 < n && !(source.charAt(i) == '*' && source.charAt(i + 1) == '/')) {
+        out.append(source.charAt(i) == '\n' ? '\n' : ' ');
+        i++;
+      }
+      if (i + 1 >= n) {
+        throw new IllegalStateException("unterminated block comment at offset " + i);
+      }
+      out.append("  ");
+      i += 2;
+    } else if (c == '"' && source.startsWith("\"\"\"", i)) {
+      out.append("   ");
+      i += 3;
+      while (i < n && !source.startsWith("\"\"\"", i)) {
+        out.append(source.charAt(i) == '\n' ? '\n' : ' ');
+        i++;
+      }
+      if (i >= n) {
+        throw new IllegalStateException("unterminated text block at offset " + i);
+      }
+      out.append("   ");
+      i += 3;
+    } else if (c == '"' || c == '\'') {
+      // The quotes themselves are kept - nothing downstream reads them, and
+      // keeping them makes the stripped text still look like Java.
+      out.append(c);
+      i++;
+      boolean closed = false;
+      while (i < n) {
+        char inner = source.charAt(i);
+        if (inner == '\\' && i + 1 < n) {
+          out.append("  ");
+          i += 2;
+          continue;
+        }
+        if (inner == c) {
+          out.append(c);
+          i++;
+          closed = true;
+          break;
+        }
+        if (inner == '\n') {
+          throw new IllegalStateException("unterminated literal at offset " + i);
+        }
+        out.append(' ');
+        i++;
+      }
+      if (!closed) {
+        throw new IllegalStateException("unterminated literal at offset " + i);
+      }
+    } else {
+      out.append(c);
+      i++;
+    }
+  }
+  return out.toString();
+}
+
+/**
+ * The erased simple type names of one Java parameter list.
+ *
+ * Erased the way a signature is read by a human rather than by the JVM:
+ * generic arguments are dropped, a package qualifier is dropped, an array
+ * dimension is kept as `[]` whichever side of the parameter name it was
+ * written on, and a varargs `...` counts as one dimension. This is the form
+ * the document records an overload under, so it has to be stable against
+ * whitespace, `final` and parameter annotations.
+ */
+List<String> erasedParameterTypes(String parameterList) {
+  List<String> types = new ArrayList<>();
+  for (String parameter : splitTopLevel(parameterList, ',')) {
+    String declaration = parameter.trim();
+    if (declaration.isEmpty()) {
+      continue;
+    }
+    StringBuilder plain = new StringBuilder();
+    int i = 0;
+    while (i < declaration.length()) {
+      char c = declaration.charAt(i);
+      if (c == '@') {
+        int end = identifierEnd(declaration, i + 1);
+        int after = skipWhitespace(declaration, end);
+        i = after < declaration.length() && declaration.charAt(after) == '('
+            ? skipBalanced(declaration, after, '(', ')')
+            : end;
+        plain.append(' ');
+      } else if (c == '<') {
+        i = skipBalanced(declaration, i, '<', '>');
+      } else {
+        plain.append(c);
+        i++;
+      }
+    }
+    String cleaned = plain.toString();
+    boolean varargs = cleaned.contains("...");
+    cleaned = cleaned.replace("...", " ");
+    List<String> tokens = new ArrayList<>();
+    for (String token : cleaned.trim().split("\\s+")) {
+      // `final` is a modifier, never part of the type.
+      if (!token.isEmpty() && !token.equals("final")) {
+        tokens.add(token);
+      }
+    }
+    if (tokens.isEmpty()) {
+      throw new IllegalStateException("cannot read a parameter type from: " + parameter);
+    }
+    // The last token is the parameter name, unless the declaration names no
+    // parameter at all (a bare type, which a declaration cannot have but a
+    // caller of this helper might pass).
+    StringBuilder typeText = new StringBuilder();
+    int typeTokens = tokens.size() > 1 ? tokens.size() - 1 : 1;
+    for (int t = 0; t < typeTokens; t++) {
+      typeText.append(tokens.get(t));
+    }
+    int dimensions = varargs ? 1 : 0;
+    if (tokens.size() > 1) {
+      // C-style dimensions written after the parameter name: `int x[]`.
+      dimensions += countOccurrences(tokens.get(tokens.size() - 1), "[]");
+    }
+    String type = typeText.toString();
+    dimensions += countOccurrences(type, "[]");
+    type = type.replace("[]", "");
+    String simple = type.substring(type.lastIndexOf('.') + 1);
+    StringBuilder erased = new StringBuilder(simple);
+    for (int d = 0; d < dimensions; d++) {
+      erased.append("[]");
+    }
+    types.add(erased.toString());
+  }
+  return types;
+}
+
+/** Splits on `separator` at bracket depth zero, keeping empty parts. */
+List<String> splitTopLevel(String text, char separator) {
+  List<String> parts = new ArrayList<>();
+  StringBuilder current = new StringBuilder();
+  int depth = 0;
+  for (int i = 0; i < text.length(); i++) {
+    char c = text.charAt(i);
+    if (c == '<' || c == '(' || c == '[') {
+      depth++;
+      current.append(c);
+    } else if (c == '>' || c == ')' || c == ']') {
+      depth--;
+      current.append(c);
+    } else if (c == separator && depth == 0) {
+      parts.add(current.toString());
+      current.setLength(0);
+    } else {
+      current.append(c);
+    }
+  }
+  parts.add(current.toString());
+  return parts;
+}
+
+/** Occurrences of `what` in `text`, non-overlapping. */
+int countOccurrences(String text, String what) {
+  int count = 0;
+  int from = 0;
+  while (true) {
+    int at = text.indexOf(what, from);
+    if (at < 0) {
+      return count;
+    }
+    count++;
+    from = at + what.length();
+  }
+}
+
+/**
+ * The method declaration that follows an annotation, as the JLS orders one.
+ *
+ * `from` sits just past the `@Test` / `@ParameterizedTest` name. A declaration
+ * may carry further annotations (`@Disabled`, `@MethodSource("x")`), modifiers,
+ * type parameters and a qualified or generic return type before its own name,
+ * so the walk crosses all of them and remembers the LAST identifier it saw:
+ * at the `(` that opens the parameter list, that identifier is the method
+ * name. An annotation's own name is deliberately forgotten again, so
+ * `@MethodSource("x") void f()` yields `f` and never `MethodSource`.
+ */
+JavaTestMethod declaredMethodAfter(String className, String text, int from) {
+  int i = from;
+  String name = null;
+  while (i < text.length()) {
+    char c = text.charAt(i);
+    if (c == '(') {
+      if (name != null) {
+        break;
+      }
+      i = skipBalanced(text, i, '(', ')');
+    } else if (c == '@') {
+      int end = identifierEnd(text, i + 1);
+      int after = skipWhitespace(text, end);
+      i = after < text.length() && text.charAt(after) == '('
+          ? skipBalanced(text, after, '(', ')')
+          : end;
+      name = null;
+    } else if (c == '<') {
+      i = skipBalanced(text, i, '<', '>');
+    } else if (Character.isJavaIdentifierStart(c)) {
+      int end = identifierEnd(text, i);
+      name = text.substring(i, end);
+      i = end;
+    } else if (c == ';' || c == '{' || c == '}' || c == '=') {
+      throw new IllegalStateException("a @Test annotation in " + className
+          + " is not followed by a method declaration (stopped at '" + c + "')");
+    } else {
+      i++;
+    }
+  }
+  if (name == null || i >= text.length()) {
+    throw new IllegalStateException("a @Test annotation in " + className
+        + " is not followed by a method declaration");
+  }
+  int end = skipBalanced(text, i, '(', ')');
+  return new JavaTestMethod(name, erasedParameterTypes(text.substring(i + 1, end - 1)));
+}
+
+/**
+ * Every `@Test` / `@ParameterizedTest` method of one class, in SOURCE ORDER.
+ *
+ * The annotation name is matched on its whole token, so `@TestInstance` and
+ * `@TestFactory` are not mistaken for `@Test`, and the scan runs over the
+ * stripped text, so a mention in a comment or a string is not counted.
+ */
+List<JavaTestMethod> javaTestMethods(String className, String source) {
+  String text = stripCommentsAndLiterals(source);
+  List<JavaTestMethod> found = new ArrayList<>();
+  int i = 0;
+  while (i < text.length()) {
+    int at = text.indexOf('@', i);
+    if (at < 0) {
+      break;
+    }
+    int end = identifierEnd(text, at + 1);
+    String annotation = text.substring(at + 1, end);
+    i = end > at + 1 ? end : at + 1;
+    if (annotation.equals("Test") || annotation.equals("ParameterizedTest")) {
+      found.add(declaredMethodAfter(className, text, end));
+    }
+  }
+  return found;
+}
+
+/**
+ * Reads a Java source file as bytes decoded one-byte-per-character.
+ *
+ * ISO-8859-1 rather than UTF-8 on purpose: every character this scanner acts
+ * on is ASCII, and a byte-preserving decode can neither throw on a file that
+ * is not valid UTF-8 nor shift an offset, so a stray non-ASCII byte in a
+ * comment or a string literal cannot change what is found.
+ */
+String readSourceFile(Path path) throws IOException {
+  return new String(Files.readAllBytes(path), StandardCharsets.ISO_8859_1);
+}
+
+/**
+ * Collects `*Test.java` under `directory`, recursively, in EXPLICIT order.
+ *
+ * `Files.newDirectoryStream` is specified to return entries in no particular
+ * order, so every directory's entries are sorted before they are descended
+ * into. The final inventory is sorted by class name anyway; doing it here as
+ * well means the walk itself is reproducible, which is what the determinism
+ * contract in the header promises.
+ */
+void collectJavaTestSources(Path directory, List<Path> into) throws IOException {
+  List<Path> entries = new ArrayList<>();
+  try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
+    for (Path entry : stream) {
+      entries.add(entry);
+    }
+  }
+  entries.sort(new Comparator<Path>() {
+    public int compare(Path left, Path right) {
+      return left.getFileName().toString().compareTo(right.getFileName().toString());
+    }
+  });
+  for (Path entry : entries) {
+    if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) {
+      collectJavaTestSources(entry, into);
+    } else if (Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS)
+        && entry.getFileName().toString().endsWith("Test.java")) {
+      into.add(entry);
+    }
+  }
+}
+
+/**
+ * The class inventory: fully-qualified test class name -> source file.
+ *
+ * A TreeMap, so the document's row order - classes by ascending
+ * fully-qualified name - is a property of the data structure rather than of
+ * the order the files happened to be read in.
+ */
+Map<String, Path> javaTestClassInventory() throws IOException {
+  Path repository = repositoryRoot();
+  Map<String, Path> inventory = new TreeMap<>();
+  Path basicsRoot = repository.resolve(MAPPING_BASICS_TEST_ROOT);
+  if (!Files.isDirectory(basicsRoot, LinkOption.NOFOLLOW_LINKS)) {
+    throw new IllegalStateException("the Java basics test tree is missing: " + basicsRoot);
+  }
+  List<Path> basicsSources = new ArrayList<>();
+  collectJavaTestSources(basicsRoot, basicsSources);
+  for (Path source : basicsSources) {
+    String relative = basicsRoot.relativize(source).toString();
+    String className = relative.substring(0, relative.length() - ".java".length())
+        .replace(source.getFileSystem().getSeparator(), ".");
+    inventory.put(className, source);
+  }
+  int basicsClasses = inventory.size();
+  CHECK.checkCount(FX_TEST_MAPPING, "basics *Test.java classes under " + MAPPING_BASICS_TEST_ROOT,
+      MAPPING_EXPECTED_BASICS_CLASSES, basicsClasses);
+  Path collectRoot = repository.resolve(MAPPING_COLLECT_TEST_ROOT);
+  for (String relative : MAPPED_COLLECT_TEST_CLASSES) {
+    String className = MAPPING_COLLECT_PACKAGE + "." + relative;
+    Path source = collectRoot.resolve(className.replace('.', '/') + ".java");
+    if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+      throw new IllegalStateException("a mapped collect test class is missing its source: "
+          + source + " - the literal list in this section names it");
+    }
+    inventory.put(className, source);
+  }
+  CHECK.checkCount(FX_TEST_MAPPING, "mapped collect test classes",
+      MAPPING_EXPECTED_COLLECT_CLASSES, inventory.size() - basicsClasses);
+  return inventory;
+}
+
+/**
+ * Renders one CSV field per RFC 4180, quoting ONLY when it has to.
+ *
+ * A field is quoted when it contains a comma or a quote, and a contained
+ * quote is doubled. Nothing else is quoted, because "quote only what needs
+ * it" is what makes the document byte-stable: a writer that quoted
+ * defensively would produce a second valid rendering of the same data and the
+ * byte comparison against the committed document would fail for no reason.
+ */
+String csvField(String value) {
+  if (value.indexOf(',') < 0 && value.indexOf('"') < 0) {
+    return value;
+  }
+  StringBuilder sb = new StringBuilder(value.length() + 2);
+  sb.append('"');
+  for (int i = 0; i < value.length(); i++) {
+    char c = value.charAt(i);
+    if (c == '"') {
+      sb.append("\"\"");
+    } else {
+      sb.append(c);
+    }
+  }
+  return sb.append('"').toString();
+}
+
+/**
+ * Parses the committed document as RFC 4180, LF-terminated and US-ASCII.
+ *
+ * Strict on purpose - a CR, a quote inside an unquoted field, an unterminated
+ * quoted field or a missing final newline is a malformed traceability document
+ * and is reported as such, rather than being repaired into rows that would
+ * then be compared against the Java sources and blamed on the mapping.
+ */
+List<List<String>> parseMappingCsv(String text, Path path) {
+  List<List<String>> rows = new ArrayList<>();
+  List<String> row = new ArrayList<>();
+  StringBuilder field = new StringBuilder();
+  boolean inQuotes = false;
+  int line = 1;
+  for (int i = 0; i < text.length(); i++) {
+    char c = text.charAt(i);
+    if (inQuotes) {
+      if (c == '"') {
+        if (i + 1 < text.length() && text.charAt(i + 1) == '"') {
+          field.append('"');
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        if (c == '\n') {
+          line++;
+        }
+        field.append(c);
+      }
+    } else if (c == '"') {
+      if (field.length() != 0) {
+        throw new IllegalStateException(path + ":" + line
+            + ": a quote may only open a field, and this one does not");
+      }
+      inQuotes = true;
+    } else if (c == ',') {
+      row.add(field.toString());
+      field.setLength(0);
+    } else if (c == '\n') {
+      row.add(field.toString());
+      field.setLength(0);
+      rows.add(row);
+      row = new ArrayList<>();
+      line++;
+    } else if (c == '\r') {
+      throw new IllegalStateException(path + ":" + line
+          + ": carriage return - the document is LF-terminated");
+    } else {
+      field.append(c);
+    }
+  }
+  if (inQuotes) {
+    throw new IllegalStateException(path + ":" + line + ": unterminated quoted field");
+  }
+  if (field.length() != 0 || !row.isEmpty()) {
+    throw new IllegalStateException(path + ":" + line
+        + ": the last line has no terminating newline");
+  }
+  return rows;
+}
+
+/**
+ * Reads the committed document, refusing anything that is not US-ASCII.
+ *
+ * The document is an INPUT here (see the section banner): columns 3-5 are
+ * human decisions, so an absent file is a stop rather than a reason to emit
+ * empty mappings, and the message says how to get it back.
+ */
+String readCommittedMapping(Path path) throws IOException {
+  if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+    throw new IllegalStateException("the committed test mapping is missing: " + path
+        + " - its scala_spec / scala_test_name / status columns are mapping decisions that cannot"
+        + " be derived from the Java sources, so a capture cannot rebuild the document without"
+        + " them; restore the file (git checkout -- " + OUTPUT_JAVA_TEST_MAPPING + ") and re-run");
+  }
+  byte[] bytes = Files.readAllBytes(path);
+  for (int i = 0; i < bytes.length; i++) {
+    if (bytes[i] < 0) {
+      throw new IllegalStateException(path + ": byte " + (bytes[i] & 0xff) + " at offset " + i
+          + " is not US-ASCII, which this document is required to be");
+    }
+  }
+  return new String(bytes, StandardCharsets.US_ASCII);
+}
+
+/** The (class, method) key columns 3-5 are looked up under. */
+String mappingKey(String className, String methodKey) {
+  return className + "\u0000" + methodKey;
+}
+
+/** The first line at which two documents differ, 1-based, or 0 if they agree. */
+int firstDifferingLine(String left, String right) {
+  String[] leftLines = left.split("\n", -1);
+  String[] rightLines = right.split("\n", -1);
+  int lines = Math.min(leftLines.length, rightLines.length);
+  for (int i = 0; i < lines; i++) {
+    if (!leftLines[i].equals(rightLines[i])) {
+      return i + 1;
+    }
+  }
+  return leftLines.length == rightLines.length ? 0 : lines + 1;
+}
+
+/** True when no field holds a line break. */
+boolean noNewlineInAnyField(List<String> fields) {
+  for (String field : fields) {
+    if (field.indexOf('\n') >= 0 || field.indexOf('\r') >= 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** One 1-based line of a document, for a diagnostic; "" past the end. */
+String documentLine(String document, int line) {
+  if (line <= 0) {
+    return "";
+  }
+  String[] lines = document.split("\n", -1);
+  return line <= lines.length ? lines[line - 1] : "";
+}
+
+/** True when `values` holds `value`. */
+boolean contains(String[] values, String value) {
+  for (String candidate : values) {
+    if (candidate.equals(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Rebuilds `java-test-mapping.csv` from the Java sources and the committed
+ * mapping decisions, checking both against each other on the way.
+ *
+ * The order of work matters for the diagnostics: the committed document is
+ * parsed and its rows are checked for shape and taxonomy FIRST, so that a
+ * malformed status is reported as itself rather than as a downstream document
+ * difference; then the Java sources are scanned and each scanned method is
+ * paired with its row; then what is left over on either side is reported row
+ * by row; then the aggregate counts; and only last the byte comparison, which
+ * is the check that catches anything the specific ones do not.
+ */
+String buildJavaTestMapping() throws IOException {
+  Path repository = repositoryRoot();
+  Path committedPath = repository.resolve(OUTPUT_JAVA_TEST_MAPPING);
+  String committed = readCommittedMapping(committedPath);
+  List<List<String>> parsed = parseMappingCsv(committed, committedPath);
+  if (parsed.isEmpty()) {
+    throw new IllegalStateException(committedPath + " is empty");
+  }
+  CHECK.checkEquals(FX_TEST_MAPPING, "header", MAPPING_HEADER, String.join(",", parsed.get(0)));
+
+  // --- The committed rows: shape, taxonomy, and the decisions to re-emit.
+  Map<String, String[]> decisions = new LinkedHashMap<>();
+  Map<String, Integer> decisionLines = new LinkedHashMap<>();
+  Set<String> unusedKeys = new LinkedHashSet<>();
+  int ported = 0;
+  int consolidated = 0;
+  int partial = 0;
+  int dropped = 0;
+  int unmappedRows = 0;
+  int duplicates = 0;
+  Set<String> specs = new TreeSet<>();
+  Set<String> consolidationTargets = new TreeSet<>();
+  for (int i = 1; i < parsed.size(); i++) {
+    List<String> fields = parsed.get(i);
+    // Row index and physical line coincide because no field may hold a line
+    // break - which is itself checked below, so the diagnostics cannot drift.
+    int line = i + 1;
+    String where = "line " + line;
+    if (fields.size() != MAPPING_COLUMNS.length) {
+      CHECK.fail(FX_TEST_MAPPING, where, "expected " + MAPPING_COLUMNS.length + " fields ("
+          + MAPPING_HEADER + "), found " + fields.size());
+      continue;
+    }
+    CHECK.checkTrue(FX_TEST_MAPPING, where, noNewlineInAnyField(fields),
+        "a field contains a line break, which this document's one-row-per-line form forbids");
+    String className = fields.get(0);
+    String methodKey = fields.get(1);
+    String spec = fields.get(2);
+    String testName = fields.get(3);
+    String status = fields.get(4);
+    String key = mappingKey(className, methodKey);
+    if (decisions.containsKey(key)) {
+      duplicates++;
+      CHECK.fail(FX_TEST_MAPPING, where, "duplicate row for " + className + "." + methodKey
+          + ", first seen at line " + decisionLines.get(key));
+      continue;
+    }
+    decisions.put(key, new String[] {spec, testName, status});
+    decisionLines.put(key, Integer.valueOf(line));
+    unusedKeys.add(key);
+    specs.add(spec);
+    String statusName = status.contains(":") ? status.substring(0, status.indexOf(':')) : status;
+    String reason = status.contains(":") ? status.substring(status.indexOf(':') + 1) : "";
+    boolean mappedStatus = statusName.equals(MAPPING_STATUS_PORTED)
+        || statusName.equals(MAPPING_STATUS_CONSOLIDATED);
+    boolean knownStatus = mappedStatus
+        || statusName.equals(MAPPING_STATUS_PARTIAL)
+        || statusName.equals(MAPPING_STATUS_DROPPED);
+    boolean reasonRequired = !statusName.equals(MAPPING_STATUS_PORTED);
+    CHECK.checkTrue(FX_TEST_MAPPING, where,
+        knownStatus && (reasonRequired ? !reason.isEmpty() : !status.contains(":")),
+        "status `" + status + "` is outside the taxonomy (ported, consolidated:<target>,"
+            + " partial:<reason>, dropped:<reason>)");
+    if (mappedStatus) {
+      CHECK.checkTrue(FX_TEST_MAPPING, where, !spec.isEmpty() && !testName.isEmpty(),
+          "a `" + statusName + "` row must name both a scala_spec and a scala_test_name, and this"
+              + " one has scala_spec=`" + spec + "` scala_test_name=`" + testName + "`");
+    } else if (knownStatus) {
+      CHECK.checkTrue(FX_TEST_MAPPING, where, spec.isEmpty() && testName.isEmpty(),
+          "a `" + statusName + "` row must leave scala_spec and scala_test_name empty, and this"
+              + " one has scala_spec=`" + spec + "` scala_test_name=`" + testName + "`");
+    }
+    if (statusName.equals(MAPPING_STATUS_PORTED)) {
+      ported++;
+    } else if (statusName.equals(MAPPING_STATUS_CONSOLIDATED)) {
+      consolidated++;
+      consolidationTargets.add(reason);
+    } else if (statusName.equals(MAPPING_STATUS_PARTIAL)) {
+      partial++;
+      CHECK.checkTrue(FX_TEST_MAPPING, where, contains(MAPPING_PARTIAL_CLASSES, className),
+          "`partial` is reserved for the collect helpers strata-basics does not use ("
+              + String.join(", ", MAPPING_PARTIAL_CLASSES) + "), so " + className + " may not use"
+              + " it");
+    } else if (statusName.equals(MAPPING_STATUS_DROPPED)) {
+      dropped++;
+      boolean allowed = contains(MAPPING_DROPPED_CLASSES, className)
+          || (className.equals(MAPPING_DROPPED_LEGACY_CLASS)
+              && methodKey.equals(MAPPING_DROPPED_LEGACY_METHOD));
+      CHECK.checkTrue(FX_TEST_MAPPING, where, allowed,
+          "`dropped` is reserved for the tests excluded with their subjects in 0.2.2 ("
+              + String.join(", ", MAPPING_DROPPED_CLASSES) + ", plus "
+              + MAPPING_DROPPED_LEGACY_CLASS + "." + MAPPING_DROPPED_LEGACY_METHOD + "), so "
+              + className + "." + methodKey + " may not use it");
+    }
+    if (spec.isEmpty() && testName.isEmpty()) {
+      unmappedRows++;
+    }
+  }
+
+  // --- The Java sources: the inventory, the methods, and the document.
+  Map<String, Path> inventory = javaTestClassInventory();
+  StringBuilder document = new StringBuilder(MAPPING_HEADER).append('\n');
+  int rows = 0;
+  int basicsMethods = 0;
+  int collectMethods = 0;
+  int missingRows = 0;
+  for (Map.Entry<String, Path> classEntry : inventory.entrySet()) {
+    String className = classEntry.getKey();
+    List<JavaTestMethod> methods =
+        javaTestMethods(className, readSourceFile(classEntry.getValue()));
+    // A name that occurs twice in one class is an overload, and BOTH of its
+    // rows carry the signature - a bare name would be ambiguous for either.
+    Map<String, Integer> nameCounts = new LinkedHashMap<>();
+    for (JavaTestMethod method : methods) {
+      Integer seen = nameCounts.get(method.name);
+      nameCounts.put(method.name, Integer.valueOf(seen == null ? 1 : seen.intValue() + 1));
+    }
+    for (JavaTestMethod method : methods) {
+      String methodKey =
+          nameCounts.get(method.name).intValue() == 1 ? method.name : method.signature();
+      String key = mappingKey(className, methodKey);
+      String[] decision = decisions.get(key);
+      unusedKeys.remove(key);
+      CHECK.countRow(FX_TEST_MAPPING);
+      rows++;
+      if (className.startsWith(MAPPING_COLLECT_PACKAGE + ".")) {
+        collectMethods++;
+      } else {
+        basicsMethods++;
+      }
+      CHECK.checkTrue(FX_TEST_MAPPING, className + "." + methodKey, decision != null,
+          "this Java test method has no row in " + OUTPUT_JAVA_TEST_MAPPING + ", so it is outside"
+              + " the port's traceability - add a row for it with the decision that covers it");
+      if (decision == null) {
+        missingRows++;
+        continue;
+      }
+      document.append(csvField(className)).append(',')
+          .append(csvField(methodKey)).append(',')
+          .append(csvField(decision[0])).append(',')
+          .append(csvField(decision[1])).append(',')
+          .append(csvField(decision[2])).append('\n');
+    }
+  }
+  for (String orphan : unusedKeys) {
+    int separator = orphan.indexOf('\u0000');
+    CHECK.fail(FX_TEST_MAPPING, "line " + decisionLines.get(orphan),
+        "no Java test method matches " + orphan.substring(0, separator) + "."
+            + orphan.substring(separator + 1) + " - the row names a method that no longer exists"
+            + " (a rename needs the row renamed, a deletion needs the row deleted)");
+  }
+
+  // --- The counts, every one of them independently verified.
+  CHECK.checkCount(FX_TEST_MAPPING, "Java test methods with no mapping row", 0, missingRows);
+  CHECK.checkCount(FX_TEST_MAPPING, "mapping rows with no Java test method", 0, unusedKeys.size());
+  CHECK.checkCount(FX_TEST_MAPPING, "duplicate (class, method) rows", 0, duplicates);
+  CHECK.checkCount(FX_TEST_MAPPING, "basics test methods", MAPPING_EXPECTED_BASICS_METHODS,
+      basicsMethods);
+  CHECK.checkCount(FX_TEST_MAPPING, "mapped collect test methods",
+      MAPPING_EXPECTED_COLLECT_METHODS, collectMethods);
+  CHECK.checkCount(FX_TEST_MAPPING, "mapping rows", MAPPING_EXPECTED_ROWS, rows);
+  CHECK.checkCount(FX_TEST_MAPPING, "committed mapping rows", MAPPING_EXPECTED_ROWS,
+      parsed.size() - 1);
+  CHECK.checkCount(FX_TEST_MAPPING, "`ported` rows", MAPPING_EXPECTED_PORTED, ported);
+  CHECK.checkCount(FX_TEST_MAPPING, "`consolidated` rows", MAPPING_EXPECTED_CONSOLIDATED,
+      consolidated);
+  CHECK.checkCount(FX_TEST_MAPPING, "`partial` rows", MAPPING_EXPECTED_PARTIAL, partial);
+  CHECK.checkCount(FX_TEST_MAPPING, "`dropped` rows", MAPPING_EXPECTED_DROPPED, dropped);
+  CHECK.checkCount(FX_TEST_MAPPING, "rows with both mapping columns empty",
+      MAPPING_EXPECTED_UNMAPPED_ROWS, unmappedRows);
+  // Two readings of one set, because both are quoted in the audit trail: the
+  // distinct spec NAMES, and the number of distinct values the column takes
+  // (the same set plus the empty string the 137 unmapped rows carry).
+  CHECK.checkCount(FX_TEST_MAPPING, "distinct non-empty scala_spec values",
+      MAPPING_EXPECTED_DISTINCT_SPECS, specs.contains("") ? specs.size() - 1 : specs.size());
+  CHECK.checkCount(FX_TEST_MAPPING, "distinct scala_spec values including the empty one",
+      MAPPING_EXPECTED_SPEC_VALUES, specs.size());
+  CHECK.checkCount(FX_TEST_MAPPING, "consolidation target specs",
+      MAPPING_EXPECTED_CONSOLIDATION_TARGETS, consolidationTargets.size());
+
+  // --- The document itself. This is the check that catches what the specific
+  // --- ones cannot: a transposed row, an edited spec name, a lost quote.
+  String rebuilt = document.toString();
+  int differingLine = firstDifferingLine(rebuilt, committed);
+  boolean identical = differingLine == 0;
+  // The diagnostic is built only when it is needed: quoting a line of a
+  // 316 KB document means splitting it, and a passing run should not pay for
+  // a message nobody reads.
+  CHECK.checkTrue(FX_TEST_MAPPING, "document", identical, identical ? ""
+      : "the document rebuilt from the Java sources differs from the committed "
+          + OUTPUT_JAVA_TEST_MAPPING + " at line " + differingLine + ": rebuilt `"
+          + documentLine(rebuilt, differingLine) + "` committed `"
+          + documentLine(committed, differingLine) + "`");
+  for (int i = 0; i < rebuilt.length(); i++) {
+    if (rebuilt.charAt(i) > 127) {
+      CHECK.fail(FX_TEST_MAPPING, "document", "character " + (int) rebuilt.charAt(i)
+          + " at offset " + i + " is not US-ASCII, which this document is required to be");
+      break;
+    }
+  }
+  return rebuilt;
+}
+
+/* ===========================================================================
+ * SECTION 15 - THE DRIVER
+ *
+ * All eight documents are built in memory, every self-check runs, and only
  * then is anything written - so a failed run cannot leave a half-valid fixture
  * on disk.
  *
@@ -10094,6 +11160,11 @@ void capture() throws Throwable {
   System.out.println("capture-baseline.jsh - Java parity baseline capture");
   System.out.println("  java.version    = " + System.getProperty("java.version"));
   System.out.println("  output root     = " + Paths.get(OUT_ROOT).toAbsolutePath().normalize());
+  // Resolved HERE rather than where Section 14 first needs it, which is after
+  // every fixture has been built: `parity.repo.dir` is an input precondition,
+  // and a wrong working directory has to be reported in the second before the
+  // work rather than in the minute after it.
+  System.out.println("  repository      = " + repositoryRoot());
   System.out.println("  random seed     = " + RANDOM_SEED);
   System.out.println();
 
@@ -10115,6 +11186,12 @@ void capture() throws Throwable {
   // The manifest is one document rather than a row array, so it contributes a
   // single row to the summary - reporting 0 would read like a failure.
   CHECK.countRow(FX_MANIFEST);
+  System.out.println("building java-test-mapping.csv ...");
+  // The eighth document is derived from the Java TEST sources rather than
+  // from the Java implementation, and it counts its own rows as it emits
+  // them; see Section 14 for why its mapping columns are read back from the
+  // committed document rather than generated.
+  stageTextDocument(OUTPUT_JAVA_TEST_MAPPING, buildJavaTestMapping());
 
   CHECK.printSummary();
 

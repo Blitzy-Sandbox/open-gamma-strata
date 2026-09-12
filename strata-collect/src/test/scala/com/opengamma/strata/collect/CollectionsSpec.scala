@@ -569,6 +569,152 @@ final class CollectionsSpec extends AnyFunSuite with Matchers with ScalaCheckPro
   }
 
   //-------------------------------------------------------------------------
+  // The assembly of a result, over inputs and repetitions that a single-pass assembly could
+  // get wrong where the small cases above would not notice.
+  //
+  // Every map-shaped member builds its result by accumulating into a map created inside the
+  // method and freezing it once at the end. Four things about that are worth asserting
+  // directly: that a large input keeps both of the orders promised and loses nothing; that
+  // one call cannot see the accumulator of another; that a collection is read exactly once,
+  // element by element, rather than once more than once; and that a repeated key is still
+  // caught, and still stops the traversal, when it arrives after thousands of distinct keys
+  // rather than as the second element.
+
+  test("groupByPreservingOrder keys a large all-distinct input in encounter order, losing nothing") {
+    // Twenty thousand elements, each with a key of its own, encountered in the reverse of the
+    // sorted order of those keys - so a result assembled in any other order than encounter
+    // order fails the first assertion, and one that dropped, duplicated or misplaced an
+    // element fails the last.
+    val size = 20000
+    val elements: List[Int] = List.range(size, 0, -1)
+    val grouped: VectorMap[Int, NonEmptyList[Int]] =
+      Collections.groupByPreservingOrder(elements)(value => value)
+    grouped.size shouldBe size
+    grouped.keys.toList shouldBe elements
+    grouped.values.map(_.size).sum shouldBe size
+    grouped.iterator.map { case (key, group) => (key, group.toList) }.toList shouldBe
+      elements.map(value => (value, List(value)))
+  }
+
+  test("groupByPreservingOrder keeps arrival order within every group of a large input") {
+    // Twenty thousand elements over two hundred keys, each group therefore holding a hundred
+    // elements in the order they arrived. The keys are first encountered in ascending order
+    // and the elements of a group are spread across the whole input, so a group assembled in
+    // the reverse of arrival order - the order the accumulator holds it in - is visible here.
+    val size = 20000
+    val groups = 200
+    val elements: List[Int] = List.range(0, size)
+    val grouped: VectorMap[Int, NonEmptyList[Int]] =
+      Collections.groupByPreservingOrder(elements)(value => value % groups)
+    grouped.size shouldBe groups
+    grouped.keys.toList shouldBe List.range(0, groups)
+    grouped.values.map(_.size).sum shouldBe size
+    grouped.get(0).map(_.toList) shouldBe
+      Some(List.range(0, size / groups).map(index => index * groups))
+    grouped.get(groups - 1).map(_.toList) shouldBe
+      Some(List.range(0, size / groups).map(index => index * groups + groups - 1))
+  }
+
+  test("toSortedMap builds a large all-distinct input in key order, losing nothing") {
+    val size = 20000
+    val elements: List[Int] = List.range(size, 0, -1)
+    val built: FailureOr[SortedMap[Int, String]] =
+      Collections.toSortedMap(elements, (value: Int) => value, (value: Int) => s"!$value")
+    built should beSuccess
+    built.map(_.size) shouldBe Right(size)
+    built.map(_.keys.toList) shouldBe Right(elements.reverse)
+    built.map(_.iterator.toList) shouldBe
+      Right(elements.reverse.map(value => (value, s"!$value")))
+  }
+
+  test("toSortedMap with a merge function combines a large input into one value per key") {
+    val size = 20000
+    val keys = 200
+    val built: SortedMap[Int, Int] = Collections.toSortedMap(
+      List.range(0, size),
+      (value: Int) => value % keys,
+      (value: Int) => value,
+      (accumulated: Int, added: Int) => accumulated + added)
+    built.size shouldBe keys
+    built.keys.toList shouldBe List.range(0, keys)
+    built.values.sum shouldBe List.range(0, size).sum
+    built.get(0) shouldBe Some(List.range(0, size / keys).map(index => index * keys).sum)
+  }
+
+  test("two calls of a map-shaped member are independent of one another") {
+    // Nothing accumulated by one call may be visible to the next, whether the earlier call
+    // succeeded, failed on a repeated key, or was given nothing at all.
+    val first: VectorMap[Int, NonEmptyList[String]] =
+      Collections.groupByPreservingOrder(List("a", "bb", "c"))(lengthOf)
+    val second: VectorMap[Int, NonEmptyList[String]] =
+      Collections.groupByPreservingOrder(List("dddd", "e"))(lengthOf)
+    val third: VectorMap[Int, NonEmptyList[String]] =
+      Collections.groupByPreservingOrder(List.empty[String])(lengthOf)
+    first.iterator.map { case (key, group) => (key, group.toList) }.toList shouldBe
+      List(1 -> List("a", "c"), 2 -> List("bb"))
+    second.iterator.map { case (key, group) => (key, group.toList) }.toList shouldBe
+      List(4 -> List("dddd"), 1 -> List("e"))
+    third shouldBe VectorMap.empty[Int, NonEmptyList[String]]
+    val failed: FailureOr[SortedMap[Int, String]] = Collections.toSortedMap(RepeatedLengths, lengthOf)
+    failed should beFailureWith(FailureReason.INVALID)
+    val afterFailure: FailureOr[SortedMap[Int, String]] =
+      Collections.toSortedMap(DistinctLengths, lengthOf)
+    afterFailure should haveValue(SortedMap(1 -> "a", 2 -> "ab", 3 -> "bob"))
+    val merged: SortedMap[Int, String] =
+      Collections.toSortedMap(List("a", "b"), lengthOf, marked, concatenated)
+    merged shouldBe SortedMap(1 -> "!a!b")
+    Collections.toSortedMap(List("cc"), lengthOf, marked, concatenated) shouldBe SortedMap(2 -> "!cc")
+  }
+
+  test("a map-shaped member reads each element of its collection exactly once") {
+    // The contract is a single read of the collection, which is stronger than reading it no
+    // more than twice: the counter below is incremented by the collection itself as each
+    // element is pulled, so a member that traversed its input twice - or looked ahead by one
+    // element - reports a count other than the number of elements.
+    val groupingReads = new AtomicLong(0L)
+    val grouping = List("a", "ab", "b", "cc").iterator.map { element =>
+      val _ = groupingReads.incrementAndGet()
+      element
+    }
+    val grouped: VectorMap[Int, NonEmptyList[String]] =
+      Collections.groupByPreservingOrder(grouping)(lengthOf)
+    grouped.keys.toList shouldBe List(1, 2)
+    groupingReads.get() shouldBe 4L
+    grouping.hasNext shouldBe false
+    val buildingReads = new AtomicLong(0L)
+    val building = List("a", "ab", "bob").iterator.map { element =>
+      val _ = buildingReads.incrementAndGet()
+      element
+    }
+    val built: FailureOr[SortedMap[Int, String]] = Collections.toSortedMap(building, lengthOf)
+    built should haveValue(SortedMap(1 -> "a", 2 -> "ab", 3 -> "bob"))
+    buildingReads.get() shouldBe 3L
+    val mergingReads = new AtomicLong(0L)
+    val merging = List("a", "ab", "b").iterator.map { element =>
+      val _ = mergingReads.incrementAndGet()
+      element
+    }
+    Collections.toSortedMap(merging, lengthOf, marked, concatenated) shouldBe
+      SortedMap(1 -> "!a!b", 2 -> "!ab")
+    mergingReads.get() shouldBe 3L
+  }
+
+  test("toSortedMap stops at a repeated key that arrives after many distinct keys") {
+    // The failing key is the ten thousandth element and the traversal has a map of nine
+    // thousand nine hundred and ninety nine keys behind it by then, which is where a check
+    // made against a partly built or already frozen accumulator would stop reporting it.
+    val distinct = 9999
+    val elements: List[Int] = List.range(0, distinct) ::: List(4321, 20000, 20001)
+    val remaining = elements.iterator
+    val built: FailureOr[SortedMap[Int, Int]] = Collections.toSortedMap(remaining, (value: Int) => value)
+    built should beFailure
+    built should beFailureWith(FailureReason.INVALID)
+    failureOf(built).map(_.message) shouldBe Some("Multiple entries found with the same key: 4321")
+    failureOf(built).map(_.attributes) shouldBe Some(SortedMap("key" -> "4321"))
+    remaining.toList shouldBe List(20000, 20001)
+  }
+
+  //-------------------------------------------------------------------------
   // toNonEmptyChain and concatNonEmptyChains
 
   test("toNonEmptyChain of an empty collection is no chain") {

@@ -19,6 +19,13 @@ package com.opengamma.strata.basics.currency
  * [[rateDigitsByCurrencies]] to answer `isConventional` and `getRateDigits`. Those two member
  * names are the published contract of this object and are kept stable.
  *
+ * That contract is offered to the module and to nothing outside it, which is why the object is
+ * qualified `private[basics]`: these rows are a transcription that the module's own types consume,
+ * not an extension point a caller elsewhere should be able to reach for and then depend on, and
+ * `CurrencyData` carries the same qualifier for the same reason. The restriction still reaches
+ * every part of the module, so `ReferenceDataManifestSpec` reads the table directly to make the
+ * comparison described under the invariants below.
+ *
  * ===Each row is the pair in standard market convention===
  *
  * A market convention determines that a rate between two currencies is quoted one way round and
@@ -66,7 +73,7 @@ package com.opengamma.strata.basics.currency
  *
  * @see [[CurrencyData]] for the currency table and the market convention priority ordering
  */
-object CurrencyPairData {
+private[basics] object CurrencyPairData {
 
   /**
    * The 92 transcribed conventional currency pairs with the number of fractional digits of a

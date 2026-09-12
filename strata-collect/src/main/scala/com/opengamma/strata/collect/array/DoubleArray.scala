@@ -72,13 +72,24 @@ import com.opengamma.strata.collect.DoubleArrayMath
  * ===Failures===
  *
  * Every failure this type reports is a caller-contract violation rather than a data-dependent
- * outcome - an index outside the array, or two arrays that have to match in length and do not -
- * so each is raised as an `IllegalArgumentException` through `ArgCheck` instead of being handed
- * back as a value to inspect. `min` and `max` on an empty array, and the range checks of
- * `copyOf`, keep the message of the Java original while raising that type in place of the state
- * and index exceptions it used, and both differences are recorded on the members concerned. An
- * index passed straight through to the stored array still surfaces as the index exception the
- * runtime raises for it.
+ * outcome, so each is raised rather than handed back as a value to inspect. There are two
+ * kinds, and which kind a failure belongs to is what decides the exception it raises:
+ *
+ *   - a size, length or state violation - a negative size asked of a factory, two arrays that
+ *     have to match in length and do not, a sub-array boundary beyond the end of the array, or
+ *     the smallest or largest element of an array that has none - is checked before anything is
+ *     allocated or read and raised as an `IllegalArgumentException` through `ArgCheck`, carrying
+ *     the message of the Java original wherever that original carried one. This is the category
+ *     whose exception type differs from the Java original, which raised a state exception from
+ *     `min` and `max`, an index exception from the `copyOf` range checks, and left a negative
+ *     size to the exception the runtime raises from the allocation; each difference is recorded
+ *     on the member concerned. Checking a size first is what keeps an invalid size from
+ *     allocating at all, and an invalid size is a contract violation like any other, so it is
+ *     reported like one;
+ *   - an index outside the array surfaces as the index exception the runtime raises for the
+ *     array access itself, which is exactly what the Java original did. `get`, `with` and the
+ *     other members that address a single element read the stored array directly, and no check
+ *     stands in front of them to change that.
  *
  * ===Implementation===
  *
@@ -881,7 +892,11 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * Arrays of different sizes are simply unequal, which is reported rather than raised: this
    * asks a question about the two arrays instead of computing a result from them. The edge
    * behaviour - which values a tolerance does and does not bring together - belongs to the
-   * comparison this delegates to, and is documented there.
+   * comparison this delegates to, and is documented there in full. Two parts of it are worth
+   * repeating, because they decide whether this member agrees with `equals`: a not-a-number
+   * element is equal to a not-a-number element at the same index, so an array holding one is
+   * equal to itself within any tolerance, exactly as it is under `equals`; and an infinite
+   * tolerance makes any two arrays of the same length equal.
    *
    * @param other  the other array
    * @param tolerance  the tolerance to use, zero or greater
@@ -894,7 +909,12 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
   /**
    * Checks whether every value in this array equals zero within the specified tolerance.
    *
-   * An empty array holds no value that differs from zero and so is equal to zero.
+   * An empty array holds no value that differs from zero and so is equal to zero. Each
+   * element is compared with zero by the same comparison `equalWithTolerance` uses, and the
+   * consequences of comparing against a number rather than against another element are that
+   * a not-a-number element is never equal to zero, at any tolerance - the clause that makes
+   * two not-a-number values equal cannot fire against zero, since zero is a number - while an
+   * infinite tolerance admits every other element, an infinite one included.
    *
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if every value is equal to zero up to the tolerance
@@ -1000,18 +1020,214 @@ object DoubleArray {
 
   //-------------------------------------------------------------------------
   /**
-   * Obtains an instance holding the specified values.
-   *
-   * This one member replaces the eleven arity-specific factories of the Java original, which
-   * existed only to spare a caller the cost of an array allocation per call:
+   * Obtains the empty array.
    *
    * {{{
    * val empty = DoubleArray.of()             // the empty array
    * val three = DoubleArray.of(1.0, 2.0, 3.0)
    * }}}
    *
-   * The sequence copies itself into a fresh array, so a caller that expanded an array of its own
-   * into this call cannot reach the array the result holds.
+   * @return the empty array
+   */
+  def of(): DoubleArray = EMPTY
+
+  /**
+   * Obtains an instance holding one value.
+   *
+   * This and the seven factories below it take their values one parameter at a time, as the
+   * Java original's arity-specific factories did, and each allocates one array of exactly the
+   * length it needs and wraps it. The form taking any number of values is reached only beyond
+   * the eighth, because a call written with values listed out would otherwise pay for a
+   * sequence to carry them and a second array to copy them into - several times the cost of
+   * the array the result is made of. The arrays these build are freshly allocated here and
+   * published nowhere else, so wrapping one without copying it is safe.
+   *
+   * @param value  the value to hold
+   * @return an array holding the value
+   */
+  def of(value: Double): DoubleArray = {
+    val array = new Array[Double](1)
+    array(0) = value
+    new DoubleArray(array)
+  }
+
+  /**
+   * Obtains an instance holding two values.
+   *
+   * @param value1  the first value
+   * @param value2  the second value
+   * @return an array holding the values, in the order given
+   */
+  def of(value1: Double, value2: Double): DoubleArray = {
+    val array = new Array[Double](2)
+    array(0) = value1
+    array(1) = value2
+    new DoubleArray(array)
+  }
+
+  /**
+   * Obtains an instance holding three values.
+   *
+   * @param value1  the first value
+   * @param value2  the second value
+   * @param value3  the third value
+   * @return an array holding the values, in the order given
+   */
+  def of(value1: Double, value2: Double, value3: Double): DoubleArray = {
+    val array = new Array[Double](3)
+    array(0) = value1
+    array(1) = value2
+    array(2) = value3
+    new DoubleArray(array)
+  }
+
+  /**
+   * Obtains an instance holding four values.
+   *
+   * @param value1  the first value
+   * @param value2  the second value
+   * @param value3  the third value
+   * @param value4  the fourth value
+   * @return an array holding the values, in the order given
+   */
+  def of(value1: Double, value2: Double, value3: Double, value4: Double): DoubleArray = {
+    val array = new Array[Double](4)
+    array(0) = value1
+    array(1) = value2
+    array(2) = value3
+    array(3) = value4
+    new DoubleArray(array)
+  }
+
+  /**
+   * Obtains an instance holding five values.
+   *
+   * @param value1  the first value
+   * @param value2  the second value
+   * @param value3  the third value
+   * @param value4  the fourth value
+   * @param value5  the fifth value
+   * @return an array holding the values, in the order given
+   */
+  def of(value1: Double, value2: Double, value3: Double, value4: Double, value5: Double): DoubleArray = {
+    val array = new Array[Double](5)
+    array(0) = value1
+    array(1) = value2
+    array(2) = value3
+    array(3) = value4
+    array(4) = value5
+    new DoubleArray(array)
+  }
+
+  /**
+   * Obtains an instance holding six values.
+   *
+   * @param value1  the first value
+   * @param value2  the second value
+   * @param value3  the third value
+   * @param value4  the fourth value
+   * @param value5  the fifth value
+   * @param value6  the sixth value
+   * @return an array holding the values, in the order given
+   */
+  def of(
+      value1: Double,
+      value2: Double,
+      value3: Double,
+      value4: Double,
+      value5: Double,
+      value6: Double): DoubleArray = {
+
+    val array = new Array[Double](6)
+    array(0) = value1
+    array(1) = value2
+    array(2) = value3
+    array(3) = value4
+    array(4) = value5
+    array(5) = value6
+    new DoubleArray(array)
+  }
+
+  /**
+   * Obtains an instance holding seven values.
+   *
+   * @param value1  the first value
+   * @param value2  the second value
+   * @param value3  the third value
+   * @param value4  the fourth value
+   * @param value5  the fifth value
+   * @param value6  the sixth value
+   * @param value7  the seventh value
+   * @return an array holding the values, in the order given
+   */
+  def of(
+      value1: Double,
+      value2: Double,
+      value3: Double,
+      value4: Double,
+      value5: Double,
+      value6: Double,
+      value7: Double): DoubleArray = {
+
+    val array = new Array[Double](7)
+    array(0) = value1
+    array(1) = value2
+    array(2) = value3
+    array(3) = value4
+    array(4) = value5
+    array(5) = value6
+    array(6) = value7
+    new DoubleArray(array)
+  }
+
+  /**
+   * Obtains an instance holding eight values.
+   *
+   * @param value1  the first value
+   * @param value2  the second value
+   * @param value3  the third value
+   * @param value4  the fourth value
+   * @param value5  the fifth value
+   * @param value6  the sixth value
+   * @param value7  the seventh value
+   * @param value8  the eighth value
+   * @return an array holding the values, in the order given
+   */
+  def of(
+      value1: Double,
+      value2: Double,
+      value3: Double,
+      value4: Double,
+      value5: Double,
+      value6: Double,
+      value7: Double,
+      value8: Double): DoubleArray = {
+
+    val array = new Array[Double](8)
+    array(0) = value1
+    array(1) = value2
+    array(2) = value3
+    array(3) = value4
+    array(4) = value5
+    array(5) = value6
+    array(6) = value7
+    array(7) = value8
+    new DoubleArray(array)
+  }
+
+  /**
+   * Obtains an instance holding any number of values.
+   *
+   * This is the form a call reaches when it supplies more than eight values, or when it
+   * expands a sequence of its own into the call:
+   *
+   * {{{
+   * val many = DoubleArray.of(readings: _*)
+   * }}}
+   *
+   * The sequence copies itself into a fresh array, so a caller that expanded a sequence of its
+   * own into this call cannot reach the array the result holds. A sequence backed by an array
+   * is best passed to `copyOf` instead, which takes it without a sequence in between.
    *
    * @param values  the values to hold, in order
    * @return an array holding the specified values, the empty array if none are supplied
@@ -1036,9 +1252,10 @@ object DoubleArray {
    * @param size  the number of elements, zero or greater
    * @param valueFunction  the function from index to value
    * @return an array of the specified size populated by the function
-   * @throws NegativeArraySizeException if the size is negative
+   * @throws IllegalArgumentException if the size is negative
    */
-  def tabulate(size: Int)(valueFunction: Int => Double): DoubleArray =
+  def tabulate(size: Int)(valueFunction: Int => Double): DoubleArray = {
+    ArgCheck.notNegative(size, "size")
     if (size == 0) {
       EMPTY
     } else {
@@ -1046,6 +1263,7 @@ object DoubleArray {
       tabulateInto(result, valueFunction, 0)
       new DoubleArray(result)
     }
+  }
 
   // fills the result from the index upwards with the function applied to each index
   @tailrec
@@ -1163,14 +1381,16 @@ object DoubleArray {
    *
    * @param size  the number of elements, zero or greater
    * @return an array of the specified size filled with zeroes
-   * @throws NegativeArraySizeException if the size is negative
+   * @throws IllegalArgumentException if the size is negative
    */
-  def filled(size: Int): DoubleArray =
+  def filled(size: Int): DoubleArray = {
+    ArgCheck.notNegative(size, "size")
     if (size == 0) {
       EMPTY
     } else {
       new DoubleArray(new Array[Double](size))
     }
+  }
 
   /**
    * Obtains an instance with every entry equal to the same value.
@@ -1178,9 +1398,10 @@ object DoubleArray {
    * @param size  the number of elements, zero or greater
    * @param value  the value of every element
    * @return an array of the specified size filled with the specified value
-   * @throws NegativeArraySizeException if the size is negative
+   * @throws IllegalArgumentException if the size is negative
    */
-  def filled(size: Int, value: Double): DoubleArray =
+  def filled(size: Int, value: Double): DoubleArray = {
+    ArgCheck.notNegative(size, "size")
     if (size == 0) {
       EMPTY
     } else {
@@ -1188,6 +1409,7 @@ object DoubleArray {
       Arrays.fill(result, value)
       new DoubleArray(result)
     }
+  }
 
   //-------------------------------------------------------------------------
   // The bit pattern of a value, which is how this type compares elements: it is the comparison

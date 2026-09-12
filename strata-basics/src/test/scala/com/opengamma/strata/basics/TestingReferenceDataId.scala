@@ -46,7 +46,10 @@ package com.opengamma.strata.basics
  * Four specs use it, and its shape is fixed by all four together:
  *
  *   - `ReferenceDataSpec` - identifiers `"1"`, `"2"` and `"3"` paired with boxed numbers, to
- *     exercise `findValue`, `getValue`, `containsValue` and combination;
+ *     exercise the whole reading surface - `findValue`, `getValue` and `containsValue` - over the
+ *     four factories, the combination of two sets of reference data, and - this fixture
+ *     implementing no member of the trait - the inherited resolution path through the identifier
+ *     itself, `ReferenceDataId.resolve` and the reader `toReader` returns;
  *   - `CombinedReferenceDataSpec` - identifiers `"1"` to `"4"`, to exercise which side of a
  *     combination wins a clash;
  *   - `date.HolidayCalendarsSpec` - to confirm that `ReferenceData.standard` holds calendars

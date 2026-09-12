@@ -86,6 +86,25 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
 
   /**
+   * The number of draws the one generated property of this file is checked against: the
+   * idempotence and length-preservation property inside `test_normalized`.
+   *
+   * The default of the framework is a handful, which is far too few for what that property
+   * asserts. It draws a month count from 1 to 12,000 - the whole range the factories of this
+   * type admit - against a day count from 0 to 400, some 4.8 million pairs, and the
+   * canonicalisation corners the claim rests on sit at three single values of that range, each
+   * about a ten-thousandth of a uniform draw. Five hundred draws, together with those three
+   * month counts named as generator specials at the property itself, reach every corner many
+   * times over and spread the remaining draws across the range, while leaving this file inside
+   * the few seconds it runs in - the property builds four frequencies per draw and nothing else.
+   *
+   * The count governs generator-driven checks only, so the table-driven `forAll(data_...)` tests
+   * below are unaffected by it: each of those evaluates every row of its table, always.
+   */
+  implicit override val generatorDrivenConfig: PropertyCheckConfiguration =
+    PropertyCheckConfiguration(minSuccessful = 500)
+
+  /**
    * Unwraps the outcome of a factory that is expected to produce a frequency.
    *
    * The data providers of the Java test held frequencies built by factories that could throw;
@@ -503,12 +522,24 @@ final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPrope
       Frequency.parse(text) should haveValue(Frequency.P12M)
     }
 
-    // Construction is idempotent and length-preserving over the whole space, not just the rows:
-    // rebuilding a frequency from the period it holds gives the same value back, normalising it
-    // changes nothing, and the two ways of spelling one length - all months, or years and months
-    // - are one frequency. Neither the total number of months nor the number of days moves,
-    // which is why no arithmetic of this type is affected by canonicalisation.
-    forAll(Gen.chooseNum(1, 12000), Gen.chooseNum(0, 400)) { (months: Int, days: Int) =>
+    // Construction is idempotent and length-preserving beyond the rows above: rebuilding a
+    // frequency from the period it holds gives the same value back, normalising it changes
+    // nothing, and the two ways of spelling one length - all months, or years and months - are
+    // one frequency. Neither the total number of months nor the number of days moves, which is
+    // why no arithmetic of this type is affected by canonicalisation.
+    //
+    // The claim is measured over the five hundred draws configured at the head of this file,
+    // taken from month counts 1 to 12,000 - the whole range the factories admit - against day
+    // counts 0 to 400, and not over every pair of that space, which is why three month counts
+    // are named as generator specials rather than left to chance: twelve, the one length whose
+    // canonical form is twelve months rather than one year; thirteen, the first count
+    // redistributed into years and months; and twenty-four, an exact number of years. Under a
+    // uniform draw each would appear about once in ten thousand, so the corners this property
+    // exists to pin would go unvisited; named as specials they are drawn with the same weight
+    // as the bounds of the range. The day count needs no special of its own - `chooseNum`
+    // already weights zero, one and both bounds, and a day count only ever passes through
+    // canonicalisation unchanged.
+    forAll(Gen.chooseNum(1, 12000, 12, 13, 24), Gen.chooseNum(0, 400)) { (months: Int, days: Int) =>
       val frequency = freq(Frequency.of(Period.of(0, months, days)))
       Frequency.of(Period.of(months / 12, months % 12, days)) should haveValue(frequency)
       Frequency.of(frequency.period) should haveValue(frequency)

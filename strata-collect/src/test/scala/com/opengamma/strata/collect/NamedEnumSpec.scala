@@ -435,6 +435,116 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
   }
 
   //-------------------------------------------------------------------------
+  // the length of text the lenient stage accepts
+  //-------------------------------------------------------------------------
+
+  test("every spelling a family resolves is still resolved once the lenient stage is bounded") {
+    // The bound applies to the lenient stage alone and is derived from the family's own
+    // data, so every route into a family - a canonical name, its upper-case form, a folded
+    // spelling, an alternate spelling and a spelling only a rewrite reaches - is unaffected
+    // by it. They are asserted together here because the bound is one change that could
+    // break any of them.
+    sample.parse("Standard") should haveValue(SampleNamed.STANDARD)
+    sample.parse("STANDARD") should haveValue(SampleNamed.STANDARD)
+    sample.parse("standard") should haveValue(SampleNamed.STANDARD)
+    sample.parse("Alternate") should haveValue(SampleNamed.STANDARD)
+    sample.parse("ALTERNATE") should haveValue(SampleNamed.STANDARD)
+    sample.parse("alternate") should haveValue(SampleNamed.STANDARD)
+    sample.parse("A1") should haveValue(SampleNamed.STANDARD)
+    sample.parse("a1") should haveValue(SampleNamed.STANDARD)
+    mock.parse("TWENTY_ONE") should haveValue(MockEnum.TWENTY_ONE)
+    mock.parse("twenty_one") should haveValue(MockEnum.TWENTY_ONE)
+  }
+
+  test("the exact lookup is not bounded, so a spelling longer than every key of its family resolves") {
+    // The bound counts the alternate spellings of a family as well as the keys of its
+    // members, so a family reached through a spelling far longer than any of its names
+    // resolves that spelling and its upper-case form exactly, and its lower-case form
+    // through the fold of the lenient stage.
+    LongAliasSpelling.length should be > sample.values.toList.map(_.name.length).max
+    longAlias.valueOf(LongAliasSpelling) shouldBe Some(SampleNamed.MORE)
+    longAlias.parse(LongAliasSpelling) should haveValue(SampleNamed.MORE)
+    longAlias.parse(LongAliasSpelling.toUpperCase(Locale.ENGLISH)) should haveValue(SampleNamed.MORE)
+    longAlias.parse(LongAliasSpelling.toLowerCase(Locale.ENGLISH)) should haveValue(SampleNamed.MORE)
+  }
+
+  test("a name far longer than the margin resolves exactly and in lower case, so the bound is not a constant") {
+    // Were the bound a fixed number of characters rather than the family's own data plus a
+    // margin, the fold of this name - which is the whole of the leniency a family without a
+    // rewrite has - would be beyond it and the lower-case spelling would be reported.
+    val spelling = LongNameNamed.SPELLED_OUT.name
+    spelling.length should be > LenientMargin
+    LongNameNamed.lookup.lenientPatterns shouldBe empty
+    LongNameNamed.lookup.valueOf(spelling) shouldBe Some(LongNameNamed.SPELLED_OUT)
+    LongNameNamed.lookup.valueOf(spelling.toUpperCase(Locale.ENGLISH)) shouldBe
+      Some(LongNameNamed.SPELLED_OUT)
+    LongNameNamed.lookup.valueOf(spelling.toLowerCase(Locale.ENGLISH)) shouldBe None
+    LongNameNamed.lookup.parse(spelling) should haveValue(LongNameNamed.SPELLED_OUT)
+    LongNameNamed.lookup.parse(spelling.toLowerCase(Locale.ENGLISH)) should
+      haveValue(LongNameNamed.SPELLED_OUT)
+  }
+
+  test("a rewrite that consumes text of any length resolves a short input and reports one beyond the bound") {
+    // The deliberate narrowing, asserted rather than left implicit. This family's single
+    // rewrite turns any text ending in `X` into the name of a member, so it resolves text of
+    // whatever length the family is willing to rewrite - and reports, as text naming no
+    // member, the text that is longer than that.
+    greedyRewrite.parse("X") should haveValue(SampleNamed.STANDARD)
+    greedyRewrite.parse("anything at all, ending in x") should haveValue(SampleNamed.STANDARD)
+    val atTheBound = "A" * (LongestSampleKey + LenientMargin - 1) + "X"
+    atTheBound.length shouldBe LongestSampleKey + LenientMargin
+    greedyRewrite.parse(atTheBound) should haveValue(SampleNamed.STANDARD)
+    val beyondTheBound = "A" * (LongestSampleKey + LenientMargin) + "X"
+    beyondTheBound.length shouldBe LongestSampleKey + LenientMargin + 1
+    val parsed: ResultNec[SampleNamed] = greedyRewrite.parse(beyondTheBound)
+    parsed should beFailureWith(FailureReason.PARSING)
+    failuresOf(parsed) shouldBe
+      List(Failure.Parsing(s"GreedyRewrite name not found: $beyondTheBound"))
+    failuresOf(parsed).head.attributes shouldBe empty
+  }
+
+  test("text beyond the bound is reported without the chain of rewrites running over it") {
+    // Asserted by construction rather than by timing: the single rewrite of this family
+    // matches every text there is and turns it into the name of a member, so a resolution is
+    // proof that the chain ran over the text and a failure is proof that it did not.
+    rewritesAnything.parse("literally anything") should haveValue(SampleNamed.STANDARD)
+    rewritesAnything.parse("A" * (LongestSampleKey + LenientMargin)) should
+      haveValue(SampleNamed.STANDARD)
+    rewritesAnything.parse("A" * (LongestSampleKey + LenientMargin + 1)) should beFailure
+    rewritesAnything.parse("A" * 40000) should beFailure
+    failuresOf(rewritesAnything.parse("A" * 40000)).head.message shouldBe
+      s"RewritesAnything name not found: ${"A" * 40000}"
+  }
+
+  test("the bound is the family's own data plus the margin, so a family of longer names rewrites longer text") {
+    // The same rewrite over two families whose names differ in length accepts text of two
+    // different lengths, which is the whole of what it means for the bound to be derived
+    // from the data of a family rather than fixed by this typeclass.
+    val shortBound = LongestSampleKey + LenientMargin
+    val longBound = LongNameNamed.SPELLED_OUT.name.length + LenientMargin
+    longBound should be > shortBound
+    rewritesAnything.parse("A" * shortBound) should haveValue(SampleNamed.STANDARD)
+    rewritesAnything.parse("A" * (shortBound + 1)) should beFailure
+    longNameRewritesAnything.parse("A" * longBound) should haveValue(LongNameNamed.SPELLED_OUT)
+    longNameRewritesAnything.parse("A" * (longBound + 1)) should beFailure
+    // The text the shorter family reports is text the longer family still rewrites.
+    longNameRewritesAnything.parse("A" * (shortBound + 1)) should
+      haveValue(LongNameNamed.SPELLED_OUT)
+  }
+
+  test("the longest expression a family declares is counted in its bound") {
+    // A family whose expression source is longer than any of its keys is bounded by that
+    // source, so a rewrite written out at length still receives the text it was written for.
+    val sourceLength = longSourceRewrite.lenientPatterns.map { case (expression, _) =>
+      expression.pattern.pattern().length
+    }.max
+    sourceLength should be > LongestSampleKey
+    longSourceRewrite.parse("MORE" + "_" * (sourceLength + LenientMargin - 4)) should
+      haveValue(SampleNamed.MORE)
+    longSourceRewrite.parse("MORE" + "_" * (sourceLength + LenientMargin - 3)) should beFailure
+  }
+
+  //-------------------------------------------------------------------------
   // the smallest family there can be, standing in for the ported empty family
   //-------------------------------------------------------------------------
 
@@ -1051,6 +1161,130 @@ private[collect] object NamedEnumFixtures {
       SampleNamed.Alternates,
       externals = Map("Foo" -> Map("Foo1" -> "Alternate")),
       familyName = "AliasedExternal")
+
+  /**
+   * The room the typeclass allows above the longest text a family knows.
+   *
+   * The lenient stage of a family is applied to text no longer than the longest key,
+   * alternate spelling or expression source the family holds, plus this margin; text beyond
+   * that is reported as text naming no member, without being folded to upper case and
+   * without an expression being applied to it. The number is held privately by the
+   * typeclass, so it is written out again here: the families below are sized against it, and
+   * the tests over them assert the boundary itself, so a change to the margin that was not
+   * meant fails them rather than passing unnoticed.
+   */
+  val LenientMargin: Int = 32
+
+  /**
+   * The longest key any member of the sample family is registered under.
+   *
+   * Derived from the members rather than written down, since it is what the bound of every
+   * lookup over those members is built from - three of the families below declare no table
+   * longer than this, so their bound is this length plus [[NamedEnumFixtures.LenientMargin]].
+   */
+  val LongestSampleKey: Int =
+    SampleNamed.values.toList
+      .flatMap(member => List(member.name, member.name.toUpperCase(Locale.ENGLISH)))
+      .map(_.length)
+      .max
+
+  /** An alternate spelling far longer than any name of the family it resolves in. */
+  val LongAliasSpelling: String = "AnAlternateSpellingLongerThanEveryKeyOfThisFamily"
+
+  /**
+   * A lookup reached through an alternate spelling longer than every key of its family.
+   *
+   * The exact lookup is bounded by nothing, and the bound of the lenient stage counts the
+   * alternate spellings of a family as well as the keys of its members, so this spelling
+   * resolves exactly and its folded forms resolve through the lenient stage.
+   */
+  val longAlias: NamedEnum[SampleNamed] =
+    NamedEnum.of(
+      SampleNamed.values,
+      Map(LongAliasSpelling -> "More"),
+      familyName = "LongAlias")
+
+  /**
+   * A lookup whose single rewrite consumes text of any length before a literal.
+   *
+   * This is the shape of expression the bound on the lenient stage exists for: a greedy
+   * group matches text of whatever length it is given, so the cost of applying the rewrite
+   * grows with the text rather than with the family, and the rewrite turns text that no
+   * member names into the name of a member. No table of the library declares an expression
+   * of this shape - every one of them is anchored to a literal of a fixed size - so the
+   * narrowing the bound introduces is observable only through a family declared for it,
+   * which is what this one is.
+   */
+  val greedyRewrite: NamedEnum[SampleNamed] =
+    NamedEnum.of(
+      SampleNamed.values,
+      lenient = List("^(.*)X$".r -> "Standard"),
+      familyName = "GreedyRewrite")
+
+  /**
+   * A lookup whose single rewrite turns every text there is into the name of a member.
+   *
+   * With this family a resolution is proof that the chain of rewrites ran over the text and
+   * a failure is proof that it did not, which is how the tests above assert that text beyond
+   * the bound is reported without the chain running - cheaply and deterministically, rather
+   * than by timing a call.
+   */
+  val rewritesAnything: NamedEnum[SampleNamed] =
+    NamedEnum.of(
+      SampleNamed.values,
+      lenient = List("^.*$".r -> "Standard"),
+      familyName = "RewritesAnything")
+
+  /**
+   * A lookup whose expression source is longer than every key of its family.
+   *
+   * The bound counts the sources of the expressions a family declares, so a family whose
+   * rewrites are written out at length receives text of the length those rewrites were
+   * written for. Here the source admits a name followed by any number of underscores, and
+   * the source itself is what sets the bound.
+   */
+  val longSourceRewrite: NamedEnum[SampleNamed] =
+    NamedEnum.of(
+      SampleNamed.values,
+      lenient = List("^MORE[_]*$".r -> "More"),
+      familyName = "LongSourceRewrite")
+
+  /**
+   * A family whose single member is named far longer than the margin.
+   *
+   * The leniency of a family that declares no rewrite is the fold of its input to upper
+   * case, and that fold is inside the bounded stage, so this family is what shows the bound
+   * to be the family's own data plus the margin rather than a number this typeclass fixes: a
+   * bound of the margin alone would report the lower-case spelling of this name.
+   *
+   * @param name  the canonical name of the member
+   */
+  sealed abstract class LongNameNamed private (val name: String) extends Named
+
+  /** The single long-named member, and the lookup over it. */
+  object LongNameNamed {
+
+    /** The member whose name is longer than the margin the bound adds. */
+    case object SPELLED_OUT
+        extends LongNameNamed("AVeryLongCanonicalNameOfAMemberWhoseFamilyBoundsItsLenientStage")
+
+    /** The lookup of the long-named family, declaring no table at all. */
+    val lookup: NamedEnum[LongNameNamed] =
+      NamedEnum.of(NonEmptyList.one(SPELLED_OUT), familyName = "LongNameNamed")
+  }
+
+  /**
+   * The rewrite of [[NamedEnumFixtures.rewritesAnything]] over the long-named family.
+   *
+   * The same expression over a family whose longest key is far longer accepts text that is
+   * far longer, which is the pair of measurements that pins the bound to the data of the
+   * family it belongs to.
+   */
+  val longNameRewritesAnything: NamedEnum[LongNameNamed] =
+    NamedEnum.of(
+      NonEmptyList.one(LongNameNamed.SPELLED_OUT),
+      lenient = List("^.*$".r -> LongNameNamed.SPELLED_OUT.name),
+      familyName = "LongNameRewritesAnything")
 
   /**
    * The smallest family there can be, standing in for the ported empty family.

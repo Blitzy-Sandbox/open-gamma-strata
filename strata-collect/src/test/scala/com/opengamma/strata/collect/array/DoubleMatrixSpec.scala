@@ -114,6 +114,16 @@ package com.opengamma.strata.collect.array {
    *  - values that do not fill the requested shape, and a function that returns a row of the wrong
    *    length, fail with `IllegalArgumentException` exactly as in the original, and the message of
    *    the original is preserved word for word, which this spec asserts rather than assumes;
+   *  - `copyOf` rejects an array whose rows differ in length, with `IllegalArgumentException`
+   *    naming the row that disagrees and both lengths, where the original copied such an array
+   *    and answered with a value that read past the end of a short row as soon as it was asked
+   *    for an element its shape promised. Rejecting is what makes rectangularity true of every
+   *    value a public factory produces, which every member addressing an element by row and
+   *    column relies on; the sibling factory taking a row function already rejected the same
+   *    condition. An array with no rows, or whose first row has no elements, is still the empty
+   *    matrix rather than a failure, as in the original. Rendering is total regardless, at each
+   *    row's own length, which is asserted through the adopting factory - the only remaining way
+   *    to hold rows of differing length;
    *  - a negative row count, column count or size fails with `IllegalArgumentException` naming the
    *    argument and its value, where the original let the allocation it had already begun raise a
    *    negative-size error of the platform's. Every factory checks its dimensions before it
@@ -526,6 +536,67 @@ package com.opengamma.strata.collect.array {
       assertMatrix(DoubleMatrix.copyOf(Array.ofDim[Double](0, 0)))
       assertMatrix(DoubleMatrix.copyOf(Array.ofDim[Double](0, 2)))
       assertMatrix(DoubleMatrix.copyOf(Array.ofDim[Double](2, 0)))
+    }
+
+    test("copyOf_rejects_rows_that_differ_in_length") {
+      // A matrix is rectangular, and every member that addresses an element by row and column
+      // relies on that, so an array whose rows differ in length describes no matrix and is
+      // rejected instead of copied. Both orientations are asserted, because a row shorter than
+      // the first and a row longer than it are different failures of the same condition: the
+      // short row would leave the shape promising elements that are not there, and the long row
+      // would leave elements the shape does not reach. The Java original copied either without
+      // complaint, so this is the one point at which this factory is the stricter of the two
+      val shortSecondRow = Array(Array(1.0, 2.0), Array(1.0))
+      val shortFailure = intercept[IllegalArgumentException](DoubleMatrix.copyOf(shortSecondRow))
+      shortFailure.getMessage shouldBe "Array cannot be copied as row 1 is of length 1, expected 2"
+
+      val longSecondRow = Array(Array(1.0), Array(1.0, 2.0))
+      val longFailure = intercept[IllegalArgumentException](DoubleMatrix.copyOf(longSecondRow))
+      longFailure.getMessage shouldBe "Array cannot be copied as row 1 is of length 2, expected 1"
+
+      // the failing row is named, wherever it is
+      val thirdRowFails =
+        intercept[IllegalArgumentException](
+          DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(3.0, 4.0), Array(5.0))))
+      thirdRowFails.getMessage shouldBe "Array cannot be copied as row 2 is of length 1, expected 2"
+
+      // an empty row after a non-empty one is the same failure, since the shape comes from the
+      // first row
+      val emptyRowFails =
+        intercept[IllegalArgumentException](DoubleMatrix.copyOf(Array(Array(1.0), Array.emptyDoubleArray)))
+      emptyRowFails.getMessage shouldBe "Array cannot be copied as row 1 is of length 0, expected 1"
+
+      // the check leaves the array it was given alone, and nothing is copied before it fails
+      shortSecondRow(0)(0) shouldBe 1.0
+      shortSecondRow(0).length shouldBe 2
+      shortSecondRow(1).length shouldBe 1
+
+      // a first row with no elements is the empty matrix rather than a failure, as in the Java
+      // original, because every factory funnels a zero dimension to the empty instance before
+      // any question of shape arises
+      assertMatrix(DoubleMatrix.copyOf(Array(Array.emptyDoubleArray, Array(1.0))))
+
+      // rectangular input of every shape is copied as before
+      assertMatrix(DoubleMatrix.copyOf(Array(Array(1.0, 2.0, 3.0))), 1.0, 2.0, 3.0)
+      assertMatrix(DoubleMatrix.copyOf(Array(Array(1.0), Array(2.0), Array(3.0))), 1.0, 2.0, 3.0)
+    }
+
+    test("toString_renders_every_value_including_one_adopted_with_rows_of_differing_length") {
+      // Rendering is total: it walks each row at that row's own length, so no value can make it
+      // fail or hide an element. For every matrix a public factory can build the row length and
+      // the column count are the same, so this is observable only through the module-private
+      // factory that adopts its rows without copying or checking them - which is exactly the
+      // value whose rendering must not fail. The expected text is that of the Java original,
+      // which also rendered each row at its own length
+      DoubleMatrix.ofUnsafe(Array(Array(1.0, 2.0), Array(1.0))).toString shouldBe "1.0 2.0\n1.0\n"
+      DoubleMatrix.ofUnsafe(Array(Array(1.0), Array(1.0, 2.0))).toString shouldBe "1.0\n1.0 2.0\n"
+      DoubleMatrix.ofUnsafe(Array(Array(1.0), Array.emptyDoubleArray, Array(2.0))).toString shouldBe
+        "1.0\n2.0\n"
+
+      // and the rectangular renderings are unchanged
+      DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(3.0, 4.0))).toString shouldBe "1.0 2.0\n3.0 4.0\n"
+      DoubleMatrix.of(1, 3, 1.0, 2.0, 3.0).toString shouldBe "1.0 2.0 3.0\n"
+      DoubleMatrix.EMPTY.toString shouldBe ""
     }
 
     //-------------------------------------------------------------------------

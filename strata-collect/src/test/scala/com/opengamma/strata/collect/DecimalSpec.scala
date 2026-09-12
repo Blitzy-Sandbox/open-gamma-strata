@@ -11,6 +11,7 @@ import java.math.RoundingMode
 
 import scala.collection.immutable.List
 import scala.util.Random
+import scala.util.Try
 
 import cats.Eq
 import cats.Hash
@@ -22,6 +23,7 @@ import cats.syntax.all._
 import _root_.io.circe.parser
 import _root_.io.circe.syntax._
 
+import org.scalacheck.Gen
 import org.scalatest.Assertion
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -652,6 +654,255 @@ class DecimalSpec
     rejected should beFailure
     rejected should haveFailureMessageMatching(".*nonsense.*")
     rejected.isLeft shouldBe true
+  }
+
+  //-------------------------------------------------------------------------
+  // The character pass that reads text.
+  //
+  // `Decimal.of(String)` reads a numeral with one pass over the characters and hands the
+  // shapes that pass does not evaluate - an exponent, a unicode digit, more digits than the
+  // type holds - to `BigDecimal`. The contract is unchanged by that: the factory answers, for
+  // every text, what `new BigDecimal(str)` followed by `Decimal.of(BigDecimal)` answered. That
+  // equivalence is what this section asserts, over the whole space of short numeral-ish text
+  // rather than over chosen cases, because the cases that distinguish two readings of text are
+  // exactly the ones nobody thinks to choose.
+
+  /**
+   * The reading of text this factory is specified to agree with.
+   *
+   * This is the route `of(String)` took in full before the pass existed: the two guards on the
+   * text itself, then `BigDecimal` and the conversion of what it read. It is computed here
+   * rather than imported, so the assertions below compare two independent algorithms rather
+   * than one algorithm with itself. Only the reason of a failure is compared, because the
+   * wording of a rejection is asserted separately and literally.
+   *
+   * @param str  the text to read
+   * @return the decimal the text names, or the reason it names none
+   */
+  private def textReference(str: String): Either[FailureReason, Decimal] =
+    if (str.isEmpty) {
+      Left(FailureReason.PARSING)
+    } else if (str.length > 256) {
+      // the length bound of the factory, restated as a literal because the constant holding it
+      // is private to the companion, exactly as the malformed-text table above restates it
+      Left(FailureReason.PARSING)
+    } else {
+      Try(new BigDecimal(str)).toEither match {
+        case Right(value) => Decimal.of(value).left.map(failure => failure.reason)
+        case Left(_) => Left(FailureReason.PARSING)
+      }
+    }
+
+  /** Asserts that the factory reads one text exactly as the reference route reads it. */
+  private def assertTextAgrees(str: String): Assertion =
+    withClue(s"reading '$str': ") {
+      Decimal.of(str).left.map(failure => failure.reason) shouldBe textReference(str)
+    }
+
+  /**
+   * The fullwidth digit one, built from its code point as [[ArabicIndicOne]] is.
+   *
+   * A second unicode digit outside ASCII, from a different block, so the delegation to
+   * `BigDecimal` is asserted over more than the one digit the ported table carries.
+   */
+  private val FullWidthOne: String = 0xff11.toChar.toString
+
+  /**
+   * A lone surrogate, which is not a digit and cannot be part of one on its own.
+   *
+   * `BigDecimal` refuses text containing it - it reads one `char` at a time and never a
+   * surrogate pair - so the pass may refuse it directly, and this character is in the sweep
+   * alphabet below to hold that agreement.
+   */
+  private val LoneSurrogate: String = 0xd835.toChar.toString
+
+  /**
+   * The characters numerals are spelled with, and several they are not.
+   *
+   * Digits at both ends of the range and a middling one, the point, both signs, both exponent
+   * markers, a unicode digit from two blocks, a lone surrogate, a letter, a space and a
+   * newline: every branch of the pass is reachable from this alphabet, including the ones that
+   * only a malformed numeral reaches.
+   */
+  private val NumeralCharacters: List[Char] =
+    List(
+      '0',
+      '1',
+      '9',
+      '.',
+      '-',
+      '+',
+      'e',
+      'E',
+      'A',
+      ' ',
+      '\n',
+      ',',
+      ArabicIndicOne.head,
+      FullWidthOne.head,
+      LoneSurrogate.head)
+
+  /** The narrower alphabet of the exhaustive sweep, one character of each kind the pass sees. */
+  private val SweepCharacters: List[Char] =
+    List('0', '1', '.', '-', '+', 'e', 'A', ' ', ArabicIndicOne.head, LoneSurrogate.head)
+
+  /**
+   * Text built from the numeral alphabet, in the three shapes that reach different branches.
+   *
+   * Free text over the alphabet covers the malformed shapes and, at short lengths, a fair
+   * number of well-formed ones; the well-formed shape is generated separately so that the
+   * digit runs are long enough to cross the eighteen-digit and eighteen-place boundaries where
+   * the pass stops evaluating and delegates; and the oversized shape crosses the length guard.
+   */
+  private val genNumeralText: Gen[String] = {
+    val character = Gen.oneOf(NumeralCharacters)
+    val free = Gen.choose(0, 20).flatMap(length => Gen.stringOfN(length, character))
+    val oversized = Gen.choose(250, 300).flatMap(length => Gen.stringOfN(length, character))
+    val wellFormed = for {
+      sign <- Gen.oneOf("", "-", "+")
+      whole <- Gen.choose(0, 22).flatMap(length => Gen.stringOfN(length, Gen.numChar))
+      point <- Gen.oneOf("", ".")
+      fraction <- Gen.choose(0, 22).flatMap(length => Gen.stringOfN(length, Gen.numChar))
+      exponent <- Gen.oneOf("", "e3", "E-3", "e+2", "E0", "e400", "e-400")
+    } yield sign + whole + point + fraction + exponent
+    Gen.frequency((10, free), (8, wellFormed), (1, oversized))
+  }
+
+  /** Every text of the given length over the given alphabet. */
+  private def textsOfLength(alphabet: List[Char], length: Int): List[String] =
+    if (length == 0) {
+      List("")
+    } else {
+      textsOfLength(alphabet, length - 1)
+        .flatMap(prefix => alphabet.map(character => prefix + character))
+    }
+
+  /**
+   * Text the pass decides itself, with the message the rejection carries.
+   *
+   * Every row is text no `BigDecimal` could read - a character that is not part of a numeral,
+   * a second point, a sign in the middle, an exponent that is not a sign and digits, or no
+   * digit at all - so the pass reports it without constructing an exception to catch, which is
+   * the whole of the change these rows guard. The message is the literal text of the report
+   * rather than one this spec builds the way the implementation builds it.
+   */
+  private val passRejectedTexts: TableFor2[String, String] = Table(
+    ("text", "message"),
+    ("not-a-number", "Decimal string is invalid: 'not-a-number'"),
+    ("1.2.3", "Decimal string is invalid: '1.2.3'"),
+    ("1+23", "Decimal string is invalid: '1+23'"),
+    ("--123", "Decimal string is invalid: '--123'"),
+    ("A", "Decimal string is invalid: 'A'"),
+    ("\n", "Decimal string is invalid: '\n'"),
+    ("..", "Decimal string is invalid: '..'"),
+    ("1..2", "Decimal string is invalid: '1..2'"),
+    ("1.-2", "Decimal string is invalid: '1.-2'"),
+    (".", "Decimal string is invalid: '.'"),
+    ("-.", "Decimal string is invalid: '-.'"),
+    ("1e", "Decimal string is invalid: '1e'"),
+    ("1e+", "Decimal string is invalid: '1e+'"),
+    ("1.2e3.4", "Decimal string is invalid: '1.2e3.4'"),
+    ("e3", "Decimal string is invalid: 'e3'"),
+    ("1 2", "Decimal string is invalid: '1 2'"),
+    ("1,000", "Decimal string is invalid: '1,000'"))
+
+  /**
+   * Text the pass hands to `BigDecimal`, with the parts of the decimal that route gives.
+   *
+   * The pass evaluates no exponent and no digit outside ASCII, and stops evaluating a numeral
+   * that names more than eighteen digits or more than eighteen places, so each of these rows
+   * is read by `BigDecimal` and converted by `of(BigDecimal)` - which is why the truncating
+   * rows here state exactly the truncation that factory performs.
+   */
+  private val delegatedTexts: TableFor3[String, Long, Int] = Table(
+    ("text", "unscaled", "scale"),
+    ("1e3", 1000L, 0),
+    ("1E3", 1000L, 0),
+    ("1.5e3", 1500L, 0),
+    ("1.5E-3", 15L, 4),
+    ("+.5e2", 50L, 0),
+    ("1.e3", 1000L, 0),
+    ("0e3", 0L, 0),
+    (ArabicIndicOne + "23", 123L, 0),
+    (FullWidthOne + "23", 123L, 0),
+    ("0.1234567890123456789", 123456789012345678L, 18),
+    ("123456789012345678.9", 123456789012345678L, 0))
+
+  /**
+   * Text the pass evaluates itself, with the unscaled value and scale it counts.
+   *
+   * The counting is the counting of the ported scanner: a leading zero contributes no
+   * significant digit, a zero after the point still occupies a place, and a trailing zero of
+   * the fraction is removed by the normalisation every factory shares rather than by the pass.
+   */
+  private val passCountedTexts: TableFor3[String, Long, Int] = Table(
+    ("text", "unscaled", "scale"),
+    ("0.001", 1L, 3),
+    ("1.10", 11L, 1),
+    ("1.", 1L, 0),
+    (".5", 5L, 1),
+    ("-1.", -1L, 0),
+    ("+0", 0L, 0),
+    ("-0", 0L, 0),
+    ("0000000000000000000005", 5L, 0),
+    ("00000.000001", 1L, 6),
+    ("999999999999999999", 999999999999999999L, 0),
+    ("-999999999999999999", -999999999999999999L, 0),
+    ("999999999999999990", 999999999999999990L, 0),
+    ("0.999999999999999999", 999999999999999999L, 18))
+
+  test("the text factory reads what BigDecimal reads, over generated numeral-ish text") {
+    forAll(genNumeralText, minSuccessful(2000)) { str =>
+      assertTextAgrees(str)
+    }
+  }
+
+  test("the text factory reads what BigDecimal reads, over every short text of its alphabet") {
+    // an exhaustive sweep rather than a property: every string of up to four characters over
+    // an alphabet holding one character of each kind the pass distinguishes, which is the
+    // space in which a misclassified character or a mishandled boundary has nowhere to hide
+    (0 to 4).foreach { length =>
+      textsOfLength(SweepCharacters, length).foreach(str => assertTextAgrees(str))
+    }
+    // the fifth character only matters where it can still change the classification, so the
+    // longer sweep is over the digits, the point, the signs and the exponent marker
+    textsOfLength(List('0', '1', '.', '-', '+', 'e'), 5).foreach(str => assertTextAgrees(str))
+    succeed
+  }
+
+  test("text the factory decides without BigDecimal is rejected with its reason and message") {
+    forAll(passRejectedTexts) { (str, message) =>
+      Decimal.of(str) should beFailureWith(FailureReason.PARSING)
+      Decimal.of(str).left.map(failure => failure.message) shouldBe Left(message)
+      Decimal.parse(str) should beFailureWith(FailureReason.PARSING)
+      assertTextAgrees(str)
+    }
+  }
+
+  test("text the factory hands to BigDecimal keeps the reading BigDecimal gives it") {
+    forAll(delegatedTexts) { (str, unscaled, scale) =>
+      assertRow(text(str), unscaled, scale)
+      assertTextAgrees(str)
+    }
+  }
+
+  test("text naming more than the type holds is still decided by BigDecimal") {
+    // the pass stops evaluating and delegates rather than deciding the truncation or the
+    // overflow itself, which is what keeps these on the side of the line the two tables of
+    // rejected text above draw: invalid values, not unreadable text
+    Decimal.of("1234567890123456789") should beFailureWith(FailureReason.INVALID)
+    Decimal.of("12345678901234567890") should beFailureWith(FailureReason.INVALID)
+    Decimal.of("1e400") should beFailureWith(FailureReason.INVALID)
+    Decimal.of("1e-400") shouldBe Right(Decimal.ZERO)
+    Decimal.of("0.0000000000000000001") shouldBe Right(Decimal.ZERO)
+  }
+
+  test("the text factory counts precision and scale as the ported scanner counts them") {
+    forAll(passCountedTexts) { (str, unscaled, scale) =>
+      assertRow(text(str), unscaled, scale)
+      Decimal.parse(str) shouldBe Right(text(str))
+      assertTextAgrees(str)
+    }
   }
 
   //-------------------------------------------------------------------------

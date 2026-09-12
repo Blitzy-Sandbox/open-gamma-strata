@@ -124,12 +124,16 @@ package com.opengamma.strata.collect.array {
    *    runtime raises, exactly as in the original;
    *  - `min` and `max` on an empty array fail with `IllegalArgumentException` where the original
    *    raised `IllegalStateException`. Both messages are unchanged, and both are asserted here;
-   *  - `equalWithTolerance` never matches a not-a-number element: an array holding one is not
-   *    equal within any tolerance to an array holding one at the same index, because no tolerance
-   *    reaches such a value. Bit-for-bit structural equality - `equals`, `hashCode` and the
-   *    lookups built on them - does keep such an element reflexive, and that asymmetry between
-   *    the two contracts is deliberate: both are asserted here, side by side. The fuzzy contract
-   *    itself belongs to the comparison this delegates to, whose own spec owns it;
+   *  - a negative size asked of `filled` or `tabulate` fails with `IllegalArgumentException`,
+   *    checked before anything is allocated, where the original let the allocation itself raise
+   *    `NegativeArraySizeException`. That puts every size and shape failure of the array and
+   *    matrix types into one exception type, which the matrix factories already used;
+   *  - `equalWithTolerance` agrees with `equals` about a not-a-number element: an array holding
+   *    one is equal within any tolerance to an array holding one at the same index, exactly as
+   *    it is under bit-for-bit structural equality, so the fuzzy and the structural contracts
+   *    answer alike here rather than contradicting one another. This is the behaviour of the
+   *    scalar comparison the port reproduces, measured against it; the contract itself belongs
+   *    to the comparison this delegates to, whose own spec owns it;
    *  - `ofUnsafe` and `toArrayUnsafe` are visible only inside this module, where the original
    *    exposed both to every caller. This spec is inside the module and exercises both positively;
    *    the prohibition outside it is proved from a probe object in a sibling package;
@@ -286,8 +290,10 @@ package com.opengamma.strata.collect.array {
     }
 
     test("test_of") {
-      // the original declared ten arity-specific factories, which exist to spare a caller an
-      // array allocation; the port has one varargs factory, so each arity is exercised through it
+      // the original declared arity-specific factories up to eight values, which exist to spare
+      // a caller a sequence and a second array per call, and the port declares the same ones.
+      // Every arity is exercised here, the ninth included, where a call reaches the form that
+      // takes any number of values
       assertContent(DoubleArray.of())
       assertContent(DoubleArray.of(1.0), 1.0)
       assertContent(DoubleArray.of(1.0, 2.0), 1.0, 2.0)
@@ -304,6 +310,49 @@ package com.opengamma.strata.collect.array {
       assertContent(
         DoubleArray.of(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0),
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0)
+    }
+
+    test("test_of_arities_and_varargs_answer_alike") {
+      // the eight factories that take their values one parameter at a time have to answer
+      // exactly what the form taking any number of values answers, since a caller chooses
+      // between them only by how the call is written. Each arity is compared against the same
+      // values expanded from a sequence, which reaches the other form
+      val values = List(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5)
+      DoubleArray.of(1.5) shouldBe DoubleArray.of(values.take(1): _*)
+      DoubleArray.of(1.5, 2.5) shouldBe DoubleArray.of(values.take(2): _*)
+      DoubleArray.of(1.5, 2.5, 3.5) shouldBe DoubleArray.of(values.take(3): _*)
+      DoubleArray.of(1.5, 2.5, 3.5, 4.5) shouldBe DoubleArray.of(values.take(4): _*)
+      DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5) shouldBe DoubleArray.of(values.take(5): _*)
+      DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5, 6.5) shouldBe DoubleArray.of(values.take(6): _*)
+      DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5) shouldBe DoubleArray.of(values.take(7): _*)
+      DoubleArray.of(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5) shouldBe DoubleArray.of(values: _*)
+
+      // the empty call is the shared empty instance, by identity, as an expansion of an empty
+      // sequence also is
+      DoubleArray.of() should be theSameInstanceAs DoubleArray.EMPTY
+      DoubleArray.of(List.empty[Double]: _*) should be theSameInstanceAs DoubleArray.EMPTY
+
+      // the values are held in the order given, and the edges of the value space are held as
+      // they were given: a signed zero keeps its sign and a not-a-number value is still one
+      bitsOf(DoubleArray.of(-0.0).get(0)) shouldBe bitsOf(-0.0)
+      bitsOf(DoubleArray.of(1.0, -0.0, Double.NaN).get(1)) shouldBe bitsOf(-0.0)
+      DoubleArray.of(1.0, -0.0, Double.NaN).get(2).isNaN shouldBe true
+      assertContent(
+        DoubleArray.of(Double.NegativeInfinity, Double.MaxValue, Double.MinValue),
+        Double.NegativeInfinity,
+        Double.MaxValue,
+        Double.MinValue)
+
+      // each of them holds an array of its own: two calls with the same values are equal values
+      // that share nothing, and neither can be reached through the other
+      val first = DoubleArray.of(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
+      val second = DoubleArray.of(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0)
+      first shouldBe second
+      (first eq second) shouldBe false
+      (first.toArray eq second.toArray) shouldBe false
+      val exposed = first.toArray
+      exposed(0) = 99.0
+      first.get(0) shouldBe 1.0
     }
 
     test("test_of_lambda") {
@@ -402,22 +451,30 @@ package com.opengamma.strata.collect.array {
     }
 
     test("negative_size_of_filled_and_tabulate") {
-      // The three factories that are told how many elements to produce document a negative size
-      // as a failure, and each fails it at the allocation of the storage rather than by checking
-      // the argument first: an array of negative length is not a value the platform can make, so
-      // the runtime raises the size exception and names the size it was asked for. This is a
-      // distinct path from the bounds failures of the copying factories above, which are checked
-      // against the length of an input array and reported as illegal arguments
-      val zeroes = intercept[NegativeArraySizeException](DoubleArray.filled(-1))
-      zeroes.getMessage shouldBe "-1"
-      val valued = intercept[NegativeArraySizeException](DoubleArray.filled(-1, 1.5))
-      valued.getMessage shouldBe "-1"
+      // The three factories that are told how many elements to produce check the size they are
+      // given before allocating anything, so a negative size is reported as the illegal argument
+      // it is rather than by the allocation it would otherwise reach. That is the same category,
+      // and the same exception, as the bounds failures of the copying factories above and as the
+      // negative dimensions of the matrix factories, so the whole family of size and shape
+      // failures reports one exception type. The Java original left a negative size to the
+      // runtime, which raised its size exception with the size as the message; that difference
+      // is the one asserted here
+      val zeroes = intercept[IllegalArgumentException](DoubleArray.filled(-1))
+      zeroes.getMessage shouldBe "Argument 'size' must not be negative but has value -1"
+      val valued = intercept[IllegalArgumentException](DoubleArray.filled(-1, 1.5))
+      valued.getMessage shouldBe "Argument 'size' must not be negative but has value -1"
 
       // the failure precedes any call of the value function, which is why the function here fails
       // the test if it is invoked at all - the same shape `test_of_lambda` uses for a size of zero
-      val tabulated = intercept[NegativeArraySizeException](
+      val tabulated = intercept[IllegalArgumentException](
         DoubleArray.tabulate(-1)(_ => fail("the function must not be invoked")))
-      tabulated.getMessage shouldBe "-1"
+      tabulated.getMessage shouldBe "Argument 'size' must not be negative but has value -1"
+
+      // a size of zero is not negative and is the empty array, at every one of the three
+      DoubleArray.filled(0) should be theSameInstanceAs DoubleArray.EMPTY
+      DoubleArray.filled(0, 1.5) should be theSameInstanceAs DoubleArray.EMPTY
+      DoubleArray.tabulate(0)(_ => fail("the function must not be invoked")) should
+        be theSameInstanceAs DoubleArray.EMPTY
     }
 
     test("reversed_range_of_copyOf_and_subArray") {
@@ -1101,33 +1158,47 @@ package com.opengamma.strata.collect.array {
     }
 
     test("ieee_tolerance_comparison_of_nan") {
-      // The tolerance comparison is delegated, and it matches no not-a-number value at all: such
-      // a value has no distance from anything, so no tolerance reaches it and an array holding
-      // one is not equal to an array holding one at the same index. It is asserted here because
-      // it is the opposite of the bitwise equality asserted above, where such an element is
-      // reflexive; the fuzzy contract belongs to the comparison, whose own spec owns it.
+      // The tolerance comparison is delegated, and it treats a not-a-number value as equal to a
+      // not-a-number value: an array holding one is therefore equal, within any tolerance, to an
+      // array holding one at the same index. It is asserted here because it is the same answer
+      // the bitwise equality asserted above gives, so the fuzzy and the structural contracts
+      // agree on such an element rather than disagreeing; the fuzzy contract itself belongs to
+      // the comparison, whose own spec owns it.
       val nan = DoubleArray.of(1.0, Double.NaN)
-      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), 0.0) shouldBe false
-      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), Double.PositiveInfinity) shouldBe false
-      nan.equalWithTolerance(nan, 0.01) shouldBe false
+      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), 0.0) shouldBe true
+      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN), Double.PositiveInfinity) shouldBe true
+      nan.equalWithTolerance(nan, 0.01) shouldBe true
+      nan.equalWithTolerance(DoubleArray.of(1.0, Double.NaN + 1.0), 0.01) shouldBe true
+      (nan == DoubleArray.of(1.0, Double.NaN)) shouldBe true
+
+      // an element that is a number, matched against one that is not, is unequal however large
+      // the tolerance, and so is the array holding it
       nan.equalWithTolerance(DoubleArray.of(1.0, 2.0), 0.01) shouldBe false
+      nan.equalWithTolerance(DoubleArray.of(1.0, 2.0), Double.MaxValue) shouldBe false
+      DoubleArray.of(1.0, 2.0).equalWithTolerance(nan, Double.PositiveInfinity) shouldBe false
+
+      // comparing with zero is comparing with a number, so no tolerance brings a not-a-number
+      // element to it
       nan.equalZeroWithTolerance(0.01) shouldBe false
       nan.equalZeroWithTolerance(Double.PositiveInfinity) shouldBe false
 
-      // the same array without that element is equal to itself within a tolerance, so it is the
-      // element and not the delegation that refuses the comparison
+      // an array of numbers is equal to itself within a tolerance as well
       val finite = DoubleArray.of(1.0, 2.0)
       finite.equalWithTolerance(DoubleArray.of(1.0, 2.0), 0.0) shouldBe true
 
-      // each infinity is equal to itself under any tolerance, an infinite one included, and to
-      // nothing else - neither the other infinity nor any finite value, zero among them
+      // each infinity is equal to itself under any tolerance; at a finite tolerance it is equal
+      // to nothing else, while an infinite tolerance leaves nothing to distinguish and so brings
+      // the other infinity, and every finite value, to it
       val positive = DoubleArray.of(Double.PositiveInfinity)
       positive.equalWithTolerance(DoubleArray.of(Double.PositiveInfinity), 0.0) shouldBe true
       positive.equalWithTolerance(DoubleArray.of(Double.PositiveInfinity), Double.PositiveInfinity) shouldBe true
       positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), 0.01) shouldBe false
-      positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe false
+      positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), Double.MaxValue) shouldBe false
+      positive.equalWithTolerance(DoubleArray.of(Double.NegativeInfinity), Double.PositiveInfinity) shouldBe true
+      positive.equalWithTolerance(DoubleArray.of(0.0), Double.PositiveInfinity) shouldBe true
       positive.equalZeroWithTolerance(0.01) shouldBe false
-      positive.equalZeroWithTolerance(Double.PositiveInfinity) shouldBe false
+      positive.equalZeroWithTolerance(Double.MaxValue) shouldBe false
+      positive.equalZeroWithTolerance(Double.PositiveInfinity) shouldBe true
 
       // the tolerance itself is checked, as a caller-contract invariant: a negative tolerance and
       // a not-a-number tolerance are both caller errors rather than comparisons that answer false

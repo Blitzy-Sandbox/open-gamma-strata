@@ -287,10 +287,10 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    * no arithmetic, so a rate of one - within a tolerance of `1e-8`, which is the literal that
    * implementation used - returns this amount unchanged, and any other rate is reported as a
    * failure rather than silently applied. That keeps a caller from scaling an amount by passing a
-   * rate for a conversion that does not happen. Under the comparison used a rate that is not a
-   * number is equal to nothing at all, itself included, and an infinite rate is equal only to
-   * the same infinity, so neither compares equal to one and both are reported as a failure
-   * rather than applied.
+   * rate for a conversion that does not happen. A rate that is not a number, and an infinite
+   * rate, are both reported as a failure rather than applied: under the comparison used neither
+   * is within any finite tolerance of one, since the distance from one to either of them is not
+   * a finite quantity and neither of them equals one.
    *
    * {{{
    * gbp100.convertedTo(Currency.USD, 1.6d)   // Right(USD 160)

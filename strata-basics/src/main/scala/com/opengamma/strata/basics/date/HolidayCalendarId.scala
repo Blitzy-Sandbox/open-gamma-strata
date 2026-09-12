@@ -125,15 +125,20 @@ sealed abstract case class HolidayCalendarId private (name: String)
    * Checks whether this identifier names more than one calendar.
    *
    * A composite identifier is one built with `'+'` or `'~'`, which its normalised name still
-   * carries; a simple identifier names a single calendar. The test is the one the original
-   * applied - the name contains a separator - and it agrees with the structure carried by
-   * [[composite]] by construction, since a composite name is built by joining two or more
-   * parts and a name that survives normalisation with one part is that part's own.
+   * carries; a simple identifier names a single calendar.
+   *
+   * Answered by asking whether this identifier carries the parts of a composite, which is the
+   * question in the form that costs nothing: the parts are worked out once, when the identifier
+   * is built. It is the test the original applied - the name contains a separator - in the other
+   * direction, and the two agree by construction, since a composite name is built by joining two
+   * or more parts and a name that survives normalisation with one part is that part's own. Asking
+   * it this way round matters because the question is asked of every part of a composite
+   * identifier on every resolution, and every date adjustment against such an identifier resolves
+   * it, where searching the name for two separators walks the whole of it twice.
    *
    * @return true if this identifier combines or links two or more calendars
    */
-  def isComposite: Boolean =
-    name.contains(HolidayCalendarId.CombineSeparator) || name.contains(HolidayCalendarId.LinkSeparator)
+  def isComposite: Boolean = composite.isDefined
 
   /**
    * Resolves this identifier to a holiday calendar using the specified reference data.
@@ -269,10 +274,18 @@ sealed abstract case class HolidayCalendarId private (name: String)
   /**
    * Resolves the parts of a composite identifier and reads them together.
    *
-   * Each part is resolved in the order the normalised name gives, and the results are folded
-   * from the left with the operation the separator chose, so the fold follows the name.
-   * `traverse` stops at the first part that cannot be resolved, which is the all-or-nothing
-   * behaviour described on [[resolve]].
+   * Each part is resolved in the order the normalised name gives, and each result is read
+   * together with the ones before it using the operation the separator chose, so the calendar
+   * built is the left fold of the parts that the name describes. The first part that cannot be
+   * resolved ends the resolution and is the answer, which is the all-or-nothing behaviour
+   * described on [[resolve]].
+   *
+   * Written as a tail-recursive walk of the parts rather than as a traversal of them because
+   * this is the path a date adjustment against a composite calendar takes on every date: a
+   * traversal of an applicative would build a list of resolved calendars, and the deferred
+   * computations that sequence it, only to fold that list away again, and it was the largest
+   * source of garbage in the library. The walk allocates what it answers with and nothing else,
+   * and it reaches the same calendar by the same operations in the same order.
    *
    * @param parts  the parts of this composite identifier and how to read them together
    * @param refData  the reference data to resolve the parts against
@@ -280,11 +293,30 @@ sealed abstract case class HolidayCalendarId private (name: String)
    */
   private def resolveParts(
       parts: HolidayCalendarId.Composite,
-      refData: ReferenceData): Either[Failure, HolidayCalendar] =
+      refData: ReferenceData): Either[Failure, HolidayCalendar] = {
 
-    parts.components
-      .traverse(component => resolvePart(component, refData))
-      .map(calendars => calendars.reduceLeft(parts.combine))
+    @tailrec
+    def loop(
+        remaining: List[HolidayCalendarId],
+        resolved: HolidayCalendar): Either[Failure, HolidayCalendar] =
+
+      remaining match {
+        case Nil => Right(resolved)
+        case component :: rest =>
+          resolvePart(component, refData) match {
+            case Right(calendar) => loop(rest, parts.combine(resolved, calendar))
+            // the failure of a part is the failure of the whole, so it is answered with as it
+            // stands rather than rebuilt
+            case failed @ Left(_) => failed
+          }
+      }
+
+    // the parts are a non-empty list, so the first of them is the calendar the fold starts from
+    resolvePart(parts.components.head, refData) match {
+      case Right(first) => loop(parts.components.tail, first)
+      case failed @ Left(_) => failed
+    }
+  }
 
   /**
    * Resolves a single part of this composite identifier.
@@ -386,6 +418,23 @@ object HolidayCalendarId {
   private val NoHolidaysName: String = "NoHolidays"
 
   /**
+   * The ordering of the parts of a composite name, from the last name to the first.
+   *
+   * Held here as a plain value so that normalising a composite name does not build a comparison
+   * function every time it is called, and declared before anything that uses it so that it is in
+   * place whenever [[of]] runs. It is not the published [[order]] of the type, which is declared
+   * below and which is also equality and hashing: this one is used only while the parts of a
+   * name are being normalised, and it agrees with that one, both being the name's.
+   *
+   * Descending, because the parts are sorted and then walked while the duplicates among them are
+   * dropped: walking a descending list and keeping each part that differs from the one kept last
+   * produces the ascending list of distinct parts directly, so the normalisation is a sort and
+   * one walk rather than a sort and two.
+   */
+  private val byNameDescending: Ordering[HolidayCalendarId] =
+    Ordering.by[HolidayCalendarId, String](calendarId => calendarId.name).reverse
+
+  /**
    * The identifier of the calendar that declares no holidays at all.
    *
    * This is the value `HolidayCalendarIds.NO_HOLIDAYS` publishes, and it is held here rather
@@ -445,7 +494,7 @@ object HolidayCalendarId {
     // The separators are tested in this order because `'+'` binds more tightly than `'~'`, so
     // a name carrying both is a link of combinations. This is the order of the original.
     if (uniqueName.contains(LinkSeparator)) {
-      val parts = normalise(splitOn(uniqueName, LinkSeparator))
+      val parts = normalisedParts(uniqueName, LinkSeparator, dropNoHolidays = false)
       // linking a calendar that has no holidays makes every day a business day
       if (parts.contains(NoHolidaysId)) {
         NoHolidaysId
@@ -453,10 +502,8 @@ object HolidayCalendarId {
         compose(parts, LinkSeparator, (first, second) => first.linkedWith(second))
       }
     } else if (uniqueName.contains(CombineSeparator)) {
-      // combining a calendar that has no holidays removes nothing, so it is dropped; the
-      // original drops it by name, before the parts become identifiers, and so does this
-      val named = splitOn(uniqueName, CombineSeparator).filterNot(part => part == NoHolidaysName)
-      compose(normalise(named), CombineSeparator, (first, second) => first.combinedWith(second))
+      val parts = normalisedParts(uniqueName, CombineSeparator, dropNoHolidays = true)
+      compose(parts, CombineSeparator, (first, second) => first.combinedWith(second))
     } else {
       simple(uniqueName)
     }
@@ -613,54 +660,88 @@ object HolidayCalendarId {
     parts match {
       case Nil => NoHolidaysId
       case single :: Nil => single
-      case first :: second :: rest =>
-        val components = NonEmptyList(first, second :: rest)
+      case first :: rest =>
+        // `rest` is the tail of the normalised parts and, the two cases above having been
+        // answered, is never empty, so it becomes the tail of the component list as it stands
+        val components = NonEmptyList(first, rest)
         val structure = new Composite(components, combine)
-        new HolidayCalendarId(components.toList.map(part => part.name).mkString(separator)) {
+        new HolidayCalendarId(parts.iterator.map(part => part.name).mkString(separator)) {
           private[date] val composite: Option[Composite] = Some(structure)
         }
     }
 
   /**
-   * Turns the parts of a composite name into normalised identifiers.
+   * Splits a composite name around a separator and normalises the parts it names.
    *
    * Each part becomes an identifier in its own right - which is what makes a part of a linked
-   * name able to be a combination - and the parts are then deduplicated and ordered by name.
-   * Sorting is what makes the name of a composite independent of the order it was written in,
-   * and deduplicating is what makes `GBLO+GBLO` the simple `GBLO`. Both steps, and their
-   * order, are those of the original.
+   * name able to be a combination - and the parts are deduplicated and ordered by name. Sorting
+   * is what makes the name of a composite independent of the order it was written in, and
+   * deduplicating is what makes `GBLO+GBLO` the simple `GBLO`. Both steps are those of the
+   * original, and so is the splitting: a library split would be driven by a regular expression,
+   * in which both separators of this type are metacharacters, and would discard a trailing empty
+   * part, which the splitter used by the original kept.
    *
-   * @param parts  the names of the parts, in the order they were written
+   * The name is walked once, each part being read and turned into an identifier as it is
+   * reached; the walk carries its position and its result as parameters, so it needs no mutable
+   * state and compiles to a jump. The parts are then sorted with the one shared comparison of
+   * [[byNameDescending]] and walked once more to drop the duplicates, which a sorted list puts
+   * next to each other. What this replaced built a list of part names, a second list of
+   * identifiers, a hash set to deduplicate them, a comparison function, an array to sort and a
+   * third list for the sorted result - most of the cost of naming a composite calendar, on a
+   * path that every read of such a calendar's name once took. Sorting keeps the work of a name
+   * of any length proportional to its parts times their logarithm, never their square, so a
+   * name written to be hostile is no more than long.
+   *
+   * @param uniqueName  the composite name, as it was written
+   * @param separator  the separator to split around
+   * @param dropNoHolidays  true to drop the parts naming the no-holidays calendar, which is
+   *   what combining with it does; a link absorbs it instead and so keeps it
    * @return the identifiers of the parts, deduplicated and sorted by name
    */
-  private def normalise(parts: List[String]): List[HolidayCalendarId] =
-    parts.map(part => of(part)).distinct.sortBy(part => part.name)
+  private def normalisedParts(
+      uniqueName: String,
+      separator: String,
+      dropNoHolidays: Boolean): List[HolidayCalendarId] = {
+
+    @tailrec
+    def parts(from: Int, found: List[HolidayCalendarId]): List[HolidayCalendarId] = {
+      val index = uniqueName.indexOf(separator, from)
+      val end = if (index < 0) uniqueName.length else index
+      val partName = uniqueName.substring(from, end)
+      // in a combination the no-holidays calendar removes nothing and so is dropped by name,
+      // before the parts become identifiers, exactly as the original dropped it
+      val next = if (dropNoHolidays && partName == NoHolidaysName) found else of(partName) :: found
+      if (index < 0) next else parts(end + separator.length, next)
+    }
+
+    distinctAscending(parts(0, Nil).sorted(byNameDescending), Nil)
+  }
 
   /**
-   * Splits a name around every occurrence of a separator.
+   * Drops the duplicates from parts sorted from the last name to the first.
    *
-   * Written out rather than delegated to a library split for two reasons: the standard
-   * library's string split is driven by a regular expression, in which both separators of this
-   * type are metacharacters, and an empty part is kept rather than discarded, which is what
-   * the splitter used by the original did. The loop carries its position and its result as
-   * parameters, so it needs no mutable state and compiles to a jump.
+   * Equal parts are next to each other in a sorted list, so a part is a duplicate exactly where
+   * it has the name of the part kept last. Keeping by prepending turns the descending input into
+   * an ascending result, which is the order a composite name is written in.
    *
-   * @param text  the text to split
-   * @param separator  the separator to split around
-   * @return the parts, in the order they appear, including empty ones
+   * @param remaining  the parts still to consider, sorted from the last name to the first
+   * @param kept  the distinct parts found so far, in ascending order
+   * @return the distinct parts, in ascending order
    */
-  private def splitOn(text: String, separator: String): List[String] = {
-    @tailrec
-    def loop(from: Int, parts: List[String]): List[String] = {
-      val index = text.indexOf(separator, from)
-      if (index < 0) {
-        (text.substring(from) :: parts).reverse
-      } else {
-        loop(index + separator.length, text.substring(from, index) :: parts)
-      }
+  @tailrec
+  private def distinctAscending(
+      remaining: List[HolidayCalendarId],
+      kept: List[HolidayCalendarId]): List[HolidayCalendarId] =
+
+    remaining match {
+      case Nil => kept
+      case part :: rest =>
+        val next = kept match {
+          case previous :: _ if previous.name == part.name => kept
+          case _ => part :: kept
+        }
+        distinctAscending(rest, next)
     }
-    loop(0, Nil)
-  }
 
   //-------------------------------------------------------------------------
   /**

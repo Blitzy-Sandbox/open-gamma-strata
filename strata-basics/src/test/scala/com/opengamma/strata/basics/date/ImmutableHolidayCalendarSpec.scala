@@ -1593,4 +1593,92 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
         s""""holidays":["2014-07-14"]}}""")
       .isLeft shouldBe true
   }
+
+  //-------------------------------------------------------------------------
+  test("test_holidays_workingDays_recoveredFromStoredMonths") {
+    // The two bulk accessors and the pair they are read from recover their dates from the stored
+    // months, so what they answer with has to be what the calendar itself says about every day of
+    // the years it covers - a holiday it holds is a date it calls a holiday and does not call a
+    // weekend, and a working day is a date it calls a business day and does call a weekend. That
+    // is the definition, and it is asserted here day by day rather than against a list of expected
+    // dates, so the recovery cannot agree with a list while disagreeing with the calendar.
+    //
+    // It is worth asserting over a range of some size because the recovery walks the months and
+    // the days within them: this calendar covers four years, one holiday of which falls at the
+    // weekend - so it is not reported - and two weekend days of which are declared working days.
+    val newYears = (2012 to 2015).map(year => date(year, 1, 1)).toList
+    val christmases = (2012 to 2015).map(year => date(year, 12, 25)).toList
+    val workingSaturdays = List(date(2013, 3, 2), date(2014, 11, 29))
+    val test = ImmutableHolidayCalendar.of(
+      HolidayCalendarId.of("TestRecovery"),
+      newYears ++ christmases ++ workingSaturdays,
+      List(SATURDAY, SUNDAY),
+      workingSaturdays)
+    val covered = datesFrom(date(test.startYear, 1, 1), date(test.endYearExclusive, 1, 1)).toList
+    val weekend = test.weekendDays
+
+    val expectedHolidays = covered.filter(day => test.isHoliday(day) && !weekend.contains(day.getDayOfWeek))
+    val expectedWorkingDays = covered.filter(day => test.isBusinessDay(day) && weekend.contains(day.getDayOfWeek))
+    test.holidays.toList shouldBe expectedHolidays
+    test.workingDays.toList shouldBe expectedWorkingDays
+
+    // The dates the calendar was built from, read back. New Year 2012 fell on a Sunday, so it is
+    // absent: a date the weekend already closes leaves no mark on the stored months and is not a
+    // holiday the calendar reports. The two Saturdays supplied as both holidays and working days
+    // are working days, the overrides being applied last.
+    test.holidays.toList shouldBe List(
+      date(2012, 12, 25),
+      date(2013, 1, 1),
+      date(2013, 12, 25),
+      date(2014, 1, 1),
+      date(2014, 12, 25),
+      date(2015, 1, 1),
+      date(2015, 12, 25))
+    test.holidays.toList shouldBe (newYears ++ christmases).sortBy(day => day.toEpochDay).filterNot(day =>
+      weekend.contains(day.getDayOfWeek))
+    expectedWorkingDays shouldBe workingSaturdays
+    test.startYear shouldBe 2012
+    test.endYearExclusive shouldBe 2016
+
+    // Both sets from one reading agree with the two accessors, which is what lets a caller that
+    // needs both - writing a calendar out, or merging two whose years do not meet - read once.
+    val (holidays, workingDays) = test.holidaysAndWorkingDays
+    holidays shouldBe test.holidays
+    workingDays shouldBe test.workingDays
+
+    // Reading is repeatable and does not consume anything: the second reading is the first.
+    test.holidays shouldBe test.holidays
+    test.workingDays shouldBe test.workingDays
+    test.holidaysAndWorkingDays._1 shouldBe holidays
+
+    // A weekend that is not Saturday and Sunday is recovered the same way, which matters because
+    // the recovery tests each day against the weekend of the calendar rather than against a fixed
+    // pair of days. Here the Saturday holiday is reported, Saturday being an ordinary business day
+    // for this calendar, while the Thursday holiday is not, its weekend having closed that day
+    // already; the Friday, supplied as both a holiday and a working day, is a working day.
+    val thuFri = ImmutableHolidayCalendar.of(
+      HolidayCalendarId.of("TestRecoveryThuFri"),
+      List(THU_2014_07_17, FRI_2014_07_18, SAT_2014_07_19),
+      List(THURSDAY, FRIDAY),
+      List(FRI_2014_07_18))
+    thuFri.holidays.toList shouldBe List(SAT_2014_07_19)
+    thuFri.workingDays.toList shouldBe List(FRI_2014_07_18)
+    thuFri.isHoliday(THU_2014_07_17) shouldBe true
+    thuFri.isBusinessDay(FRI_2014_07_18) shouldBe true
+    datesFrom(date(thuFri.startYear, 1, 1), date(thuFri.endYearExclusive, 1, 1)).foreach { day =>
+      withClue(s"$day: ") {
+        thuFri.holidays.contains(day) shouldBe
+          (thuFri.isHoliday(day) && !thuFri.weekendDays.contains(day.getDayOfWeek))
+        thuFri.workingDays.contains(day) shouldBe
+          (thuFri.isBusinessDay(day) && thuFri.weekendDays.contains(day.getDayOfWeek))
+      }
+    }
+
+    // A calendar holding no months at all has nothing to recover, and answers with two empty sets
+    // rather than failing to walk them.
+    HOLCAL_SAT_SUN.holidays shouldBe empty
+    HOLCAL_SAT_SUN.workingDays shouldBe empty
+    HOLCAL_SAT_SUN.holidaysAndWorkingDays._1 shouldBe empty
+    HOLCAL_SAT_SUN.holidaysAndWorkingDays._2 shouldBe empty
+  }
 }
