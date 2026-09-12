@@ -19,6 +19,7 @@ import io.circe.Encoder
 import io.circe.generic.semiauto.deriveDecoder
 import io.circe.generic.semiauto.deriveEncoder
 
+import com.opengamma.strata.basics.date.BusinessDayAdjustment
 import com.opengamma.strata.basics.date.DateAdjuster
 import com.opengamma.strata.basics.date.DayCount
 import com.opengamma.strata.collect.Validate
@@ -66,6 +67,11 @@ import com.opengamma.strata.collect.result.Failure
  *    adjustment collapsed the period onto a single day; it now returns that failure as a value.
  *    [[toUnadjusted]] stays total, because the unadjusted pair of a value of this type is already
  *    known to be in order.
+ *  - '''`subSchedule` gains an error channel too.''' The method built its definition through the
+ *    bean builder of [[PeriodicSchedule]], which threw where the arguments described no definition;
+ *    it now returns the definition through [[PeriodicSchedule.of]] and reports those reasons as a
+ *    value. What it returns is still the definition rather than a generated schedule, so the
+ *    holiday calendar the dates need stays a choice of the caller.
  *  - '''`yearFraction` takes the schedule as its day count contract.''' The method took the
  *    concrete schedule containing this period; it takes
  *    [[com.opengamma.strata.basics.date.DayCount.ScheduleInfo]], which is the only thing the day
@@ -185,6 +191,49 @@ sealed abstract case class SchedulePeriod private (
    * @return true if this period contains the date
    */
   def contains(date: LocalDate): Boolean = !date.isBefore(startDate) && date.isBefore(endDate)
+
+  //-------------------------------------------------------------------------
+  /**
+   * Creates a sub-schedule within this period.
+   *
+   * The sub-schedule will have one or more periods. The schedule is bounded by the '''unadjusted'''
+   * start and end date of this period, because those are the dates a roll convention generates
+   * from: a sub-schedule derived from the adjusted pair would roll from a business day rather than
+   * from the periodic date the enclosing schedule was built on. The frequency and roll convention
+   * are used to build the unadjusted dates of the sub-schedule, the stub convention handles any
+   * remaining time where the new frequency does not divide evenly into this period, and the
+   * business day adjustment is the one the sub-schedule applies to every date it produces.
+   *
+   * What is returned is the '''definition''' of the sub-schedule rather than the schedule itself,
+   * as it was in the method being ported: generating the dates needs a holiday calendar, so the
+   * caller resolves the definition with [[PeriodicSchedule.createSchedule]] and the reference data
+   * of its choosing. That keeps the reference data threaded explicitly, which is the rule this
+   * port follows everywhere.
+   *
+   * The definition is decided by [[PeriodicSchedule.of]], so a set of arguments that describes no
+   * definition is reported as a chain of reasons rather than raised - the method being ported threw
+   * `ScheduleException` for the same cases. The dates this period contributes are already known to
+   * be in order, so the only reasons reachable here come from the four supplied arguments.
+   *
+   * @param frequency  the frequency of the sub-schedule
+   * @param rollConvention  the roll convention to use for rolling
+   * @param stubConvention  the stub convention to use for any excess
+   * @param adjustment  the business day adjustment to apply to the sub-schedule
+   * @return the definition of the sub-schedule, or the failures describing why the arguments
+   *   describe none
+   */
+  def subSchedule(
+      frequency: Frequency,
+      rollConvention: RollConvention,
+      stubConvention: StubConvention,
+      adjustment: BusinessDayAdjustment): EitherNec[Failure, PeriodicSchedule] =
+    PeriodicSchedule.of(
+      unadjustedStartDate,
+      unadjustedEndDate,
+      frequency,
+      adjustment,
+      stubConvention,
+      rollConvention)
 
   //-------------------------------------------------------------------------
   /**
