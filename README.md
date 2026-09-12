@@ -65,6 +65,53 @@ For more information about developing code on Strata
 see the [documentation](https://strata.opengamma.io).
 
 
+Scala port
+----------
+
+Alongside the Maven build, this repository contains a Scala 2.13 port of two Strata modules:
+`strata-collect`, ported in the subset that `strata-basics` uses, and `strata-basics` itself.
+The port is a separate, additional build, driven by [sbt](https://www.scala-sbt.org/) from the
+repository root.
+The Java modules under `modules/` are unchanged and are still built with Maven as described above.
+
+To build the Scala port, JDK 21 and sbt 1.13.0 are required.
+Scala 2.13.18 is resolved by the build itself, so it does not need to be installed separately.
+
+Run this command to compile both Scala modules and run their test suites:
+
+```
+  sbt test
+```
+
+`strata-basics` is the root project of the sbt build and aggregates `strata-collect`,
+so this single command covers both modules.
+
+Run this command for the end-to-end demo:
+
+```
+  sbt "strata-basics/run"
+```
+
+The demo builds a `PeriodicSchedule`, adjusts its dates against a built-in `HolidayCalendar`
+through an explicitly supplied `ReferenceData`, converts a `MultiCurrencyAmount` to another
+currency through an `FxMatrix`, then serializes the results to JSON and prints them.
+
+Run this script to check the port against its acceptance gates:
+
+```
+  scripts/verify-gates.sh
+```
+
+It is the single authoritative gate runner, intended to be run from a clean checkout on JDK 21.
+It writes `target/gate-report.md` and exits non-zero if any automated gate fails.
+
+The [Scala migration note](SCALA_MIGRATION.md) records every ported `strata-collect` symbol with
+its Scala replacement, and every deliberate divergence from the Java behaviour.
+Each ported module also has its own README:
+[Strata-Basics (Scala)](strata-basics/README.md) and
+[Strata-Collect (Scala)](strata-collect/README.md).
+
+
 Status
 ------
 
@@ -89,3 +136,8 @@ Strata is formed from a number of modules:
 * [Data](modules/data/README.md)
 * [Basics](modules/basics/README.md)
 * [Collect](modules/collect/README.md)
+
+The Scala port adds two modules, built with sbt rather than Maven:
+
+* [Strata-Basics (Scala)](strata-basics/README.md)
+* [Strata-Collect (Scala)](strata-collect/README.md)
