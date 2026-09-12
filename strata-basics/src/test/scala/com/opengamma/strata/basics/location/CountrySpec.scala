@@ -7,12 +7,16 @@ package com.opengamma.strata.basics.location
 
 import java.util.Locale
 
+import scala.collection.immutable.SortedSet
+
 import cats.Eq
 import cats.Hash
 import cats.Order
 import cats.Show
 
+import io.circe.DecodingFailure
 import io.circe.Json
+import io.circe.parser.decode
 import io.circe.syntax.EncoderOps
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -23,20 +27,20 @@ import org.scalatest.prop.TableFor2
 
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
-import com.opengamma.strata.collect.testkit.ResultMatchers._
+import com.opengamma.strata.collect.testkit.ResultMatchers
 
 /**
  * Test [[Country]].
  *
- * Every method of the Java original is kept, under its own name, so that the method-level
- * traceability of the migration stays one-to-one; the original's two bad-input providers
- * become the two tables declared with the tests that read them. The original's
- * `test_serialization` is the one method not here: the test mapping manifest consolidates it
- * into `json.JsonRoundTripSpec`, so what this spec pins instead is the per-type JSON
- * representation, in a test of its own at the end.
+ * All twenty-one methods of the Java original are kept, under their own names and in the
+ * order the original declared them, so that the method-level traceability of the migration
+ * stays one-to-one; each of the original's two bad-input providers becomes one table declared
+ * with the test that reads it, carrying the rows the provider carried other than its
+ * absent-input row, for the reason given below. Nothing else declares a test here, so the
+ * count of this suite is the count of the original.
  *
- * Five of the ported methods assert a guarantee the port gives differently from the original,
- * and the reasoning is recorded at each of them:
+ * Where the port gives a guarantee differently from the original the reasoning is recorded at
+ * the method, and the same reasoning is collected here:
  *
  *  - `test_of_String` and `test_of_String_unknownCountryCreated` asserted that two calls with
  *    one code returned the ''same instance'', which was a property of the instance cache the
@@ -58,12 +62,22 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *    apiece. The port distinguishes the two causes the original conflated - text that is not the
  *    shape of a three letter code, and a well formed code that names nothing - so both are
  *    asserted, by reason and by the message the original used.
+ *  - `test_serialization` asserted the round trip of the platform serialization the original
+ *    supported. That support is not carried over, and the JSON codec is the supported way to
+ *    write and read a country, so the method asserts the codec: the bare string the type
+ *    writes, what it reads back, and what it refuses. (The test mapping manifest additionally
+ *    routes this Java method to the cross-type round-trip spec, which exercises the same codec
+ *    through generated values; what is asserted here is the representation itself, which is
+ *    per-type and which a generated round trip cannot pin.)
+ *  - `test_jodaConvert` asserted the round trip of the reflective string-conversion library
+ *    the original registered with. The library is gone, and the guarantee it gave - the
+ *    rendered name is the identity, and reads back as the same country - is asserted directly.
  *
  * The three letter conversions were adjudicated against the published Java jar rather than
  * derived by hand: `CRI` is `CR`, `GIB` is `GI`, and `GB`, `FR`, `US` convert to `GBR`, `FRA`
  * and `USA`.
  */
-class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
+class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks with ResultMatchers {
 
   /**
    * The 46 constants of the type, each with the code it carries, grouped as the original
@@ -141,7 +155,9 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
 
   //-----------------------------------------------------------------------
   test("test_getAvailable") {
-    val available: Set[Country] = Country.availableCountries
+    // an immutable sorted set of the library's own collection vocabulary, where the original
+    // answered with a platform set
+    val available: SortedSet[Country] = Country.availableCountries
     available should contain(Country.US)
     available should contain(Country.EU)
     available should contain(Country.JP)
@@ -169,12 +185,15 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     // instance cache, so asking for a country the cache did not hold grew it by one and this
     // test asserted that growth. The set here is fixed: it describes the countries the library
     // knows about rather than the ones it has been asked for, so building a country outside it -
-    // which `of` permits for any well formed code - leaves it exactly as it was.
-    val before: Set[Country] = Country.availableCountries
+    // which `of` permits for any well formed code - leaves it exactly as it was. The divergence
+    // is the one this spec states, and it is recorded in `SCALA_MIGRATION.md`; the behaviour it
+    // replaces is at `Country.java:55,285` (the cache and the call that grows it) and
+    // `Country.java:265-268` (the snapshot of it this method answered with).
+    val before: SortedSet[Country] = Country.availableCountries
     before.size should be > 0
 
     Country.of("XZ") should beSuccess
-    val after: Set[Country] = Country.availableCountries
+    val after: SortedSet[Country] = Country.availableCountries
 
     after.size - before.size shouldBe 0
     after shouldBe before
@@ -199,30 +218,56 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
 
   test("test_of_String_unknownCountryCreated") {
     // The code space is open: any two upper case ASCII letters are accepted whether or not the
-    // standard assigns them, which is the behaviour of the original.
+    // standard assigns them, which is the behaviour of the original and the reason this type is
+    // a validated value rather than one of the closed named families of the library.
     Country.of("AA").map(_.code) should haveValue("AA")
     Country.of("AA") shouldBe Country.of("AA")
     Country.of("ZZ").map(_.code) should haveValue("ZZ")
     Country.of("QQ").map(_.code) should haveValue("QQ")
     // an unassigned code is a country like any other, and is not equal to an assigned one
     Country.of("AA") should not be Country.of("AT")
+    // and it is genuinely unassigned: no row of the reference data names it, so it is outside
+    // the set of countries the library knows about, which is what makes it a probe of openness
+    // rather than a second way of asking for a catalogued country
+    Country.of("AA").map(Country.availableCountries.contains) should haveValue(false)
   }
 
   test("test_of_String_bad") {
-    // The rows of the Java `data_ofBad` provider, less its absent-input row, which cannot be
-    // written here. Every row is one accumulated `Invalid` failure: the three ways of being
-    // malformed share one message in the original because what the caller has to correct is the
-    // same in each case, and they share one here too.
+    // The six rows of the Java `data_ofBad` provider, transcribed in the order the provider
+    // declared them. Its seventh row was an absent input, and that row has no counterpart: the
+    // port models an absent value as an `Option` and drops the checks the original made against
+    // a missing reference, so no such argument can be written - a fact asserted below at the
+    // only level at which it can be, the compiler's.
+    //
+    // Note that `gb` is rejected here and accepted by `parse`, which is the asymmetry the two
+    // providers of the original encode between them: folding case is exactly what `parse` adds.
     val dataOfBad: TableFor1[String] =
-      Table("input", "", "A", "gb", "ABC", "123", " GB", "G B", "G-B", "GBR", "\u0000B", "gB", "Gb")
+      Table("input", "", "A", "gb", "ABC", "123", " GB")
 
     forAll(dataOfBad) { (input: String) =>
       withClue(s"'$input': ") {
+        // Every row is one accumulated `Invalid` failure: the three ways of being malformed
+        // share one message in the original because what the caller has to correct is the same
+        // in each case, and they share one here too.
         Country.of(input) should beFailureWith(FailureReason.INVALID)
         // a single cause, not an accumulation: the input has one thing wrong with it
         Country.of(input).left.map(_.length) shouldBe Left(1L)
       }
     }
+
+    // beyond the provider, the shapes it samples: an embedded space, a punctuation character, a
+    // three letter code, a control character and a mixture of case are each malformed too
+    List("G B", "G-B", "GBR", "\u0000B", "gB", "Gb").foreach { input =>
+      withClue(s"'$input': ") {
+        Country.of(input) should beFailureWith(FailureReason.INVALID)
+      }
+    }
+
+    // The absent-input row of the provider, at the only level it can be asserted. The positive
+    // form is asserted alongside it so that the ruling is known to be about the argument being
+    // absent rather than about anything else in the snippet.
+    assertCompiles("""Country.of("GB")""")
+    assertDoesNotCompile("""Country.of(Option.empty[String])""")
   }
 
   //-----------------------------------------------------------------------
@@ -243,6 +288,9 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     // host, so the result does not depend on where the program runs
     Country.parse("gB") should haveValue(Country.GB)
     Country.parse("Gb") should haveValue(Country.GB)
+    // every constant is recovered from the lower case of its code; the locale is named here for
+    // the same reason the type names it, so that the folding this test performs is the folding
+    // the type performs and neither depends on the host the tests run on
     forAll(dataConstants) { (code: String, country: Country) =>
       withClue(s"$code: ") {
         Country.parse(code.toLowerCase(Locale.ENGLISH)) should haveValue(country)
@@ -251,17 +299,33 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   }
 
   test("test_parse_String_bad") {
-    // The rows of the Java `data_parseBad` provider, less its absent-input row. `gb` is absent
-    // from this provider and present in the other, because folding case is exactly what `parse`
-    // adds to `of`.
+    // The five rows of the Java `data_parseBad` provider, in its order. Its sixth row was an
+    // absent input and has no counterpart, for the reason given on `test_of_String_bad`. `gb` is
+    // deliberately absent from this provider and present in the other, because folding case is
+    // exactly what `parse` adds to `of`, so it is valid here - asserted as such below.
     val dataParseBad: TableFor1[String] =
-      Table("input", "", "A", "ABC", "123", " GB", "G B", "\u00c9\u00c9", "\uff21\uff21")
+      Table("input", "", "A", "ABC", "123", " GB")
 
     forAll(dataParseBad) { (input: String) =>
       withClue(s"'$input': ") {
         Country.parse(input) should beFailureWith(FailureReason.INVALID)
       }
     }
+
+    // the row the other provider holds and this one does not, asserted from the other side
+    Country.parse("gb") should beSuccess
+
+    // beyond the provider: folding case does not enlarge the code space, so a letter outside
+    // ASCII is malformed however it is cased
+    List("G B", "\u00c9\u00c9", "\uff21\uff21").foreach { input =>
+      withClue(s"'$input': ") {
+        Country.parse(input) should beFailureWith(FailureReason.INVALID)
+      }
+    }
+
+    // the absent-input row of the provider, at the only level it can be asserted
+    assertCompiles("""Country.parse("GB")""")
+    assertDoesNotCompile("""Country.parse(Option.empty[String])""")
     // `parse` folds the text before checking it, so the message quotes the folded code rather
     // than the text as it was supplied. That is the behaviour of the original, which folds in
     // exactly the same place and lets its check report the folded value, so it is what is
@@ -294,14 +358,30 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     // the ordering is alphabetical by code, which is the comparison of the original
     List(Country.JP, Country.EU, Country.GB).sorted(Order[Country].toOrdering) shouldBe
       List(Country.EU, Country.GB, Country.JP)
+
+    // the ordering agrees with equality over these values - `compare` is zero exactly when the
+    // two countries are equal - which the code being the whole of the value makes true without
+    // any secondary comparison, unlike several other validated types of this library
+    for (left <- List(a, b, c); right <- List(a, b, c)) {
+      withClue(s"${left.code} against ${right.code}: ") {
+        (Order[Country].compare(left, right) == 0) shouldBe Eq[Country].eqv(left, right)
+      }
+    }
   }
 
   test("test_compareTo_null") {
-    // Reinterpretation: the Java method compared against an absent value and asserted that it
-    // raised. No such value can be written here, so what is asserted instead is the property
-    // that makes the ordering safe to rely on and which the original's `compareTo` shares: it is
-    // total over the type, antisymmetric, and agrees with equality - `compare` is zero exactly
-    // when the two countries are equal.
+    // Reinterpretation: the Java `test_compareTo_null` compared a country against an absent
+    // value and asserted that the comparison raised. The port models an absent value as an
+    // `Option` and drops the checks against a missing reference, so that comparison cannot be
+    // written and the error it raised cannot be observed - which is why nothing here expects a
+    // raised error. What replaces it is the pair of facts that make the raised error
+    // unnecessary: the comparison is rejected at compile time rather than at run time, and
+    // comparison over the values that do exist is total.
+    assertCompiles("""cats.Order[Country].compare(Country.EU, Country.GB)""")
+    assertDoesNotCompile("""cats.Order[Country].compare(Country.EU, Option.empty[Country])""")
+    assertDoesNotCompile("""cats.Order[Country].compare(Country.EU, "GB")""")
+
+    // and over real inhabitants the ordering is total, antisymmetric, and agrees with equality
     val sample: List[Country] =
       List(Country.EU, Country.GB, Country.JP, Country.US) ::: List("AA", "ZZ", "QQ").flatMap(code =>
         Country.of(code).toOption.toList)
@@ -318,41 +398,48 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
 
   //-----------------------------------------------------------------------
   test("test_from3CharString_constants") {
-    Country.of3Char("GBR") shouldBe Right(Country.GB)
-    Country.of3Char("FRA") shouldBe Right(Country.FR)
-    Country.of3Char("USA") shouldBe Right(Country.US)
+    Country.of3Char("GBR") should haveValue(Country.GB)
+    Country.of3Char("FRA") should haveValue(Country.FR)
+    Country.of3Char("USA") should haveValue(Country.US)
   }
 
   //-----------------------------------------------------------------------
   test("test_from3CharString_nonConstants") {
     // a country that no constant names is reached the same way, and the two factories agree on it
-    Country.of3Char("CRI").map(_.code) shouldBe Right("CR")
+    Country.of3Char("CRI").map(_.code) should haveValue("CR")
     Country.of3Char("CRI").toOption shouldBe Country.of("CR").toOption
-    Country.of3Char("GIB").map(_.code) shouldBe Right("GI")
+    Country.of3Char("GIB").map(_.code) should haveValue("GI")
     Country.of3Char("GIB").toOption shouldBe Country.of("GI").toOption
   }
 
   //-----------------------------------------------------------------------
   test("test_from3CharString_missing") {
-    // The original raised one kind of error for both of these; the port reports them as the two
-    // distinct causes they are. A well formed code that names no country is a `Parsing` failure
-    // carrying the message the original used.
+    // The original raised one kind of error for both of its cases; the port reports them as the
+    // two distinct causes they are. A well formed code that names no country is a `Parsing`
+    // failure carrying the message the original used.
     Country.of3Char("ZZZ") should beFailureWith(FailureReason.PARSING)
     Country.of3Char("ZZZ").left.map(_.message) shouldBe Left("Unknown country code: ZZZ")
     // text that is not the shape of a three letter code never reaches the lookup, so it is an
-    // `Invalid` failure instead
+    // `Invalid` failure instead: too short, lower case, empty, too long, or holding characters
+    // outside the code space
     Country.of3Char("zzz") should beFailureWith(FailureReason.INVALID)
+    Country.of3Char("gbr") should beFailureWith(FailureReason.INVALID)
     Country.of3Char("") should beFailureWith(FailureReason.INVALID)
     Country.of3Char("GB") should beFailureWith(FailureReason.INVALID)
     Country.of3Char("GBRA") should beFailureWith(FailureReason.INVALID)
     Country.of3Char("12 ") should beFailureWith(FailureReason.INVALID)
+    // The original's second case passed an absent value and asserted that it raised. As with
+    // `test_of_String_bad`, no such argument can be written here, so the case is asserted at
+    // the compiler.
+    assertCompiles("""Country.of3Char("GBR")""")
+    assertDoesNotCompile("""Country.of3Char(Option.empty[String])""")
   }
 
   //-----------------------------------------------------------------------
   test("test_get3CharString") {
-    Country.GB.code3Char shouldBe Right("GBR")
-    Country.FR.code3Char shouldBe Right("FRA")
-    Country.US.code3Char shouldBe Right("USA")
+    Country.GB.code3Char should haveValue("GBR")
+    Country.FR.code3Char should haveValue("FRA")
+    Country.US.code3Char should haveValue("USA")
     Country.of("CR").map(_.code3Char) shouldBe Right(Right("CRI"))
     Country.of("GI").map(_.code3Char) shouldBe Right(Right("GIB"))
 
@@ -386,19 +473,34 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     a1 shouldBe a1
     a2 should haveValue(a1)
     a1 should not be b
-    a1 should not equal ""
     a2.map(_.hashCode) shouldBe Right(a1.hashCode)
 
+    // The original's two negative cases compared a country against text and against an absent
+    // value. Both are asserted through the untyped comparison of the framework, whose parameter
+    // is `Any`, with the country ascribed so that no comparison of unrelated types is written -
+    // one of those would be reported by the compiler and, this build treating a report as an
+    // error, would not compile at all.
+    (a1: Any) should not equal ""
+    (a1: Any) should not equal null
+
     // the code is the whole of the value, so the three equality-bearing views agree
+    Country.of("GB").map(country => Eq[Country].eqv(a1, country)) should haveValue(true)
     Eq[Country].eqv(a1, b) shouldBe false
     Hash[Country].eqv(a1, b) shouldBe false
     Order[Country].compare(a1, b) should not be 0
     Country.of("GB").map(country => Hash[Country].hash(country)) shouldBe Right(Hash[Country].hash(a1))
+
+    // and the typed equality of the library cannot be asked the untyped question at all, which
+    // is why the comparisons against text above are the framework's and not the type class's
+    assertCompiles("""cats.Eq[Country].eqv(Country.GB, Country.EU)""")
+    assertDoesNotCompile("""cats.Eq[Country].eqv(Country.GB, "")""")
   }
 
   //-----------------------------------------------------------------------
   test("test_toString") {
     Country.GB.toString shouldBe "GB"
+    // the rendering of the type class is the rendering of the value, as it is for every named
+    // or text-identified type of this port
     Show[Country].show(Country.GB) shouldBe "GB"
     forAll(dataConstants) { (code: String, country: Country) =>
       withClue(s"$code: ") {
@@ -406,52 +508,79 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
         Show[Country].show(country) shouldBe code
       }
     }
+    // a country outside the reference data renders the same way: the code is the whole of the
+    // value, so there is nothing else it could render as
+    Country.of("ZZ").map(_.toString) should haveValue("ZZ")
+    Country.of("ZZ").map(country => Show[Country].show(country)) should haveValue("ZZ")
+  }
+
+  test("test_serialization") {
+    // Reinterpretation: the Java method asserted the round trip of the platform serialization
+    // the original supported, and the wire format of the bean library it was written against.
+    // Neither is carried over - platform serialization and that library's documents are both
+    // outside the scope of this port - and the JSON codec is the supported way to write and
+    // read a country, so what is asserted here is that codec.
+    //
+    // A country is text, not a record: the document is the bare two letter code rather than an
+    // object naming the field, which is the form the original wrote and which keeps a country
+    // usable wherever a string is expected.
+    Country.GB.asJson shouldBe Json.fromString("GB")
+    Country.GB.asJson.noSpaces shouldBe "\"GB\""
+    decode[Country]("\"GB\"") shouldBe Right(Country.GB)
+    Json.fromString("GB").as[Country] shouldBe Right(Country.GB)
+
+    // the round trip of the two values the original serialized, written and read back through
+    // the document rather than through the encoder alone
+    Country.GB.asJson.as[Country] shouldBe Right(Country.GB)
+    Country.of("US").map(country => decode[Country](country.asJson.noSpaces)) shouldBe
+      Right(Right(Country.US))
+
+    // the code space is open in a document exactly as it is in the factory: a well formed code
+    // the reference data does not hold is written and read like any other
+    Country.of("AA").map(_.asJson) shouldBe Right(Json.fromString("AA"))
+    decode[Country]("\"ZZ\"").map(_.code) shouldBe Right("ZZ")
+    Json.fromString("AA").as[Country].map(_.code) shouldBe Right("AA")
+
+    // Reading goes through `of` rather than `parse`, so the codec accepts exactly the canonical
+    // form it writes: a document holding a folded or malformed code is rejected rather than
+    // quietly corrected, and the rejection carries the message of the check that rejected it.
+    List("\"gb\"", "\"ABC\"", "\"\"", "\" GB\"").foreach { document =>
+      withClue(s"$document: ") {
+        decode[Country](document) match {
+          case Left(failure: DecodingFailure) => failure.message should include("countryCode")
+          case other => fail(s"expected a DecodingFailure for $document but was $other")
+        }
+      }
+    }
+
+    // a document that is not text at all is rejected by the reader of the string, before the
+    // factory is reached
+    Json.fromInt(1).as[Country].isLeft shouldBe true
+    Json.Null.as[Country].isLeft shouldBe true
+    decode[Country]("{\"code\":\"GB\"}").isLeft shouldBe true
   }
 
   test("test_jodaConvert") {
     // Reinterpretation: the Java method asserted the round trip of the reflective
     // string-conversion library the original registered with. The library is gone with the
     // port, and the guarantee it gave is asserted directly: a country renders as its bare code,
-    // and that rendering reads back as the same country.
+    // and that rendering reads back as the same country, through both of the factories that
+    // accept it. The rendered name remains the identity of the value, which is what made the
+    // conversion the original registered worth asserting in the first place.
     forAll(dataConstants) { (code: String, country: Country) =>
       val rendered = Show[Country].show(country)
       withClue(s"$code: ") {
         rendered shouldBe code
-        Country.of(rendered) should haveValue(country)
+        country.toString shouldBe code
+        Country.of(country.code) should haveValue(country)
+        Country.parse(country.toString) should haveValue(country)
       }
     }
+    // the two values the original converted, stated as the original stated them
+    Country.of(Country.GB.code) should haveValue(Country.GB)
+    Country.parse(Country.GB.toString) should haveValue(Country.GB)
+    Country.of("US").map(country => Show[Country].show(country)) should haveValue("US")
     Country.of(Country.US.toString) should haveValue(Country.US)
-  }
-
-  //-----------------------------------------------------------------------
-  // The tests below are the port's own: the JSON representation, which replaces the platform
-  // serialization the consolidated round-trip spec no longer covers per type, and the closed
-  // construction surface of a validated type.
-
-  test("test_codec") {
-    Country.GB.asJson shouldBe Json.fromString("GB")
-    Json.fromString("GB").as[Country] shouldBe Right(Country.GB)
-    // an unassigned but well formed code is written and read like any other
-    Country.of("AA").map(_.asJson) shouldBe Right(Json.fromString("AA"))
-    Json.fromString("AA").as[Country].map(_.code) shouldBe Right("AA")
-    // reading goes through `of` rather than `parse`, so the codec accepts exactly the canonical
-    // form it writes and a document holding a folded code is rejected rather than quietly
-    // corrected
-    Json.fromString("gb").as[Country].isLeft shouldBe true
-    Json.fromString("ABC").as[Country].isLeft shouldBe true
-    Json.fromString("").as[Country].isLeft shouldBe true
-    Json.fromInt(1).as[Country].isLeft shouldBe true
-    Json.Null.as[Country].isLeft shouldBe true
-  }
-
-  test("test_construction_isClosed") {
-    // A validated type publishes its factory and nothing else: there is no generated
-    // constructor to bypass the check with, and no copy to change a checked value with. Both are
-    // compile-time properties, so both are asserted as such.
-    assertDoesNotCompile("""Country("GB")""")
-    assertDoesNotCompile("""Country.GB.copy(code = "XX")""")
-    assertDoesNotCompile("""new Country("GB") {}""")
-    // the factory is the only way in, and it answers with a value rather than raising
-    Country.of("GB") should beSuccess
+    Country.parse(Country.US.toString) should haveValue(Country.US)
   }
 }
