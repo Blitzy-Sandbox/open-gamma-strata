@@ -1140,6 +1140,41 @@ package com.opengamma.strata.collect.array {
         publicArrayReturns shouldBe List("toArray")
       }
 
+      // The same statement is made of the rewrites the constructor dispatches on, because they
+      // are the other place a run of values could have been put. Each names an operation the
+      // constructor is to apply to the storage it produces, and each is read by that constructor
+      // alone; if one of them carried an array - for a two-array operation, the other value's own
+      // storage - it would publish an accessor handing that array out, and the aliasing this type
+      // does not have would be back under a new name. So: none of them holds a field of an array
+      // type, and none of them declares a member answering with one.
+      val rewrites: List[Class[_]] = List(
+        classOf[DoubleArray.NoRewrite],
+        classOf[DoubleArray.CopyRange],
+        classOf[DoubleArray.SetAt],
+        classOf[DoubleArray.PlusScalar],
+        classOf[DoubleArray.MinusScalar],
+        classOf[DoubleArray.ScaledBy],
+        classOf[DoubleArray.Mapped],
+        classOf[DoubleArray.MappedWithIndex],
+        classOf[DoubleArray.PlusEach],
+        classOf[DoubleArray.MinusEach],
+        classOf[DoubleArray.MultipliedByEach],
+        classOf[DoubleArray.DividedByEach],
+        classOf[DoubleArray.CombinedWith],
+        classOf[DoubleArray.SortedRun])
+      val rewriteArrayMembers =
+        rewrites.flatMap { rewrite =>
+          rewrite.getDeclaredMethods.toList
+            .filter(method => method.getReturnType.isArray)
+            .map(method => s"${rewrite.getSimpleName}.${method.getName}") :::
+            rewrite.getDeclaredFields.toList
+              .filter(field => field.getType.isArray)
+              .map(field => s"${rewrite.getSimpleName}.${field.getName}")
+        }
+      withClue(s"members of a rewrite holding or answering with values: $rewriteArrayMembers: ") {
+        rewriteArrayMembers shouldBe empty
+      }
+
       // and that one accessor answers with a fresh run of values on every call, so holding the
       // result of one call is not a way to observe or change what a later call sees
       val test = DoubleArray.of(1.0, 2.0, 3.0)
@@ -1160,11 +1195,24 @@ package com.opengamma.strata.collect.array {
       // move, because the copy is made by the constructor rather than by the factory in front of
       // it. There is exactly one such constructor, which is asserted too: a second one would be a
       // second construction path to hold to the same contract.
+      //
+      // It takes two arguments, the values and the operation it is constructing for, and there is
+      // deliberately no adopting route among them to test: the constructor ALLOCATES the storage
+      // it keeps on every one of its branches - a clone of the values, or a copy of a range of
+      // them - and then rewrites that storage in place, which is what lets an operation of this
+      // type cost one allocation instead of two. So no argument of any kind makes it keep the
+      // array it was handed, and each of the three routes below is handed a caller's array and
+      // then measured for aliasing: the route every factory takes, a route that rewrites the
+      // storage, and the route that copies a range of it.
       val constructors = classOf[DoubleArray].getConstructors.toList
       constructors should have size 1
+      val constructor = constructors.head
+      constructor.getParameterCount shouldBe 2
 
       val source = Array(1.0, 2.0, 3.0)
-      val built = constructors.head.newInstance(source.asInstanceOf[AnyRef]).asInstanceOf[DoubleArray]
+      val built = constructor
+        .newInstance(source.asInstanceOf[AnyRef], DoubleArray.NoRewrite)
+        .asInstanceOf[DoubleArray]
       assertContent(built, 1.0, 2.0, 3.0)
       source(0) = 9.0
       source(2) = 7.0
@@ -1173,6 +1221,37 @@ package com.opengamma.strata.collect.array {
       // and nothing the value hands back afterwards reaches the array that built it
       (built.toArray eq source) shouldBe false
       Arrays.equals(source, Array(9.0, 2.0, 7.0)) shouldBe true
+
+      // the rewriting route, handed a caller's array in the same way: the operation is applied to
+      // the storage the constructor produced, so the values are those of the rewritten copy and
+      // the caller's array is neither modified nor kept
+      val operand = Array(1.0, 2.0, 3.0)
+      val added = constructor
+        .newInstance(operand.asInstanceOf[AnyRef], new DoubleArray.PlusScalar(0.5))
+        .asInstanceOf[DoubleArray]
+      assertContent(added, 1.5, 2.5, 3.5)
+      Arrays.equals(operand, Array(1.0, 2.0, 3.0)) shouldBe true
+      operand(1) = 9.0
+      assertContent(added, 1.5, 2.5, 3.5)
+      (added.toArray eq operand) shouldBe false
+
+      // and the route that copies a range rather than cloning the whole run, which is the one
+      // branch whose storage is not the length of the array it was handed
+      val ranged = constructor
+        .newInstance(operand.asInstanceOf[AnyRef], new DoubleArray.CopyRange(1, 3))
+        .asInstanceOf[DoubleArray]
+      assertContent(ranged, 9.0, 3.0)
+      operand(2) = 8.0
+      assertContent(ranged, 9.0, 3.0)
+      (ranged.toArray eq operand) shouldBe false
+
+      // The family of operations the constructor dispatches on is closed, which is what makes the
+      // choice it makes total and keeps the routes to its storage the ones enumerated above: a
+      // rewrite declared anywhere else cannot join it. The positive control is the line above
+      // each rejection, which names a member of the family that does exist.
+      assertCompiles("com.opengamma.strata.collect.array.DoubleArray.NoRewrite: AnyRef")
+      assertDoesNotCompile(
+        "class Rogue extends com.opengamma.strata.collect.array.DoubleArray.Rewrite")
     }
 
     test("unsafe_members_resolve_to_nothing") {

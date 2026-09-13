@@ -1127,6 +1127,35 @@ package com.opengamma.strata.collect.array {
             "rowArray", "toArray")
       }
 
+      // The same statement is made of the rewrites the constructor dispatches on, because they
+      // are the other place rows could have been put. Each names an operation the constructor is
+      // to apply to the storage it produces, and each is read by that constructor alone; if one
+      // of them carried rows - for a two-matrix operation, the other matrix's own storage - it
+      // would publish an accessor handing those rows out, and the aliasing this type does not
+      // have would be back under a new name. So: none of them holds a field of an array type, and
+      // none of them declares a member answering with one.
+      val rewrites: List[Class[_]] = List(
+        classOf[DoubleMatrix.NoRewrite],
+        classOf[DoubleMatrix.SetAt],
+        classOf[DoubleMatrix.ScaledBy],
+        classOf[DoubleMatrix.Mapped],
+        classOf[DoubleMatrix.MappedWithIndex],
+        classOf[DoubleMatrix.PlusEach],
+        classOf[DoubleMatrix.MinusEach],
+        classOf[DoubleMatrix.CombinedWith])
+      val rewriteArrayMembers =
+        rewrites.flatMap { rewrite =>
+          rewrite.getDeclaredMethods.toList
+            .filter(method => method.getReturnType.isArray)
+            .map(method => s"${rewrite.getSimpleName}.${method.getName}") :::
+            rewrite.getDeclaredFields.toList
+              .filter(field => field.getType.isArray)
+              .map(field => s"${rewrite.getSimpleName}.${field.getName}")
+        }
+      withClue(s"members of a rewrite answering with or holding rows: $rewriteArrayMembers: ") {
+        rewriteArrayMembers shouldBe empty
+      }
+
       // and each of those accessors answers with fresh data on every call, so holding the result
       // of one call is not a way to observe or change what a later call sees
       val test = matrix3x2
@@ -1153,12 +1182,26 @@ package com.opengamma.strata.collect.array {
       // than by the factory in front of it. There is exactly one such constructor, which is
       // asserted too: a second one would be a second construction path to hold to the same
       // contract.
+      //
+      // It takes four arguments - the rows, the shape, and the operation it is constructing for -
+      // and there is deliberately no adopting route among them to test: the constructor ALLOCATES
+      // the storage it keeps on every one of its branches, as the deep copy of the rows it was
+      // handed, and then rewrites that copy in place, which is what lets an operation of this type
+      // cost one rectangle instead of two. So no argument of any kind makes it keep the rows it
+      // was handed, and both routes below are handed a caller's rows and then measured for
+      // aliasing: the route every factory takes, and a route that rewrites the storage.
       val constructors = classOf[DoubleMatrix].getConstructors.toList
       constructors should have size 1
+      val constructor = constructors.head
+      constructor.getParameterCount shouldBe 4
 
       val source = Array(Array(1.0, 2.0), Array(3.0, 4.0))
-      val built = constructors.head
-        .newInstance(source.asInstanceOf[AnyRef], Integer.valueOf(2), Integer.valueOf(2))
+      val built = constructor
+        .newInstance(
+          source.asInstanceOf[AnyRef],
+          Integer.valueOf(2),
+          Integer.valueOf(2),
+          DoubleMatrix.NoRewrite)
         .asInstanceOf[DoubleMatrix]
       assertMatrix(built, 1.0, 2.0, 3.0, 4.0)
       source(0)(0) = 9.0
@@ -1168,6 +1211,33 @@ package com.opengamma.strata.collect.array {
       // and nothing the value hands back afterwards reaches the rows that built it
       (built.toArray eq source) shouldBe false
       (built.toArray(0) eq source(0)) shouldBe false
+
+      // the rewriting route, handed a caller's rows in the same way: the operation is applied to
+      // the deep copy the constructor produced, so the elements are those of the rewritten copy
+      // and the caller's rows are neither modified nor kept
+      val operand = Array(Array(1.0, 2.0), Array(3.0, 4.0))
+      val scaled = constructor
+        .newInstance(
+          operand.asInstanceOf[AnyRef],
+          Integer.valueOf(2),
+          Integer.valueOf(2),
+          new DoubleMatrix.ScaledBy(2.0))
+        .asInstanceOf[DoubleMatrix]
+      assertMatrix(scaled, 2.0, 4.0, 6.0, 8.0)
+      operand(0)(0) shouldBe 1.0
+      operand(0)(0) = 9.0
+      operand(1) = Array(7.0, 7.0)
+      assertMatrix(scaled, 2.0, 4.0, 6.0, 8.0)
+      (scaled.toArray eq operand) shouldBe false
+      (scaled.toArray(0) eq operand(0)) shouldBe false
+
+      // The family of operations the constructor dispatches on is closed, which is what makes the
+      // choice it makes total and keeps the routes to its storage the ones enumerated above: a
+      // rewrite declared anywhere else cannot join it. The positive control is the line above the
+      // rejection, which names a member of the family that does exist.
+      assertCompiles("com.opengamma.strata.collect.array.DoubleMatrix.NoRewrite: AnyRef")
+      assertDoesNotCompile(
+        "class Rogue extends com.opengamma.strata.collect.array.DoubleMatrix.Rewrite")
     }
 
     test("unsafe_members_resolve_to_nothing") {

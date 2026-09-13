@@ -1891,16 +1891,30 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
 
       // and the copying is observable from here, through the one construction path bytecode can
       // reach: the constructor of each type, invoked with an array this module still holds.
+      //
+      // Each constructor also takes the operation it is constructing for - the two types produce
+      // the storage they keep inside the constructor and rewrite it there, which is what keeps an
+      // element-wise operation to one allocation - and that operation's type is restricted to the
+      // package the numeric types live in, so this module cannot name it. It is fetched from the
+      // companion by reflection instead, which is exactly how a caller compiled against these
+      // classes would have to reach it, and is therefore the sharper form of this probe: the copy
+      // below is made for a caller that has no source-level access to any of this.
+      val arrayRoute = DoubleArray.getClass.getMethod("NoRewrite").invoke(DoubleArray)
       val arraySource = Array(1.0, 2.0, 3.0)
       val builtArray = classOf[DoubleArray].getConstructors.head
-        .newInstance(arraySource.asInstanceOf[AnyRef])
+        .newInstance(arraySource.asInstanceOf[AnyRef], arrayRoute)
         .asInstanceOf[DoubleArray]
       arraySource(0) = 99.0
       builtArray.get(0) shouldBe 1.0
 
+      val matrixRoute = DoubleMatrix.getClass.getMethod("NoRewrite").invoke(DoubleMatrix)
       val rowSource = Array(Array(1.0, 2.0), Array(3.0, 4.0))
       val builtMatrix = classOf[DoubleMatrix].getConstructors.head
-        .newInstance(rowSource.asInstanceOf[AnyRef], Integer.valueOf(2), Integer.valueOf(2))
+        .newInstance(
+          rowSource.asInstanceOf[AnyRef],
+          Integer.valueOf(2),
+          Integer.valueOf(2),
+          matrixRoute)
         .asInstanceOf[DoubleMatrix]
       rowSource(0)(0) = 99.0
       rowSource(1) = Array(99.0, 99.0)

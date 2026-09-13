@@ -54,12 +54,13 @@ import com.opengamma.strata.collect.ArgCheck
  *
  * Immutability here is enforced by the compiled code rather than promised by a convention, and
  * the enforcement rests on two facts about this class that hold together. The sole constructor
- * deep-copies the rows it is handed - the array of rows and every row within it - and stores the
- * copy, so a matrix's storage is allocated by that constructor and is reachable from nowhere the
- * caller can name; and no member hands that storage out. `toArray` answers with a deep copy, and
- * the four members that expose a single row or column - `row`, `rowArray`, `column` and
- * `columnArray` - each answer with independent data, a row cloned once and a column read element
- * by element into one buffer per call.
+ * produces the storage a matrix keeps - a deep copy of the rows it is handed, the array of rows
+ * and every row within it - rather than storing what it was handed, so a matrix's storage is
+ * allocated by that constructor and is reachable from nowhere the caller can name; and no member
+ * hands that storage out. `toArray` answers with a deep copy, and the four members that expose a
+ * single row or column - `row`, `rowArray`, `column` and `columnArray` - each answer with
+ * independent data, a row cloned once and a column read element by element into one buffer per
+ * call.
  *
  * Stating it that way is deliberate, because the alternative does not hold on this platform. A
  * member restricted to this module is restricted in ''source'' only: the compiler emits it as a
@@ -74,14 +75,18 @@ import com.opengamma.strata.collect.ArgCheck
  * built column, and published two further members that skipped the copy outright - `ofUnsafe`,
  * which adopted an array of rows, and `toArrayUnsafe`, which handed back the stored one. None of
  * those aliases survives here: the two members are not ported under any name or any visibility,
- * and the accessors copy. What that costs is one copy of a freshly built rectangle per operation,
- * which is small next to the arithmetic these matrices exist for; what it buys is that no array
- * anywhere is reachable both by a caller and by a matrix.
+ * and the accessors copy. What that costs is one copy of a rectangle per matrix built, which is
+ * small next to the arithmetic these matrices exist for; what it buys is that no array anywhere
+ * is reachable both by a caller and by a matrix.
  *
- * `with` is the member where that cost is most visible, and it is paid there too. It clones the
- * row it changes rather than writing into the row it was derived from - a stored row is never
- * modified, which is what makes the derivation safe at all - and the constructor then copies
- * every row, so the result it answers with shares nothing with the matrix it came from.
+ * That copy is also the only rectangle an operation of this type allocates. The constructor is
+ * told which operation it is constructing for, deep-copies the rows it was handed and applies
+ * that operation's own loop to the copy in row-major order before the matrix is published, so a
+ * produced matrix costs one array of rows and one clone per row - `with`, for instance, writes
+ * its new value into the copy rather than cloning a row of its own on the way in. No stored row
+ * is ever modified, which is what makes deriving one matrix from another safe at all: the loop
+ * writes only to storage the constructor has just allocated, and reads the matrix it was derived
+ * from, so the result shares nothing with it.
  *
  * ===Numerical fidelity===
  *
@@ -146,28 +151,44 @@ import com.opengamma.strata.collect.ArgCheck
  * builder, threads it through its two recursions as an argument and a result, and reads its
  * contents once at the end - and that is safe for the reason a freshly allocated array is safe:
  * it is published nowhere, no other thread can observe it, and it is unreachable the moment the
- * string it produced is returned. An operation that produces a matrix allocates its rows once,
- * fills them in row-major order and wraps them only once they are complete, and bulk moves -
- * copying, filling, hashing and cloning - go straight to the primitive array operations of the
- * platform. Every element-wise operation funnels through the one row-major fill in the companion,
- * so the traversal order that the parity duty above depends on is defined in a single place.
+ * string it produced is returned. Bulk moves - copying, filling, hashing and cloning - go
+ * straight to the primitive array operations of the platform.
  *
- * Wrapping those completed rows copies them once more. Every one of those operations reaches the
- * sole constructor, whose single line deep-copies the array of rows and every row within it - the
- * comment on that line records why it is a copy rather than the argument - so a produced matrix
- * costs one further allocation and one bulk copy per row beyond the rectangle the operation
- * filled. That is the one copy of a freshly built rectangle per operation named above, and what
- * it buys is named there too: no array anywhere is reachable both by a caller and by a matrix.
+ * An operation that produces a matrix allocates its rectangle exactly once, and that one
+ * allocation is the deep copy the constructor makes. The constructor is told which operation it
+ * is constructing for, alongside the rows and the shape: it deep-copies the rows - the array of
+ * rows and every row within it - and then applies that operation's own loop to that copy, in
+ * row-major order, before the matrix is published. Rewriting the copy in place leaves exactly
+ * what filling a fresh rectangle from the source would have left, because the copy starts out
+ * holding the source, so a produced matrix costs one array of rows plus one clone per row, and
+ * the loop that follows allocates nothing at all. The choice of loop is made once per matrix
+ * constructed, where the operation names its rewrite, and not once per element; each loop is a
+ * single row-major recursion of this class, so the traversal order the parity duty above depends
+ * on is written out once per operation, in one place, in the one shape `forEach` also has.
  *
- * No internal path skips that copy, and none can, for the reason ''The stored rows never escape''
- * above gives. The constructor is emitted public because the companion every factory lives in has
- * to reach it, and a companion-private helper reached from this class is emitted as a public
- * method as well, under a mangled name - the deep copy this class reaches is emitted exactly that
- * way, which is why the build's check on the members of the two numeric types has to name it. A
- * member that adopted internally built rows instead of copying them would therefore be callable
- * by anything compiled against this class, outside the access the language grants its own
- * callers, and would be the aliasing entry point that `ofUnsafe` and `toArrayUnsafe` were and
- * this type deliberately has none of.
+ * Two properties of that arrangement matter beyond the allocation it saves. The rewrite happens
+ * inside the constructor, so the stored rows are written only while they are being initialised
+ * and are final by the time any other thread can reach the matrix - which is what the ''Thread
+ * safety'' note below rests on; and the constructor still never stores the rows it is handed,
+ * which is what keeps every factory and every accessor copy-safe for any caller the bytecode
+ * admits, in the way ''The stored rows never escape'' above sets out. There is no member, and no
+ * constructor argument, through which rows a caller retains can become a matrix's storage: a
+ * member that adopted rows instead of producing them would be exactly that, and would be
+ * callable by anything compiled against this class, because a companion-private helper reached
+ * from here is emitted as a public method under a mangled name - the deep copy this class reaches
+ * is emitted exactly that way, which is why the build's check on the members of the two numeric
+ * types has to name it. That is the aliasing entry point `ofUnsafe` and `toArrayUnsafe` were, and
+ * this type deliberately has none of it.
+ *
+ * Construction that does not start from the rows of an existing matrix keeps a rectangle of its
+ * own, and pays the extra deep copy the operations above no longer pay: `of` unboxes a sequence
+ * of elements, `tabulate`, `filled`, `identity` and `diagonal` compute their elements from a
+ * shape, `ofArrays` and `ofArrayObjects` take each row from a function, `copyOf` is handed a
+ * caller's rows, and `transpose` produces a rectangle of the opposite shape - which is not the
+ * shape of anything the constructor could have rewritten in place. Each of those builds a
+ * rectangle and the constructor copies it, which is one deep copy per construction: of a freshly
+ * built rectangle in every case but `copyOf`, where it is the copy that makes the caller's rows
+ * unreachable from the matrix.
  *
  * No element and no index is boxed on any path of this type. Where a member takes a one- or
  * two-argument function - `map`, `multipliedBy`, `combine`, `reduce`, `tabulate` and `diagonal` -
@@ -196,11 +217,13 @@ import com.opengamma.strata.collect.ArgCheck
  * @param rows  the rows to hold, which are copied rather than retained
  * @param rowCount  the number of rows, zero or greater
  * @param columnCount  the number of columns, zero or greater
+ * @param rewrite  the operation to apply to the copy of the rows, before the matrix is published
  */
 final class DoubleMatrix private (
     rows: Array[Array[Double]],
     val rowCount: Int,
-    val columnCount: Int) extends Matrix {
+    val columnCount: Int,
+    rewrite: DoubleMatrix.Rewrite) extends Matrix {
 
   // The shape and the rows are measured against each other as this value is constructed, before
   // anything is copied.
@@ -229,18 +252,191 @@ final class DoubleMatrix private (
   // construction.
   DoubleMatrix.checkShape(rows, rowCount, columnCount)
 
-  // The rows of this matrix, deep-copied out of whatever was handed to the constructor.
+  // The rows of this matrix: storage deep-copied out of whatever was handed to the constructor,
+  // rewritten here, and held by nothing else.
   //
-  // This is the line that makes the type immutable in the compiled code, which is why it is a
-  // copy and not the argument itself: every factory of the companion, and every operation that
-  // produces a new matrix, reaches this constructor, so the rows stored here were allocated here
-  // and are held by nothing else. The deep copy is the companion's own, so the one loop that
-  // clones a run of rows serves both this and `toArray`. The field is private to the class and is
-  // read only from within it - including from another instance of it, which the platform allows
-  // and which `equals` and the element-wise operations do - so the compiler emits no accessor for
-  // it beyond the private one, and there is no member of this type through which it can be
-  // reached.
-  private val array: Array[Array[Double]] = DoubleMatrix.deepClone(rows)
+  // This is the expression that makes the type immutable in the compiled code, which is why every
+  // branch of it produces a rectangle rather than keeping the argument: every factory of the
+  // companion, and every operation that produces a new matrix, reaches this constructor, so the
+  // rows stored here were allocated here and are held by nothing else. The deep copy is the
+  // companion's own, so the one loop that clones a run of rows serves every branch here and
+  // `toArray`. The field is private to the class and is read only from within it - including from
+  // another instance of it, which the platform allows and which `equals` and the element-wise
+  // rewrites below do - so the compiler emits no accessor for it beyond the private one, and
+  // there is no member of this type through which it can be reached.
+  //
+  // The rewrite says which operation this matrix is being constructed for, and the match selects
+  // that operation's loop once, here, rather than once per element. Every case deep-copies first
+  // and then applies that operation to the copy in place, in row-major order, where there is one
+  // to apply; the route every factory takes names no operation and stops at the copy. Rewriting
+  // the copy leaves what a fresh rectangle filled from the same source would have held, because
+  // the copy begins as a copy of that source.
+  //
+  // Each loop is a private method of this class, so it is emitted private and may read another
+  // instance's rows directly, and none of them reads this instance's own field: the field is what
+  // they are producing. The rewrite is consumed here and nowhere else, which is what keeps the
+  // compiler from retaining it in a field of every instance - the hazard recorded above for the
+  // rows.
+  private val array: Array[Array[Double]] = rewrite match {
+    case _: DoubleMatrix.NoRewrite =>
+      DoubleMatrix.deepClone(rows)
+    case single: DoubleMatrix.SetAt =>
+      val storage = DoubleMatrix.deepClone(rows)
+      storage(single.row)(single.column) = single.newValue
+      storage
+    case scaled: DoubleMatrix.ScaledBy =>
+      val storage = DoubleMatrix.deepClone(rows)
+      scaledInto(storage, scaled.factor, 0, 0)
+      storage
+    case mapped: DoubleMatrix.Mapped =>
+      val storage = DoubleMatrix.deepClone(rows)
+      mapInto(storage, mapped.operator, 0, 0)
+      storage
+    case indexed: DoubleMatrix.MappedWithIndex =>
+      val storage = DoubleMatrix.deepClone(rows)
+      mapWithIndexInto(storage, indexed.function, 0, 0)
+      storage
+    case summed: DoubleMatrix.PlusEach =>
+      val storage = DoubleMatrix.deepClone(rows)
+      plusEachInto(storage, summed.other.array, 0, 0)
+      storage
+    case differenced: DoubleMatrix.MinusEach =>
+      val storage = DoubleMatrix.deepClone(rows)
+      minusEachInto(storage, differenced.other.array, 0, 0)
+      storage
+    case combined: DoubleMatrix.CombinedWith =>
+      val storage = DoubleMatrix.deepClone(rows)
+      combineEachInto(storage, combined.other.array, combined.operator, 0, 0)
+      storage
+  }
+
+  // Constructs the matrix this one's rows, rewritten by the given operation, describe.
+  //
+  // Every operation of this class that produces a matrix of the same shape as this one answers
+  // through here, which is where the one short circuit they share lives: a shape with no rows or
+  // no columns has no element to rewrite, so it answers with the shared empty instance, as every
+  // factory of this type does. The rows this matrix holds are passed to the constructor, which
+  // deep-copies them rather than keeping them, so the two matrices share nothing.
+  private def rewritten(rewrite: DoubleMatrix.Rewrite): DoubleMatrix =
+    if (rowCount == 0 || columnCount == 0) {
+      DoubleMatrix.EMPTY
+    } else {
+      new DoubleMatrix(array, rowCount, columnCount, rewrite)
+    }
+
+  // The element-wise rewrites, each a single row-major recursion over the storage the constructor
+  // is producing. Each visits row 0 left to right, then row 1, and so on - the order of `forEach`
+  // and of the Java original, and the order the numerical parity of this type is measured in -
+  // and each reads the row length off the storage it is walking, which the shape check above has
+  // already measured against the column count. Writing to the target while reading the other
+  // matrix is safe for the reason the field comment gives: the target was allocated by this
+  // constructor moments earlier and no other matrix holds it.
+
+  // multiplies every element of the target by the factor, in row-major order
+  @tailrec
+  private def scaledInto(
+      target: Array[Array[Double]],
+      factor: Double,
+      row: Int,
+      column: Int): Unit =
+
+    if (row < target.length) {
+      if (column >= target(row).length) {
+        scaledInto(target, factor, row + 1, 0)
+      } else {
+        target(row)(column) = target(row)(column) * factor
+        scaledInto(target, factor, row, column + 1)
+      }
+    }
+
+  // applies the operator to every element of the target, in row-major order
+  @tailrec
+  private def mapInto(
+      target: Array[Array[Double]],
+      operator: Double => Double,
+      row: Int,
+      column: Int): Unit =
+
+    if (row < target.length) {
+      if (column >= target(row).length) {
+        mapInto(target, operator, row + 1, 0)
+      } else {
+        target(row)(column) = operator(target(row)(column))
+        mapInto(target, operator, row, column + 1)
+      }
+    }
+
+  // applies the function to every positioned element of the target, in row-major order
+  @tailrec
+  private def mapWithIndexInto(
+      target: Array[Array[Double]],
+      function: DoubleMatrix.ElementFunction,
+      row: Int,
+      column: Int): Unit =
+
+    if (row < target.length) {
+      if (column >= target(row).length) {
+        mapWithIndexInto(target, function, row + 1, 0)
+      } else {
+        target(row)(column) = function(row, column, target(row)(column))
+        mapWithIndexInto(target, function, row, column + 1)
+      }
+    }
+
+  // adds the matching element of the other matrix to every element of the target, in row-major
+  // order, the other matrix's rows being read and never written
+  @tailrec
+  private def plusEachInto(
+      target: Array[Array[Double]],
+      other: Array[Array[Double]],
+      row: Int,
+      column: Int): Unit =
+
+    if (row < target.length) {
+      if (column >= target(row).length) {
+        plusEachInto(target, other, row + 1, 0)
+      } else {
+        target(row)(column) = target(row)(column) + other(row)(column)
+        plusEachInto(target, other, row, column + 1)
+      }
+    }
+
+  // subtracts the matching element of the other matrix from every element of the target, in
+  // row-major order, the other matrix's rows being read and never written
+  @tailrec
+  private def minusEachInto(
+      target: Array[Array[Double]],
+      other: Array[Array[Double]],
+      row: Int,
+      column: Int): Unit =
+
+    if (row < target.length) {
+      if (column >= target(row).length) {
+        minusEachInto(target, other, row + 1, 0)
+      } else {
+        target(row)(column) = target(row)(column) - other(row)(column)
+        minusEachInto(target, other, row, column + 1)
+      }
+    }
+
+  // replaces every element of the target with the operator applied to it and the matching element
+  // of the other matrix, in row-major order, the other matrix's rows being read and never written
+  @tailrec
+  private def combineEachInto(
+      target: Array[Array[Double]],
+      other: Array[Array[Double]],
+      operator: (Double, Double) => Double,
+      row: Int,
+      column: Int): Unit =
+
+    if (row < target.length) {
+      if (column >= target(row).length) {
+        combineEachInto(target, other, operator, row + 1, 0)
+      } else {
+        target(row)(column) = operator(target(row)(column), other(row)(column))
+        combineEachInto(target, other, operator, row, column + 1)
+      }
+    }
 
   //-------------------------------------------------------------------------
   /**
@@ -419,11 +615,11 @@ final class DoubleMatrix private (
    * Returns an instance with the value at the specified row and column changed.
    *
    * The new value is compared with the stored one by bit pattern, so replacing a value with the
-   * one already there answers with this instance rather than with a copy. Otherwise the row that
-   * changes is cloned and the new value written into the clone, which is what keeps this matrix
-   * unchanged - a stored row is never modified - and the constructor then copies every row, so
-   * the result shares no storage with this matrix at all. The name is that of the Java original,
-   * which is a reserved word here and so is written in backquotes.
+   * one already there answers with this instance rather than with a copy. Otherwise the rows are
+   * deep-copied by the constructor and the new value is written into that copy, which is what
+   * keeps this matrix unchanged - a stored row is never modified - so the result shares no
+   * storage with this matrix at all. The name is that of the Java original, which is a reserved
+   * word here and so is written in backquotes.
    *
    * This instance is immutable and unaffected by this method.
    *
@@ -437,11 +633,7 @@ final class DoubleMatrix private (
     if (DoubleMatrix.bitsOf(array(row)(column)) == DoubleMatrix.bitsOf(newValue)) {
       this
     } else {
-      val result = array.clone()
-      val changed = result(row).clone()
-      changed(column) = newValue
-      result(row) = changed
-      new DoubleMatrix(result, rowCount, columnCount)
+      rewritten(new DoubleMatrix.SetAt(row, column, newValue))
     }
 
   //-------------------------------------------------------------------------
@@ -463,7 +655,7 @@ final class DoubleMatrix private (
     if (factor == 1d) {
       this
     } else {
-      DoubleMatrix.tabulate(rowCount, columnCount)((row, column) => array(row)(column) * factor)
+      rewritten(new DoubleMatrix.ScaledBy(factor))
     }
 
   /**
@@ -480,8 +672,7 @@ final class DoubleMatrix private (
    * @param operator  the operator to apply to each value
    * @return a copy of this matrix with the operator applied to each element
    */
-  def map(operator: Double => Double): DoubleMatrix =
-    DoubleMatrix.tabulate(rowCount, columnCount)((row, column) => operator(array(row)(column)))
+  def map(operator: Double => Double): DoubleMatrix = rewritten(new DoubleMatrix.Mapped(operator))
 
   /**
    * Returns an instance with an operation applied to each indexed element of this matrix.
@@ -506,8 +697,7 @@ final class DoubleMatrix private (
    * @return a copy of this matrix with the function applied to each element
    */
   def mapWithIndex(function: DoubleMatrix.ElementFunction): DoubleMatrix =
-    DoubleMatrix.tabulate(rowCount, columnCount)((row, column) =>
-      function(row, column, array(row)(column)))
+    rewritten(new DoubleMatrix.MappedWithIndex(function))
 
   //-------------------------------------------------------------------------
   /**
@@ -526,8 +716,7 @@ final class DoubleMatrix private (
    */
   def plus(other: DoubleMatrix): DoubleMatrix = {
     ArgCheck.isTrue(sameShapeAs(other), DoubleMatrix.differentSizes)
-    DoubleMatrix.tabulate(rowCount, columnCount)((row, column) =>
-      array(row)(column) + other.array(row)(column))
+    rewritten(new DoubleMatrix.PlusEach(other))
   }
 
   /**
@@ -546,8 +735,7 @@ final class DoubleMatrix private (
    */
   def minus(other: DoubleMatrix): DoubleMatrix = {
     ArgCheck.isTrue(sameShapeAs(other), DoubleMatrix.differentSizes)
-    DoubleMatrix.tabulate(rowCount, columnCount)((row, column) =>
-      array(row)(column) - other.array(row)(column))
+    rewritten(new DoubleMatrix.MinusEach(other))
   }
 
   /**
@@ -571,8 +759,7 @@ final class DoubleMatrix private (
    */
   def combine(other: DoubleMatrix, operator: (Double, Double) => Double): DoubleMatrix = {
     ArgCheck.isTrue(sameShapeAs(other), DoubleMatrix.differentSizes)
-    DoubleMatrix.tabulate(rowCount, columnCount)((row, column) =>
-      operator(array(row)(column), other.array(row)(column)))
+    rewritten(new DoubleMatrix.CombinedWith(other, operator))
   }
 
   // whether the other matrix has the same number of rows and the same number of columns
@@ -788,13 +975,80 @@ final class DoubleMatrix private (
  */
 object DoubleMatrix {
 
+  //-------------------------------------------------------------------------
+  // The construction routes of this type: which storage the sole constructor is to produce, and
+  // which operation it is to apply to that storage before the matrix is published.
+  //
+  // These are internal to the package - the two specs of this package name them, and nothing else
+  // does - and they exist so that an operation producing a matrix costs one rectangle instead of
+  // two. Building a rectangle and handing it over cost that rectangle plus the deep copy the
+  // constructor makes of it; naming the operation instead lets the constructor produce the
+  // storage itself and rewrite it in place, so the deep copy IS the result rectangle.
+  //
+  // Three properties of the family are deliberate, and each is a property of the compiled form
+  // rather than of a convention:
+  //
+  //   - no descriptor carries rows. Each carries a scalar, a position, a callback, or another
+  //     matrix; a descriptor holding an `Array[Array[Double]]` would publish an accessor handing
+  //     those rows out, which for a binary operation is another matrix's storage, and the
+  //     aliasing this type does not have would be back;
+  //   - a descriptor selects a loop and nothing else. The constructor matches once per matrix
+  //     constructed, and the loop it selects is that operation's own row-major loop, so the
+  //     dispatch is one type test per operation rather than a virtual call per element;
+  //   - no descriptor can make the constructor keep the rows it is handed. Every branch of the
+  //     field initialiser produces storage - the companion's deep copy of the argument - so any
+  //     caller the bytecode admits, in any language, that reaches the constructor with rows it
+  //     retains gets a matrix that copied them. There is no adopting route to reach, and so none
+  //     to defend.
+  //
+  // They are declared ahead of `EMPTY` because that value constructs through this family, and a
+  // `val` of an object is initialised in the order the object declares it.
+  private[array] sealed abstract class Rewrite
+
+  // Keep the rows as they are: the storage is the deep copy of what the constructor was handed.
+  // This is the route of every factory, and of the shared empty instance.
+  private[array] final class NoRewrite extends Rewrite
+
+  // Replace the element at one position, which is what `with` produces.
+  private[array] final class SetAt(val row: Int, val column: Int, val newValue: Double)
+      extends Rewrite
+
+  // Multiply every element by the factor, which is what `multipliedBy` produces.
+  private[array] final class ScaledBy(val factor: Double) extends Rewrite
+
+  // Apply the operator to every element, which is what `map` produces.
+  private[array] final class Mapped(val operator: Double => Double) extends Rewrite
+
+  // Apply the callback to every positioned element, which is what `mapWithIndex` produces.
+  private[array] final class MappedWithIndex(val function: ElementFunction) extends Rewrite
+
+  // Add the matching element of the other matrix to every element, which is what `plus` produces.
+  // The other matrix is carried whole rather than as its rows, which is what keeps this
+  // descriptor from having rows to hand out.
+  private[array] final class PlusEach(val other: DoubleMatrix) extends Rewrite
+
+  // Subtract the matching element of the other matrix from every element, which is what `minus`
+  // produces.
+  private[array] final class MinusEach(val other: DoubleMatrix) extends Rewrite
+
+  // Combine every element with the matching element of the other matrix, which is what `combine`
+  // produces.
+  private[array] final class CombinedWith(
+      val other: DoubleMatrix,
+      val operator: (Double, Double) => Double) extends Rewrite
+
+  // The one route that carries nothing is a single instance, so naming it costs no allocation:
+  // every factory of this type names it.
+  private[array] val NoRewrite: NoRewrite = new NoRewrite
+
+  //-------------------------------------------------------------------------
   /**
    * An empty matrix.
    *
    * It has no rows, no columns and no elements. Every factory that has no elements to produce
    * answers with this instance, so the common empty result costs no allocation.
    */
-  val EMPTY: DoubleMatrix = new DoubleMatrix(new Array[Array[Double]](0), 0, 0)
+  val EMPTY: DoubleMatrix = new DoubleMatrix(new Array[Array[Double]](0), 0, 0, NoRewrite)
 
   // The message reported when two matrices that have to match in shape do not. One definition
   // keeps it identical at every site, and identical to the message of the Java original, which
@@ -968,7 +1222,7 @@ object DoubleMatrix {
         case other =>
           fillFromElements(result, other.iterator, columns, 0)
       }
-      new DoubleMatrix(result, rows, columns)
+      new DoubleMatrix(result, rows, columns, NoRewrite)
     }
   }
 
@@ -1032,8 +1286,11 @@ object DoubleMatrix {
    * a function together; as a named member it says what it does, and it is the member a caller
    * reaches for in place of building an array of rows and wrapping it.
    *
-   * Every element-wise operation of this type is expressed in terms of this factory, so the
-   * row-major traversal that the numerical parity of the port depends on is defined here alone.
+   * This is the factory `transpose` and the shape-driven constructions of this type build
+   * through. The element-wise operations, whose result has the shape of the matrix they are
+   * called on, do not: each has the constructor produce the rectangle and rewrite it in place,
+   * which is one allocation rather than two, and each walks its elements in the same row-major
+   * order this factory fills them in - the order the numerical parity of the port depends on.
    *
    * @param rows  the number of rows, zero or greater
    * @param columns  the number of columns, zero or greater
@@ -1047,7 +1304,7 @@ object DoubleMatrix {
     if (rows == 0 || columns == 0) {
       EMPTY
     } else {
-      new DoubleMatrix(build(rows, columns, valueFunction), rows, columns)
+      new DoubleMatrix(build(rows, columns, valueFunction), rows, columns, NoRewrite)
     }
   }
 
@@ -1117,7 +1374,7 @@ object DoubleMatrix {
     } else {
       val result = new Array[Array[Double]](rows)
       fillFromArrays(result, columns, valuesFunction, 0)
-      new DoubleMatrix(result, rows, columns)
+      new DoubleMatrix(result, rows, columns, NoRewrite)
     }
   }
 
@@ -1167,7 +1424,7 @@ object DoubleMatrix {
     } else {
       val result = new Array[Array[Double]](rows)
       fillFromArrayObjects(result, columns, valuesFunction, 0)
-      new DoubleMatrix(result, rows, columns)
+      new DoubleMatrix(result, rows, columns, NoRewrite)
     }
   }
 
@@ -1271,7 +1528,7 @@ object DoubleMatrix {
       // rows are not is refused here, where the other order would answer with the empty matrix.
       // Building the value and then answering with the shared empty instance costs the copy of
       // an array of empty rows, which is the price of deciding in that order.
-      val copied = new DoubleMatrix(array, rows, array(0).length)
+      val copied = new DoubleMatrix(array, rows, array(0).length, NoRewrite)
       if (copied.columnCount == 0) {
         EMPTY
       } else {
@@ -1316,7 +1573,7 @@ object DoubleMatrix {
     if (rows == 0 || columns == 0) {
       EMPTY
     } else {
-      new DoubleMatrix(rectangle(rows, columns), rows, columns)
+      new DoubleMatrix(rectangle(rows, columns), rows, columns, NoRewrite)
     }
   }
 
@@ -1337,7 +1594,7 @@ object DoubleMatrix {
     } else {
       val result = rectangle(rows, columns)
       fillWith(result, value, 0)
-      new DoubleMatrix(result, rows, columns)
+      new DoubleMatrix(result, rows, columns, NoRewrite)
     }
   }
 
@@ -1407,7 +1664,7 @@ object DoubleMatrix {
   private def diagonalMatrix(size: Int, valueFunction: Int => Double): DoubleMatrix = {
     val result = rectangle(size, size)
     fillDiagonal(result, valueFunction, 0)
-    new DoubleMatrix(result, size, size)
+    new DoubleMatrix(result, size, size, NoRewrite)
   }
 
   // sets each diagonal element from the index upwards from the function, in row order

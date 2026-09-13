@@ -5261,7 +5261,17 @@ dumps = dict(argument.split("=", 1) for argument in sys.argv[2:])
 #                  primitive arrays, which the specification's list does not
 #                  enumerate one by one. They are roots because Rule 3 is
 #                  about inner loops over `Array[Double]`, and these are
-#                  inner loops over `Array[Double]`.
+#                  inner loops over `Array[Double]`. The CONSTRUCTOR of each
+#                  of the two numeric classes is a root here too, under the
+#                  simple class name, which is the name javap's declaration
+#                  line gives it: each class produces the storage it keeps in
+#                  its constructor and applies the operation's own in-place
+#                  loop to that storage there, so those loops are reached
+#                  from the constructor and from nowhere else. The graph
+#                  cannot walk to it - javap prints a constructor call as
+#                  `"<init>"`, which matches no declaration - so naming it as
+#                  a root is what puts its body, and the loops it reaches,
+#                  inside the audit.
 #   `helpers`      the private loop bodies the operations delegate to. Each
 #                  is asserted individually: the call graph must REACH it, so
 #                  a delegation the graph cannot see fails the row.
@@ -5273,13 +5283,14 @@ INVENTORY = {
         "hot": ["plus", "minus", "multipliedBy", "dividedBy", "map", "mapWithIndex", "combine",
                 "reduce", "sum", "min", "max", "equalWithTolerance", "tabulate"],
         "elementwise": ["combineReduce", "equalZeroWithTolerance", "sorted", "concat", "subArray",
-                        "with", "get", "contains", "indexOf", "lastIndexOf", "forEach", "toArray"],
+                        "with", "get", "contains", "indexOf", "lastIndexOf", "forEach", "toArray",
+                        "DoubleArray"],
         "helpers": ["plusInto", "minusInto", "scaledInto", "mapInto", "mapWithIndexInto",
                     "plusEachInto", "minusEachInto", "multipliedByEachInto", "dividedByEachInto",
                     "combineEachInto", "ternaryFoldFrom", "minFrom", "maxFrom", "sumFrom",
                     "reduceFrom", "concatArray", "firstIndexOfFrom", "lastIndexOfFrom",
-                    "forEachFrom"],
-        "floor": 30,
+                    "forEachFrom", "rewritten"],
+        "floor": 56,
     },
     "DoubleArray$": {
         "hot": ["tabulate"],
@@ -5290,9 +5301,11 @@ INVENTORY = {
     "DoubleMatrix": {
         "hot": ["plus", "minus", "multipliedBy", "map", "mapWithIndex", "combine", "reduce",
                 "total", "transpose", "tabulate"],
-        "elementwise": ["row", "column", "get", "with", "forEach", "toArray"],
-        "helpers": ["reduceFrom", "totalFrom", "forEachFrom", "columnCopy", "fillColumn"],
-        "floor": 20,
+        "elementwise": ["row", "column", "get", "with", "forEach", "toArray", "DoubleMatrix"],
+        "helpers": ["reduceFrom", "totalFrom", "forEachFrom", "columnCopy", "fillColumn",
+                    "rewritten", "scaledInto", "mapInto", "mapWithIndexInto", "plusEachInto",
+                    "minusEachInto", "combineEachInto"],
+        "floor": 37,
     },
     "DoubleMatrix$": {
         "hot": ["tabulate"],
