@@ -336,7 +336,17 @@ lazy val commonSettings = Seq(
     "org.typelevel" %% "cats-effect" % catsEffectVersion,
     "io.circe" %% "circe-core" % circeVersion,
     "io.circe" %% "circe-generic" % circeVersion,
-    "io.circe" %% "circe-parser" % circeVersion,
+    // circe-parser is Test-scope, which for this one coordinate is a deliberate
+    // divergence from AAP §0.5.1's "both, Compile", recorded as row 17 of
+    // SCALA_MIGRATION.md section (g). The codecs are written against circe-core and
+    // derived by circe-generic, and neither module's main sources read JSON - the demo
+    // encodes only - while 43 test sources import `io.circe.parser`. Compile scope
+    // therefore put circe-parser, and through it circe-jawn and jawn-parser, on both
+    // modules' Compile classpaths, where no source of this build resolves anything from
+    // them and where a consumer of the two published libraries would inherit all three.
+    // Declaring it Test keeps every test that parses a fixture or a round-trip
+    // compiling, and leaves both Compile classpaths at circe-core and circe-generic.
+    "io.circe" %% "circe-parser" % circeVersion % Test,
     "org.scalatest" %% "scalatest" % scalaTestVersion % Test,
     "org.scalacheck" %% "scalacheck" % scalaCheckVersion % Test,
     "org.scalatestplus" %% "scalacheck-1-20" % scalaTestPlusVersion % Test,

@@ -17,6 +17,7 @@ import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.TimeoutException
 
 import scala.concurrent.duration.DurationInt
@@ -55,9 +56,19 @@ import com.opengamma.strata.collect.result.Failure
  * How much a source may yield is only one of the two ways it can cost this process without
  * limit; how long it may take to yield it is the other, and it is bounded as well. The whole
  * of a managed read - the open, the read and the decode - is given two minutes, for the
- * reasons set out at `ReadTimeLimit`, and a read that outlasts that is abandoned with a
+ * reasons set out at `ReadTimeLimit`, and a caller whose read outlasts that is freed with a
  * failure naming the source and the bound. Nothing legitimate this module reads comes close to
  * it; what it bounds is a source that has stopped making progress.
+ *
+ * A bound on how long a caller waits is not by itself a bound on what a stalled read costs
+ * this process, and the sources whose waiting cannot be ended at all are answered before they
+ * are opened rather than by that bound: '''neither reader opens a source of the file system
+ * that is not a regular file'''. A directory, a named pipe, a socket and a device are refused
+ * with a failure naming the source - by the file reader for the path it is given, and by the
+ * classpath reader for a name it resolved onto the file system, which is what a classpath
+ * resolves a name onto; a location under a protocol this object cannot interpret is opened as
+ * it always was, as `locationRefusal` records. The section on cancellation below sets out why
+ * the open in particular has to be answered that way and what is left over once it is.
  *
  * ===The decode is strict===
  *
@@ -82,11 +93,13 @@ import com.opengamma.strata.collect.result.Failure
  * of the classpath rather than content, so it is refused as a name instead of handed back as
  * text. A source the platform refuses to open, and a path the platform declines to interpret at
  * all, fail with a [[java.io.IOException]] naming the source and what the platform reported; a
- * source beyond the ceiling and text that is not valid UTF-8 each fail with a
- * [[java.io.IOException]] that explains which of the two it was; and a read that does not
- * complete inside the time bound described below fails with a [[java.io.IOException]] naming
- * the source and that bound. Neither reader ever substitutes a sentinel or empty text for
- * content.
+ * path the platform describes as something other than a regular file fails with a
+ * [[java.io.IOException]] of this object's own, naming the source, saying what the platform
+ * described it as and why only a regular file is opened; a source beyond the ceiling and text
+ * that is not valid UTF-8 each fail with a [[java.io.IOException]] that explains which of the
+ * two it was; and a read that does not complete inside the time bound described below fails
+ * with a [[java.io.IOException]] naming the source and that bound. Neither reader ever
+ * substitutes a sentinel or empty text for content.
  *
  * Every one of those messages names its source in a '''bounded, single-line''' form, produced
  * by `Failure.renderDiagnostic` - the one renderer these two modules hold for text on its
@@ -113,8 +126,8 @@ import com.opengamma.strata.collect.result.Failure
  * cancelled while it waits on a source releases its handle only once the blocked call returns,
  * and a source that never yields never returns it: the read holds a thread of the blocking pool
  * and a descriptor of this process indefinitely, and no cancellation of it can be prompt
- * (CWE-400, CWE-772). Three mechanisms together make it prompt, and each of them answers a
- * different part of that:
+ * (CWE-400, CWE-772). Four mechanisms together answer that, and each of them answers a
+ * different part of it:
  *
  *  1. '''The blocking is interruptible.''' Both acquisitions and the read itself are lifted
  *     with `IO.interruptible` and `IO.interruptibleMany` rather than with ordinary blocking, so
@@ -129,12 +142,38 @@ import com.opengamma.strata.collect.result.Failure
  *     interrupt entirely. Release still owns the close on every ordinary outcome; the close on
  *     this path tolerates finding a stream that is already closed.
  *  1. '''The read has a time bound.''' A read that neither completes nor is cancelled is
- *     abandoned after two minutes, so a caller that never cancels is bounded as well. The
- *     bound is applied with `timeoutAndForget` rather than `timeout`: `timeout` waits for the
- *     read it has cancelled to finish, which is a wait on precisely the source the bound exists
- *     for. Forgetting the read lets the failure arrive on time, and the read that was forgotten
- *     still gives its handle back, because release runs for a cancelled use and a cancelled
- *     acquisition alike.
+ *     abandoned after two minutes, so a '''caller''' that never cancels is not made to wait on
+ *     a source that has stopped making progress. The bound is applied with `timeoutAndForget`
+ *     rather than `timeout`: `timeout` waits for the read it has cancelled to finish, which is
+ *     a wait on precisely the source the bound exists for. Forgetting the read lets the failure
+ *     arrive on time, and the read that was forgotten still gives its handle back, because
+ *     release runs for a cancelled use and a cancelled acquisition alike. What the bound does
+ *     '''not''' do is reclaim a thread: an abandoned read that is inside a call the platform
+ *     will not interrupt stays there, which is what the mechanism below is for.
+ *  1. '''Neither reader opens a source of a kind whose open waits.''' The three mechanisms
+ *     above all act on a call that is already running, and the one call none of them reaches is
+ *     the '''open''': it happens in the acquisition, which cats-effect runs uncancelable, and
+ *     for a source that is not a regular file the platform defines the open itself to wait - a
+ *     named pipe waits for a writer, a socket for a peer, some devices for data - in a native
+ *     call that a thread interrupt does not abort. So each reader asks what the source is
+ *     before it opens anything, with the one call that answers immediately for every kind of
+ *     source, and refuses what is not a regular file: the file reader describes the path
+ *     (`regularFileStream`) and the classpath reader asks the same of a location it resolved on
+ *     the file system (`locationRefusal`). The kinds of source whose open is designed to wait
+ *     are therefore refused before the uninterruptible acquisition begins, rather than met
+ *     inside it.
+ *
+ * What remains after all four is worth stating plainly rather than leaving to be discovered. A
+ * '''regular''' file on a file system that stops answering, and a path replaced between the
+ * moment it was described and the moment it was opened, can each still hold one thread of the
+ * blocking pool for as long as the platform takes to return from that open. In both of those
+ * the caller is still freed at the time bound, what is held is the single thread that read's
+ * own open is waiting in, and the descriptor is still never leaked: there is none until the
+ * open returns, and when it returns the pairing with release closes it even though the use it
+ * was acquired for was abandoned long before. A caller's own bound cannot be shorter than such
+ * an open either, because acquisition is uncancelable by design, and that is the exchange which
+ * guarantees the handle comes back at all: a read whose acquisition could be cancelled part way
+ * through could be cancelled between obtaining a descriptor and pairing it with its close.
  *
  * ===What a read costs===
  *
@@ -157,15 +196,21 @@ import com.opengamma.strata.collect.result.Failure
  * at roughly 12.7 MiB, so for the reads this object exists to serve the floor is about one
  * percent of the work.
  *
- * That floor '''is''' the three mechanisms set out just above, and it is paid for nothing else.
+ * That floor '''is''' the mechanisms set out just above, and it is paid for nothing else.
  * Interruptible blocking is what lets a cancellation end a call that is waiting; the fiber is
  * what lets a cancellation reclaim the handle without waiting for that call; the timer is what
- * bounds a source that never yields. A read without them would be a shade quicker and could not
- * be cancelled promptly nor bounded at all, and this object reads fixtures and demonstration
- * text - work measured in tens of reads, not in millions - so the exchange is settled here once
- * for both readers rather than offered as a choice. A caller reads whole text from a named
- * source and pays a bounded, cancelable read for it; there is no second, cheaper reader to
- * choose, and the two-member surface above is deliberate.
+ * bounds how long a caller waits on a source that has stopped making progress; and describing
+ * the source before opening it is what keeps an open that cannot be interrupted out of the
+ * acquisition. The last of those is the only one that costs no scheduling: the description and
+ * the open are one call after another inside the hop the acquisition already pays, so what it
+ * adds to a read is one system call rather than a hop, and the figures above - measured before
+ * it - do not resolve it. A read without any of them would be a shade quicker and could not be
+ * cancelled promptly, bounded at all, nor kept away from a source whose open never returns, and
+ * this object reads fixtures and demonstration text - work measured in tens of reads, not in
+ * millions - so the exchange is settled here once for both readers rather than offered as a
+ * choice. A caller reads whole text from a named source and pays a bounded, cancelable read for
+ * it; there is no second, cheaper reader to choose, and the two-member surface above is
+ * deliberate.
  *
  * The scope is deliberately narrow. The byte and character source hierarchy of the
  * original, its locator value type together with the prefixed forms ("classpath:",
@@ -194,10 +239,20 @@ object Resources {
    * The longest either reader waits for a source to be opened, read and decoded: two minutes.
    *
    * The ceiling above bounds how much a source may yield; this bounds how long it may take to
-   * yield it, which is the other way a source can cost this process without limit. A named
-   * pipe, a device, a stream whose other end has stopped writing without closing: each of them
-   * leaves a read waiting for data that may never arrive, and without a bound that read holds a
-   * thread of the blocking pool and a handle of this process for as long as the source chooses.
+   * yield it, which is the other way a source can cost this process without limit. A stream
+   * whose other end has stopped writing without closing, a file system that has stopped
+   * answering: each of them leaves a read waiting for data that may never arrive, and without a
+   * bound the '''caller''' of that read waits with it for as long as the source chooses.
+   *
+   * What the bound delivers is exactly that: the caller is not held. It is applied with
+   * `timeoutAndForget`, so the failure arrives at the bound whatever the source is doing, and
+   * the handle of the abandoned read still comes back, because release runs for a cancelled use
+   * and a cancelled acquisition alike. It does not recover the '''thread''' of a read stalled
+   * in a call the platform will not interrupt, and it is not the mechanism that answers the
+   * sources whose blocking cannot be ended - those are refused before they are opened, by the
+   * fourth mechanism described at the head of this object, which also records what is left
+   * over. Two minutes therefore bounds how long a caller waits on a source that stopped making
+   * progress part way through a read this object had begun.
    *
    * Two minutes is chosen the same way the byte ceiling is - far above any legitimate read, so
    * that the bound can only ever be reached by a source that has stopped making progress. The
@@ -256,6 +311,13 @@ object Resources {
    * resolved against the working directory of the process. The file is opened once, read
    * under the same ceiling as a classpath resource, and closed on every outcome.
    *
+   * What is read is a '''regular file'''. The path is described before it is opened, and a
+   * path the platform describes as anything else - a directory, a named pipe, a socket, a
+   * device - fails the effect instead of being opened, because the open of such a source is
+   * defined to wait and that wait cannot be interrupted; `regularFileStream` sets out the
+   * reasoning and what the description cannot promise. Nothing a caller can name that the
+   * platform calls a regular file is narrowed by that, symbolic links being followed.
+   *
    * @param path  the path of the file to read
    * @return the content of the file decoded as UTF-8; the effect fails with a
    *         [[java.io.IOException]] whose message names the file in the bounded,
@@ -263,9 +325,9 @@ object Resources {
    *         reported as its '''cause''' - for an absent file that cause is
    *         [[java.nio.file.NoSuchFileException]], and for a path the platform declines to
    *         interpret it is the rejection of the path itself - and with a
-   *         [[java.io.IOException]] of this object's own for a source beyond the 64 MiB
-   *         ceiling, for text that is not valid UTF-8, and for a read that outlasts the
-   *         time bound
+   *         [[java.io.IOException]] of this object's own for a path that is not a regular
+   *         file, for a source beyond the 64 MiB ceiling, for text that is not valid UTF-8,
+   *         and for a read that outlasts the time bound
    */
   def readFileText(path: String): IO[String] = {
     // Rendered once, as on the classpath side, and passed to the acquisition so that the
@@ -290,19 +352,22 @@ object Resources {
   /**
    * Reads one source to its end, under a ceiling and under the time bound, and decodes it.
    *
-   * This is where the three mechanisms of the cancellation protocol described at the head of
-   * this object meet: the acquisition and the read it wraps are interruptible, the read runs
-   * on a fiber whose cancellation closes the stream before it waits for the reader, and the
-   * whole managed read is given the time bound. The bound is applied '''outside''' the
+   * This is where three of the four mechanisms of the cancellation protocol described at the
+   * head of this object meet: the acquisition and the read it wraps are interruptible, the read
+   * runs on a fiber whose cancellation closes the stream before it waits for the reader, and
+   * the whole managed read is given the time bound. The bound is applied '''outside''' the
    * pairing with release, so that expiring it cancels the use and the acquisition together and
-   * therefore reclaims the handle.
+   * therefore reclaims the handle. The fourth mechanism sits in the acquisitions this is handed
+   * rather than here, because what it answers is the open and not the read.
    *
    * `timeoutAndForget` rather than `timeout`: `timeout` cancels the read and then '''waits'''
-   * for that cancellation to finish, which on the one source this bound exists for - a source
-   * that never yields - is a wait on exactly the read that is not returning. Forgetting the
-   * read instead makes the failure arrive at the bound whatever the source does. The forgotten
-   * read is not abandoned: its cancellation continues in the background, and release runs on a
-   * cancelled use and a cancelled acquisition alike, so the stream is still closed.
+   * for that cancellation to finish, which on the source this bound exists for - one that has
+   * stopped making progress - is a wait on exactly the read that is not returning. Forgetting
+   * the read instead makes the failure arrive at the bound whatever the source does, which is
+   * what makes the bound a bound '''for the caller''': the caller is freed at it, and the
+   * forgotten read is not thereby recovered. That read is not dropped either: its cancellation
+   * continues in the background, and release runs on a cancelled use and a cancelled
+   * acquisition alike, so the stream is still closed.
    *
    * @param source  how the source is named in a failure message, already rendered
    * @param open  the acquisition of the stream to read
@@ -318,8 +383,9 @@ object Resources {
           IO.raiseError(
             new IOException(
               s"$source did not complete within $ReadTimeLimit, so the read was abandoned; " +
-                "the bound exists so that a source which never yields cannot hold a thread " +
-                "and a handle of this process for as long as it chooses",
+                "the bound exists so that a source which has stopped making progress cannot " +
+                "make its caller wait for as long as it chooses, and the handle of the " +
+                "abandoned read is given back",
               expired))
         case other => IO.raiseError(other)
       }
@@ -396,8 +462,8 @@ object Resources {
    * The order of the two steps is what keeps the wrapping right: the lookup and the open are
    * one interruptible region, so anything the platform raises inside it - a location it
    * declines to interpret, an open it refuses - becomes the wrapped `unopenable` failure,
-   * while the two refusals this object decides for itself are raised afterwards from the
-   * `Either` that region yields and so carry their own wording unwrapped.
+   * while the refusals this object decides for itself are raised afterwards from the `Either`
+   * that region yields and so carry their own wording unwrapped.
    *
    * @param rendered  the resource name in its bounded, single-line rendering, for the message
    * @param name  the same name as a class loader expects it, for the lookup itself
@@ -421,7 +487,10 @@ object Resources {
    * back would turn a mistyped name into a parse failure of the text it was given instead of a
    * refusal of the name, and would publish the shape of the classpath along the way (CWE-209).
    * This object's contract is the classpath subset that names files, so a name outside it is
-   * refused here, where the absent name is refused, rather than read.
+   * refused here, where the absent name is refused, rather than read - and a location of a kind
+   * whose open would '''wait''' is refused here too, for the reason `regularFileStream` gives,
+   * so neither reader of this object issues an open against a source the platform has just
+   * described as something other than a regular file.
    *
    * The location is resolved once and the stream is opened from it, which is what the class
    * loader's own combined lookup-and-open does internally: an ordinary read therefore costs
@@ -441,44 +510,74 @@ object Resources {
   private def classpathEntry(rendered: String, name: String): Either[String, InputStream] =
     Option(classLoader.getResource(name)) match {
       case None => Left(s"Classpath resource absent: $rendered")
-      case Some(located) if denotesDirectory(located) =>
-        Left(s"Classpath resource is a directory rather than a file: $rendered")
-      case Some(located) => Right(located.openStream())
+      case Some(located) =>
+        locationRefusal(rendered, located) match {
+          case Some(refusal) => Left(refusal)
+          case None => Right(located.openStream())
+        }
     }
 
   /**
-   * Decides whether a resolved classpath location denotes a directory, by asking the one
+   * Decides whether a resolved classpath location can be read as a file, by asking the one
    * question each protocol can actually answer.
    *
-   * A location carries the protocol that produced it, and only the protocol knows what a
-   * directory is:
+   * A location carries the protocol that produced it, and only the protocol knows what it has
+   * resolved to:
    *
-   *  1. A location on the file system is a path, so the file system is asked directly.
+   *  1. A location on the file system is a path, so the file system is asked directly - and it
+   *     is asked the same question the file reader asks, because a classpath that resolves a
+   *     name onto a directory can resolve one onto a source of some other kind too, and the
+   *     open of such a source waits for the reasons set out at `regularFileStream`. A
+   *     directory is refused as the directory it is, since that is what a mistyped fixture
+   *     name resolves to; a location that is neither a directory nor a regular file is
+   *     refused as not being one.
    *  1. A location inside an archive is an entry, and an archive marks a directory entry as
    *     such. The entry is read through [[java.net.JarURLConnection]], the connection type this
    *     protocol produces, whose own lookup resolves a name without a trailing separator onto
    *     the directory entry that carries one - which is precisely the name a caller would have
-   *     mistyped.
+   *     mistyped. An entry of an archive is a span of bytes of that archive rather than a
+   *     source of the platform's own, so an open of it waits for nothing and the kind question
+   *     does not arise.
    *  1. Any other protocol is one this object cannot interpret, and a guess about it would
    *     refuse a location that reads perfectly well. Such a location is therefore accepted and
    *     opened, and if the open or the read then fails it fails as it would have before.
+   *
+   * The two predicates asked of a file location are the non-raising ones rather than the
+   * description `regularFileStream` takes, which is deliberate: each of them answers false for
+   * a location it cannot describe instead of raising, so a location this object has no reading
+   * of is still opened exactly as it was before, and the leniency of this side is unchanged.
+   * The file reader cannot use them, because it has to tell an absent path apart from a path
+   * of the wrong kind and only the description does that.
    *
    * The connection is only asked for its entry and never for its own stream, so nothing is
    * opened that the caller would have to close: the stream a read owns is opened once, by the
    * acquisition above, and closed by the pairing that owns it.
    *
+   * @param rendered  the resource name in its bounded, single-line rendering, for the message
    * @param located  the location a class loader resolved the resource name to
-   * @return whether that location denotes a directory rather than a readable file
+   * @return the message of the refusal to raise in its place, or nothing where the location
+   *         can be read as a file
    */
-  private def denotesDirectory(located: URL): Boolean =
+  private def locationRefusal(rendered: String, located: URL): Option[String] =
     located.getProtocol match {
-      case "file" => Files.isDirectory(Paths.get(located.toURI))
+      case "file" =>
+        val location = Paths.get(located.toURI)
+        if (Files.isDirectory(location)) {
+          Some(s"Classpath resource is a directory rather than a file: $rendered")
+        } else if (Files.isRegularFile(location)) {
+          None
+        } else {
+          Some(s"Classpath resource is not a regular file: $rendered")
+        }
       case "jar" =>
         located.openConnection() match {
-          case archive: JarURLConnection => Option(archive.getJarEntry).exists(_.isDirectory)
-          case _ => false
+          case archive: JarURLConnection =>
+            Option(archive.getJarEntry)
+              .filter(_.isDirectory)
+              .map(_ => s"Classpath resource is a directory rather than a file: $rendered")
+          case _ => None
         }
-      case _ => false
+      case _ => None
     }
 
   /**
@@ -489,12 +588,87 @@ object Resources {
    * the file system being touched at all, and that rejection is as caller-controlled as any
    * other: it is wrapped exactly like a refused open.
    *
+   * The order of the steps is the same as on the classpath side and keeps the wrapping right:
+   * the interpretation, the description of the source and the open are one interruptible
+   * region, so anything the platform raises inside it - a path it declines to interpret, a
+   * path it holds nothing at, an open it refuses - becomes the wrapped `unopenable` failure,
+   * while the refusal this object decides for itself is raised afterwards from the `Either`
+   * that region yields and so carries its own wording unwrapped.
+   *
    * @param rendered  the path in its bounded, single-line rendering, for the message
    * @param path  the path to interpret and open, exactly as it was supplied
    */
   private def openFileStream(rendered: String, path: String): IO[InputStream] =
-    IO.interruptible(Files.newInputStream(Paths.get(path)))
+    IO.interruptible(regularFileStream(rendered, path))
       .handleErrorWith(cause => IO.raiseError(unopenable(fileSource(rendered), cause)))
+      .flatMap {
+        case Right(stream) => IO.pure(stream)
+        case Left(refusal) => IO.raiseError(new IOException(refusal))
+      }
+
+  /**
+   * Describes a path and opens it only where the platform describes a '''regular file''', or
+   * says why it was not opened.
+   *
+   * This is the one question that has to be asked '''before''' the open rather than after it,
+   * and the reason is the difference between the two calls. Describing a path is `stat`, which
+   * answers about the entry itself and returns whatever kind of source it names; opening one is
+   * `open`, and for a source that is not a regular file `open` is defined to '''wait''' - a
+   * named pipe with no writer waits for one, a socket waits for a peer, some devices wait for
+   * data - and that wait is in a native call that a thread interrupt does not abort. An open
+   * of that kind is therefore unbounded in a way no bound of this object can shorten, because
+   * acquisition is uncancelable by design, so the source is refused here instead, where the
+   * question costs one `stat` and answers immediately whatever kind of source it is.
+   *
+   * What that narrows is only the '''kind''' of source, not which files a caller may name. A
+   * regular file is opened wherever the platform reports one, symbolic links being followed,
+   * so a link to a file and a pseudo-file the platform describes as regular read exactly as
+   * they did; a directory, a named pipe, a socket, a device and anything else the platform
+   * calls other than regular are refused with the wording below rather than opened.
+   *
+   * The description and the open are '''not''' atomic, and that race is stated rather than
+   * hidden: a path can be replaced between the two, so a source described as a regular file
+   * can be something else by the time it is opened, and such an open can still wait. What the
+   * pair removes is the case a caller can arrange by choosing a name - which is the whole of
+   * what a reader of caller-supplied paths can remove - and the residual is one open of a
+   * source that was a regular file when it was described. The time bound still frees the
+   * caller in that case, and the residual is recorded at the head of this object.
+   *
+   * @param rendered  the path in its bounded, single-line rendering, for the message
+   * @param path  the path to interpret, describe and open, exactly as it was supplied
+   * @return the opened stream, or the message of the refusal to raise in its place
+   */
+  private def regularFileStream(rendered: String, path: String): Either[String, InputStream] = {
+    val file = Paths.get(path)
+    // `stat` rather than a predicate: a predicate answers false for a path the platform holds
+    // nothing at, which would report an absent file as a refusal of this object's own instead
+    // of as the platform's report carried as a cause.
+    val described = Files.readAttributes(file, classOf[BasicFileAttributes])
+    if (described.isRegularFile) Right(Files.newInputStream(file))
+    else Left(notARegularFile(rendered, described.isDirectory))
+  }
+
+  /**
+   * The refusal of a source that is not a regular file, naming the source and what the
+   * platform described it as.
+   *
+   * A directory is named as one, because that is the mistake a caller is most likely to have
+   * made and it is what the classpath side of this object already says of a name that resolved
+   * to one; every other kind - a named pipe, a socket, a device - is named by what it is not,
+   * since the distinction between them changes nothing about the refusal.
+   *
+   * @param rendered  the path in its bounded, single-line rendering
+   * @param directory  whether the platform described the source as a directory
+   * @return the message of the refusal
+   */
+  private def notARegularFile(rendered: String, directory: Boolean): String = {
+    val described =
+      if (directory) "is a directory rather than a regular file" else "is not a regular file"
+    s"${fileSource(rendered)} $described, so it was not opened; this reader opens regular " +
+      "files only, because the open of a source of another kind - a named pipe with no " +
+      "writer, a socket, some devices - can wait for a peer that never arrives and cannot " +
+      "be interrupted"
+  }
 
   /**
    * How a classpath resource is named in a message, given the rendering of its name.

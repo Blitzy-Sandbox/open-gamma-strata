@@ -10447,8 +10447,9 @@ PUBLICATION_PATHS=(
 scan_publication_artifacts() {
   local phase="$1" paths_mode="$2" files_mode="$3" summary="$4"
   shift 4
-  # The one checksum the repository publishes on purpose, read from the file
-  # that publishes it so that this allowlist cannot drift from it.
+  # Every checksum the repository publishes on purpose - the sbt distribution's
+  # and the pinned base image's - read from the file that publishes them, so
+  # that this allowlist cannot drift from it.
   local published_checksum=""
   if [[ -f .circleci/config.yml ]]; then
     # `|| true` because a configuration that publishes no checksum is not an

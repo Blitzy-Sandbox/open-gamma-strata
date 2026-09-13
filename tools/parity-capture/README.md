@@ -758,10 +758,13 @@ not of the procedure in general, and each says how to check whether it still hol
    consumer of these documents exists and runs (section 4), and `scripts/verify-gates.sh` fails
    when a parity report is missing or carries a failed row — but all of that asserts the port
    against the **committed** documents. CI does rebuild and test the Java modules: `maven_install`
-   (`mvn install -T 4 -DskipTests -Dstrict`) and `maven_test` (`mvn test`) are defined at
-   `.circleci/config.yml:66-80` and run by the `build`, `build11`, `build17` and `build21` jobs
-   (`:245-281`). What no job does is couple that rebuild to a capture: none runs this script or
-   compares a regenerated document with a committed one —
+   (`mvn install -T 4 -DskipTests -Dstrict`) and `maven_test` (`mvn test`) are defined under the
+   `commands:` map of `.circleci/config.yml` and run by the `build`, `build11`, `build17` and
+   `build21` jobs under its `jobs:` map — named rather than numbered for the reason section 0 gives,
+   and printed in that order, the two commands first, by
+   `grep -nE '^  (maven_install|maven_test|build[0-9]*):' .circleci/config.yml`, whose final line is
+   the `build` workflow key rather than a job. What no job does is couple that rebuild to a capture:
+   none runs this script or compares a regenerated document with a committed one —
    `grep -cE '\bmvn\b|jshell|capture-baseline' scripts/verify-gates.sh` is 0, and `scala_build21`
    runs only that script. So a change under `modules/**` that should move a baseline produces green
    gates against the old numbers until someone re-captures. The countermeasure is procedural and

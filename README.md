@@ -119,6 +119,15 @@ Each ported module also has its own README:
 [Strata-Basics (Scala)](strata-basics/README.md) and
 [Strata-Collect (Scala)](strata-collect/README.md).
 
+The sbt build brings its own dependency surface, and the repository's automated dependency updates
+cover the Maven modules only - `.github/dependabot.yml` declares the `maven` ecosystem and does not
+see `build.sbt` or `project/`. Section (h) of the
+[Scala migration note](SCALA_MIGRATION.md) is the dependency review that covers it instead: what is
+under review, when to review it, the commands a review runs, what the last one found, and the
+automated monitoring an owner would add on top. The acceptance gates prove the classpath carries
+nothing it should not; they do not tell you whether a version is current, which is why that review
+is written down and manual.
+
 
 Status
 ------

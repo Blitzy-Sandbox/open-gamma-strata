@@ -40,8 +40,12 @@ This module provides the data structures, the error model and the codec helpers 
   array codecs; products derive at compile time with `io.circe.generic.semiauto`, so nothing on the
   codec path uses reflection
 * io - a minimal `cats-effect` reader for classpath and file text, the module's only main-source use
-  of `cats-effect`; the calculations are pure, bar `ArgCheck`'s fail-fast throws and the `forEach`
-  callbacks of `DoubleArray` and `DoubleMatrix`, which run a caller-supplied action
+  of `cats-effect`. It reads **regular files** only: a path is described before it is opened, and a
+  directory, a named pipe, a socket or a device is refused before the open with an `IOException`
+  naming the source, because the open of a source of another kind can wait for a peer that never
+  arrives and cannot be interrupted. The calculations are pure, bar `ArgCheck`'s fail-fast throws
+  and the `forEach` callbacks of `DoubleArray` and `DoubleMatrix`, which run a caller-supplied
+  action
 
 
 ### Ported subset
@@ -85,6 +89,19 @@ The module is usable and testable on its own, `sbt "strata-collect/test"` runnin
 root `sbt test` runs both projects through the aggregation in `build.sbt`. Its test-scope helpers
 `testkit.TestHelper`, `testkit.ResultMatchers` and `Arbitraries` are shared with the `strata-basics`
 tests through the sbt `test->test` dependency that replaces the former Maven test-jar.
+
+
+### Dependency review
+
+Eleven jars reach this module's Compile classpath - `scala-library`, the five cats and cats-effect
+artifacts with `cats-mtl`, `circe-core`, `circe-generic`, `circe-numbers` and `shapeless` - and
+everything else resolution produces is test-scoped, `circe-parser` among it, since no main source
+here reads JSON. Growing the module in a later slice means adding to that surface, and nothing
+automated watches it: the repository's Dependabot configuration declares the Maven ecosystem alone
+and does not see `build.sbt`. Section (h) of [`SCALA_MIGRATION.md`](../SCALA_MIGRATION.md) is the
+manual dependency and advisory review that covers it - scope, cadence, commands, the last review's
+findings, and the monitoring an owner would add. A new dependency also has to keep Gate 2's purity
+rows green, which forbid Guava, Joda and the Java `strata-collect` artifact on either classpath.
 
 
 ### Source code

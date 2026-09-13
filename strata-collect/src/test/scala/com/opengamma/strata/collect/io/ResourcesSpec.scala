@@ -6,6 +6,7 @@
 package com.opengamma.strata.collect.io
 
 import java.io.ByteArrayOutputStream
+import java.io.Closeable
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
@@ -16,6 +17,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, NoSuchFileException, Path, Paths}
 
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
+import scala.jdk.CollectionConverters._
 import scala.util.Try
 
 import cats.effect.FiberIO
@@ -100,43 +102,58 @@ import org.scalatest.matchers.should.Matchers
  * fails once its stream is open, and after a read the ceiling refuses.
  *
  * Release when a read is '''cancelled''' is asserted as well, and it needs no seam in the
- * subject either. The source it is asserted over is the endless device `/dev/urandom`: a whole
- * read of it costs a few hundred milliseconds of real time, and the case '''measures''' that
- * cost first, so what follows is compared against this machine rather than against a constant
- * guessed at while writing the case. It then starts a second read, lets it get under way,
- * cancels it, and times the cancellation. Three things must hold: the read ends '''cancelled'''
- * rather than with a result, the cancellation costs a small fraction of a whole read - a
- * cancellation that waited for the blocking call to return would cost nearly all of one,
- * because it is delivered in the first tenth of it - and no descriptor of this process names
- * the source afterwards that did not name it before. Where the source is absent, where the read
- * ends before the cancellation reaches it, or where the machine reads so fast that the
- * comparison would mean nothing, the case cancels itself with the reason stated; every wait in
- * it is bounded, so a regression fails it rather than hanging the suite.
+ * subject either. The source it is asserted over is a sparse file of exactly the documented
+ * ceiling: a whole read of it costs a couple of hundred milliseconds of real time, and the case
+ * '''measures''' that cost first, so what follows is compared against this machine rather than
+ * against a constant guessed at while writing the case. It then starts further reads, lets each
+ * get a tenth of the way through - a tenth of what it measured, not of a constant - cancels it,
+ * and times the cancellation. Three things must hold: each read ends '''cancelled''' rather
+ * than with a result, the quickest cancellation costs a small fraction of a whole read - a
+ * cancellation that waited for the blocking call to return would cost nearly all of one in
+ * every sample, because it is delivered in the first tenth - and no descriptor of this process
+ * names the source afterwards. Where the runner cannot hold the text of a read that size, where
+ * every read ends before the cancellation reaches it, or where the machine reads so fast that
+ * the comparison would mean nothing, the case cancels itself with the reason stated; every wait
+ * in it is bounded, so a regression fails it rather than hanging the suite.
  *
- * A named pipe would be the obvious source for that case, since one opens and then never
- * yields, and the case after it records why it is not used: the subject reads its source with
- * one bulk call, that call requires a seekable channel, and a pipe is therefore '''refused'''
- * the moment it is read rather than blocking on it. That is worth establishing rather than
- * merely noting - it says that a source of this shape cannot make a read of this subject wait
- * at all, and that the handle of the refused read comes back like any other. The case makes its
- * pipe with `mkfifo`, opens the writing end on a fiber of its own so that the subject's open
- * can complete, removes both by a finalizer, bounds every wait, and cancels itself with the
- * reason stated where `mkfifo` cannot be run or where a platform turns out to read pipes after
- * all.
+ * A stalling source - a named pipe with no writer, an endless device - would be the obvious
+ * source for that case, and the two cases after it are why it is not used: the subject
+ * '''refuses''' a source that is not a regular file '''before''' it opens it, so a source of
+ * either shape cannot be caught in flight at all. That is the property those two cases
+ * establish, and it is what answers a source whose open never returns - the subject asks the
+ * platform what the source is first, and an open the platform defines to wait, which no thread
+ * interrupt can abort, is therefore never issued.
+ *
+ * The pipe case is the sharper of the two, and it is deliberately the case the subject would
+ * have failed before that refusal existed. It makes its pipe with `mkfifo` and leaves it with
+ * '''no writer''', which is exactly the source whose open never returns, and it holds the
+ * subject to four things at once: the read fails naming the source and saying it is not a
+ * regular file; it fails in milliseconds rather than at the subject's own two-minute bound, so
+ * a read abandoned at that bound fails this case rather than merely slowing it; the writing end
+ * the case opened on a fiber of its own has '''not''' been let through, which is the proof that
+ * the subject never opened the reading end rather than an inference from the timing; and no
+ * thread of this process is left inside a file open once the read has ended, which is the
+ * symptom a bound that freed the caller and forgot the thread would leave behind. The case then
+ * releases its own writer by opening the reading end itself, closes both ends, and tolerates
+ * every ordering of that in its finalizer, so nothing of the spec is left blocked in a native
+ * open whatever the outcome. The device case is the same refusal over a source nothing had to
+ * create - a read of `/dev/urandom` that used to end sixty-four mebibytes later at the ceiling
+ * now ends in milliseconds without opening it.
  *
  * ===Cases about the runner rather than about the subject===
  *
- * Four of the cases here cancel themselves where the machine cannot carry them - too little
- * heap for the case at the ceiling, no descriptor table to read, no endless device, no usable
- * `mkfifo` - and printing the reason is the right thing for such a case to do. On its own,
- * though, it hides the loss: a cancelled case is not a failed one, so a run that stopped
- * exercising the ceiling or the descriptor table still reports itself green. The capability
- * case at the foot of this file is the answer to that. It asserts those five properties of the
- * runner directly, each naming what it observed, so a machine that lacks one of them fails this
- * file and says which; the cases themselves keep their cancellations, so what is lost is still
- * printed where the machine is genuinely incapable. Three further conditions those cases cancel
- * on are outcomes of a race rather than properties of a machine, and the capability case states
- * why it deliberately does not assert them.
+ * Six of the cases here cancel themselves where the machine cannot carry them - too little heap
+ * for the two cases that read the whole ceiling, no descriptor table to read, a classpath
+ * fixture that is not an ordinary file, no readable device, no usable `mkfifo` - and printing
+ * the reason is the right thing for such a case to do. On its own, though, it hides the loss: a
+ * cancelled case is not a failed one, so a run that stopped exercising the ceiling or the
+ * descriptor table still reports itself green. The capability case at the foot of this file is
+ * the answer to that. It asserts those five properties of the runner directly, each naming what
+ * it observed, so a machine that lacks one of them fails this file and says which; the cases
+ * themselves keep their cancellations, so what is lost is still printed where the machine is
+ * genuinely incapable. Two further conditions those cases cancel on are outcomes of a race
+ * rather than properties of a machine, and the capability case states why it deliberately does
+ * not assert them.
  *
  * ===Where a failure goes===
  *
@@ -262,15 +279,16 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   private val PipeName = "stalled-source"
 
   /**
-   * The endless device the cancellation case reads: a source that yields without ever ending.
+   * The device the refusal case points the subject at: a source the platform describes as
+   * something other than a regular file, and one no case has to create or remove.
    *
-   * It is what makes a read observably '''in flight''' from outside the subject. A file of any
-   * size this spec could write is read in a moment, and a named pipe - the obvious stalling
-   * source - is refused rather than read, as the case after the cancellation one establishes.
-   * This device is neither: the subject reads it exactly as it reads a file, the read takes
-   * long enough to be interrupted part way through, and it needs nothing created or removed.
+   * A device is the second shape of source whose open the platform may define to wait, and the
+   * subject refuses it for that reason - before opening it, off the description of the path.
+   * The refusal is also what this source costs now: a read of it used to run to the sixty-four
+   * mebibyte ceiling and be refused there, sixty-seven megabytes of churn later, because the
+   * device never ends.
    */
-  private val ContinuousSource = "/dev/urandom"
+  private val RefusedDevice = "/dev/urandom"
 
   /**
    * The absolute bound on the cancellation of a read that is in flight.
@@ -287,37 +305,70 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
    * How much faster than a whole read the cancellation of one in flight has to be.
    *
    * A cancellation that waited for the blocking call to return would cost what remains of the
-   * read, and the cancellation is delivered in the first tenth of one, so a factor of four
-   * separates the two outcomes with room to spare in both directions - it does not demand that
-   * a loaded machine cancel in any particular number of milliseconds, and it is not satisfied
-   * by a cancellation that waited.
+   * read, and the cancellation is delivered in the first tenth of one, so waiting lands within
+   * about a tenth of a whole read - a factor of roughly 1.1. A factor of two separates that
+   * outcome from a cancellation that interrupted the read, and it separates them on the machine
+   * this suite actually runs on rather than only on an idle one: measured with this case alone,
+   * a cancellation costs a thirtieth to a fiftieth of a whole read (4-11 ms against 220-260 ms),
+   * but measured inside the module's whole test run both ends move towards each other - the read
+   * is quicker because the code is already JIT-compiled (160 ms), and a cancellation is slower
+   * because dropping the tens of mebibytes the cancelled read had accumulated can wait on a
+   * collection of an already-loaded heap (41-45 ms), which is a ratio of under four. The factor
+   * is therefore set where the noise of a shared runner cannot reach it while a cancellation
+   * that waited still cannot satisfy it: it does not demand that a loaded machine cancel in any
+   * particular number of milliseconds, and half a read is not a cost a cancellation which
+   * queued behind one can come in under.
    */
-  private val PromptnessFactor: Long = 4L
+  private val PromptnessFactor: Long = 2L
 
   /**
    * The shortest whole read the comparison above is drawn from.
    *
-   * Below this, a quarter of a whole read is so small that the case would be measuring
+   * Below this, half of a whole read is so small that the case would be measuring
    * scheduling noise rather than the subject, so it cancels itself instead of asserting
-   * something it cannot see.
+   * something it cannot see. It is also what keeps the entry pause below meaningful, that pause
+   * being a fraction of the measured read: a read of at least this long is entered at least ten
+   * milliseconds in, which is twenty times the cost of describing a read and starting one.
    */
   private val MeasurableRead: FiniteDuration = 100.millis
 
   /**
-   * The pause between starting a read and cancelling it.
+   * Where in a read the cancellation of it is delivered, as a fraction of the whole: a tenth.
    *
-   * Long enough that the read is inside its blocking call rather than still being set up -
-   * cancelling the effect around a read is a different path and not the one the finding is
-   * about - and short enough to leave nine tenths of the read ahead of it, which is what makes
-   * the comparison above decisive.
+   * The pause is '''derived''' from the read the case has just measured rather than fixed,
+   * because what the comparison above needs is that most of the read is still ahead of the
+   * cancellation, and how long a read of the ceiling takes is a property of the machine. A
+   * fixed pause that left nine tenths of a read ahead of it here would land in the decode at
+   * the end of a read on a machine twice as fast, where a cancellation costs the rest of that
+   * decode - the decode is one uninterruptible step - and the case would then be measuring
+   * something it is not about. A tenth in, the read is inside the interruptible call that reads
+   * the bytes, whatever the machine.
    */
-  private val ReadEntryPause: FiniteDuration = 50.millis
+  private val ReadEntryFraction: Long = 10L
 
   /**
-   * How long the writing end of the named pipe may take to open.
+   * How many cancellations the case measures, of which the quickest is the one it asserts on.
    *
-   * Opening it completes only when the subject opens the reading end, so this bounds the
-   * subject's own open together with the scheduling of two fibers.
+   * One sample is not enough to assert a fraction of a read on: cancelling a read that has
+   * already accumulated tens of mebibytes drops all of it at once, so a collection can land
+   * inside the measurement and cost more than the cancellation itself. Taking several and
+   * asserting the quickest keeps the case decisive about the property it is for - a
+   * cancellation that '''waited''' for the read would cost nearly a whole read in every sample,
+   * so no sample of it could pass - while a run whose machine paused for a collection in one of
+   * them still reports what it saw in all of them. Five rather than three because inside the
+   * module's whole test run, where the heap already carries what every suite before this one
+   * allocated, a collection landed in all three of three.
+   */
+  private val CancellationSamples: Int = 5
+
+  /**
+   * How long either end of the named pipe may take to open once the case releases it.
+   *
+   * The writing end the pipe case opens on a fiber of its own completes only when some reader
+   * opens the pipe, and the whole point of that fiber is that the subject never does. So the
+   * case releases it itself, at the end, by opening the reading end - and this bounds that
+   * exchange: the reading end's own open, which a waiting writer completes at once, and the
+   * scheduling of the two fibers it takes to observe it.
    */
   private val PipeOpenBound: FiniteDuration = 30.seconds
 
@@ -325,13 +376,55 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   private val MakePipeBound: FiniteDuration = 10.seconds
 
   /**
-   * How long the read of the named pipe may take before the case draws no conclusion from it.
+   * The outer bound on the read of the named pipe, which is what stops a regression hanging.
    *
-   * A refusal is immediate, so reaching this bound means the platform read the pipe instead of
-   * refusing it - on which the case has nothing to say and cancels itself, rather than failing
-   * over a platform difference in a call the subject makes.
+   * The subject refuses a pipe off the description of the path, in milliseconds, so reaching
+   * this bound means the refusal is gone and the read is waiting in an open the way it did
+   * before that refusal existed. The read is bounded with `timeoutAndForget` rather than
+   * `timeout` for exactly that case: the subject's acquisition is uncancelable, so a bound that
+   * waited for the cancellation it asked for would wait out the subject's own two-minute limit
+   * and the case would take two minutes to say what it already knows.
    */
   private val PipeReadBound: FiniteDuration = 10.seconds
+
+  /**
+   * How quickly a source that is not a regular file has to be refused.
+   *
+   * The refusal costs one description of the path, so it is a matter of milliseconds; this is
+   * the bound the two refusal cases '''assert''' against, rather than the outer bound above
+   * which only keeps a regression from hanging. Five seconds is orders of magnitude above what
+   * a refusal needs on a loaded machine and far below the subject's own two-minute bound, so a
+   * read that reached that bound and was abandoned there fails these cases plainly.
+   */
+  private val PromptRefusal: FiniteDuration = 5.seconds
+
+  /**
+   * How long the pipe case waits to see whether its writing end was let through.
+   *
+   * The writing end can only open once some reader opens the pipe, so a join that does not
+   * complete is the proof that the subject opened nothing. It is a short wait by design: the
+   * subject's read has already ended by the time it is taken, so there is nothing left to
+   * arrive, and this only has to outlast the scheduling of the fiber it asks about.
+   */
+  private val WriterCheck: FiniteDuration = 500.millis
+
+  /**
+   * How long a thread of this process may be seen inside a file open before the pipe case
+   * concludes one is stuck there, and how often it looks.
+   *
+   * The suites here share one forked process and run in parallel, so another suite's ordinary
+   * open can appear in a single sample of the live threads for an instant. A single sample would
+   * therefore be flaky in both directions, and the case polls instead: it waits for the count to
+   * come back to what it was before the read, and only a count that stays above it for the whole
+   * of this settle fails the case. Five seconds of polling at a tenth of a second is far longer
+   * than any ordinary open of this suite takes and far shorter than the two minutes a read
+   * abandoned at the subject's bound would leave a thread pinned for - permanently, in the case
+   * this is about.
+   */
+  private val OpenFrameSettle: FiniteDuration = 100.millis
+
+  /** How many times the settle above is taken, making five seconds in all. */
+  private val OpenFrameSettleAttempts: Int = 50
 
   /** The content of the fixture file the original read, byte for byte. */
   private val HelloWorld = "HelloWorld\n"
@@ -588,7 +681,11 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     // Two reads in one composition, the second failing inside the read rather than in the
     // acquisition: that is the pair a duplicate report needs, because the read is the part that
     // runs on a fiber of its own and a fiber which ends errored is handed to the runtime's
-    // failure reporter as well as to whoever joins it.
+    // failure reporter as well as to whoever joins it. Malformed UTF-8 is what puts the failure
+    // there: the file is a regular file, so it is opened and read, and the decode at the end of
+    // the read on that fiber is what refuses it. A source the acquisition refuses - a name
+    // nothing bears, a path that is not a regular file - would fail before the fiber exists and
+    // would leave this case asserting nothing.
     //
     // Two things about this case are worth stating. It asserts narrowly - that no captured line
     // names the subject - rather than that the capture is empty, because suites here share one
@@ -598,11 +695,11 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     // having had the chance to fail; what establishes it is a run of these two reads in a
     // process of their own, which is how the behaviour was found. The case earns its place by
     // failing if the report ever comes back in the first refused read of a process.
-    withTempDirectory { directory =>
+    withTempBytes(MalformedUtf8) { path =>
       withCapturedStandardError(
         for {
           absent <- Resources.readClasspathText(AbsentResource).attempt
-          unreadable <- Resources.readFileText(directory.toString).attempt
+          unreadable <- Resources.readFileText(path.toString).attempt
         } yield (absent, unreadable)
       ).map { case ((absent, unreadable), capture) =>
         // Both reads failed, so the case is about a failure that happened rather than about a
@@ -715,11 +812,22 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     // read as a file. Withdrawing read permission from a file is not: it is silently
     // ineffective for a privileged process, which is the normal case in a container, and
     // the case would then fail for a reason that has nothing to do with the subject.
+    //
+    // The failure is asserted rather than merely counted, because a directory is now refused
+    // for the same reason a named pipe and a device are - it is not a regular file, and the
+    // subject establishes that before it opens anything - and the message is where that shows.
+    // It names the source in the rendered form every message of this subject uses, says what
+    // the platform described the source as, and says the source was not opened at all.
     withTempDirectory { directory =>
       Resources.readFileText(directory.toString).attempt.map {
         case Left(failure) =>
           failure shouldBe an[IOException]
-          failure.getMessage should not be empty
+          withClue(s"the message was '${failure.getMessage}': ") {
+            failure.getMessage should include(s"file '${directory.toString}'")
+            failure.getMessage should include("is a directory rather than a regular file")
+            failure.getMessage should include("it was not opened")
+            failure.getMessage.linesIterator.size shouldBe 1
+          }
         case Right(text) =>
           fail(s"expected a failed IO, got ${text.length} characters")
       }
@@ -842,13 +950,23 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         """com.opengamma.strata.collect.io.Resources.openClasspathStream("parity/double-array-baseline.json", "parity/double-array-baseline.json")"""
       )
       assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.openFileStream("x", "x")""")
+      // Nor the two halves of the file acquisition: how a path is described and opened, and the
+      // wording of the refusal that follows a description of something other than a regular
+      // file, are the subject's own. A caller cannot obtain a stream by describing a path
+      // itself, and cannot compose that refusal to look like one of the subject's own.
+      assertDoesNotCompile(
+        """com.opengamma.strata.collect.io.Resources.regularFileStream("x", "x")"""
+      )
+      assertDoesNotCompile(
+        """com.opengamma.strata.collect.io.Resources.notARegularFile("x", true)"""
+      )
       // Nor the two halves of the classpath acquisition: how a name is located and opened, and
-      // how a located name is judged to be a directory rather than a file, are the subject's own
-      // decisions. Both arguments below are well-typed - two strings, and a URL - so each
-      // snippet is refused for the visibility of the member and for nothing else.
+      // how a located name is judged to be readable as a file at all, are the subject's own
+      // decisions. Both arguments below are well-typed - two strings, and a string with a URL -
+      // so each snippet is refused for the visibility of the member and for nothing else.
       assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.classpathEntry("x", "x")""")
       assertDoesNotCompile(
-        """com.opengamma.strata.collect.io.Resources.denotesDirectory(java.net.URI.create("file:/x").toURL())"""
+        """com.opengamma.strata.collect.io.Resources.locationRefusal("x", java.net.URI.create("file:/x").toURL())"""
       )
       // Nor the wording a failure uses to name its source, nor the wrapping of a platform
       // failure in it: a caller cannot compose a diagnostic that looks like one of this
@@ -1069,58 +1187,83 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   }
 
   //-------------------------------------------------------------------------
-  // Cancellation of a read that is still under way
+  // A read that is still under way, and the sources whose read never begins
   //
-  // The three descriptor observations above all look at a read that has finished. The two
-  // cases below look at one that has not, which is the outcome the subject's cancellation
-  // protocol exists for and the one that pairing acquisition with release cannot deliver on
-  // its own: a read still inside its blocking call holds a thread and a descriptor until that
-  // call returns, so a cancellation which merely queues behind it is no cancellation at all.
+  // The three descriptor observations above all look at a read that has finished. The three
+  // cases below look at a read that has not, and at the two sources whose read the subject
+  // never starts - which is the outcome its cancellation protocol exists for and the one that
+  // pairing acquisition with release cannot deliver on its own: a read still inside its
+  // blocking call holds a thread and a descriptor until that call returns, so a cancellation
+  // which merely queues behind it is no cancellation at all.
   //
-  // Both cases are about sources rather than about fixtures, because that is what decides what
-  // can be seen from outside the subject: one source yields endlessly, which makes a read
-  // observably in flight, and the other is refused outright, which is why it cannot be used
-  // for the first.
+  // All three are about sources rather than about fixtures, because the source is what decides
+  // what can be seen from outside the subject. The first needs a source a read is observably
+  // '''in flight''' on, and a sparse file of exactly the ceiling is the largest one the subject
+  // reads whole, so it is the one that takes long enough to be caught. A stalling source would
+  // be the obvious choice for that and cannot be used, which is the reasoning of the two cases
+  // after it rather than a limitation of them: a named pipe and a device are '''refused before
+  // they are opened''', so no read of either is ever under way, and each of those two cases
+  // establishes that refusal over one of the two shapes.
   //-------------------------------------------------------------------------
   test("readFileText cancels a read that is in flight promptly rather than waiting for the source") {
-    IO.blocking(Files.isReadable(Paths.get(ContinuousSource))).flatMap { readable =>
-      if (!readable) {
+    // The heap, for the same reason the case at the ceiling asks about it: the yardstick read
+    // this case measures is a whole read of the ceiling, so it materialises those bytes and the
+    // text decoded from them at once.
+    IO(Runtime.getRuntime.maxMemory).flatMap { heap =>
+      if (heap < CeilingCaseHeap) {
         IO(
           cancel(
-            s"this platform offers no readable $ContinuousSource, so a read cannot be caught " +
-              "in flight here; release after a read has finished is asserted by the three " +
-              "cases above"))
+            s"this runner allows $heap bytes of heap, and the whole read this case measures " +
+              s"itself against is a read of $DocumentedCeiling bytes, which needs at least " +
+              s"$CeilingCaseHeap; release after a read has finished is asserted by the three " +
+              "cases above, and the two refusal cases below need no heap at all"))
       } else {
         inFlightCancellationCase
       }
     }
   }
 
-  test("a named pipe is refused rather than read, so a source of that shape cannot make a read wait") {
+  test("a named pipe with no writer is refused before it is opened, leaving no thread in an open") {
+    // The case the finding was about, asserted from the outside: a pipe nobody is writing to is
+    // the source whose open never returns, and the subject must refuse it off the description of
+    // the path rather than meet it inside an acquisition no cancellation can reach.
     withNamedPipe(pipeRefusalCase)
+  }
+
+  test("a device is refused before it is opened rather than read to the ceiling") {
+    IO.blocking(Files.isReadable(Paths.get(RefusedDevice))).flatMap { readable =>
+      if (!readable) {
+        IO(
+          cancel(
+            s"this platform offers no readable $RefusedDevice, so the refusal of a device " +
+              "cannot be observed here; the pipe case above establishes the same refusal over " +
+              "the other shape of source whose open can wait"))
+      } else {
+        deviceRefusalCase
+      }
+    }
   }
 
   //-------------------------------------------------------------------------
   // What this runner has to provide
   //
-  // Four of the cases above cancel themselves where the machine cannot carry them, and each
+  // Six of the cases above cancel themselves where the machine cannot carry them, and each
   // prints the reason when it does. That is the right behaviour for the case - it has nothing to
   // say about a subject it could not exercise - but on its own it is invisible: a cancelled case
   // is not a failed one, and a run that quietly stopped exercising the ceiling, the descriptor
-  // table, the endless device or a named pipe still reports itself as green. The case below is
-  // what makes that visible. It asserts the five '''capabilities''' those cancellations rest on,
+  // table, a device or a named pipe still reports itself as green. The case below is what makes
+  // that visible. It asserts the five '''capabilities''' those cancellations rest on,
   // separately and each naming what it observed, so a runner that lacks one fails here and says
   // which one and why it matters, while the cases themselves still cancel with their reasons
   // rather than failing on a machine that was never going to carry them.
   //
-  // Three other conditions those cases cancel on are deliberately '''not''' asserted here,
+  // Two other conditions those cases cancel on are deliberately '''not''' asserted here,
   // because they are outcomes of a race rather than properties of the machine: that a whole read
-  // of the endless device is slow enough to measure, that a read has not ended on its own inside
-  // the pause before it is cancelled, and that a read of a named pipe ends inside its bound. Any
-  // of the three can go either way on a machine that provides every capability below, so
-  // asserting one would make this suite fail intermittently for a reason that is not a defect.
-  // They remain cancellations, with the measurement printed in the reason, which is what lets a
-  // run that hit one be recognised by reading it.
+  // of the ceiling is slow enough to measure, and that a read has not ended on its own inside
+  // the pause before it is cancelled. Either can go either way on a machine that provides every
+  // capability below, so asserting one would make this suite fail intermittently for a reason
+  // that is not a defect. They remain cancellations, with the measurement printed in the reason,
+  // which is what lets a run that hit one be recognised by reading it.
   //-------------------------------------------------------------------------
   test("this runner provides every capability the cases above cancel themselves for the absence of") {
     for {
@@ -1128,12 +1271,15 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       descriptorsExposed <- IO.blocking(Files.isDirectory(ProcessDescriptors))
       fixtureProtocol <- IO.blocking(
         Option(getClass.getClassLoader.getResource(FixturePath)).map(_.getProtocol))
-      continuousReadable <- IO.blocking(Files.isReadable(Paths.get(ContinuousSource)))
+      deviceReadable <- IO.blocking(Files.isReadable(Paths.get(RefusedDevice)))
+      deviceIsRegular <- IO.blocking(Files.isRegularFile(Paths.get(RefusedDevice)))
       pipeCapability <- namedPipeCapability
     } yield {
-      // The ceiling case decodes sixty-four mebibytes and the text made from them at once.
+      // The ceiling case decodes sixty-four mebibytes and the text made from them at once, and
+      // the cancellation case measures itself against a whole read of the same size.
       withClue(s"this runner allows $heap bytes of heap against the $CeilingCaseHeap the case " +
-        "at the documented ceiling needs; run the suite with a larger -Xmx: ") {
+        "at the documented ceiling and the cancellation case both need; run the suite with a " +
+        "larger -Xmx: ") {
         heap should be >= CeilingCaseHeap
       }
       // The three descriptor cases read the descriptor table of this process directly.
@@ -1151,10 +1297,15 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         "class directories: ") {
         fixtureProtocol shouldBe Some("file")
       }
-      // The cancellation case needs a source that yields without ending.
-      withClue(s"$ContinuousSource is not readable on this runner, so no read can be caught in " +
-        "flight and prompt cancellation cannot be observed: ") {
-        continuousReadable shouldBe true
+      // The device case needs a device: a source this process may read and that the platform
+      // describes as something other than a regular file, which is the property the subject
+      // refuses it for. Both halves are asserted, because a platform whose /dev/urandom were an
+      // ordinary file would satisfy the first and leave that case asserting nothing.
+      withClue(s"$RefusedDevice on this runner is readable=$deviceReadable, " +
+        s"regularFile=$deviceIsRegular; the device case needs a readable source that is not a " +
+        "regular file: ") {
+        deviceReadable shouldBe true
+        deviceIsRegular shouldBe false
       }
       // And the pipe case needs a named pipe, which is made by running mkfifo.
       pipeCapability
@@ -1426,11 +1577,11 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   /**
    * Creates a named pipe, hands its path to the case, and removes it afterwards.
    *
-   * A named pipe is the one source this spec can point the subject at that opens and then
-   * never yields, which is what the cancellation case needs and what no ordinary file can
-   * provide. Making one is not something the platform exposes through its file API, so it is
-   * made by running `mkfifo`; a platform that has no usable `mkfifo` cancels the case with the
-   * reason stated rather than failing it, exactly as the descriptor cases cancel themselves
+   * A named pipe with no writer is the one source this spec can point the subject at whose
+   * '''open''' never returns, which is what the refusal case needs and what no ordinary file
+   * can provide. Making one is not something the platform exposes through its file API, so it
+   * is made by running `mkfifo`; a platform that has no usable `mkfifo` cancels the case with
+   * the reason stated rather than failing it, exactly as the descriptor cases cancel themselves
    * where the descriptor table is not exposed.
    *
    * The pipe and the directory holding it are removed by a finalizer, so they are removed on
@@ -1529,187 +1680,477 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       }
 
   /**
-   * Measures a whole read of the endless device, then cancels one in flight and compares.
+   * Measures a whole read of a sparse file of exactly the ceiling, then cancels reads in flight
+   * and compares.
    *
    * The first read is the yardstick, and measuring it is what makes the case independent of
-   * the machine: it is the cost of reading the subject's ceiling from this source here and
-   * now, and it ends in the ceiling refusal because the device never ends. A cancellation that
-   * waited for the blocking call to return would cost most of that, since it is delivered in
-   * the first tenth of a read; a cancellation that interrupts the call and closes the handle
-   * costs a fraction of it. A machine on which a whole read is too quick to measure is told
-   * so, rather than being asserted against noise.
+   * the machine: it is the cost of reading the subject's ceiling here and now, and it ends in
+   * the whole text because a source of exactly the ceiling is read rather than refused. A
+   * cancellation that waited for the blocking call to return would cost most of that, since it
+   * is delivered in the first tenth of a read; a cancellation that interrupts the call and
+   * closes the handle costs a fraction of it. A machine on which a whole read is too quick to
+   * measure is told so, rather than being asserted against noise.
+   *
+   * The source is the largest one the subject reads whole, and it is a '''regular''' file,
+   * which is what makes it the source for this case: a pipe or a device would stall a read for
+   * longer still and the subject refuses both before it opens them, so neither can be caught in
+   * flight. Sparseness is what makes a file of that size free to create and to read.
    *
    * @return the effect of the case
    */
   private def inFlightCancellationCase: IO[Assertion] =
-    for {
-      startedWhole <- IO.monotonic
-      _ <- Resources.readFileText(ContinuousSource).attempt
-      finishedWhole <- IO.monotonic
-      whole = finishedWhole - startedWhole
-      assertion <-
-        if (whole < MeasurableRead) {
-          IO(
-            cancel(
-              s"a whole read of $ContinuousSource took $whole here, which is under the " +
-                s"$MeasurableRead this case compares against, so the time a cancellation takes " +
-                "cannot be told from scheduling noise on this machine"))
-        } else {
-          cancelReadInFlight(whole)
-        }
-    } yield assertion
+    withSparseFile(DocumentedCeiling) { path =>
+      for {
+        startedWhole <- IO.monotonic
+        _ <- Resources.readFileText(path.toString).attempt
+        finishedWhole <- IO.monotonic
+        whole = finishedWhole - startedWhole
+        assertion <-
+          if (whole < MeasurableRead) {
+            IO(
+              cancel(
+                s"a whole read of $DocumentedCeiling bytes took $whole here, which is under " +
+                  s"the $MeasurableRead this case compares against, so the time a cancellation " +
+                  "takes cannot be told from scheduling noise on this machine"))
+          } else {
+            cancelReadInFlight(path, whole)
+          }
+      } yield assertion
+    }
 
   /**
-   * Cancels a read of the endless device part way through and asserts what the cancellation
-   * did.
+   * Cancels reads of the sparse file part way through and asserts what the cancellations did.
    *
    * The order of the steps is the substance of the case:
    *
-   *  - the descriptor table is read '''before''' the read starts, because this source is one
-   *    the runtime itself holds open, so what the case can assert is that the cancelled read
-   *    left nothing '''new''' behind rather than that nothing refers to the device at all;
    *  - the pause lets the read reach its blocking call, so the cancellation is delivered to a
    *    read in flight rather than to the effect around one. Both are cancellation paths; only
-   *    the first is the one that could not be prompt;
+   *    the first is the one that could not be prompt. It is a tenth of the read the case has
+   *    just measured, for the reason `ReadEntryFraction` gives;
    *  - `cancel` completes only once the read's finalizers have run, so the time it takes
    *    '''is''' the time the handle takes to come back. It is bounded as well as measured, so
    *    a protocol that waited for the read would fail this case rather than hang it;
-   *  - the outcome is examined before anything is concluded from the timing, because a read
-   *    that had already ended would be "cancelled" instantly and would prove nothing.
+   *  - the outcome of each read is examined before anything is concluded from its timing,
+   *    because a read that had already ended would be "cancelled" instantly and would prove
+   *    nothing. A run in which every read ended that way observes nothing and says so;
+   *  - the quickest of the cancellations is what the comparison is made on, for the reason
+   *    `CancellationSamples` gives, and all of them are reported;
+   *  - the descriptor table is read afterwards and asserted against '''nothing''' naming the
+   *    source, which a temporary path of this case's own making allows: no part of this process
+   *    other than the cancelled reads has any reason to hold it open.
    *
+   * @param path  the sparse file being read, which no descriptor may name afterwards
    * @param whole  the measured cost of a whole read of the same source
    * @return the effect of the assertions
    */
-  private def cancelReadInFlight(whole: FiniteDuration): IO[Assertion] =
+  private def cancelReadInFlight(path: Path, whole: FiniteDuration): IO[Assertion] = {
+    val entry = whole / ReadEntryFraction
     for {
-      held <- descriptorTargets.map(_.count(target => target == ContinuousSource))
-      reader <- Resources.readFileText(ContinuousSource).start
-      _ <- IO.sleep(ReadEntryPause)
+      samples <- cancellationSamples(path, entry, CancellationSamples)
+      open <- descriptorTargets
+      cancellations = samples.flatten
+      assertion <-
+        if (cancellations.isEmpty) {
+          IO(
+            cancel(
+              s"every one of the $CancellationSamples reads ended on its own inside the $entry " +
+                "before the cancellation reached it - a whole read of " +
+                s"$DocumentedCeiling bytes was measured at $whole - so nothing was cancelled " +
+                "and this run observes nothing about cancellation"))
+        } else {
+          val promptest = cancellations.map(_.toNanos).min
+          IO {
+            info(
+              s"a whole read of $DocumentedCeiling bytes took $whole; ${cancellations.size} of " +
+                s"$CancellationSamples cancellations of one in flight, each delivered $entry " +
+                s"in, took ${cancellations.mkString(", ")}")
+            // The clue names the measurements and the descriptor count rather than the whole
+            // descriptor table: a table of a hundred entries in a failure message buries the
+            // numbers that say what went wrong.
+            withClue(
+              s"a whole read took $whole, the cancellations took ${cancellations.mkString(", ")} " +
+                s"with the cancellation delivered $entry in, and " +
+                s"${open.count(target => target == path.toString)} descriptors named the " +
+                "source afterwards: ") {
+              // Prompt relative to the source itself, which is the comparison that separates a
+              // cancellation that interrupted the read from one that queued behind it.
+              (promptest * PromptnessFactor) should be < whole.toNanos
+              // And release while the read was still under way: no descriptor names the source,
+              // which is the sharper form of this observation that a source of the case's own
+              // making allows.
+              open.count(target => target == path.toString) shouldBe 0
+            }
+          }
+        }
+    } yield assertion
+  }
+
+  /**
+   * Cancels one read after another, each after the same pause, and hands back what each cost.
+   *
+   * A read that ended before the cancellation reached it contributes nothing rather than a
+   * meaningless measurement, which is why a sample is an `Option`: the caller distinguishes a
+   * run that cancelled nothing from a run that cancelled slowly. The recursion is over the
+   * samples left to take and is stack safe, as `IO` recursion is.
+   *
+   * @param path  the source to read and cancel
+   * @param entry  how long each read is left to run before it is cancelled
+   * @param samples  how many reads to cancel
+   * @return what each cancellation cost, or nothing for a read that had already ended
+   */
+  private def cancellationSamples(
+      path: Path,
+      entry: FiniteDuration,
+      samples: Int): IO[Vector[Option[FiniteDuration]]] =
+    if (samples <= 0) {
+      IO.pure(Vector.empty[Option[FiniteDuration]])
+    } else {
+      cancelOneReadInFlight(path, entry).flatMap(head =>
+        cancellationSamples(path, entry, samples - 1).map(rest => head +: rest)
+      )
+    }
+
+  /**
+   * Starts one read, lets it get under way, cancels it and times the cancellation.
+   *
+   * `cancel` is bounded by `PromptCancellation`, which is the absolute half of this case's
+   * claim: a cancellation protocol that waited for the source would fail here rather than hang
+   * the suite. The time is taken around `cancel` alone, because `cancel` completes only once
+   * the read's finalizers have run - so what is measured is when the handle came back.
+   *
+   * @param path  the source to read and cancel
+   * @param entry  how long the read is left to run before it is cancelled
+   * @return what the cancellation cost, or nothing where the read had already ended
+   */
+  private def cancelOneReadInFlight(path: Path, entry: FiniteDuration): IO[Option[FiniteDuration]] =
+    for {
+      reader <- Resources.readFileText(path.toString).start
+      _ <- IO.sleep(entry)
       startedAt <- IO.monotonic
       _ <- reader.cancel.timeout(PromptCancellation)
       finishedAt <- IO.monotonic
       outcome <- reader.join
-      open <- descriptorTargets
-      cancellation = finishedAt - startedAt
-      ended = !outcome.fold(
+    } yield {
+      val cancelled = outcome.fold(
         canceled = true,
         errored = (_: Throwable) => false,
         completed = (_: IO[String]) => false)
-      assertion <-
-        if (ended) {
-          IO(
-            cancel(
-              s"the read ended on its own inside the $ReadEntryPause before the cancellation " +
-                s"reached it - a whole read of $ContinuousSource was measured at $whole - so " +
-                "nothing was cancelled and this run observes nothing about cancellation"))
-        } else {
-          IO {
-            info(
-              s"a whole read of $ContinuousSource took $whole; cancelling one in flight took " +
-                s"$cancellation")
-            // The clue names the two measurements and the two descriptor counts rather than
-            // the whole descriptor table: a table of a hundred entries in a failure message
-            // buries the three numbers that say what went wrong.
-            withClue(
-              s"a whole read took $whole, the cancellation took $cancellation, and " +
-                s"${open.count(target => target == ContinuousSource)} descriptors named " +
-                s"$ContinuousSource afterwards against $held before: ") {
-              // Prompt relative to the source itself, which is the comparison that separates a
-              // cancellation that interrupted the read from one that queued behind it.
-              (cancellation.toNanos * PromptnessFactor) should be < whole.toNanos
-              // And release while the read was still under way: no descriptor names the source
-              // that did not name it before the read started.
-              open.count(target => target == ContinuousSource) shouldBe held
-            }
-          }
-        }
-    } yield assertion
+      if (cancelled) Some(finishedAt - startedAt) else None
+    }
 
   /**
-   * Reads a named pipe through the public API and asserts that it is refused, promptly, with
-   * its handle reclaimed.
+   * Reads a named pipe that has no writer, and asserts the whole of what the subject must do
+   * with one.
    *
-   * The writing end is opened '''before''' the read starts and is never written to, because a
-   * pipe's open completes only once both ends are open: without it the subject would wait in
-   * its own open, which is a different path from the one this case is about. Joining that
-   * fiber is therefore the proof that the subject got past its open and reached the read, with
-   * no delay guessed at. The join is bounded, so a subject that never opens fails this case
-   * rather than hanging it; if that happens the writer fiber is left inside a native open,
-   * which no platform makes interruptible, and it costs one daemon thread of a run that has
-   * already failed.
+   * This is the case the subject would have failed while its file reader opened whatever it was
+   * pointed at. A pipe with no writer is the source whose `open` never returns, the subject's
+   * acquisition is uncancelable, and a thread interrupt does not abort that call - so a reader
+   * that opened it first and bounded the read afterwards freed its caller at the bound and left
+   * a thread of the blocking pool inside the open for the life of the process. Four
+   * observations hold the subject to answering it before the open instead, and they are taken
+   * in this order for a reason:
    *
-   * What the read then does is the point: the subject reads its source with one bulk call, that
-   * call needs a seekable channel, and a pipe has none - so the read is refused where a file
-   * would have been read. A platform that reads pipes instead reaches the bound below and
-   * cancels the case, since nothing here is a claim about the subject in that event.
+   *  - the threads of this process that are inside a file open are counted '''first''', while
+   *    nothing of this case is open, because the count afterwards is compared with this one;
+   *  - the writing end is opened on a fiber of its own, '''before''' the read, and never
+   *    written to. Its open can complete only once some reader opens the pipe, so a join that
+   *    has not completed after the read has ended is the proof that the subject opened nothing -
+   *    which is a fact about the subject rather than an inference from how long it took;
+   *  - the read is bounded well below the subject's own two-minute limit and '''measured''', so
+   *    a refusal that turned back into an abandoned read fails this case in seconds instead of
+   *    passing it slowly. It is bounded with `timeoutAndForget`, because a bound that waited for
+   *    the cancellation of a read stuck in an uncancelable acquisition would itself wait out
+   *    those two minutes;
+   *  - the writer is then released - by opening the reading end here, in the case, which a
+   *    waiting writer completes at once - and both ends are closed, after which no thread may
+   *    be inside a file open and no descriptor may name the pipe. Releasing it is what makes
+   *    the thread count meaningful, since the writer's own open is one of the threads that would
+   *    otherwise be sitting in `open`.
    *
-   * @param pipe  the named pipe to read
+   * The release tolerates every ordering: it is run once here and again from the finalizer, and
+   * it looks at the writer's own outcome to decide whether the reading end still has to be
+   * opened, so nothing of this spec is left blocked in a native open however the case ends.
+   *
+   * @param pipe  the named pipe to read, which nothing is writing to
    * @return the effect of the case
    */
   private def pipeRefusalCase(pipe: Path): IO[Assertion] =
     for {
-      opening <- IO.interruptible(Files.newOutputStream(pipe)).start
-      reader <- Resources.readFileText(pipe.toString).attempt.start
-      sink <- opening.joinWithNever.timeout(PipeOpenBound)
-      // The close in the finalizer is the second one: the case closes the writing end itself,
-      // in its own order, and this closes it on the paths where the case never got that far.
-      // Closing an already closed stream is tolerated, as it is in the subject.
-      assertion <- pipeRefusal(reader, sink, pipe).guarantee(closeQuietly(sink))
+      inAnOpenBefore <- threadsInsideAFileOpen
+      writer <- IO.interruptible(Files.newOutputStream(pipe)).start
+      assertion <- pipeRefusal(pipe, writer, inAnOpenBefore)
+        .guarantee(releaseWritingEnd(pipe, writer))
     } yield assertion
 
   /**
-   * Waits for the refusal, closes the writing end and inspects the descriptor table.
+   * Reads the pipe, then takes the three observations that say the read never opened it.
    *
-   * The writing end is closed only once the read has ended, because closing it would end the
-   * read by itself; once it is closed, nothing of this process should refer to the pipe, which
-   * is what the descriptor table is inspected for.
-   *
-   * @param reader  the fiber running the read of the pipe
-   * @param sink  the writing end of the pipe, which keeps the subject's open from waiting
    * @param pipe  the path of the pipe, as it appears in the descriptor table
+   * @param writer  the fiber opening the writing end, which only a reader can let through
+   * @param inAnOpenBefore  the threads inside a file open before any of this began
    * @return the effect of the assertions
    */
   private def pipeRefusal(
-      reader: FiberIO[Either[Throwable, String]],
-      sink: OutputStream,
-      pipe: Path): IO[Assertion] =
+      pipe: Path,
+      writer: FiberIO[OutputStream],
+      inAnOpenBefore: Vector[String]): IO[Assertion] =
     for {
-      outcome <- reader.joinWithNever.map(Option(_)).timeoutTo(PipeReadBound, IO.pure(None))
-      _ <- closeQuietly(sink)
-      exposed <- IO.blocking(Files.isDirectory(ProcessDescriptors))
+      startedAt <- IO.monotonic
+      outcome <- boundedRefusal(pipe)
+      finishedAt <- IO.monotonic
+      letThrough <- writer.join.map(Option(_)).timeoutTo(WriterCheck, IO.pure(None))
+      _ <- releaseWritingEnd(pipe, writer)
+      inAnOpenAfter <- settledThreadsInsideAFileOpen(inAnOpenBefore.size)
       open <- descriptorTargets
-      assertion <- outcome match {
-        case None =>
-          IO(
-            cancel(
-              s"the read of a named pipe here did not end within $PipeReadBound, so this " +
-                "platform reads pipes rather than refusing them and the case has nothing to " +
-                "conclude; the cancellation case above is where promptness is established"))
-        case Some(refused) =>
-          IO {
-            withClue(
-              s"${open.count(target => target == pipe.toString)} descriptors named the pipe " +
-                "after the read of it: ") {
-              refused match {
-                case Left(failure) =>
-                  // A refusal, and one this subject reports as a failed effect like any other.
-                  failure shouldBe an[IOException]
-                  Option(failure.getMessage) should not be empty
-                case Right(text) =>
-                  fail(s"expected the pipe to be refused, got ${text.length} characters")
-              }
-              // Release on that path as on every other: the read opened the pipe before it was
-              // refused, so a handle that was not given back would show up here.
-              if (exposed) open.count(target => target == pipe.toString) shouldBe 0
-              else succeed
-            }
-          }
+      exposed <- IO.blocking(Files.isDirectory(ProcessDescriptors))
+    } yield {
+      val refusal = finishedAt - startedAt
+      val reported = outcome.fold(s"nothing inside $PipeReadBound")(
+        _.fold(failure => s"'${failure.getMessage}'", text => s"${text.length} characters"))
+      val naming = open.count(target => target == pipe.toString)
+      withClue(
+        s"the read of the pipe ended in $reported after $refusal, the writing end was " +
+          s"${letThrough.fold("not let through")(_ => "let through")}, ${inAnOpenAfter.size} " +
+          s"threads were inside a file open afterwards against ${inAnOpenBefore.size} before " +
+          s"(${inAnOpenAfter.mkString("; ")}), and $naming descriptors named the pipe: ") {
+        // The refusal itself, named the way every message of this subject names its source, and
+        // saying what the platform described the source as.
+        outcome match {
+          case Some(Left(failure)) =>
+            failure shouldBe an[IOException]
+            failure.getMessage should include(s"file '${pipe.toString}'")
+            failure.getMessage should include("is not a regular file")
+            failure.getMessage.linesIterator.size shouldBe 1
+          case Some(Right(text)) =>
+            fail(s"expected the pipe to be refused, got ${text.length} characters")
+          case None =>
+            fail(
+              s"the read of a pipe with no writer did not end within $PipeReadBound, so the " +
+                "subject is waiting in an open it cannot be made to abandon")
+        }
+        // Promptly, which is the half of this a time bound alone would have satisfied two
+        // minutes late.
+        refusal.toNanos should be < PromptRefusal.toNanos
+        // And the open never happened: the writing end is still waiting for a reader, so no
+        // reader arrived.
+        letThrough shouldBe None
+        // No thread of this process is left inside a file open - the symptom the finding was
+        // reported for - and the pipe is named by no descriptor, which is release as everywhere
+        // else in this file.
+        inAnOpenAfter.size should be <= inAnOpenBefore.size
+        if (exposed) naming shouldBe 0
+        else succeed
       }
-    } yield assertion
+    }
+
+  /**
+   * Reads the pipe under a bound that cannot itself wait, and hands back what the read did.
+   *
+   * `timeoutAndForget` rather than `timeout`: the subject's acquisition is uncancelable, so a
+   * read that was waiting in an open would not answer a cancellation, and a bound that waited
+   * for one would take the subject's own two minutes to report that this case had failed.
+   * Nothing inside the bound is a claim about the subject, and reaching it is the failure the
+   * caller of this asserts.
+   *
+   * @param pipe  the named pipe to read
+   * @return what the read produced, or nothing where it did not end inside the bound
+   */
+  private def boundedRefusal(pipe: Path): IO[Option[Either[Throwable, String]]] =
+    Resources
+      .readFileText(pipe.toString)
+      .attempt
+      .map(Option(_))
+      .timeoutAndForget(PipeReadBound)
+      .attempt
+      .map(_.toOption.flatten)
+
+  /**
+   * Lets the writing end of the pipe through and closes it, whatever state it is in.
+   *
+   * The writing end is blocked in an open no reader has arrived for, and cancelling that fiber
+   * would be a wait on exactly the call no interrupt ends - so it is released rather than
+   * cancelled: the reading end is opened here, which completes the writer's open at once, and
+   * both ends are then closed. Where the writer has already been let through - which is how
+   * this runs the second time, from the finalizer - its stream is closed again and nothing is
+   * opened, because a second open of the reading end with no writer waiting would be the one
+   * call in this spec that could block without end.
+   *
+   * Every step tolerates its own failure. The reading end's open is bounded and forgotten
+   * rather than cancelled, for the reason given above, and a close that finds a closed stream
+   * is the expected case rather than a fault.
+   *
+   * @param pipe  the named pipe
+   * @param writer  the fiber that opened the writing end
+   * @return the effect of the release
+   */
+  private def releaseWritingEnd(pipe: Path, writer: FiberIO[OutputStream]): IO[Unit] =
+    writer.join.map(Option(_)).timeoutTo(WriterCheck, IO.pure(None)).flatMap {
+      case Some(_) => closeWritingEndIfThrough(writer, WriterCheck)
+      case None =>
+        openAndCloseReadingEnd(pipe).flatMap(_ =>
+          closeWritingEndIfThrough(writer, PipeOpenBound))
+    }
+
+  /**
+   * Closes the writing end of the pipe where the fiber that opened it has finished, and does
+   * nothing where it has not.
+   *
+   * A fiber still inside its open has no stream to close, and one that ended without producing
+   * one has none either, so both are nothing to do rather than something to report: this runs
+   * on the tidying path of a case that has already said whatever it had to say. Joining a fiber
+   * that has finished answers with the same outcome however often it is asked, which is what
+   * lets the release above join once to decide and again to close.
+   *
+   * @param writer  the fiber that opened the writing end
+   * @param bound  how long to wait for that fiber before concluding it is still in its open
+   * @return the effect of the close
+   */
+  private def closeWritingEndIfThrough(
+      writer: FiberIO[OutputStream],
+      bound: FiniteDuration): IO[Unit] =
+    writer.join.map(Option(_)).timeoutTo(bound, IO.pure(None)).flatMap {
+      case Some(outcome) =>
+        outcome.fold(
+          canceled = IO.unit,
+          errored = (_: Throwable) => IO.unit,
+          completed = (opened: IO[OutputStream]) => opened.flatMap(closeQuietly))
+      case None => IO.unit
+    }
+
+  /**
+   * Opens the reading end of the pipe and closes it again, which is what lets a waiting writer
+   * through.
+   *
+   * The open is bounded and '''forgotten''' rather than cancelled, because a pipe's open is the
+   * one call in this spec that an interrupt does not end - the very property the case is about.
+   * Reaching that bound means the writer this was meant to release is no longer waiting, in
+   * which case there is nothing to release and nothing to report; the case itself has already
+   * failed on an assertion by then.
+   *
+   * @param pipe  the named pipe
+   * @return the effect of the open and the close
+   */
+  private def openAndCloseReadingEnd(pipe: Path): IO[Unit] =
+    IO.interruptible(Files.newInputStream(pipe))
+      .timeoutAndForget(PipeOpenBound)
+      .attempt
+      .flatMap {
+        case Right(reading) => closeQuietly(reading)
+        case Left(_) => IO.unit
+      }
+
+  /**
+   * Reads a device through the public API and asserts that it is refused before it is opened.
+   *
+   * The same refusal as the pipe case, over the other shape of source whose open the platform
+   * may define to wait, and the one that costs nothing to arrange because the platform provides
+   * it. What it adds to the pipe case is the '''cost''': this device never ends, so before the
+   * subject asked what it was reading, a read of it ran to the sixty-four mebibyte ceiling and
+   * was refused there. Now it is refused in milliseconds, and the elapsed time is asserted
+   * rather than described.
+   *
+   * The descriptor observation is a comparison rather than an absolute count, because this is a
+   * source the runtime itself may hold open - a random device is where a secure random number
+   * generator is seeded from - so what can be asserted is that the refused read left nothing
+   * new behind.
+   *
+   * @return the effect of the assertions
+   */
+  private def deviceRefusalCase: IO[Assertion] =
+    for {
+      held <- descriptorTargets.map(_.count(target => target == RefusedDevice))
+      startedAt <- IO.monotonic
+      outcome <- Resources.readFileText(RefusedDevice).attempt
+      finishedAt <- IO.monotonic
+      open <- descriptorTargets
+    } yield {
+      val refusal = finishedAt - startedAt
+      val naming = open.count(target => target == RefusedDevice)
+      withClue(
+        s"the read of $RefusedDevice took $refusal and $naming descriptors named it afterwards " +
+          s"against $held before: ") {
+        outcome match {
+          case Left(failure) =>
+            failure shouldBe an[IOException]
+            failure.getMessage should include(s"file '$RefusedDevice'")
+            failure.getMessage should include("is not a regular file")
+            failure.getMessage.linesIterator.size shouldBe 1
+          case Right(text) =>
+            fail(s"expected the device to be refused, got ${text.length} characters")
+        }
+        // The refusal is a description of the path rather than a read of the source, so it
+        // costs milliseconds; a reader that opened the device and ran to its ceiling would take
+        // orders of magnitude longer and fail here.
+        refusal.toNanos should be < PromptRefusal.toNanos
+        // And nothing was opened that was not open before.
+        naming shouldBe held
+      }
+    }
 
   /** Closes a stream of this spec's own, treating a failure to close as nothing to report. */
-  private def closeQuietly(stream: OutputStream): IO[Unit] =
+  private def closeQuietly(stream: Closeable): IO[Unit] =
     IO.blocking(stream.close()).handleError(_ => ())
+
+  /**
+   * The threads of this process that are sitting inside a file open, one line each.
+   *
+   * This is the observation the finding turned on. A read abandoned at the subject's time bound
+   * while its open was waiting leaves a thread of the blocking pool inside
+   * `sun.nio.fs.UnixNativeDispatcher.open0` - `RUNNABLE`, in a native call no interrupt aborts,
+   * for the life of the process - and nothing a caller can see says so, which is why it is
+   * observed here rather than through the subject. The top frame is what is examined, because a
+   * thread that is merely on its way into an open has that call further down its stack and is
+   * not stuck in it.
+   *
+   * The name, state and frame of each such thread are reported rather than only the count, so a
+   * case that fails on this says which threads it found.
+   */
+  private def threadsInsideAFileOpen: IO[Vector[String]] =
+    IO.blocking {
+      Thread.getAllStackTraces.asScala.toVector.flatMap { case (thread, frames) =>
+        frames.toVector.headOption
+          .filter(frame =>
+            frame.getMethodName == "open0" ||
+              (frame.getClassName.startsWith("sun.nio.fs") && frame.getMethodName == "open"))
+          .map(frame => s"${thread.getName} state=${thread.getState} top=$frame")
+      }
+    }
+
+  /**
+   * Waits for the threads inside a file open to come back to a count, and reports what it saw
+   * last.
+   *
+   * The suites here share one forked process and run in parallel, so another suite's ordinary
+   * open can appear in one sample for an instant; polling is what tells that apart from a
+   * thread that is stuck. The wait ends as soon as the count is back to the baseline, so an
+   * ordinary run pays one sample, and a run where the count stays above it pays the whole
+   * settle and then fails with what it observed.
+   *
+   * @param baseline  the count observed before the read, which the count must return to
+   * @return the threads observed at the last sample taken
+   */
+  private def settledThreadsInsideAFileOpen(baseline: Int): IO[Vector[String]] =
+    settledThreadsInsideAFileOpen(baseline, OpenFrameSettleAttempts)
+
+  /**
+   * The polling loop behind the settle above, written as a recursion on the attempts left.
+   *
+   * `IO` recursion is stack safe, so the loop costs nothing in stack however many attempts it
+   * is given, and each attempt is a fresh observation rather than a re-reading of one.
+   *
+   * @param baseline  the count observed before the read
+   * @param attemptsLeft  how many more samples may be taken
+   * @return the threads observed at the last sample taken
+   */
+  private def settledThreadsInsideAFileOpen(baseline: Int, attemptsLeft: Int): IO[Vector[String]] =
+    threadsInsideAFileOpen.flatMap { observed =>
+      if (observed.size <= baseline || attemptsLeft <= 0) {
+        IO.pure(observed)
+      } else {
+        IO.sleep(OpenFrameSettle)
+          .flatMap(_ => settledThreadsInsideAFileOpen(baseline, attemptsLeft - 1))
+      }
+    }
 
   /** The targets of the descriptors this process currently has open. */
   private def descriptorTargets: IO[Vector[String]] =
@@ -1833,7 +2274,7 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 //
 // ---------------------------------------------------------------------------
 // The seven cases named above are every case in this file that an original case landed on.
-// The other twenty-two of the twenty-nine have no origin in the original class and are
+// The other twenty-three of the thirty have no origin in the original class and are
 // additive, because they hold the port to promises the original could not make - its reads
 // happened where they were written and it reported failure by throwing. They are:
 //
@@ -1843,9 +2284,10 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 //     evaluated, and on the file side the file exists when the description is built and is
 //     deleted before it is evaluated, which is what a reader that read at construction time
 //     would fail;
-//   * the two remaining failure cases - a file that does not exist, and a path that is not
-//     a readable file - which hold the port to its promise that a source it cannot obtain
-//     fails the effect rather than yielding a sentinel or empty text;
+//   * the two remaining failure cases - a file that does not exist, and a path the platform
+//     describes as a directory rather than a regular file - which hold the port to its promise
+//     that a source it cannot obtain fails the effect rather than yielding a sentinel or empty
+//     text, the second of them naming the refusal the reader now decides for itself;
 //   * the JSON-structure case, which shows the fixture survives the read as text a parser
 //     accepts, and the multi-byte case, which shows a decode of more bytes than characters;
 //   * the absence proofs, which deny the whole unported surface at compile time;
@@ -1862,13 +2304,18 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 //     not grow with the name it quotes, while keeping the platform's report reachable as the
 //     cause. The absent-resource case above carries the third property of that family, that
 //     an ordinary name is quoted back character for character;
-//   * the two cases about a read that has not finished: the cancellation case, which catches a
-//     read of an endless device in flight and shows its cancellation costing a fraction of
-//     what the source needs for a whole read, with no descriptor left behind - release while a
-//     read is still under way, which the three descriptor observations above cannot reach
-//     because each of them looks at a read that has ended - and the pipe case, which
-//     establishes that a named pipe is refused rather than read, which is why the first uses
-//     a device and not a pipe;
+//   * the three cases about a read that has not finished, or that never begins: the
+//     cancellation case, which catches a read of a sparse file of exactly the ceiling in flight
+//     and shows its cancellation costing a fraction of what that source needs for a whole read,
+//     with no descriptor left behind - release while a read is still under way, which the three
+//     descriptor observations above cannot reach because each of them looks at a read that has
+//     ended; the pipe case, which points the subject at a named pipe with no writer - the source
+//     whose open never returns - and establishes that it is refused before it is opened,
+//     promptly, without letting a writing end through and without leaving a thread of this
+//     process inside a file open, which is the whole of the finding this case was written for;
+//     and the device case, which establishes the same refusal over the other shape of source
+//     whose open can wait, where a read used to run to the ceiling. The second and third are
+//     also why the first uses a regular file: a source that stalls is never read at all;
 //   * the three cases about what the classpath reader reads: a name denoting a directory of the
 //     classpath and the empty name, each refused rather than read - the reader takes the subset
 //     of the classpath that names files, and a name outside it fails where an absent name fails
@@ -1878,7 +2325,7 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 //   * the diagnostics case, which holds a failure to one destination: a refused read reports
 //     itself to its caller as a value and writes nothing about itself to the error stream, so a
 //     caller that handles the failure is not also reading it in a log;
-//   * the capability case, which asserts the five properties of the runner that the four
+//   * the capability case, which asserts the five properties of the runner that the six
 //     cancelling cases above rest on, so a machine that cannot carry one of them fails this
 //     file rather than passing it with a case silently skipped.
 // ---------------------------------------------------------------------------

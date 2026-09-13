@@ -41,6 +41,21 @@ executors:
       JAVA_TOOL_OPTIONS: -XX:MaxRAM=3572m
       MAVEN_OPTS: -Xmx1g
 
+  #----------------------------------------------------------------------------
+  # Same environment as jdk21 above, with the image pinned by digest rather
+  # than by the floating `21.0` tag: the JDK and OS layer this port is built
+  # and gated on cannot change without a change to this file. The digest is
+  # what both `cimg/openjdk:21.0` and `cimg/openjdk:21.0.12` resolve to, and
+  # the image declares JAVA_VERSION=21.0.12, which the job asserts in full.
+  # The four executors above keep their tags: they belong to the Maven jobs,
+  # which this port does not modify. No MAVEN_OPTS - this job runs no Maven.
+  jdk21_pinned:
+    docker:
+      - image: cimg/openjdk@sha256:a94c24460ede1270ab32fbad52fd8afaf8a46113667fe6e7e3d4ce92442960e2
+    working_directory: ~/repo
+    environment:
+      JAVA_TOOL_OPTIONS: -XX:MaxRAM=3572m
+
 #############################################################################
 # reusable commands
 commands:
@@ -182,7 +197,8 @@ commands:
           working_directory: ~/repo/.circleci
           command: |
             gpg --version
-            echo $SIGNING_PASSWORD | gpg --batch --passphrase-fd 0 -o codesigning.asc -d codesigning.asc.gpg
+            gpg --batch --passphrase-fd 3 -o codesigning.asc -d codesigning.asc.gpg \
+              3< <(printf '%s' "$SIGNING_PASSWORD")
             gpg --batch --import codesigning.asc
             shred --remove codesigning.asc
             echo 'use-agent' >> ~/.gnupg/gpg.conf
@@ -283,12 +299,27 @@ jobs:
 #----------------------------------------------------------------------------
 # verify-gates.sh is the single owner of acceptance checks
   scala_build21:
-    executor: jdk21
+    executor: jdk21_pinned
     steps:
       - checkout
       - run:
           name: Checking Java version
-          command: java -version 2>&1 | grep -q '"21'
+          command: |
+            # The executor pins the image by digest, so this asserts the patch
+            # level that pin carries rather than only the major version: a
+            # digest that moves the JDK fails here until this expectation
+            # moves with it.
+            EXPECTED_JDK=21.0.12
+            REPORTED=$(java -version 2>&1)
+            printf '%s\n' "$REPORTED"
+            if [ "${JAVA_VERSION:-unset}" != "$EXPECTED_JDK" ]; then
+              printf 'Pinned image declares JAVA_VERSION=%s, expected %s.\n' "${JAVA_VERSION:-unset}" "$EXPECTED_JDK" >&2
+              exit 1
+            fi
+            case $REPORTED in
+              *"version \"$EXPECTED_JDK"*) ;;
+              *) printf 'Running JDK is not %s.\n' "$EXPECTED_JDK" >&2; exit 1 ;;
+            esac
       - run:
           name: Installing sbt 1.13.0
           command: |

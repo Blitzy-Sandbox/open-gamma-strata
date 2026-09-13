@@ -133,6 +133,17 @@ exceptions replaced by `Either` and the `Failure` ADT. [`README.md`](../README.m
 repository-level overview.
 
 
+### Dependency review
+
+This module declares no dependency of its own beyond the two law-checking test libraries; the rest
+come from the shared settings in `build.sbt` and are reviewed as one surface. Nothing automated
+watches that surface - the repository's Dependabot configuration covers the Maven ecosystem only -
+so section (h) of [`SCALA_MIGRATION.md`](../SCALA_MIGRATION.md) records the manual dependency and
+advisory review in its place: the coordinates and jars in scope, the cadence, the commands, the last
+review's findings, and the monitoring an owner would add. Read it before bumping a version here,
+because a bump has to keep Gate 2's classpath purity rows green as well as the tests.
+
+
 ### Source code
 
 This module is released as Open Source Software using the
