@@ -925,11 +925,14 @@ object HolidayCalendar {
    *
    * The holiday dates and the weekend dates declared to be business days are the sets the
    * calendar reports, so the array of monthly bit masks it holds internally never appears in a
-   * document. Both sets are taken from one scan of those months rather than from two, because
-   * each day of each month decides by itself which set it belongs to. The first year covered is
-   * written for the reader and is checked rather than used when a document is read back, because
-   * the range a calendar supports follows from its holidays and is worked out again when the
-   * calendar is rebuilt.
+   * document. Both sets are taken from one scan of those months rather than from two, the two
+   * masks of a month deciding between them which set each of its days belongs to; that scan
+   * reads one machine word per month and builds a date only for a day it keeps, so writing a
+   * calendar out costs the dates the document will carry and not the days of the range the
+   * calendar declares - see [[ImmutableHolidayCalendar.holidaysAndWorkingDays]]. The first year
+   * covered is written for the reader and is checked rather than used when a document is read
+   * back, because the range a calendar supports follows from its holidays and is worked out
+   * again when the calendar is rebuilt.
    *
    * @param calendar  the calendar to write
    * @return the fields of the calendar
@@ -988,6 +991,16 @@ object HolidayCalendar {
    * part by part, as resolving that identifier always does. A name that resolves to nothing is a
    * decoding failure carrying the reason the identifier could not be resolved.
    *
+   * The failure is handed to [[Codecs.decodingFailure]] rather than being turned into a
+   * `DecodingFailure` from its message here. The name in that message came out of the document,
+   * so the message is text on its way to a reader of lines that a document decided the content
+   * and the size of; the bridge renders it - one line, bounded in length, every character a
+   * line-oriented reader could act on escaped - which is what every decoder a helper of `Codecs`
+   * builds already does. Building the failure from `failure.message` instead would let a
+   * document-supplied newline forge a line of a log and a ten-kilobyte name amplify into a
+   * ten-kilobyte diagnostic (CWE-117, CWE-400). Rendering leaves ordinary text alone character
+   * for character, so an identifier that is merely unknown reads exactly as it did.
+   *
    * @param text  the name read from the document
    * @param cursor  the position in the document, for the failure message
    * @return the calendar of that name, or the failure naming the identifier - or, for a
@@ -1001,7 +1014,7 @@ object HolidayCalendar {
           .of(text)
           .resolve(ReferenceData.standard)
           .left
-          .map(failure => DecodingFailure(failure.message, cursor.history))
+          .map(failure => Codecs.decodingFailure(failure, cursor.history))
     }
 
   /**
@@ -1254,6 +1267,25 @@ object HolidayCalendar {
    * to any calendar of the same identifier, so the library's `GBLO` and an application's own
    * `GBLO` are equal values that encode differently, which is exactly what stops the second
    * being read back as the first.
+   *
+   * ===What a document costs===
+   *
+   * A calendar written as its name costs the resolution of that name, and nothing about the
+   * calendar it names is read or written. The structural form costs the '''dates''' the document
+   * carries - one date built, formatted and inserted into an ordered set per holiday and per
+   * working-day override, in each direction - plus one machine word of work per month of the
+   * range of years the calendar covers.
+   *
+   * That last term is the representation's own and does not go away: a calendar holds one `Int`
+   * per month from the first year of its holidays to the last, so writing one out has to read
+   * each of those words and reading one in has to fill each of them. It is one word and not one
+   * day: a month is entered, decided and left on its two masks, so neither direction visits the
+   * days of a month it keeps no date from. A calendar of two holidays a century and a half apart
+   * therefore costs its two dates and eighteen hundred words, rather than the fifty-four thousand
+   * day steps and eighteen hundred date objects that reading a month a day at a time cost - which
+   * is what made the cost of a document follow the range its calendar declared instead of the
+   * data it carried. See [[ImmutableHolidayCalendar.holidaysAndWorkingDays]] and
+   * [[ImmutableHolidayCalendar.of]] for the two walks.
    *
    * ===What a document may not state===
    *
@@ -1666,10 +1698,11 @@ sealed abstract case class ImmutableHolidayCalendar private (override val id: Ho
    * with, sorted and deduplicated. It is the set a document holds, and it is what makes the
    * storage an implementation detail rather than part of the contract.
    *
-   * Only the holidays are built: the walk of the stored months reads the two bits that decide
-   * the category of each day and keeps a date only where both say holiday, so a working-day
-   * override is recognised by its bits and is never turned into a date nor given a list cell on
-   * the way to being discarded. See [[datesOfCategory]].
+   * Only the holidays are built: the walk of the stored months combines the two masks that decide
+   * the category of a day into the days that are holidays, and builds a date only for those, so a
+   * working-day override is excluded by the masks and is never turned into a date nor given a
+   * list cell on the way to being discarded. See [[datesOfCategory]], which also gives what the
+   * walk costs.
    *
    * @return the holiday dates, in ascending order
    */
@@ -2039,11 +2072,16 @@ sealed abstract case class ImmutableHolidayCalendar private (override val id: Ho
   /**
    * Recovers the holiday dates and the weekend dates declared to be business days.
    *
-   * Both sets come from one scan of the stored months, because each day of each month decides
-   * which of them it belongs to, if either: a day that is not a business day and does not fall at
-   * a weekend is a holiday, and a day that is a business day and does fall at a weekend is a
-   * working-day override. A day that is neither is an ordinary business day or an ordinary
-   * weekend, and is carried by the weekend alone.
+   * Both sets come from one scan of the stored months, because the two masks of a month decide
+   * between them which of the sets each of its days belongs to, if either: a day that is not a
+   * business day and does not fall at a weekend is a holiday, and a day that is a business day
+   * and does fall at a weekend is a working-day override. A day that is neither is an ordinary
+   * business day or an ordinary weekend, and is carried by the weekend alone.
+   *
+   * The scan is [[exceptionalDates]], which reads one machine word per month and builds a date
+   * only for a day it keeps, so the cost of this is the dates it answers with plus a word per
+   * month of the range rather than anything per day of it. Which of the two sets a date belongs
+   * to then follows from [[isHoliday]], which reads the same bit the scan did.
    *
    * Where the calendar holds no months there is nothing to scan and both sets are empty.
    *
@@ -2073,50 +2111,17 @@ sealed abstract case class ImmutableHolidayCalendar private (override val id: Ho
    * splits one walk in two. A caller that wants one kind alone asks [[datesOfCategory]] for that
    * kind instead, and so never builds the other.
    *
-   * The whole of the stored months is walked once, from the last month to the first and within
-   * each month from the last day to the first, prepending each date that is found. Walking
-   * backwards is what makes the result ascending without a reversal, and prepending is what makes
-   * the walk allocate one list cell per date returned rather than a collection per month. Both
-   * loops are tail recursive over `Int` indices, so the walk holds no mutable state and needs no
-   * stack however many years the calendar covers.
+   * A day is exceptional exactly where its bit in its stored month and the bit of its day of the
+   * week in the weekend '''agree''', so the exceptional days of a month are the complement of
+   * the two masks exclusive-or'd together, taken over the days the month has. The walk is
+   * therefore [[datesOfSelectedDays]] over that one expression; see there for what it costs.
    *
    * Where the calendar holds no months there is nothing to walk and the result is empty.
    *
    * @return every holiday and working-day override of the stored months, in ascending order
    */
-  private def exceptionalDates: List[LocalDate] = {
-    @tailrec
-    def loop(index: Int, found: List[LocalDate]): List[LocalDate] =
-      if (index < 0) found else loop(index - 1, exceptionalDatesOfMonth(index, found))
-    loop(months.length - 1, Nil)
-  }
-
-  /**
-   * Prepends the exceptional dates of one stored month to the dates already found.
-   *
-   * @param index  the index of the month to scan
-   * @param later  the dates found in the months after this one, in ascending order
-   * @return the exceptional dates of this month followed by those dates, in ascending order
-   */
-  private def exceptionalDatesOfMonth(index: Int, later: List[LocalDate]): List[LocalDate] = {
-    // the month of an index, worked out arithmetically rather than by adding months to the first
-    // day of the first year, which allocated a date per month more than this does
-    val firstOfMonth = LocalDate.of(startYear + index / 12, index % 12 + 1, 1)
-    val monthData = months(index)
-    val firstBitOfWeek = firstOfMonth.getDayOfWeek.getValue - 1
-    @tailrec
-    def loop(dayOffset: Int, found: List[LocalDate]): List[LocalDate] =
-      if (dayOffset < 0) {
-        found
-      } else {
-        val businessDay = (monthData & (1 << dayOffset)) != 0
-        val weekendDay = (weekends & (1 << ((firstBitOfWeek + dayOffset) % 7))) != 0
-        // a day the weekend accounts for adds nothing; the rest is a holiday or an override
-        val next = if (businessDay == weekendDay) firstOfMonth.withDayOfMonth(dayOffset + 1) :: found else found
-        loop(dayOffset - 1, next)
-      }
-    loop(firstOfMonth.lengthOfMonth - 1, later)
-  }
+  private def exceptionalDates: List[LocalDate] =
+    datesOfSelectedDays((businessDayBits, weekendBits) => ~(businessDayBits ^ weekendBits))
 
   /**
    * Recovers the dates of one exceptional category alone from the stored months.
@@ -2127,17 +2132,16 @@ sealed abstract case class ImmutableHolidayCalendar private (override val id: Ho
    * that is both. A day whose two bits disagree is an ordinary business day or an ordinary
    * weekend, is carried by the weekend alone, and belongs to neither category.
    *
-   * Both bits are compared against the category asked for, which is what lets this build only
-   * the dates the caller wants: a date of the other category is recognised by its bits and never
-   * becomes a `LocalDate` nor occupies a list cell. A caller that wants both categories reads
-   * [[holidaysAndWorkingDays]] instead, which partitions one walk rather than making two.
+   * Both bits are required to be the category asked for, which is what lets this build only the
+   * dates the caller wants: a date of the other category is never a bit of the word the walk
+   * turns into dates, so it becomes no `LocalDate` and occupies no list cell. A caller that
+   * wants both categories reads [[holidaysAndWorkingDays]] instead, which partitions one walk
+   * rather than making two.
    *
-   * The stored months are walked once, from the last month to the first and within each month
-   * from the last day to the first, prepending each date kept. Walking backwards is what makes
-   * the result ascending without a reversal, and prepending is what makes the walk allocate one
-   * list cell per date returned rather than a collection per month. Both loops are tail
-   * recursive over `Int` indices, so the walk holds no mutable state and needs no stack however
-   * many years the calendar covers.
+   * The category is applied by inverting both masks for the holidays and neither of them for the
+   * working days, which is the whole of the difference between the two: `~b & ~w` selects the
+   * days both bits call closed, and `b & w` the days both call open. The walk is
+   * [[datesOfSelectedDays]] over that expression; see there for what it costs.
    *
    * Where the calendar holds no months there is nothing to walk and the result is empty.
    *
@@ -2147,47 +2151,122 @@ sealed abstract case class ImmutableHolidayCalendar private (override val id: Ho
    * @return the dates of that category, in ascending order
    */
   private def datesOfCategory(category: Boolean): List[LocalDate] = {
-    @tailrec
-    def loop(index: Int, found: List[LocalDate]): List[LocalDate] =
-      if (index < 0) found else loop(index - 1, datesOfCategoryInMonth(index, category, found))
-    loop(months.length - 1, Nil)
+    // `x ^ -1` is `~x`, so one exclusive-or applies the category to both masks without a branch
+    // inside the walk: every bit is inverted for the holidays and none of them for the overrides
+    val invert = if (category == ImmutableHolidayCalendar.WorkingDayCategory) 0 else -1
+    datesOfSelectedDays((businessDayBits, weekendBits) => (businessDayBits ^ invert) & (weekendBits ^ invert))
   }
 
   /**
-   * Prepends the dates of one exceptional category found in one stored month to the dates
-   * already found.
+   * Walks the stored months and recovers the dates that one selection of their bits picks out.
    *
-   * @param index  the index of the month to scan
-   * @param category  the value both stored bits take for the category wanted
-   * @param later  the dates found in the months after this one, in ascending order
-   * @return the dates of that category in this month followed by those dates, in ascending order
+   * The body of [[exceptionalDates]] and [[datesOfCategory]], which differ only in how they
+   * combine the two masks a month has: the business-day bits it stores, and the days of it that
+   * fall at the weekend. Every date a calendar answers with beyond its weekend is recovered
+   * through here.
+   *
+   * ===What it costs===
+   *
+   * The cost is the '''dates''' the selection picks out, plus one machine word of work per month
+   * of the range. Nothing looks at a day of the month: the selection is one integer expression
+   * over two masks, a month whose selected word is zero is left in a handful of instructions
+   * without a date being built or even a month's geometry being finished, and a month that does
+   * select days visits those days alone, taking the highest set bit at each step. The one word
+   * per month that remains is the representation's own - a calendar stores one `Int` per month of
+   * the years its holidays span, and recovering its dates has to read each of them - so a
+   * calendar declaring a long range still pays for the length of that range here, at one word
+   * rather than at one date arithmetic step per day of it. The walk that preceded this one tested
+   * two bits per '''day''', which is what made writing out a calendar of two holidays a hundred
+   * and fifty years apart cost fifty-four thousand day steps and a date object per month.
+   *
+   * ===How it walks===
+   *
+   * The whole of the stored months is walked once, from the last month to the first and within
+   * each month from the last day to the first, prepending each date that is found. Walking
+   * backwards is what makes the result ascending without a reversal, and prepending is what makes
+   * the walk allocate one list cell per date returned rather than a collection per month.
+   *
+   * The weekend days of a month follow from the day of the week its first day falls on, and that
+   * is '''threaded''' through the walk rather than asked of a date per month: the first of one
+   * month is the length of that month before the day after it ends, and the day after month
+   * `index` ends is the first day of month `index + 1`, so each step hands the day it worked out
+   * to the next one. The walk therefore builds a single `LocalDate` however many months it covers
+   * - the first of January of the year after the last one covered, which is where the thread
+   * starts - and every step after that is integer arithmetic.
+   *
+   * Both loops are tail recursive over `Int` indices, so the walk holds no mutable state and
+   * needs no stack however many years the calendar covers.
+   *
+   * @param selected  picks the days wanted out of a month, from the business-day bits the month
+   *   stores and the day-of-month bits of its weekend, both in the layout of a stored month; it
+   *   may set bits above the end of the month, which are masked off
+   * @return the dates that selection picks out, in ascending order
    */
-  private def datesOfCategoryInMonth(
-      index: Int,
-      category: Boolean,
-      later: List[LocalDate]): List[LocalDate] = {
-
-    // the month of an index, worked out arithmetically rather than by adding months to the first
-    // day of the first year, which allocated a date per month more than this does
-    val firstOfMonth = LocalDate.of(startYear + index / 12, index % 12 + 1, 1)
-    val monthData = months(index)
-    val firstBitOfWeek = firstOfMonth.getDayOfWeek.getValue - 1
+  private def datesOfSelectedDays(selected: (Int, Int) => Int): List[LocalDate] = {
     @tailrec
-    def loop(dayOffset: Int, found: List[LocalDate]): List[LocalDate] =
-      if (dayOffset < 0) {
+    def loop(index: Int, dayOfWeekAfterMonth0: Int, found: List[LocalDate]): List[LocalDate] =
+      if (index < 0) {
         found
       } else {
-        val businessDay = (monthData & (1 << dayOffset)) != 0
-        val weekendDay = (weekends & (1 << ((firstBitOfWeek + dayOffset) % 7))) != 0
-        // the date is constructed only where it is kept: both bits have to be the category asked
-        // for, so a day of the other category costs the two bit checks and nothing else
-        val next =
-          if (businessDay == category && weekendDay == category) firstOfMonth.withDayOfMonth(dayOffset + 1) :: found
-          else found
-        loop(dayOffset - 1, next)
+        // the month of an index, worked out arithmetically rather than by adding months to the
+        // first day of the first year, which allocated a date per month more than this does
+        val year = startYear + index / ImmutableHolidayCalendar.MonthsOfYear
+        val monthOfYear = index % ImmutableHolidayCalendar.MonthsOfYear + 1
+        val lengthOfMonth = ImmutableHolidayCalendar.daysOfMonth(year, monthOfYear)
+        // the first of this month is its own length before the day after it ends
+        val firstDayOfWeek0 =
+          Math.floorMod(dayOfWeekAfterMonth0 - lengthOfMonth, ImmutableHolidayCalendar.DaysOfWeek)
+        val weekendBits = ImmutableHolidayCalendar.weekendDaysOfMonth(weekends, firstDayOfWeek0)
+        // one set bit per day wanted, and no bit beyond the end of the month
+        val days = selected(months(index), weekendBits) & ((1 << lengthOfMonth) - 1)
+        loop(index - 1, firstDayOfWeek0, datesOfDays(year, monthOfYear, days, found))
       }
-    loop(firstOfMonth.lengthOfMonth - 1, later)
+
+    if (months.isEmpty) {
+      Nil
+    } else {
+      // the thread starts at the first of January of the year after the last one covered, which
+      // is the day after the last stored month ends. It is the one date this walk builds
+      loop(
+        months.length - 1,
+        LocalDate.of(endYearExclusive, 1, 1).getDayOfWeek.getValue - 1,
+        Nil)
+    }
   }
+
+  /**
+   * Prepends the days one month selected, as dates, to the dates already found.
+   *
+   * The days arrive as day-of-month bits and are turned into dates from the last of them to the
+   * first, so that prepending leaves them ascending. Each step takes the '''highest''' set bit,
+   * builds the date it stands for and clears it, so the walk visits the days selected and no
+   * others: a month that selected none is answered in one comparison, which is what lets a
+   * calendar skip a month of its range for the cost of reading one word.
+   *
+   * The caller has already masked the days off beyond the end of the month, so every bit reached
+   * here stands for a day the month has and the date is built without being validated against
+   * anything the caller has not already established.
+   *
+   * @param year  the year the month belongs to
+   * @param monthOfYear  the month of the year, 1 to 12
+   * @param days  the days of that month to build, one bit per day of the month
+   * @param later  the dates found in the months after this one, in ascending order
+   * @return the dates of those days followed by those dates, in ascending order
+   */
+  @tailrec
+  private def datesOfDays(
+      year: Int,
+      monthOfYear: Int,
+      days: Int,
+      later: List[LocalDate]): List[LocalDate] =
+
+    if (days == 0) {
+      later
+    } else {
+      // the index of the highest set bit, which is the last day of the month still to build
+      val highest = 31 - Integer.numberOfLeadingZeros(days)
+      datesOfDays(year, monthOfYear, days & ~(1 << highest), LocalDate.of(year, monthOfYear, highest + 1) :: later)
+    }
 }
 
 
@@ -2210,14 +2289,57 @@ sealed abstract case class ImmutableHolidayCalendar private (override val id: Ho
 object ImmutableHolidayCalendar {
 
   /**
-   * The repeating seven-bit pattern that clears one day of the week from a month.
+   * The repeating seven-bit pattern that spreads one week of days across a month.
    *
-   * Bits 0, 7, 14, 21 and 28 are set, so shifting the pattern left by the offset between a
-   * weekend day and the first of the month selects every occurrence of that day within the
-   * month, and clearing those bits removes the whole of that weekday in one operation. It is
-   * written in hexadecimal because Scala 2 has no binary literal.
+   * Bits 0, 7, 14, 21 and 28 are set - five of them, which is as many times as one day of the
+   * week can occur in a month of 31 days - so multiplying a word of seven bits by this pattern
+   * lays a copy of that word at each of those positions. The copies would occupy bits 0 to 6, 7
+   * to 13, 14 to 20, 21 to 27 and 28 to 34, so no two of them overlap and nothing carries: the
+   * product is exactly the union of the five shifted copies, of which the bits above 31 are lost
+   * off the end of the `Int`. Every day a month has is covered - bits 0 to 30 are days 1 to 31 -
+   * and the one bit left over, bit 31, stands for a 32nd day that no month has and is cleared by
+   * the caller along with any other bit past the end of the month. That is what makes
+   * [[weekendDaysOfMonth]] three integer operations rather than a loop over the days of the month
+   * or over the days of the week.
+   *
+   * It is written in hexadecimal because Scala 2 has no binary literal.
    */
   private val WeekendPattern: Int = 0x10204081
+
+  /**
+   * The days of one month that fall at the weekend, as day-of-month bits.
+   *
+   * The weekend of a calendar is seven bits, one per day of the week; the answer is one bit per
+   * day of the month, in the layout the stored months use - bit `d - 1` for day of month `d` -
+   * so the two can be combined with a single integer operation. Day of month `d` falls on the
+   * day of the week `(firstDayOfWeek0 + d - 1) mod 7`, so the answer is the weekend read from
+   * the day the month starts on and then repeated up the month: the seven bits are '''rotated'''
+   * right by the day of the week the first of the month falls on, and the rotated word is
+   * replicated every seven bits by [[WeekendPattern]].
+   *
+   * This is the one place the weekend of a calendar is turned into days of a month, and it is
+   * used by both directions of that translation: building the stored months of a calendar from
+   * its dates, and recovering its dates from its stored months. Both are O(1) in the month and
+   * allocate nothing, which is what lets either walk visit a month of a long range without
+   * paying for the days of it - the alternative, a pass over the days of the month or a fold
+   * over the weekend days, is what made the cost of both follow the range of years a calendar
+   * declares rather than the holidays it holds.
+   *
+   * @param packedWeekends  the days of the week that are holidays, one bit per day, bit 0 being
+   *   Monday as [[weekendBit]] lays them out
+   * @param firstDayOfWeek0  the day of the week the first of the month falls on, 0 for Monday
+   * @return the days of that month falling at the weekend, one bit per day of the month; the
+   *   answer describes 32 days rather than the days of any particular month, so the caller masks
+   *   it to the length of the month it asked about, as both callers do
+   */
+  private def weekendDaysOfMonth(packedWeekends: Int, firstDayOfWeek0: Int): Int = {
+    // the weekend read from the day of the week the month begins on: bit k of these seven is set
+    // where day of month k + 1 falls at the weekend. Both halves of the rotation are masked back
+    // to seven bits, which also discards the bits the left shift carries above them
+    val rotated =
+      ((packedWeekends >>> firstDayOfWeek0) | (packedWeekends << (DaysOfWeek - firstDayOfWeek0))) & EveryDayOfWeek
+    rotated * WeekendPattern
+  }
 
   /**
    * The bits a packed weekend may set, which are the seven days of a week.
@@ -2637,15 +2759,16 @@ object ImmutableHolidayCalendar {
       weekendDays: Iterable[DayOfWeek],
       workingDays: Iterable[LocalDate]): ImmutableHolidayCalendar = {
 
-    val weekendSet = weekendDays.toSet
-    val weekends = weekendSet.foldLeft(0)((mask, day) => mask | weekendBit(day))
+    // the weekend is packed once, here, and the packed form is the whole of what building the
+    // months needs: a day of the week is a bit of it, so no set of days of the week is built
+    val weekends = weekendDays.foldLeft(0)((mask, day) => mask | weekendBit(day))
     if (holidays.isEmpty) {
       create(id, weekends, 0, emptyLookup)
     } else {
       val startYear = holidays.head.getYear
       val endYearExclusive = holidays.last.getYear + 1
       checkSupportedYears(id, startYear, holidays.last.getYear)
-      val lookup = buildLookup(holidays, weekendSet, startYear, endYearExclusive, workingDays)
+      val lookup = buildLookup(holidays, weekends, startYear, endYearExclusive, workingDays)
       create(id, weekends, startYear, lookup)
     }
   }
@@ -2792,13 +2915,44 @@ object ImmutableHolidayCalendar {
    * day.
    *
    * Each month starts as every one of its days being a business day, which also leaves the bits
-   * beyond the end of the month unset so that they read as holidays. The weekend is then cleared
-   * a whole weekday at a time, the holidays are cleared, and the working days are set last so
-   * that they override both. The array is produced by tabulating over the months, so the
-   * construction holds no mutable state.
+   * beyond the end of the month unset so that they read as holidays. The weekend is then cleared,
+   * the holidays are cleared, and the working days are set last so that they override both -
+   * which is the order the semantics of a calendar require and the order these three integer
+   * operations apply.
+   *
+   * ===What it costs===
+   *
+   * One machine word of work per month of the range, and nothing per day of a month. Each month
+   * needs three things, and each of them is O(1): the days it has, which is arithmetic
+   * ([[daysOfMonth]]); the days of it that fall at the weekend, which is
+   * [[weekendDaysOfMonth]] from the day of the week its first day falls on; and the holidays and
+   * working days named in it, which are read out of the two arrays [[masksByMonth]] collected
+   * the dates into. The one word per month is the representation's own cost - the array being
+   * built is one `Int` per month of the years the holidays span - so a calendar declaring a long
+   * range pays for the length of that range here however few holidays it holds, and that is the
+   * whole of what it pays.
+   *
+   * The day of the week each month starts on is '''threaded''' through the fill rather than
+   * asked of a date per month: the first of the next month is the length of this month after the
+   * first of this one, so each step hands the day it worked out to the next. The whole
+   * construction therefore builds a single `LocalDate` - the first day of the range, where the
+   * thread starts - whatever range it covers. Together with the two arrays above this is what
+   * removed the date, the fold over the weekend days and the two boxed map lookups that the
+   * construction of every month used to pay for.
+   *
+   * ===Why it fills an array in place===
+   *
+   * The array is allocated here and filled by a tail-recursive step, which is the idiom of this
+   * port for storage whose contents follow from each other: threading the day of the week
+   * through the months is exactly that, and `Array.tabulate` would have to recover it for each
+   * month independently, which is the date per month this is written to avoid. The array is
+   * local until it is returned and is copied again by the constructor of the calendar that will
+   * own it (see [[ownedMonths]]), so nothing observes it part-filled and no mutable state
+   * outlives this method; there is no assignment to a name anywhere in it.
    *
    * @param holidays  the holiday dates, sorted and deduplicated
-   * @param weekendDays  the days of the week that are holidays
+   * @param packedWeekends  the days of the week that are holidays, one bit per day as
+   *   [[weekendBit]] lays them out
    * @param startYear  the first year to cover, which is the year of the earliest holiday
    * @param endYearExclusive  the year after the last one to cover
    * @param workingDays  the dates that are business days whatever the holidays and weekend say
@@ -2806,26 +2960,33 @@ object ImmutableHolidayCalendar {
    */
   private def buildLookup(
       holidays: Iterable[LocalDate],
-      weekendDays: Set[DayOfWeek],
+      packedWeekends: Int,
       startYear: Int,
       endYearExclusive: Int,
       workingDays: Iterable[LocalDate]): Array[Int] = {
 
-    val firstOfRange = LocalDate.of(startYear, 1, 1)
-    val holidayMasks = masksByMonth(holidays, startYear, endYearExclusive)
-    val workingMasks = masksByMonth(workingDays, startYear, endYearExclusive)
-    Array.tabulate((endYearExclusive - startYear) * 12) { index =>
-      val firstOfMonth = firstOfRange.plusMonths(index.toLong)
-      val firstDayOfWeek = firstOfMonth.getDayOfWeek.getValue
-      // one set bit per day of the month, and no set bit beyond its end
-      val everyDay = (1 << firstOfMonth.lengthOfMonth) - 1
-      val withoutWeekends = weekendDays.foldLeft(everyDay) { (mask, weekendDay) =>
-        val daysDifference = weekendDay.getValue - firstDayOfWeek
-        val offset = if (daysDifference < 0) daysDifference + 7 else daysDifference
-        mask & ~(WeekendPattern << offset)
+    val monthCount = (endYearExclusive - startYear) * MonthsOfYear
+    val holidayMasks = masksByMonth(holidays, startYear, endYearExclusive, monthCount)
+    val workingMasks = masksByMonth(workingDays, startYear, endYearExclusive, monthCount)
+    val lookup = new Array[Int](monthCount)
+
+    @tailrec
+    def fill(index: Int, firstDayOfWeek0: Int): Unit =
+      if (index < monthCount) {
+        val lengthOfMonth = daysOfMonth(startYear + index / MonthsOfYear, index % MonthsOfYear + 1)
+        // one set bit per day of the month, and no set bit beyond its end
+        val everyDay = (1 << lengthOfMonth) - 1
+        lookup(index) =
+          (everyDay & ~weekendDaysOfMonth(packedWeekends, firstDayOfWeek0) & ~holidayMasks(index)) |
+            workingMasks(index)
+        // the first of the next month is this month's length after the first of this one
+        fill(index + 1, (firstDayOfWeek0 + lengthOfMonth) % DaysOfWeek)
       }
-      (withoutWeekends & ~holidayMasks.getOrElse(index, 0)) | workingMasks.getOrElse(index, 0)
-    }
+
+    // the thread starts at the first day of the range, which is the one date this construction
+    // builds; a range of no months has no first day to ask about and nothing to fill
+    fill(0, if (monthCount == 0) 0 else LocalDate.of(startYear, 1, 1).getDayOfWeek.getValue - 1)
+    lookup
   }
 
   /**
@@ -2834,24 +2995,34 @@ object ImmutableHolidayCalendar {
    * Dates outside the range are dropped, which is what ignores a working day the calendar holds
    * no data for. The holidays define the range and so are never dropped by this.
    *
+   * The masks are an `Array[Int]` indexed by the month rather than a map from it, so that
+   * [[buildLookup]] reads the mask of a month without boxing the index it reads it by and
+   * without consulting a hash table - a month naming no date reads as the zero the array was
+   * allocated with. The array is filled here by iterating the dates, is local until it is
+   * returned, and is read and then discarded by the one caller, so nothing observes it
+   * part-filled; there is no assignment to a name anywhere in it.
+   *
    * @param dates  the dates to collect
    * @param startYear  the first year of the range
    * @param endYearExclusive  the year after the last one of the range
-   * @return the bit mask of each month that holds at least one of the dates
+   * @param monthCount  the number of months the range covers, which is the length of the result
+   * @return the bit mask of each month of the range, zero for a month holding none of the dates
    */
   private def masksByMonth(
       dates: Iterable[LocalDate],
       startYear: Int,
-      endYearExclusive: Int): Map[Int, Int] =
+      endYearExclusive: Int,
+      monthCount: Int): Array[Int] = {
 
-    dates.foldLeft(Map.empty[Int, Int]) { (masks, date) =>
-      if (date.getYear < startYear || date.getYear >= endYearExclusive) {
-        masks
-      } else {
-        val index = (date.getYear - startYear) * 12 + date.getMonthValue - 1
-        masks.updated(index, masks.getOrElse(index, 0) | (1 << (date.getDayOfMonth - 1)))
+    val masks = new Array[Int](monthCount)
+    dates.foreach { date =>
+      if (date.getYear >= startYear && date.getYear < endYearExclusive) {
+        val index = (date.getYear - startYear) * MonthsOfYear + date.getMonthValue - 1
+        masks(index) = masks(index) | (1 << (date.getDayOfMonth - 1))
       }
     }
+    masks
+  }
 
   /**
    * The hashing and equality of calendars built from holiday dates.

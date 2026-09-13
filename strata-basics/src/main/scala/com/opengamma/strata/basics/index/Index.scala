@@ -196,16 +196,25 @@ object Index {
    * ahead of them - composes one and passes it to [[Index.firstMatch]] rather than reimplementing
    * the search.
    *
-   * It is a method rather than a field, and the elements of the sequence it returns are supplied
-   * by name, so obtaining the composition forces none of the four companions and each is forced
-   * only when its own probe is reached: resolving an Ibor index initialises the Ibor family alone.
-   * A strict sequence would force all four families on the first lookup, and the families of index
-   * and the families of floating rate name refer to each other, so each family must be
-   * initialised by the searches that reach it and by no other.
+   * It is a memoised holder of by-name elements: the composition is assembled once, on the first
+   * lookup that needs it, and every later lookup searches that same value, while each probe is
+   * still produced only when it is reached. Holding it therefore forces none of the four
+   * companions - producing a probe creates the function and does not apply it, and a family's
+   * companion is initialised by its probe being applied - so resolving an Ibor index initialises
+   * the Ibor family alone, whether or not an earlier lookup already assembled the composition.
+   * What would force all four families on the first lookup is a strict sequence, whose elements
+   * are produced where it is built rather than when they are reached: an element produced there is
+   * free to reach into its family, as an eta-expansion of a family's lookup does, obtaining the
+   * function by evaluating the companion it belongs to. Each element here is instead written out
+   * as a function of the name, which names its family without evaluating it until the probe is
+   * applied. The families of index and the families of floating rate name refer to each other, so
+   * each family must be initialised by the searches that reach it and by no other. Memoising the
+   * assembled composition is what keeps a lookup from rebuilding four cells and four functions on
+   * every call.
    *
    * @return the four family probes, in probe order, each produced when it is first reached
    */
-  def standardLookups: LazyList[Lookup] =
+  lazy val standardLookups: LazyList[Lookup] =
     ((name: String) => IborIndex.valueOf(name)) #::
       ((name: String) => OvernightIndex.valueOf(name)) #::
       ((name: String) => PriceIndex.valueOf(name)) #::
@@ -238,17 +247,33 @@ object Index {
    * Every union of this package routes through it: [[Index.valueOf]], [[RateIndex.valueOf]],
    * [[FloatingRateIndex.valueOf]] and, over the floating rates, `FloatingRate.tryParseWith`, each
    * over its own `standardLookups`. Supplying a sequence whose elements are themselves by-name -
-   * the `LazyList` each of those compositions returns is one - additionally defers producing each
+   * the `LazyList` each of those compositions holds is one - additionally defers producing each
    * probe until it is reached, which is what keeps a family's companion from being loaded by a
    * search that never consults it.
+   *
+   * The search is a tail-recursive walk over the head and the tail of the sequence, which adds no
+   * allocation of its own: it needs no iterator and holds no intermediate value, so the cost of a
+   * lookup is the cost of the probes it actually applies. Both the `LazyList` these compositions
+   * hold and a strict `List` step by head and tail in constant time and without allocating.
+   *
+   * The order in which the sequence is touched is part of the rule: the next element is asked for
+   * only after the current probe has answered with nothing, so the probe beyond the answering one
+   * is never produced, let alone applied. The search is total in the sequence it is given, the
+   * empty one included.
    *
    * @tparam A  the type of value the probes answer with
    * @param name  the text to search for, such as `GBP-LIBOR-3M`
    * @param lookups  the probes to search, in the order they are to be tried
    * @return the value the first matching probe found, or nothing when none of them matched
    */
+  @tailrec
   private[index] def firstMatch[A](name: String, lookups: Seq[String => Option[A]]): Option[A] =
-    lookups.iterator.map(lookup => lookup(name)).find(_.isDefined).flatten
+    if (lookups.isEmpty) None
+    else
+      lookups.head.apply(name) match {
+        case found @ Some(_) => found
+        case None => firstMatch(name, lookups.tail)
+      }
 
   /**
    * Reports a breach of an invariant of this module's own reference data, fail-fast.
@@ -449,12 +474,12 @@ object FloatingRateIndex {
    * index, Overnight index, then price index.
    *
    * This is the one place in this object that names the three families, and it is what [[valueOf]]
-   * searches. It is a method whose elements are supplied by name for the reason given on
-   * [[Index.standardLookups]].
+   * searches. It is a memoised holder of by-name elements - assembled once, each probe produced
+   * only when it is reached - for the reason given on [[Index.standardLookups]].
    *
    * @return the three family probes, in probe order, each produced when it is first reached
    */
-  def standardLookups: LazyList[Lookup] =
+  lazy val standardLookups: LazyList[Lookup] =
     ((name: String) => IborIndex.valueOf(name)) #::
       ((name: String) => OvernightIndex.valueOf(name)) #::
       ((name: String) => PriceIndex.valueOf(name)) #::
@@ -678,12 +703,12 @@ object RateIndex {
    * index, then Overnight index.
    *
    * This is the one place in this object that names the two families, and it is what [[valueOf]]
-   * and [[parse]] search. It is a method whose elements are supplied by name for the reason given
-   * on [[Index.standardLookups]].
+   * and [[parse]] search. It is a memoised holder of by-name elements - assembled once, each probe
+   * produced only when it is reached - for the reason given on [[Index.standardLookups]].
    *
    * @return the two family probes, in probe order, each produced when it is first reached
    */
-  def standardLookups: LazyList[Lookup] =
+  lazy val standardLookups: LazyList[Lookup] =
     ((name: String) => IborIndex.valueOf(name)) #::
       ((name: String) => OvernightIndex.valueOf(name)) #::
       LazyList.empty[Lookup]

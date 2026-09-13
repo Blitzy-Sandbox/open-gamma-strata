@@ -7,7 +7,9 @@ package com.opengamma.strata.basics
 
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.Month
 import java.time.Period
+import java.time.Year
 import java.time.YearMonth
 
 import scala.annotation.tailrec
@@ -19,6 +21,11 @@ import org.scalacheck.Arbitrary
 import org.scalacheck.Cogen
 import org.scalacheck.Gen
 import org.scalacheck.Shrink
+import org.scalacheck.rng.Seed
+
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers
+import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 
 import com.opengamma.strata.collect.{Arbitraries => CollectArbitraries}
 import com.opengamma.strata.collect.Decimal
@@ -290,14 +297,121 @@ object Arbitraries {
   /**
    * Generates a date in the twenty-one year window.
    *
-   * The day of the year runs to 365 rather than to the length of the year, so a leap year and a
-   * common year are drawn from the same range.
+   * The day of the year runs to the real length of the year, so 29 February and the 366th day of a
+   * leap year - 31 December - are both drawn; capping the day at 365 for every year would make the
+   * last day of a leap year unreachable, and reachable dates are what a property may rely on.
+   *
+   * '''Why the window is deliberately narrow.''' The dates a schedule, an index observation or a
+   * day count is generated over are drawn from here, and every one of those types is exercised over
+   * combinations of several dates at once: a window of twenty-one years keeps the draws in the range
+   * the market conventions these types carry were written for - real holiday data, sensible tenors,
+   * schedules whose periods are counted rather than estimated - and keeps a property run over the
+   * whole inventory cheap. The wider contract of the library is therefore '''not''' reached from
+   * this generator. It is reached from [[genContractBoundaryDate]] and [[genOutsideContractDate]],
+   * which draw the extremes of the 0 to 9999 year contract a holiday calendar states and the dates
+   * outside it, and it is additionally covered by example: see
+   * `date.ImmutableHolidayCalendarSpec.test_of_unsupportedYears`, which pins the accepted ends
+   * (`0-01-03`, `9999-12-31`) and the refused dates (`LocalDate.MIN`, `LocalDate.MAX`,
+   * `10000-01-01`, `-1-12-31`), and `schedule.PeriodicScheduleSpec`, which builds definitions over
+   * `LocalDate.MIN` and `LocalDate.MAX` because a schedule definition constrains the order of its
+   * dates and nothing about their magnitude.
+   *
+   * @see [[ArbitrariesSpec]] for the properties that assert what this generator draws
    */
   val genLocalDate: Gen[LocalDate] =
     for {
       year <- Gen.choose(MinYear, MaxYear)
-      dayOfYear <- Gen.choose(1, 365)
+      dayOfYear <- Gen.choose(1, Year.of(year).length())
     } yield LocalDate.ofYearDay(year, dayOfYear)
+
+  //-------------------------------------------------------------------------
+  // The ends of the date contract of the library, drawn separately from the window above so that
+  // widening the property space costs no existing property its range.
+  //-------------------------------------------------------------------------
+  /**
+   * The first date [[genLocalDate]] can draw, published for the properties over it.
+   *
+   * A property that means to assert the window it was promised reads it from here rather than
+   * restating the years, so moving the window moves the assertion with it.
+   */
+  val FirstGeneratedDate: LocalDate = LocalDate.of(MinYear, 1, 1)
+
+  /** The last date [[genLocalDate]] can draw, published for the same reason as the first. */
+  val LastGeneratedDate: LocalDate = LocalDate.of(MaxYear, 12, 31)
+
+  /** The first year a holiday calendar can hold data for, or answer a question about. */
+  val FirstContractYear: Int = 0
+
+  /** The last such year; a calendar refuses a date in year 10000 or later, and before year 0. */
+  val LastContractYear: Int = 9999
+
+  /**
+   * Every leap year of the contract range, the years a 29 February can be drawn from.
+   *
+   * Computed once rather than filtered inside a generator, because a filtered generator can fail a
+   * draw and a property is owed a value. The proleptic ISO rules make year 0 a leap year, so the
+   * first year of the contract carries a 29 February of its own.
+   */
+  private val ContractLeapYears: Vector[Int] =
+    (FirstContractYear to LastContractYear).filter(year => Year.isLeap(year.toLong)).toVector
+
+  /**
+   * Generates a date at an end of the contract a holiday calendar states, inside it.
+   *
+   * A calendar holds one machine word per month from its earliest holiday to its latest, so the
+   * years it can be built from are the years it can be asked about: 0 to 9999. These are the dates
+   * at the edges of that range which a calendar must still accept - the first and last day of the
+   * first and last year it can cover - together with a 29 February drawn from anywhere in the
+   * range, the date a year-length calculation is most likely to get wrong.
+   *
+   * No existing generator draws from here. It is for a property that means to state what the
+   * contract accepts, which is half of the boundary the narrow window of [[genLocalDate]] leaves
+   * unreached.
+   */
+  val genContractBoundaryDate: Gen[LocalDate] = Gen.frequency(
+    2 -> Gen.const(LocalDate.of(FirstContractYear, 1, 1)),
+    2 -> Gen.const(LocalDate.of(LastContractYear, 12, 31)),
+    1 -> Gen.const(LocalDate.of(FirstContractYear, 12, 31)),
+    1 -> Gen.const(LocalDate.of(LastContractYear, 1, 1)),
+    2 -> Gen.oneOf(ContractLeapYears).map(year => LocalDate.of(year, 2, 29)),
+    1 -> Gen.oneOf(ContractLeapYears).map(year => LocalDate.ofYearDay(year, 366)))
+
+  /**
+   * Generates a date outside the contract a holiday calendar states.
+   *
+   * The four dates stated by hand are the four a calendar is asserted to refuse by example in
+   * `date.ImmutableHolidayCalendarSpec.test_of_unsupportedYears`: the two ends of `LocalDate`
+   * itself, the first year past the contract and the last year before it. The two drawn branches
+   * spread the rest of the `LocalDate` range either side of the contract, so a property is not
+   * left asserting the refusal of four constants alone.
+   *
+   * Every date this draws is a legal `LocalDate` - the type spans years -999,999,999 to
+   * 999,999,999 - and none of them is a date a holiday calendar may hold or answer for.
+   */
+  val genOutsideContractDate: Gen[LocalDate] = Gen.frequency(
+    2 -> Gen.const(LocalDate.MIN),
+    2 -> Gen.const(LocalDate.MAX),
+    2 -> Gen.const(LocalDate.of(LastContractYear + 1, 1, 1)),
+    2 -> Gen.const(LocalDate.of(FirstContractYear - 1, 12, 31)),
+    1 -> Gen
+      .choose(LastContractYear + 1, LocalDate.MAX.getYear)
+      .flatMap(year => Gen.choose(1, Year.of(year).length()).map(day => LocalDate.ofYearDay(year, day))),
+    1 -> Gen
+      .choose(LocalDate.MIN.getYear, FirstContractYear - 1)
+      .flatMap(year => Gen.choose(1, Year.of(year).length()).map(day => LocalDate.ofYearDay(year, day))))
+
+  /**
+   * Generates a date the whole contract admits: mostly from the window, occasionally at an end.
+   *
+   * One draw in ten is an extreme, which is often enough for a property run of a hundred cases to
+   * see several and rare enough that what the property mostly exercises is still the range the
+   * market conventions were written for. It is offered for a property whose subject holds a single
+   * date and is defined across the contract; a property over a schedule or an observation keeps to
+   * [[genLocalDate]], whose window its own preconditions are stated against.
+   */
+  val genWideLocalDate: Gen[LocalDate] = Gen.frequency(
+    9 -> genLocalDate,
+    1 -> genContractBoundaryDate)
 
   val genYearMonth: Gen[YearMonth] =
     for {
@@ -3349,5 +3463,239 @@ object Arbitraries {
     val dates = adjustableDateCandidates(payment.date)
       .map(date => AdjustablePayment.of(payment.value, date))
     (amounts #::: dates).distinct.filterNot(candidate => candidate == payment)
+  }
+}
+
+/**
+ * The self-test of the date generators of [[Arbitraries]].
+ *
+ * A generator is the premise of every property written over it, so a degenerate one leaves a suite
+ * green while asserting nothing: the properties below therefore treat the generators themselves as
+ * the subject. Three things are asserted of them.
+ *
+ *   - '''The window is the whole window.''' [[Arbitraries.genLocalDate]] draws every year of its
+ *     twenty-one year range, a 29 February, a 31 December, and the 366th day of a leap year - which
+ *     is the one draw a day-of-year capped at 365 could never produce - and it draws nothing outside
+ *     [[Arbitraries.FirstGeneratedDate]] to [[Arbitraries.LastGeneratedDate]], so no property
+ *     inherited a wider range than the one its own preconditions are stated against.
+ *   - '''Both directions of the date contract.''' A holiday calendar can neither hold nor answer
+ *     for a date whose year lies outside 0 to 9999, and refuses one fast through `ArgCheck`. Every
+ *     date [[Arbitraries.genContractBoundaryDate]] draws is one a calendar accepts and then reports
+ *     as a holiday; every date [[Arbitraries.genOutsideContractDate]] draws is one the same factory
+ *     refuses, naming the precondition. The wording asserted is taken from the factory's own
+ *     refusal rather than transcribed here - see `UnsupportedDateMessage` - so a reworded message
+ *     cannot leave these properties asserting text nothing raises.
+ *   - '''The wide generator stays in contract.''' [[Arbitraries.genWideLocalDate]] mixes the window
+ *     with those in-contract extremes, and a calendar answers for every date it draws: inside its
+ *     own years from its holiday data, outside them from its weekend alone.
+ *
+ * These are the properties, not the only cover: the same boundary is asserted by example in
+ * `date.ImmutableHolidayCalendarSpec.test_of_unsupportedYears` and
+ * `date.ImmutableHolidayCalendarSpec.test_unsupportedYears_optimizedPaths`, and `LocalDate.MIN` and
+ * `LocalDate.MAX` are carried through `schedule.PeriodicScheduleSpec`, which constrains the order of
+ * its dates and nothing about their magnitude.
+ *
+ * '''Replaying a failure.''' The two tests that draw from fixed seeds draw from the seed
+ * `BoundarySeed` = 20240229 - stated here so that a failure is replayable - as
+ * `Seed(BoundarySeed + index)` for each index of the draw, never from the clock or from the
+ * property-check machinery, so two runs of this suite draw the same dates and a failing draw
+ * reappears on the next run. The properties run from the ScalaCheck default seed and print their
+ * own `Init Seed` on failure, as every property of this repository does.
+ */
+final class ArbitrariesSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
+
+  /**
+   * The property configuration of every property in this suite.
+   *
+   * Two hundred cases is twenty times the ScalaTest default, which the generators here are worth:
+   * each draws from a handful of branches, and two hundred cases reach every branch of each of them
+   * while costing no more than building two hundred one-holiday calendars.
+   *
+   * @return the configuration every property in this suite runs under
+   */
+  implicit override val generatorDrivenConfig: PropertyCheckConfiguration =
+    PropertyCheckConfiguration(minSuccessful = 200)
+
+  /** The identifier of every calendar this suite builds, which is not a built-in one. */
+  private val BoundaryCalendarId: HolidayCalendarId = HolidayCalendarId.of("ArbitrariesBoundary")
+
+  /** The weekend of every calendar this suite builds, the weekend most of the world keeps. */
+  private val Weekend: List[DayOfWeek] = List(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
+
+  /** The one holiday of the calendar the wide generator is answered by; a Monday in 2015. */
+  private val ProbeHoliday: LocalDate = LocalDate.of(2015, 6, 15)
+
+  /**
+   * A calendar holding one holiday, used to answer questions about dates all over the contract.
+   *
+   * Its holiday data covers 2015 alone, so every drawn date outside that year exercises the
+   * fallback path - the weekend applied without holiday data - which is the path a date at an end
+   * of the contract necessarily takes.
+   */
+  private val ProbeCalendar: ImmutableHolidayCalendar =
+    ImmutableHolidayCalendar.of(BoundaryCalendarId, List(ProbeHoliday), Weekend)
+
+  /**
+   * Builds a one-holiday calendar and returns the message of the refusal it raises.
+   *
+   * @param date  the single holiday the calendar is asked to hold
+   * @return the message of the `IllegalArgumentException` the factory raised
+   */
+  private def refusalFor(date: LocalDate): String =
+    intercept[IllegalArgumentException](
+      ImmutableHolidayCalendar.of(BoundaryCalendarId, List(date), Weekend)).getMessage
+
+  /**
+   * The wording of the date precondition, taken from the factory rather than transcribed.
+   *
+   * Two dates at opposite ends of `LocalDate` are refused, and the two messages differ only in the
+   * years they name, so the common prefix of the two is the whole of the wording that does not vary
+   * with the date. Deriving it here is what keeps the properties below honest: an assertion against
+   * a transcription of a message would keep passing if the factory were reworded, and would keep
+   * passing just as well if the message were replaced by wording that named no precondition at all.
+   * `the refusal text this suite asserts is the factory's own` asserts that the derivation itself
+   * produced something, since `include` of an empty string holds of every message there is.
+   */
+  private val UnsupportedDateMessage: String = {
+    val fromEarliest = refusalFor(LocalDate.MIN)
+    val fromLatest = refusalFor(LocalDate.MAX)
+    fromEarliest
+      .zip(fromLatest)
+      .takeWhile { case (earliest, latest) => earliest == latest }
+      .map { case (shared, _) => shared }
+      .mkString
+  }
+
+  //-------------------------------------------------------------------------
+  test("the refusal text this suite asserts is the factory's own") {
+    val fromEarliest = refusalFor(LocalDate.MIN)
+    val fromLatest = refusalFor(LocalDate.MAX)
+    // the two refusals name their own years, so the derived wording is a proper prefix of each:
+    // non-empty, shorter than either, and shared by both
+    fromEarliest should not be fromLatest
+    UnsupportedDateMessage should not be empty
+    UnsupportedDateMessage.length should be < fromEarliest.length
+    UnsupportedDateMessage.length should be < fromLatest.length
+    fromEarliest should startWith(UnsupportedDateMessage)
+    fromLatest should startWith(UnsupportedDateMessage)
+    // and it came from the factory this suite called, which named the calendar it was asked for
+    UnsupportedDateMessage should include(BoundaryCalendarId.name)
+  }
+
+  test("a calendar holds every in-contract boundary date and reports it as a holiday") {
+    forAll(Arbitraries.genContractBoundaryDate) { (date: LocalDate) =>
+      date.getYear should be >= Arbitraries.FirstContractYear
+      date.getYear should be <= Arbitraries.LastContractYear
+      val calendar = ImmutableHolidayCalendar.of(BoundaryCalendarId, List(date), Weekend)
+      // the year of the holiday is the whole of the range the calendar stores, and the date it was
+      // built from is a holiday of it - whether because it was named as one or, where the date falls
+      // at the weekend, because the weekend closes it
+      calendar.startYear shouldBe date.getYear
+      calendar.endYearExclusive shouldBe date.getYear + 1
+      calendar.isHoliday(date) shouldBe true
+      calendar.isBusinessDay(date) shouldBe false
+    }
+  }
+
+  test("a calendar refuses every out-of-contract date, naming the precondition") {
+    forAll(Arbitraries.genOutsideContractDate) { (date: LocalDate) =>
+      // the generator's own claim: every date it draws lies outside the years a calendar covers
+      val insideContract = date.getYear >= Arbitraries.FirstContractYear &&
+        date.getYear <= Arbitraries.LastContractYear
+      insideContract shouldBe false
+      // and the factory refuses it fast, as a caller-contract violation rather than a data failure
+      refusalFor(date) should include(UnsupportedDateMessage)
+    }
+  }
+
+  test("the wide date generator stays in contract and a calendar answers for every date it draws") {
+    forAll(Arbitraries.genWideLocalDate) { (date: LocalDate) =>
+      date.getYear should be >= Arbitraries.FirstContractYear
+      date.getYear should be <= Arbitraries.LastContractYear
+      val closedByWeekend = Weekend.contains(date.getDayOfWeek)
+      if (date.getYear == ProbeHoliday.getYear) {
+        // inside the stored year the holiday data answers, and it holds the one holiday
+        ProbeCalendar.isHoliday(date) shouldBe (closedByWeekend || date == ProbeHoliday)
+      } else {
+        // outside it the weekend alone answers, which is the whole of the fallback contract
+        ProbeCalendar.isHoliday(date) shouldBe closedByWeekend
+      }
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  // The draws from the fixed seed: what a generator is capable of producing, asserted over a run
+  // large enough for a rare branch to appear, rather than over the cases a property happens to see.
+  //-------------------------------------------------------------------------
+  /** The seed the draws below are taken from, fixed so that a failure of one is replayable. */
+  private val BoundarySeed: Long = 20240229L
+
+  /**
+   * How many values the draws below take.
+   *
+   * The rarest draw of [[Arbitraries.genLocalDate]] is the 366th day of a leap year: five of the
+   * twenty-one years in the window are leap years and each has 366 days, so one draw in about
+   * 1,540 is such a date. Twenty thousand draws expect thirteen of them, which leaves the chance
+   * that none appears at about two in a million - and the draws are from fixed seeds, so the
+   * question is settled for this suite rather than left to a run.
+   */
+  private val PinnedDrawCount: Int = 20000
+
+  /**
+   * Draws from a generator with the fixed seed, one seed per value.
+   *
+   * A generator without a filter yields a value from every seed, so a draw that yields nothing is a
+   * generator that has become partial; the count is asserted by the callers for that reason.
+   *
+   * @param generator  the generator to draw from
+   * @tparam A  the type being drawn
+   * @return the values drawn, in the order of the seeds they came from
+   */
+  private def pinnedDraws[A](generator: Gen[A]): List[A] = {
+    val parameters = Gen.Parameters.default
+    (0 until PinnedDrawCount).toList
+      .flatMap(index => generator(parameters, Seed(BoundarySeed + index.toLong)))
+  }
+
+  test("the window generator reaches every year of the window and both ends of a year") {
+    val drawn = pinnedDraws(Arbitraries.genLocalDate)
+    drawn.size shouldBe PinnedDrawCount
+    // nothing outside the window: the range every property over this generator was promised
+    drawn.filter(date =>
+      date.isBefore(Arbitraries.FirstGeneratedDate) ||
+        date.isAfter(Arbitraries.LastGeneratedDate)) shouldBe empty
+    // every year of it, so the year is drawn rather than fixed
+    drawn.map(date => date.getYear).distinct.sorted shouldBe
+      (Arbitraries.FirstGeneratedDate.getYear to Arbitraries.LastGeneratedDate.getYear).toList
+    // the 366th day of a leap year, which is what a day-of-year capped at 365 made unreachable
+    drawn.count(date => date.getDayOfYear == 366) should be > 0
+    // and both dates a year-length calculation is most likely to get wrong
+    drawn.count(date => date.getMonth == Month.FEBRUARY && date.getDayOfMonth == 29) should be > 0
+    drawn.count(date => date.getMonth == Month.DECEMBER && date.getDayOfMonth == 31) should be > 0
+  }
+
+  test("the boundary generators reach every date the contract is stated at") {
+    val inContract = pinnedDraws(Arbitraries.genContractBoundaryDate)
+    inContract.size shouldBe PinnedDrawCount
+    val inContractDates = inContract.toSet
+    inContractDates should contain(LocalDate.of(Arbitraries.FirstContractYear, 1, 1))
+    inContractDates should contain(LocalDate.of(Arbitraries.FirstContractYear, 12, 31))
+    inContractDates should contain(LocalDate.of(Arbitraries.LastContractYear, 1, 1))
+    inContractDates should contain(LocalDate.of(Arbitraries.LastContractYear, 12, 31))
+    inContract.count(date =>
+      date.getMonth == Month.FEBRUARY && date.getDayOfMonth == 29) should be > 0
+    inContract.count(date => date.getDayOfYear == 366) should be > 0
+
+    val outsideContract = pinnedDraws(Arbitraries.genOutsideContractDate)
+    outsideContract.size shouldBe PinnedDrawCount
+    val outsideContractDates = outsideContract.toSet
+    // the four dates `ImmutableHolidayCalendarSpec` pins by example, now reached by a property
+    outsideContractDates should contain(LocalDate.MIN)
+    outsideContractDates should contain(LocalDate.MAX)
+    outsideContractDates should contain(LocalDate.of(Arbitraries.LastContractYear + 1, 1, 1))
+    outsideContractDates should contain(LocalDate.of(Arbitraries.FirstContractYear - 1, 12, 31))
+    // and years either side of the contract beyond those four, so the draws are not four constants
+    outsideContract.count(date => date.getYear > Arbitraries.LastContractYear + 1) should be > 0
+    outsideContract.count(date => date.getYear < Arbitraries.FirstContractYear - 1) should be > 0
   }
 }

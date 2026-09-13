@@ -96,6 +96,34 @@ final class MoneySpec extends AnyFunSuite with Matchers {
   /** A value of a type unrelated to a money value, for the equality assertion that needs one. */
   private val ANOTHER_TYPE: Any = ""
 
+  /**
+   * The longest the amount part of the text form may be, as [[Money]] states it.
+   *
+   * It is the ceiling [[com.opengamma.strata.collect.Decimal]] applies to the numeral it reads,
+   * restated in that companion so that it can be tested before the numeral is copied, and
+   * restated here because both sides of it are asserted.
+   */
+  private val MaxAmountTextLength: Int = 256
+
+  /**
+   * The longest text a rejection quotes back in full, which is the longest text this type accepts.
+   *
+   * A three letter currency code, the one separator after it and a numeral at the ceiling above.
+   * Text within it is named character for character, and text beyond it is named through the
+   * bounded renderer, so the cost of a rejection is capped by this type rather than chosen by its
+   * caller.
+   */
+  private val MaxQuotedTextLength: Int = 3 + 1 + MaxAmountTextLength
+
+  /**
+   * The greatest number of characters of rejected text a message can carry.
+   *
+   * The bounded renderer of a failure writes at most five hundred and twelve characters of a part
+   * and then the three of an ellipsis, so this is the cap a message reaches however long the
+   * rejected text was.
+   */
+  private val MaxRenderedMessagePart: Int = 512 + 3
+
   private val DifferentCurrenciesAddMessage: String =
     "Unable to add amounts in different currencies"
 
@@ -542,14 +570,127 @@ final class MoneySpec extends AnyFunSuite with Matchers {
     }
 
     // and text written to be hostile - two hundred thousand separators, which is two hundred
-    // thousand and one parts - reaches that same wording, naming the text in full as every
-    // rejection of this port does; bounding what a reader sees belongs to the rendering of the
-    // failure, which the neighbouring suites pin.
+    // thousand and one parts - reaches that same wording, with the text it refused quoted
+    // bounded: text that long could not have named a value at any length, so naming the whole of
+    // it would make the cost of a rejection proportional to the length a sender chose
+    // (CWE-400/CWE-770). Bounding what a reader sees is a second, independent bound, which the
+    // rendering of the failure applies on top of this one.
     val hostile: String = " " * 200000
     val refused: FailureOr[Money] = Money.parse(hostile)
     refused should beFailureWith(FailureReason.PARSING)
-    refused.left.toOption.map(failure => failure.message) shouldBe
-      Some(s"Unable to parse amount, invalid format: $hostile")
+    val refusedMessage: String =
+      refused.left.toOption.map(failure => failure.message).getOrElse(fail("expected a failure"))
+    refusedMessage should startWith("Unable to parse amount, invalid format:   ")
+    refusedMessage should endWith("...")
+    refusedMessage.length shouldBe
+      "Unable to parse amount, invalid format: ".length + MaxRenderedMessagePart
+  }
+
+  /**
+   * Asserts the ceiling on the numeral from both sides of it, and the bound on the text a
+   * rejection quotes back.
+   *
+   * The ceiling is the one [[com.opengamma.strata.collect.Decimal]] already applies, restated so
+   * that it is tested before the numeral is copied; what is new here is that the quotation of the
+   * rejected text is bounded at the longest text this type accepts, so text within that length is
+   * named character for character - a raw line break among it - and text beyond it is named
+   * through the bounded renderer. A rejection therefore cannot be made to cost more than the
+   * ceiling however long the input is.
+   */
+  test("the numeral is bounded, and a rejection quotes only what could have named a value") {
+    // a numeral of exactly the ceiling reaches the decimal exactly as it always did
+    val atCeiling: String = "0." + ("0" * (MaxAmountTextLength - 2))
+    atCeiling.length shouldBe MaxAmountTextLength
+    Money.parse(s"GBP $atCeiling").map(value => value.currency) should haveValue(Currency.GBP)
+
+    // one character more names no decimal, through the wording the decimal's own refusal used
+    val pastCeiling: String = "0." + ("0" * (MaxAmountTextLength - 1))
+    pastCeiling.length shouldBe MaxAmountTextLength + 1
+    val overCeiling: FailureOr[Money] = Money.parse(s"GBP $pastCeiling")
+    overCeiling should beFailureWith(FailureReason.PARSING)
+    overCeiling.left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse amount: GBP $pastCeiling")
+
+    // the quotation boundary, asserted through a raw line break because that is what tells the
+    // two quotations apart at a length where they are otherwise the same characters: within the
+    // bound the text is handed back untouched, so the break survives into `message` and is
+    // escaped only when the failure is written out
+    val atQuotationBound: String = "GBP\n" + ("8" * (MaxAmountTextLength - 1)) + "x"
+    atQuotationBound.length shouldBe MaxQuotedTextLength
+    Money.parse(atQuotationBound).left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse amount, invalid format: $atQuotationBound")
+    val pastQuotationBound: String = "GBP\n" + ("8" * MaxAmountTextLength) + "x"
+    pastQuotationBound.length shouldBe MaxQuotedTextLength + 1
+    val pastMessage: String = Money
+      .parse(pastQuotationBound)
+      .left
+      .toOption
+      .map(failure => failure.message)
+      .getOrElse(fail("expected a failure"))
+    pastMessage should not be s"Unable to parse amount, invalid format: $pastQuotationBound"
+    pastMessage should not include "\n"
+    pastMessage should include("\\n")
+
+    // and a megabyte of text is named in a few hundred characters
+    val megabyte: String = "H" * (1024 * 1024)
+    val cappedMessage: String = Money
+      .parse(megabyte)
+      .left
+      .toOption
+      .map(failure => failure.message)
+      .getOrElse(fail("expected a failure"))
+    cappedMessage.length shouldBe
+      "Unable to parse amount, invalid format: ".length + MaxRenderedMessagePart
+  }
+
+
+  /**
+   * Asserts that the separator is located as a character, and that the two parts are cut at the
+   * offsets that follow from that.
+   *
+   * The separator of this text form is one space, and the parse scans for it twice - once to find
+   * it and once to rule out a second. Both scans read it as a character rather than as a
+   * one-character text, which is the intrinsified search
+   * [[com.opengamma.strata.basics.currency.CurrencyAmount.parse]] already used and costs a
+   * fraction per character of what the general substring search costs; a rejection of oversized
+   * text is where the difference showed, because that is the path whose whole work is the two
+   * scans.
+   *
+   * Nothing observable follows from the change, which is what this case states: the four shapes
+   * the grammar distinguishes read exactly as they read before, and the two parts are cut one
+   * character past the separator - so a numeral carrying a leading sign keeps it and no part
+   * carries the separator itself, which is where an offset stated in the length of a text rather
+   * than in one character would have gone wrong.
+   */
+  test("the separator is located as a character and the parts are cut one character past it") {
+    // a normal value: one separator, the code before it and the numeral after it
+    Money.parse("GBP 12.34").map(value => value.toString) should haveValue("GBP 12.34")
+    Money.parse("GBP 12.34").map(value => value.currency) should haveValue(Currency.GBP)
+
+    // a numeral carrying a leading sign: the sign is the first character after the separator, so
+    // it survives exactly when the offset is one character
+    Money.parse("GBP -12.34").map(value => value.toString) should haveValue("GBP -12.34")
+
+    // no separator at all is the malformed form
+    Money.parse("GBP").left.toOption.map(failure => failure.message) shouldBe
+      Some("Unable to parse amount, invalid format: GBP")
+
+    // a second separator, wherever it falls, is the malformed form - the second scan starts one
+    // character past the first separator, so the two adjacent separators of "GBP  1", and the
+    // two of a text that is nothing but separators, are found
+    List("GBP 1 2", "GBP  1", " GBP 1", "  ").foreach { input =>
+      val outcome: FailureOr[Money] = Money.parse(input)
+      outcome should beFailureWith(FailureReason.PARSING)
+      outcome.left.toOption.map(failure => failure.message) shouldBe
+        Some(s"Unable to parse amount, invalid format: $input")
+    }
+
+    // a trailing separator is two parts with an empty second one, so it is refused for the
+    // decimal it does not name and not for its shape
+    val trailingSeparator: FailureOr[Money] = Money.parse("GBP ")
+    trailingSeparator should beFailureWith(FailureReason.PARSING)
+    trailingSeparator.left.toOption.map(failure => failure.message) shouldBe
+      Some("Unable to parse amount: GBP ")
   }
 
   //-------------------------------------------------------------------------

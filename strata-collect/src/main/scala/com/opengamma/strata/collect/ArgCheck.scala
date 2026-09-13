@@ -1403,14 +1403,21 @@ private[strata] object JvmClosure {
    * statement "a value of this type satisfies this" holds of every value that exists rather than
    * only of the ones built through the published factory.
    *
-   * The condition is taken by name, so a check that is costly to evaluate costs nothing until it
-   * is needed, and the description completes the sentence "a <type> ..." in the refusal.
+   * Which half of the call is deferred follows from when each half is read. The condition is the
+   * invariant, and every call evaluates it exactly once - [[ArgCheck.isTrue]] tests it whether it
+   * holds or not - so it is taken strictly: by name it would buy no laziness and would cost one
+   * closure, capturing the value under construction, on every construction. The description
+   * completes the sentence "a value of this type requires that ..." in the refusal, which is read
+   * only when the refusal happens, so it is taken by name and the sentence is built only then.
+   * Together with the reasoning above, that leaves the closure of construction paying for the
+   * checks it runs and for nothing else.
    *
-   * @param description  what the invariant requires, as a phrase completing "requires that ..."
-   * @param condition  the invariant, evaluated once
+   * @param description  what the invariant requires, as a phrase completing "requires that ...",
+   *   built only if the invariant does not hold
+   * @param condition  the invariant, evaluated once by the caller
    * @throws IllegalArgumentException if the invariant does not hold
    */
-  def requireInvariant(description: String, condition: => Boolean): Unit =
+  def requireInvariant(description: => String, condition: Boolean): Unit =
     ArgCheck.isTrue(
       condition,
       s"a value of this type requires that $description, and the value being constructed does " +

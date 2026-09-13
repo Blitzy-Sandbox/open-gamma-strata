@@ -415,6 +415,19 @@ final class ValueStepSpec extends AnyFunSuite with Matchers with ScalaCheckPrope
   private val IndexBaseDate: LocalDate = date(2016, 1, 1)
 
   /**
+   * A date-based step count that puts a [[ValueStep.PeriodIndex]] on the scanning side of its
+   * strategy threshold.
+   *
+   * The two counts below are read from the threshold itself rather than written as literals, so
+   * they stay on the two sides of it whatever it is measured to be: one step is the count every
+   * resolution of a single step has, and the threshold itself is the smallest count that indexes.
+   */
+  private val ScanningStepCount: Int = ValueStep.PeriodIndex.IndexedLookupThreshold - 1
+
+  /** A date-based step count that puts a `PeriodIndex` on the indexing side of that threshold. */
+  private val IndexingStepCount: Int = ValueStep.PeriodIndex.IndexedLookupThreshold
+
+  /**
    * The message `findIndex` reports for an index-based step naming no period of the schedule.
    *
    * The two messages here are the literals the implementation reports, and they are what makes
@@ -564,14 +577,45 @@ final class ValueStepSpec extends AnyFunSuite with Matchers with ScalaCheckPrope
    * indexed ones. The comparison is of whole outcomes, so the condition reported and its message
    * are compared along with the index answered.
    *
+   * The comparison is made over '''both''' of the strategies a [[ValueStep.PeriodIndex]] answers
+   * by, driven from either side of the step count it selects them with: an index built for one
+   * date-positioned step scans its period list, one built for the threshold count indexes it, and
+   * the two have to agree with each other and with the reference on every one of these inputs.
+   * That is the whole content of the claim that the strategy is a choice of cost rather than of
+   * answer, and the shapes these two tests supply - descending, overlapping, duplicate-start,
+   * gapped, and adjusted starts colliding with unadjusted ones - are exactly the shapes on which a
+   * lookup structure and a walk can diverge.
+   *
    * @param periods  the periods to resolve against, in the order they are held
    * @param stepUnderTest  the step to resolve
-   * @return the assertion that all four answers agree
+   * @return the assertion that all four answers agree, under both strategies
    */
   private def assertResolutionAgrees(
       periods: NonEmptyList[SchedulePeriod],
       stepUnderTest: ValueStep): Assertion = {
-    val index = ValueStep.PeriodIndex.of(periods)
+    assertResolutionAgrees(periods, stepUnderTest, ScanningStepCount)
+    assertResolutionAgrees(periods, stepUnderTest, IndexingStepCount)
+  }
+
+  /**
+   * Asserts the agreement above for an index built for the specified number of date-based steps.
+   *
+   * The count is what the index chooses its strategy with, so passing it explicitly is how a
+   * single input is resolved both ways. The two members that take the period list rather than an
+   * index build their own, for one step, and are compared against the index built here: they are
+   * written in terms of the indexed members, so their agreement is agreement across the strategy
+   * boundary as well.
+   *
+   * @param periods  the periods to resolve against, in the order they are held
+   * @param stepUnderTest  the step to resolve
+   * @param dateStepCount  the number of date-positioned steps the index is built for
+   * @return the assertion that all four answers agree
+   */
+  private def assertResolutionAgrees(
+      periods: NonEmptyList[SchedulePeriod],
+      stepUnderTest: ValueStep,
+      dateStepCount: Int): Assertion = {
+    val index = ValueStep.PeriodIndex.of(periods, dateStepCount)
     val periodList = periods.toList
     stepUnderTest.findIndex(index) shouldBe referenceFindIndex(stepUnderTest, periodList)
     stepUnderTest.findPreviousIndex(index) shouldBe
@@ -643,6 +687,33 @@ final class ValueStepSpec extends AnyFunSuite with Matchers with ScalaCheckPrope
         shiftedPeriodAt(0L, 2L, 5L),
         periodAt(5L, 7L),
         shiftedPeriodAt(10L, 12L, -8L)))
+  }
+
+  //-------------------------------------------------------------------------
+  test("resolution_agreesAcrossStrategyThreshold") {
+    // The strategy a `PeriodIndex` answers by is chosen from the number of date-positioned steps
+    // it is built for, so one question put to indexes built for different counts is one question
+    // answered two different ways. Every count around the threshold is driven here - below it, at
+    // it, above it, the degenerate zero and a count far past it - over a period list holding a
+    // duplicate start, an overlap, a gap and an adjusted start that collides with an unadjusted
+    // one, which is where a lookup structure and a walk would part company if either were wrong.
+    val periods =
+      NonEmptyList.of(
+        shiftedPeriodAt(6L, 12L, -1L),
+        periodAt(0L, 8L),
+        periodAt(6L, 7L),
+        shiftedPeriodAt(2L, 3L, 9L),
+        periodAt(20L, 24L))
+    val threshold = ValueStep.PeriodIndex.IndexedLookupThreshold
+    val stepCounts = List(0, 1, threshold - 1, threshold, threshold + 1, threshold * 64)
+    val dateSteps =
+      (-4L to 30L).map(offset => ValueStep.of(IndexBaseDate.plusDays(offset), DeltaMinus2000))
+    val indexSteps =
+      (1 to periods.size + 2).map(index => step(ValueStep.of(index, DeltaMinus2000)))
+    (dateSteps ++ indexSteps).foreach { stepUnderTest =>
+      stepCounts.foreach(count => assertResolutionAgrees(periods, stepUnderTest, count))
+    }
+    succeed
   }
 
   //-------------------------------------------------------------------------

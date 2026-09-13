@@ -8,6 +8,8 @@ package com.opengamma.strata.collect.io
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
+import java.net.JarURLConnection
+import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CharsetDecoder
@@ -73,14 +75,18 @@ import com.opengamma.strata.collect.result.Failure
  *
  * ===Failure, and how a failure names its source===
  *
- * A resource that cannot be obtained makes the returned effect fail. A missing classpath
- * resource fails with a [[java.io.FileNotFoundException]] naming it; a source the platform
- * refuses to open, and a path the platform declines to interpret at all, fail with a
- * [[java.io.IOException]] naming the source and what the platform reported; a source beyond
- * the ceiling and text that is not valid UTF-8 each fail with a [[java.io.IOException]] that
- * explains which of the two it was; and a read that does not complete inside the time bound
- * described below fails with a [[java.io.IOException]] naming the source and that bound.
- * Neither reader ever substitutes a sentinel or empty text for content.
+ * A resource that cannot be obtained makes the returned effect fail. A classpath resource that
+ * is absent fails with a [[java.io.FileNotFoundException]] naming it, and so does a classpath
+ * name that resolves to a '''directory''' rather than to a readable file, because this object
+ * reads files and a directory is not one: what a directory yields when it is read is the shape
+ * of the classpath rather than content, so it is refused as a name instead of handed back as
+ * text. A source the platform refuses to open, and a path the platform declines to interpret at
+ * all, fail with a [[java.io.IOException]] naming the source and what the platform reported; a
+ * source beyond the ceiling and text that is not valid UTF-8 each fail with a
+ * [[java.io.IOException]] that explains which of the two it was; and a read that does not
+ * complete inside the time bound described below fails with a [[java.io.IOException]] naming
+ * the source and that bound. Neither reader ever substitutes a sentinel or empty text for
+ * content.
  *
  * Every one of those messages names its source in a '''bounded, single-line''' form, produced
  * by `Failure.renderDiagnostic` - the one renderer these two modules hold for text on its
@@ -129,6 +135,37 @@ import com.opengamma.strata.collect.result.Failure
  *     for. Forgetting the read lets the failure arrive on time, and the read that was forgotten
  *     still gives its handle back, because release runs for a cancelled use and a cancelled
  *     acquisition alike.
+ *
+ * ===What a read costs===
+ *
+ * A read of this object carries a fixed cost before it moves a single byte, and it is worth
+ * stating plainly because it is large next to a small source. That floor is two hops onto the
+ * blocking pool - the interruptible acquisition and the interruptible read - one fiber started
+ * and joined, and one timer registered for the bound; measured on a loaded twelve-core machine
+ * in a forked process, twenty-five samples each, it comes to roughly half a millisecond at
+ * best and three quarters of one typically. A one-kibibyte file costs 0.48 ms at best and
+ * 0.70 ms typically; a ninety-kibibyte classpath resource 1.10 ms and 1.23 ms; a bare round
+ * trip through this effect system, which reads nothing at all, 0.02 ms and 0.04 ms. So the
+ * floor is between ten and thirty times the cost of scheduling alone and it does not move with
+ * the size of the source: a one-kibibyte read and a ninety-kibibyte read differ by far less
+ * than either differs from doing nothing, because what separates them is scheduling rather
+ * than input and output.
+ *
+ * Above the floor the cost is monotone in the payload and quickly dominated by it: a twelve
+ * mebibyte file costs 40.7 ms at best and 47.9 ms typically, where the floor is under two
+ * percent of the read. The largest text this repository holds is the day-count parity baseline
+ * at roughly 12.7 MiB, so for the reads this object exists to serve the floor is about one
+ * percent of the work.
+ *
+ * That floor '''is''' the three mechanisms set out just above, and it is paid for nothing else.
+ * Interruptible blocking is what lets a cancellation end a call that is waiting; the fiber is
+ * what lets a cancellation reclaim the handle without waiting for that call; the timer is what
+ * bounds a source that never yields. A read without them would be a shade quicker and could not
+ * be cancelled promptly nor bounded at all, and this object reads fixtures and demonstration
+ * text - work measured in tens of reads, not in millions - so the exchange is settled here once
+ * for both readers rather than offered as a choice. A caller reads whole text from a named
+ * source and pays a bounded, cancelable read for it; there is no second, cheaper reader to
+ * choose, and the two-member surface above is deliberate.
  *
  * The scope is deliberately narrow. The byte and character source hierarchy of the
  * original, its locator value type together with the prefixed forms ("classpath:",
@@ -184,13 +221,21 @@ object Resources {
    * `parity/example.json` and `/parity/example.json` name the same resource. The name is
    * otherwise used exactly as supplied: the calling class plays no part in resolution.
    *
+   * What is read is a '''file''' of the classpath. A name that resolves to something other
+   * than a readable file - a directory of the classpath, which resolves as readily as an entry
+   * does - fails the effect rather than being read, because what a directory yields when it is
+   * read is the shape of the classpath and not content anybody stored there. So a mistyped
+   * fixture name is refused as a name, in the same place and in the same form as a name nothing
+   * bears at all, instead of failing later as unparseable text.
+   *
    * The stream is closed once the read finishes, and equally if the read fails or is
    * cancelled.
    *
    * @param path  the resource name, with or without a leading `/`
    * @return the content of the resource decoded as UTF-8; the effect fails with a
    *         [[java.io.FileNotFoundException]] naming the resource when the classpath
-   *         holds no such entry, and with a [[java.io.IOException]] when the resource
+   *         holds no such entry, and equally when the name resolves to a directory rather
+   *         than to a readable file, and with a [[java.io.IOException]] when the resource
    *         exceeds the 64 MiB ceiling described above, is not valid UTF-8, could not be
    *         opened at all or did not arrive inside the time bound; every one of those
    *         messages names the resource in the bounded, single-line form described above
@@ -306,14 +351,26 @@ object Resources {
    * owning the close on every other outcome, so the stream is closed exactly once whenever the
    * read completes, fails or is refused.
    *
+   * The read is carried on that fiber as an '''`Either`''' - the failure is caught before the
+   * fiber can end in it, and raised again here, in the effect the caller is waiting on. A fiber
+   * that ends errored is not only joined: the runtime hands its outcome to the failure reporter
+   * as well, which prints it, and a reader whose whole contract is to return failures '''as
+   * values''' would then both return a failure and print one. Catching it inside the fiber
+   * leaves that fiber ending successfully with a failure it is carrying, so nothing is reported
+   * anywhere but to the caller. The value is not changed by the detour: the same exception
+   * instance is raised, in the same place in the composition, so a caller observing the read
+   * through `attempt` sees exactly what it saw before. Nor is the cancellation protocol
+   * changed - catching a failure does not catch a cancellation, so a cancelled read still
+   * reaches the finalizer above, which closes the stream and only then cancels the reader.
+   *
    * @param source  how the source is named in a failure message, already rendered
    * @param stream  the stream to read, owned by the pairing above
    * @param maxBytes  the largest number of bytes to accept
    * @return the decoded text
    */
   private def cancelableRead(source: String, stream: InputStream, maxBytes: Int): IO[String] =
-    readBoundedText(source, stream, maxBytes).start.flatMap(reader =>
-      reader.joinWithNever.onCancel(closeTolerantly(stream) *> reader.cancel)
+    readBoundedText(source, stream, maxBytes).attempt.start.flatMap(reader =>
+      reader.joinWithNever.onCancel(closeTolerantly(stream) *> reader.cancel).rethrow
     )
 
   /**
@@ -329,21 +386,100 @@ object Resources {
   /**
    * Acquires a classpath resource as a stream.
    *
-   * Acquisition is the lookup itself, so an entry the classpath does not hold is reported
-   * as a failed effect rather than as a stream that yields no bytes. The absence is named
-   * with the rendering of the resource name that the reader produced, never with the name as
-   * it was supplied, and a lookup the classpath machinery itself refuses is wrapped by
-   * `unopenable` for the same reason.
+   * Acquisition is the lookup itself, so a name the classpath does not hold, and a name it
+   * holds without a readable file behind it, are both reported as a failed effect rather than
+   * as a stream that yields bytes a caller would read as content. Either refusal is named with
+   * the rendering of the resource name that the reader produced, never with the name as it was
+   * supplied, and a lookup the classpath machinery itself refuses is wrapped by `unopenable`
+   * for the same reason.
+   *
+   * The order of the two steps is what keeps the wrapping right: the lookup and the open are
+   * one interruptible region, so anything the platform raises inside it - a location it
+   * declines to interpret, an open it refuses - becomes the wrapped `unopenable` failure,
+   * while the two refusals this object decides for itself are raised afterwards from the
+   * `Either` that region yields and so carry their own wording unwrapped.
    *
    * @param rendered  the resource name in its bounded, single-line rendering, for the message
    * @param name  the same name as a class loader expects it, for the lookup itself
    */
   private def openClasspathStream(rendered: String, name: String): IO[InputStream] =
-    IO.interruptible(Option(classLoader.getResourceAsStream(name)))
+    IO.interruptible(classpathEntry(rendered, name))
       .handleErrorWith(cause => IO.raiseError(unopenable(classpathSource(rendered), cause)))
-      .flatMap(opened =>
-        IO.fromOption(opened)(new FileNotFoundException(s"Classpath resource absent: $rendered"))
-      )
+      .flatMap {
+        case Right(stream) => IO.pure(stream)
+        case Left(refusal) => IO.raiseError(new FileNotFoundException(refusal))
+      }
+
+  /**
+   * Locates a classpath resource and opens it, or says why it cannot be read as a file.
+   *
+   * A class loader resolves a name to a location, and a location is not necessarily a file: a
+   * name that denotes a '''directory''' of the classpath resolves as readily as one that
+   * denotes an entry, and reading it yields whatever the platform makes of a directory - the
+   * names it holds, one per line, under exploded class directories, and empty text from an
+   * archive. Both of those are content a caller never stored, so a reader that handed them
+   * back would turn a mistyped name into a parse failure of the text it was given instead of a
+   * refusal of the name, and would publish the shape of the classpath along the way (CWE-209).
+   * This object's contract is the classpath subset that names files, so a name outside it is
+   * refused here, where the absent name is refused, rather than read.
+   *
+   * The location is resolved once and the stream is opened from it, which is what the class
+   * loader's own combined lookup-and-open does internally: an ordinary read therefore costs
+   * exactly what it did, and the decision below is a question asked of a location already in
+   * hand rather than a second traversal of the classpath.
+   *
+   * This is deliberately one thunk rather than two effects. The lookup, the decision and the
+   * open belong to the single interruptible region of the acquisition, so a classpath read
+   * pays one hop to the blocking pool whatever the outcome; splitting them would add a hop to
+   * every read to sharpen a failure, which is the wrong trade at the cost described at the head
+   * of this object.
+   *
+   * @param rendered  the resource name in its bounded, single-line rendering, for the message
+   * @param name  the same name as a class loader expects it, for the lookup itself
+   * @return the opened stream, or the message of the refusal to raise in its place
+   */
+  private def classpathEntry(rendered: String, name: String): Either[String, InputStream] =
+    Option(classLoader.getResource(name)) match {
+      case None => Left(s"Classpath resource absent: $rendered")
+      case Some(located) if denotesDirectory(located) =>
+        Left(s"Classpath resource is a directory rather than a file: $rendered")
+      case Some(located) => Right(located.openStream())
+    }
+
+  /**
+   * Decides whether a resolved classpath location denotes a directory, by asking the one
+   * question each protocol can actually answer.
+   *
+   * A location carries the protocol that produced it, and only the protocol knows what a
+   * directory is:
+   *
+   *  1. A location on the file system is a path, so the file system is asked directly.
+   *  1. A location inside an archive is an entry, and an archive marks a directory entry as
+   *     such. The entry is read through [[java.net.JarURLConnection]], the connection type this
+   *     protocol produces, whose own lookup resolves a name without a trailing separator onto
+   *     the directory entry that carries one - which is precisely the name a caller would have
+   *     mistyped.
+   *  1. Any other protocol is one this object cannot interpret, and a guess about it would
+   *     refuse a location that reads perfectly well. Such a location is therefore accepted and
+   *     opened, and if the open or the read then fails it fails as it would have before.
+   *
+   * The connection is only asked for its entry and never for its own stream, so nothing is
+   * opened that the caller would have to close: the stream a read owns is opened once, by the
+   * acquisition above, and closed by the pairing that owns it.
+   *
+   * @param located  the location a class loader resolved the resource name to
+   * @return whether that location denotes a directory rather than a readable file
+   */
+  private def denotesDirectory(located: URL): Boolean =
+    located.getProtocol match {
+      case "file" => Files.isDirectory(Paths.get(located.toURI))
+      case "jar" =>
+        located.openConnection() match {
+          case archive: JarURLConnection => Option(archive.getJarEntry).exists(_.isDirectory)
+          case _ => false
+        }
+      case _ => false
+    }
 
   /**
    * Acquires a file as a stream, naming the source rather than repeating what the platform

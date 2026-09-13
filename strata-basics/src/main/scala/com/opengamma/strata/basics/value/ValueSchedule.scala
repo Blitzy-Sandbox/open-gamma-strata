@@ -6,6 +6,9 @@
 package com.opengamma.strata.basics.value
 
 import java.time.LocalDate
+import java.util.Arrays
+
+import scala.annotation.tailrec
 
 import cats.Hash
 import cats.Show
@@ -210,15 +213,21 @@ sealed abstract case class ValueSchedule private (
    *      to the value the previous period ended with;
    *   1. the steps set aside are required to change nothing.
    *
-   * No stage holds mutable state: an immutable accumulator is threaded through a fold, the values
-   * are computed with a running scan, and the steps set aside are checked by traversal.
+   * No stage holds mutable state that outlives it: an immutable accumulator is threaded through a
+   * fold, the steps set aside are checked by traversal, and the one buffer that is written in
+   * place - the run of period values - is allocated by the third stage, is reachable from nothing
+   * else while it is written, and is copied into the [[DoubleArray]] that is returned.
    *
    * The periods are indexed '''once''' here, into a [[ValueStep.PeriodIndex]] that the second and
-   * fourth stages both resolve against, so that no stage searches the period list itself. Placing
-   * a step takes one or two map lookups and finding the period an unplaced step falls in takes a
-   * binary search, where searching the list afresh per step would cost a walk of the `n` periods
-   * for each of the `m` steps - and a definition whose sequence expands to a step per period has
-   * `m` of the order of `n`.
+   * fourth stages both resolve against, so that no stage searches the period list itself and no
+   * step pays for a search another step has already paid for. That index decides for itself
+   * whether to answer a question by a walk of the periods or by a structure built over them, and
+   * it decides it from the number of steps positioned by a '''date''' - the only steps that ask it
+   * a searching question at all, since a step positioned by a period index is answered from the
+   * period count alone. Counting them is one pass over the steps, which this stage is already
+   * paying for, and it is what keeps a definition holding a single step from paying for a
+   * structure covering the whole schedule; see [[ValueStep.PeriodIndex]] for both strategies and
+   * the measured crossover between them.
    *
    * @param periods  the periods of the schedule, in schedule order
    * @param rollConv  the roll convention of the schedule
@@ -231,7 +240,7 @@ sealed abstract case class ValueSchedule private (
     for {
       resolvedSteps <- stepSequence.fold[FailureOr[List[ValueStep]]](Right(steps))(sequence =>
         sequence.resolve(steps, rollConv))
-      periodIndex = ValueStep.PeriodIndex.of(periods)
+      periodIndex = ValueStep.PeriodIndex.of(periods, resolvedSteps.count(_.date.isDefined))
       assignment <- assignSteps(resolvedSteps, periodIndex)
       values = periodValues(assignment.slots, periodIndex.size)
       _ <- checkUnassignedSteps(assignment.unassignedSteps, periodIndex, values)
@@ -296,18 +305,74 @@ sealed abstract case class ValueSchedule private (
    * The value of a period is the value of the period before it with the adjustment assigned to
    * this period applied, if one is, and the value of the first period is the initial value of this
    * definition adjusted in the same way - which is why a step at index zero is meaningful even
-   * though no period precedes it. That recurrence is a running scan over the period indices with
-   * the seed dropped, the seed being the initial value itself.
+   * though no period precedes it.
+   *
+   * That recurrence makes the values '''piecewise constant''' between the periods that hold an
+   * adjustment: a period with no adjustment of its own holds exactly what the period before it
+   * holds. So the run of values is not computed a period at a time, asking each period for an
+   * adjustment that almost none of them has; it is computed a '''run''' at a time - the assigned
+   * indices are taken in order, the span before each is filled with the value in force across it,
+   * and the assigned period itself holds that value adjusted. A schedule of `n` periods carrying
+   * `s` adjustments therefore costs `s` lookups and `s + 1` bulk fills of a buffer of primitives,
+   * rather than `n` lookups producing `n` boxed values and a boxed collection to hold them.
+   *
+   * The buffer is allocated here, is reachable from nothing else while it is filled, and is copied
+   * by the caller into the [[DoubleArray]] it returns, so nothing mutable escapes and no mutable
+   * local is declared: the walk over the assigned indices is a tail-recursive method threading the
+   * value in force as a primitive parameter, and the fills are `java.util.Arrays.fill`.
    *
    * @param slots  the adjustments assigned to periods, keyed by period index
    * @param size  the number of periods in the schedule
    * @return the value of each period, in schedule order, one entry per period
    */
-  private def periodValues(slots: Map[Int, ValueAdjustment], size: Int): Vector[Double] =
-    (0 until size)
-      .scanLeft(initialValue)((value, index) => slots.get(index).fold(value)(_.adjust(value)))
-      .tail
-      .toVector
+  private def periodValues(slots: Map[Int, ValueAdjustment], size: Int): Array[Double] = {
+    val values = new Array[Double](size)
+    val assignedIndices = slots.keysIterator.toArray
+    Arrays.sort(assignedIndices)
+    fillValueRuns(values, assignedIndices, 0, initialValue, slots)
+    values
+  }
+
+  /**
+   * Fills the run of periods before the specified assigned period, then the period itself.
+   *
+   * The assigned indices are in ascending order and are all indices the schedule has, since a
+   * step resolving to no period of it is set aside rather than assigned and one resolving past its
+   * end is reported. So the span from the period after the previously assigned one up to this one
+   * holds no adjustment and therefore holds the value in force, and this period holds that value
+   * with its own adjustment applied - which becomes the value in force for the span after it. Once
+   * the indices are exhausted the remaining span, up to the end of the schedule, is filled with
+   * the value in force across it, and that final fill is the whole array where no period holds an
+   * adjustment at all.
+   *
+   * The recursion is in tail position and so is compiled to a loop, threading the value in force
+   * as a primitive parameter rather than holding it in mutable state.
+   *
+   * @param values  the buffer being filled, one entry per period of the schedule
+   * @param assignedIndices  the indices of the periods holding an adjustment, in ascending order
+   * @param position  the position in those indices of the period to fill up to and including
+   * @param valueInForce  the value held by every period before that one that holds no adjustment
+   *   of its own
+   * @param slots  the adjustments assigned to periods, keyed by period index
+   */
+  @tailrec
+  private def fillValueRuns(
+      values: Array[Double],
+      assignedIndices: Array[Int],
+      position: Int,
+      valueInForce: Double,
+      slots: Map[Int, ValueAdjustment]): Unit = {
+    val runStart = if (position == 0) 0 else assignedIndices(position - 1) + 1
+    if (position >= assignedIndices.length) {
+      Arrays.fill(values, runStart, values.length, valueInForce)
+    } else {
+      val assignedIndex = assignedIndices(position)
+      Arrays.fill(values, runStart, assignedIndex, valueInForce)
+      val adjustedValue = slots(assignedIndex).adjust(valueInForce)
+      values(assignedIndex) = adjustedValue
+      fillValueRuns(values, assignedIndices, position + 1, adjustedValue, slots)
+    }
+  }
 
   /**
    * Checks that every step that resolved to no period of the schedule changes nothing.
@@ -328,7 +393,7 @@ sealed abstract case class ValueSchedule private (
   private def checkUnassignedSteps(
       unassignedSteps: List[ValueStep],
       periods: ValueStep.PeriodIndex,
-      values: Vector[Double]): FailureOr[Unit] =
+      values: Array[Double]): FailureOr[Unit] =
     unassignedSteps.traverse_(step => checkUnassignedStep(step, periods, values))
 
   /**
@@ -348,23 +413,26 @@ sealed abstract case class ValueSchedule private (
   private def checkUnassignedStep(
       step: ValueStep,
       periods: ValueStep.PeriodIndex,
-      values: Vector[Double]): FailureOr[Unit] =
+      values: Array[Double]): FailureOr[Unit] =
     step.findPreviousIndex(periods).flatMap { index =>
-      values
-        .lift(index)
-        .toRight(failure(ValueSchedule.PeriodValueMissing))
-        .flatMap { baseValue =>
-          // the numeric comparison of the platform, deliberately NOT the bit comparison that the
-          // equality of this type uses: the two disagree exactly where IEEE-754 does, so a step
-          // producing a value that is not a number counts as a change even from a base value that
-          // is not a number, and a step turning a positive zero into a negative zero counts as no
-          // change
-          if (step.value.adjust(baseValue) != baseValue) {
-            Left(failure(ValueSchedule.boundaryMismatchMessage(step)))
-          } else {
-            Right(())
-          }
+      // the bound is tested rather than read through an optional lookup, because the values are a
+      // run of primitives and asking one of them for an option would box it; the test is the same
+      // one such a lookup would make, and its failing branch reports the same condition
+      if (index < 0 || index >= values.length) {
+        Left(failure(ValueSchedule.PeriodValueMissing))
+      } else {
+        val baseValue = values(index)
+        // the numeric comparison of the platform, deliberately NOT the bit comparison that the
+        // equality of this type uses: the two disagree exactly where IEEE-754 does, so a step
+        // producing a value that is not a number counts as a change even from a base value that
+        // is not a number, and a step turning a positive zero into a negative zero counts as no
+        // change
+        if (step.value.adjust(baseValue) != baseValue) {
+          Left(failure(ValueSchedule.boundaryMismatchMessage(step)))
+        } else {
+          Right(())
         }
+      }
     }
 
   /**
@@ -550,9 +618,9 @@ object ValueSchedule {
       definition: ValueSchedule): String = {
     // the index came from resolving a step against these very periods, so it names one of them;
     // the empty rendering below is unreachable and is written rather than read out of the option
-    // so that building a message cannot itself fail. The date is read from the index rather than
-    // from a list rebuilt here, so no walk of the periods remains on the path that reports a
-    // failure - building a message is not a place to spend the schedule a second time
+    // so that building a message cannot itself fail. The date is asked of the index rather than of
+    // a period list rebuilt here: the index walks its own periods to that position, which is a
+    // cost paid on a resolution that has already failed rather than on every one that succeeds
     val startDate = periods.unadjustedStartDateAt(index).map(_.toString).getOrElse("")
     "Invalid ValueSchedule, two steps resolved to the same schedule period starting on " +
       s"$startDate, schedule defined as $definition"

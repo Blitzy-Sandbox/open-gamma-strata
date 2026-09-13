@@ -8,6 +8,8 @@ package com.opengamma.strata.basics.schedule
 import java.time.LocalDate
 import java.time.Period
 
+import scala.annotation.tailrec
+
 import cats.Hash
 import cats.Order
 import cats.Show
@@ -369,19 +371,89 @@ sealed abstract case class Schedule private (
   /**
    * Finds the period end date given a date in the period.
    *
-   * The first matching period is used. The adjusted start and end dates of each period are
-   * compared, with the start date included and the end date excluded, so a date equal to a
-   * period's start date lies in that period and a date equal to its end date lies in the next one.
+   * The adjusted start and end dates of each period are compared, with the start date included
+   * and the end date excluded, so a date equal to a period's start date lies in that period and a
+   * date equal to its end date lies in the next one.
    *
    * A date lying in none of the periods answers `None`, which is the shape the schedule
    * information interface fixes for this member: a date outside the schedule is data rather than
    * a broken call.
    *
+   * ===How the period is found===
+   *
+   * The '''one''' period that can contain the date is located by halving the range it can lie in,
+   * in time proportional to the logarithm of the period count rather than to the count itself.
+   * That matters because this member is read '''once per period''' by the schedule-dependent day
+   * counts - [[com.opengamma.strata.basics.date.DayCount]]'s `Act/Act ICMA` and `Act/365 Actual` -
+   * and by any caller sweeping a schedule: a walk of the periods here would be one walk per
+   * period there, costing time proportional to the square of the schedule's length, which for a
+   * schedule of a few thousand periods is the difference between milliseconds and microseconds.
+   *
+   * Two facts license the search, and both hold of '''every''' schedule rather than only of one
+   * a factory built:
+   *
+   *   - the adjusted start dates '''strictly ascend'''. The invariant of this type requires of
+   *     each consecutive pair that the earlier period's adjusted end date is not after the later
+   *     period's adjusted start date, and [[SchedulePeriod.of]] requires each period's start date
+   *     to fall strictly before its end date, so each start date falls strictly before the next.
+   *     "The period's adjusted start date is after this date" is therefore false on a prefix of
+   *     the periods and true on the rest, which is what [[firstLaterPeriod]] halves;
+   *   - no two periods overlap, by the same pair of facts, so at most one period contains the
+   *     date. The rightmost period whose adjusted start date is not after the date is the only
+   *     candidate, and every period before it ended on or before that candidate's start date.
+   *
+   * What the invariant does '''not''' give is adjacency: a gap between one period and the next is
+   * allowed. The candidate is therefore tested with [[SchedulePeriod.contains]], which is what
+   * answers `None` for a date lying in a gap, and that test is as load-bearing as the search - a
+   * date before the first period is answered by there being no candidate at all, and a date in a
+   * gap or at or after the last end date by the candidate not containing it.
+   *
    * @param date  the date to find
    * @return the end date of the period that includes the date, empty if no period includes it
    */
-  override def periodEndDate(date: LocalDate): Option[LocalDate] =
-    periods.find(_.contains(date)).map(_.endDate)
+  override def periodEndDate(date: LocalDate): Option[LocalDate] = {
+    val position = firstLaterPeriod(date, 0, periodVector.size)
+    if (position == 0) {
+      // every period starts after the date, so the date falls before the schedule
+      None
+    } else {
+      val candidate = periodVector(position - 1)
+      if (candidate.contains(date)) Some(candidate.endDate) else None
+    }
+  }
+
+  /**
+   * Searches the periods for the first one whose adjusted start date is after the date specified.
+   *
+   * The start dates strictly ascend, for the reason [[periodEndDate]] records, so "starts after
+   * this date" is a predicate that is false on a prefix of the periods and true on the rest, and
+   * the position it first becomes true at is found by halving the range it can lie in. The
+   * position before it holds the only period that can contain the date; the answer is the period
+   * count where the predicate holds nowhere, so the period before it is the last one, and zero
+   * where it holds everywhere, so there is no period before it and the date falls before the
+   * schedule.
+   *
+   * The recursion is in tail position and is compiled to a loop, which is how this is written
+   * without mutable state; the bounds shrink on every call, so it terminates.
+   *
+   * @param date  the date to compare the adjusted start dates against
+   * @param low  the first position that could satisfy the predicate
+   * @param high  the position after the last one that could satisfy it
+   * @return the first position whose period starts after the date, or the number of periods if
+   *   none does
+   */
+  @tailrec
+  private def firstLaterPeriod(date: LocalDate, low: Int, high: Int): Int =
+    if (low >= high) {
+      low
+    } else {
+      val middle = low + (high - low) / 2
+      if (periodVector(middle).startDate.isAfter(date)) {
+        firstLaterPeriod(date, low, middle)
+      } else {
+        firstLaterPeriod(date, middle + 1, high)
+      }
+    }
 
   /**
    * Merges this schedule to form a new schedule with a single 'Term' period.
@@ -885,14 +957,14 @@ object Schedule {
    * contradicts the field it is stored in and every member that reads the periods in order. That
    * matters beyond tidiness: the schedule is the
    * [[com.opengamma.strata.basics.date.DayCount.ScheduleInfo]] a day count accrues against,
-   * [[Schedule.periodEndDate]] answers with the first period containing a date, stub
-   * classification reads the first and last period, the two merges collapse runs of adjacent
-   * periods, and [[com.opengamma.strata.basics.value.ValueSchedule]] resolves a step by finding
-   * the period whose boundary it names. Every one of those reads the list as a time line, so a
-   * list that is not one produces answers that are wrong rather than answers that fail - which is
-   * why the refusal belongs here, at the single point of construction, and why the decoder builds
-   * through this factory (a document is exactly the route by which a reversed list would otherwise
-   * arrive).
+   * [[Schedule.periodEndDate]] finds the one period containing a date by halving the ascending
+   * start dates, stub classification reads the first and last period, the two merges collapse
+   * runs of adjacent periods, and [[com.opengamma.strata.basics.value.ValueSchedule]] resolves a
+   * step by finding the period whose boundary it names. Every one of those reads the list as a
+   * time line, so a list that is not one produces answers that are wrong rather than answers that
+   * fail - which is why the refusal belongs here, at the single point of construction, and why
+   * the decoder builds through this factory (a document is exactly the route by which a reversed
+   * list would otherwise arrive).
    *
    * One failure is reported for each ordering that does not hold, so a list with several
    * misplaced periods reports each of them rather than only the first, in the accumulating channel

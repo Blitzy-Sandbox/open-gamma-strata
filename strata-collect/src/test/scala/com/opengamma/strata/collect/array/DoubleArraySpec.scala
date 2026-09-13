@@ -1091,6 +1091,39 @@ package com.opengamma.strata.collect.array {
       assertContent(DoubleArray.EMPTY.concat(List(0.5, 0.6): _*), 0.5, 0.6)
     }
 
+    test("copy_safety_of_concat_of_an_array") {
+      // The array form of `concat` produces a value of a length neither operand has, and it is
+      // the constructor that allocates it and moves both runs into it. So the result must share
+      // nothing with either operand and nothing with the caller's arrays those operands were
+      // built from: this changes the caller's arrays after the join, changes what the result
+      // hands back, and asserts all three values afterwards.
+      val frontSource = Array(1.0, 2.0)
+      val backSource = Array(3.0, 4.0)
+      val front = DoubleArray.copyOf(frontSource)
+      val back = DoubleArray.copyOf(backSource)
+      val joined = front.concat(back)
+      assertContent(joined, 1.0, 2.0, 3.0, 4.0)
+
+      frontSource(0) = 9.0
+      backSource(1) = 8.0
+      assertContent(joined, 1.0, 2.0, 3.0, 4.0)
+      assertContent(front, 1.0, 2.0)
+      assertContent(back, 3.0, 4.0)
+
+      val extracted = joined.toArray
+      (extracted eq joined.toArray) shouldBe false
+      extracted(0) = 7.0
+      extracted(3) = 6.0
+      assertContent(joined, 1.0, 2.0, 3.0, 4.0)
+      assertContent(front, 1.0, 2.0)
+      assertContent(back, 3.0, 4.0)
+
+      // and joining a value to itself is the same claim with one array on both sides, which is
+      // the case a fused move would get wrong if it wrote the front before reading the tail
+      assertContent(front.concat(front), 1.0, 2.0, 1.0, 2.0)
+      assertContent(front, 1.0, 2.0)
+    }
+
     test("copy_safety_of_tabulate_and_filled") {
       // the two factories that produce their own elements allocate the storage they wrap, so
       // nothing the caller holds can reach it
@@ -1147,6 +1180,13 @@ package com.opengamma.strata.collect.array {
       // storage - it would publish an accessor handing that array out, and the aliasing this type
       // does not have would be back under a new name. So: none of them holds a field of an array
       // type, and none of them declares a member answering with one.
+      //
+      // The list is the whole family, the routes that produce their storage from a size, a value,
+      // a function or another value of this type included. One of them does carry elements - the
+      // boxed sequence of a varargs `concat` - and it is the caller's own sequence rather than any
+      // value's storage, which is why it is an array of no kind and passes the sweep below; that
+      // it is nonetheless copy-safe is asserted directly, over a sequence that views a caller's
+      // array, in `copy_safety_of_concat_varargs`.
       val rewrites: List[Class[_]] = List(
         classOf[DoubleArray.NoRewrite],
         classOf[DoubleArray.CopyRange],
@@ -1161,7 +1201,12 @@ package com.opengamma.strata.collect.array {
         classOf[DoubleArray.MultipliedByEach],
         classOf[DoubleArray.DividedByEach],
         classOf[DoubleArray.CombinedWith],
-        classOf[DoubleArray.SortedRun])
+        classOf[DoubleArray.SortedRun],
+        classOf[DoubleArray.Blank],
+        classOf[DoubleArray.FilledWith],
+        classOf[DoubleArray.Tabulated],
+        classOf[DoubleArray.Concatenated],
+        classOf[DoubleArray.Appended])
       val rewriteArrayMembers =
         rewrites.flatMap { rewrite =>
           rewrite.getDeclaredMethods.toList
@@ -1198,12 +1243,14 @@ package com.opengamma.strata.collect.array {
       //
       // It takes two arguments, the values and the operation it is constructing for, and there is
       // deliberately no adopting route among them to test: the constructor ALLOCATES the storage
-      // it keeps on every one of its branches - a clone of the values, or a copy of a range of
-      // them - and then rewrites that storage in place, which is what lets an operation of this
-      // type cost one allocation instead of two. So no argument of any kind makes it keep the
-      // array it was handed, and each of the three routes below is handed a caller's array and
-      // then measured for aliasing: the route every factory takes, a route that rewrites the
-      // storage, and the route that copies a range of it.
+      // it keeps on every one of its branches - a clone of the values, a copy of a range of them,
+      // or a run of the length the result has, written once from the values, from the operation,
+      // or from both - which is what lets a construction of this type cost one allocation instead
+      // of two. So no argument of any kind makes it keep the array it was handed, and each of the
+      // routes below is handed a caller's array and then measured for aliasing: the route every
+      // factory handed values takes, a route that writes a fresh run from those values, the route
+      // that copies a range of them, and the four routes that produce their storage from the
+      // operation alone - which are handed a caller's array they must ignore entirely.
       val constructors = classOf[DoubleArray].getConstructors.toList
       constructors should have size 1
       val constructor = constructors.head
@@ -1244,6 +1291,48 @@ package com.opengamma.strata.collect.array {
       operand(2) = 8.0
       assertContent(ranged, 9.0, 3.0)
       (ranged.toArray eq operand) shouldBe false
+
+      // The routes that produce their storage from the operation alone, handed the same caller's
+      // array: each ignores it, so the values are those the operation describes and the array is
+      // neither read, written nor kept. That is the sharper form of the claim for these four,
+      // because a branch that fell back on the argument would answer with the caller's values
+      // here and be caught by the length alone.
+      val ignored = Array(1.0, 2.0, 3.0)
+      val blank = constructor
+        .newInstance(ignored.asInstanceOf[AnyRef], new DoubleArray.Blank(2))
+        .asInstanceOf[DoubleArray]
+      assertContent(blank, 0.0, 0.0)
+      val filledFromDescriptor = constructor
+        .newInstance(ignored.asInstanceOf[AnyRef], new DoubleArray.FilledWith(2, 7.5))
+        .asInstanceOf[DoubleArray]
+      assertContent(filledFromDescriptor, 7.5, 7.5)
+      val tabulatedFromDescriptor = constructor
+        .newInstance(
+          ignored.asInstanceOf[AnyRef],
+          new DoubleArray.Tabulated(2, index => index.toDouble + 0.5))
+        .asInstanceOf[DoubleArray]
+      assertContent(tabulatedFromDescriptor, 0.5, 1.5)
+      Arrays.equals(ignored, Array(1.0, 2.0, 3.0)) shouldBe true
+
+      // and the two joining routes, which read the array they are handed as the front of the
+      // result and the descriptor as its tail, at a length neither source has
+      val joined = constructor
+        .newInstance(
+          ignored.asInstanceOf[AnyRef],
+          new DoubleArray.Concatenated(DoubleArray.of(4.0, 5.0)))
+        .asInstanceOf[DoubleArray]
+      assertContent(joined, 1.0, 2.0, 3.0, 4.0, 5.0)
+      val appended = constructor
+        .newInstance(
+          ignored.asInstanceOf[AnyRef],
+          new DoubleArray.Appended(ArraySeq.unsafeWrapArray(Array(6.0))))
+        .asInstanceOf[DoubleArray]
+      assertContent(appended, 1.0, 2.0, 3.0, 6.0)
+      ignored(0) = 9.0
+      assertContent(joined, 1.0, 2.0, 3.0, 4.0, 5.0)
+      assertContent(appended, 1.0, 2.0, 3.0, 6.0)
+      (joined.toArray eq ignored) shouldBe false
+      (appended.toArray eq ignored) shouldBe false
 
       // The family of operations the constructor dispatches on is closed, which is what makes the
       // choice it makes total and keeps the routes to its storage the ones enumerated above: a

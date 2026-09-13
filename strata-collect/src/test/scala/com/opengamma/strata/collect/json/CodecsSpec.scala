@@ -1349,6 +1349,116 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   }
 
   //-------------------------------------------------------------------------
+  // doubleArrayCodec: the two reading routes answer alike
+  //
+  // A payload whose every element this policy accepts is read straight out of
+  // the parsed elements; anything else is handed to the element decoder of the
+  // JSON library, which is what states the refusal. The cases below are what
+  // makes that split safe: the two routes accept the same payloads, read the
+  // same values from them, and refuse with the same words at the same position,
+  // whichever element is the unacceptable one.
+  //-------------------------------------------------------------------------
+  /** The decoder the fallback route consists of, read through the codec of a lone element. */
+  private val elementByElement: Decoder[Array[Double]] =
+    Decoder.decodeArray[Double](Codecs.taggedDouble, implicitly)
+
+  /**
+   * The JSON array of a list of elements, stated as the document states them.
+   *
+   * @param elements  the elements of the array
+   * @return the JSON array holding them
+   */
+  private def elementsPayload(elements: List[Json]): Json = Json.fromValues(elements)
+
+  /** An element the policy accepts, in each of the four forms it accepts. */
+  private val acceptedElements: List[Json] = List(
+    Json.fromDoubleOrNull(1.5),
+    Json.fromDoubleOrNull(-0.0),
+    Json.fromString("NaN"),
+    Json.fromString("Infinity"))
+
+  /** An element the policy refuses, in each of the forms a document can state one. */
+  private val refusedElements = Table(
+    "element",
+    Json.True,
+    Json.Null,
+    Json.fromString("1.5"),
+    Json.fromString("nan"),
+    Json.fromString(""),
+    Json.arr(),
+    Json.obj(),
+    parsedText("1e999"))
+
+  test("doubleArrayCodec reads the same values the element decoder reads, for every accepted form") {
+    val payload = elementsPayload(acceptedElements)
+    val read = Codecs.doubleArrayCodec.decodeJson(payload).value
+    val elementwise = elementByElement.decodeJson(payload).value
+    read.toArray.map(value => bitsOf(value)).toList shouldBe
+      elementwise.map(value => bitsOf(value)).toList
+    read.size shouldBe acceptedElements.size
+  }
+
+  test("doubleArrayCodec refuses with the element decoder's own words, wherever the bad element is") {
+    // the refusal is the element decoder's at every position, which is what shows the reading
+    // route is chosen without the reported outcome depending on which route ran
+    forAll(refusedElements) { (bad: Json) =>
+      val positions = List(0, 2, acceptedElements.size)
+      positions.foreach { position =>
+        val elements = acceptedElements.take(position) ++ (bad :: acceptedElements.drop(position))
+        val payload = elementsPayload(elements)
+        val outcome = Codecs.doubleArrayCodec.decodeJson(payload)
+        val elementwise = elementByElement.decodeJson(payload)
+        withClue(s"the element $bad at position $position: ") {
+          outcome.left.value.message shouldBe elementwise.left.value.message
+          outcome.left.value.history shouldBe elementwise.left.value.history
+        }
+      }
+    }
+  }
+
+  test("doubleArrayCodec positions an over-range element exactly where it always did") {
+    // the pinned reading of the finding this route was measured against: the fallback runs from
+    // the start of the array, so the position is the element's own and not where the fast pass
+    // stopped
+    val outcome = Codecs.doubleArrayCodec.decodeJson(parsedText("[1.0,2.0,1e999,4.0]"))
+    outcome.left.value.message shouldBe
+      "Expected a JSON number a double can hold; a magnitude beyond that range is written as " +
+        "the string Infinity or -Infinity"
+    outcome.left.value.history shouldBe
+      List[CursorOp](CursorOp.MoveRight, CursorOp.MoveRight, CursorOp.DownArray)
+  }
+
+  test("doubleArrayCodec reads a payload whose elements are all tags") {
+    Codecs.doubleArrayCodec.decodeJson(parsedText("""["NaN","Infinity","-Infinity"]""")) shouldBe
+      Right(DoubleArray.of(Double.NaN, Double.PositiveInfinity, Double.NegativeInfinity))
+  }
+
+  test("doubleArrayCodec agrees with the element decoder on every generated array, read as text") {
+    forAll(Arbitraries.genDoubleArray) { (array: DoubleArray) =>
+      val payload = reparse(Codecs.doubleArrayCodec(array))
+      val read = Codecs.doubleArrayCodec.decodeJson(payload).value
+      val elementwise = elementByElement.decodeJson(payload).value
+      read.toArray.map(value => bitsOf(value)).toList shouldBe
+        elementwise.map(value => bitsOf(value)).toList
+    }
+  }
+
+  test("doubleMatrixCodec reads its rows through the same two routes") {
+    // a matrix reads each row with the array codec, so a row of accepted elements takes the
+    // straight route and a row holding anything else is reported by the element decoder at that
+    // element's own position, inside the row where it stands
+    val accepted = Json.arr(Json.arr(Json.fromDoubleOrNull(1.0), Json.fromString("NaN")))
+    Codecs.doubleMatrixCodec.decodeJson(accepted) shouldBe Right(DoubleMatrix.of(1, 2, 1.0, Double.NaN))
+    val refused = parsedText("""[[1.0,2.0],[3.0,1e999]]""")
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(refused)
+    outcome.left.value.message shouldBe
+      "Expected a JSON number a double can hold; a magnitude beyond that range is written as " +
+        "the string Infinity or -Infinity"
+    outcome.left.value.history shouldBe
+      List[CursorOp](CursorOp.MoveRight, CursorOp.DownArray, CursorOp.MoveRight, CursorOp.DownArray)
+  }
+
+  //-------------------------------------------------------------------------
   test("doubleMatrixCodec encodes a matrix as a JSON array of row arrays") {
     val matrix = DoubleMatrix.of(2, 3, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
     Codecs.doubleMatrixCodec(matrix).noSpaces shouldBe "[[1.0,2.0,3.0],[4.0,5.0,6.0]]"
@@ -1882,6 +1992,131 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   }
 
   //-------------------------------------------------------------------------
+  // dropNulls: the rule is the library's, and an unchanged document is the
+  // document itself
+  //
+  // The wrapping sits on the encoding path of every product of the port, so
+  // what it does to a document that has nothing to remove is as much a part of
+  // its contract as what it removes. These cases pin both halves: the removal
+  // is held against the library's own deep removal at every position an empty
+  // value can stand in, including the two positions no encoder of the port
+  // writes, and the JSON handed back is the JSON handed in whenever nothing is
+  // removed.
+  //-------------------------------------------------------------------------
+  /** The encoder that writes JSON as itself, so the wrapping is the whole of what is measured. */
+  private val jsonEncoder: Encoder[Json] = Encoder.instance[Json](json => json)
+
+  /** The wrapping under test, applied to that encoder. */
+  private val droppingEncoder: Encoder[Json] = Codecs.dropNulls(jsonEncoder)
+
+  /** Generates a JSON value that is not a structure, an explicitly empty one included. */
+  private val genScalarJson: Gen[Json] = Gen.oneOf(
+    Gen.const(Json.Null),
+    Gen.const(Json.True),
+    Gen.const(Json.False),
+    Gen.choose(-4, 4).map(value => Json.fromInt(value)),
+    Gen.oneOf("", "x", "null").map(text => Json.fromString(text)))
+
+  /**
+   * Generates JSON of a bounded depth with an empty value reachable at every position.
+   *
+   * The three shapes are drawn with weights that keep a structure likely at every level while
+   * bounding its size, and the empty value is one of the scalars, so it arises as a field of an
+   * object, as an element of an array, nested inside either, and as the whole document.
+   *
+   * @param depth  how many levels of structure may still be generated
+   * @return the generator of JSON of at most that depth
+   */
+  private def genNestedJson(depth: Int): Gen[Json] =
+    if (depth <= 0) {
+      genScalarJson
+    } else {
+      Gen.frequency(
+        3 -> genScalarJson,
+        2 -> Gen.listOf(genNestedJson(depth - 1)).map(values => Json.fromValues(values.take(4))),
+        3 -> Gen
+          .listOf(for {
+            key <- Gen.oneOf("a", "b", "c")
+            value <- genNestedJson(depth - 1)
+          } yield key -> value)
+          .map(fields => Json.obj(fields.take(4): _*)))
+    }
+
+  test("dropNulls produces exactly what the library's own deep removal produces") {
+    forAll(genNestedJson(4)) { (json: Json) =>
+      droppingEncoder(json) shouldBe json.deepDropNullValues
+    }
+  }
+
+  test("dropNulls hands back the same JSON when the document holds nothing to remove") {
+    // the wrapping is applied to every product encoder of the port, and nearly every document
+    // it writes has nothing to remove, so this is the case that has to cost nothing
+    forAll(genNestedJson(4)) { (json: Json) =>
+      val written = droppingEncoder(json)
+      if (json.deepDropNullValues == json) {
+        written should be theSameInstanceAs json
+      } else {
+        written should not be theSameInstanceAs(json)
+      }
+    }
+  }
+
+  test("dropNulls hands back the same JSON for a document with no empty value anywhere") {
+    val payload = Json.obj(
+      "name" -> Json.fromString("alpha"),
+      "sizes" -> Json.arr(Json.fromInt(1), Json.fromInt(2)),
+      "nested" -> Json.obj("tag" -> Json.fromString(""), "rows" -> Json.arr(Json.obj())))
+    droppingEncoder(payload) should be theSameInstanceAs payload
+  }
+
+  test("dropNulls shares the branches of a document it does change") {
+    // only the object carrying the empty field and the containers above it are rebuilt, which
+    // is what makes the removal cost the part of the document it touches rather than all of it
+    val kept = Json.obj("tag" -> Json.fromString("tag"), "sizes" -> Json.arr(Json.fromInt(1)))
+    val payload = Json.obj("kept" -> kept, "changed" -> Json.obj("note" -> Json.Null))
+    val written = droppingEncoder(payload)
+    written shouldBe payload.deepDropNullValues
+    written should not be theSameInstanceAs(payload)
+    fieldOf(written, "kept") should be theSameInstanceAs kept
+    fieldOf(written, "changed") shouldBe Json.obj()
+  }
+
+  test("dropNulls removes an element of an array that is explicitly empty, as the library does") {
+    // no encoder of this port writes such an element, so this is the library's rule inherited
+    // rather than a decision of the port; it is pinned because the two implementations agreeing
+    // in every position is what makes the restatement legitimate
+    val payload = Json.arr(Json.Null, Json.fromInt(1), Json.obj("a" -> Json.Null, "b" -> Json.fromInt(2)))
+    droppingEncoder(payload).noSpaces shouldBe """[1,{"b":2}]"""
+    droppingEncoder(payload) shouldBe payload.deepDropNullValues
+  }
+
+  test("dropNulls keeps a document that is itself an explicitly empty value") {
+    droppingEncoder(Json.Null) shouldBe Json.Null
+    droppingEncoder(Json.Null) should be theSameInstanceAs Json.Null
+    droppingEncoder(Json.Null) shouldBe Json.Null.deepDropNullValues
+  }
+
+  test("dropNulls reaches an object standing inside an array") {
+    val payload = Json.obj("rows" -> Json.arr(Json.obj("tag" -> Json.fromString("t"), "detail" -> Json.Null)))
+    droppingEncoder(payload).noSpaces shouldBe """{"rows":[{"tag":"t"}]}"""
+    droppingEncoder(payload) shouldBe payload.deepDropNullValues
+  }
+
+  test("dropNulls keeps an object left with no fields and an array left with no elements") {
+    // what is removed is the field, never the structure that held it
+    val payload = Json.obj("empty" -> Json.obj("only" -> Json.Null), "list" -> Json.arr(Json.Null))
+    droppingEncoder(payload).noSpaces shouldBe """{"empty":{},"list":[]}"""
+    droppingEncoder(payload) shouldBe payload.deepDropNullValues
+  }
+
+  test("dropNulls keeps a value that is not a structure exactly as it stands") {
+    forAll(genScalarJson) { (json: Json) =>
+      droppingEncoder(json) should be theSameInstanceAs json
+      droppingEncoder(json) shouldBe json.deepDropNullValues
+    }
+  }
+
+  //-------------------------------------------------------------------------
   // validatedDecoder and checkedDecoder: the factory of the type decides
   //-------------------------------------------------------------------------
   /**
@@ -2138,6 +2373,67 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     outcome.left.value.message shouldBe "Bounds are unacceptable: 'low=1\\nINVALID: forged'"
     outcome.left.value.message should not include "\n"
     outcome.left.value.history shouldBe List.empty[CursorOp]
+  }
+
+  //-------------------------------------------------------------------------
+  // The bridge is published, because a hand-written codec has to reach it
+  //
+  // A codec written out by hand has no derived decoder to route through, so it
+  // states its refusals itself, and the two bounds above have to be available
+  // to it as a member rather than only as a behaviour of the helpers. These
+  // cases pin the published form: both arities, the same rendering, the same
+  // cause cap, the same position, and agreement with what a helper produces.
+  //-------------------------------------------------------------------------
+  /** The position of a field within a document, as a hand-written codec would carry it. */
+  private val fieldHistory: List[CursorOp] = List[CursorOp](CursorOp.DownField("ticker"))
+
+  test("the published bridge renders the text of a single cause exactly as a helper-built decoder does") {
+    val forged = "GB\nPARSING: forged\rmore"
+    val failure = Failure.Parsing(rejectionMessage(forged))
+    val direct = Codecs.decodingFailure(failure, fieldHistory)
+    // the same refusal routed through a helper, which is what a hand-written codec has to match
+    val routed = Json
+      .obj("ticker" -> Json.fromString(forged))
+      .hcursor
+      .downField("ticker")
+      .as[SampleTicker](rejectingCodec(text => NonEmptyChain.one(Failure.Parsing(rejectionMessage(text)))))
+    direct.message shouldBe "Ticker name not found: 'GB\\nPARSING: forged\\rmore'"
+    direct.message shouldBe routed.left.value.message
+    direct.history shouldBe fieldHistory
+    direct.history shouldBe routed.left.value.history
+    direct.message.exists(_.isControl) shouldBe false
+  }
+
+  test("the published bridge bounds the message of a single cause, however much text it quotes") {
+    val failure = Failure.Parsing(rejectionMessage("A" * 10000))
+    val reported = Codecs.decodingFailure(failure, List.empty[CursorOp])
+    reported.message.length should be <= MaxRenderedMessage
+    reported.message should startWith("Ticker name not found: 'AAAA")
+    reported.message should endWith("...")
+    failure.message.length should be > 10000
+  }
+
+  test("the published bridge takes a single cause to mean the chain of one") {
+    // the one-argument form is the many-argument form, so a hand-written codec cannot report
+    // a single cause in a shape the rest of the surface does not produce
+    val failure = Failure.Invalid("The payload names no member")
+    Codecs.decodingFailure(failure, fieldHistory) shouldBe
+      Codecs.decodingFailure(NonEmptyChain.one(failure), fieldHistory)
+    Codecs.decodingFailure(failure, fieldHistory).message shouldBe "The payload names no member"
+  }
+
+  test("the published bridge names at most ten causes and states how many it left out") {
+    val reported = Codecs.decodingFailure(accumulated(25, causeMessage), List.empty[CursorOp])
+    reported.message shouldBe
+      (List.range(1, MaxReportedFailures + 1).map(causeMessage) :+ s"and ${25 - MaxReportedFailures} more")
+        .mkString("; ")
+    reported.message should endWith("and 15 more")
+  }
+
+  test("the published bridge carries the position it is given, at any depth") {
+    val deep = List[CursorOp](CursorOp.MoveRight, CursorOp.DownArray, CursorOp.DownField("series"))
+    Codecs.decodingFailure(Failure.Invalid("Element 2 is not acceptable"), deep).history shouldBe deep
+    Codecs.decodingFailure(accumulated(2, causeMessage), deep).history shouldBe deep
   }
 
   //-------------------------------------------------------------------------

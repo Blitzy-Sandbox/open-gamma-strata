@@ -5,6 +5,7 @@
  */
 package com.opengamma.strata.collect
 
+import scala.annotation.tailrec
 import scala.collection.immutable.SortedMap
 
 import cats.Hash
@@ -19,6 +20,11 @@ import org.scalacheck.Arbitrary
 import org.scalacheck.Cogen
 import org.scalacheck.Gen
 import org.scalacheck.Shrink
+import org.scalacheck.rng.Seed
+import org.scalatest.Assertion
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers
+import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 
 import com.opengamma.strata.collect.array.DoubleArray
 import com.opengamma.strata.collect.array.DoubleMatrix
@@ -216,13 +222,15 @@ object SampleNamed {
  * The floor named in the scaladoc of each instance is the value repeated shrinking arrives at,
  * so a failing property reports a minimised case a reader can both act on and predict.
  *
- * This file declares generators only and contributes no test case of its own. What the three
- * rules guarantee is therefore observed where the instances are used: every property of either
- * module runs over them, so an instance that produced an invalid value, or that minimised a
+ * What the three rules guarantee is observed twice over. Every property of either module runs
+ * over these instances, so an instance that produced an invalid value, or that minimised a
  * case into one its own operation rejects, shows up as a failure of the property that drew on
- * it.
+ * it; and [[ArbitrariesSpec]], declared below in this same file, asserts the rules directly,
+ * generator by generator, so a generator that stopped drawing the edge values documented here
+ * is reported by a red test of its own rather than by every property quietly passing.
  *
  * @see [[SampleNamed]] for the sample named family generated here
+ * @see [[ArbitrariesSpec]] for the suite that executes every instance declared here
  */
 object Arbitraries {
 
@@ -1802,3 +1810,1442 @@ object Arbitraries {
     LazyList.from(members.take(math.max(members.indexOf(value), 0)))
   }
 }
+
+/**
+ * Tests [[Arbitraries]], the shared ScalaCheck surface of this module.
+ *
+ * Every other property in both Scala modules is written over the generators, cogenerators and
+ * shrinkings that object publishes, so what those properties establish is only as good as what
+ * it produces. That is why this suite exists and why it asserts by ''executing'' the instances
+ * rather than by reading them: a generator that quietly stopped drawing `NaN`, that produced a
+ * decimal outside the range of its type, or a shrinking that minimised a failing case into a
+ * value its own operation rejects, would leave every property built on it green while it
+ * asserted far less than it reads as asserting.
+ *
+ * ===What is established here===
+ *
+ * Four things, for every member of that object:
+ *
+ *   - '''the documented edge values are reached'''. `NaN`, both infinities and both signed
+ *     zeroes come out of the element generators and out of the edge-bearing array, pair and
+ *     matrix generators; zero, both published extremes, the largest unscaled value and every
+ *     supported scale come out of the decimal generator; the empty and the largest collection
+ *     both arise wherever a generator admits both, and at least one element arises wherever one
+ *     does not; every canonical name form, whitespace, punctuation, digits and text outside
+ *     ASCII come out of the text generator; every failure reason, a chain of one failure and a
+ *     chain of several, and every shape of each of the four outcome types, all arise.
+ *   - '''the generated values are valid'''. A decimal is in range and normalised, a fixed-scale
+ *     decimal shows every digit its decimal holds and no more than eighteen places, an array
+ *     and a matrix stay inside the size and shape bounds documented for the generator that
+ *     drew them, a matrix is rectangular and a square one is square, a pair agrees on size or
+ *     shape, a large value is larger than any small one the neighbouring generator could have
+ *     produced, a failure carries the reason its member is for with a non-empty message and
+ *     attributes in key order, and a chain of failures is non-empty.
+ *   - '''the shrinkings are well behaved'''. Every candidate of every instance is a valid
+ *     value, is different from the value it came from, is strictly smaller under the measure
+ *     the instance documents, and comes from a finite list of candidates. Repeated shrinking is
+ *     followed to a fixed point under a bounded loop, which is what makes termination a fact
+ *     here rather than an argument, and the fixed point reached is the floor the instance
+ *     documents.
+ *   - '''the cogenerators agree exactly where the values do'''. Two equal values perturb one
+ *     seed identically and two different values do not, checked over values the generators
+ *     reach rather than over a handful of literals.
+ *
+ * ===The measures are recomputed here===
+ *
+ * Each shrinking of `Arbitraries` documents the measure its candidates reduce. This suite
+ * computes those measures itself, from the parts of the value, rather than asking the instance
+ * for them: a measure computed by the code under test could agree with a broken shrinking,
+ * while one written out from the documented definition cannot. The functions below are
+ * therefore a transcription of that documentation and are deliberately not shared with the
+ * object they check, and the bounds they are checked against are restated here for the same
+ * reason.
+ *
+ * ===Determinism, and the two pinned seeds===
+ *
+ * Every case is a pure function of literal data or of generated data drawn from the generators
+ * being tested. Nothing reads a clock, a file or the environment, and no case shares mutable
+ * state with another, so the outcome does not depend on the order the cases run in.
+ *
+ * The cases that assert a generator ''reaches'' a particular value are where that needs care,
+ * and each of them is written over a sample drawn from the literal `SampleSeed`, `20260911153000`,
+ * rather than as a property. A property draws a fresh sample every run, so such a case would
+ * fail for a correct generator once in some large number of runs - rarely enough never to be
+ * reproduced, often enough to be seen - and a test that can do that is not deterministic. The
+ * fixed sample makes each of those cases pass in every run or fail in every run. The cases
+ * about the cogenerators perturb the literal `CogenSeed`, `4132297845901`, for the same reason.
+ * Both seeds are stated here so that a failure is replayable: drawing
+ * `Gen.listOfN(count, generator).pureApply(Gen.Parameters.default, Seed(20260911153000L))` in a
+ * console reproduces exactly the sample the failing case saw.
+ *
+ * ===Why this suite shares a file with its subject===
+ *
+ * The target layout of the migration lists one file for the generator surface of this module
+ * and none for its spec, and that layout is authoritative, so this suite is declared beside the
+ * object it tests rather than in a file of its own. Nothing else about it differs from a spec
+ * with its own file: it is an ordinary suite in the ordinary package, it is discovered and
+ * reported under its own name, and the generator surface it draws on is reached through the
+ * import at the head of the class rather than through a file-level one, so no member of
+ * [[Arbitraries]] is ever shadowed inside the object that declares it.
+ *
+ * @see [[Arbitraries]] for the instances under test
+ * @see [[SampleNamed]] for the sample named family generated there
+ */
+final class ArbitrariesSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
+
+  import Arbitraries._
+
+  // ---------------------------------------------------------------------------
+  // Fixtures and bounds.
+  //
+  // The bounds are the ones `Arbitraries` documents: sixteen elements, five rows
+  // and columns, sixty-four to five hundred and twelve elements and eight to
+  // forty-eight rows and columns for the large generators, three attributes,
+  // four failures in a chain, twenty-four characters of text and twelve
+  // upper-case letters. They are restated here rather than read from that
+  // object, since it holds them privately and since a suite that read its
+  // expectations from its subject would pass whatever the subject did.
+  // ---------------------------------------------------------------------------
+
+  /** The largest array a shared generator of that object produces. */
+  private val MaxArraySize: Int = 16
+
+  /** The largest number of rows, or of columns, a shared generated matrix has. */
+  private val MaxMatrixDimension: Int = 5
+
+  /** The smallest array a ''large'' generator produces, above the shared ceiling. */
+  private val MinLargeArraySize: Int = 64
+
+  /** The largest array a ''large'' generator produces. */
+  private val MaxLargeArraySize: Int = 512
+
+  /** The smallest dimension a ''large'' generated matrix has, above the shared ceiling. */
+  private val MinLargeMatrixDimension: Int = 8
+
+  /** The largest dimension a ''large'' generated matrix has. */
+  private val MaxLargeMatrixDimension: Int = 48
+
+  /** The largest number of attributes a generated failure carries. */
+  private val MaxAttributes: Int = 3
+
+  /** The largest number of failures a generated chain holds. */
+  private val MaxChainSize: Int = 4
+
+  /** The longest text [[Arbitraries.genNonEmptyText]] produces. */
+  private val MaxTextLength: Int = 24
+
+  /** The longest text [[Arbitraries.genUpperLetterText]] produces. */
+  private val MaxUpperLetterLength: Int = 12
+
+  /** The largest magnitude [[Arbitraries.genFiniteDouble]] draws, being its widest range. */
+  private val MaxFiniteMagnitude: Double = 1.0e9
+
+  /** The canonical name forms [[Arbitraries.genNonEmptyText]] documents drawing. */
+  private val NameForms: List[String] =
+    List("Act/365F", "GBP-LIBOR-3M", "EUR/USD", "P3M", "GBLO+USNY", "scheme~value")
+
+  /** The characters the punctuation branch of the text generator draws from. */
+  private val PunctuationCharacters: Set[Char] =
+    Set('-', '/', '+', '~', '.', ',', ':', '_', '(', ')', '[', ']')
+
+  /** The keys [[Arbitraries.genFailureAttributes]] documents drawing from. */
+  private val AttributeKeys: List[String] =
+    List("value", "name", "id", "reason", "exceptionType", "scale")
+
+  /** The four phrases [[Arbitraries.genFailureMessage]] begins a message with. */
+  private val MessagePrefixes: List[String] = List(
+    "Unable to resolve",
+    "Invalid input for",
+    "Unsupported operation on",
+    "Missing data for")
+
+  /** The five IEEE-754 values the equality design of the port turns on. */
+  private val EdgeValues: List[Double] =
+    List(Double.NaN, Double.PositiveInfinity, Double.NegativeInfinity, -0.0, 0.0)
+
+  /**
+   * The bit patterns of [[EdgeValues]], which is how a case asserts one was reached.
+   *
+   * Bit patterns rather than values, because that is the equality the double-bearing types use
+   * and because `NaN` compares equal to nothing at all under `==`: a case asking whether a
+   * sample holds `NaN`, or whether it holds a negative zero as distinct from a positive one,
+   * cannot ask with `contains` on the values themselves.
+   */
+  private val EdgeBits: List[Long] = EdgeValues.map(element => bitsOf(element))
+
+  /**
+   * The number of shrinking steps every termination case is bounded by.
+   *
+   * The longest path any instance here takes is the nineteen steps a fixed-scale decimal needs
+   * - one to reach zero and eighteen to drop its places - so a bound of two hundred is far
+   * above what a terminating shrinking uses and far below what a circling one would.
+   */
+  private val StepBound: Int = 200
+
+  /**
+   * The seed every cogeneration case perturbs.
+   *
+   * A literal, so that the perturbations compared in a case are compared under one seed and the
+   * case gives the same answer on every run.
+   */
+  private val CogenSeed: Seed = Seed(4132297845901L)
+
+  /**
+   * The seed every reachability sample below is drawn from.
+   *
+   * A case that asserts a generator ''reaches'' a particular value cannot be written as an
+   * ordinary property: a property draws a fresh sample each time it runs, so a correct
+   * generator would omit the value asked for once in some large number of runs and the case
+   * would fail for no reason at all. Drawing the sample from a literal seed instead makes such
+   * a case a function of the generator alone - it passes in every run or it fails in every run
+   * - which is the determinism the specs of this module are held to.
+   */
+  private val SampleSeed: Seed = Seed(20260911153000L)
+
+  /** The number of values a reachability case draws when the value asked for is a common one. */
+  private val Draws: Int = 200
+
+  /**
+   * The number of values a reachability case draws when the value asked for is a rare one.
+   *
+   * A five-by-five shape is one of thirty-six, a text form one of several branches of a
+   * frequency, and an edge value one of five inside one branch in four, so those cases draw
+   * more widely. Even the widest sample here is a few hundred small values and costs
+   * milliseconds.
+   */
+  private val WideDraws: Int = 500
+
+  /**
+   * The number of decimals a reachability case draws.
+   *
+   * The scale of a generated decimal is one of nineteen inside one branch, and the case below
+   * asserts that every one of the nineteen is reached, so this sample is the largest of them.
+   */
+  private val DecimalDraws: Int = 1000
+
+  /** The number of ''large'' values a case draws, each holding hundreds of elements. */
+  private val LargeDraws: Int = 20
+
+  /**
+   * Draws a fixed sample from a generator, identically in every run.
+   *
+   * The sample is the one the literal [[SampleSeed]] produces, so a case written over it sees
+   * exactly the same values on every run. `pureApply` is the route taken because none of these
+   * generators rejects an input - each is built from the factories of its type over ranges those
+   * factories accept - so no draw is discarded and the sample is always the size asked for.
+   *
+   * @param values  the generator to draw from
+   * @param count  the number of values to draw
+   * @tparam A  the type of value generated
+   * @return the sample, which is the same one on every run for a given generator and count
+   */
+  private def sampleOf[A](values: Gen[A], count: Int): List[A] =
+    Gen.listOfN(count, values).pureApply(Gen.Parameters.default, SampleSeed)
+
+  // ---------------------------------------------------------------------------
+  // The measures, transcribed from the documentation of each shrinking.
+  // ---------------------------------------------------------------------------
+
+  /** The bit pattern of a `double`, which is the identity both double-bearing types use. */
+  private def bitsOf(element: Double): Long = java.lang.Double.doubleToLongBits(element)
+
+  /**
+   * Whether an element is the positive zero the double-bearing shrinkings simplify towards.
+   *
+   * Bit patterns rather than `==`, because that is the equality both double-bearing types use:
+   * this reports false for a negative zero, which is a different value of an array, and false
+   * for `NaN`, which `==` reports as equal to nothing at all.
+   */
+  private def isSimplifiedElement(element: Double): Boolean = bitsOf(element) == bitsOf(0.0)
+
+  /**
+   * Whether an element is one of the edge values a finite generator cannot have drawn.
+   *
+   * A positive zero is deliberately not counted: it is drawn by the finite generator as well as
+   * by the edge one, so its presence is no evidence that the edge branch was taken. `NaN`, the
+   * two infinities and the negative zero are drawn by the edge branch alone.
+   */
+  private def isEdgeElement(element: Double): Boolean =
+    !element.isFinite || bitsOf(element) == bitsOf(-0.0)
+
+  /** Twice the magnitude of the unscaled value plus the scale, and one more when negative. */
+  private def decimalMeasure(value: Decimal): Long =
+    2L * (math.abs(value.unscaledValue) + value.scale.toLong) + (if (value.signum < 0) 1L else 0L)
+
+  /** The measure of the decimal plus the scale it is presented at. */
+  private def fixedScaleMeasure(value: FixedScaleDecimal): Long =
+    decimalMeasure(value.decimal) + value.fixedScale.toLong
+
+  /** The size of the array plus the number of elements that are not already positive zero. */
+  private def arrayMeasure(value: DoubleArray): Long =
+    value.size.toLong + value.toList.count(element => !isSimplifiedElement(element)).toLong
+
+  /** The measures of the two sides of a pair of arrays, added. */
+  private def arrayPairMeasure(value: (DoubleArray, DoubleArray)): Long =
+    arrayMeasure(value._1) + arrayMeasure(value._2)
+
+  /** The entries of a matrix in row-major order, which the measure below counts. */
+  private def entriesOf(value: DoubleMatrix): List[Double] =
+    List.tabulate(value.rowCount)(row => value.row(row).toList).flatten
+
+  /** The row count plus the column count plus the number of entries that are not zero. */
+  private def matrixMeasure(value: DoubleMatrix): Long =
+    value.rowCount.toLong + value.columnCount.toLong +
+      entriesOf(value).count(entry => !isSimplifiedElement(entry)).toLong
+
+  /** The measures of the two sides of a pair of matrices, added. */
+  private def matrixPairMeasure(value: (DoubleMatrix, DoubleMatrix)): Long =
+    matrixMeasure(value._1) + matrixMeasure(value._2)
+
+  /** The words of a message, separated by spaces, the empty parts dropped. */
+  private def wordsOf(message: String): List[String] =
+    message.split(' ').iterator.filter(_.nonEmpty).toList
+
+  /** The number of attributes plus the number of words in the message. */
+  private def failureMeasure(value: Failure): Long =
+    value.attributes.size.toLong + wordsOf(value.message).size.toLong
+
+  /** The failures of a chain as a list, which is the order the chain holds them in. */
+  private def failuresOf(value: NonEmptyChain[Failure]): List[Failure] =
+    value.toNonEmptyList.toList
+
+  /** The number of failures plus the measures of all of them. */
+  private def failuresMeasure(value: NonEmptyChain[Failure]): Long =
+    failuresOf(value).size.toLong + failuresOf(value).map(failure => failureMeasure(failure)).sum
+
+  /** The position of a member in the declaration order of the sample family. */
+  private def sampleNamedMeasure(value: SampleNamed): Long =
+    SampleNamed.values.toList.indexOf(value).toLong
+
+  // ---------------------------------------------------------------------------
+  // Helpers that assert the rules over one value.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Asserts that every candidate of a value is valid, different and strictly smaller.
+   *
+   * Reading the candidates as a list is itself part of the assertion: a shrinking that offered
+   * candidates without end would not return from here, and the bound on the size of the list
+   * pins the number each instance is documented to offer.
+   *
+   * @param value  the value to shrink
+   * @param measure  the measure the candidates must reduce
+   * @param bound  the largest number of candidates the instance offers for this value
+   * @param check  the validity the candidates must have
+   * @return the assertion that every candidate obeys all three rules
+   */
+  private def assertCandidates[A](
+      value: A,
+      measure: A => Long,
+      bound: Int,
+      check: A => Assertion)(implicit shrink: Shrink[A]): Assertion = {
+
+    val candidates = Shrink.shrink(value).toList
+    withClue(s"shrinking '$value' gave ${candidates.size} candidates: ") {
+      candidates.size should be <= bound
+      candidates.foreach { candidate =>
+        withClue(s"candidate '$candidate': ") {
+          check(candidate)
+          candidate should not be value
+          measure(candidate) should be < measure(value)
+        }
+      }
+      succeed
+    }
+  }
+
+  /**
+   * Follows the first candidate of a value repeatedly until none is offered.
+   *
+   * The loop is bounded, so a shrinking that circled between two values, or that offered a
+   * candidate for every value it produced, returns the bound rather than running forever - and
+   * the case that called it fails on the step count instead of hanging.
+   *
+   * @param value  the value to start from
+   * @param steps  the number of steps taken so far
+   * @return the value reached and the number of steps it took to reach it
+   */
+  @tailrec
+  private def fixedPointOf[A](value: A, steps: Int)(implicit shrink: Shrink[A]): (A, Int) =
+    if (steps >= StepBound) {
+      (value, steps)
+    } else {
+      Shrink.shrink(value).headOption match {
+        case Some(candidate) => fixedPointOf(candidate, steps + 1)
+        case None => (value, steps)
+      }
+    }
+
+  /**
+   * Asserts that repeated shrinking of a value terminates, and at the value expected.
+   *
+   * @param value  the value to shrink repeatedly
+   * @param check  the floor the shrinking is expected to reach
+   * @return the assertion that a fixed point is reached within the bound and is that floor
+   */
+  private def assertTerminates[A](value: A, check: A => Assertion)(
+      implicit shrink: Shrink[A]): Assertion = {
+
+    val (floor, steps) = fixedPointOf(value, 0)
+    withClue(s"shrinking '$value' reached '$floor' in $steps steps: ") {
+      steps should be < StepBound
+      Shrink.shrink(floor).toList shouldBe empty
+      check(floor)
+    }
+  }
+
+  /** Perturbs the one seed of this suite by a value, and reads the number that comes out. */
+  private def perturbationOf[A](value: A)(implicit cogen: Cogen[A]): Long =
+    cogen.perturb(CogenSeed, value).long._1
+
+  /**
+   * Asserts that no candidate of a value perturbs the seed the way the value itself does.
+   *
+   * Every candidate is a different value of the type - the cases above establish that - so this
+   * is the disagreement half of the cogeneration contract, checked over values the generators
+   * reach rather than over a handful of literals.
+   */
+  private def assertDistinctPerturbations[A](value: A)(
+      implicit shrink: Shrink[A],
+      cogen: Cogen[A]): Assertion = {
+
+    Shrink.shrink(value).toList.foreach { candidate =>
+      withClue(s"candidate '$candidate' of '$value': ") {
+        perturbationOf(candidate) should not be perturbationOf(value)
+      }
+    }
+    succeed
+  }
+
+  // ---------------------------------------------------------------------------
+  // Validity of a generated value, by type.
+  // ---------------------------------------------------------------------------
+
+  /** Asserts that no element of a collection drawn from a finite generator is an edge value. */
+  private def assertFinite(elements: List[Double]): Assertion =
+    elements.filterNot(element => element.isFinite) shouldBe empty
+
+  /** Asserts that a decimal is in range, at a supported scale, and normalised. */
+  private def assertValidDecimal(value: Decimal): Assertion = {
+    // normalisation is what makes the text of a decimal injective and its equality agree with
+    // its comparison: a normalised value holds no trailing zero in its fraction
+    if (value.scale > 0) {
+      value.unscaledValue % 10L should not be 0L
+    }
+    math.abs(value.unscaledValue) should be <= Decimal.MAX_VALUE.unscaledValue
+    value.scale should be >= 0
+    value.scale should be <= Decimal.MAX_SCALE
+  }
+
+  /** Asserts that a fixed-scale decimal shows every digit of its decimal and no more than 18. */
+  private def assertValidFixedScaleDecimal(value: FixedScaleDecimal): Assertion = {
+    assertValidDecimal(value.decimal)
+    value.fixedScale should be >= value.decimal.scale
+    value.fixedScale should be <= Decimal.MAX_SCALE
+  }
+
+  /** Asserts that a matrix is rectangular, which is the one shape these generators produce. */
+  private def assertRectangular(value: DoubleMatrix): Assertion = {
+    List.tabulate(value.rowCount)(row => value.row(row).size) shouldBe
+      List.fill(value.rowCount)(value.columnCount)
+    entriesOf(value) should have size (value.rowCount.toLong * value.columnCount.toLong)
+  }
+
+  /** Asserts that an array is larger than any array the shared generators could have drawn. */
+  private def assertLargeArray(value: DoubleArray): Assertion = {
+    value.size should be > MaxArraySize
+    value.size should be >= MinLargeArraySize
+    value.size should be <= MaxLargeArraySize
+  }
+
+  /** Asserts that a matrix is rectangular and shaped beyond the reach of the shared generators. */
+  private def assertLargeMatrix(value: DoubleMatrix): Assertion = {
+    assertRectangular(value)
+    value.rowCount should be > MaxMatrixDimension
+    value.columnCount should be > MaxMatrixDimension
+    value.rowCount should be >= MinLargeMatrixDimension
+    value.rowCount should be <= MaxLargeMatrixDimension
+    value.columnCount should be >= MinLargeMatrixDimension
+    value.columnCount should be <= MaxLargeMatrixDimension
+  }
+
+  /** Asserts that a failure carries the reason of its own member, with a message and order. */
+  private def assertValidFailure(value: Failure): Assertion = {
+    value.message should not be empty
+    // `of` answers the member that carries the reason, so rebuilding the value from its parts
+    // recovers it exactly when the member and the reason it reports agree
+    Failure.of(value.reason, value.message, value.attributes) shouldBe value
+    value.attributes.keys.toList shouldBe value.attributes.keys.toList.sorted
+  }
+
+  /** Asserts that a generated failure also stays inside the documented attribute bound. */
+  private def assertGeneratedFailure(value: Failure): Assertion = {
+    assertValidFailure(value)
+    value.attributes.size should be <= MaxAttributes
+  }
+
+  /** Asserts that a generated chain is non-empty and inside the documented length bound. */
+  private def assertGeneratedChain(value: NonEmptyChain[Failure]): Assertion = {
+    val failures = failuresOf(value)
+    failures should not be empty
+    failures.size should be <= MaxChainSize
+    failures.foreach(failure => assertGeneratedFailure(failure))
+    succeed
+  }
+
+  /** Whether a character is one of the letters `A` to `Z`, which is the upper-case shape. */
+  private def isUpperLetter(character: Char): Boolean = character >= 'A' && character <= 'Z'
+
+  // ===========================================================================
+  // The element generators - the IEEE-754 values the equality design turns on
+  // ===========================================================================
+
+  test("every finite double is finite and small enough for two of them to be added") {
+    forAll(genFiniteDouble) { element =>
+      element.isFinite shouldBe true
+      math.abs(element) should be <= MaxFiniteMagnitude
+    }
+  }
+
+  test("the edge generator produces nothing but the five IEEE-754 values it documents") {
+    forAll(genEdgeDouble) { element =>
+      EdgeBits should contain(bitsOf(element))
+    }
+  }
+
+  test("the edge generator reaches each of the five IEEE-754 values") {
+    // a fixed sample rather than a property, for the reason given at `SampleSeed`: a case that
+    // asserts a value is reached has to give the same answer on every run
+    val drawn = sampleOf(genEdgeDouble, Draws).map(element => bitsOf(element))
+    EdgeBits.foreach { bits =>
+      withClue(s"the value whose bit pattern is $bits: ") {
+        drawn should contain(bits)
+      }
+    }
+    succeed
+  }
+
+  test("the mixed double generator reaches ordinary numbers and every edge value") {
+    val drawn = sampleOf(genDouble, WideDraws)
+    drawn.count(element => element.isFinite && !isSimplifiedElement(element)) should be > 0
+    EdgeBits.foreach { bits =>
+      withClue(s"the value whose bit pattern is $bits: ") {
+        drawn.map(element => bitsOf(element)) should contain(bits)
+      }
+    }
+    succeed
+  }
+
+  // ===========================================================================
+  // The text generators
+  // ===========================================================================
+
+  test("every generated text is non-empty and short enough to read in a failure report") {
+    forAll(genNonEmptyText) { text =>
+      text should not be empty
+      text.length should be <= MaxTextLength
+    }
+  }
+
+  test("the text generator reaches every canonical name form of the library") {
+    val texts = sampleOf(genNonEmptyText, WideDraws)
+    NameForms.foreach { form =>
+      withClue(s"the name form '$form': ") {
+        texts should contain(form)
+      }
+    }
+    succeed
+  }
+
+  test("the text generator reaches whitespace, punctuation, digits, non-ASCII and free text") {
+    val texts = sampleOf(genNonEmptyText, WideDraws)
+    // whitespace-only text passes an emptiness check and fails a blankness check, which is the
+    // distinction a property over this generator has to be able to see
+    texts.exists(text => text.nonEmpty && text.trim.isEmpty) shouldBe true
+    texts.exists(text =>
+      text.forall(character => PunctuationCharacters.contains(character))) shouldBe true
+    texts.exists(text => text.forall(character => character.isDigit)) shouldBe true
+    texts.exists(text => text.exists(character => character > '\u007f')) shouldBe true
+    // the one-character case is the boundary of every emptiness check in the library
+    texts.exists(text => text.length == 1) shouldBe true
+    // only the free-text branch runs past the longest name form, which is twelve characters, so
+    // a longer text is the evidence that branch is reached
+    texts.exists(text => text.length > MaxUpperLetterLength) shouldBe true
+  }
+
+  test("every generated upper-case text holds only the letters A to Z") {
+    forAll(genUpperLetterText) { text =>
+      text should not be empty
+      text.length should be <= MaxUpperLetterLength
+      text.filterNot(character => isUpperLetter(character)) shouldBe ""
+    }
+  }
+
+  test("the upper-case generator reaches both the single letter and the longest text") {
+    val lengths = sampleOf(genUpperLetterText, Draws).map(text => text.length)
+    lengths should contain(1)
+    lengths should contain(MaxUpperLetterLength)
+  }
+
+  test("every generated non-upper text is non-empty and fails an upper-case-letters check") {
+    forAll(genNonUpperText) { text =>
+      text should not be empty
+      text.exists(character => !isUpperLetter(character)) shouldBe true
+      // six upper-case letters either side of the one offending character
+      text.length should be <= 13
+    }
+  }
+
+  test("the non-upper generator offends at the start, in the middle and at the end") {
+    val texts = sampleOf(genNonUpperText, Draws)
+    texts.exists(text => !isUpperLetter(text.head)) shouldBe true
+    texts.exists(text => !isUpperLetter(text.last)) shouldBe true
+    texts.exists(text =>
+      text.length > 2 && isUpperLetter(text.head) && isUpperLetter(text.last)) shouldBe true
+    // a validation written as a character range and one written as a letter test differ on
+    // exactly this distinction, so both kinds of offending character have to arise
+    texts.exists(text =>
+      text.exists(character => character >= 'a' && character <= 'z')) shouldBe true
+    texts.exists(text => text.exists(character => !character.isLetter)) shouldBe true
+  }
+
+  // ===========================================================================
+  // The decimals
+  // ===========================================================================
+
+  test("every arbitrary decimal is in range and normalised") {
+    forAll { (value: Decimal) =>
+      assertValidDecimal(value)
+    }
+  }
+
+  test("the decimal generator reaches zero, both extremes and the largest unscaled value") {
+    val decimals = sampleOf(genDecimal, DecimalDraws)
+    decimals should contain(Decimal.ZERO)
+    decimals should contain(Decimal.MAX_VALUE)
+    decimals should contain(Decimal.MIN_VALUE)
+    decimals.map(value => math.abs(value.unscaledValue)).max shouldBe
+      Decimal.MAX_VALUE.unscaledValue
+    decimals.map(value => value.signum).distinct.sorted shouldBe List(-1, 0, 1)
+  }
+
+  test("the decimal generator reaches every scale the type supports") {
+    sampleOf(genDecimal, DecimalDraws).map(value => value.scale).distinct.sorted shouldBe
+      (0 to Decimal.MAX_SCALE).toList
+  }
+
+  test("every arbitrary fixed-scale decimal shows every digit its decimal holds") {
+    forAll { (value: FixedScaleDecimal) =>
+      assertValidFixedScaleDecimal(value)
+    }
+  }
+
+  test("the fixed-scale generator reaches the exact scale, a padding of it and the largest") {
+    val values = sampleOf(genFixedScaleDecimal, Draws)
+    values.exists(value => value.fixedScale == value.decimal.scale) shouldBe true
+    values.exists(value => value.fixedScale > value.decimal.scale) shouldBe true
+    values.exists(value => value.fixedScale == Decimal.MAX_SCALE) shouldBe true
+  }
+
+  // ===========================================================================
+  // The arrays
+  // ===========================================================================
+
+  test("every arbitrary array is within the documented size bound and copies back from its list") {
+    forAll { (value: DoubleArray) =>
+      value.size should be <= MaxArraySize
+      value.toList should have size value.size.toLong
+      DoubleArray.copyOf(value.toList) shouldBe value
+    }
+  }
+
+  test("every array of the finite generators holds only finite elements") {
+    forAll(genFiniteDoubleArray) { value =>
+      value.size should be <= MaxArraySize
+      assertFinite(value.toList)
+    }
+    forAll(genNonEmptyFiniteDoubleArray) { value =>
+      value.size should be >= 1
+      assertFinite(value.toList)
+    }
+  }
+
+  test("every array of the non-empty generators holds at least one element") {
+    forAll(genNonEmptyDoubleArray) { value =>
+      value.size should be >= 1
+      value.size should be <= MaxArraySize
+    }
+    // the invariant is also asserted over a fixed sample, since a property of ten cases cannot
+    // establish that the empty array is never drawn where a generator excludes it
+    sampleOf(genNonEmptyDoubleArray, Draws).filter(value => value.isEmpty) shouldBe empty
+    sampleOf(genNonEmptyFiniteDoubleArray, Draws).filter(value => value.isEmpty) shouldBe empty
+  }
+
+  test("the edge-bearing array generator reaches every IEEE-754 value") {
+    val elements =
+      sampleOf(genNonEmptyDoubleArray, Draws).flatMap(array => array.toList).map(bitsOf)
+    EdgeBits.foreach { bits =>
+      withClue(s"the element whose bit pattern is $bits: ") {
+        elements should contain(bits)
+      }
+    }
+    succeed
+  }
+
+  test("both the empty array and the largest array arise where a generator allows both") {
+    List(genFiniteDoubleArray, genDoubleArray).foreach { values =>
+      val sizes = sampleOf(values, WideDraws).map(array => array.size)
+      sizes should contain(0)
+      sizes should contain(MaxArraySize)
+    }
+    succeed
+  }
+
+  test("every generated pair of arrays agrees on size") {
+    forAll(genFiniteDoubleArrayPair) { case (left, right) =>
+      left.size shouldBe right.size
+      left.size should be <= MaxArraySize
+      assertFinite(left.toList ::: right.toList)
+    }
+    forAll(genDoubleArrayPair) { case (left, right) =>
+      left.size shouldBe right.size
+      left.size should be <= MaxArraySize
+    }
+  }
+
+  test("the edge-bearing pair generator reaches an edge value on each side") {
+    val pairs = sampleOf(genDoubleArrayPair, Draws)
+    pairs.flatMap { case (left, _) => left.toList }.exists(element =>
+      isEdgeElement(element)) shouldBe true
+    pairs.flatMap { case (_, right) => right.toList }.exists(element =>
+      isEdgeElement(element)) shouldBe true
+  }
+
+  // ===========================================================================
+  // The large arrays - the population the shared generators never reach
+  // ===========================================================================
+
+  test("every large finite array is larger than any small one and holds only finite elements") {
+    forAll(genLargeFiniteDoubleArray) { value =>
+      assertLargeArray(value)
+      assertFinite(value.toList)
+    }
+  }
+
+  test("every large edge-bearing array is within the documented size bound") {
+    forAll(genLargeDoubleArray) { value =>
+      assertLargeArray(value)
+    }
+  }
+
+  test("every large edge-bearing array holds several edge values rather than at most one") {
+    sampleOf(genLargeDoubleArray, LargeDraws).foreach { value =>
+      withClue(s"an array of ${value.size} elements: ") {
+        value.toList.count(element => isEdgeElement(element)) should be >= 2
+      }
+    }
+    succeed
+  }
+
+  test("every large pair of arrays agrees on size and is large on both sides") {
+    forAll(genLargeFiniteDoubleArrayPair) { case (left, right) =>
+      left.size shouldBe right.size
+      assertLargeArray(left)
+      assertLargeArray(right)
+      assertFinite(left.toList ::: right.toList)
+    }
+  }
+
+  // ===========================================================================
+  // The matrices
+  // ===========================================================================
+
+  test("every arbitrary matrix is rectangular and within the documented shape bound") {
+    forAll { (value: DoubleMatrix) =>
+      assertRectangular(value)
+      value.rowCount should be <= MaxMatrixDimension
+      value.columnCount should be <= MaxMatrixDimension
+      assertFinite(entriesOf(value))
+    }
+    forAll(genDoubleMatrix) { value =>
+      assertRectangular(value)
+      value.rowCount should be <= MaxMatrixDimension
+      value.columnCount should be <= MaxMatrixDimension
+    }
+  }
+
+  test("every matrix of the square generators is square") {
+    forAll(genSquareFiniteDoubleMatrix) { value =>
+      value.isSquare shouldBe true
+      value.rowCount should be <= MaxMatrixDimension
+      assertFinite(entriesOf(value))
+    }
+    forAll(genSquareDoubleMatrix) { value =>
+      value.isSquare shouldBe true
+      assertRectangular(value)
+    }
+  }
+
+  test("a generated matrix holding no entry states neither a row nor a column") {
+    // a shape with no row or no column is the empty matrix, which the factory collapses both
+    // degenerate shapes to, so a generated matrix never states a dimension it cannot fill
+    forAll(genFiniteDoubleMatrix) { value =>
+      if (value.isEmpty) {
+        value.rowCount shouldBe 0
+        value.columnCount shouldBe 0
+      } else {
+        value.rowCount should be > 0
+        value.columnCount should be > 0
+      }
+    }
+  }
+
+  test("both the empty matrix and the largest shape arise from the shaped generators") {
+    List(genFiniteDoubleMatrix, genDoubleMatrix).foreach { values =>
+      val shapes =
+        sampleOf(values, WideDraws).map(value => (value.rowCount, value.columnCount))
+      shapes should contain((0, 0))
+      shapes should contain((MaxMatrixDimension, MaxMatrixDimension))
+    }
+    succeed
+  }
+
+  test("the edge-bearing matrix generators reach every IEEE-754 value") {
+    List(genDoubleMatrix, genSquareDoubleMatrix).foreach { values =>
+      val entries = sampleOf(values, WideDraws).flatMap(value => entriesOf(value)).map(bitsOf)
+      EdgeBits.foreach { bits =>
+        withClue(s"the entry whose bit pattern is $bits: ") {
+          entries should contain(bits)
+        }
+      }
+    }
+    succeed
+  }
+
+  test("every generated pair of matrices agrees on shape") {
+    forAll(genFiniteDoubleMatrixPair) { case (left, right) =>
+      left.rowCount shouldBe right.rowCount
+      left.columnCount shouldBe right.columnCount
+      assertFinite(entriesOf(left) ::: entriesOf(right))
+    }
+    forAll(genDoubleMatrixPair) { case (left, right) =>
+      left.rowCount shouldBe right.rowCount
+      left.columnCount shouldBe right.columnCount
+    }
+  }
+
+  // ===========================================================================
+  // The large matrices
+  // ===========================================================================
+
+  test("every large matrix is shaped beyond the shared bound and holds finite entries") {
+    forAll(genLargeFiniteDoubleMatrix) { value =>
+      assertLargeMatrix(value)
+      assertFinite(entriesOf(value))
+    }
+  }
+
+  test("the large rectangular generator reaches shapes that are not square") {
+    sampleOf(genLargeFiniteDoubleMatrix, LargeDraws).count(value => !value.isSquare) should be > 0
+  }
+
+  test("every large square matrix is square and shaped beyond the shared bound") {
+    forAll(genLargeSquareFiniteDoubleMatrix) { value =>
+      value.isSquare shouldBe true
+      assertLargeMatrix(value)
+      assertFinite(entriesOf(value))
+    }
+  }
+
+  test("every large pair of matrices agrees on shape and is large on both sides") {
+    forAll(genLargeFiniteDoubleMatrixPair) { case (left, right) =>
+      left.rowCount shouldBe right.rowCount
+      left.columnCount shouldBe right.columnCount
+      assertLargeMatrix(left)
+      assertLargeMatrix(right)
+      assertFinite(entriesOf(left) ::: entriesOf(right))
+    }
+  }
+
+  // ===========================================================================
+  // The failures
+  // ===========================================================================
+
+  test("every arbitrary failure reason is a member of the closed family") {
+    forAll { (value: FailureReason) =>
+      FailureReason.values.toList should contain(value)
+      FailureReason.valueOf(value.name) shouldBe Some(value)
+    }
+  }
+
+  test("the failure reason generator reaches every member the family declares") {
+    sampleOf(genFailureReason, Draws).distinct.map(reason => reason.name).sorted shouldBe
+      FailureReason.values.toList.map(reason => reason.name).sorted
+  }
+
+  test("every arbitrary failure carries its reason, a non-empty message and sorted attributes") {
+    forAll { (value: Failure) =>
+      assertGeneratedFailure(value)
+    }
+  }
+
+  test("the failure generator reaches a failure of every one of the reasons") {
+    sampleOf(genFailure, Draws).map(failure => failure.reason).distinct should have size
+      FailureReason.values.length.toLong
+  }
+
+  test("a failure generated for a reason carries exactly that reason") {
+    FailureReason.values.toList.foreach { reason =>
+      withClue(s"the reason '${reason.name}': ") {
+        sampleOf(genFailureWithReason(reason), LargeDraws).foreach { failure =>
+          failure.reason shouldBe reason
+          assertGeneratedFailure(failure)
+        }
+      }
+    }
+    succeed
+  }
+
+  test("every generated set of attributes is sorted, bounded and drawn from the documented keys") {
+    forAll(genFailureAttributes) { attributes =>
+      attributes.size should be <= MaxAttributes
+      // the order of the keys is what makes the JSON of a failure byte-stable
+      attributes.keys.toList shouldBe attributes.keys.toList.sorted
+      attributes.keys.toList.filterNot(key => AttributeKeys.contains(key)) shouldBe empty
+    }
+  }
+
+  test("the attribute generator reaches no attribute, the largest map and the empty value") {
+    val attributes = sampleOf(genFailureAttributes, Draws)
+    attributes.exists(entries => entries.isEmpty) shouldBe true
+    attributes.exists(entries => entries.size == MaxAttributes) shouldBe true
+    attributes.exists(entries => entries.values.exists(value => value.isEmpty)) shouldBe true
+  }
+
+  test("every generated failure message is a non-empty phrase of the documented shape") {
+    forAll(genFailureMessage) { message =>
+      message should not be empty
+      MessagePrefixes.exists(prefix => message.startsWith(prefix)) shouldBe true
+      // one of the four three-word prefixes followed by one to three words of vocabulary
+      wordsOf(message).size should be >= 4
+      wordsOf(message).size should be <= 6
+    }
+  }
+
+  test("the message generator reaches every documented prefix") {
+    val messages = sampleOf(genFailureMessage, Draws)
+    MessagePrefixes.foreach { prefix =>
+      withClue(s"the prefix '$prefix': ") {
+        messages.exists(message => message.startsWith(prefix)) shouldBe true
+      }
+    }
+    succeed
+  }
+
+  test("every arbitrary chain holds between one and four failures") {
+    forAll { (value: NonEmptyChain[Failure]) =>
+      assertGeneratedChain(value)
+    }
+  }
+
+  test("the chain generator reaches a chain of one and chains of more than one") {
+    val sizes = sampleOf(genFailures, Draws).map(chain => failuresOf(chain).size)
+    sizes should contain(1)
+    sizes should contain(MaxChainSize)
+    sizes.count(size => size > 1) should be > 0
+  }
+
+  test("every arbitrary member of the sample family is one of its declared values") {
+    forAll { (value: SampleNamed) =>
+      SampleNamed.values.toList should contain(value)
+      SampleNamed.namedEnum.valueOf(value.name) shouldBe Some(value)
+    }
+  }
+
+  test("the sample family generator reaches every member the family declares") {
+    sampleOf(genSampleNamed, Draws).distinct.map(member => member.name).sorted shouldBe
+      SampleNamed.values.toList.map(member => member.name).sorted
+  }
+
+  test("the sample family orders, hashes and renders its members by name") {
+    // the family exists so that the generic machinery of this module can be exercised on values
+    // that carry no meaning of their own, and its three instances are all derived from the name,
+    // so a member that ordered, hashed or rendered by anything else would make every spec
+    // reaching for the family through `genSampleNamed` assert something other than it reads as
+    val members = SampleNamed.values.toList
+    members.map(member => SampleNamed.show.show(member)) shouldBe
+      members.map(member => member.name)
+    members.foreach { left =>
+      members.foreach { right =>
+        withClue(s"'${left.name}' against '${right.name}': ") {
+          SampleNamed.order.compare(left, right).sign shouldBe
+            left.name.compareTo(right.name).sign
+          SampleNamed.order.eqv(left, right) shouldBe (left == right)
+          if (left == right) {
+            SampleNamed.order.hash(left) shouldBe SampleNamed.order.hash(right)
+          } else {
+            succeed
+          }
+        }
+      }
+    }
+    succeed
+  }
+
+  // ===========================================================================
+  // The four outcome types of the module
+  //
+  // The four names are written unqualified, as they are in `Arbitraries`, so
+  // these cases resolve them through the re-export of the module root rather
+  // than through the `result` package that defines them.
+  // ===========================================================================
+
+  test("every arbitrary single-failure outcome is one of its two shapes, and both arise") {
+    forAll { (outcome: FailureOr[Decimal]) =>
+      outcome match {
+        case Left(failure) => assertGeneratedFailure(failure)
+        case Right(value) => assertValidDecimal(value)
+      }
+    }
+    val outcomes = sampleOf(genFailureOr(genDecimal), Draws)
+    outcomes.count(outcome => outcome.isLeft) should be > 0
+    outcomes.count(outcome => outcome.isRight) should be > 0
+  }
+
+  test("every arbitrary result is one of its two shapes, and both arise") {
+    forAll { (outcome: ResultNec[Decimal]) =>
+      outcome match {
+        case Left(failures) => assertGeneratedChain(failures)
+        case Right(value) => assertValidDecimal(value)
+      }
+    }
+    val outcomes = sampleOf(genResultNec(genDecimal), Draws)
+    outcomes.count(outcome => outcome.isLeft) should be > 0
+    outcomes.count(outcome => outcome.isRight) should be > 0
+  }
+
+  test("every arbitrary accumulating outcome is one of its two shapes, and both arise") {
+    forAll { (outcome: ValidatedFailures[Decimal]) =>
+      outcome match {
+        case Validated.Invalid(failures) => assertGeneratedChain(failures)
+        case Validated.Valid(value) => assertValidDecimal(value)
+      }
+    }
+    val outcomes = sampleOf(genValidatedFailures(genDecimal), Draws)
+    outcomes.count(outcome => outcome.isInvalid) should be > 0
+    outcomes.count(outcome => outcome.isValid) should be > 0
+  }
+
+  test("every arbitrary partly-successful outcome is one of its three shapes") {
+    forAll { (outcome: ValueWithFailures[Decimal]) =>
+      outcome match {
+        case Ior.Left(failures) => assertGeneratedChain(failures)
+        case Ior.Right(value) => assertValidDecimal(value)
+        case Ior.Both(failures, value) =>
+          assertGeneratedChain(failures)
+          assertValidDecimal(value)
+      }
+    }
+  }
+
+  test("all three shapes of a partly-successful outcome arise from its generator") {
+    // the both-shape is the reason the type exists, so it is asserted to arise rather than left
+    // to chance: a generator that produced only the two Either-like shapes would leave half of
+    // every combinator of this type untested
+    val outcomes = sampleOf(genValueWithFailures(genDecimal), Draws)
+    outcomes.count(outcome => outcome.isLeft) should be > 0
+    outcomes.count(outcome => outcome.isRight) should be > 0
+    outcomes.count(outcome => outcome.isBoth) should be > 0
+  }
+
+  // ===========================================================================
+  // The Shrink instances - every candidate is valid, different and smaller
+  // ===========================================================================
+
+  test("every candidate of a decimal is a smaller decimal in range") {
+    forAll(genDecimal) { value =>
+      assertCandidates(value, decimalMeasure, 4, assertValidDecimal)
+    }
+  }
+
+  test("every candidate of a fixed-scale decimal still shows every digit of its decimal") {
+    forAll(genFixedScaleDecimal) { value =>
+      assertCandidates(value, fixedScaleMeasure, 5, assertValidFixedScaleDecimal)
+    }
+  }
+
+  test("every candidate of an array is a smaller non-empty array") {
+    forAll(genDoubleArray) { value =>
+      assertCandidates(
+        value,
+        arrayMeasure,
+        MaxArraySize + 1,
+        (candidate: DoubleArray) => {
+          // the floor of one element is what the non-empty generators promise their consumers,
+          // so a candidate may never be the empty array
+          candidate.size should be >= 1
+          candidate.size should be <= value.size
+        })
+    }
+  }
+
+  test("every candidate of a pair of arrays keeps the two sides the same size") {
+    forAll(genDoubleArrayPair) { value =>
+      assertCandidates(
+        value,
+        arrayPairMeasure,
+        MaxArraySize + 1,
+        (candidate: (DoubleArray, DoubleArray)) => {
+          candidate._1.size shouldBe candidate._2.size
+          candidate._1.size should be >= 1
+          candidate._1.size should be <= value._1.size
+        })
+    }
+  }
+
+  test("every candidate of a matrix is a smaller rectangular matrix") {
+    forAll(genDoubleMatrix) { value =>
+      assertCandidates(
+        value,
+        matrixMeasure,
+        MaxMatrixDimension * MaxMatrixDimension + 1,
+        (candidate: DoubleMatrix) => {
+          assertRectangular(candidate)
+          candidate.rowCount should be >= 1
+          candidate.columnCount should be >= 1
+          candidate.rowCount should be <= value.rowCount
+          candidate.columnCount should be <= value.columnCount
+        })
+    }
+  }
+
+  test("every candidate of a square matrix is square") {
+    forAll(genSquareDoubleMatrix) { value =>
+      assertCandidates(
+        value,
+        matrixMeasure,
+        MaxMatrixDimension * MaxMatrixDimension + 1,
+        (candidate: DoubleMatrix) => {
+          candidate.isSquare shouldBe true
+          candidate.rowCount should be >= 1
+          candidate.rowCount should be <= value.rowCount
+        })
+    }
+  }
+
+  test("every candidate of a pair of matrices keeps the two sides the same shape") {
+    forAll(genDoubleMatrixPair) { value =>
+      assertCandidates(
+        value,
+        matrixPairMeasure,
+        MaxMatrixDimension * MaxMatrixDimension + 1,
+        (candidate: (DoubleMatrix, DoubleMatrix)) => {
+          candidate._1.rowCount shouldBe candidate._2.rowCount
+          candidate._1.columnCount shouldBe candidate._2.columnCount
+          candidate._1.rowCount should be >= 1
+          candidate._1.columnCount should be >= 1
+        })
+    }
+  }
+
+  test("every candidate of a failure keeps its reason and a non-empty message") {
+    forAll(genFailure) { value =>
+      assertCandidates(
+        value,
+        failureMeasure,
+        MaxAttributes + 3,
+        (candidate: Failure) => {
+          // the reason is the identity of the member, and a candidate message is never empty
+          candidate.reason shouldBe value.reason
+          assertValidFailure(candidate)
+        })
+    }
+  }
+
+  test("every candidate of a chain of failures is a smaller non-empty chain") {
+    forAll(genFailures) { value =>
+      assertCandidates(
+        value,
+        failuresMeasure,
+        2 + MaxChainSize * (MaxAttributes + 3),
+        (candidate: NonEmptyChain[Failure]) => {
+          val failures = failuresOf(candidate)
+          failures should not be empty
+          failures.size should be <= failuresOf(value).size
+          failures.foreach(failure => assertValidFailure(failure))
+          succeed
+        })
+    }
+  }
+
+  test("every candidate of a member of the sample family precedes it in declaration order") {
+    forAll(genSampleNamed) { value =>
+      assertCandidates(
+        value,
+        sampleNamedMeasure,
+        SampleNamed.values.toList.size,
+        (candidate: SampleNamed) =>
+          SampleNamed.values.toList.take(SampleNamed.values.toList.indexOf(value)) should
+            contain(candidate))
+    }
+  }
+
+  // ===========================================================================
+  // The Shrink instances - repeated shrinking terminates, at the documented floor
+  // ===========================================================================
+
+  test("repeated shrinking of a decimal terminates at zero") {
+    forAll(genDecimal) { value =>
+      assertTerminates(value, (floor: Decimal) => floor shouldBe Decimal.ZERO)
+    }
+  }
+
+  test("repeated shrinking of a fixed-scale decimal terminates at zero at no decimal places") {
+    forAll(genFixedScaleDecimal) { value =>
+      assertTerminates(
+        value,
+        (floor: FixedScaleDecimal) => {
+          floor.decimal shouldBe Decimal.ZERO
+          floor.fixedScale shouldBe 0
+        })
+    }
+  }
+
+  test("repeated shrinking of an array terminates at a single zero element") {
+    forAll(genNonEmptyDoubleArray) { value =>
+      assertTerminates(
+        value,
+        (floor: DoubleArray) => {
+          floor.size shouldBe 1
+          isSimplifiedElement(floor.get(0)) shouldBe true
+        })
+    }
+  }
+
+  test("repeated shrinking of a square matrix terminates at a one-by-one zero matrix") {
+    forAll(genSquareDoubleMatrix.filter(matrix => !matrix.isEmpty)) { value =>
+      assertTerminates(
+        value,
+        (floor: DoubleMatrix) => {
+          floor.rowCount shouldBe 1
+          floor.columnCount shouldBe 1
+          isSimplifiedElement(floor.get(0, 0)) shouldBe true
+        })
+    }
+  }
+
+  test("repeated shrinking of a matrix terminates with every entry zero and a dimension of one") {
+    forAll(genDoubleMatrix.filter(matrix => !matrix.isEmpty)) { value =>
+      assertTerminates(
+        value,
+        (floor: DoubleMatrix) => {
+          entriesOf(floor).filterNot(entry => isSimplifiedElement(entry)) shouldBe empty
+          math.min(floor.rowCount, floor.columnCount) shouldBe 1
+        })
+    }
+  }
+
+  test("repeated shrinking of a failure terminates at an attribute-free one-word failure") {
+    forAll(genFailure) { value =>
+      assertTerminates(
+        value,
+        (floor: Failure) => {
+          floor.reason shouldBe value.reason
+          floor.attributes shouldBe empty
+          wordsOf(floor.message) should have size 1L
+        })
+    }
+  }
+
+  test("repeated shrinking of a chain of failures terminates at a chain of one such failure") {
+    forAll(genFailures) { value =>
+      assertTerminates(
+        value,
+        (floor: NonEmptyChain[Failure]) => {
+          val failures = failuresOf(floor)
+          failures should have size 1L
+          failures.head.attributes shouldBe empty
+          wordsOf(failures.head.message) should have size 1L
+        })
+    }
+  }
+
+  test("repeated shrinking of a member of the sample family terminates at the first declared") {
+    forAll(genSampleNamed) { value =>
+      assertTerminates(value, (floor: SampleNamed) => floor shouldBe SampleNamed.values.head)
+    }
+  }
+
+  test("repeated shrinking of a pair of arrays moves both sides to the floor together") {
+    forAll(genDoubleArrayPair) { value =>
+      assertTerminates(
+        value,
+        (floor: (DoubleArray, DoubleArray)) => {
+          floor._1.size shouldBe floor._2.size
+          floor._1.size should be <= 1
+          floor._1.toList.filterNot(element => isSimplifiedElement(element)) shouldBe empty
+          floor._2.toList.filterNot(element => isSimplifiedElement(element)) shouldBe empty
+        })
+    }
+  }
+
+  test("repeated shrinking of a pair of matrices moves both sides to the floor together") {
+    forAll(genDoubleMatrixPair) { value =>
+      assertTerminates(
+        value,
+        (floor: (DoubleMatrix, DoubleMatrix)) => {
+          floor._1.rowCount shouldBe floor._2.rowCount
+          floor._1.columnCount shouldBe floor._2.columnCount
+          entriesOf(floor._1).filterNot(entry => isSimplifiedElement(entry)) shouldBe empty
+          entriesOf(floor._2).filterNot(entry => isSimplifiedElement(entry)) shouldBe empty
+        })
+    }
+  }
+
+  // ===========================================================================
+  // The Shrink instances - a non-trivial case really is minimised
+  //
+  // This is the group `shrinkAny` fails: it offers no candidate at all, so each
+  // of these cases would report the value it started with.
+  // ===========================================================================
+
+  test("a sixteen-element array is minimised to a single zero element") {
+    val array = DoubleArray.tabulate(MaxArraySize)(index => index.toDouble + 1.0)
+    val candidates = Shrink.shrink(array).toList
+    candidates should not be empty
+    candidates.head shouldBe array.subArray(0, MaxArraySize - 1)
+    val (floor, steps) = fixedPointOf(array, 0)
+    floor shouldBe DoubleArray.of(0.0)
+    steps should be < StepBound
+  }
+
+  test("a five-by-five matrix is minimised to a one-by-one zero matrix") {
+    val matrix =
+      DoubleMatrix.tabulate(MaxMatrixDimension, MaxMatrixDimension)((row, column) =>
+        (row + 1).toDouble * 10.0 + (column + 1).toDouble)
+    val candidates = Shrink.shrink(matrix).toList
+    candidates should not be empty
+    candidates.head shouldBe
+      DoubleMatrix.tabulate(MaxMatrixDimension - 1, MaxMatrixDimension - 1)(matrix.get)
+    val (floor, steps) = fixedPointOf(matrix, 0)
+    floor shouldBe DoubleMatrix.tabulate(1, 1)((_, _) => 0.0)
+    steps should be < StepBound
+  }
+
+  test("an eighteen-digit decimal is minimised to zero") {
+    val candidates = Shrink.shrink(Decimal.MAX_VALUE).toList
+    candidates should not be empty
+    candidates should contain(Decimal.ZERO)
+    // the halved candidate is the one that makes a long minimisation short: it loses a digit of
+    // the eighteen at every step rather than counting down
+    candidates.map(candidate => candidate.unscaledValue) should
+      contain(Decimal.MAX_VALUE.unscaledValue / 2L)
+    val (floor, steps) = fixedPointOf(Decimal.MAX_VALUE, 0)
+    floor shouldBe Decimal.ZERO
+    steps should be < StepBound
+  }
+
+  test("a four-failure chain is minimised to a chain of one") {
+    // the chain is ascribed to the trait rather than left at the least upper bound of its four
+    // members, which would be `Failure with Product with Serializable` and would resolve the
+    // shrinking of this file to none at all
+    val chain: NonEmptyChain[Failure] = NonEmptyChain.of(
+      Failure.Parsing("Unable to read row one", SortedMap("row" -> "1", "value" -> "x")),
+      Failure.Parsing("Unable to read row two", SortedMap("row" -> "2")),
+      Failure.MissingData("Missing data for value three"),
+      Failure.Invalid("Invalid input for value four", SortedMap("value" -> "4")))
+    val candidates = Shrink.shrink(chain).toList
+    candidates should not be empty
+    candidates.head shouldBe NonEmptyChain.of(failuresOf(chain).head)
+    val (floor, steps) = fixedPointOf(chain, 0)
+    failuresOf(floor) should have size 1L
+    failuresOf(floor).head.reason shouldBe FailureReason.PARSING
+    failuresOf(floor).head.attributes shouldBe empty
+    wordsOf(failuresOf(floor).head.message) should have size 1L
+    steps should be < StepBound
+  }
+
+  // ===========================================================================
+  // The Cogen instances - equal values agree, different values do not
+  // ===========================================================================
+
+  test("equal decimals perturb a seed identically, and the candidates of one do not") {
+    forAll(genDecimal) { value =>
+      val copy = Decimal.ofScaled(value.unscaledValue, value.scale)
+      copy shouldBe Right(value)
+      copy.map(decimal => perturbationOf(decimal)) shouldBe Right(perturbationOf(value))
+      assertDistinctPerturbations(value)
+    }
+  }
+
+  test("equal fixed-scale decimals perturb a seed identically, and the candidates of one do not") {
+    forAll(genFixedScaleDecimal) { value =>
+      val copy = FixedScaleDecimal.of(value.decimal, value.fixedScale)
+      copy shouldBe Right(value)
+      copy.map(fixed => perturbationOf(fixed)) shouldBe Right(perturbationOf(value))
+      assertDistinctPerturbations(value)
+    }
+  }
+
+  test("equal arrays perturb a seed identically, and the candidates of one do not") {
+    forAll(genDoubleArray) { value =>
+      val copy = DoubleArray.copyOf(value.toList)
+      copy shouldBe value
+      perturbationOf(copy) shouldBe perturbationOf(value)
+      assertDistinctPerturbations(value)
+    }
+  }
+
+  test("equal matrices perturb a seed identically, and the candidates of one do not") {
+    forAll(genDoubleMatrix) { value =>
+      val copy = DoubleMatrix.tabulate(value.rowCount, value.columnCount)(value.get)
+      copy shouldBe value
+      perturbationOf(copy) shouldBe perturbationOf(value)
+      assertDistinctPerturbations(value)
+    }
+  }
+
+  test("equal failures perturb a seed identically, and the candidates of one do not") {
+    forAll(genFailure) { value =>
+      val copy = Failure.of(value.reason, value.message, value.attributes)
+      copy shouldBe value
+      perturbationOf(copy) shouldBe perturbationOf(value)
+      assertDistinctPerturbations(value)
+    }
+  }
+
+  test("equal chains of failures perturb a seed identically, and the candidates of one do not") {
+    forAll(genFailures) { value =>
+      val failures = failuresOf(value)
+      val copy = NonEmptyChain.of(failures.head, failures.tail: _*)
+      copy shouldBe value
+      perturbationOf(copy) shouldBe perturbationOf(value)
+      assertDistinctPerturbations(value)
+    }
+  }
+
+  test("two different failure reasons do not perturb a seed the same way") {
+    val reasons = FailureReason.values.toList
+    reasons.foreach { left =>
+      reasons.foreach { right =>
+        withClue(s"'${left.name}' against '${right.name}': ") {
+          (perturbationOf(left) == perturbationOf(right)) shouldBe (left == right)
+        }
+      }
+    }
+    succeed
+  }
+
+  test("two different members of the sample family do not perturb a seed the same way") {
+    val members = SampleNamed.values.toList
+    members.foreach { left =>
+      members.foreach { right =>
+        withClue(s"'${left.name}' against '${right.name}': ") {
+          (perturbationOf(left) == perturbationOf(right)) shouldBe (left == right)
+        }
+      }
+    }
+    succeed
+  }
+}
+

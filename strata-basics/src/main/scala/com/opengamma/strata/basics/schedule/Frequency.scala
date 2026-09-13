@@ -9,8 +9,6 @@ import java.time.LocalDate
 import java.time.Period
 import java.time.temporal.ChronoUnit
 
-import scala.util.Try
-
 import cats.Hash
 import cats.Order
 import cats.Show
@@ -20,6 +18,7 @@ import cats.syntax.apply._
 
 import io.circe.Codec
 
+import com.opengamma.strata.basics.date.PeriodText
 import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.Validate
@@ -411,10 +410,11 @@ object Frequency {
    * refused for its length, while text written to be large is refused before it is worked on.
    *
    * It bounds work rather than meaning. [[Frequency.parse]] compares the text against the four
-   * term spellings, copies it to prefix it and hands the copy to `java.time.Period`, whose own
-   * parse builds a matcher over the whole of it: every one of those costs is proportional to the
-   * length of text that arrived from outside this library (CWE-400/CWE-770), and all of them are
-   * now reached only by text within the grammar's own bound. The value is the one
+   * term spellings and then walks it to read the period it spells: both costs are proportional
+   * to the length of text that arrived from outside this library (CWE-400/CWE-770), and both are
+   * now reached only by text within the grammar's own bound. The walk replaced a copy of the
+   * text and a regular-expression matcher over the copy, so the ceiling bounds strictly less
+   * work than it was introduced to bound. The value is the one
    * [[com.opengamma.strata.collect.Decimal]] and [[com.opengamma.strata.basics.date.Tenor]] use
    * for the same purpose, so the text ceilings of this port are one number.
    */
@@ -669,16 +669,30 @@ object Frequency {
    * what was refused. Bounding that text and escaping what it may hold belong to the rendering
    * of a failure rather than to its construction.
    *
+   * ===The text is read by a walk, not by an exception===
+   *
+   * Text that is none of the term spellings is read by
+   * [[com.opengamma.strata.basics.date.PeriodText.readOptionallyPrefixed]], which walks the
+   * characters once and answers the period or nothing. It implements the grammar
+   * `java.time.Period.parse` implements, to the character, and it is that method's absence from
+   * this path that makes a refusal cost nothing: `Period.parse` reports text it cannot read by
+   * throwing a `java.time.format.DateTimeParseException`, constructed in full only to be
+   * discarded here, since this method answers a failure value. The walk also reads the leading
+   * `P` in place rather than copying the text to add one. The grammar it agrees with is stated
+   * where it is implemented, and `FrequencySpec` holds the two to each other over a corpus of
+   * texts; no accepted or rejected spelling of this method has moved by a character, `PTerm`
+   * and `-2D` included.
+   *
    * ===The grammar's own ceiling is tested first===
    *
    * Text longer than [[MaxTextLength]] characters names no frequency - neither the term
    * spellings nor a period reaches a fraction of that length, as the constant explains - and is
    * refused before anything is done with it: before the four case-insensitive comparisons
-   * against the term spellings, before the copy that adds the leading `P`, and before
-   * `java.time.Period` is asked to read it. That failure names the ceiling rather than the text,
-   * which is the wording [[com.opengamma.strata.collect.Decimal]] reports for the same
-   * condition. Every text within the ceiling reads exactly as it did, quoted in full when it is
-   * refused, so the ceiling is invisible to every caller but the one handing over a payload.
+   * against the term spellings, and before a character of the period text is read. That failure
+   * names the ceiling rather than the text, which is the wording
+   * [[com.opengamma.strata.collect.Decimal]] reports for the same condition. Every text within
+   * the ceiling reads exactly as it did, quoted in full when it is refused, so the ceiling is
+   * invisible to every caller but the one handing over a payload.
    *
    * @param toParse  the text to parse
    * @return the frequency the text names, or the failure naming the broken constraint: the text
@@ -690,12 +704,11 @@ object Frequency {
     } else if (isTermText(toParse)) {
       Right(TERM)
     } else {
-      // Only an upper-case `P` is recognised as already present, while `Period.parse` itself
-      // reads the units without regard to case.
-      val prefixed = if (toParse.startsWith("P")) toParse else "P" + toParse
-      Try(Period.parse(prefixed)).toEither match {
-        case Right(period) => of(period).left.map(failures => Failure.collapse(failures))
-        case Left(_) =>
+      // Only an upper-case `P` is recognised as already present, while the units themselves are
+      // read without regard to case; both rules belong to the reader, which states them.
+      PeriodText.readOptionallyPrefixed(toParse) match {
+        case Some(period) => of(period).left.map(failures => Failure.collapse(failures))
+        case None =>
           Left(Failure.Parsing(s"Unable to parse frequency: '$toParse'"))
       }
     }

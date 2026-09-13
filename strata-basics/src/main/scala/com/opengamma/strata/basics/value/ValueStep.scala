@@ -157,10 +157,13 @@ sealed abstract case class ValueStep private (
    * The semantics are those documented above, unchanged and in the same order: an index-based
    * step at or beyond the end of the schedule is reported, a date-based step is matched against
    * the unadjusted start dates and only then against the adjusted ones, and a date matching
-   * neither is answered with nothing. The two passes are two lookups here rather than two walks,
-   * and the second is only made where the first found nothing, which is what preserves the order
-   * of the passes - and so the period a date that is the unadjusted start of one period and the
-   * adjusted start of another resolves to.
+   * neither is answered with nothing. The two passes are two questions asked of the index here
+   * rather than two searches written out, and the second is only asked where the first found
+   * nothing, which is what preserves the order of the passes - and so the period a date that is
+   * the unadjusted start of one period and the adjusted start of another resolves to. Whether the
+   * index answers a pass by a lookup or by a walk is its own business and changes no answer; not
+   * asking the second question at all is also what keeps the adjusted half of the index from
+   * being built where no step needs it.
    *
    * @param periods  the index over the periods of the schedule to resolve against
    * @return the index of the schedule period this step applies at, nothing if this step is
@@ -362,20 +365,52 @@ object ValueStep {
    * ===Why it exists===
    *
    * A step resolves by searching the periods of the schedule it is applied to: for the period
-   * that starts on its date, or for the period its date falls in. Searching the period list
-   * itself answers each question in a walk, so resolving a definition of `m` steps against a
-   * schedule of `n` periods would cost `m * n` walks, and a definition holding a sequence
-   * expanded into a step per period would make that quadratic in the size of the schedule alone.
-   * This index is built '''once''' per resolution and answers each question in constant time, or
-   * in logarithmic time for the one question that genuinely needs a search, so the same
-   * resolution costs `n + m log n` and allocates one index rather than one zipped list per step.
+   * that starts on its date, or for the period its date falls in. Four questions are asked in
+   * all - the number of periods, the unadjusted start date of one named period, the period that
+   * starts on a date, and the period a date falls in - and this type is the single answerer of
+   * them, so that a resolution reaches the period list in one place rather than once per step and
+   * once per question.
    *
-   * ===What it holds, and why each part is shaped the way it is===
+   * ===Why nothing here is built until it is asked for===
+   *
+   * A walk of the periods allocates nothing; the structures that replace a walk with a lookup
+   * cost an entry per period, whether one step is being placed or a thousand. Building them
+   * unconditionally therefore made a definition holding a single step pay for the whole schedule -
+   * measured at ~90x the time and ~83x the allocation of the same resolution in the Java original,
+   * which walks - and left resolution of a stepped schedule allocation-bound rather than
+   * compute-bound.
+   *
+   * So this type holds the '''period list itself''' and derives eagerly only what a traversal that
+   * allocates nothing can derive: the number of periods, the unadjusted start date of the first,
+   * and the unadjusted end date of the last. The three questions that genuinely search are
+   * answered by one of two strategies, chosen once when the index is built:
+   *
+   *   - the '''scan''' strategy walks the period list in schedule order and allocates nothing at
+   *     all. This is the shape of the Java original, and it is the cheaper of the two for the
+   *     step counts a definition actually holds, which is one or a handful;
+   *   - the '''indexed''' strategy answers from a first-hit map per kind of start date and from a
+   *     vector of the prefix maxima of the start dates. All three are `lazy val`s, so a resolution
+   *     builds only the ones its own steps consult: a definition whose steps all land on
+   *     unadjusted boundaries builds the unadjusted map alone, one whose steps are all positioned
+   *     by a period index builds none of the three, and the adjusted map is built only where the
+   *     date of some step matched no unadjusted boundary.
+   *
+   * The choice is made from the number of date-positioned steps about to be placed, against
+   * [[PeriodIndex.IndexedLookupThreshold]], which records where the two were measured to cross
+   * over. Both strategies answer every question identically - the scan takes the first hit in
+   * schedule order, and the maps are built to hold the first hit for exactly that reason - so the
+   * choice is one of cost alone and never one of answer.
+   *
+   * ===Why the two searching structures are shaped the way they are===
    *
    * The two date-to-index maps are '''first-hit''': where several periods share a start date, the
    * map holds the earliest of them, which is the period a walk over the list in schedule order
-   * would match. That is why the maps are folded rather than built from a list of pairs, which
-   * would keep the last duplicate instead of the first.
+   * matches. Each is built in a single pass whose per-period cost is one entry rather than one
+   * map: the periods become date-and-index pairs in '''reverse''' schedule order and are handed to
+   * the map factory, which keeps the last pair offered for a repeated key - and the last pair
+   * offered for a date is the earliest position that date appears at. Entering each date into a
+   * map derived from the previous one would instead cost a fresh map per period, which is what the
+   * allocation measured above was mostly made of.
    *
    * The prefix maxima are what let the preceding-period question be answered by a search rather
    * than by a walk. That question is "the first period, after the first one, whose unadjusted start
@@ -386,48 +421,78 @@ object ValueStep {
    * maximum exceeds `d` exactly when one of the dates it covers does; the prefix maxima are
    * non-decreasing by construction, whatever order the periods are in, so that second form '''is'''
    * searchable. The maxima cover indices `1` to `n - 1` only, since the question excludes the
-   * first period.
+   * first period. The scan form of that same question walks those same periods in order and stops
+   * at the first one that starts later, which needs no such identity - which is why the two
+   * strategies agree on a period list held in any order at all.
    *
    * ===Thread safety===
    *
    * An instance is immutable and holds only immutable values, so it is safe to share between any
-   * number of threads without synchronisation. It is also worth nothing beyond the resolution it
-   * was built for, which is why it is neither published nor cached: it is a function of the
-   * period list, and holding one alongside a schedule would be a second copy of that list to keep
-   * in step with it.
+   * number of threads without synchronisation. The three derived structures are `lazy val`s: the
+   * platform performs each initialisation at most once however many threads reach it together and
+   * publishes the result safely, and each is a pure function of the period list, so no thread can
+   * observe a half-built structure or a different answer from another thread's. An instance is
+   * also worth nothing beyond the resolution it was built for, which is why it is neither
+   * published nor cached: it is a function of the period list, and holding one alongside a
+   * schedule would be a second copy of that list to keep in step with it.
    *
-   * @param unadjustedStartDates  the unadjusted start date of each period, in schedule order,
-   *   non-empty because the factory takes a non-empty list and the constructor is private
-   * @param unadjustedStartIndices  the index of the '''first''' period starting on each
-   *   unadjusted start date
-   * @param adjustedStartIndices  the index of the '''first''' period starting on each adjusted
-   *   start date
+   * @param periods  the periods of the schedule to resolve against, in schedule order, non-empty
+   *   because the factory takes a non-empty list and the constructor is private
+   * @param size  the number of periods in the schedule this index was built over, one or more,
+   *   counted once by the factory
+   * @param firstUnadjustedStartDate  the unadjusted start date of the first period, which is the
+   *   start of the schedule as the preceding-period question measures it
    * @param lastUnadjustedEndDate  the unadjusted end date of the last period, which is the end of
    *   the schedule as the preceding-period question measures it
-   * @param laterStartMaxima  the running maximum of the unadjusted start dates of the periods
-   *   after the first, one entry per such period, in schedule order
+   * @param indexedLookups  whether the three searching questions are answered from the lazily
+   *   built structures rather than by a scan of the period list, decided by the factory from the
+   *   number of date-positioned steps that are about to be placed against this index
    */
   private[value] final class PeriodIndex private (
-      unadjustedStartDates: Vector[LocalDate],
-      unadjustedStartIndices: Map[LocalDate, Int],
-      adjustedStartIndices: Map[LocalDate, Int],
+      periods: List[SchedulePeriod],
+      val size: Int,
+      val firstUnadjustedStartDate: LocalDate,
       val lastUnadjustedEndDate: LocalDate,
-      laterStartMaxima: Vector[LocalDate]) {
+      indexedLookups: Boolean) {
 
     /**
-     * The number of periods in the schedule this index was built over.
+     * The index of the '''first''' period starting on each unadjusted start date.
      *
-     * @return the period count, one or more
+     * Built on first use and only under the indexed strategy, so a resolution that scans never
+     * pays for it and one that indexes pays for it once.
      */
-    def size: Int = unadjustedStartDates.size
+    private lazy val unadjustedStartIndices: Map[LocalDate, Int] =
+      firstHitIndices(period => period.unadjustedStartDate)
 
     /**
-     * The unadjusted start date of the first period, which is the start of the schedule as the
-     * preceding-period question measures it.
+     * The index of the '''first''' period starting on each adjusted start date.
      *
-     * @return the unadjusted start date of the first period
+     * Built on first use, which under the indexed strategy is the first time the date of a step
+     * matches no unadjusted boundary: the adjusted pass is the second of the two and is not made
+     * at all where the first one matched, so a definition whose steps all name unadjusted
+     * boundaries never builds this map.
      */
-    def firstUnadjustedStartDate: LocalDate = unadjustedStartDates.head
+    private lazy val adjustedStartIndices: Map[LocalDate, Int] =
+      firstHitIndices(period => period.startDate)
+
+    /**
+     * The running maximum of the unadjusted start dates of the periods after the first, one entry
+     * per such period, in schedule order.
+     *
+     * Built on first use, which under the indexed strategy is the first time a step has to be
+     * placed in the period its date falls inside rather than on a boundary. The seed is the start
+     * date of the second period, since the question the maxima answer excludes the first.
+     */
+    private lazy val laterStartMaxima: Vector[LocalDate] =
+      periods match {
+        case _ :: firstLaterPeriod :: remainingPeriods =>
+          remainingPeriods.iterator
+            .map(period => period.unadjustedStartDate)
+            .scanLeft(firstLaterPeriod.unadjustedStartDate)((runningMaximum, date) =>
+              if (date.isAfter(runningMaximum)) date else runningMaximum)
+            .toVector
+        case _ => Vector.empty[LocalDate]
+      }
 
     /**
      * The unadjusted start date of the period at the specified index.
@@ -438,11 +503,17 @@ object ValueStep {
      * period starts on, and the index it names it from came from resolving a step against this
      * very index.
      *
+     * The date is reached by walking the period list to that index. This is the one question of
+     * the four that no strategy indexes, because it is asked only while a failure is being
+     * reported: a walk on that path costs a resolution that is already over, where a vector of
+     * every start date would cost every resolution that succeeds.
+     *
      * @param index  the zero-based index of the period
      * @return the unadjusted start date of that period, or nothing if the schedule has no such
      *   period
      */
-    def unadjustedStartDateAt(index: Int): Option[LocalDate] = unadjustedStartDates.lift(index)
+    def unadjustedStartDateAt(index: Int): Option[LocalDate] =
+      if (index < 0) None else unadjustedStartDateFrom(periods, index)
 
     /**
      * The index of the first period whose '''unadjusted''' start date is the specified date.
@@ -450,7 +521,12 @@ object ValueStep {
      * @param date  the date to look up
      * @return the index of the first such period, or nothing if no period starts on that date
      */
-    def unadjustedStartIndexOf(date: LocalDate): Option[Int] = unadjustedStartIndices.get(date)
+    def unadjustedStartIndexOf(date: LocalDate): Option[Int] =
+      if (indexedLookups) {
+        unadjustedStartIndices.get(date)
+      } else {
+        firstStartIndexOf(periods, 0, date, period => period.unadjustedStartDate)
+      }
 
     /**
      * The index of the first period whose '''adjusted''' start date is the specified date.
@@ -458,28 +534,168 @@ object ValueStep {
      * @param date  the date to look up
      * @return the index of the first such period, or nothing if no period starts on that date
      */
-    def adjustedStartIndexOf(date: LocalDate): Option[Int] = adjustedStartIndices.get(date)
+    def adjustedStartIndexOf(date: LocalDate): Option[Int] =
+      if (indexedLookups) {
+        adjustedStartIndices.get(date)
+      } else {
+        firstStartIndexOf(periods, 0, date, period => period.startDate)
+      }
 
     /**
      * The index of the period before the first period, after the first one, that starts after the
      * specified date.
      *
-     * This is the middle rule of [[ValueStep.findPreviousIndex]], and it is answered by a binary
-     * search over the prefix maxima of the start dates rather than by a walk over the dates
-     * themselves - see the documentation of this type for why the maxima are the searchable form
-     * of the question and why the dates are not, and in particular why the answer does not
-     * require the periods of the schedule to be in date order. The answer is the index found
-     * '''minus one''', which is the position of the maximum in a vector that starts at period one
-     * and so needs no subtraction of its own.
+     * This is the middle rule of [[ValueStep.findPreviousIndex]]. Under the indexed strategy it is
+     * answered by a binary search over the prefix maxima of the start dates rather than by a walk
+     * over the dates themselves - see the documentation of this type for why the maxima are the
+     * searchable form of the question and the dates are not, and in particular why the answer does
+     * not require the periods of the schedule to be in date order. Under the scan strategy it is
+     * answered by that walk, which stops at the first period that starts later. Both forms answer
+     * the index found '''minus one''', which is the position of the maximum in a vector that
+     * starts at period one and so needs no subtraction of its own.
      *
      * @param date  the date of the step being resolved
      * @return the index of the period before the first later-starting one, or nothing if no
      *   period after the first starts after that date
      */
-    def indexBeforeFirstLaterStart(date: LocalDate): Option[Int] = {
-      val position = firstLaterStart(date, 0, laterStartMaxima.size)
-      if (position < laterStartMaxima.size) Some(position) else None
-    }
+    def indexBeforeFirstLaterStart(date: LocalDate): Option[Int] =
+      if (indexedLookups) {
+        val position = firstLaterStart(date, 0, laterStartMaxima.size)
+        if (position < laterStartMaxima.size) Some(position) else None
+      } else {
+        periods match {
+          case _ :: laterPeriods => firstLaterStartPosition(laterPeriods, 0, date)
+          case Nil => None
+        }
+      }
+
+    /**
+     * Maps each start date of the periods to the '''first''' position it appears at.
+     *
+     * The pairs are accumulated by prepending, so the list handed to the map factory holds them in
+     * reverse schedule order, and the factory keeps the last pair it is offered for a repeated
+     * key: the surviving position of a date that several periods start on is therefore the
+     * earliest of them, which is the period a walk in schedule order matches. The cost is one pair
+     * and one entry per period, paid once, where entering each date into a map derived from the
+     * previous one would cost a map per period.
+     *
+     * @param startDateOf  the start date of a period to index it by, unadjusted or adjusted
+     * @return the first position of each distinct start date
+     */
+    private def firstHitIndices(startDateOf: SchedulePeriod => LocalDate): Map[LocalDate, Int] =
+      Map.from(reversedStartEntries(periods, 0, startDateOf, Nil))
+
+    /**
+     * Pairs each period with its index, in reverse schedule order.
+     *
+     * The walk is forward and the pairs are prepended, which is what reverses them; the recursion
+     * is in tail position and so is compiled to a loop.
+     *
+     * @param remaining  the periods still to pair, in schedule order
+     * @param index  the index of the first of those periods
+     * @param startDateOf  the start date of a period to pair it by
+     * @param entries  the pairs made from the periods already walked, latest first
+     * @return every period paired with its index, latest first
+     */
+    @tailrec
+    private def reversedStartEntries(
+        remaining: List[SchedulePeriod],
+        index: Int,
+        startDateOf: SchedulePeriod => LocalDate,
+        entries: List[(LocalDate, Int)]): List[(LocalDate, Int)] =
+      remaining match {
+        case Nil => entries
+        case period :: laterPeriods =>
+          reversedStartEntries(
+            laterPeriods,
+            index + 1,
+            startDateOf,
+            (startDateOf(period), index) :: entries)
+      }
+
+    /**
+     * Walks the periods for the unadjusted start date of the one at the specified offset.
+     *
+     * Answers with nothing where the offset runs past the end of the list, which is how an index
+     * the schedule has no period for is answered without a bound being checked against the size.
+     *
+     * @param remaining  the periods still to walk, in schedule order
+     * @param countdown  the number of periods still to pass before the one wanted
+     * @return the unadjusted start date of that period, or nothing if the list is shorter
+     */
+    @tailrec
+    private def unadjustedStartDateFrom(
+        remaining: List[SchedulePeriod],
+        countdown: Int): Option[LocalDate] =
+      remaining match {
+        case Nil => None
+        case period :: laterPeriods =>
+          if (countdown == 0) {
+            Some(period.unadjustedStartDate)
+          } else {
+            unadjustedStartDateFrom(laterPeriods, countdown - 1)
+          }
+      }
+
+    /**
+     * Walks the periods in schedule order for the first one starting on the specified date.
+     *
+     * This is the scan strategy's form of both boundary-matching questions, the two differing only
+     * in which start date of a period they read. It allocates nothing per period walked and stops
+     * at the first hit, which is what makes it agree with the first-hit maps on a list holding
+     * several periods that start on one date. The recursion is in tail position and so is compiled
+     * to a loop.
+     *
+     * @param remaining  the periods still to walk, in schedule order
+     * @param index  the index of the first of those periods
+     * @param date  the date to match
+     * @param startDateOf  the start date of a period to match against, unadjusted or adjusted
+     * @return the index of the first period starting on that date, or nothing if none does
+     */
+    @tailrec
+    private def firstStartIndexOf(
+        remaining: List[SchedulePeriod],
+        index: Int,
+        date: LocalDate,
+        startDateOf: SchedulePeriod => LocalDate): Option[Int] =
+      remaining match {
+        case Nil => None
+        case period :: laterPeriods =>
+          if (startDateOf(period) == date) {
+            Some(index)
+          } else {
+            firstStartIndexOf(laterPeriods, index + 1, date, startDateOf)
+          }
+      }
+
+    /**
+     * Walks the periods after the first for the first one that starts after the specified date.
+     *
+     * This is the scan strategy's form of the preceding-period question, and it answers the
+     * position of that period in the list of periods after the first - which is its index in the
+     * schedule minus one, the same number the search over the prefix maxima answers. The
+     * recursion is in tail position and so is compiled to a loop.
+     *
+     * @param remaining  the periods after the first that are still to walk, in schedule order
+     * @param position  the position of the first of those periods among the periods after the
+     *   first
+     * @param date  the date of the step being resolved
+     * @return the position of the first later-starting period, or nothing if none starts later
+     */
+    @tailrec
+    private def firstLaterStartPosition(
+        remaining: List[SchedulePeriod],
+        position: Int,
+        date: LocalDate): Option[Int] =
+      remaining match {
+        case Nil => None
+        case period :: laterPeriods =>
+          if (period.unadjustedStartDate.isAfter(date)) {
+            Some(position)
+          } else {
+            firstLaterStartPosition(laterPeriods, position + 1, date)
+          }
+      }
 
     /**
      * Searches the prefix maxima for the first position holding a date after the one specified.
@@ -512,56 +728,106 @@ object ValueStep {
   }
 
   /**
-   * Companion of [[PeriodIndex]], holding the single factory that builds one.
+   * Companion of [[PeriodIndex]], holding the factories that build one and the threshold that
+   * decides how it answers.
    *
-   * The constructor of the type is private, so this is the only way an index comes about, and the
-   * five parts of one are therefore always derived from the same period list in the same place.
+   * The constructor of the type is private, so these are the only way an index comes about, and
+   * the eagerly derived parts of one are therefore always read from the same period list in the
+   * same place.
    */
   private[value] object PeriodIndex {
 
     /**
-     * Builds the index over the specified periods.
+     * The number of date-positioned steps at which the indexed strategy becomes the cheaper one.
      *
-     * Every part is built by a traversal of the periods or of a vector derived from one: the two
-     * vectors of start dates, the first-hit map over each of them, the prefix maxima, and the
-     * unadjusted end date of the last period. The cost is therefore linear in the number of
-     * periods and is paid once per resolution, which is the whole point of the type.
+     * Below this count an index scans its period list for each date it is asked about, allocating
+     * nothing; at it or above, it builds the structures that turn those scans into lookups.
+     *
+     * The constant is a measurement rather than a guess. Resolving a definition against a
+     * 1000-period monthly schedule, with the two strategies forced in turn and the step count
+     * swept, the indexed strategy costs 82-99 microseconds almost flat in the step count up to 64 -
+     * the one build dominates it - while the scanning strategy costs what its walks cost, which
+     * depends on '''where''' in the schedule the steps sit as well as on how many of them there
+     * are: a scan stops at the period it matches, so steps naming the first periods of the schedule
+     * are found almost immediately and steps naming the last ones walk nearly the whole list. With
+     * the steps at the end of the schedule - the unfavourable placement, and the one that a date
+     * matching no boundary at all shares - scanning costs 17 microseconds at one step and 48, 86
+     * and 150 at 16, 32 and 64 steps, crossing the indexed cost between 32 and 48. With the steps
+     * at the start of the schedule scanning stays under 20 microseconds out to 64 steps and does
+     * not cross until around 256.
+     *
+     * The crossing of the unfavourable placement is the one this constant is set to, because being
+     * on the wrong side of that one is what costs an order of magnitude: at 256 tail-placed steps a
+     * scan costs 928 microseconds against the index's 132, where at 256 head-placed steps the index
+     * costs 113 microseconds against the scan's 106. The position of the crossing is insensitive to
+     * the length of the schedule, since the cost of one scan and the cost of the whole build are
+     * both proportional to it, which is why one constant serves rather than a function of both
+     * counts.
+     *
+     * Nothing about an answer depends on this number - the two strategies are checked against one
+     * another, and against an independent linear reference, on both sides of it.
+     */
+    private[value] val IndexedLookupThreshold: Int = 32
+
+    /**
+     * Builds the index over the specified periods for a single date-positioned step.
+     *
+     * This is the form for a caller resolving '''one''' step, which is what the two members of
+     * [[ValueStep]] that take a period list are: one step is below the threshold, so the index it
+     * gets answers by scanning and builds nothing.
      *
      * @param periods  the periods of the schedule to index, in schedule order
      * @return the index over those periods
      */
-    def of(periods: NonEmptyList[SchedulePeriod]): PeriodIndex = {
+    def of(periods: NonEmptyList[SchedulePeriod]): PeriodIndex = of(periods, 1)
+
+    /**
+     * Builds the index over the specified periods for the specified number of date-positioned
+     * steps.
+     *
+     * Only the three parts that cost nothing are derived here, each by a traversal that allocates
+     * nothing: the number of periods, the unadjusted start date of the first period, and the
+     * unadjusted end date of the last. The structures that answer the searching questions are
+     * built by the index itself, on first use and only where the strategy this count selects is
+     * the indexed one.
+     *
+     * The count is of the steps positioned by a '''date''', because they are the only ones that
+     * ask a searching question at all: a step positioned by a period index is answered from the
+     * number of periods alone. A caller that does not know the count - which means a caller
+     * placing one step - uses the single-argument form above.
+     *
+     * @param periods  the periods of the schedule to index, in schedule order
+     * @param dateStepCount  the number of date-positioned steps to be placed against this index
+     * @return the index over those periods
+     */
+    def of(periods: NonEmptyList[SchedulePeriod], dateStepCount: Int): PeriodIndex = {
       val periodList = periods.toList
-      val unadjustedStartDates = periodList.iterator.map(_.unadjustedStartDate).toVector
-      val adjustedStartDates = periodList.iterator.map(_.startDate).toVector
-      val laterStarts = unadjustedStartDates.drop(1)
-      val laterStartMaxima =
-        laterStarts.headOption.fold(Vector.empty[LocalDate])(firstStart =>
-          laterStarts.tail.scanLeft(firstStart)((runningMax, date) =>
-            if (date.isAfter(runningMax)) date else runningMax))
       new PeriodIndex(
-        unadjustedStartDates,
-        firstHitIndices(unadjustedStartDates),
-        firstHitIndices(adjustedStartDates),
-        periods.last.unadjustedEndDate,
-        laterStartMaxima)
+        periodList,
+        periodList.length,
+        periods.head.unadjustedStartDate,
+        lastOf(periods.head, periods.tail).unadjustedEndDate,
+        dateStepCount >= IndexedLookupThreshold)
     }
 
     /**
-     * Maps each of the specified dates to the '''first''' position it appears at.
+     * The last of the specified periods.
      *
-     * A date appearing more than once keeps its earliest position, which is the period a walk
-     * over the list in schedule order would match. Folding is what achieves that - building the
-     * map from a list of pairs would keep the last duplicate instead - and a date is only entered
-     * where it is not already present, so the fold does no work per duplicate beyond the lookup.
+     * Written as a walk taking the head and the tail separately so that it is total on a list of
+     * any length, including the empty tail of a schedule of one period, and so that it allocates
+     * nothing while walking. The recursion is in tail position and so is compiled to a loop.
      *
-     * @param dates  the dates to index, in schedule order
-     * @return the first position of each distinct date
+     * @param period  the period reached so far
+     * @param remaining  the periods after it, in schedule order
+     * @return the last period
      */
-    private def firstHitIndices(dates: Vector[LocalDate]): Map[LocalDate, Int] =
-      dates.iterator.zipWithIndex.foldLeft(Map.empty[LocalDate, Int]) {
-        case (indices, (date, index)) =>
-          if (indices.contains(date)) indices else indices.updated(date, index)
+    @tailrec
+    private def lastOf(
+        period: SchedulePeriod,
+        remaining: List[SchedulePeriod]): SchedulePeriod =
+      remaining match {
+        case Nil => period
+        case laterPeriod :: laterPeriods => lastOf(laterPeriod, laterPeriods)
       }
   }
 

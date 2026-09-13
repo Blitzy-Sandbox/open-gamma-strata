@@ -166,18 +166,25 @@ trait FloatingRate extends Named {
  *
  * Every family the composition names declares a type that extends the trait above, so the
  * dependency between this file and theirs is mutual. It is safe because nothing here holds a
- * family: [[FloatingRate.standardLookups]] is a method, and the elements of the sequence it
- * returns are supplied by name, so obtaining the composition forces none of the four
- * companions and each is forced only when its own probe is reached. Loading this object
- * therefore forces none of them, and each is initialized when a program first reaches it, in
- * whatever order that happens to be.
+ * family: the elements of [[FloatingRate.standardLookups]] are supplied by name, so holding the
+ * composition forces none of the four companions - producing a probe creates the function and
+ * does not apply it - and each companion is forced only when its own probe is reached and
+ * applied. Loading this object therefore forces none of them, and each is initialized when a
+ * program first reaches it, in whatever order that happens to be. The composition is memoised, so
+ * a parse assembles it at most once, and memoising it changes only where the by-name elements are
+ * stored: it is not evaluated while this object is being loaded, and evaluating it produces no
+ * probe.
  *
- * Anything added here has to preserve that property, and the composition in particular has to
- * stay a method whose elements are by-name. A `val` holding the four lookups pre-assembled, or
- * a strict sequence built in place, would force all four companions on the first parse and
- * reintroduce an initialization cycle, whose symptom - a member observed as missing while a
- * class initializer is still running - surfaces only for the class the program happens to
- * touch first.
+ * Anything added here has to preserve that property, and the elements of the composition in
+ * particular have to stay by-name. A strict sequence of the four lookups, built in place, would
+ * produce all four probes where it is written, and an element produced there is free to reach
+ * into its family - an eta-expansion of a family's lookup, `IborIndex.valueOf _`, does exactly
+ * that, because obtaining the function evaluates the companion it is taken from - so all four
+ * families would be forced on the first parse, reintroducing an initialization cycle whose
+ * symptom, a member observed as missing while a class initializer is still running, surfaces only
+ * for the class the program happens to touch first. Each element is therefore written out as a
+ * function of the name, `(name: String) => IborIndex.valueOf(name)`, whose body names the family
+ * without evaluating it until the probe is applied.
  */
 object FloatingRate {
 
@@ -242,7 +249,7 @@ object FloatingRate {
    * this trait, because the rule has nothing to do with what a floating rate is, and stating
    * it this way is what lets it be read and tested with no family involved. Supplying a
    * sequence whose elements are themselves by-name - the `LazyList` that
-   * [[FloatingRate.standardLookups]] returns is one - additionally defers producing each probe
+   * [[FloatingRate.standardLookups]] holds is one - additionally defers producing each probe
    * until it is reached, which is what keeps a family's companion from being loaded by a
    * search that never consults it.
    *
@@ -279,13 +286,15 @@ object FloatingRate {
    * a different set composes one and passes it to [[FloatingRate.tryParseWith]] rather than
    * reimplementing the search.
    *
-   * It is a method rather than a field, and the elements of the sequence it returns are
-   * supplied by name: the note on initialization order above explains why both matter and
-   * must not be changed.
+   * It is a memoised holder of by-name elements: the composition is assembled once, on the first
+   * parse that needs it, and every later parse searches that same value, while each probe is
+   * still produced only when it is reached. The note on initialization order above explains why
+   * the elements being by-name matters and must not be changed, and why memoising the value they
+   * are held in does not weaken it.
    *
    * @return the four family probes, in probe order, each produced when it is first reached
    */
-  def standardLookups: LazyList[Lookup] =
+  lazy val standardLookups: LazyList[Lookup] =
     ((name: String) => IborIndex.valueOf(name)) #::
       ((name: String) => OvernightIndex.valueOf(name)) #::
       ((name: String) => PriceIndex.valueOf(name)) #::

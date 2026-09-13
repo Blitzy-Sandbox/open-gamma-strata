@@ -764,6 +764,271 @@ final class MultiCurrencyAmountSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   /**
+   * The assembly of the map is an implementation choice - the entries are accumulated into a
+   * buffer ordered by currency and the buffer is sealed into the immutable map the value holds -
+   * and the tests of this section are the ones a change to it has to keep passing. They state what
+   * is observable about that assembly and nothing about how it is performed: the order of the
+   * entries, where a traversal stops, which number is written for a currency that arrives twice,
+   * and the equality, the rendering and the bytes of values built from the same amounts in
+   * different orders.
+   */
+  test("the map build orders the amounts by currency code whatever order they arrive in") {
+    val ascending: List[CurrencyAmount] = List(
+      amountOf(AUD, 1d),
+      amountOf(CAD, 2d),
+      amountOf(CHF, 3d),
+      amountOf(EUR, 4d),
+      amountOf(GBP, 5d),
+      amountOf(NZD, 6d),
+      amountOf(USD, 7d))
+    val codes: List[String] = List("AUD", "CAD", "CHF", "EUR", "GBP", "NZD", "USD")
+    val shuffled: List[CurrencyAmount] =
+      List(ascending(3), ascending(0), ascending(6), ascending(2), ascending(5), ascending(1),
+        ascending(4))
+
+    List(ascending, ascending.reverse, shuffled).foreach { arrival =>
+      withClue(s"${arrival.map(amount => amount.currency.code).mkString(",")}: ") {
+        val built: MultiCurrencyAmount = unwrap(MultiCurrencyAmount.of(arrival))
+
+        built.toMap.keysIterator.map(currency => currency.code).toList shouldBe codes
+        built.iterator.map(amount => amount.currency.code).toList shouldBe codes
+        built.getAmounts.toList shouldBe ascending
+        built.getCurrencies.iterator.map(currency => currency.code).toList shouldBe codes
+
+        // every route that assembles a collection agrees on that order, including the ones that
+        // merge rather than reject, the one that reads a map and the one that maps the amounts
+        MultiCurrencyAmount
+          .total(arrival)
+          .toMap
+          .keysIterator
+          .map(currency => currency.code)
+          .toList shouldBe codes
+        unwrap(
+          MultiCurrencyAmount.of(
+            arrival.map(amount => (amount.currency, amount.amount)).toMap)).toMap.keysIterator
+          .map(currency => currency.code)
+          .toList shouldBe codes
+        Monoid[MultiCurrencyAmount]
+          .combineAll(arrival.map(amount => multiOf(amount)))
+          .toMap
+          .keysIterator
+          .map(currency => currency.code)
+          .toList shouldBe codes
+        built
+          .mapAmounts(amount => amount * 2d)
+          .toMap
+          .keysIterator
+          .map(currency => currency.code)
+          .toList shouldBe codes
+
+        // and an amount added to an assembled value lands in code order rather than at the end
+        built
+          .plus(multiOf(amountOf(JPY, 8d)))
+          .toMap
+          .keysIterator
+          .map(currency => currency.code)
+          .toList shouldBe List("AUD", "CAD", "CHF", "EUR", "GBP", "JPY", "NZD", "USD")
+      }
+    }
+
+    // the map the value holds carries the currency ordering itself, so a caller reading it sorts
+    // and searches by currency code rather than by whatever order the amounts arrived in
+    val sortedMap: SortedMap[Currency, Double] = unwrap(MultiCurrencyAmount.of(shuffled)).toMap
+    sortedMap.ordering.compare(AUD, USD) should be < 0
+    sortedMap.ordering.compare(USD, AUD) should be > 0
+    sortedMap.ordering.compare(AUD, AUD) shouldBe 0
+    sortedMap.rangeFrom(GBP).keysIterator.toList shouldBe List(GBP, NZD, USD)
+  }
+
+  /**
+   * The duplicate check is made before each amount is added, so the failure names the '''first'''
+   * currency that repeats and the traversal stops there. The count is what pins the second half:
+   * a collection read past the repeat would be consumed further than the outcome needs, which for
+   * a single-use collection is data a caller can no longer read.
+   */
+  test("of reports the first repeated currency and reads no further") {
+    val repeatsFirstCurrency: CountingAmounts =
+      new CountingAmounts(List(CA1, CA2, amountOf(CCY1, 5d), amountOf(CCY2, 7d)))
+    val firstOutcome: FailureOr[MultiCurrencyAmount] =
+      MultiCurrencyAmount.of(repeatsFirstCurrency)
+    firstOutcome should beFailureWith(FailureReason.INVALID)
+    firstOutcome should haveFailureMessageMatching(Regex.quote("Currency is duplicated: AUD"))
+    repeatsFirstCurrency.pulledCount shouldBe 3
+
+    // the first repeat decides, so the later repeat of another currency is never reported
+    val repeatsSecondCurrency: CountingAmounts =
+      new CountingAmounts(List(CA1, CA2, amountOf(CCY2, 5d), amountOf(CCY1, 7d)))
+    val secondOutcome: FailureOr[MultiCurrencyAmount] =
+      MultiCurrencyAmount.of(repeatsSecondCurrency)
+    secondOutcome should beFailureWith(FailureReason.INVALID)
+    secondOutcome should haveFailureMessageMatching(Regex.quote("Currency is duplicated: CAD"))
+    repeatsSecondCurrency.pulledCount shouldBe 3
+
+    // a collection of distinct currencies is read exactly once, to its end
+    val allDistinct: CountingAmounts = new CountingAmounts(List(CA1, CA2, CA3))
+    assertMCA(unwrap(MultiCurrencyAmount.of(allDistinct)), CA1, CA2, CA3)
+    allDistinct.pulledCount shouldBe 3
+  }
+
+  /**
+   * `total` adds the amounts of one currency in arrival order starting from the first of them, and
+   * the numbers here are inexact in binary, so the sums are asserted as bit patterns: a build that
+   * reordered the additions, or seeded a currency with a zero, would produce a number that differs
+   * in its last bit and fail here.
+   */
+  test("total adds a repeated currency to the exact double, per currency") {
+    val arriving: List[CurrencyAmount] = List(
+      amountOf(CCY1, 0.1d),
+      amountOf(CCY2, 103d),
+      amountOf(CCY1, 0.2d),
+      amountOf(CCY3, 0.3d),
+      amountOf(CCY2, 0.4d))
+
+    val totalled: MultiCurrencyAmount = MultiCurrencyAmount.total(arriving)
+    totalled.size shouldBe 3
+    totalled.toMap.keysIterator.toList shouldBe List(CCY1, CCY2, CCY3)
+
+    // stated as a literal as well as as an expression, so the expectation is not merely whatever
+    // the same expression evaluates to
+    0.1d + 0.2d shouldBe 0.30000000000000004d
+    bitsOf(totalled, CCY1) shouldBe bits(0.30000000000000004d)
+    bitsOf(totalled, CCY2) shouldBe bits(103d + 0.4d)
+    bitsOf(totalled, CCY3) shouldBe bits(0.3d)
+
+    // the same collection through `of` is the failure naming the repeat rather than a total
+    MultiCurrencyAmount.of(arriving) should beFailureWith(FailureReason.INVALID)
+  }
+
+  /**
+   * The arithmetic reads and writes the same map, so it is pinned to the exact numbers the
+   * per-entry merge produced: each sum is `what is held plus what arrives`, a currency only one
+   * side holds keeps its number untouched, and a product or a mapped value is computed once.
+   */
+  test("the arithmetic keeps the exact numbers the per-entry merge produced") {
+    val base: MultiCurrencyAmount = multiOf(amountOf(CCY1, 101d), amountOf(CCY2, 103d))
+    val other: MultiCurrencyAmount = multiOf(amountOf(CCY2, 0.1d), amountOf(CCY3, 0.2d))
+
+    val sum: MultiCurrencyAmount = base.plus(other)
+    sum.toMap.keysIterator.toList shouldBe List(CCY1, CCY2, CCY3)
+    bitsOf(sum, CCY1) shouldBe bits(101d)
+    bitsOf(sum, CCY2) shouldBe bits(103d + 0.1d)
+    bitsOf(sum, CCY3) shouldBe bits(0.2d)
+
+    val difference: MultiCurrencyAmount = base.minus(other)
+    bitsOf(difference, CCY1) shouldBe bits(101d)
+    bitsOf(difference, CCY2) shouldBe bits(103d + -0.1d)
+    bitsOf(difference, CCY3) shouldBe bits(-0.2d)
+
+    bitsOf(base.plus(CCY2, 0.1d), CCY2) shouldBe bits(103d + 0.1d)
+    bitsOf(base.plus(amountOf(CCY3, 0.2d)), CCY3) shouldBe bits(0.2d)
+    bitsOf(base.minus(amountOf(CCY1, 0.1d)), CCY1) shouldBe bits(101d + -0.1d)
+    bitsOf(base.minus(CCY3, 0.2d), CCY3) shouldBe bits(-0.2d)
+
+    val scaled: MultiCurrencyAmount = base.multipliedBy(1.1d)
+    bitsOf(scaled, CCY1) shouldBe bits(101d * 1.1d)
+    bitsOf(scaled, CCY2) shouldBe bits(103d * 1.1d)
+
+    val mapped: MultiCurrencyAmount = base.mapAmounts(amount => amount / 3d)
+    bitsOf(mapped, CCY1) shouldBe bits(101d / 3d)
+    bitsOf(mapped, CCY2) shouldBe bits(103d / 3d)
+
+    bitsOf(base.negated, CCY1) shouldBe bits(-101d)
+    bitsOf(base.negated, CCY2) shouldBe bits(-103d)
+
+    // mapping both currencies onto one totals them in currency-code order
+    bitsOf(
+      base.mapCurrencyAmounts(amount => amountOf(USD, amount.amount)),
+      USD) shouldBe bits(101d + 103d)
+  }
+
+  /**
+   * Two values built from the same amounts in different orders are indistinguishable - equal,
+   * alike in hash, in rendering and in the bytes they encode to - because the order of the entries
+   * is the order of the currency codes and not the order they arrived in.
+   */
+  test("values built in different insertion orders are equal, hash alike and encode alike") {
+    val amounts: List[CurrencyAmount] = List(
+      amountOf(AUD, 1.1d),
+      amountOf(CAD, 2.2d),
+      amountOf(CHF, 3.3d),
+      amountOf(EUR, 4.4d),
+      amountOf(GBP, 5.5d),
+      amountOf(NZD, 6.6d),
+      amountOf(USD, 7.7d))
+    val ascending: MultiCurrencyAmount = unwrap(MultiCurrencyAmount.of(amounts))
+
+    val built: List[MultiCurrencyAmount] = List(
+      unwrap(MultiCurrencyAmount.of(amounts.reverse)),
+      unwrap(MultiCurrencyAmount.of(List(amounts(4), amounts(1), amounts(6), amounts(0),
+        amounts(5), amounts(3), amounts(2)))),
+      MultiCurrencyAmount.total(amounts.reverse),
+      Monoid[MultiCurrencyAmount].combineAll(amounts.reverse.map(amount => multiOf(amount))),
+      unwrap(MultiCurrencyAmount.of(amounts.map(amount => (amount.currency, amount.amount)).toMap)),
+      MultiCurrencyAmount.empty.plus(unwrap(MultiCurrencyAmount.of(amounts.reverse))))
+
+    built.foreach { value =>
+      withClue(s"$value: ") {
+        value shouldBe ascending
+        value.toMap shouldBe ascending.toMap
+        value.hashCode shouldBe ascending.hashCode
+        Hash[MultiCurrencyAmount].hash(value) shouldBe Hash[MultiCurrencyAmount].hash(ascending)
+        value.toString shouldBe ascending.toString
+        value.asJson.noSpaces shouldBe ascending.asJson.noSpaces
+        amounts.foreach { amount =>
+          bitsOf(value, amount.currency) shouldBe bits(amount.amount)
+        }
+      }
+    }
+  }
+
+  /**
+   * Every number entering the map goes through the invariant of an amount, wherever the map is
+   * assembled, so a negative zero supplied from outside is a positive zero in the value and a
+   * product that is a negative zero is normalised as it is written.
+   */
+  test("every collection route normalises a negative zero") {
+    val fromMap: MultiCurrencyAmount =
+      unwrap(MultiCurrencyAmount.of(Map(CCY1 -> -0d, CCY2 -> 103d, CCY3 -> -0d)))
+    bitsOf(fromMap, CCY1) shouldBe bits(0d)
+    bitsOf(fromMap, CCY2) shouldBe bits(103d)
+    bitsOf(fromMap, CCY3) shouldBe bits(0d)
+
+    val mapped: MultiCurrencyAmount = multiOf(CA1, CA2).mapAmounts(_ => -0d)
+    bitsOf(mapped, CCY1) shouldBe bits(0d)
+    bitsOf(mapped, CCY2) shouldBe bits(0d)
+
+    val scaled: MultiCurrencyAmount = multiOf(amountOf(CCY1, 0d), CA2).multipliedBy(-1d)
+    bitsOf(scaled, CCY1) shouldBe bits(0d)
+    bitsOf(scaled, CCY2) shouldBe bits(-103d)
+
+    bitsOf(MultiCurrencyAmount.total(List(amountOf(CCY1, 0d), amountOf(CCY1, -0d))), CCY1) shouldBe
+      bits(0d)
+  }
+
+  /** No entry at all is the empty value, whichever route assembles it. */
+  test("every collection route builds the empty value from no entries") {
+    val built: List[MultiCurrencyAmount] = List(
+      unwrap(MultiCurrencyAmount.of()),
+      unwrap(MultiCurrencyAmount.of(Nil)),
+      unwrap(MultiCurrencyAmount.of(Map.empty[Currency, Double])),
+      MultiCurrencyAmount.total(Nil),
+      Monoid[MultiCurrencyAmount].combineAll(Nil),
+      MultiCurrencyAmount.empty.mapAmounts(amount => amount * 2d),
+      MultiCurrencyAmount.empty.plus(MultiCurrencyAmount.empty))
+
+    built.foreach { value =>
+      value shouldBe MultiCurrencyAmount.empty
+      value.size shouldBe 0
+      value.toMap.isEmpty shouldBe true
+      value.iterator.hasNext shouldBe false
+      value.toString shouldBe "[]"
+      value.hashCode shouldBe MultiCurrencyAmount.empty.hashCode
+      value.asJson.noSpaces shouldBe """{"amounts":[]}"""
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  /**
    * Asserts that a value holds exactly the expected amounts - its size, its amounts, its
    * currencies - and that [[NON_EXISTING]] is absent from it, reported by `getAmount` and read as
    * zero by `getAmountOrZero`.
@@ -823,6 +1088,32 @@ final class MultiCurrencyAmountSpec extends AnyFunSuite with Matchers {
         fail(s"Expected an amount of $currency but the value held $value")))
 
   private def bits(amount: Double): Long = java.lang.Double.doubleToLongBits(amount)
+
+  /**
+   * A collection of amounts that counts how many of them a traversal actually pulled, which is
+   * what the duplicate pins observe: the factory promises that a repeated currency stops the
+   * traversal where it is found, and that promise is about how far the collection was read rather
+   * than about the failure it returns.
+   *
+   * The count is incremented by the mapping of a lazy iterator, so it rises once per element
+   * handed out and not once per element held; each test builds a fresh collection, so no count
+   * depends on the order the tests ran in.
+   */
+  private final class CountingAmounts(amounts: List[CurrencyAmount])
+      extends Iterable[CurrencyAmount] {
+
+    private val pulled: AtomicInteger = new AtomicInteger(0)
+
+    override def iterator: Iterator[CurrencyAmount] =
+      amounts.iterator.map { amount =>
+        // Bound to a wildcard because `-Wvalue-discard` rejects discarding the new count; the
+        // tests read it through pulledCount.
+        val _ = pulled.incrementAndGet()
+        amount
+      }
+
+    def pulledCount: Int = pulled.get()
+  }
 
   /**
    * A rate provider that answers with a function and counts how often it was asked, which is what

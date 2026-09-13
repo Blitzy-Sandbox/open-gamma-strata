@@ -5,11 +5,17 @@
  */
 package com.opengamma.strata.basics.date
 
+import java.time.DayOfWeek
 import java.time.DayOfWeek.FRIDAY
 import java.time.DayOfWeek.SATURDAY
 import java.time.DayOfWeek.SUNDAY
 import java.time.DayOfWeek.THURSDAY
 import java.time.LocalDate
+
+import io.circe.DecodingFailure
+import io.circe.Json
+import io.circe.parser.parse
+import io.circe.syntax.EncoderOps
 
 import org.scalatest.Assertion
 import org.scalatest.funsuite.AnyFunSuite
@@ -18,6 +24,7 @@ import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.prop.TableFor2
 import org.scalatest.prop.TableFor3
 
+import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 import com.opengamma.strata.collect.testkit.TestHelper._
@@ -1019,5 +1026,179 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     // A name the closed data does not hold depends on the argument rather than the calling code,
     // so it is reported as a failure, whose reason is compared as a `FailureReason` value.
     HolidayCalendars.of("NotKnown") should beFailureWith(FailureReason.PARSING)
+  }
+
+  //-------------------------------------------------------------------------
+  test("a refusal quoting a name a document supplied is bounded and stays on one line") {
+    // The codec of this family is hand-written, so it states its refusals itself, and the one
+    // refusal its name form can state quotes the name out of the document: an identifier the
+    // built-in reference data does not hold. A decoding failure is read where a failure is read,
+    // which is a log, a report or a line of a console, so a document must be able to decide
+    // neither the line structure nor the size of the diagnostic it provokes (CWE-117, CWE-400).
+    // The refusal therefore goes through the one bridge `Codecs` publishes for hand-written
+    // codecs, and this test holds it to exactly the bounds a codec built by a helper of that
+    // object has always had. `Currency` is the control: its codec is `Codecs.namedEnumCodec`, so
+    // it has gone through the bridge since it was written, and its refusal quotes the same
+    // rejected name.
+    def refusal(document: Json): DecodingFailure =
+      document
+        .as[HolidayCalendar]
+        .swap
+        .getOrElse(fail(s"the document was accepted: ${document.noSpaces}"))
+
+    def controlRefusal(document: Json): DecodingFailure =
+      document.as[Currency].swap.getOrElse(fail(s"the document was accepted: ${document.noSpaces}"))
+
+    // What a line-oriented reader could act on: every ISO control character, and the two Unicode
+    // separators such a reader may treat as ending a line. None of them may survive into a
+    // message, whatever the document held.
+    def forgesALine(message: String): Int =
+      message.count(character =>
+        Character.isISOControl(character) || character == '\u2028' || character == '\u2029')
+
+    // The bound the bridge puts on one rendered cause: 512 characters of it and the three of the
+    // ellipsis, plus the 21 characters of the prefix circe's own `getMessage` writes in front of
+    // it. Both figures are measured from the control below rather than assumed.
+    val renderedCeiling: Int = 515
+    val messageCeiling: Int = 536
+
+    // Each payload is an ordinary name with one such character in the middle of it, so a refusal
+    // quoting it unrendered carries exactly one and a rendered one carries none. The six are the
+    // kinds the renderer distinguishes: the three control characters that have a short escape, a
+    // control character that has none, and the Unicode separator a reader may treat as ending a
+    // line.
+    val hostileNames: TableFor2[String, String] =
+      Table(
+        ("description", "payload"),
+        ("a line feed", "A\nB"),
+        ("a carriage return", "A\rB"),
+        ("a NUL", "A\u0000B"),
+        ("a line separator", "A\u2028B"),
+        ("an escape", "A\u001bB"),
+        ("a tab", "A\tB"))
+
+    forAll(hostileNames) { (description: String, payload: String) =>
+      withClue(s"$description: ") {
+        val message = refusal(Json.fromString(payload)).getMessage
+        forgesALine(message) shouldBe 0
+        message should include("Reference data not found for identifier")
+        message.length should be <= messageCeiling
+        forgesALine(controlRefusal(Json.fromString(payload)).getMessage) shouldBe 0
+      }
+    }
+
+    // A name far larger than any identifier: the refusal is the same size as the control's,
+    // rather than the size of the name, so a large document cannot make a large diagnostic.
+    val long: String = "X" * 10000
+    controlRefusal(Json.fromString(long)).message.length shouldBe renderedCeiling
+    controlRefusal(Json.fromString(long)).getMessage.length shouldBe messageCeiling
+    refusal(Json.fromString(long)).message.length shouldBe renderedCeiling
+    refusal(Json.fromString(long)).getMessage.length shouldBe messageCeiling
+
+    // Rendering leaves text within the bound holding none of the escaped characters alone,
+    // character for character, so the refusal an ordinary document provokes reads as it did -
+    // the reason the identifier could not be resolved, word for word as the resolution wrote it.
+    refusal(Json.fromString("NOT-A-CALENDAR")).message shouldBe
+      "Reference data not found for identifier 'NOT-A-CALENDAR'"
+  }
+
+  //-------------------------------------------------------------------------
+  test("the structural document of a calendar carries its dates whatever range it declares") {
+    // Both directions of the structural form read the stored months of a calendar a month at a
+    // time - one machine word each - rather than a day at a time, so what a document costs
+    // follows the dates it carries and not the range of years its calendar declares. The two
+    // calendars below are the two extremes of that: the same two holidays a hundred and fifty
+    // years apart, which declares eighteen hundred months and carries two dates, and two hundred
+    // and fifty holidays inside one year, which declares twelve months and carries two hundred
+    // and fifty dates. Each has to come back exactly as it went out - the same bytes, the same
+    // holidays, the same working weekend days, and the same answer on every date of its range -
+    // because that is the property the walk had to preserve while its cost changed.
+    val weekend: List[DayOfWeek] = List(SATURDAY, SUNDAY)
+
+    // Sparse over a wide range: the 2nd of January 1950 is a Monday and the 31st of December
+    // 2099 is a Thursday, so each is a holiday the weekend does not already account for, and
+    // they sit at the two ends of the range so that every month between them is a month the
+    // walk has to pass through and keep nothing from. The two Saturdays declared working days
+    // are weekend dates the calendar re-opens, which is the interaction that makes the two masks
+    // of a month agree where an ordinary weekend makes them disagree.
+    val sparseWide: ImmutableHolidayCalendar =
+      ImmutableHolidayCalendar.of(
+        HolidayCalendarId.of("XSPARSE"),
+        List(date(1950, 1, 2), date(2099, 12, 31)),
+        weekend,
+        List(date(1950, 1, 7), date(2099, 12, 26)))
+
+    // Dense inside one narrow range: 250 consecutive days from the 1st of January 2020, which
+    // covers nine whole months and reaches into the tenth, so most months are wholly holidays
+    // and the months around them are partly so.
+    val denseNarrow: ImmutableHolidayCalendar =
+      ImmutableHolidayCalendar.of(
+        HolidayCalendarId.of("XDENSE"),
+        List.tabulate(250)(offset => date(2020, 1, 1).plusDays(offset.toLong)),
+        weekend)
+
+    val calendars: TableFor2[String, ImmutableHolidayCalendar] =
+      Table(
+        ("description", "calendar"),
+        ("two holidays a hundred and fifty years apart", sparseWide),
+        ("two hundred and fifty holidays inside one year", denseNarrow))
+
+    forAll(calendars) { (description: String, calendar: ImmutableHolidayCalendar) =>
+      withClue(s"$description: ") {
+        val document: String = (calendar: HolidayCalendar).asJson.noSpaces
+        val decoded: HolidayCalendar =
+          parse(document)
+            .flatMap(json => json.as[HolidayCalendar])
+            .getOrElse(fail(s"the calendar did not survive its own document: $document"))
+
+        // byte-identical: what came back writes the document it was read from, character for
+        // character, which is what makes the document the whole of the value
+        (decoded: HolidayCalendar).asJson.noSpaces shouldBe document
+
+        // and it is the same calendar rather than merely an equal one: equality compares
+        // identifiers alone, so only the recovered sets and the sweep below say anything
+        val recovered = decoded match {
+          case immutable: ImmutableHolidayCalendar => immutable
+          case other => fail(s"the document decoded to something other than its own kind: $other")
+        }
+        recovered.id shouldBe calendar.id
+        recovered.weekendDays shouldBe calendar.weekendDays
+        recovered.startYear shouldBe calendar.startYear
+        recovered.endYearExclusive shouldBe calendar.endYearExclusive
+        recovered.holidays.toList shouldBe calendar.holidays.toList
+        recovered.workingDays.toList shouldBe calendar.workingDays.toList
+
+        // the recovered sets agree with the two questions a calendar is actually asked, over
+        // every date of the range it declares: a date the holiday set holds is a holiday, a date
+        // the working-day set holds is a business day, and each of the two calendars answers as
+        // the other does
+        val holidaySet = recovered.holidays
+        val workingSet = recovered.workingDays
+        LocalDateUtils
+          .dates(date(recovered.startYear, 1, 1), date(recovered.endYearExclusive, 1, 1))
+          .foreach { current =>
+            withClue(s"$current: ") {
+              recovered.isHoliday(current) shouldBe calendar.isHoliday(current)
+              if (holidaySet.contains(current)) recovered.isHoliday(current) shouldBe true
+              if (workingSet.contains(current)) recovered.isBusinessDay(current) shouldBe true
+            }
+          }
+      }
+    }
+
+    // The two documents state what each calendar declared, so the reading above is of the shape
+    // the encoder writes rather than of whatever the decoder happens to accept: the wide one
+    // names its first year and its two dates, and the narrow one names two hundred and fifty.
+    val sparseDocument: String = (sparseWide: HolidayCalendar).asJson.noSpaces
+    sparseDocument shouldBe
+      """{"Immutable":{"id":"XSPARSE","weekendDays":["SATURDAY","SUNDAY"],"startYear":1950,""" +
+        """"holidays":["1950-01-02","2099-12-31"],""" +
+        """"workingWeekendDays":["1950-01-07","2099-12-26"]}}"""
+    // the 7th of January 1950 and the 26th of December 2099 are both Saturdays of the range and
+    // were both declared working days, so each is an override the document carries
+    sparseWide.workingDays.toList shouldBe List(date(1950, 1, 7), date(2099, 12, 26))
+    sparseWide.startYear shouldBe 1950
+    sparseWide.endYearExclusive shouldBe 2100
+    (denseNarrow: HolidayCalendar).asJson.noSpaces.length shouldBe 2433
   }
 }

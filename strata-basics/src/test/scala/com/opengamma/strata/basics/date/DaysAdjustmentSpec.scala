@@ -398,14 +398,36 @@ class DaysAdjustmentSpec extends AnyFunSuite with Matchers {
     // A count of zero is the one input it rewrites: there is no addition of zero business days,
     // so the addition calendar is dropped and the adjustment supplied is kept, while the
     // validated factory refuses the pairing outright.
+    //
+    // This rewrite is a deliberate departure, recorded as divergence (c)-54 and elaborated in
+    // (c)-36: the implementation being ported kept the calendar it was handed - `getCalendar()`
+    // answered `Sat/Sun` and the text read `0 business days using calendar Sat/Sun` - and
+    // rewrote it only when asked, through `normalized()`. This factory stores the normalised
+    // value, so the `calendar` field, the text form, equality against a value built the Java way
+    // and the JSON differ, while everything computed from the value agrees.
     val zero: DaysAdjustment =
       DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.SAT_SUN, BDA_NONE)
     zero.days shouldBe 0
     zero.calendar shouldBe HolidayCalendarIds.NO_HOLIDAYS
     zero.adjustment shouldBe BDA_NONE
     zero shouldBe DaysAdjustment.NONE
+    zero.toString shouldBe "0 calendar days"
+    zero.normalized shouldBe zero
     DaysAdjustment.of(0, HolidayCalendarIds.SAT_SUN, BDA_NONE) should
       beFailureWith(FailureReason.INVALID)
+
+    // The same rewrite with a trailing adjustment that does name a calendar, which is the case
+    // (c)-36 tabulates against Java: the addition calendar is gone, the adjustment is kept whole,
+    // and the result calendar - the one every computed date comes from - is the adjustment's.
+    val zeroWithAdjustment: DaysAdjustment =
+      DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.GBLO, BDA_FOLLOW_WED_THU)
+    zeroWithAdjustment.days shouldBe 0
+    zeroWithAdjustment.calendar shouldBe HolidayCalendarIds.NO_HOLIDAYS
+    zeroWithAdjustment.adjustment shouldBe BDA_FOLLOW_WED_THU
+    zeroWithAdjustment.toString shouldBe
+      "0 calendar days then apply Following using calendar WedThu"
+    zeroWithAdjustment.normalized shouldBe zeroWithAdjustment
+    zeroWithAdjustment.resultCalendar shouldBe BDA_FOLLOW_WED_THU.calendar
 
     // The two-argument form reads the same request as the rule it can mean, so the two zero-day
     // forms are different values: this one adjusts nothing, that one moves a holiday forwards.

@@ -173,7 +173,7 @@ commands:
             echo "export POM_VERSION=$PROJECT_VERSION" >> $BASH_ENV
 
 #----------------------------------------------------------------------------
-# the loopback pinentry options below require GPG 2.1 or later; the step prints gpg --version
+# this works with gpg v2.1 as currently installed on CircleCI
   setup_gpg:
     description: "Setup GPG"
     steps:
@@ -424,6 +424,19 @@ jobs:
       # steps run `when: always`, which is exactly when the scan has failed -
       # published artifacts the scan had just objected to.
       #
+      # So this job's published artifact contract is one tree, and this is
+      # where to read it. A gate run produces four evidence paths -
+      # target/gate-report.md, target/parity-report, target/test-reports and
+      # target/audit - and every one of them is uploaded, but as a sanitized
+      # copy inside the single `gate-evidence` destination below:
+      # gate-evidence/gate-report.md, gate-evidence/parity-report/,
+      # gate-evidence/test-reports/ and gate-evidence/audit/, beside the
+      # MANIFEST.txt and PUBLICATION-STATUS.txt that record which copy was
+      # approved and what was withheld. None of those four paths is uploaded
+      # under its own name, deliberately: their bytes are the originals the
+      # scan works from. SCALA_MIGRATION.md records this as a divergence from
+      # the four artifact paths the specification lists, with the reason.
+      #
       # This step ENFORCES the approval rather than printing it. Printing it
       # was not enough: the upload below runs `when: always`, so a tree the
       # gate run marked NOT APPROVED - or one changed after it was scanned, or
@@ -440,9 +453,18 @@ jobs:
           command: |
             set +e
             mkdir -p target/publish/test-reports
-            scripts/verify-gates.sh --verify-publication > /tmp/verify-publication.txt 2>&1
+            # The check's own output is captured through a pipe into a shell
+            # variable, not into a file under a shared temporary directory. A
+            # fixed path there is predictable, so a symbolic link already
+            # sitting at it is followed and whatever it points at is
+            # overwritten (CWE-377); two runs of this step on one host write
+            # the same path, which is how the lines quoted below could come
+            # from the other run; and the file outlives the step. A variable
+            # has none of those properties and leaves nothing to clean up, so
+            # this step still writes nowhere outside target/.
+            report="$(scripts/verify-gates.sh --verify-publication 2>&1)"
             verified=$?
-            cat /tmp/verify-publication.txt
+            printf '%s\n' "$report"
             if [ "$verified" -ne 0 ]; then
               echo "The publication tree was NOT approved for upload; replacing it with a notice."
               rm -rf target/publish
@@ -456,7 +478,7 @@ jobs:
                 printf '# under target/audit, target/parity-report and target/test-reports.\n'
                 printf '#\n'
                 printf '# what the uploader check reported:\n'
-                head -n 40 /tmp/verify-publication.txt | sed 's/^/# /'
+                printf '%s\n' "$report" | sed -n '1,40{s/^/# /;p;}'
               } > target/publish/PUBLICATION-STATUS.txt
             fi
             cat target/publish/PUBLICATION-STATUS.txt

@@ -7,6 +7,7 @@ package com.opengamma.strata.basics.currency
 
 import java.util.Locale
 
+import scala.annotation.tailrec
 import scala.util.matching.Regex
 
 import cats.Hash
@@ -319,18 +320,45 @@ sealed abstract case class FxRate private (pair: CurrencyPair, rate: Double)
 object FxRate {
 
   /**
-   * The text form of a rate: a pair of three-letter codes and a rate, separated by a slash and a
-   * space.
+   * The pair that precedes the space in the text form: two three-letter codes and a slash.
    *
-   * The expression is applied to the whole of the text rather than to part of it, so leading or
-   * trailing characters are a rejection rather than something to ignore.
+   * The text form of a rate is this pair, a space and the rate. The two halves are checked in
+   * two different ways, because they are two different kinds of text: the pair is folded to
+   * upper case and matched against this expression, while the rate is checked character by
+   * character by [[namesRateText]]. What decides the split is that the expression is where
+   * case-insensitivity and the exact shape of a pair live, and neither applies to a rate - the
+   * characters a rate may hold are their own upper case and their shape is "one or more of them".
    *
-   * The rate group admits only digits, a sign and a dot, which is deliberately narrower than the
-   * text the platform can parse as a number: `EUR/USD 1e3` and `EUR/USD 1.25d` name no rate at
-   * all, and are rejected by this expression rather than by the number parsing that follows it.
-   * That distinction is what decides which of the two wordings of [[parse]] a caller is given.
+   * The expression is applied to the whole of the pair part rather than to part of it, so a
+   * leading or trailing character inside that part is a rejection rather than something to
+   * ignore, and text whose pair part is not exactly two codes and a slash reaches the
+   * invalid-rate wording of [[parse]].
+   *
+   * ===Why this is the same grammar the whole-text expression accepted===
+   *
+   * It replaces `([A-Z]{3})[/]([A-Z]{3})[ ]([0-9+.-]+)` matched against the whole of the folded
+   * text, and accepts and rejects exactly what that accepted and rejected:
+   *
+   *  - A space maps to a space under folding and no character's upper case contains one, so the
+   *    folded text holds exactly as many spaces as the text given. The accepted form holds one,
+   *    so accepted text holds one, and it is the first - which is the separator [[parse]] finds.
+   *  - Folding is therefore distributive over that separator: the fold of the text is the fold of
+   *    the pair part, a space and the fold of the rate part. `String.toUpperCase(Locale.ENGLISH)`
+   *    is a per-character mapping for this purpose - the conditional special casings that read
+   *    neighbouring characters are Lithuanian, Turkish and Azeri, and the one that is language
+   *    independent maps a final sigma to itself when uppercasing - so no character's fold depends
+   *    on what lies across the separator.
+   *  - The rate class is closed under folding in both directions: digits, `+`, `.` and `-` are
+   *    their own upper case, and no character folds into a text made only of those, because every
+   *    multi-character upper case mapping in Unicode is letters. So the folded rate part is one or
+   *    more of that class exactly when the rate part as given is, and the text handed to the
+   *    number reading is the same either way.
+   *
+   * What changes is the work: the fold and the expression now see at most the seven characters
+   * [[PairTextLength]] bounds, where they used to see the whole of the text a caller supplied
+   * (CWE-400/CWE-770).
    */
-  private val RateFormat: Regex = """([A-Z]{3})[/]([A-Z]{3})[ ]([0-9+.-]+)""".r
+  private val PairFormat: Regex = """([A-Z]{3})[/]([A-Z]{3})""".r
 
   /**
    * The length of the pair that precedes the space, which the expression above fixes at seven.
@@ -344,11 +372,14 @@ object FxRate {
    *
    * That is what [[FxRate.parse]] tests before it folds anything - the text holds a space, and
    * no more than seven characters precede it - because the test is decided by a single scan that
-   * allocates nothing, where the fold copies the whole of the text (CWE-400/CWE-770). It is an
+   * allocates nothing, where the fold copies the text it is given (CWE-400/CWE-770). It is an
    * upper bound rather than an equality precisely because folding can lengthen the pair: the
    * single character `\ufb01` folds to `FI`, so `\ufb01M/USD` is six characters that fold to the
    * seven of `FIM/USD` - a pair this library defines - and a text of six characters therefore
-   * still reaches the expression and still names the rate it always named.
+   * still reaches the expression and still names the rate it always named. It is also why the
+   * test is the position of the separator rather than a fixed slice of the text: the pair part is
+   * whatever precedes the first space, at any length up to this bound, and the fold is applied to
+   * that part and to nothing else.
    *
    * This bounds the front of the text only. The rate that follows the space is bounded by
    * [[MaxRateTextLength]], which [[FxRate.parse]] tests in the same place and for the same
@@ -359,26 +390,82 @@ object FxRate {
   /**
    * The longest the rate may be, as text.
    *
-   * The rate group of the expression admits digits, signs and points without limit, and the
-   * reading that follows is a double, which has no longest spelling: a caller may write any
-   * number of digits and the reading rounds them. So the pair test above bounds the front of the
-   * text and, until this, nothing bounded its tail - a sender could choose how much text was
-   * case-folded, matched against the expression and read as a number, in each case only for the
-   * result to be discarded.
+   * The rate part admits digits, signs and points without limit, and the reading that follows is
+   * a double, which has no longest spelling: a caller may write any number of digits and the
+   * reading rounds them. So the pair test above bounds the front of the text and, until this,
+   * nothing bounded its tail - a sender could choose how much text was case-folded, matched and
+   * read as a number, in each case only for the result to be discarded.
    *
-   * The number is what it takes to write a double exactly, as it is for the amount of an
-   * [[CurrencyAmount]], and is the same thousand characters: the longest exact decimal spelling
-   * of a finite double is that of the smallest subnormal, at 767 significant digits after a
-   * leading zero and a point, and every other value needs fewer. No spelling that names a rate
-   * exactly is refused for its size; text carrying digits that cannot change the value it names
-   * is, and that is all.
+   * ===Why it is the bound the decimal types use, and not a wider one===
+   *
+   * The number is the 256 characters [[CurrencyAmount]], [[Money]] and [[BigMoney]] read their
+   * numeral within, and it is one bound across the four types of this package that read a number
+   * out of text. It is deliberately narrower than the bound that would follow from spelling a
+   * double exactly: the longest exact decimal spelling of a finite double is that of the smallest
+   * subnormal, at 767 significant digits after a leading zero and a point, so a bound calibrated
+   * on that argument is a thousand characters and refuses no spelling that names a rate exactly.
+   *
+   * That wider bound was what this type carried, and it left the four types disagreeing about the
+   * same numeral: a 500-digit rate was read here while `Money.parse` refused a 500-digit amount,
+   * a difference a caller has no way to predict from the form they wrote. What the narrowing
+   * refuses is text whose extra digits cannot change any value the domain trades in - beyond
+   * about seventeen significant digits no further digit moves the double that is read - so the
+   * rates this type is asked about in practice are three orders of magnitude inside it. The
+   * narrowing is therefore a deliberate choice of consistency over a calibration on exact
+   * spellings, and not the correction of a defect.
    *
    * Text past it is reported with the wording of a rate that could not be read rather than one
    * of its own, so what reaches a caller is what has always reached one for a rate that names no
    * legal value - which the ten-thousand-digit rate of the test suite, refused here for its size
    * where it used to be refused for being zero, still reads as.
    */
-  private val MaxRateTextLength: Int = 1024
+  private val MaxRateTextLength: Int = 256
+
+  /**
+   * The longest text a failure of [[FxRate.parse]] quotes back in full.
+   *
+   * It is the longest text this type can accept: the seven characters of a folded pair, the space
+   * after them and a rate at the ceiling above. Every text that could plausibly name a rate is
+   * therefore quoted character for character, so the message a caller reads, logs and asserts on
+   * for an ordinary rejection is exactly the text they wrote - a line break and every other
+   * character among them, because neutralising such a character remains the act of writing the
+   * failure out rather than the act of reporting it.
+   *
+   * Beyond this length the text cannot name a rate whatever it holds, so there is nothing a
+   * caller can learn from the whole of it that the bounded quotation does not tell them, and
+   * quoting it in full would make the cost of a rejection proportional to the length a sender
+   * chose (CWE-400/CWE-770). [[quoted]] is where that is applied.
+   *
+   * It is stated over the folded pair length rather than over the unfolded one because folding
+   * can only lengthen the pair: a text that is within this bound before folding is within it
+   * after, and one that reaches the bound only by folding was already accepted by the pair test.
+   */
+  private val MaxQuotedTextLength: Int = PairTextLength + 1 + MaxRateTextLength
+
+  /**
+   * Quotes rejected text into a failure message, in full where the text could have named a rate
+   * and bounded where it could not.
+   *
+   * Text within [[MaxQuotedTextLength]] is returned exactly as it was given - the same instance,
+   * with no copy and no escaping, and unfolded, so a caller sees back what they wrote and not
+   * what was matched. Longer text is handed to
+   * [[com.opengamma.strata.collect.result.Failure.renderDiagnostic]], the one renderer these two
+   * modules hold for text on its way to a reader of lines, which bounds it to a few hundred
+   * characters, marks with an ellipsis that there was more and escapes anything that could forge
+   * a line.
+   *
+   * The effect on a rejection is that its cost stops being a function of the length of the input:
+   * a message built here is at most a few hundred characters whether the text handed to
+   * [[FxRate.parse]] was a thousand characters or a million. What a reader sees is unchanged,
+   * because the text form of a failure bounds every part it writes in exactly this way; what
+   * changes is that the bound is now reached before the message is built rather than only when it
+   * is written out.
+   *
+   * @param text  the rejected text, as it was given to [[FxRate.parse]]
+   * @return the text itself where it is within the bound, and its bounded rendering beyond it
+   */
+  private def quoted(text: String): String =
+    if (text.length <= MaxQuotedTextLength) text else Failure.renderDiagnostic(text)
 
   /**
    * The rejection of a rate other than one between two identical currencies.
@@ -450,22 +537,27 @@ object FxRate {
    * Parses a rate from text of the form `AAA/BBB RATE`.
    *
    * The parsed form is the base code, a slash, the counter code, a space and the rate, which is
-   * the form [[FxRate.toString]] writes. The text is folded to upper case in the English locale
+   * the form [[FxRate.toString]] writes. The pair is folded to upper case in the English locale
    * before it is matched, so parsing is insensitive to the case of the input; the English locale
-   * is named explicitly so that the fold is the same in every locale a program might run in.
+   * is named explicitly so that the fold is the same in every locale a program might run in. The
+   * rate needs no folding, because every character a rate may hold is its own upper case.
    *
-   * Two wordings are reported, and the shape of the text decides which. Text the expression above
-   * does not match is `Invalid rate: <text>`; text that matches but does not name a rate -
-   * because a code names no currency, because the digits do not form a number, or because the
-   * rate is one this type rejects - is `Unable to parse rate: <text>`. Both quote the text as it
-   * was supplied rather than as it was folded, so a caller sees back what they wrote.
+   * Two wordings are reported, and the shape of the text decides which. Text whose pair does not
+   * match [[PairFormat]], or whose rate is not one or more of the characters a rate may hold, is
+   * `Invalid rate: <text>`; text of that shape that nonetheless does not name a rate - because a
+   * code names no currency, because the digits do not form a number, or because the rate is one
+   * this type rejects - is `Unable to parse rate: <text>`. Both quote the text as it
+   * was supplied rather than as it was folded, so a caller sees back what they wrote, and both
+   * bound that quotation at [[MaxQuotedTextLength]] - the longest text this type accepts - so a
+   * realistic rejection names the text in full while one that could not have named a rate at any
+   * length is named bounded ([[quoted]]).
    *
    * {{{
    * FxRate.parse("USD/EUR 205.123")   // Right(USD/EUR 205.123)
    * FxRate.parse("cAd/GbP 1.25")      // Right(CAD/GBP 1.25) - case insensitive
    * FxRate.parse("EUR/USD +1.25")     // Right(EUR/USD 1.25) - a leading sign is a number
    * FxRate.parse("EUR/USD")           // Left(Failure.Parsing("Invalid rate: EUR/USD"))
-   * FxRate.parse("EUR/USD X")         // Left - the rate group admits no letters
+   * FxRate.parse("EUR/USD X")         // Left - the rate admits no letters
    * FxRate.parse("EUR/GBP 0")         // Left(Failure.Parsing("Unable to parse rate: EUR/GBP 0"))
    * FxRate.parse("EUR/EUR 1.25")      // Left - matches, but names no legal rate
    * }}}
@@ -478,20 +570,27 @@ object FxRate {
    * the text, which keeps two failures over the same text equal and keeps the message a caller
    * reads and logs to one line.
    *
-   * ===The shape of the pair is tested before the text is folded===
+   * ===Only the pair is folded, and only the pair is matched===
    *
-   * The expression puts the space that separates the pair from the rate after the seventh
-   * character. Folding never makes a text shorter and no character folds to a space, so text
-   * that holds no space at all, or that holds more than [[PairTextLength]] characters before its
-   * first one, cannot match however it is folded. That is tested before the fold - by one scan
-   * for the space, which allocates nothing - and text failing it is refused with the
-   * invalid-rate wording it was always refused with. Nothing else moves: every text that could
-   * still match is folded and matched exactly as before, a pair that lengthens under folding
-   * included; the rate group is left unbounded, so a rate written with ten thousand digits still
-   * reaches the expression and is still reported with the other wording; and folding cannot
-   * affect that group, which holds only digits, a sign and a dot. The saving is the copy - text
-   * arriving from outside this library is no longer folded in full before its shape is looked at
-   * (CWE-400/CWE-770).
+   * The form puts the space that separates the pair from the rate after the seventh character.
+   * Folding never makes a text shorter and no character folds to a space, so text that holds no
+   * space at all, or that holds more than [[PairTextLength]] characters before its first one,
+   * cannot name a rate however it is folded; that is tested first, by one scan for the space
+   * which allocates nothing, and text failing it is refused with the invalid-rate wording it was
+   * always refused with. The rate that follows the space is then measured against
+   * [[MaxRateTextLength]], also before anything is folded or copied.
+   *
+   * What is folded and matched after those two tests is the pair part alone - at most seven
+   * characters - and the rate part is checked by a scan over the characters a rate may hold
+   * ([[namesRateText]]), with no fold and no expression. That accepts and rejects exactly what
+   * matching the whole of the folded text against one expression accepted and rejected, for the
+   * three reasons set out on [[PairFormat]]: folding preserves the number and the order of
+   * spaces, it distributes over the separator for this locale, and the characters a rate may hold
+   * are closed under it in both directions. A pair that lengthens under folding therefore still
+   * matches, `EUR/USD 1e3` is still an invalid rate rather than an unreadable one, and the text
+   * handed to the number reading is still the rate exactly as it was written. The saving is that
+   * text arriving from outside this library is no longer case-folded and matched in full before
+   * its shape is looked at (CWE-400/CWE-770).
    *
    * @param rateStr  the rate as text, in the form `AAA/BBB RATE`, in any case
    * @return the FX rate the text names, or the failure naming text that is not two three-letter
@@ -504,38 +603,94 @@ object FxRate {
     // whose fold carries it at the eighth position carries it here at the eighth or before
     val spaceIndex: Int = rateStr.indexOf(' ')
     if (spaceIndex < 0 || spaceIndex > PairTextLength) {
-      // the text is rendered rather than interpolated as it stands, which bounds the message and
-      // keeps it to one line while leaving an in-bound spelling quoted as it was given
-      Left(Failure.Parsing(s"Invalid rate: $rateStr"))
+      // the quotation is bounded at the longest text this type accepts, so an in-bound spelling
+      // is named as it was given and a text of a sender's choosing cannot make the message grow
+      Left(Failure.Parsing(s"Invalid rate: ${quoted(rateStr)}"))
     } else if (rateStr.length - (spaceIndex + 1) > MaxRateTextLength) {
-      // The rate group of the expression admits digits without limit, so the pair test above
-      // bounds the front of the text and nothing bounds its tail: a well-formed pair followed by
-      // a tail of a sender's choosing would be case-folded in full, matched in full and then
-      // read as a number in full (CWE-400/CWE-770). The tail is therefore measured here, before
-      // any of that, and text past the bound names no rate the type holds - which is what the
-      // wording below says, and why the ceiling reports through it rather than through a wording
-      // of its own.
-      Left(Failure.Parsing(s"Unable to parse rate: $rateStr"))
+      // The rate admits digits without limit, so the pair test above bounds the front of the
+      // text and nothing bounds its tail: a well-formed pair followed by a tail of a sender's
+      // choosing would be scanned in full and then read as a number in full (CWE-400/CWE-770).
+      // The tail is therefore measured here, before either of those, and text past the bound
+      // names no rate the type holds - which is what the wording below says, and why the ceiling
+      // reports through it rather than through a wording of its own. The quotation is bounded
+      // too, so the whole of the rejection is bounded.
+      Left(Failure.Parsing(s"Unable to parse rate: ${quoted(rateStr)}"))
     } else {
-      // the fold is bounded by the two tests above: the pair is at most PairTextLength
-      // characters and the rate at most MaxRateTextLength, whatever arrived
-      rateStr.toUpperCase(Locale.ENGLISH) match {
-        case RateFormat(baseCode, counterCode, rateText) =>
+      // Only the pair is folded and matched. The fold is bounded by the pair test above at seven
+      // characters, where folding and matching the whole of the text made both proportional to a
+      // length the caller chose; the rate is checked by a scan over the characters it may hold,
+      // which allocates nothing and stops at the first character that is not one of them. The
+      // two together accept and reject exactly what the whole-text expression did, for the
+      // reasons set out on `PairFormat`.
+      rateStr.substring(0, spaceIndex).toUpperCase(Locale.ENGLISH) match {
+        case PairFormat(baseCode, counterCode) if namesRateText(rateStr, spaceIndex + 1) =>
+          // the rate is copied out of the text only now, when the shape of both halves is known:
+          // a text whose pair does not match, or whose rate holds a character a rate may not,
+          // has been decided from indices alone and has copied nothing but the pair
           val parsed: Option[FxRate] = for {
             base <- Currency.parse(baseCode).toOption
             counter <- Currency.parse(counterCode).toOption
-            parsedRate <- rateText.toDoubleOption
+            parsedRate <- rateStr.substring(spaceIndex + 1).toDoubleOption
             fxRate <- of(CurrencyPair.of(base, counter), parsedRate).toOption
           } yield fxRate
-          // the text is rendered rather than interpolated as it stands, which bounds both
-          // messages and keeps them to one line while leaving an in-bound spelling quoted as it
-          // was given
-          parsed.toRight(Failure.Parsing(s"Unable to parse rate: $rateStr"))
+          // text of this shape is within the quotation bound by the two tests above, so it is
+          // named in full here and the bound never takes effect on this branch
+          parsed.toRight(Failure.Parsing(s"Unable to parse rate: ${quoted(rateStr)}"))
         case _ =>
-          Left(Failure.Parsing(s"Invalid rate: $rateStr"))
+          Left(Failure.Parsing(s"Invalid rate: ${quoted(rateStr)}"))
       }
     }
   }
+
+  /**
+   * Checks that text is the rate part of the text form: one or more digits, signs and points.
+   *
+   * This is the rate half of the grammar [[PairFormat]] documents, checked by a scan rather than
+   * by an expression because that is all the shape of a rate is. The class is deliberately
+   * narrower than the text the platform can read as a number: `1e3` and `1.25d` hold a character
+   * that is not one of these, so they name no rate at all and are refused here rather than by
+   * the number reading that follows, which is what decides that a caller is given the
+   * invalid-rate wording for them and the unreadable-rate wording for `-.+-`.
+   *
+   * The scan threads its index through a tail-recursive step, so it compiles to a jump loop with
+   * no mutable local and no allocation, and it stops at the first character outside the class -
+   * so text that is not a rate costs the distance to its first offending character rather than
+   * its length. It reads the rate out of the whole text at an offset rather than out of a
+   * substring of it, so the rate part is copied only once the shape of both halves is known.
+   *
+   * @param text  the whole text, as it was given, unfolded
+   * @param from  the index of the first character of the rate part, one past the separator
+   * @return true if the text from that index on is one or more characters of the rate class
+   */
+  private def namesRateText(text: String, from: Int): Boolean = {
+    @tailrec
+    def scanning(index: Int): Boolean =
+      if (index >= text.length) {
+        true
+      } else if (isRateCharacter(text.charAt(index))) {
+        scanning(index + 1)
+      } else {
+        false
+      }
+
+    from < text.length && scanning(from)
+  }
+
+  /**
+   * Checks whether a character is one the rate part of the text form may hold.
+   *
+   * The digits, a leading or trailing sign and a decimal point, which is the character class of
+   * the rate group of the whole-text expression this port started from. Every one of them is its
+   * own upper case, which is why the rate part needs no folding.
+   *
+   * @param character  the character to check
+   * @return true if the character is a digit, a plus, a minus or a point
+   */
+  private def isRateCharacter(character: Char): Boolean =
+    (character >= '0' && character <= '9') ||
+      character == '+' ||
+      character == '-' ||
+      character == '.'
 
   /**
    * Creates a rate, holding it to both constraints of the type, which every route funnels

@@ -5,11 +5,13 @@
  */
 package com.opengamma.strata.basics.index
 
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 import scala.collection.immutable.Set
 import scala.collection.mutable.ListBuffer
 
+import org.scalatest.exceptions.TestFailedException
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
@@ -396,6 +398,54 @@ class IndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     }
   }
 
+  /**
+   * A stand-in for a union of families, in the exact shape the four production compositions have:
+   * an object holding a memoised `LazyList` of by-name probes over sibling objects that stand for
+   * the family companions. The deferral assertions of this spec are stated over it rather than over
+   * the real families, so that they observe the shape itself and not the order in which this run
+   * happened to load the index classes: nothing else in this spec or in the library refers to the
+   * two stand-ins, so each records its own initialization, once, when a probe naming it is applied.
+   */
+  private object DeferralFixture {
+
+    /** How many times the first stand-in family's initializer has run. */
+    val firstInitializations: AtomicInteger = new AtomicInteger(0)
+
+    /** How many times the second stand-in family's initializer has run. */
+    val secondInitializations: AtomicInteger = new AtomicInteger(0)
+
+    /**
+     * Records one run of a stand-in family's initializer. The count is bound to a wildcard because
+     * what the assertions read is the reference, not this increment.
+     *
+     * @param sink  the counter of the family being initialized
+     */
+    private def record(sink: AtomicInteger): Unit = {
+      val _ = sink.incrementAndGet()
+    }
+
+    /** A stand-in family whose initializer is observable through the count it records. */
+    private object FirstFamily {
+      record(firstInitializations)
+      def valueOf(name: String): Option[String] = Option.when(name == "first")("first:first")
+    }
+
+    /** The second stand-in family, so that a probe can be applied without reaching the first. */
+    private object SecondFamily {
+      record(secondInitializations)
+      def valueOf(name: String): Option[String] = Option.when(name == "second")("second:second")
+    }
+
+    /**
+     * The composition: memoised, with elements supplied by name and each written out as a function
+     * of the name, which is what the production compositions are.
+     */
+    lazy val standardLookups: LazyList[String => Option[String]] =
+      ((name: String) => FirstFamily.valueOf(name)) #::
+        ((name: String) => SecondFamily.valueOf(name)) #::
+        LazyList.empty[String => Option[String]]
+  }
+
   //-------------------------------------------------------------------------
   test("floatingRate_standardLookupsAreTheFourFamilyProbesInOrder") {
     // Each probe is required to be one family's own exact lookup, in the declared order Ibor,
@@ -414,15 +464,69 @@ class IndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     }
   }
 
-  test("floatingRate_standardLookupsAreProducedFreshlyOnEveryCall") {
-    // The composition has to stay a method whose elements are supplied by name: pre-assembled in a
-    // value it would force all four companions at once, reintroducing an initialization cycle.
-    val first = FloatingRate.standardLookups
-    val second = FloatingRate.standardLookups
-    first should not be theSameInstanceAs(second)
-    first should have size 4
-    second should have size 4
+  test("test_standardLookups_memoisedCompositionWithProbesStillDeferred") {
+    // Each of the four compositions is assembled once and searched thereafter, so obtaining one
+    // twice yields a single value; what the memoisation had to leave alone is the production of
+    // each probe, which is what defers a family's initialization to the search that reaches it.
+    val firstObtained = FloatingRate.standardLookups
+    val secondObtained = FloatingRate.standardLookups
+    firstObtained should be theSameInstanceAs secondObtained
+    Index.standardLookups should be theSameInstanceAs Index.standardLookups
+    RateIndex.standardLookups should be theSameInstanceAs RateIndex.standardLookups
+    FloatingRateIndex.standardLookups should be theSameInstanceAs FloatingRateIndex.standardLookups
 
+    // A memoised composition is searched, not consumed: each is traversed repeatedly here, and its
+    // documented size and its answers are the same every time, which a value backed by an iterator
+    // would not be.
+    Index.standardLookups should have size 4
+    Index.standardLookups.toList should have size 4
+    RateIndex.standardLookups should have size 2
+    FloatingRateIndex.standardLookups should have size 3
+    FloatingRate.standardLookups should have size 4
+    (floatingRateSampleText.toList ::: List("GBP-LIBOR", "EUR/CHF-ECB")).foreach { name =>
+      withClue(s"'$name': ") {
+        Index.firstMatch(name, Index.standardLookups) shouldBe Index.valueOf(name)
+        Index.firstMatch(name, Index.standardLookups) shouldBe Index.valueOf(name)
+        Index.firstMatch(name, RateIndex.standardLookups) shouldBe RateIndex.valueOf(name)
+        Index.firstMatch(name, FloatingRateIndex.standardLookups) shouldBe
+          FloatingRateIndex.valueOf(name)
+        FloatingRate.tryParseWith(name, FloatingRate.standardLookups) shouldBe
+          FloatingRate.tryParse(name)
+        FloatingRate.tryParseWith(name, FloatingRate.standardLookups) shouldBe
+          FloatingRate.tryParse(name)
+      }
+    }
+
+    // The deferral itself, proved over the fixture above rather than over the families, so that
+    // nothing here depends on which class this run happened to load first: forcing every cell of a
+    // composition of the production shape produces both probes and runs neither family's
+    // initializer, and applying one probe runs exactly the initializer of the family it names.
+    val composition = DeferralFixture.standardLookups
+    composition should be theSameInstanceAs DeferralFixture.standardLookups
+    composition.size shouldBe 2
+    composition.toList should have size 2
+    DeferralFixture.firstInitializations.get() shouldBe 0
+    DeferralFixture.secondInitializations.get() shouldBe 0
+
+    composition(1).apply("second") shouldBe Some("second:second")
+    DeferralFixture.secondInitializations.get() shouldBe 1
+    DeferralFixture.firstInitializations.get() shouldBe 0
+
+    composition.head.apply("first") shouldBe Some("first:first")
+    DeferralFixture.firstInitializations.get() shouldBe 1
+    DeferralFixture.secondInitializations.get() shouldBe 1
+
+    // an initializer runs once however often its probe is applied, and a probe of the memoised
+    // composition answers the same after the family behind it has been initialized
+    composition.head.apply("other") shouldBe None
+    composition(1).apply("other") shouldBe None
+    composition.head.apply("first") shouldBe Some("first:first")
+    composition(1).apply("second") shouldBe Some("second:second")
+    DeferralFixture.firstInitializations.get() shouldBe 1
+    DeferralFixture.secondInitializations.get() shouldBe 1
+  }
+
+  test("floatingRate_standardLookupsComposeIntoSubsets") {
     // a subset composes, so a caller searches fewer families without reimplementing the search
     FloatingRate.standardLookups.take(3) should have size 3
     val indexFamiliesOnly: List[FloatingRate.Lookup] =
@@ -434,6 +538,10 @@ class IndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
       FloatingRate.tryParseWith("GBP-LIBOR-3M", indexFamiliesOnly)
     FloatingRate.tryParseWith("GBP-LIBOR-BBA", FloatingRate.standardLookups.take(3)) shouldBe
       FloatingRate.tryParseWith("GBP-LIBOR-BBA", indexFamiliesOnly)
+
+    // and taking a subset leaves the memoised composition it was taken from as it was
+    FloatingRate.standardLookups should have size 4
+    FloatingRate.standardLookups should be theSameInstanceAs FloatingRate.standardLookups
   }
 
   test("floatingRate_searchIsStatedOverAnyValueAProbeAnswersWith") {
@@ -514,7 +622,30 @@ class IndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     Index.firstMatch("c", composition) shouldBe None
     probed.toList shouldBe List("first", "second")
 
-    // and the search is total in the composition it is given, including the empty one
+    // And the search is total in the composition it is given, including the empty one, whatever
+    // ordered sequence that is: the lazy sequence the four unions hold and two strict ones.
     Index.firstMatch("a", List.empty[Index.Lookup]) shouldBe None
+    Index.firstMatch("a", LazyList.empty[Index.Lookup]) shouldBe None
+    Index.firstMatch("a", Vector.empty[Index.Lookup]) shouldBe None
+    Index.firstMatch("", LazyList.empty[Index.Lookup]) shouldBe None
+
+    // The probe after the answering one is not merely left unapplied, it is never produced: the
+    // element beyond the hit raises where it is produced, and the searches that stop before it
+    // answer normally while the one that reaches it fails - which is what the last line asserts.
+    probed.clear()
+    def beyondTheHit(beyond: => (String => Option[String])): LazyList[String => Option[String]] =
+      probe("first", Set("a")) #:: probe("second", Set("b")) #:: beyond #::
+        LazyList.empty[String => Option[String]]
+    Index.firstMatch("a", beyondTheHit(fail("the probe beyond the answering one was produced"))) shouldBe
+      Some("first:a")
+    probed.toList shouldBe List("first")
+    probed.clear()
+    Index.firstMatch("b", beyondTheHit(fail("the probe beyond the answering one was produced"))) shouldBe
+      Some("second:b")
+    probed.toList shouldBe List("first", "second")
+    probed.clear()
+    a[TestFailedException] should be thrownBy
+      Index.firstMatch("c", beyondTheHit(fail("the probe beyond the answering one was produced")))
+    probed.toList shouldBe List("first", "second")
   }
 }

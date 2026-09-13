@@ -57,6 +57,16 @@ import com.opengamma.strata.collect.result.toNec
  * reads a map of values per currency - which every route that could break them goes through, and
  * of the one construction point behind it.
  *
+ * The first two cost a constant and a step per currency, of which a run holds at most the number
+ * of currencies there are; the third costs a pass over the whole run, once per value built. It is
+ * therefore established exactly once, by whichever route takes the numbers in - the checking
+ * factory and [[total]] report what that pass finds, the two total arithmetic members raise it -
+ * and the routes that read [[MultiCurrencyAmount]] values examine nothing at all, since the
+ * invariant of that type has already established of every amount it holds exactly what this one
+ * asks of every element. Stating it a second time where the values are handed over would double
+ * the cost of every element-wise operation on a run of a hundred thousand scenarios, the
+ * establishing pass being as long as the arithmetic one.
+ *
  * Which channel reports a refused element is the channel the route in question already has,
  * which is the policy of this port for a numeric-domain edge: the checking factory, [[total]],
  * the four members that add or subtract, [[convertedTo]] and the decoder report
@@ -137,27 +147,36 @@ sealed abstract case class MultiCurrencyAmountArray private (
   // stopped is here. The single implementation is the companion's hidden `Impl`.
   JvmClosure.requireSoleImplementation(this, classOf[MultiCurrencyAmountArray.Impl])
 
-  // The invariant of this type, stated over the fields the instance actually holds rather than
-  // over the arguments a factory was given, because the implementation class carries a public
-  // constructor in the class file whatever the source asked for: a class compiled outside this
-  // library can call it directly, and identity alone would then admit a run whose size is not the
-  // length of the arrays it holds - so that reading one scenario of it would reach past the end of
-  // an array, or would read fewer currencies than the run has. These are the two structural
-  // properties `MultiCurrencyAmountArray.checked` establishes and every other route into the type
-  // holds by construction. The third is the element invariant: the elements of a run are amounts
-  // kept as numbers, so a value that is not a number is no more an element of a run than it is an
-  // amount, and identity alone would admit a run whose every later reader failed on it.
-  //
-  // The map is walked once per statement, over one entry per currency, and the third walks each
-  // array on its bit patterns - all of which is less than the factory that builds the arrays has
-  // already cost.
+  // The two structural properties of this type, stated over the fields the instance actually holds
+  // rather than over the arguments a factory was given, because the implementation class carries a
+  // public constructor in the class file whatever the source asked for: a class compiled outside
+  // this library can call it directly, and identity alone would then admit a run whose size is not
+  // the length of the arrays it holds - so that reading one scenario of it would reach past the end
+  // of an array, or would read fewer currencies than the run has. These are the two properties
+  // `MultiCurrencyAmountArray.checked` establishes and every other route into the type holds by
+  // construction. Restating them here costs a constant and one step per currency of the value, of
+  // which a run holds at most the number of currencies that exist, so they are stated for every
+  // instance however it came to be constructed.
   JvmClosure.requireInvariant("its size is not negative", size >= 0)
   JvmClosure.requireInvariant(
     "it holds exactly one value per index of the run for each of its currencies",
     values.forall { case (_, currencyValues) => currencyValues.size == size })
-  JvmClosure.requireInvariant(
-    "every value of every currency it holds is a number",
-    values.forall { case (_, currencyValues) => currencyValues.indexOf(Double.NaN) < 0 })
+
+  // The third property - every value of every currency it holds is a number - is deliberately not
+  // restated here, and this is the one statement of why.
+  //
+  // Unlike the two above it costs a pass over every array of the run, and a constructor runs for
+  // every value built: restating it here would examine every element of every currency a second
+  // time, and a third time where the route that reports a refusal has to examine them itself to
+  // say which element of which currency it refused, doubling the cost of the checking factory and
+  // of each element-wise operation on a run of a hundred thousand scenarios - for a route the
+  // supported API does not have. It is therefore established once, by whichever route takes the
+  // numbers in, and `MultiCurrencyAmountArray.trusted` is the construction point they all reach
+  // once they have: `create` raises it, `checked` reports it, and the routes that read
+  // `MultiCurrencyAmount` values rely on the invariant of that type instead. The property
+  // consequently holds of every value this library builds; what a forged instance would hold is
+  // not examined here, and a value that is not a number in one would be refused by
+  // `CurrencyAmount` as soon as any index of it were read as an amount.
 
   /**
    * Gets the set of currencies this run holds values for.
@@ -183,9 +202,15 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * array.getValues(Currency.CHF)   // Left(Failure.Invalid("No values available for CHF"))
    * }}}
    *
+   * This is the route to read the numbers of a run of any length by. The array handed back is the
+   * one the run already holds - it is immutable, so nothing is copied and the answer costs the
+   * same for a run of a hundred thousand scenarios as for one of two - whereas reading the same
+   * numbers through [[get]] builds one [[MultiCurrencyAmount]] per index.
+   *
    * @param currency  the currency to read the values of
    * @return the values of that currency, or the failure naming the currency this run does not
    *   hold
+   * @see [[get]] for the amount at one index, and for when each route is the right one
    */
   def getValues(currency: Currency): FailureOr[DoubleArray] =
     values.get(currency).toRight(MultiCurrencyAmountArray.noValues(currency))
@@ -225,10 +250,33 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * check the element invariant of this type has already established every value passes - and a
    * negative zero held in an array is normalised to a positive zero in the amount.
    *
+   * ===Which route to read a run by===
+   *
+   * What an index costs is nevertheless a whole [[MultiCurrencyAmount]] and the map inside it -
+   * measured at 0.2 to 0.8 microseconds and 1.1 to 1.4 kilobytes per index of a run of four
+   * currencies, on the hosts this port was profiled on - and that cost is the same whether the run
+   * holds two scenarios or a hundred thousand, because it is the cost of the value answered with
+   * rather than of finding it. Reading a whole run one index at a time therefore costs one such
+   * value per index: a hundred thousand indices in four currencies is tens of milliseconds and of
+   * the order of a hundred megabytes of garbage, all of it transposing a representation the run
+   * already holds. [[getValues]] answers in single-digit nanoseconds, and allocates nothing a
+   * caller that reads its values keeps.
+   *
+   * That is the price of the amount, not of this member, and it is worth paying where an amount is
+   * what a caller wants - one scenario to report, or the amounts in order through [[iterator]],
+   * which builds each only as it is read and never holds two at once. Where what a caller wants is
+   * the numbers, [[getValues]] is the route: it hands back the [[DoubleArray]] the run already
+   * holds for a currency, in constant time and without copying it, so a fold or a comparison over
+   * a whole run reads one array per currency rather than one amount per index. [[convertedTo]] and
+   * the element-wise arithmetic are written that way for the same reason - they work per currency,
+   * never per index - and a caller that needs several currencies at one index of a long run is
+   * better served by reading each currency's array once and indexing into those.
+   *
    * @param index  the zero-based index to retrieve
    * @return the amount at that index, naming every currency of the run
    * @throws java.lang.IndexOutOfBoundsException if the index is outside the run and the run holds
    *   at least one currency
+   * @see [[getValues]] for reading a currency's values without materialising an amount per index
    */
   def get(index: Int): MultiCurrencyAmount =
     MultiCurrencyAmount.create(values.iterator.map { case (currency, currencyValues) =>
@@ -1116,16 +1164,19 @@ object MultiCurrencyAmountArray {
    * Builds a run from amounts that have already been read into an indexed sequence.
    *
    * This is where the three total factories meet, and it is where the size of the run is settled:
-   * one index per amount. It has nothing of its own to check: [[arraysOf]] produces one array of
-   * exactly that length per currency, and every number in those arrays came out of a
-   * [[MultiCurrencyAmount]] - which holds amounts - or is the padded zero, so the element
-   * invariant of the construction point cannot refuse one of them.
+   * one index per amount. It has nothing of its own to check, and therefore checks nothing:
+   * [[arraysOf]] produces one array of exactly that length per currency, and every number in those
+   * arrays came out of a [[MultiCurrencyAmount]] - whose own invariant, stated in its class body
+   * and so holding of every instance of it that exists, is that every amount it holds is a number
+   * - or is the padded zero. The element property of this type is therefore already established of
+   * every value of every array, and the values go to [[trusted]] directly: examining them would be
+   * examining the invariant of [[MultiCurrencyAmount]] a second time, once per element of the run.
    *
    * @param amounts  the amounts, one per index, in index order
    * @return the run holding those amounts
    */
   private def fromAmounts(amounts: Vector[MultiCurrencyAmount]): MultiCurrencyAmountArray =
-    create(amounts.size, arraysOf(amounts))
+    trusted(amounts.size, arraysOf(amounts))
 
   /**
    * Turns amounts into one full-length array of values per currency.
@@ -1179,8 +1230,10 @@ object MultiCurrencyAmountArray {
    * The element examination is performed here rather than being left to the raise of [[create]]
    * because every route through this one has a failure channel: a caller reading a map of values
    * from a document, a file or a wire did not write those numbers, so a run it cannot have is an
-   * answer to be read and not an exception thrown past it. [[create]] still performs the
-   * invariant - it answers to the routes that have no channel - and it is reached from here only
+   * answer to be read and not an exception thrown past it. The value is consequently built by
+   * [[trusted]] rather than by [[create]], which would examine every element a second time to
+   * raise an invariant this method has just established cannot be broken; [[create]] performs the
+   * same examination for the routes that have no channel to report it in. The value is built only
    * when nothing was found, `toLeft` taking its argument by name.
    *
    * @param size  the size the run is to have, zero or greater
@@ -1203,7 +1256,7 @@ object MultiCurrencyAmountArray {
     })
     Collections
       .concatNonEmptyChains(List(negativeSize, differingLengths, notANumbers).flatten)
-      .toLeft(create(size, values))
+      .toLeft(trusted(size, values))
   }
 
   /**
@@ -1227,24 +1280,46 @@ object MultiCurrencyAmountArray {
     checked(size, values).left.map(Failure.collapse)
 
   /**
-   * Builds a run, establishing the element invariant, which is the only call of the constructor.
+   * Builds a run from values whose three properties have already been established, which is the
+   * only call of the constructor.
    *
-   * Every route into the type ends here, and each of them has already established the two
-   * structural properties: the total factories build one array of the run's length per currency,
-   * the element-wise arithmetic preserves the lengths of the arrays it is given, and [[checked]]
-   * has just examined them. The third property, that every element is a value
-   * [[CurrencyAmount]] holds, is a property of the numbers rather than of the route, and it is
-   * established here so that it holds for every route at once - including the two arithmetic
-   * members that are total in signature and produce numbers of their own, which have no channel
-   * to report it in. Keeping both the construction and that invariant in one place is what makes
-   * the type's promise reviewable at a single site.
+   * Every route into the type ends here, and each arrives having established all three: the total
+   * factories build one array of the run's length per currency, the element-wise arithmetic
+   * preserves the lengths of the arrays it is given, [[checked]] has just examined both the
+   * lengths and the elements, and each route has established the element property either by
+   * examining the numbers it was given ([[create]] and [[checked]]) or by taking them from
+   * [[MultiCurrencyAmount]] values that already satisfy it. Nothing is examined here.
    *
-   * The check is a fail-fast [[ArgCheck]], and the message - which names the currency and the
-   * index, since a run says nothing about which of its numbers is wrong - is taken by name, so
-   * the happy path allocates nothing for it. `hasNext` inspects the scan without consuming its
-   * first entry, so the message can still take that entry from the same iterator. A route with a
-   * failure channel of its own does not reach the raise: [[checked]] performs the same
-   * examination first and reports it.
+   * That the element examination happens in the callers rather than in this one method is the
+   * whole of the difference between one pass over a run and two: a construction point that
+   * examined its own arguments would examine them again after the route that has to report a
+   * refusal had already examined them to find the currency and index to name, and would examine
+   * the arrays of a run transposed from amounts that cannot carry a refused element at all.
+   *
+   * @param size  the size of the run
+   * @param values  the values per currency, each holding exactly `size` elements, of which the
+   *   element property of this type has been established
+   * @return the run
+   */
+  private def trusted(
+      size: Int,
+      values: SortedMap[Currency, DoubleArray]): MultiCurrencyAmountArray =
+    new Impl(size, values)
+
+  /**
+   * Builds a run, establishing the element property by raising it.
+   *
+   * This is the construction route of the two arithmetic members that are total in signature and
+   * produce numbers of their own, which have no channel to report a refused element in. The check
+   * is a fail-fast [[ArgCheck]], and the message - which names the currency and the index, since a
+   * run says nothing about which of its numbers is wrong - is taken by name, so the happy path
+   * allocates nothing for it. `hasNext` inspects the scan without consuming its first entry, so
+   * the message can still take that entry from the same iterator. A route with a failure channel
+   * of its own does not reach the raise and does not reach this method either: [[checked]]
+   * performs the same examination and reports what it finds.
+   *
+   * The examination is one pass over each currency's array, performed once per value built, and
+   * [[trusted]], which the construction itself goes through, performs no second pass.
    *
    * @param size  the size of the run
    * @param values  the values per currency, each holding exactly `size` elements
@@ -1260,7 +1335,7 @@ object MultiCurrencyAmountArray {
         val (currency, index) = offending.next()
         notANumberMessage(currency, index)
       })
-    new Impl(size, values)
+    trusted(size, values)
   }
 
   /**

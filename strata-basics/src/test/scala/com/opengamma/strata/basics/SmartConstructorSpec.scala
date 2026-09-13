@@ -1725,23 +1725,31 @@ object SmartConstructorSpec {
    * The longest the numeral of an amount, or of an exchange rate, may be as text.
    *
    * Both types read their number as a double, which has no longest spelling, so each states this
-   * bound and tests it before copying the numeral out of the text or reading it. The value is
-   * what it takes to write a double exactly - the smallest subnormal needs 767 significant
-   * digits and every other value fewer - so nothing that names a number exactly is refused for
-   * its size.
+   * bound and tests it before copying the numeral out of the text or reading it.
+   *
+   * The value is the bound [[com.opengamma.strata.collect.Decimal]] reads within, which is to say
+   * the one [[MaxDecimalTextLength]] states below, so a single bound holds across the four types
+   * of the currency package that read a number out of text: the same text form now reaches the
+   * same answer from `CurrencyAmount.parse` and from `Money.parse`, where a numeral between the
+   * two bounds used to be read by one and refused by the other.
+   *
+   * It is deliberately narrower than a calibration on exact double spellings - the smallest
+   * subnormal needs 767 significant digits - because what the narrowing refuses is text whose
+   * further digits cannot change the value it names, while what it buys is that the work a
+   * rejection can be made to cost is bounded four times lower.
    */
-  private val MaxAmountTextLength: Int = 1024
+  private val MaxAmountTextLength: Int = 256
 
   /**
    * The longest numeral [[com.opengamma.strata.collect.Decimal]] reads, which
    * [[com.opengamma.strata.basics.currency.Money]] and
    * [[com.opengamma.strata.basics.currency.BigMoney]] restate ahead of their own copy.
    *
-   * Lower than the bound above because those two types hold a decimal of eighteen digits rather
-   * than a double, so the text that can name one of their values is shorter. Applying it before
-   * the numeral is copied changes nothing about what they accept - the decimal refused the same
-   * text, one copy later - which is what the assertions in the group above check from both sides
-   * of the bound.
+   * Equal to the bound above, which those two types reached first and the other two have since
+   * been brought down to, so one number bounds every numeral this package reads out of text.
+   * Applying it before the numeral is copied changes nothing about what they accept - the decimal
+   * refused the same text, one copy later - which is what the assertions in the group above check
+   * from both sides of the bound.
    */
   private val MaxDecimalTextLength: Int = 256
 

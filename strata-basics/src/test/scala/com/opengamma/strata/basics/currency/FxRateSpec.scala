@@ -63,6 +63,36 @@ final class FxRateSpec
   private val ZeroRateMessage: String =
     "Argument 'rate' must not be negative or zero but has value 0.0"
 
+  /**
+   * The longest the rate part of the text form may be, as [[FxRate]] states it.
+   *
+   * Restated here because it is not visible outside that companion and because both sides of it
+   * are asserted. The value is the 256 characters [[CurrencyAmount]], [[Money]] and [[BigMoney]]
+   * read their numeral within: one bound holds across the four types of this package that read a
+   * number out of text, where this type once carried a thousand characters calibrated on the
+   * longest exact decimal spelling of a double.
+   */
+  private val MaxRateTextLength: Int = 256
+
+  /**
+   * The longest text a rejection quotes back in full, which is the longest text this type accepts.
+   *
+   * The seven characters of a folded pair, the space after them and a rate at the ceiling above.
+   * Text within it is named character for character, and text beyond it is named through the
+   * bounded renderer, so the cost of a rejection is capped by this type rather than chosen by its
+   * caller.
+   */
+  private val MaxQuotedTextLength: Int = 7 + 1 + MaxRateTextLength
+
+  /**
+   * The greatest number of characters of rejected text a message can carry.
+   *
+   * The bounded renderer of a failure writes at most five hundred and twelve characters of a part
+   * and then the three of an ellipsis, so this is the cap a message reaches however long the
+   * rejected text was.
+   */
+  private val MaxRenderedMessagePart: Int = 512 + 3
+
   //-------------------------------------------------------------------------
   /**
    * The rates the cross-rate test crosses, written as quotients of small integers so that the
@@ -495,31 +525,82 @@ final class FxRateSpec
   }
 
   /**
-   * Asserts that rejected text is named in full while the failure renders bounded and on one line:
-   * the message quotes the whole of what was rejected, in both wordings, while the rendering bounds
-   * what it writes, marks what it left out and escapes anything that could forge a line.
+   * Asserts how rejected text is quoted back, and that the failure renders bounded and on one line.
+   *
+   * The property the quotation has is that text within the length this type can accept is named
+   * in full and text beyond it is named bounded, so a rejection cannot be made to cost more than
+   * the ceiling however long the input is. Both sides of that boundary are asserted here, and the
+   * rendering - which bounds and escapes every part it writes - is asserted on top of it, because
+   * the two bounds are independent: one caps what the failure carries, the other caps what a
+   * reader of lines is shown.
    */
-  test("parsing names rejected text in full, and the failure renders bounded and on one line") {
+  test("parsing bounds the text it quotes, and the failure renders bounded and on one line") {
     val payload = "H" * 10000
     val bounded: FailureOr[FxRate] = FxRate.parse(payload)
     bounded should beFailureWith(FailureReason.PARSING)
     val failure = bounded.left.toOption.getOrElse(fail("expected a failure"))
-    failure.message shouldBe s"Invalid rate: $payload"
+    failure.message should startWith("Invalid rate: HHH")
+    failure.message should endWith("...")
+    failure.message.length shouldBe "Invalid rate: ".length + MaxRenderedMessagePart
     val rendered = Show[Failure].show(failure)
     rendered.length should be < 1000
     rendered should startWith("PARSING: Invalid rate: HHH")
     rendered should endWith("...")
 
-    // the rate group admits digits, so a rate written with ten thousand zeroes after the point
-    // matches and is then rejected as a zero rate - the other wording, bounded the same way
+    // the rate part admits digits, so a rate written with ten thousand zeroes after the point
+    // used to match and then be rejected as a zero rate; it is now past the ceiling on the rate,
+    // which reports through that same second wording, and the text is quoted bounded
     val longZero = s"EUR/GBP 0.${"0" * 10000}"
     val matched: FailureOr[FxRate] = FxRate.parse(longZero)
     matched should beFailureWith(FailureReason.PARSING)
-    matched.left.toOption.map(failure => failure.message) shouldBe
-      Some(s"Unable to parse rate: $longZero")
+    val matchedMessage: String =
+      matched.left.toOption.map(failure => failure.message).getOrElse(fail("expected a failure"))
+    matchedMessage should startWith("Unable to parse rate: EUR/GBP 0.000")
+    matchedMessage should endWith("...")
+    matchedMessage.length shouldBe "Unable to parse rate: ".length + MaxRenderedMessagePart
     Show[Failure]
       .show(matched.left.toOption.getOrElse(fail("expected a failure")))
       .length should be < 1000
+
+    // a rejection whose text could have named a rate is quoted in full, whatever it holds
+    val realistic: String = s"EUR/GBP 0.${"0" * 100}"
+    FxRate.parse(realistic).left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse rate: $realistic")
+
+    // and the boundary between the two is the longest text this type accepts - the seven
+    // characters of a folded pair, the space after them and a rate at the ceiling, which is 264
+    // characters. Either side of it is asserted through a raw line break, because that is what
+    // tells the two quotations apart at a length where they are otherwise the same characters:
+    // within the bound the text is handed back untouched, so the break survives into `message`
+    // and is escaped only when the failure is written out, while beyond the bound the text goes
+    // through the renderer, which escapes it there and then
+    val atQuotationBound: String = "EUR\n" + ("0" * (MaxQuotedTextLength - 4))
+    atQuotationBound.length shouldBe MaxQuotedTextLength
+    FxRate.parse(atQuotationBound).left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Invalid rate: $atQuotationBound")
+    val pastQuotationBound: String = "EUR\n" + ("0" * (MaxQuotedTextLength - 3))
+    pastQuotationBound.length shouldBe MaxQuotedTextLength + 1
+    val pastMessage: String = FxRate
+      .parse(pastQuotationBound)
+      .left
+      .toOption
+      .map(failure => failure.message)
+      .getOrElse(fail("expected a failure"))
+    pastMessage should not be s"Invalid rate: $pastQuotationBound"
+    pastMessage should not include "\n"
+    pastMessage should include("\\n")
+
+    // whatever a sender chooses, the message a rejection carries is capped: a megabyte of text is
+    // named in a few hundred characters, so the cost of a rejection is bounded by this type and
+    // not by the length of its input (CWE-400/CWE-770)
+    val megabyte: String = "H" * (1024 * 1024)
+    val cappedMessage: String = FxRate
+      .parse(megabyte)
+      .left
+      .toOption
+      .map(failure => failure.message)
+      .getOrElse(fail("expected a failure"))
+    cappedMessage.length shouldBe "Invalid rate: ".length + MaxRenderedMessagePart
 
     val injected = FxRate.parse("EUR\nUSD 1.25")
     injected should beFailureWith(FailureReason.PARSING)
@@ -534,6 +615,82 @@ final class FxRateSpec
       Some("Invalid rate: AUD 1.25")
     FxRate.parse("EUR/GBP 0").left.toOption.map(failure => failure.message) shouldBe
       Some("Unable to parse rate: EUR/GBP 0")
+  }
+
+  /**
+   * Asserts the accepted grammar at every edge the shape of the text can be at.
+   *
+   * The pair is folded and matched against an expression while the rate is checked by a scan over
+   * the characters it admits, so these cases are where the two halves of the grammar meet. Each
+   * is a case the whole-text expression that preceded this decided on its own, and each has to
+   * read the same way now: an empty rate part is not one character of the rate class and so is a
+   * shape failure; a second space is a character the rate class does not hold and so is a shape
+   * failure rather than a second part; a letter anywhere in the rate part is likewise refused by
+   * the shape rather than by the reading that follows it, which is what keeps `EUR/USD 1e3` an
+   * invalid rate and not an unreadable one.
+   *
+   * The last case is why the pair test is an upper bound rather than an equality: `\ufb01` folds
+   * to `FI`, so `\ufb01M/USD` is six characters before the space that fold to the seven of
+   * `FIM/USD`, a pair this library defines. Folding the pair alone has to keep that working, and
+   * it is the case that would break first if the fold were applied to a part of the text chosen
+   * by position rather than by the separator.
+   */
+  test("the accepted grammar is unchanged at every edge of the shape of the text") {
+    // an empty rate part: one character of the rate class is required
+    FxRate.parse("EUR/USD ").left.toOption.map(failure => failure.message) shouldBe
+      Some("Invalid rate: EUR/USD ")
+
+    // a second space is not a character of the rate class
+    FxRate.parse("EUR/USD 1 2").left.toOption.map(failure => failure.message) shouldBe
+      Some("Invalid rate: EUR/USD 1 2")
+    FxRate.parse("EUR/USD 1.25 ").left.toOption.map(failure => failure.message) shouldBe
+      Some("Invalid rate: EUR/USD 1.25 ")
+
+    // a letter anywhere in the rate part, in either case, is a shape failure
+    List("EUR/USD X", "EUR/USD 1x25", "EUR/USD 1.25d", "EUR/USD 1E3", "EUR/USD x1.25").foreach {
+      input =>
+        val outcome: FailureOr[FxRate] = FxRate.parse(input)
+        outcome should beFailureWith(FailureReason.PARSING)
+        outcome.left.toOption.map(failure => failure.message) shouldBe Some(s"Invalid rate: $input")
+    }
+
+    // every character the rate class does hold is accepted by the shape, including the signs and
+    // points that then name no number - which is the other wording, reached through the reading
+    FxRate.parse("EUR/USD +1.25").map(rate => rate.toString) shouldBe Right("EUR/USD 1.25")
+    FxRate.parse("EUR/USD -.+-").left.toOption.map(failure => failure.message) shouldBe
+      Some("Unable to parse rate: EUR/USD -.+-")
+
+    // a pair that grows under folding still reaches the expression and still names its rate
+    FxRate.parse("\ufb01M/USD 1.25").map(rate => rate.toString) shouldBe Right("FIM/USD 1.25")
+    // and one that grows past seven characters cannot name a pair, so it is a shape failure
+    FxRate.parse("\ufb01IM/USD 1.25").left.toOption.map(failure => failure.message) shouldBe
+      Some("Invalid rate: \ufb01IM/USD 1.25")
+  }
+
+  /**
+   * Asserts the ceiling on the rate part from both sides of it.
+   *
+   * The ceiling is a deliberate narrowing rather than a bug fix: it was calibrated on the longest
+   * exact decimal spelling of a double, at 767 significant digits, and is now the 256 characters
+   * [[CurrencyAmount]], [[Money]] and [[BigMoney]] read their numeral within, so one bound holds
+   * across the four types of this package that read a number out of text. What it refuses is text
+   * whose extra digits cannot change the value it names, and it reports through the wording a
+   * text that names no rate has always reported rather than through a wording of its own.
+   */
+  test("the rate part is bounded, and reports through the wording of an unreadable rate") {
+    // a rate of exactly the ceiling is read exactly as it always was, zeroes and all
+    val atCeiling: String = "1." + ("0" * (MaxRateTextLength - 2))
+    atCeiling.length shouldBe MaxRateTextLength
+    FxRate.parse(s"EUR/GBP $atCeiling").map(rate => rate.toString) shouldBe Right("EUR/GBP 1")
+
+    // one character more names no rate, through that same wording and with no fold, no match and
+    // no numeric reading
+    val pastCeiling: String = "1." + ("0" * (MaxRateTextLength - 1))
+    pastCeiling.length shouldBe MaxRateTextLength + 1
+    val refused: FailureOr[FxRate] = FxRate.parse(s"EUR/GBP $pastCeiling")
+    refused should beFailureWith(FailureReason.PARSING)
+    refused.left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse rate: EUR/GBP $pastCeiling")
   }
 
   //-------------------------------------------------------------------------

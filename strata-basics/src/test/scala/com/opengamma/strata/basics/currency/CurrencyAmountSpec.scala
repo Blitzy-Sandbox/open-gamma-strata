@@ -27,6 +27,7 @@ import com.opengamma.strata.basics.currency.Currency.CAD
 import com.opengamma.strata.basics.currency.Currency.EUR
 import com.opengamma.strata.basics.currency.Currency.GBP
 import com.opengamma.strata.basics.currency.Currency.USD
+import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.FailureReason
@@ -60,6 +61,36 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
 
   /** The message `of` reports for an amount that is not a number; pinned because a log shows it. */
   private val NotANumberMessage: String = "Argument 'amount' must not be NaN"
+
+  /**
+   * The longest the amount part of the text form may be, as [[CurrencyAmount]] states it.
+   *
+   * Restated here because it is not visible outside that companion and because both sides of it
+   * are asserted. The value is the 256 characters [[Money]] and [[BigMoney]] read the same text
+   * form within: one bound holds across the four types of this package that read a number out of
+   * text, where this type once carried a thousand characters calibrated on the longest exact
+   * decimal spelling of a double.
+   */
+  private val MaxAmountTextLength: Int = 256
+
+  /**
+   * The longest text a rejection quotes back in full, which is the longest text this type accepts.
+   *
+   * A three letter currency code, the separator after it and an amount at the ceiling above.
+   * Text within it is named character for character, and text beyond it is named through the
+   * bounded renderer, so the cost of a rejection is capped by this type rather than chosen by
+   * its caller.
+   */
+  private val MaxQuotedTextLength: Int = 3 + 1 + MaxAmountTextLength
+
+  /**
+   * The greatest number of characters of rejected text a message can carry.
+   *
+   * The bounded renderer of a failure writes at most five hundred and twelve characters of a part
+   * and then the three of an ellipsis, so this is the cap a message reaches however long the
+   * rejected text was.
+   */
+  private val MaxRenderedMessagePart: Int = 512 + 3
 
   //-------------------------------------------------------------------------
   /**
@@ -162,6 +193,47 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
     CurrencyAmount.of(USD, Double.NegativeInfinity) should beSuccess
   }
 
+  /**
+   * Asserts that the single check of `of` reports the value the accumulating validators of the
+   * collect module report for the same rejection.
+   *
+   * `of` tests the one thing that can be wrong with its arguments directly and answers with a
+   * failure it holds as a constant, rather than building a `Validated`, converting it, chaining
+   * it and collapsing a chain of one. The equality asserted here is what makes that an
+   * implementation detail: the whole failure - its reason, its message and its attributes - is
+   * compared against what `Validate.notNaN` and `Failure.collapse` produce, so the assertion is
+   * not a copy of the wording but the wording's source. A change to the argument-check message of
+   * either module is therefore a failing test here rather than a divergence between the value
+   * this factory reports and the one the invariant of the type raises.
+   */
+  test("the single check of of reports what the accumulating validators report") {
+    val reported: Failure = CurrencyAmount
+      .of(USD, Double.NaN)
+      .left
+      .toOption
+      .getOrElse(fail("expected a failure"))
+    val accumulated: Failure = Validate
+      .notNaN(Double.NaN, "amount")
+      .toEither
+      .left
+      .toOption
+      .map(Failure.collapse)
+      .getOrElse(fail("expected the validator to reject a value that is not a number"))
+
+    reported shouldBe accumulated
+    reported.reason shouldBe accumulated.reason
+    reported.message shouldBe accumulated.message
+    reported.attributes shouldBe accumulated.attributes
+    reported.attributes shouldBe empty
+    Show[Failure].show(reported) shouldBe Show[Failure].show(accumulated)
+    reported.asJson.noSpaces shouldBe accumulated.asJson.noSpaces
+
+    // the same wording reaches a caller through the invariant of the type, which is the route a
+    // value that is not a number takes when it is produced by the arithmetic rather than supplied
+    the[IllegalArgumentException] thrownBy CCY_AMOUNT.multipliedBy(
+      Double.NaN) should have message NotANumberMessage
+  }
+
   test("test_of_Currency_nullCurrency") {
     assertDoesNotCompile("""CurrencyAmount.of(Option.empty[Currency], AMT1)""")
     assertDoesNotCompile("""CurrencyAmount.of(AMT1, Currency.USD)""")
@@ -209,6 +281,13 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
    *
    * Each message is pinned through `Regex.quote`, so the assertion is the literal message a log
    * or a user sees rather than a pattern that happens to match it.
+   *
+   * The property the quotation has is that text within the length this type can accept is named
+   * in full and text beyond it is named bounded, so a rejection cannot be made to cost more than
+   * the ceiling however long the input is. Both sides of that boundary are asserted below, and
+   * the rendering - which bounds and escapes every part it writes - is asserted on top of it,
+   * because the two bounds are independent: one caps what the failure carries, the other caps
+   * what a reader of lines is shown.
    */
   test("test_parse_String_bad") {
     forAll(data_parseBad) { (input: String, message: String) =>
@@ -218,30 +297,83 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
     }
 
     // text with no separator at the fourth position is refused on its shape, before anything is
-    // read from it, and the failure names the whole of what it refused
+    // read from it; ten thousand characters is far beyond any text that could have named an
+    // amount, so the failure names what it refused bounded rather than in full
     val payload: String = "H" * 10000
     val bounded: FailureOr[CurrencyAmount] = CurrencyAmount.parse(payload)
     bounded should beFailureWith(FailureReason.PARSING)
-    bounded.left.toOption.map(failure => failure.message) shouldBe
-      Some(s"Unable to parse amount, invalid format: $payload")
-    // the rendering is where the size stops: ten thousand characters reach a log as a few
-    // hundred, marked to say that there was more
+    val boundedMessage: String =
+      bounded.left.toOption.map(failure => failure.message).getOrElse(fail("expected a failure"))
+    boundedMessage should startWith("Unable to parse amount, invalid format: HHH")
+    boundedMessage should endWith("...")
+    boundedMessage.length should be < 1000
+    // the rendering bounds what a log is shown on top of that, and still marks that there was
+    // more
     val rendered = Show[Failure].show(bounded.left.toOption.getOrElse(fail("expected a failure")))
     rendered.length should be < 1000
     rendered should startWith("PARSING: Unable to parse amount, invalid format: HHH")
     rendered should endWith("...")
 
+    // the other wording is bounded in exactly the same way, and for the same reason
     val prefixed: FailureOr[CurrencyAmount] = CurrencyAmount.parse(s"AUD $payload")
-    prefixed.left.toOption.map(failure => failure.message) shouldBe
-      Some(s"Unable to parse amount: AUD $payload")
+    val prefixedMessage: String =
+      prefixed.left.toOption.map(failure => failure.message).getOrElse(fail("expected a failure"))
+    prefixedMessage should startWith("Unable to parse amount: AUD HHH")
+    prefixedMessage should endWith("...")
+    prefixedMessage.length should be < 1000
     Show[Failure]
       .show(prefixed.left.toOption.getOrElse(fail("expected a failure")))
       .length should be < 1000
 
+    // a rejection whose text could have named an amount is quoted in full, whatever it holds: a
+    // hundred characters of it, the whole of which appears in the message
+    val realistic: String = "ZZZ " + ("9" * 100)
+    CurrencyAmount.parse(realistic).left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse amount: $realistic")
+
+    // and the boundary between the two is the longest text this type accepts - a three letter
+    // code, the separator and a numeral at the ceiling, which is 260 characters. Either side of
+    // it is asserted through a raw line break, because that is what tells the two quotations
+    // apart at a length where they are otherwise the same characters: within the bound the text
+    // is handed back untouched, so the break survives into `message` and is escaped only when
+    // the failure is written out, while beyond the bound the text goes through the renderer,
+    // which escapes it there and then
+    val atQuotationBound: String = "ZZZ\n" + ("8" * (MaxAmountTextLength - 1)) + "x"
+    atQuotationBound.length shouldBe MaxQuotedTextLength
+    CurrencyAmount.parse(atQuotationBound).left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse amount, invalid format: $atQuotationBound")
+    val pastQuotationBound: String = "ZZZ\n" + ("8" * MaxAmountTextLength) + "x"
+    pastQuotationBound.length shouldBe MaxQuotedTextLength + 1
+    val pastMessage: String = CurrencyAmount
+      .parse(pastQuotationBound)
+      .left
+      .toOption
+      .map(failure => failure.message)
+      .getOrElse(fail("expected a failure"))
+    pastMessage should not be s"Unable to parse amount, invalid format: $pastQuotationBound"
+    pastMessage should not include "\n"
+    pastMessage should include("\\n")
+
+    // whatever a sender chooses, the message a rejection carries is capped: a megabyte of text
+    // is named in a few hundred characters, so the cost of a rejection is bounded by this type
+    // and not by the length of its input (CWE-400/CWE-770)
+    val megabyte: String = "H" * (1024 * 1024)
+    val cappedMessage: String = CurrencyAmount
+      .parse(megabyte)
+      .left
+      .toOption
+      .map(failure => failure.message)
+      .getOrElse(fail("expected a failure"))
+    cappedMessage.length should be < 1000
+    cappedMessage.length shouldBe
+      "Unable to parse amount, invalid format: ".length + MaxRenderedMessagePart
+
     // text holding a line break is named as it stands but rendered on one line, so a
     // line-oriented consumer cannot be made to record a line the library did not report. The
     // break is placed to reach each wording in turn: at the separator position, then inside the
-    // amount part
+    // amount part. Both texts are within the quotation bound, so the raw break survives into
+    // `message` and is escaped only by the renderer - which is the division of labour the
+    // bounding does not change
     CurrencyAmount.parse("AUD\n1.5") should haveFailureMessageMatching(
       Regex.quote("Unable to parse amount, invalid format: AUD\n1.5"))
     CurrencyAmount.parse("AUD 1.5\nINJECTED") should haveFailureMessageMatching(
@@ -249,6 +381,44 @@ final class CurrencyAmountSpec extends AnyFunSuite with Matchers with TableDrive
     val injected: FailureOr[CurrencyAmount] = CurrencyAmount.parse("AUD 1.5\nINJECTED")
     Show[Failure].show(injected.left.toOption.getOrElse(fail("expected a failure"))) shouldBe
       "PARSING: Unable to parse amount: AUD 1.5\\nINJECTED"
+  }
+
+  /**
+   * Asserts the ceiling on the amount part from both sides of it.
+   *
+   * The ceiling is a deliberate narrowing rather than a bug fix: it was calibrated on the longest
+   * exact decimal spelling of a double, at 767 significant digits, and is now the 256 characters
+   * [[Money]] and [[BigMoney]] read the same text form within, so one bound holds across the four
+   * types of this package that read a number out of text. What it refuses is text whose extra
+   * digits cannot change the value it names, and it reports through the wording a text that names
+   * no amount has always reported rather than through a wording of its own.
+   */
+  test("the amount part is bounded, and reports through the wording of an unreadable amount") {
+    // a numeral of exactly the ceiling is read exactly as it always was, zeroes and all
+    val atCeiling: String = "0." + ("0" * (MaxAmountTextLength - 2))
+    atCeiling.length shouldBe MaxAmountTextLength
+    unwrap(CurrencyAmount.parse(s"AUD $atCeiling")).amount shouldBe 0d
+
+    // a significant numeral at the ceiling reads as the value it names, so the bound is a bound
+    // on the text and not on the precision
+    val significantAtCeiling: String = "1." + ("0" * (MaxAmountTextLength - 3)) + "5"
+    significantAtCeiling.length shouldBe MaxAmountTextLength
+    unwrap(CurrencyAmount.parse(s"AUD $significantAtCeiling")).amount shouldBe 1d
+
+    // one character more names no amount, through that same wording and with no numeric reading.
+    // The whole text is one character past the quotation bound, so it is quoted through the
+    // renderer - which returns text of this length holding nothing escapable exactly as it
+    // stands, so what a caller reads here is still the text they wrote
+    val pastCeiling: String = "0." + ("0" * (MaxAmountTextLength - 1))
+    pastCeiling.length shouldBe MaxAmountTextLength + 1
+    val refused: FailureOr[CurrencyAmount] = CurrencyAmount.parse(s"AUD $pastCeiling")
+    refused should beFailureWith(FailureReason.PARSING)
+    refused.left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Unable to parse amount: AUD $pastCeiling")
+
+    // the bound is on the amount part alone: the currency code and the separator ahead of it are
+    // not counted, so a text of the ceiling plus four characters is the longest one accepted
+    unwrap(CurrencyAmount.parse(s"AUD $atCeiling")).currency shouldBe AUD
   }
 
   //-------------------------------------------------------------------------

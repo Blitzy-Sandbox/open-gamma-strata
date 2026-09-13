@@ -587,6 +587,94 @@ final class DoubleArrayMathSpec
     DoubleArrayMath.fuzzyEquals(Double.NegativeInfinity, Double.NaN, Double.PositiveInfinity) shouldBe false
   }
 
+  test("the tolerance comparison decides the finite case on the distance alone") {
+    // The comparison measures the distance first and classifies an operand only where the
+    // distance cannot answer the question, which is what keeps a scan of finite values to a
+    // subtraction and two comparisons per element. Every outcome that ordering has to preserve
+    // is tabulated here, at every form the member takes, so a later reordering that loses one of
+    // them fails this test rather than a performance measurement somewhere else.
+    //
+    // The rows are organised by what the distance of the pair is, because that is what the
+    // implementation now branches on: a finite distance, a not-a-number distance, and an
+    // infinite distance under a finite and then an infinite tolerance.
+    val outcomes = Table[String, Double, Double, Double, Boolean](
+      ("case", "first", "second", "tolerance", "equal"),
+      // a finite distance implies two finite operands, so this is the whole fast branch
+      ("two finite values within the tolerance", 1.0, 1.0 + 1.0e-9, 1.0e-8, true),
+      ("two finite values beyond the tolerance", 1.0, 1.0 + 1.0e-7, 1.0e-8, false),
+      ("the same value at a zero tolerance", -12.5, -12.5, 0.0, true),
+      ("adjacent values at a zero tolerance", 1.0, math.nextUp(1.0), 0.0, false),
+      ("adjacent values at one unit of least precision",
+        1.0, math.nextUp(1.0), math.ulp(1.0), true),
+      ("the two zeroes at a zero tolerance", -0.0, 0.0, 0.0, true),
+      ("the two zeroes the other way round", 0.0, -0.0, 0.0, true),
+      ("two finite values at an infinite tolerance", 0.0, 1.0e300, Double.PositiveInfinity, true),
+      // a not-a-number distance: a not-a-number operand, or two identical infinities
+      ("not-a-number against itself at a zero tolerance", Double.NaN, Double.NaN, 0.0, false),
+      ("not-a-number against itself at the largest tolerance",
+        Double.NaN, Double.NaN, Double.MaxValue, false),
+      ("not-a-number against itself at an infinite tolerance",
+        Double.NaN, Double.NaN, Double.PositiveInfinity, false),
+      ("not-a-number against a finite value", Double.NaN, 0.0, Double.MaxValue, false),
+      ("a finite value against not-a-number", 0.0, Double.NaN, Double.MaxValue, false),
+      ("not-a-number against an infinity",
+        Double.NaN, Double.PositiveInfinity, Double.PositiveInfinity, false),
+      ("the same infinity at a zero tolerance",
+        Double.PositiveInfinity, Double.PositiveInfinity, 0.0, true),
+      ("the same negative infinity at a zero tolerance",
+        Double.NegativeInfinity, Double.NegativeInfinity, 0.0, true),
+      ("the same infinity at an infinite tolerance",
+        Double.PositiveInfinity, Double.PositiveInfinity, Double.PositiveInfinity, true),
+      // an infinite distance under a finite tolerance: excluded, whatever produced it
+      ("opposite infinities at the largest tolerance",
+        Double.PositiveInfinity, Double.NegativeInfinity, Double.MaxValue, false),
+      ("an infinity and a finite value at the largest tolerance",
+        Double.PositiveInfinity, 1.0e300, Double.MaxValue, false),
+      ("a finite value and an infinity at the largest tolerance",
+        1.0e300, Double.NegativeInfinity, Double.MaxValue, false),
+      ("two finite values whose difference overflows, at a finite tolerance",
+        -Double.MaxValue, Double.MaxValue, Double.MaxValue, false),
+      // an infinite distance under an infinite tolerance: the one place the fast branch has to
+      // classify, since only two finite operands are brought together there
+      ("two finite values whose difference overflows, at an infinite tolerance",
+        -Double.MaxValue, Double.MaxValue, Double.PositiveInfinity, true),
+      ("the same overflow the other way round",
+        Double.MaxValue, -Double.MaxValue, Double.PositiveInfinity, true),
+      ("opposite infinities at an infinite tolerance",
+        Double.PositiveInfinity, Double.NegativeInfinity, Double.PositiveInfinity, false),
+      ("an infinity and a finite value at an infinite tolerance",
+        Double.PositiveInfinity, 0.0, Double.PositiveInfinity, false),
+      ("a finite value and an infinity at an infinite tolerance",
+        0.0, Double.PositiveInfinity, Double.PositiveInfinity, false),
+      ("an infinity and zero the other way round",
+        Double.NegativeInfinity, 0.0, Double.PositiveInfinity, false))
+
+    forAll(outcomes) {
+      (name: String, first: Double, second: Double, tolerance: Double, equal: Boolean) =>
+        withClue(s"$name, ") {
+          // the scalar member the domain layer calls
+          DoubleArrayMath.fuzzyEquals(first, second, tolerance) shouldBe equal
+          // the array member, over a pair of one element and over a pair where the interesting
+          // position is neither the first nor the last, so the loop reaches it mid-scan
+          DoubleArrayMath.fuzzyEquals(Array(first), Array(second), tolerance) shouldBe equal
+          DoubleArrayMath.fuzzyEquals(
+            Array(1.0, first, 2.0),
+            Array(1.0, second, 2.0),
+            tolerance) shouldBe equal
+          // the wrapper's own comparison, which delegates to the array member
+          DoubleArray.of(first).equalWithTolerance(DoubleArray.of(second), tolerance) shouldBe equal
+          // and the comparison against zero, wherever the second value of the row is a zero:
+          // that member passes zero as the second value, so the row's outcome is its outcome.
+          // Either zero qualifies, and the two rows that pair them expect the same answer both
+          // ways round, so the sign of the second value decides nothing here.
+          if (second == 0.0) {
+            DoubleArrayMath.fuzzyEqualsZero(Array(first), tolerance) shouldBe equal
+            DoubleArray.of(first).equalZeroWithTolerance(tolerance) shouldBe equal
+          }
+        }
+    }
+  }
+
   test("a not-a-number value is not equal to another not-a-number value, at any tolerance") {
     // such a value has no distance from anything, itself included, so no tolerance reaches it.
     // This is the one point at which the tolerance comparison and the bit-for-bit equality of

@@ -7,6 +7,7 @@ package com.opengamma.strata.collect.named
 
 import java.util.Locale
 
+import scala.annotation.tailrec
 import scala.util.matching.Regex
 
 import cats.Hash
@@ -234,14 +235,17 @@ trait NamedEnum[A <: Named] {
    * longest alternate spelling the family holds, no text either exact lookup could resolve is
    * ever beyond it.
    *
-   * Within the ceiling the length of the text still may not cost more than the text is worth,
-   * and that is settled where the expressions are handed over rather than where the text is:
-   * each expression is examined once, when the family declares it, for the character every
-   * full match of it must end with, and an expression whose character the text does not end
-   * with is a match that cannot happen and is not attempted. The condition is a consequence of
-   * the expression - it is derived only where the shape of the expression proves it, and no
-   * condition at all otherwise - so it decides nothing about which text resolves, and leaves
-   * one pass over the expressions costing what a pass over the text costs.
+   * Within the ceiling neither the length of the text nor the size of the table may cost more
+   * than the text is worth, and that is settled where the expressions are handed over rather
+   * than where the text is: each expression is examined once, when the family declares it, for
+   * the characters every full match of it must begin and end with, and an expression whose
+   * characters the text does not carry is a match that cannot happen and is not attempted. The
+   * family holds its expressions indexed by the character they require of the end of the text,
+   * so a pass reaches the expressions that could match the text rather than all of them, in the
+   * order the family declared them. Each condition is a consequence of the expression it was
+   * read from - derived only where the shape of the expression proves it, and no condition at
+   * all otherwise - so the narrowing decides nothing about which text resolves, and leaves one
+   * pass over the expressions costing what a pass over the text costs.
    *
    * ===The text the failure quotes back===
    *
@@ -467,7 +471,7 @@ object NamedEnum {
   /**
    * The characters of an expression that stand for something other than themselves.
    *
-   * Used only to decide whether the tail of an expression source is a plain literal, which
+   * Used only to decide whether either end of an expression source is a plain literal, which
    * is a question about the text of the expression rather than about the language it
    * matches; anything in this set, and anything after a backslash, ends the enquiry with no
    * answer rather than with a guess.
@@ -497,6 +501,26 @@ object NamedEnum {
   private val QuoteOpen: String = "\\Q"
 
   private val SingleCharacterClassLength: Int = 3
+
+  /**
+   * The characters that quantify the character before them.
+   *
+   * A quantifier follows what it applies to, so one of these in second position can make the
+   * first character of a source optional or repeated. Used only to decide whether the leading
+   * character of a source is a character every match of it must begin with.
+   */
+  private val Quantifiers: Set[Char] = Set('?', '*', '+', '{')
+
+  /**
+   * The number of characters the candidate index of a family holds a slot for.
+   *
+   * The index is keyed by the last character of the text, and only the characters below this
+   * one are keyed: `(?i)` without `(?u)` folds the ASCII letters and nothing else, while the
+   * comparison a rule makes folds both ways for every character, so the two agree on an ASCII
+   * character and need not agree on any other. Text ending in a character at or above this
+   * one is therefore answered by every rule of the family rather than by a slot.
+   */
+  private val AsciiCandidateSlots: Int = 128
 
   /**
    * Summons the name lookup of a family.
@@ -751,9 +775,49 @@ object NamedEnum {
      * of characters written as upper case would never match a lower-case letter. One
      * expression per rule exists in the program, made here from the source the family handed
      * over and used by every parse thereafter.
+     *
+     * Each rule is given the position the family declared it at, because the order of the pass
+     * is behaviour: a rule that fires hands its output to the rules after it and to no other,
+     * so the position is what the chain resumes from once a rule has fired.
      */
     private lazy val lenientRules: List[LenientRule] =
-      suppliedSources.map { case (source, replacement) => new LenientRule(source, replacement) }
+      suppliedSources.zipWithIndex.map {
+        case ((source, replacement), declaredAt) => new LenientRule(source, replacement, declaredAt)
+      }
+
+    /**
+     * The rules of the family in declaration order, as an array.
+     *
+     * The chain walks the rules by position rather than through an iterator - an iterator over a
+     * list is an allocation per pass, and this pass is on the miss path of every parse - and it
+     * is also the candidate set for text whose last character the index cannot speak for.
+     */
+    private lazy val orderedLenientRules: Array[LenientRule] = lenientRules.toArray
+
+    /**
+     * The rules that could match text ending with each ASCII character, in declaration order.
+     *
+     * One slot per character below [[AsciiCandidateSlots]], holding exactly the rules whose own
+     * expression could match text that ends with that character. The slot is built with the same
+     * comparison the rule itself makes, so it is a reproduction of that test rather than an
+     * approximation of it: the rules a slot omits are the rules that would have left the text
+     * exactly as they found it.
+     *
+     * Derived once per family, like every other table here, and only if the family is ever asked
+     * to rewrite text at all.
+     */
+    private lazy val lenientRulesByFinalCharacter: Array[Array[LenientRule]] =
+      Array.tabulate(AsciiCandidateSlots)(code =>
+        orderedLenientRules.filter(rule => rule.couldMatchTextEndingWith(code.toChar)))
+
+    /**
+     * The rules that could match empty text, in declaration order.
+     *
+     * Empty text has no last character, so a rule that requires one cannot match it; the rules
+     * that require none are the whole of what is left to try.
+     */
+    private lazy val lenientRulesForEmptyText: Array[LenientRule] =
+      orderedLenientRules.filterNot(rule => rule.requiresAFinalCharacter)
 
     override def lenientSources: List[(String, String)] = suppliedSources
 
@@ -852,10 +916,16 @@ object NamedEnum {
      * source in them is anchored to a literal shape of a fixed size, which is why the ceiling
      * closes the case while it is still unrealised rather than after a family realises it.
      *
-     * A full pass over the expressions for text within the ceiling is not narrowed and is not
-     * meant to be: it is the cost the ported algorithm has, and the order of the pass is
-     * behaviour. What bounds that pass is the requirement each rule reads from its own
-     * expression - see [[LenientRule]] - which decides nothing about which text resolves.
+     * The pass over the expressions for text within the ceiling is reached only by the rules
+     * whose own expression could match that text: each rule reads from its source, once and
+     * when the family declares it, the characters a full match of it must begin and end with -
+     * see [[LenientRule]] - and the family holds its rules indexed by the second of those, so
+     * the text is offered to the candidates for its last character rather than to all of them.
+     * Neither the order of the pass nor its result changes: the candidates are visited in
+     * declaration order, a rule that fires hands its output to the candidates declared after
+     * it, and a rule left out of a pass is a rule that would have returned the text it was
+     * given. What the narrowing decides is the work, and it decides nothing about which text
+     * resolves.
      *
      * The comparison is written into the lookup rather than left to `rewriteLeniently`, which
      * applies the same ceiling itself: the fold to upper case happens between the two, so a
@@ -875,7 +945,84 @@ object NamedEnum {
       if (name.length > lenientLengthCeiling) {
         name
       } else {
-        lenientRules.foldLeft(name)((current, rule) => rule.rewrite(current))
+        applyLenientRules(candidatesFor(name), 0, name)
+      }
+
+    /**
+     * The rules worth offering the specified text to, in declaration order.
+     *
+     * Empty text goes to the rules that require no final character, text ending in an ASCII
+     * character to that character's slot, and text ending in any other character to every rule
+     * of the family - the last of the three because the index is keyed by a character while the
+     * comparison a rule makes is not a single fold, so a slot can speak for an ASCII character
+     * and for no other. Every route answers with a table built beforehand, so selecting
+     * candidates allocates nothing.
+     *
+     * @param text  the text the rules would be applied to
+     * @return the rules whose own expression could match the text
+     */
+    private def candidatesFor(text: String): Array[LenientRule] =
+      if (text.isEmpty) {
+        lenientRulesForEmptyText
+      } else {
+        val last = text.charAt(text.length - 1).toInt
+        if (last < AsciiCandidateSlots) lenientRulesByFinalCharacter(last) else orderedLenientRules
+      }
+
+    /**
+     * Applies the candidate rules from the specified position onwards, chaining as they fire.
+     *
+     * The chain of the ported algorithm is a fold over every rule in declaration order, and this
+     * is that fold with the rules that could not have changed the text left out of it. A rule
+     * that fires can change the last character of the text and so change which rules the
+     * remainder of the pass has to consider, which is why the candidates are selected again for
+     * what it produced and the walk resumes at the first of them the family declared after the
+     * rule that fired - the rules before it have had their turn, exactly as they have in a fold.
+     *
+     * Whether a rule fired is read from the identity of what it answered with rather than from
+     * the text of it: a rule that declines the text or fails to match it answers with the very
+     * instance it was handed, and a replacement is always a fresh instance, so the comparison is
+     * a pointer test and the text is not compared. Two rules that rewrite text into itself are
+     * therefore treated as having fired, which is what a fold does with them as well.
+     *
+     * @param candidates  the rules worth offering the current text to, in declaration order
+     * @param position  the position in that array to apply next
+     * @param current  the text as the rules before this position left it
+     * @return the text that survives every rule from this position onwards
+     */
+    @tailrec
+    private def applyLenientRules(candidates: Array[LenientRule], position: Int, current: String): String =
+      if (position >= candidates.length) {
+        current
+      } else {
+        val rule = candidates(position)
+        val rewritten = rule.rewrite(current)
+        if (rewritten eq current) {
+          applyLenientRules(candidates, position + 1, current)
+        } else {
+          val resumed = candidatesFor(rewritten)
+          applyLenientRules(resumed, positionAfter(resumed, rule.declaredAt, 0), rewritten)
+        }
+      }
+
+    /**
+     * The position of the first candidate the family declared after the specified rule.
+     *
+     * The candidates of any text are in declaration order, so this is the point a chain resumes
+     * from once the rule at that declared position has fired. It is the length of the array when
+     * the rule that fired was the last one declared, which ends the walk.
+     *
+     * @param candidates  the rules worth offering the current text to, in declaration order
+     * @param declaredAt  the declared position of the rule that has just fired
+     * @param position  the position being considered, from which the search runs forwards
+     * @return the position of the first candidate declared after that rule
+     */
+    @tailrec
+    private def positionAfter(candidates: Array[LenientRule], declaredAt: Int, position: Int): Int =
+      if (position >= candidates.length || candidates(position).declaredAt > declaredAt) {
+        position
+      } else {
+        positionAfter(candidates, declaredAt, position + 1)
       }
 
     /**
@@ -926,25 +1073,36 @@ object NamedEnum {
    * the difference between one pass over a name and a pass per character of it, which is
    * work a family declaring several dozen rules does several dozen times.
    *
-   * It is closed by asking of the expression, once, a question about the language it
-   * matches: which character must a full match end with? Where the tail of the source is a
-   * plain literal, or a class holding exactly one character, the answer is that character
-   * and every full match ends with it. Where the tail is anything else - a group, a
-   * quantifier, a class of several characters, an anchor, an escape - there is no answer and
+   * It is closed by asking of the expression, once, two questions about the language it
+   * matches: which character must a full match begin with, and which must it end with? Where
+   * the end of the source is a plain literal, or a class holding exactly one character, the
+   * answer to the second is that character and every full match ends with it; where the source
+   * opens with a plain literal that carries no quantifier, the answer to the first is that
+   * character and every full match begins with it. Where either end is anything else - a group,
+   * a quantifier, a class of several characters, an anchor, an escape - there is no answer and
    * none is guessed. An expression holding an alternation is not asked at all, since either
-   * branch may end the match.
+   * branch may begin or end the match.
    *
-   * Text that does not end with a character the expression requires cannot match it, so
-   * declining to run the expression over such text removes no match: the two spellings of
-   * this rule agree on every input, and the specification of this port - which fixes the
+   * Text that does not begin and end with the characters the expression requires cannot match
+   * it, so declining to run the expression over such text removes no match: the two spellings
+   * of this rule agree on every input, and the specification of this port - which fixes the
    * lenient algorithm as that of the type being ported - is satisfied either way. What
-   * changes is only the work: the one expression among the transcribed tables that can
-   * consume unbounded text, `(.*)[(](.*)[)]`, requires a closing bracket at the end, so text
-   * crafted to make it backtrack is declined on its last character rather than matched. The
-   * requirement and the ceiling are independent of each other and both are kept: the ceiling
-   * decides how much text a rule may be handed, this requirement decides which rules are
-   * worth handing it to, and only the second of the two leaves every answer untouched by
-   * construction.
+   * changes is only the work, and it changes in two places. The one expression among the
+   * transcribed tables that can consume unbounded text, `(.*)[(](.*)[)]`, requires a closing
+   * bracket at the end, so text crafted to make it backtrack is declined on its last character
+   * rather than matched. And the rules that require no final character are commonly the ones
+   * written to accept a whole shape of text - the six rows of the transcribed day-count table
+   * that expand an actual/actual spelling all open with a literal `A` - so a leading character
+   * is what declines them for text that begins with anything else.
+   *
+   * The family holds its rules indexed by the character they require of the end of the text,
+   * so the second question also decides which rules a pass considers at all rather than only
+   * which of them run their expression; the first is asked of every rule that a pass reaches.
+   * The two requirements and the ceiling are independent of each other and all three are kept:
+   * the ceiling decides how much text a rule may be handed and the requirements decide which
+   * rules are worth handing it to, so the ceiling is the only one of the three that narrows an
+   * answer, which it does deliberately and for text no family could resolve, while the
+   * requirements leave every answer untouched by construction.
    *
    * The comparison of characters ignores case, because the expression does. A source that
    * turns case sensitivity off again is therefore tested more weakly than it needs to be,
@@ -954,13 +1112,17 @@ object NamedEnum {
    * @param source  the source of the expression, as the family declared it
    * @param replacement  the replacement for text this rule matches, which may refer back to
    *   the groups the expression captured
+   * @param declaredAt  the position the family declared this rule at, from which a chain that
+   *   this rule has just rewritten resumes
    */
-  private final class LenientRule(source: String, replacement: String) {
+  private final class LenientRule(source: String, replacement: String, val declaredAt: Int) {
 
     private val expression: Regex =
       (if (source.startsWith(CaseInsensitiveFlag)) source else CaseInsensitiveFlag + source).r
 
     private val requiredFinalCharacter: Option[Char] = finalCharacterOf(source)
+
+    private val requiredInitialCharacter: Option[Char] = initialCharacterOf(source)
 
     /**
      * Applies this rule to the specified text, where it matches the whole of it.
@@ -984,16 +1146,49 @@ object NamedEnum {
       }
 
     /**
-     * Whether the text satisfies what this rule requires of its final character.
+     * Whether the text satisfies what this rule requires of its first and last characters.
      *
-     * A rule that requires nothing could match anything and is always applied.
+     * A rule that requires neither could match anything and is always applied; a rule that
+     * requires either cannot match text that has no such character at all, which is why empty
+     * text satisfies only a rule that requires nothing.
+     *
+     * Both requirements are read as a match on the character the rule holds rather than through
+     * a function over it, so the test allocates nothing however many rules a family declares -
+     * the pass this sits in is the miss path of every parse.
      *
      * @param text  the text a match is being considered for
      * @return false only where a full match is impossible
      */
     private def couldMatch(text: String): Boolean =
-      requiredFinalCharacter.forall(required =>
-        text.nonEmpty && equalIgnoringCase(text.charAt(text.length - 1), required))
+      satisfiedBy(requiredInitialCharacter, text, 0) &&
+        satisfiedBy(requiredFinalCharacter, text, text.length - 1)
+
+    /**
+     * Whether this rule could match some text that ends with the specified character.
+     *
+     * The question the family's index of rules is built from, asked here because a nested class
+     * keeps its own state from the class that holds it. It is the final-character half of
+     * [[couldMatch]] for any non-empty text ending with that character, so a slot of that index
+     * holds exactly the rules the screen above would admit.
+     *
+     * @param character  the last character of some text
+     * @return false only where a full match of text ending with it is impossible
+     */
+    def couldMatchTextEndingWith(character: Char): Boolean =
+      requiredFinalCharacter match {
+        case Some(required) => equalIgnoringCase(character, required)
+        case None => true
+      }
+
+    /**
+     * Whether this rule requires anything of the last character of the text.
+     *
+     * A rule that does cannot match empty text, which has no last character, so this is what
+     * separates the rules a family offers empty text to from the rest.
+     *
+     * @return whether a full match of this rule must end with a particular character
+     */
+    def requiresAFinalCharacter: Boolean = requiredFinalCharacter.isDefined
   }
 
   /**
@@ -1024,10 +1219,8 @@ object NamedEnum {
    * @return the character a full match must end with, where the source proves one
    */
   private def finalCharacterOf(source: String): Option[Char] = {
-    val body =
-      if (source.startsWith(CaseInsensitiveFlag)) source.substring(CaseInsensitiveFlag.length) else source
-    if (body.isEmpty || body.contains(Alternation) || body.contains(GroupWithMeaning) ||
-      body.contains(QuoteOpen)) {
+    val body = bodyOf(source)
+    if (unreadable(body)) {
       None
     } else if (body.charAt(body.length - 1) == ClassClose) {
       singleCharacterClassOf(body)
@@ -1035,6 +1228,75 @@ object NamedEnum {
       finalLiteralOf(body)
     }
   }
+
+  /**
+   * The character every full match of the specified expression source must begin with, where
+   * the source proves one.
+   *
+   * The counterpart of the reader above, held to the same discipline and declining wherever
+   * that one declines: a source that is empty, that holds an alternation, an inline construct
+   * `(?...` or a quoted run `\Q` is left without a requirement, for the reasons set out there,
+   * and only a leading `(?i)` is exempt. Two further shapes stop this reader:
+   *
+   *  - a leading character that stands for something other than itself, which is any
+   *    metacharacter - the anchor `^`, the group `(`, the class `[`, the wildcard `.` and the
+   *    escape `\` among them - because what such a source begins with is not the character it
+   *    spells;
+   *  - a leading character followed by a '''quantifier''', because a quantifier applies to the
+   *    character before it and `?`, `*` and `{0,n}` all make that character optional, so the
+   *    match may begin with whatever follows it instead.
+   *
+   * Declining is always the safe direction. A rule without a requirement is applied to every
+   * text, exactly as it was before any requirement was read, so a source this reader does not
+   * understand costs the work of running its expression and can never cost a match. A
+   * requirement wrongly read, on the other hand, would refuse text the expression accepts,
+   * which is why neither reader answers from anything but a shape that proves the answer.
+   *
+   * @param source  the source of an expression
+   * @return the character a full match must begin with, where the source proves one
+   */
+  private def initialCharacterOf(source: String): Option[Char] = {
+    val body = bodyOf(source)
+    if (unreadable(body)) {
+      None
+    } else {
+      val first = body.charAt(0)
+      if (Metacharacters.contains(first)) {
+        None
+      } else if (body.length > 1 && Quantifiers.contains(body.charAt(1))) {
+        None
+      } else {
+        Some(first)
+      }
+    }
+  }
+
+  /**
+   * The specified expression source without the leading inline flag this lookup adds itself.
+   *
+   * Only that one flag is removed, and only where it leads: it is the flag prefixed to every
+   * source here, so it says nothing about how the source was written, while a flag the family
+   * itself spelled is part of the source and is what makes the source unreadable.
+   *
+   * @param source  the source of an expression, as the family declared it
+   * @return the source without a leading case-insensitivity flag
+   */
+  private def bodyOf(source: String): String =
+    if (source.startsWith(CaseInsensitiveFlag)) source.substring(CaseInsensitiveFlag.length) else source
+
+  /**
+   * Whether nothing at all can be read from the specified expression body.
+   *
+   * The four shapes that stop either reader before it begins, each because it can make part of
+   * a source mean something other than what it spells: an empty body, an alternation, an inline
+   * construct and a quoted run.
+   *
+   * @param body  the source, without any leading inline flag
+   * @return whether the body proves nothing about the text it matches
+   */
+  private def unreadable(body: String): Boolean =
+    body.isEmpty || body.contains(Alternation) || body.contains(GroupWithMeaning) ||
+      body.contains(QuoteOpen)
 
   /**
    * The character of a class of exactly one character closing the specified source.
@@ -1102,4 +1364,28 @@ object NamedEnum {
     left == right ||
       Character.toUpperCase(left) == Character.toUpperCase(right) ||
       Character.toLowerCase(left) == Character.toLowerCase(right)
+
+  /**
+   * Whether the character at the specified position of the text satisfies a requirement.
+   *
+   * A requirement of no character is satisfied by every text, including the empty one, and a
+   * requirement of some character is satisfied only by text that has a character at that
+   * position and holds that character there in some case. Text shorter than the position - the
+   * empty text, for either end of it - therefore satisfies no requirement at all.
+   *
+   * Written as a match on the requirement rather than as a function over it so that testing one
+   * costs no allocation: the `Some` a rule holds was made when the family declared the rule,
+   * and matching on it makes nothing.
+   *
+   * @param requirement  the character required, where a source proved one
+   * @param text  the text a match is being considered for
+   * @param position  the position of the character the requirement is about
+   * @return whether the text satisfies the requirement
+   */
+  private def satisfiedBy(requirement: Option[Char], text: String, position: Int): Boolean =
+    requirement match {
+      case Some(required) =>
+        position >= 0 && position < text.length && equalIgnoringCase(text.charAt(position), required)
+      case None => true
+    }
 }

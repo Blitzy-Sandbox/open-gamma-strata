@@ -1311,6 +1311,112 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  // The report of what was compared.
+  //-------------------------------------------------------------------------
+
+  test("the data tables compared against the manifest are reported as an inventory") {
+    // Every test above compares one table of the port against one section of the captured
+    // document, and a reader of the gate report otherwise has to infer which tables those were
+    // from a list of test names. So the tables are reported: one line per section, carrying the
+    // number of rows that section was compared over, and one line of totals.
+    //
+    // The report is derived from the decoded document rather than transcribed, so a section that
+    // shrank is reported with its smaller count, and it is asserted as well as printed: every
+    // section of the schema of record appears exactly once, none is empty, and the totals are the
+    // sum of the lines. A section dropped from `ManifestSections` would therefore fail here
+    // rather than disappear quietly from the report.
+    val report: List[String] = manifestReport
+    val sections: List[(String, Int)] = ManifestSections
+    report should have size (sections.size + 1).toLong
+    report.init.map(line => line.takeWhile(character => character != ' ')).distinct shouldBe
+      List(ReportLinePrefix)
+    withClue("a section is reported once: ")(
+      sections.map { case (name, _) => name }.distinct should have size sections.size.toLong)
+    withClue("no reported section is empty: ")(sections.filter { case (_, rows) => rows <= 0 } shouldBe empty)
+
+    // The sections of the document that carry rows are all here, so the report covers the
+    // document rather than a chosen part of it.
+    val reported: Set[String] = sections.map { case (name, _) => name }.toSet
+    DocumentedNameGroupCounts.keySet.subsetOf(reported) shouldBe true
+    DocumentedIndexTableCounts.keySet.subsetOf(reported) shouldBe true
+    DocumentedFloatingRateSectionCounts.keys
+      .map(section => s"$FloatingRateNamesKey.sections.$section")
+      .toSet
+      .subsetOf(reported) shouldBe true
+    DocumentedLenientCounts.keys
+      .map(family => s"lenientPatterns.$family")
+      .toSet
+      .subsetOf(reported) shouldBe true
+    DocumentedAlternateNameCounts.keys
+      .map(family => s"alternateNames.$family")
+      .toSet
+      .subsetOf(reported) shouldBe true
+    Set("currencies", "marketConventionPriority", "currencyPairs", "countries")
+      .subsetOf(reported) shouldBe true
+
+    report.last shouldBe
+      s"$ReportSummaryPrefix sections=${sections.size} " +
+        s"rows=${sections.map { case (_, rows) => rows }.sum}"
+    // stable between calls, so the figures in a gate report are reproducible from the same build
+    manifestReport shouldBe report
+    report.foreach(println)
+    info(
+      s"compared ${sections.size} manifest sections holding " +
+        s"${sections.map { case (_, rows) => rows }.sum} rows against the port's data tables")
+  }
+
+  /**
+   * Every section of the manifest the tests above compare, with the number of rows in it.
+   *
+   * Read out of the decoded document, so each figure is the size of what was actually compared.
+   * The order is the order of the sections in the document, which keeps two reports of the same
+   * build comparable line by line.
+   *
+   * @return the name of each section and its row count, in document order
+   */
+  private def manifestSections: List[(String, Int)] =
+    List(
+      ("currencies", currencies.rows.size),
+      ("marketConventionPriority", marketConventionPriority.size),
+      ("currencyPairs", currencyPairs.rows.size),
+      ("countries", countries.rows.size)) :::
+      DocumentedIndexTableCounts.keys.toList.sorted.map(key => (key, indexTable(key).rows.size)) :::
+      DocumentedNameGroupCounts.keys.toList.sorted.map(key => (key, nameGroup(key).names.size)) :::
+      List(
+        (s"$FloatingRateNamesKey.constants", floatingRateNames.constants.names.size)) :::
+      floatingRateNames.sections.keys.toList.sorted.map(section =>
+        (s"$FloatingRateNamesKey.sections.$section", floatingRateNames.sections(section).rows.size)) :::
+      externalNames.keys.toList.sorted.flatMap(family =>
+        externalNames(family).keys.toList.sorted.map(group =>
+          (s"externalNames.$family.$group", externalNames(family)(group).rows.size))) :::
+      lenientPatterns.keys.toList.sorted.map(family =>
+        (s"lenientPatterns.$family", lenientPatterns(family).rows.size)) :::
+      alternateNames.keys.toList.sorted.flatMap(family =>
+        List(
+          (s"alternateNames.$family", alternateNames(family).iniRows.size),
+          (s"alternateNames.$family.apiExpanded", alternateNames(family).apiExpandedRows.size))) :::
+      List(
+        (HolidayCalendarDefaultKey, holidayCalendarDefaultByCurrency.rows.size),
+        (s"$HolidayCalendarDataKey.$ThbaCalendarName", holidayCalendarDataThba.rows.size))
+
+  /** The sections of the manifest, read once so the report and its assertions agree. */
+  private lazy val ManifestSections: List[(String, Int)] = manifestSections
+
+  /**
+   * The report of the comparison: one line per manifest section, then one line of totals.
+   *
+   * @return the lines of the report, the totals last
+   */
+  private def manifestReport: List[String] = {
+    val lines: List[String] =
+      ManifestSections.map { case (name, rows) => s"$ReportLinePrefix $name rows=$rows" }
+    val summary: String =
+      s"$ReportSummaryPrefix sections=${ManifestSections.size} " +
+        s"rows=${ManifestSections.map { case (_, rows) => rows }.sum}"
+    lines :+ summary
+  }
+
+  //-------------------------------------------------------------------------
   // Element-wise comparison with a failure that names the offending row.
   //-------------------------------------------------------------------------
 
@@ -1539,6 +1645,15 @@ private object ReferenceDataManifestSpec {
 
   /** The captured document, named as the class loader sees it. */
   val ManifestResource: String = "manifest/reference-data-manifest.json"
+
+  /**
+   * The prefix every reported line carries, so the report of what was compared can be extracted
+   * from a run's output by name, as the codec-coverage and typeclass-instance reports are.
+   */
+  val ReportLinePrefix: String = "REFERENCE-DATA-MANIFEST"
+
+  /** The prefix of the single totals line that closes the report. */
+  val ReportSummaryPrefix: String = "REFERENCE-DATA-MANIFEST-SUMMARY"
 
   val IborIndicesKey: String = "iborIndices"
   val OvernightIndicesKey: String = "overnightIndices"

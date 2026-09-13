@@ -7,6 +7,7 @@ package com.opengamma.strata.collect
 
 import java.time.Duration
 import java.time.LocalDate
+import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.immutable.List
 import scala.collection.immutable.Map
@@ -899,7 +900,10 @@ private[collect] object ArgCheckTables extends Tables {
  * Every member of [[ArgCheck]]: the two boolean checks, the two forms of `matches`, the
  * blankness check, the eight `notEmpty` overloads, the two duplicate checks, the four sign
  * families over int, long, double and decimal, the not-a-number check, the two
- * tolerance-bearing checks, the nine range checks and the two order checks.
+ * tolerance-bearing checks, the nine range checks and the two order checks. The last section
+ * adds `JvmClosure.requireInvariant`, which shares this file with [[ArgCheck]] and reports
+ * through it: it is the check every validated type runs from its own constructor, so what it
+ * evaluates before a failure can occur is asserted there as well as what it refuses.
  *
  * The source of the case inventory is the test class of the Java original, whose 134 methods
  * are each answered here. Of those, 116 exercise a check that was ported and are reproduced
@@ -985,6 +989,22 @@ class ArgCheckSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
    */
   private def messageOf(check: => Unit): String =
     intercept[IllegalArgumentException](check).getMessage
+
+  /**
+   * Answers the outcome of an invariant, counting the evaluation that produced it.
+   *
+   * The condition of [[JvmClosure.requireInvariant]] is evaluated by the caller rather than by
+   * the check, so a case that asserts how often it runs has to observe the evaluation itself:
+   * this counts one and answers the outcome it was given.
+   *
+   * @param counter  the counter recording the evaluations
+   * @param holds  the outcome to answer with
+   * @return the outcome supplied
+   */
+  private def counting(counter: AtomicInteger, holds: Boolean): Boolean = {
+    val _ = counter.incrementAndGet()
+    holds
+  }
 
   //-------------------------------------------------------------------------
   // The published fixture.
@@ -2764,6 +2784,74 @@ class ArgCheckSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
       } else {
         noException should be thrownBy ArgCheck.noDuplicates(argument, Name)
       }
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  // The invariant half of the construction closure, `JvmClosure.requireInvariant`.
+  //
+  // Nothing in the Java original corresponds to this: it is the check every validated type of
+  // both modules runs from its own constructor, so it runs on every construction of every one
+  // of them, and what it evaluates before a failure can occur is therefore paid for by every
+  // value either module builds. The cases below state which half is deferred and which is not,
+  // over a counter rather than over a timing: the description is a sentence read only by a
+  // refusal and is taken by name, the condition is the invariant itself and is evaluated once
+  // by the caller.
+  //
+  // A refusal is provoked here by calling the member directly with a broken condition, because
+  // the types that state invariants - `Decimal` among them - have no constructor reachable from
+  // Scala source, so an instance that breaks one cannot be built to raise the refusal itself.
+  // `DecimalSpec` and `FixedScaleDecimalSpec` assert the sentence of each invariant their type
+  // states; what is asserted here is the shape those sentences are built into.
+
+  test("requireInvariant builds no description while the invariant holds") {
+    val descriptions: AtomicInteger = new AtomicInteger(0)
+    JvmClosure.requireInvariant(
+      {
+        // the incremented value is bound to a wildcard because only the total below is of
+        // interest; reaching this block at all is the observation
+        val _ = descriptions.incrementAndGet()
+        "its scale is between 0 and 18"
+      },
+      condition = true)
+    descriptions.get shouldBe 0
+  }
+
+  test("requireInvariant builds the description exactly once, and only to refuse") {
+    val descriptions: AtomicInteger = new AtomicInteger(0)
+    val message: String = messageOf(
+      JvmClosure.requireInvariant(
+        {
+          val _ = descriptions.incrementAndGet()
+          "its unscaled value is within the precision of this type"
+        },
+        condition = false))
+    message shouldBe
+      "a value of this type requires that its unscaled value is within the precision of this " +
+        "type, and the value being constructed does not: a value of this type is obtained from " +
+        "its factory"
+    descriptions.get shouldBe 1
+  }
+
+  test("requireInvariant evaluates the invariant exactly once, whether it holds or is broken") {
+    val satisfied: AtomicInteger = new AtomicInteger(0)
+    JvmClosure.requireInvariant("a satisfied invariant holds", counting(satisfied, holds = true))
+    satisfied.get shouldBe 1
+
+    val broken: AtomicInteger = new AtomicInteger(0)
+    messageOf(JvmClosure.requireInvariant(
+      "a broken invariant holds",
+      counting(broken, holds = false))) should startWith(
+      "a value of this type requires that a broken invariant holds, and the value being " +
+        "constructed does not")
+    broken.get shouldBe 1
+  }
+
+  test("the refusal quotes the phrase it was given verbatim, whatever the phrase") {
+    forAll { (description: String) =>
+      messageOf(JvmClosure.requireInvariant(description, condition = false)) shouldBe
+        s"a value of this type requires that $description, and the value being constructed does " +
+          "not: a value of this type is obtained from its factory"
     }
   }
 }

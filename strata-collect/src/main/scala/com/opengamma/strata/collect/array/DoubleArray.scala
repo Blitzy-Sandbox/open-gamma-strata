@@ -33,8 +33,9 @@ import com.opengamma.strata.collect.DoubleArrayMath
  *
  * Immutability here is enforced by the compiled code rather than promised by a convention, and
  * the enforcement rests on two facts about this class that hold together. The sole constructor
- * produces the storage an instance keeps - a copy of the run of values it is handed, or a copy of
- * a range of that run - rather than storing what it was handed, so an instance's storage is
+ * produces the storage an instance keeps - a copy of the run of values it is handed, a copy of a
+ * range of that run, or a run it allocates at the length of the result and writes itself - rather
+ * than storing what it was handed, so an instance's storage is
  * allocated by that constructor and is reachable from nowhere the caller can name; and no member
  * hands that storage out - `toArray` answers with a copy of it, and every other member answers
  * with an element, a count or a new array. Whoever holds an array, and whatever they do with it
@@ -110,17 +111,23 @@ import com.opengamma.strata.collect.DoubleArrayMath
  * sorting, comparing and rendering - go straight to the primitive array operations of the
  * platform. No element is boxed on any of those paths.
  *
- * An operation that produces a run of values allocates it exactly once, and that one allocation
- * is the copy the constructor makes. The constructor is told which operation it is constructing
- * for, alongside the values: it produces the storage it will keep - a clone of the run it was
- * handed, or a copy of a range of it - and then applies that operation's own loop to that
- * storage, in ascending index order, before the value is published. Cloning the source and
- * rewriting the clone in place leaves exactly what filling a fresh buffer from the source would
- * have left, because the clone starts out holding the source, so a produced value costs one
- * allocation and one bulk copy and the loop that follows allocates nothing at all. The choice of
- * loop is made once per operation, where the operation names its rewrite, and not once per
- * element: the loops stay one per operation, each monomorphic over the primitive array and
- * specialised in its callback, so nothing here trades a bulk copy for a virtual call per element.
+ * A construction that produces a run of values allocates it exactly once, and that one
+ * allocation is the storage the value keeps. The constructor is told which operation it is
+ * constructing for, alongside the values: it produces the storage it will keep and writes it,
+ * in ascending index order, before the value is published. Which of four shapes a construction
+ * takes follows from what its result is a function of - a bulk move of the values as they stand
+ * is taken from the platform's own move; a result that adds or scales every value by one value is
+ * that same bulk move rewritten where it lies; a result read from a second run or a function is a
+ * run of the result's length written once from its sources; and a result computed from a size, a
+ * value, a function or two runs joined is a run allocated from that description and filled - and
+ * all four cost one allocation, with the loop that follows allocating nothing at all. The two
+ * element-wise shapes were measured against one another rather than chosen: writing a fresh run
+ * is the cheaper where a second run or a function is read, and rewriting the bulk move is the
+ * cheaper where one value is added or scaled, because a move fills its storage at the speed of
+ * the platform's copy and work that light per element does not repay a second traversal. The choice of loop is made
+ * once per operation, where the operation names its rewrite, and not once per element: the loops
+ * stay one per operation, each monomorphic over the primitive array and specialised in its
+ * callback, so nothing here trades a bulk copy for a virtual call per element.
  *
  * Two properties of that arrangement matter beyond the allocation it saves. The rewrite happens
  * inside the constructor, so the stored array is written only while it is being initialised and
@@ -136,16 +143,18 @@ import com.opengamma.strata.collect.DoubleArrayMath
  * the aliasing entry point `ofUnsafe` and `toArrayUnsafe` were, and this type deliberately has
  * none of it.
  *
- * Construction that does not start from a run of values keeps a buffer of its own, and pays the
- * extra bulk copy the operations above no longer pay: `of` and `copyOf` of a collection unbox a
- * boxed sequence, `tabulate` and `filled` compute their elements from a size, and `concat`
- * gathers two sources at a length neither of them has - which is also what keeps it free of
- * per-element boxing, since each source is moved in one bulk copy. None of those has a run of
- * values for the constructor to derive storage from, so each fills a buffer and the constructor
- * copies it. That copy is of a freshly allocated buffer no caller holds, and it is paid once per
- * construction rather than once per element, which is the cost `copyOf` records along with the
- * property it buys: that no array anywhere - inside this class or outside it - is reachable both
- * by a caller and by an instance, whatever language or compiler produced that caller.
+ * Construction that does not start from a run of values states its result instead, and pays for
+ * that result alone: `tabulate` and `filled` name a size, with a function or a value to fill it
+ * from, and `concat` names the other source - so the constructor allocates the length the result
+ * has and writes it once, and no buffer exists for it to copy. `concat` is free of per-element
+ * boxing for the same reason it was before, each source being moved in one bulk copy, and its
+ * varargs form names the caller's sequence rather than draining it into a buffer first. The one
+ * construction that still keeps a buffer of its own is the unboxing one - `of` and `copyOf` of a
+ * collection ask a boxed sequence for a primitive array and the constructor copies that - which
+ * is where boxing is the operation rather than a cost inside a loop, and is the cost `copyOf`
+ * records along with the property it buys: that no array anywhere - inside this class or outside
+ * it - is reachable both by a caller and by an instance, whatever language or compiler produced
+ * that caller.
  *
  * ===Thread safety===
  *
@@ -155,7 +164,7 @@ import com.opengamma.strata.collect.DoubleArrayMath
 final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rewrite)
     extends Matrix {
 
-  // The values of this array: storage produced here, rewritten here, and held by nothing else.
+  // The values of this array: storage produced here, written here, and held by nothing else.
   //
   // This is the single expression that makes the type immutable in the compiled code, which is
   // why every branch of it produces an array rather than keeping the argument: every factory of
@@ -168,11 +177,33 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
   //
   // The rewrite says which operation this value is being constructed for, and the match selects
   // that operation's loop once, here, rather than once per element. Every case produces the
-  // storage first - a clone of what the constructor was handed, or a copy of a range of it - and
-  // then applies that operation to it in place, where there is one to apply; the two routes that
-  // name no operation, the one every factory takes and the one that keeps a range, stop at the
-  // copy. Rewriting the clone leaves what a fresh buffer filled from the same source would have
-  // held, because the clone begins as a copy of that source.
+  // storage first and then writes it, and which of the two shapes a case takes is decided by
+  // what its result is a function of:
+  //
+  //   - the cases whose result is a bulk move of the values as they stand take the platform's
+  //     move as their storage - a clone of the run, a copy of a range of it, a clone with one
+  //     element replaced, or a clone sorted in place. Each of those is one allocation and one
+  //     bulk copy already, and no loop of this class can better it;
+  //   - the cases that read a second run, or a function, allocate a run of the length the result
+  //     has and write every element of it once, reading the source - the values this constructor
+  //     was handed, and for a binary operation the other value's storage as well. Writing a fresh
+  //     run in one pass is what a clone followed by a rewrite of the clone used to do in two, at
+  //     two reads and a write per element instead of one read and one write, and it is measurably
+  //     the cheaper of the two shapes for these cases at every length;
+  //   - the cases that add or scale every element by one value take the platform's move as their
+  //     storage and rewrite it where it lies. These could equally allocate a fresh run and write
+  //     it from the source in one pass, and that shape was measured against this one: it is the
+  //     dearer of the two here, because a clone fills its storage at the speed of the platform's
+  //     copy and without the zero fill a fresh run pays, and a rewrite that adds or scales in
+  //     place is too cheap per element to repay that. So the shape of each case is the one
+  //     measured faster for the work that case does, rather than one shape imposed on all of
+  //     them;
+  //   - the cases whose result is a function of a size, a value, a function or another value of
+  //     this type have no run of values behind them at all. Each allocates its own storage from
+  //     the descriptor and fills it, so a factory that computes its elements from their
+  //     positions, or joins two runs, pays for the result and for nothing besides. Those cases
+  //     are matched last because the element-wise operations above are the hot ones and each
+  //     type test ahead of them is a branch every one of them pays.
   //
   // Each loop is a private method of this class, so it is emitted private and may read another
   // instance's storage directly, and none of them reads this instance's own field: the field is
@@ -187,6 +218,9 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
       val storage = values.clone()
       storage(single.index) = single.newValue
       storage
+    // the three whole-run scalar cases take the clone as their storage and rewrite it where it
+    // lies, each through a loop that names that one run; both shapes were measured for them and
+    // this is the faster, for the reason recorded at `plusInto`
     case added: DoubleArray.PlusScalar =>
       val storage = values.clone()
       plusInto(storage, added.amount, 0)
@@ -200,36 +234,57 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
       scaledInto(storage, scaled.factor, 0)
       storage
     case mapped: DoubleArray.Mapped =>
-      val storage = values.clone()
-      mapInto(storage, mapped.operator, 0)
+      val storage = new Array[Double](values.length)
+      mapInto(storage, values, mapped.operator, 0)
       storage
     case indexed: DoubleArray.MappedWithIndex =>
-      val storage = values.clone()
-      mapWithIndexInto(storage, indexed.function, 0)
+      val storage = new Array[Double](values.length)
+      mapWithIndexInto(storage, values, indexed.function, 0)
       storage
     case summed: DoubleArray.PlusEach =>
-      val storage = values.clone()
-      plusEachInto(storage, summed.other.array, 0)
+      val storage = new Array[Double](values.length)
+      plusEachInto(storage, values, summed.other.array, 0)
       storage
     case differenced: DoubleArray.MinusEach =>
-      val storage = values.clone()
-      minusEachInto(storage, differenced.other.array, 0)
+      val storage = new Array[Double](values.length)
+      minusEachInto(storage, values, differenced.other.array, 0)
       storage
     case multiplied: DoubleArray.MultipliedByEach =>
-      val storage = values.clone()
-      multipliedByEachInto(storage, multiplied.other.array, 0)
+      val storage = new Array[Double](values.length)
+      multipliedByEachInto(storage, values, multiplied.other.array, 0)
       storage
     case divided: DoubleArray.DividedByEach =>
-      val storage = values.clone()
-      dividedByEachInto(storage, divided.other.array, 0)
+      val storage = new Array[Double](values.length)
+      dividedByEachInto(storage, values, divided.other.array, 0)
       storage
     case combined: DoubleArray.CombinedWith =>
-      val storage = values.clone()
-      combineEachInto(storage, combined.other.array, combined.operator, 0)
+      val storage = new Array[Double](values.length)
+      combineEachInto(storage, values, combined.other.array, combined.operator, 0)
       storage
     case _: DoubleArray.SortedRun =>
       val storage = values.clone()
       Arrays.sort(storage)
+      storage
+    case blank: DoubleArray.Blank =>
+      new Array[Double](blank.size)
+    case filled: DoubleArray.FilledWith =>
+      val storage = new Array[Double](filled.size)
+      Arrays.fill(storage, filled.value)
+      storage
+    case tabulated: DoubleArray.Tabulated =>
+      val storage = new Array[Double](tabulated.size)
+      DoubleArray.tabulateInto(storage, tabulated.valueFunction, 0)
+      storage
+    case joined: DoubleArray.Concatenated =>
+      val storage = new Array[Double](values.length + joined.other.array.length)
+      concatArray(storage, values, joined.other.array)
+      storage
+    case appended: DoubleArray.Appended =>
+      val storage = new Array[Double](values.length + appended.values.length)
+      System.arraycopy(values, 0, storage, 0, values.length)
+      // the sequence reports how many elements it moved, which is its own length and so says
+      // nothing this does not already know; an ignored result is a warning, hence the binding
+      val _ = appended.values.copyToArray(storage, values.length)
       storage
   }
 
@@ -237,9 +292,10 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
   //
   // Every operation of this class that produces an array of the same length as this one answers
   // through here, which is where the one short circuit they share lives: an operation on an array
-  // of no elements has no element to rewrite, so it answers with the shared empty instance, as
+  // of no elements has no element to write, so it answers with the shared empty instance, as
   // every factory of this type does. The storage this instance holds is passed to the
-  // constructor, which copies it rather than keeping it, so the two values share nothing.
+  // constructor, which reads it into storage of its own rather than keeping it, so the two values
+  // share nothing.
   private def rewritten(rewrite: DoubleArray.Rewrite): DoubleArray =
     if (array.length == 0) {
       DoubleArray.EMPTY
@@ -469,11 +525,15 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
       rewritten(new DoubleArray.PlusScalar(amount))
     }
 
-  // adds the amount to each element of the target from the index upwards, in index order
+  // adds the amount to each element of the target where it lies, from the index upwards, in
+  // index order
   //
-  // The target is the storage of the value being constructed, which the constructor has just
-  // cloned from this array, so adding the amount to the element already there is adding it to the
-  // element of this array at the same index.
+  // The target is the storage of the value being constructed - for this operation the clone the
+  // constructor took of this array's values, reachable from nowhere else. The loop names that one
+  // run rather than a target and a source, and that is deliberate: two parameters holding the
+  // same run may alias as far as the compiler can tell, and the loop it emits for them is the
+  // slower by a third to a half, measured. One run, read and written at the same position, is the
+  // shape it compiles best.
   @tailrec
   private def plusInto(target: Array[Double], amount: Double, index: Int): Unit =
     if (index < target.length) {
@@ -499,8 +559,8 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
       rewritten(new DoubleArray.MinusScalar(amount))
     }
 
-  // subtracts the amount from each element of the target from the index upwards, in index order,
-  // the target being the clone of this array the constructor is producing
+  // subtracts the amount from each element of the target where it lies, from the index upwards,
+  // in index order, the target being the clone the constructor took, as recorded at `plusInto`
   @tailrec
   private def minusInto(target: Array[Double], amount: Double, index: Int): Unit =
     if (index < target.length) {
@@ -548,9 +608,9 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
       rewritten(new DoubleArray.ScaledBy(1 / divisor))
     }
 
-  // multiplies each element of the target by the factor from the index upwards, in index order,
-  // the target being the clone of this array the constructor is producing; shared by multipliedBy
-  // and dividedBy because the original multiplies in both cases
+  // multiplies each element of the target by the factor where it lies, from the index upwards,
+  // in index order, the target being the clone the constructor took, as recorded at `plusInto`;
+  // shared by multipliedBy and dividedBy because the original multiplies in both cases
   @tailrec
   private def scaledInto(target: Array[Double], factor: Double, index: Int): Unit =
     if (index < target.length) {
@@ -579,13 +639,18 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
    */
   def map(operator: Double => Double): DoubleArray = rewritten(new DoubleArray.Mapped(operator))
 
-  // applies the operator to each element of the target from the index upwards, in index order,
-  // the target being the clone of this array the constructor is producing
+  // writes the operator applied to each element of the source into the target, from the index
+  // upwards, in index order, the target being the storage the constructor has just allocated
   @tailrec
-  private def mapInto(target: Array[Double], operator: Double => Double, index: Int): Unit =
+  private def mapInto(
+      target: Array[Double],
+      source: Array[Double],
+      operator: Double => Double,
+      index: Int): Unit =
+
     if (index < target.length) {
-      target(index) = operator(target(index))
-      mapInto(target, operator, index + 1)
+      target(index) = operator(source(index))
+      mapInto(target, source, operator, index + 1)
     }
 
   /**
@@ -605,17 +670,18 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
   def mapWithIndex(function: (Int, Double) => Double): DoubleArray =
     rewritten(new DoubleArray.MappedWithIndex(function))
 
-  // applies the function to each indexed element of the target from the index upwards, in index
-  // order, the target being the clone of this array the constructor is producing
+  // writes the function applied to each indexed element of the source into the target, from the
+  // index upwards, in index order, the target being the storage the constructor has just allocated
   @tailrec
   private def mapWithIndexInto(
       target: Array[Double],
+      source: Array[Double],
       function: (Int, Double) => Double,
       index: Int): Unit =
 
     if (index < target.length) {
-      target(index) = function(index, target(index))
-      mapWithIndexInto(target, function, index + 1)
+      target(index) = function(index, source(index))
+      mapWithIndexInto(target, source, function, index + 1)
     }
 
   //-------------------------------------------------------------------------
@@ -637,16 +703,22 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
     rewritten(new DoubleArray.PlusEach(other))
   }
 
-  // adds the matching element of the other array to each element of the target from the index
-  // upwards, in index order. The target is the clone of this array the constructor is producing
-  // and the other array is another instance's storage, which is only read: the two are distinct
-  // arrays whatever the two values are, because each was allocated by the constructor that keeps
-  // it, so this loop cannot observe its own writes through the other array.
+  // writes the sum of the matching elements of the source and the other array into the target,
+  // from the index upwards, in index order. The target is the storage the constructor has just
+  // allocated, and the two sources are this array's storage and another instance's, both of which
+  // are only read: the target is distinct from either whatever the two values are, because it was
+  // allocated moments earlier and no value holds it, so this loop cannot observe its own writes
+  // through a source.
   @tailrec
-  private def plusEachInto(target: Array[Double], other: Array[Double], index: Int): Unit =
+  private def plusEachInto(
+      target: Array[Double],
+      source: Array[Double],
+      other: Array[Double],
+      index: Int): Unit =
+
     if (index < target.length) {
-      target(index) = target(index) + other(index)
-      plusEachInto(target, other, index + 1)
+      target(index) = source(index) + other(index)
+      plusEachInto(target, source, other, index + 1)
     }
 
   /**
@@ -667,14 +739,19 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
     rewritten(new DoubleArray.MinusEach(other))
   }
 
-  // subtracts the matching element of the other array from each element of the target from the
-  // index upwards, in index order, the target being the clone of this array the constructor is
-  // producing and the other array another instance's storage, which is only read
+  // writes each element of the source less the matching element of the other array into the
+  // target, from the index upwards, in index order, the target being the storage the constructor
+  // has just allocated and both sources being read and never written
   @tailrec
-  private def minusEachInto(target: Array[Double], other: Array[Double], index: Int): Unit =
+  private def minusEachInto(
+      target: Array[Double],
+      source: Array[Double],
+      other: Array[Double],
+      index: Int): Unit =
+
     if (index < target.length) {
-      target(index) = target(index) - other(index)
-      minusEachInto(target, other, index + 1)
+      target(index) = source(index) - other(index)
+      minusEachInto(target, source, other, index + 1)
     }
 
   /**
@@ -695,14 +772,19 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
     rewritten(new DoubleArray.MultipliedByEach(other))
   }
 
-  // multiplies each element of the target by the matching element of the other array from the
-  // index upwards, in index order, the target being the clone of this array the constructor is
-  // producing and the other array another instance's storage, which is only read
+  // writes the product of the matching elements of the source and the other array into the
+  // target, from the index upwards, in index order, the target being the storage the constructor
+  // has just allocated and both sources being read and never written
   @tailrec
-  private def multipliedByEachInto(target: Array[Double], other: Array[Double], index: Int): Unit =
+  private def multipliedByEachInto(
+      target: Array[Double],
+      source: Array[Double],
+      other: Array[Double],
+      index: Int): Unit =
+
     if (index < target.length) {
-      target(index) = target(index) * other(index)
-      multipliedByEachInto(target, other, index + 1)
+      target(index) = source(index) * other(index)
+      multipliedByEachInto(target, source, other, index + 1)
     }
 
   /**
@@ -725,14 +807,19 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
     rewritten(new DoubleArray.DividedByEach(other))
   }
 
-  // divides each element of the target by the matching element of the other array from the index
-  // upwards, in index order, the target being the clone of this array the constructor is producing
-  // and the other array another instance's storage, which is only read
+  // writes each element of the source divided by the matching element of the other array into
+  // the target, from the index upwards, in index order, the target being the storage the
+  // constructor has just allocated and both sources being read and never written
   @tailrec
-  private def dividedByEachInto(target: Array[Double], other: Array[Double], index: Int): Unit =
+  private def dividedByEachInto(
+      target: Array[Double],
+      source: Array[Double],
+      other: Array[Double],
+      index: Int): Unit =
+
     if (index < target.length) {
-      target(index) = target(index) / other(index)
-      dividedByEachInto(target, other, index + 1)
+      target(index) = source(index) / other(index)
+      dividedByEachInto(target, source, other, index + 1)
     }
 
   /**
@@ -758,20 +845,20 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
     rewritten(new DoubleArray.CombinedWith(other, operator))
   }
 
-  // replaces each element of the target from the index upwards with the operator applied to it
-  // and the matching element of the other array, in index order, the target being the clone of
-  // this array the constructor is producing and the other array another instance's storage, which
-  // is only read
+  // writes the operator applied to the matching elements of the source and the other array into
+  // the target, from the index upwards, in index order, the target being the storage the
+  // constructor has just allocated and both sources being read and never written
   @tailrec
   private def combineEachInto(
       target: Array[Double],
+      source: Array[Double],
       other: Array[Double],
       operator: (Double, Double) => Double,
       index: Int): Unit =
 
     if (index < target.length) {
-      target(index) = operator(target(index), other(index))
-      combineEachInto(target, other, operator, index + 1)
+      target(index) = operator(source(index), other(index))
+      combineEachInto(target, source, other, operator, index + 1)
     }
 
   /**
@@ -830,9 +917,9 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
    * The result is as long as this array plus the number of values supplied. Concatenating
    * nothing answers with this instance.
    *
-   * The elements are gathered once, at their final length, and each source is moved in one bulk
-   * copy: the stored elements into the front, the supplied values into the tail. Asking the
-   * sequence for an array of its own first would move those values twice before the gathering
+   * The elements are gathered once, at their final length, by the constructor: the stored
+   * elements move into the front in one bulk copy and the supplied values into the tail. Asking
+   * the sequence for an array of its own first would move those values twice before the gathering
    * even began, once into that array and once out of it again.
    *
    * This instance is immutable and unaffected by this method.
@@ -844,14 +931,11 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
     if (values.isEmpty) {
       this
     } else {
-      // the two sources are gathered into one run of values here, each in a single bulk move, and
-      // the factory below turns that run into the result; `copyToArray` answers with the number of
-      // elements it moved, which is the length of the sequence and so tells us nothing we do not
-      // know, and the value is bound and discarded because an ignored result is a warning
-      val result = new Array[Double](array.length + values.length)
-      System.arraycopy(array, 0, result, 0, array.length)
-      val _ = values.copyToArray(result, array.length)
-      DoubleArray.copyOf(result)
+      // The sequence is named to the constructor, which allocates the result at its final length
+      // and moves both sources into it, so the join costs the result and nothing besides. The
+      // sequence is the caller's own boxed data rather than a run of any value's storage, which is
+      // why naming it here keeps the storage of this type as unreachable as it was.
+      new DoubleArray(array, new DoubleArray.Appended(values))
     }
 
   /**
@@ -872,14 +956,23 @@ final class DoubleArray private (values: Array[Double], rewrite: DoubleArray.Rew
     } else if (other.array.length == 0) {
       this
     } else {
-      concatArray(other.array)
+      // the other value is named to the constructor, which allocates the result at the combined
+      // length and moves both runs into it; the shared short circuit of `rewritten` is not taken
+      // here because the result is longer than this array rather than the same length
+      new DoubleArray(array, new DoubleArray.Concatenated(other))
     }
 
-  // joins this array and a non-empty other array into one freshly allocated array
-  private def concatArray(other: Array[Double]): DoubleArray = {
-    val result = Arrays.copyOf(array, array.length + other.length)
-    System.arraycopy(other, 0, result, array.length, other.length)
-    DoubleArray.copyOf(result)
+  // Writes two runs of values into the target, each in one bulk move: the first into the front and
+  // the second into the tail. The target is the storage the constructor has just allocated at the
+  // combined length of the two, and neither source is written, so a join costs one allocation and
+  // one move per source.
+  private def concatArray(
+      target: Array[Double],
+      first: Array[Double],
+      second: Array[Double]): Unit = {
+
+    System.arraycopy(first, 0, target, 0, first.length)
+    System.arraycopy(second, 0, target, first.length, second.length)
   }
 
   //-------------------------------------------------------------------------
@@ -1096,26 +1189,33 @@ object DoubleArray {
   // which operation it is to apply to that storage before the value is published.
   //
   // These are internal to the package - the two specs of this package name them, and nothing
-  // else does - and they exist so that an operation producing a run of values costs one
+  // else does - and they exist so that a construction producing a run of values costs one
   // allocation instead of two. Filling a fresh buffer and handing it over cost the buffer plus
   // the copy the constructor makes of it; naming the operation instead lets the constructor
-  // produce the storage itself and rewrite it in place, so the copy IS the result buffer.
+  // produce the storage itself and write it once, so that single allocation IS the result.
   //
   // Three properties of the family are deliberate, and each is a property of the compiled form
   // rather than of a convention:
   //
-  //   - no descriptor carries a run of values. Each carries a scalar, an index, a function, or
-  //     another value of this type; a descriptor holding an `Array[Double]` would publish an
-  //     accessor handing that array out, which for a binary operation is another value's
-  //     storage, and the aliasing this type does not have would be back;
+  //   - no descriptor carries a run of values. Each carries a scalar, an index, a size, a
+  //     function, another value of this type, or a boxed sequence of the caller's own; a
+  //     descriptor holding an `Array[Double]` would publish an accessor handing that array out,
+  //     which for a binary operation is another value's storage, and the aliasing this type does
+  //     not have would be back. A boxed sequence is not that: it is the caller's own data,
+  //     arriving from a varargs call, and its elements are moved into storage the constructor
+  //     allocated;
   //   - a descriptor selects a loop and nothing else. The constructor matches once per value
   //     constructed, and the loop it selects is that operation's own specialised loop, so the
   //     dispatch is one type test per operation rather than a virtual call per element;
   //   - no descriptor can make the constructor keep the array it is handed. Every branch of the
-  //     field initialiser produces storage - a clone of the argument, or a copy of a range of it
-  //     - so any caller the bytecode admits, in any language, that reaches the constructor with
-  //     an array it retains gets a value that copied it. There is no adopting route to reach,
-  //     and so none to defend.
+  //     field initialiser produces storage - a clone of the argument, a copy of a range of it, or
+  //     a run allocated at the length the result has and written from the argument, from the
+  //     descriptor, or from both - so any caller the bytecode admits, in any language, that
+  //     reaches the constructor with an array it retains gets a value that copied it. There is no
+  //     adopting route to reach, and so none to defend. That is why the routes that derive their
+  //     storage from the descriptor alone are handed the shared run of no values below rather than
+  //     a buffer of the length they are about to produce: nothing is handed over that could be
+  //     kept, so the property holds branch by branch and not only case by case.
   //
   // They are declared ahead of `EMPTY` because that value constructs through this family, and a
   // `val` of an object is initialised in the order the object declares it.
@@ -1176,10 +1276,50 @@ object DoubleArray {
   // Sort the values, which is what `sorted` produces.
   private[array] final class SortedRun extends Rewrite
 
+  //-------------------------------------------------------------------------
+  // The routes whose storage is a function of the descriptor rather than of a run of values. Each
+  // states the length of the result and how to fill it, so the constructor allocates exactly that
+  // and writes it once: the run of values these are handed is the shared empty one below, which
+  // holds nothing to copy and nothing to keep.
+
+  // Produce a run of the given size holding zeroes, which is what `filled` of a size produces:
+  // a freshly allocated run of doubles holds them already, so there is nothing further to write.
+  private[array] final class Blank(val size: Int) extends Rewrite
+
+  // Produce a run of the given size with every element equal to the value, which is what `filled`
+  // of a size and a value produces.
+  private[array] final class FilledWith(val size: Int, val value: Double) extends Rewrite
+
+  // Produce a run of the given size with each element taken from the function applied to its
+  // index, in ascending index order, which is what `tabulate` produces.
+  private[array] final class Tabulated(val size: Int, val valueFunction: Int => Double)
+      extends Rewrite
+
+  // Produce the values followed by those of the other array, which is what `concat` of an array
+  // produces. The other value is carried whole rather than as its storage, as `PlusEach` carries
+  // it, and the result is the one length no other route has: the sum of the two.
+  private[array] final class Concatenated(val other: DoubleArray) extends Rewrite
+
+  // Produce the values followed by those of the sequence, which is what `concat` of a varargs
+  // call produces. The sequence is the caller's own boxed data - the one descriptor holding
+  // anything that carries elements at all - and its elements are read out of it exactly once,
+  // into storage the constructor allocated, which is what keeps this route copy-safe.
+  private[array] final class Appended(val values: Seq[Double]) extends Rewrite
+
   // The two routes that carry nothing are single instances, so naming either of them costs no
-  // allocation: every factory of this type names the first, and `sorted` names the second.
+  // allocation: every factory of this type that is handed a run of values names the first, and
+  // `sorted` names the second.
   private[array] val NoRewrite: NoRewrite = new NoRewrite
   private[array] val SortedRun: SortedRun = new SortedRun
+
+  // The run of values handed to the constructor on the routes that derive their storage from the
+  // descriptor. It holds nothing, so it is shared by every such construction and sharing it is
+  // safe for the reason the empty value itself is safe: a run of no elements has nothing to read
+  // and no position to write. It is private to the companion rather than to the package because a
+  // member restricted to the package is emitted public, and a public member of either numeric
+  // type that answered with a run of values - whatever it held - is what the build's check on
+  // these two types forbids.
+  private val noValues: Array[Double] = new Array[Double](0)
 
   //-------------------------------------------------------------------------
   /**
@@ -1284,15 +1424,18 @@ object DoubleArray {
     if (size == 0) {
       EMPTY
     } else {
-      val result = new Array[Double](size)
-      tabulateInto(result, valueFunction, 0)
-      new DoubleArray(result, NoRewrite)
+      // the size and the function are named to the constructor, which allocates the run once and
+      // fills it through the loop below, so tabulating costs the result and nothing besides
+      new DoubleArray(noValues, new Tabulated(size, valueFunction))
     }
   }
 
-  // fills the result from the index upwards with the function applied to each index
+  // Fills the result from the index upwards with the function applied to each index. This is the
+  // loop the constructor runs for the tabulating route, which is why it is restricted to the
+  // package rather than to this object: a member of a companion that the class reaches is emitted
+  // under a compiler-chosen name, and the build's check on the numeric types names this loop.
   @tailrec
-  private def tabulateInto(
+  private[array] def tabulateInto(
       result: Array[Double],
       valueFunction: Int => Double,
       index: Int): Unit =
@@ -1326,10 +1469,10 @@ object DoubleArray {
    * That one copy is what buys the property this type rests on: no array anywhere - inside this
    * class or outside it - is reachable both by a caller and by an instance. The operations of
    * this class no longer pay it a second time, because each of them has the constructor produce
-   * the storage and rewrite it in place rather than filling a buffer for the constructor to copy;
-   * the construction paths that start from something other than a run of values - a boxed
-   * sequence, a size, or two sources gathered at a new length - still hand over a buffer of their
-   * own and are copied here, as the implementation notes of this type set out.
+   * the storage and write it rather than filling a buffer for the constructor to copy, and
+   * neither do the constructions that start from a size, a value, a function or two sources
+   * joined; the one path that still hands over a buffer of its own is the unboxing of a boxed
+   * sequence, which arrives here, as the implementation notes of this type set out.
    *
    * @param array  the array to copy
    * @return an array holding the values of the specified array
@@ -1406,7 +1549,9 @@ object DoubleArray {
     if (size == 0) {
       EMPTY
     } else {
-      new DoubleArray(new Array[Double](size), NoRewrite)
+      // the size alone is named to the constructor, which allocates the run it keeps: a freshly
+      // allocated run of doubles holds zeroes, so this construction is that one allocation
+      new DoubleArray(noValues, new Blank(size))
     }
   }
 
@@ -1423,9 +1568,9 @@ object DoubleArray {
     if (size == 0) {
       EMPTY
     } else {
-      val result = new Array[Double](size)
-      Arrays.fill(result, value)
-      new DoubleArray(result, NoRewrite)
+      // the size and the value are named to the constructor, which allocates the run and fills it
+      // with the platform's own fill, so this construction is one allocation and one bulk write
+      new DoubleArray(noValues, new FilledWith(size, value))
     }
   }
 

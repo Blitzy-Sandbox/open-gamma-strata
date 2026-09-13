@@ -86,6 +86,61 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   }
 
   /**
+   * Asserts where the element invariant is established, and that it is established once.
+   *
+   * The invariant is a property of the numbers rather than of the route, so it is established by
+   * whichever route takes numbers in from outside - each examines them once and then raises or
+   * reports what it found - and the single construction point they all reach examines nothing
+   * further. Restating it in the constructor would examine every element of every run a second
+   * time, and a third time on the routes that have to examine them anyway to say which element
+   * they refused; that pass is as long as the pass that does the arithmetic, so on a run of a
+   * hundred thousand scenarios it is the difference between one traversal and two.
+   *
+   * A behavioural test cannot count traversals, so what is read is the compiled form, as the
+   * boxing test below reads it: the class file of the type refers to no scan of its values at all,
+   * while the companion - where every examining route lives - refers to one. The two together
+   * place the examination and pin that it is not also performed once per construction.
+   *
+   * What the type promises is unchanged by that, and the rest of this test is the promise: one
+   * wording, reported and raised by the same input, and no run holding a value an amount does not,
+   * including on the routes that examine nothing because they read amounts.
+   */
+  test("the element invariant is established where the numbers arrive, not once per construction") {
+    compiledFormOf(classOf[CurrencyAmountArray]) should not include "indexOf"
+    compiledFormOf(
+      Class.forName("com.opengamma.strata.basics.currency.CurrencyAmountArray$")) should
+      include("indexOf")
+
+    // one examination means one wording: the same refused element raises and reports the same
+    // sentence, rather than two channels describing it in two ways
+    val raised: IllegalArgumentException = intercept[IllegalArgumentException](
+      CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.NaN)))
+    val positive: CurrencyAmountArray =
+      CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.PositiveInfinity))
+    val negative: CurrencyAmountArray =
+      CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.NegativeInfinity))
+    positive.plus(negative) should haveFailureMessageMatching(Regex.quote(raised.getMessage))
+
+    // the two factories that read amounts examine nothing, and what keeps them inside the
+    // invariant is the invariant of the amounts they read - asserted here as the premise it is,
+    // in both of that type's channels
+    the[IllegalArgumentException] thrownBy CurrencyAmount.create(GBP, Double.NaN) should
+      have message "Argument 'amount' must not be NaN"
+    CurrencyAmount.of(GBP, Double.NaN) should beFailureWith(FailureReason.INVALID)
+
+    // so a run transposed from amounts holds only values the run admits, the infinities included,
+    // and holds exactly the values the amounts held
+    val extremes: List[CurrencyAmount] = List(
+      amountOf(GBP, Double.PositiveInfinity),
+      amountOf(GBP, Double.NegativeInfinity),
+      amountOf(GBP, 0d))
+    unwrap(CurrencyAmountArray.of(extremes)).values shouldBe
+      DoubleArray.of(Double.PositiveInfinity, Double.NegativeInfinity, 0d)
+    unwrap(CurrencyAmountArray.of(3, index => extremes(index))).values shouldBe
+      DoubleArray.of(Double.PositiveInfinity, Double.NegativeInfinity, 0d)
+  }
+
+  /**
    * Asserts the empty run, the other end of what the direct factory admits.
    *
    * An array of no values is a `DoubleArray` and nothing in the type rejects one, so the empty

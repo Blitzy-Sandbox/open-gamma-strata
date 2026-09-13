@@ -11,7 +11,7 @@ import java.time.temporal.ChronoUnit
 import java.time.temporal.Temporal
 import java.time.temporal.TemporalUnit
 
-import scala.util.Try
+import scala.annotation.tailrec
 
 import cats.Hash
 import cats.Order
@@ -365,11 +365,12 @@ object Tenor {
    * times the longest text that can succeed - so that no text a caller means to be read is ever
    * refused for its length, while text written to be large is refused before it is worked on.
    *
-   * It bounds work rather than meaning. [[Tenor.parse]] copies the text to prefix it, and hands
-   * the copy to `java.time.Period`, whose own parse builds a matcher over the whole of it: both
-   * costs are proportional to the length of text that arrived from outside this library
-   * (CWE-400/CWE-770), and both are now reached only by text that is within the grammar's own
-   * bound.
+   * It bounds work rather than meaning. [[Tenor.parse]] walks the text to read the period it
+   * spells, and that walk visits the characters of text that arrived from outside this library
+   * (CWE-400/CWE-770): the cost is proportional to the length of the input, and is now reached
+   * only by text that is within the grammar's own bound. The walk replaced a copy of the text
+   * and a regular-expression matcher over the copy, so the ceiling bounds strictly less work
+   * than it was introduced to bound.
    *
    * The value is the one [[com.opengamma.strata.collect.Decimal]] uses for the same purpose on
    * the numeral it reads, so the two ceilings of this port that bound a text grammar are the
@@ -573,15 +574,29 @@ object Tenor {
    * The parsing failure quotes the text back as it was given, so the message names the whole of
    * what was refused.
    *
+   * ===The text is read by a walk, not by an exception===
+   *
+   * The period is read by [[PeriodText.readOptionallyPrefixed]], which walks the characters of
+   * the text once and answers the period or nothing. It implements the grammar
+   * `java.time.Period.parse` implements, to the character, and it is that method's absence from
+   * this path that makes a refusal cost nothing: `Period.parse` reports a text it cannot read by
+   * throwing a `java.time.format.DateTimeParseException`, which is constructed - message,
+   * captured text and stack trace - only to be discarded here, since this method answers a
+   * failure value. The walk also reads the leading `P` in place instead of copying the text to
+   * add one, so the spelling without the prefix - the canonical name of a tenor, and therefore
+   * the spelling the codec reads - no longer allocates a second string. Neither the accepted nor
+   * the rejected spelling has moved by a character; [[PeriodText]] states the grammar it agrees
+   * with, and `TenorSpec` holds the two to each other over a corpus of texts.
+   *
    * ===The grammar's own ceiling is tested first===
    *
    * Text longer than [[MaxTextLength]] characters names no tenor - the grammar of a period puts
    * every name it admits far below that, as the constant explains - and is refused before
-   * anything is done with it: before the copy that adds the leading `P`, and before
-   * `java.time.Period` is asked to read it. That failure names the ceiling rather than the text,
-   * which is the wording [[com.opengamma.strata.collect.Decimal]] reports for the same
-   * condition. Every text within the ceiling reads exactly as it did, quoted in full when it is
-   * refused, so the ceiling is invisible to every caller but the one handing over a payload.
+   * anything is done with it: before the leading `P` is looked for and before a character of the
+   * text is read. That failure names the ceiling rather than the text, which is the wording
+   * [[com.opengamma.strata.collect.Decimal]] reports for the same condition. Every text within
+   * the ceiling reads exactly as it did, quoted in full when it is refused, so the ceiling is
+   * invisible to every caller but the one handing over a payload.
    *
    * @param toParse  the text to parse
    * @return the tenor the text names, or the failure naming what is wrong with the text: it is
@@ -592,10 +607,9 @@ object Tenor {
     if (toParse.length > MaxTextLength) {
       Left(Failure.Parsing(MaxTextLengthMessage))
     } else {
-      val prefixed = if (toParse.startsWith("P")) toParse else s"P$toParse"
-      Try(Period.parse(prefixed)).toEither match {
-        case Right(period) => of(period).left.map(Failure.collapse)
-        case Left(_) => Left(Failure.Parsing(s"Unable to parse tenor: '$toParse'"))
+      PeriodText.readOptionallyPrefixed(toParse) match {
+        case Some(period) => of(period).left.map(Failure.collapse)
+        case None => Left(Failure.Parsing(s"Unable to parse tenor: '$toParse'"))
       }
     }
 
@@ -743,5 +757,334 @@ object Tenor {
    * @return the codec reading and writing a tenor as its canonical text
    */
   implicit val codec: Codec[Tenor] = Codecs.parsedStringCodec(parse, _.name)
+
+}
+
+/**
+ * Reads the text form of a `java.time.Period` without constructing an exception.
+ *
+ * The three types of this port that are named by a period - [[Tenor]],
+ * [[com.opengamma.strata.basics.date.MarketTenor]], which reads its text through the tenor, and
+ * [[com.opengamma.strata.basics.schedule.Frequency]] - all accept the ISO-8601 spelling of a
+ * period with the leading `P` and the same spelling without it, and all three answer an `Either`
+ * rather than throwing. Reading that text by handing it to `java.time.Period.parse` nevertheless
+ * put an exception on every rejection: that method reports text it cannot read by throwing a
+ * `java.time.format.DateTimeParseException`, which is constructed in full - message, a copy of
+ * the offending text, and a stack trace walked from the throw site - only to be dropped by the
+ * `scala.util.Try` that caught it. An acceptance paid for a `java.util.regex` matcher over the
+ * text, and a spelling without the prefix paid for a second string to hold the prefixed copy.
+ *
+ * This object is that read, done as one left-to-right walk of the characters. It allocates
+ * nothing whatever when it refuses, and on acceptance only the period it answers with and the
+ * `Some` that carries it. It is the sole reader of period text in this module, so the tenor and
+ * the frequency cannot come to disagree about which spellings name a period.
+ *
+ * ===The grammar===
+ *
+ * The walk implements, character for character, the grammar `java.time.Period.parse` matches,
+ * which that method holds as the pattern
+ *
+ * {{{
+ * ([-+]?)P(?:([-+]?[0-9]+)Y)?(?:([-+]?[0-9]+)M)?(?:([-+]?[0-9]+)W)?(?:([-+]?[0-9]+)D)?
+ * }}}
+ *
+ * compiled `CASE_INSENSITIVE` and matched against the '''whole''' of the text, with at least one
+ * of the four sections required to be present. Restated as the rules this walk applies:
+ *
+ *   - the four sections appear in the order years, months, weeks, days; each may be left out and
+ *     none may appear twice, which is one statement - a section's unit may not be one an earlier
+ *     section has already passed;
+ *   - a section is an optional `-` or `+`, then one or more characters in `0`-`9`, then its unit
+ *     letter. A unit letter is matched without regard to case, and since the pattern carries
+ *     `CASE_INSENSITIVE` without `UNICODE_CASE` that folding is ASCII-only, which this walk
+ *     reproduces by accepting the two ASCII spellings of each of the four letters and nothing
+ *     else. The digits are ASCII digits alone: a character that `Character.isDigit` would accept
+ *     but the pattern's `[0-9]` would not, such as a full-width `１`, is refused;
+ *   - the leading `P` is the one letter of the grammar this reader matches in upper case only,
+ *     and it is the prefixing rule of [[readOptionallyPrefixed]] rather than the pattern that
+ *     decides it: text that does not begin with an upper-case `P` is read as though one preceded
+ *     it, so a lower-case `p3m` is read as `P` followed by `p3m` and refused at the `p`, which is
+ *     exactly what the pattern did with the prefixed copy `Pp3m`;
+ *   - a section's digits are read as an `Int`, so a count outside that range - with or without a
+ *     sign, and however many leading zeros precede it - is a refusal, as it is for the
+ *     `Integer.parseInt` the pattern's own reader uses;
+ *   - the weeks are folded into the days as `days + weeks * 7`, and a product or a sum that no
+ *     `Int` holds is a refusal. `java.time.Period.parse` reports that overflow by an
+ *     `ArithmeticException` rather than the parse exception, its overflow-checked arithmetic
+ *     sitting outside the conversion its own handler covers; both were caught alike by the
+ *     `Try` this walk replaced, so a text such as `P2147483647W` is refused here exactly as it
+ *     was before;
+ *   - anything else is a refusal: text that ends before its unit letter, a character the grammar
+ *     does not admit, a section out of order or repeated, a decimal point, a time part such as
+ *     `PT1H`, leading or trailing space, a bare `P`, and empty text.
+ *
+ * Nothing beyond that is checked, because `java.time.Period` itself checks nothing beyond it: a
+ * period of any three counts an `Int` holds is a period, and it is the factory of the type being
+ * parsed - [[Tenor.of]] or
+ * [[com.opengamma.strata.basics.schedule.Frequency.of]] - that decides whether the period it
+ * names is one that type admits. That division is what keeps `-2D` reported as a negative period
+ * rather than as unreadable text.
+ *
+ * ===The leading sign===
+ *
+ * The grammar admits a sign before the `P`, applied to every section, and the entry point here
+ * deliberately does not: it is unreachable from the two parses that call it. Each of them reads
+ * text whose first character is a `P` - either the text's own upper-case `P` or the one the
+ * prefixing rule supplies - so the sign group of the pattern always matched empty. A text that
+ * does begin with a sign, `-P2D`, is not prefixed-in-place but read as `P` followed by `-P2D`,
+ * whose first section has a sign and then a `P` where a digit is required, and is refused. That
+ * is precisely what `java.time.Period.parse` did with the prefixed copy `P-P2D`, so the outcome
+ * of every text is unchanged and no unreachable branch is carried to produce it.
+ *
+ * This object holds no state and every member is a pure function of its arguments, so it is safe
+ * to use from any number of threads. It is a second top-level object of this file rather than a
+ * member of the tenor's companion so that a frequency reading its own text does not initialise
+ * the forty-eight tenor constants that companion holds.
+ */
+private[basics] object PeriodText {
+
+  /**
+   * The position in the grammar at which each unit may be read.
+   *
+   * The four sections are ordered, so the walk carries the stage it has reached and a unit is
+   * admissible only where its own stage is at least that: a unit that an earlier section has
+   * passed - one out of order, or a repeat of one already read - is refused by the same
+   * comparison, which is why the ordering of the grammar and the uniqueness of a section need no
+   * separate statement here.
+   */
+  private val YearsStage: Int = 0
+  private val MonthsStage: Int = 1
+  private val WeeksStage: Int = 2
+  private val DaysStage: Int = 3
+
+  /**
+   * The stage of a character that is not a unit of the grammar.
+   *
+   * It is below every stage the walk can reach, so a character the grammar does not admit in the
+   * position of a unit is refused by the comparison that orders the units, and needs no test of
+   * its own.
+   */
+  private val NoStage: Int = -1
+
+  /**
+   * Answered by [[countOf]] for a section whose digits name no `Int`.
+   *
+   * A count is carried as a `Long` so that the bounds of an `Int` can be tested rather than
+   * silently wrapped, which leaves every `Long` outside the range of an `Int` free to mark the
+   * refusal. `Long.MinValue` is chosen from those: it is as far from a readable count as a value
+   * can be, so a caller that failed to test for it could not mistake it for one.
+   */
+  private val NoCount: Long = Long.MinValue
+
+  /** The largest count a section may name, which is the largest value an `Int` holds. */
+  private val LargestCount: Long = Int.MaxValue.toLong
+
+  /**
+   * The largest magnitude a negated section may name.
+   *
+   * It is one more than [[LargestCount]], the range of an `Int` being asymmetric, and it is the
+   * bound `Integer.parseInt` applies to the same digits: `-2147483648` is a count and
+   * `2147483648` is not.
+   */
+  private val LargestNegatedCount: Long = -Int.MinValue.toLong
+
+  /**
+   * Reads the period a text spells, where the leading `P` of the grammar may be left off.
+   *
+   * This is the rule the two parses share: text beginning with an upper-case `P` is read from
+   * the character after it, and any other text is read from its first character, as though a `P`
+   * preceded it. Only an upper-case `P` counts as one already present, which is what makes `3m`
+   * three months and `p3m` unreadable - the lower-case spelling is read as a `P` followed by
+   * `p3m`, and a `p` is not the start of a section. The prefix is applied by choosing where to
+   * start rather than by building a prefixed copy of the text, so the spelling without it - the
+   * canonical name of a tenor - allocates nothing.
+   *
+   * @param text  the text to read, which the caller has already bounded in length
+   * @return the period the text names, or nothing where the text names no period
+   */
+  def readOptionallyPrefixed(text: String): Option[Period] =
+    if (text.isEmpty) {
+      // empty text names no period, and reading it as a bare `P` would be the same refusal one
+      // step later; it is answered here so that the walk below never begins past the end
+      None
+    } else {
+      val from: Int = if (text.charAt(0) == 'P') 1 else 0
+      readSections(text, from, YearsStage, 0, 0, 0, sectionRead = false)
+    }
+
+  /**
+   * Reads the sections of a period from the text, one section per step.
+   *
+   * The walk is tail recursive, so text of any length is read in constant stack space, and it
+   * carries what it has read rather than holding it in mutable state: the counts of the three
+   * units a period holds, the stage the grammar has reached, and whether any section has been
+   * read at all - the last being the one condition the pattern of the grammar cannot express,
+   * since every section of it is optional and a bare `P` therefore matches while naming no
+   * period.
+   *
+   * The weeks of the grammar are not carried, because a period holds no weeks: a week section is
+   * folded into the days as it is read, which is safe in exactly the same way the folding at the
+   * end of the pattern's own reader is - a week section may be read only while the stage is at
+   * or before the weeks, so the days are still zero when it arrives, and a day section that
+   * follows adds to what it left. The two overflow tests are therefore the two the pattern's
+   * reader applies, in the same order and over the same values.
+   *
+   * @param text  the text being read
+   * @param index  the index to read the next section at
+   * @param stage  the earliest stage of the grammar a unit may now name
+   * @param years  the years read so far
+   * @param months  the months read so far
+   * @param days  the days read so far, including any week section already folded into them
+   * @param sectionRead  whether any section has been read, which at least one must have been
+   * @return the period the text names, or nothing where it names no period
+   */
+  @tailrec
+  private def readSections(
+      text: String,
+      index: Int,
+      stage: Int,
+      years: Int,
+      months: Int,
+      days: Int,
+      sectionRead: Boolean): Option[Period] =
+    if (index == text.length) {
+      // the text is spent: it names a period if it held a section, and `Period.of` answers the
+      // zero period for three zero counts exactly as the pattern's own reader does
+      if (sectionRead) Some(Period.of(years, months, days)) else None
+    } else {
+      val leading: Char = text.charAt(index)
+      val negated: Boolean = leading == '-'
+      val digitsFrom: Int = if (negated || leading == '+') index + 1 else index
+      val digitsTo: Int = digitsEnd(text, digitsFrom)
+      val unit: Int = if (digitsTo < text.length) stageOf(text.charAt(digitsTo)) else NoStage
+      if (digitsTo == digitsFrom || unit < stage) {
+        // a section with no digits, a unit the grammar does not admit, a unit already passed, or
+        // digits the text ended before the unit of
+        None
+      } else {
+        val count: Long = countOf(text, digitsFrom, digitsTo, negated)
+        val next: Int = digitsTo + 1
+        if (count == NoCount) {
+          None
+        } else if (unit == YearsStage) {
+          readSections(text, next, unit + 1, count.toInt, months, days, sectionRead = true)
+        } else if (unit == MonthsStage) {
+          readSections(text, next, unit + 1, years, count.toInt, days, sectionRead = true)
+        } else if (unit == WeeksStage) {
+          val asDays: Long = count * 7L
+          if (asDays < -LargestNegatedCount || asDays > LargestCount) {
+            None
+          } else {
+            readSections(text, next, unit + 1, years, months, asDays.toInt, sectionRead = true)
+          }
+        } else {
+          // the days, this being the last stage: a unit below the stage reached was refused
+          // above, and the character that is not one of the four units has no stage at all
+          val totalDays: Long = days.toLong + count
+          if (totalDays < -LargestNegatedCount || totalDays > LargestCount) {
+            None
+          } else {
+            readSections(text, next, unit + 1, years, months, totalDays.toInt, sectionRead = true)
+          }
+        }
+      }
+    }
+
+  /**
+   * Returns the index at which the run of digits starting at the specified index ends.
+   *
+   * The run may be empty, in which case the index is answered unchanged and the caller refuses
+   * the section: the grammar requires at least one digit. Only the ten ASCII digits are read,
+   * which is what the `[0-9]` of the pattern admits and is narrower than `Character.isDigit`.
+   *
+   * @param text  the text being read
+   * @param index  the index the digits start at
+   * @return the index one past the last digit, which is the index given where there are none
+   */
+  @tailrec
+  private def digitsEnd(text: String, index: Int): Int =
+    if (index < text.length && isAsciiDigit(text.charAt(index))) {
+      digitsEnd(text, index + 1)
+    } else {
+      index
+    }
+
+  /**
+   * Whether a character is one of the ten digits the grammar admits.
+   *
+   * @param character  the character to test
+   * @return true where the character is an ASCII digit
+   */
+  private def isAsciiDigit(character: Char): Boolean = character >= '0' && character <= '9'
+
+  /**
+   * Returns the stage of the grammar the specified unit letter names.
+   *
+   * Both spellings of each letter are admitted and nothing else, which is the ASCII-only folding
+   * the pattern's `CASE_INSENSITIVE` performs in the absence of `UNICODE_CASE`. The comparison is
+   * against the characters themselves rather than against a case-folded copy of the text, so it
+   * neither allocates nor depends on a locale.
+   *
+   * @param unit  the character in the position of a unit letter
+   * @return the stage the unit names, or [[NoStage]] where the character is not a unit
+   */
+  private def stageOf(unit: Char): Int = unit match {
+    case 'Y' | 'y' => YearsStage
+    case 'M' | 'm' => MonthsStage
+    case 'W' | 'w' => WeeksStage
+    case 'D' | 'd' => DaysStage
+    case _ => NoStage
+  }
+
+  /**
+   * Reads the count a section's digits name, applying the sign the section carried.
+   *
+   * The magnitude is accumulated as a `Long` against the bound of an `Int` - the bound being the
+   * larger by one where the section is negated, the range of an `Int` being asymmetric - so a
+   * count no `Int` holds is answered as [[NoCount]] rather than wrapping. This is the arithmetic
+   * `Integer.parseInt` performs on the same digits, and it reports the same refusals: leading
+   * zeros are read and do not count towards the bound, and a magnitude past the bound is refused
+   * however long the run of digits naming it.
+   *
+   * @param text  the text being read
+   * @param from  the index of the first digit
+   * @param until  the index one past the last digit
+   * @param negated  whether the section carried a `-`
+   * @return the count the digits name, or [[NoCount]] where no `Int` holds it
+   */
+  private def countOf(text: String, from: Int, until: Int, negated: Boolean): Long = {
+    val bound: Long = if (negated) LargestNegatedCount else LargestCount
+    val magnitude: Long = magnitudeOf(text, from, until, bound, 0L)
+    if (magnitude == NoCount || !negated) magnitude else -magnitude
+  }
+
+  /**
+   * Accumulates the magnitude of a run of digits, refusing one that passes the bound.
+   *
+   * The accumulation is tail recursive and stops at the first digit that carries it past the
+   * bound, so a run of any length is read in constant stack space and the accumulator itself
+   * cannot overflow: it is never larger than the bound when a digit is read, and the bound is
+   * that of an `Int`.
+   *
+   * @param text  the text being read
+   * @param index  the index of the next digit to read
+   * @param until  the index one past the last digit
+   * @param bound  the largest magnitude the section may name
+   * @param accumulated  the magnitude of the digits read so far
+   * @return the magnitude of the whole run, or [[NoCount]] where it passes the bound
+   */
+  @tailrec
+  private def magnitudeOf(
+      text: String,
+      index: Int,
+      until: Int,
+      bound: Long,
+      accumulated: Long): Long =
+    if (index == until) {
+      accumulated
+    } else {
+      val grown: Long = accumulated * 10L + (text.charAt(index) - '0').toLong
+      if (grown > bound) NoCount else magnitudeOf(text, index + 1, until, bound, grown)
+    }
 
 }

@@ -187,7 +187,7 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
     if (amountToAdd.currency == currency) {
       Right(BigMoney.create(currency, amount.plus(amountToAdd.amount)))
     } else {
-      Left(Failure.Invalid(BigMoney.DifferentCurrenciesAddMessage))
+      Left(BigMoney.DifferentCurrenciesAddFailure)
     }
 
   /**
@@ -206,7 +206,7 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
     if (amountToSubtract.currency == currency) {
       Right(BigMoney.create(currency, amount.minus(amountToSubtract.amount)))
     } else {
-      Left(Failure.Invalid(BigMoney.DifferentCurrenciesSubtractMessage))
+      Left(BigMoney.DifferentCurrenciesSubtractFailure)
     }
 
   /**
@@ -340,7 +340,7 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
     if (otherAmount.currency == currency) {
       Right(predicate(amount, otherAmount.amount))
     } else {
-      Left(Failure.Invalid(BigMoney.DifferentCurrenciesCompareMessage))
+      Left(BigMoney.DifferentCurrenciesCompareFailure)
     }
 
   /**
@@ -518,7 +518,7 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
       if (DoubleArrayMath.fuzzyEquals(fxRate.doubleValue, 1d, BigMoney.NoConversionTolerance)) {
         Right(this)
       } else {
-        Left(Failure.Invalid(BigMoney.NonUnitRateMessage))
+        Left(BigMoney.NonUnitRateFailure)
       }
     } else {
       Right(BigMoney.of(resultCurrency, amount.multipliedBy(fxRate)))
@@ -615,9 +615,24 @@ object BigMoney {
   private val DifferentCurrenciesAddMessage: String =
     "Unable to add amounts in different currencies"
 
+  /**
+   * The failure [[BigMoney.plus]] reports for a currency mismatch.
+   *
+   * The condition has one cause and its message names neither operand, so the failure is one
+   * value rather than a value per call: the rejection allocates the `Left` around it and nothing
+   * else, where a caller testing an outcome for failure used to pay for a message it may never
+   * read.
+   */
+  private val DifferentCurrenciesAddFailure: Failure =
+    Failure.Invalid(DifferentCurrenciesAddMessage)
+
   /** Reported when two values of different currencies are subtracted. */
   private val DifferentCurrenciesSubtractMessage: String =
     "Unable to subtract amounts in different currencies"
+
+  /** The failure [[BigMoney.minus]] reports for a currency mismatch. */
+  private val DifferentCurrenciesSubtractFailure: Failure =
+    Failure.Invalid(DifferentCurrenciesSubtractMessage)
 
   /**
    * Reported when two values of different currencies are compared by one of the four predicates.
@@ -628,9 +643,20 @@ object BigMoney {
   private val DifferentCurrenciesCompareMessage: String =
     "Unable to compare amounts in different currencies"
 
+  /**
+   * The failure the four comparison predicates of this type report for a currency mismatch.
+   *
+   * One wording covers all four, so one failure value does too.
+   */
+  private val DifferentCurrenciesCompareFailure: Failure =
+    Failure.Invalid(DifferentCurrenciesCompareMessage)
+
   /** Reported when a rate other than one is supplied for a conversion that does not convert. */
   private val NonUnitRateMessage: String =
     "FX rate must be 1 when no conversion required"
+
+  /** The failure [[BigMoney.convertedTo]] reports for a rate other than one. */
+  private val NonUnitRateFailure: Failure = Failure.Invalid(NonUnitRateMessage)
 
   /**
    * The tolerance within which a rate counts as one for a conversion that does not convert.
@@ -640,17 +666,6 @@ object BigMoney {
    * digits.
    */
   private val NoConversionTolerance: Double = 1e-8
-
-  /**
-   * The separator between the currency code and the amount in the text form.
-   *
-   * A single space, as [[BigMoney.toString]] writes it and as [[BigMoney.parse]] locates it. The
-   * text form has exactly two parts either side of that one separator, which is the whole of the
-   * grammar, and the parse tests that shape by index rather than by splitting the text: a
-   * constant naming the number of parts would describe an intermediate the parse no longer
-   * builds, so none is declared.
-   */
-  private val TextSeparator: String = " "
 
   /**
    * The longest the amount part of the text form may be.
@@ -663,6 +678,60 @@ object BigMoney {
    * choosing is no longer copied in order to be measured (CWE-400/CWE-770).
    */
   private val MaxAmountTextLength: Int = 256
+
+  /**
+   * The length of the first part of the text form, which is a currency code.
+   *
+   * A code is three letters, and it is the whole of what precedes the separator in a text this
+   * type accepts, so the code length and the separator are what relate the numeral ceiling above
+   * to the whole-text bound below. It is named here rather than written into that arithmetic
+   * because [[BigMoney.parse]] locates the separator by scanning for it - a text whose first part
+   * is of some other length is read and then refused for naming no currency - so the length is a
+   * property of what is accepted rather than an index the parse reads.
+   */
+  private val CurrencyCodeLength: Int = 3
+
+  /**
+   * The longest text a failure of [[BigMoney.parse]] quotes back in full.
+   *
+   * It is the longest text this type can accept: a three-letter currency code, the one separator
+   * after it and a numeral at the ceiling above. Every text that could plausibly name a value is
+   * therefore quoted character for character, so the message a caller reads, logs and asserts on
+   * for an ordinary rejection is exactly the text they wrote - a line break and every other
+   * character among them, because neutralising such a character remains the act of writing the
+   * failure out rather than the act of reporting it.
+   *
+   * Beyond this length the text cannot name a value whatever it holds, so there is nothing a
+   * caller can learn from the whole of it that the bounded quotation does not tell them, and
+   * quoting it in full would make the cost of a rejection proportional to the length a sender
+   * chose (CWE-400/CWE-770). [[quoted]] is where that is applied.
+   */
+  private val MaxQuotedTextLength: Int = CurrencyCodeLength + 1 + MaxAmountTextLength
+
+  /**
+   * Quotes rejected text into a failure message, in full where the text could have named a value
+   * and bounded where it could not.
+   *
+   * Text within [[MaxQuotedTextLength]] is returned exactly as it was given - the same instance,
+   * with no copy and no escaping - so every message this type reports for a realistic rejection
+   * is character for character the message it has always reported. Longer text is handed to
+   * [[com.opengamma.strata.collect.result.Failure.renderDiagnostic]], the one renderer these two
+   * modules hold for text on its way to a reader of lines, which bounds it to a few hundred
+   * characters, marks with an ellipsis that there was more and escapes anything that could forge
+   * a line.
+   *
+   * The effect on a rejection is that its cost stops being a function of the length of the input:
+   * a message built here is at most a few hundred characters whether the text handed to
+   * [[BigMoney.parse]] was a thousand characters or a million. What a reader sees is unchanged,
+   * because the text form of a failure bounds every part it writes in exactly this way; what
+   * changes is that the bound is now reached before the message is built rather than only when it
+   * is written out.
+   *
+   * @param text  the rejected text, as it was given to [[BigMoney.parse]]
+   * @return the text itself where it is within the bound, and its bounded rendering beyond it
+   */
+  private def quoted(text: String): String =
+    if (text.length <= MaxQuotedTextLength) text else Failure.renderDiagnostic(text)
 
   /**
    * Obtains a zero value in the specified currency.
@@ -781,10 +850,14 @@ object BigMoney {
    * message is what a caller reads, logs and asserts on, and keeping the failure to that one
    * message keeps two failures over the same text equal and their serialized form stable.
    *
-   * Both wordings name the text as it was given. The text came from outside the library, so
-   * bounding it and escaping what it may hold belong to the writing of a failure, which
-   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure perform
-   * for every part they write.
+   * Both wordings name the text as it was given, for every text that could have named a value:
+   * the quotation is bounded at [[MaxQuotedTextLength]], which is the longest text this type
+   * accepts, so a realistic rejection reads back exactly what a caller wrote - a line break among
+   * it - and only text that could not have named a value at any length is quoted bounded. That is
+   * what keeps the cost of a rejection from being a function of the length a sender chose, and it
+   * is applied by [[quoted]]. Escaping what the text may hold remains the act of writing a
+   * failure out, which [[com.opengamma.strata.collect.result.Failure.show]] and the text form of
+   * a failure perform for every part they write.
    *
    * ===The shape is decided before anything is built from the text===
    *
@@ -807,24 +880,32 @@ object BigMoney {
     // check: text with no separator has one part and text with two has three, and neither is the
     // two parts the form has. A trailing separator is kept, so "RON " is two parts, the second of
     // them empty, and is rejected for naming no decimal rather than for having the wrong shape.
-    val separator = amountStr.indexOf(TextSeparator)
-    if (separator < 0 || amountStr.indexOf(TextSeparator, separator + TextSeparator.length) >= 0) {
+    // Both scans name the separator as a character literal, which is what
+    // `CurrencyAmount.parse` does over the same text form and for the same reason: it selects
+    // `String.indexOf(char, int)`, an intrinsic the JIT compiles to a vectorised search, where
+    // naming it as a one-character text selects the general substring search and made these two
+    // scans - the whole of the work of rejecting oversized text - cost several times per
+    // character what the other parsers of this package pay. Nothing writes the separator, so
+    // there is no rendering side that would want it as a text, and one character is what follows
+    // the separator index in the two offsets below.
+    val separator = amountStr.indexOf(' ')
+    if (separator < 0 || amountStr.indexOf(' ', separator + 1) >= 0) {
       Left(invalidFormat(amountStr))
-    } else if (amountStr.length - (separator + TextSeparator.length) > MaxAmountTextLength) {
+    } else if (amountStr.length - (separator + 1) > MaxAmountTextLength) {
       // the ceiling the decimal would apply, applied before the numeral is copied rather than
-      // after: the outcome is the one the decimal's own refusal produced, and the copy is not
-      // made
-      Left(Failure.Parsing(s"Unable to parse amount: $amountStr"))
+      // after: the outcome is the one the decimal's own refusal produced, the copy is not made,
+      // and the quotation is bounded, so the whole of the rejection is bounded too
+      Left(Failure.Parsing(s"Unable to parse amount: ${quoted(amountStr)}"))
     } else {
       val currencyCode = amountStr.substring(0, separator)
-      val amountText = amountStr.substring(separator + TextSeparator.length)
+      val amountText = amountStr.substring(separator + 1)
       val parsed: Option[BigMoney] = for {
         currency <- Currency.parse(currencyCode).toOption
         amount <- Decimal.parse(amountText).toOption
       } yield create(currency, amount)
-      // the text is rendered rather than interpolated as it stands, which bounds the message and
-      // keeps it to one line while leaving an in-bound spelling quoted as it was given
-      parsed.toRight(Failure.Parsing(s"Unable to parse amount: $amountStr"))
+      // text of this shape is within the quotation bound by the two tests above, so it is named
+      // in full here and the bound never takes effect on this branch
+      parsed.toRight(Failure.Parsing(s"Unable to parse amount: ${quoted(amountStr)}"))
     }
   }
 
@@ -866,12 +947,13 @@ object BigMoney {
   /**
    * The failure reported for text whose shape does not admit a monetary value.
    *
-   * The text is quoted as it stands; bounding it and escaping what it may hold belong to the
-   * writing of a failure, which the text form of one and [[Failure.show]] perform for every part
-   * they write.
+   * The text is quoted through [[quoted]], so it stands as it was given wherever it is within the
+   * length this type can accept and is bounded beyond it; escaping what it may hold belongs to
+   * the writing of a failure, which the text form of one and [[Failure.show]] perform for every
+   * part they write.
    */
   private def invalidFormat(amountStr: String): Failure =
-    Failure.Parsing(s"Unable to parse amount, invalid format: $amountStr")
+    Failure.Parsing(s"Unable to parse amount, invalid format: ${quoted(amountStr)}")
 
   /**
    * The ordering, hashing and equality of values of this type.

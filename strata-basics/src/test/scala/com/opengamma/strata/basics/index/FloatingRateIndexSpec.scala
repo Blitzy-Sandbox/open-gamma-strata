@@ -238,4 +238,32 @@ class FloatingRateIndexSpec extends AnyFunSuite with Matchers with TableDrivenPr
       }
     }
   }
+
+  test("test_standardLookups_memoisedComposition") {
+    // The composition is assembled once and searched thereafter, so obtaining it twice yields a
+    // single value; it is searched rather than consumed, so a second search of the same value
+    // answers as the first one did, and the three probes stay the three families in their order.
+    val firstObtained = FloatingRateIndex.standardLookups
+    val secondObtained = FloatingRateIndex.standardLookups
+    firstObtained should be theSameInstanceAs secondObtained
+    firstObtained should have size 3
+    secondObtained should have size 3
+
+    List(
+      IborIndices.GBP_LIBOR_3M.name,
+      OvernightIndices.GBP_SONIA.name,
+      PriceIndices.GB_RPI.name,
+      FxIndices.EUR_USD_ECB.name,
+      "GBP-LIBOR",
+      "Rubbish",
+      "").foreach { name =>
+      withClue(s"$name: ") {
+        val expected = FloatingRateIndex.valueOf(name)
+        Index.firstMatch(name, firstObtained) shouldBe expected
+        Index.firstMatch(name, secondObtained) shouldBe expected
+        Index.firstMatch(name, FloatingRateIndex.standardLookups) shouldBe expected
+        FloatingRateIndex.valueOf(name) shouldBe expected
+      }
+    }
+  }
 }

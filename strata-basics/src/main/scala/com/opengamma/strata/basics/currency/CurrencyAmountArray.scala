@@ -60,10 +60,19 @@ import com.opengamma.strata.collect.result.Failure
  * Every value an array holds is a value [[CurrencyAmount]] holds: the elements of a run are
  * amounts kept as numbers, so a value that is not a number is no more an element of a run than
  * it is an amount. The two infinities are numbers an amount holds and are therefore elements a
- * run holds; only a not-a-number value is refused, and it is refused once, at the single
- * construction point every route ends at. The invariant consequently holds of every value of
- * this type rather than of the values of some of its routes, and reading an element - [[get]],
+ * run holds; only a not-a-number value is refused. The invariant holds of every value of this
+ * type rather than of the values of some of its routes, and reading an element - [[get]],
  * [[iterator]], [[toList]] - cannot raise it.
+ *
+ * It costs one pass over the values, and exactly one: the invariant is established by whichever
+ * route takes numbers in from outside - each examines them once, then raises or reports what it
+ * found and hands the values on to the single construction point, which examines nothing further.
+ * A route whose numbers are the amounts of [[CurrencyAmount]] values examines nothing at all,
+ * since the invariant of that type has already established of every one of them exactly what this
+ * one asks. Restating the invariant a second time where the values are handed over would double
+ * the cost of every element-wise operation on a run of a hundred thousand scenarios - the pass
+ * that establishes it is as long as the pass that does the arithmetic - which is why it is stated
+ * once and where the numbers arrive.
  *
  * Which channel reports a refused element is the channel the route in question already has,
  * which is the policy of this port for a numeric-domain edge:
@@ -123,22 +132,28 @@ sealed abstract case class CurrencyAmountArray private (currency: Currency, valu
   // stopped is here. The single implementation is the companion's hidden `Impl`.
   JvmClosure.requireSoleImplementation(this, classOf[CurrencyAmountArray.Impl])
 
-  // The invariant of this type, stated over the field the instance actually holds rather than
-  // over the arguments a factory was given, because the implementation class carries a public
-  // constructor in the class file whatever the source asked for: a class compiled outside this
-  // library can call it directly, and identity alone would then admit a run holding a value no
-  // amount holds - one whose every later reader would fail on it. The elements of a run are
-  // amounts kept as numbers, so this is the element invariant the construction point of the
-  // companion establishes for every route the source has, restated here for the one route the
-  // source does not have. The two infinities are values an amount holds and are admitted, and the
-  // empty run holds no element and so satisfies this vacuously, which is what the factory that is
-  // total in signature and the specs of this type require.
+  // The element invariant of this type - every element of its values is a number - is deliberately
+  // not restated here, and this is the one statement of why.
   //
-  // The array is walked once, on bit patterns, which is less than the factory that built it has
-  // already cost.
-  JvmClosure.requireInvariant(
-    "every element of its values is a number",
-    values.indexOf(Double.NaN) < 0)
+  // A class body is where the construction closure states an invariant, because the implementation
+  // class carries a public constructor in the class file whatever the source asked for: a class
+  // compiled outside this library can call it directly, and `requireSoleImplementation` above
+  // admits exactly that class, so an invariant restated here is the only thing that also holds of
+  // an instance forged that way. Where an invariant costs a constant, or costs one step per
+  // currency of a value, restating it is free and every type of this package restates it -
+  // `CurrencyAmount` its own two, `MultiCurrencyAmountArray` its size and its per-currency lengths.
+  //
+  // This one costs a pass over the whole run. A constructor runs for every value built, so
+  // restating it here would examine every element of every array a second time - and a third time
+  // where the route that reports failures has to examine them itself to say which element it
+  // refused - doubling the cost of `of` and of each element-wise operation on a run of a hundred
+  // thousand scenarios, for a route the supported API does not have. It is therefore established
+  // once, by whichever route takes the numbers in, and `CurrencyAmountArray.trusted` is the
+  // construction point they all reach once they have: `create` raises it, `checked` reports it, and
+  // the two factories that read amounts rely on the invariant of `CurrencyAmount` instead. The
+  // invariant consequently holds of every value this library builds; what a forged instance would
+  // hold is not examined here, and a value that is not a number in one would be refused by
+  // `CurrencyAmount` as soon as any element of it were read as an amount.
 
   /**
    * Gets the size of the array.
@@ -617,8 +632,14 @@ object CurrencyAmountArray {
         // collection of numbers and copied: the function handed to `tabulate` is an
         // `Int => Double`, the primitive specialisation of a one-argument function, so each
         // amount's number is written straight into the array of the result and none of them is
-        // boxed on the way
-        create(
+        // boxed on the way.
+        //
+        // The values are handed to the construction point directly, because there is nothing
+        // left to examine: every one of them is the amount of a `CurrencyAmount`, and the
+        // invariant of that type - stated in its own class body, so it holds of every instance
+        // of it that exists - is that its amount is a number. Examining them here would be
+        // examining `CurrencyAmount`'s invariant a second time, once per element of the run
+        trusted(
           checked.head.currency,
           DoubleArray.tabulate(requested.size)(index => requested(index).amount)))
       .toEither
@@ -679,34 +700,55 @@ object CurrencyAmountArray {
           // the values are tabulated by index off the amounts already in hand, for the reason
           // the collection form above gives: an `Int => Double` is the primitive
           // specialisation of a one-argument function, so no number is boxed between the
-          // amount that holds it and the array of the result. The array is built only when the
+          // amount that holds it and the array of the result. They go to the construction point
+          // directly for the reason that form gives too - each is the amount of a
+          // `CurrencyAmount` and is therefore already a number. The array is built only when the
           // outcome carries no failure, `toLeft` taking its argument by name
           .toLeft(
-            create(currency, DoubleArray.tabulate(checkedSize)(index => produced(index).amount)))
+            trusted(currency, DoubleArray.tabulate(checkedSize)(index => produced(index).amount)))
       }
 
   /**
-   * Builds an instance, establishing the element invariant, which is the only call of the
-   * constructor.
+   * Builds an instance from values whose element invariant has already been established, which is
+   * the only call of the constructor.
    *
    * Every route into the type ends here - the total factory, both checking factories, the
-   * arithmetic, the mapping, the conversion and the decoder - and each of them has already
-   * established what only it can: the two checking factories have found that the amounts name
-   * one currency. What none of them can establish for the others is the element invariant, which
-   * is a property of the numbers rather than of the route, so it is established here, once, for
-   * all of them. Keeping both the construction and that invariant in one place is what makes the
-   * type's promise - every value of an array is a value [[CurrencyAmount]] holds - reviewable at
-   * a single site.
+   * arithmetic, the mapping, the conversion and the decoder - and each of them arrives having
+   * established what only it can: the two factories that read amounts have found that those
+   * amounts name one currency, and every route has established the element invariant, either by
+   * examining the numbers it was given ([[create]] and [[checked]]) or by taking them from
+   * [[CurrencyAmount]] values that already satisfy it. Nothing is examined here.
    *
-   * The check is a fail-fast [[ArgCheck]] rather than a reported failure because this is the
-   * construction point shared by the routes that are total in signature, and the message is
-   * taken by name so that the happy path allocates nothing for it. A route that has a failure
-   * channel of its own does not reach the raise: [[checked]] and [[checkedOne]] perform the same
-   * examination first and report it, and every such route goes through one of those two.
+   * That the examination happens in the three callers rather than in this one method is the whole
+   * of the difference between one pass over a run and two. A single construction point that
+   * examined its own arguments would examine them again after the route that has to report a
+   * refusal - rather than raise it - had already examined them to find the element to name, and
+   * would examine the values of a run assembled from amounts that cannot carry a refused element
+   * at all. What the single point is for is the constructor call and the invariant's wording,
+   * which [[notANumberMessage]] states once for both channels, and those it still holds.
+   *
+   * @param currency  the currency of the values
+   * @param values  the values, of which the element invariant of this type has been established
+   * @return the array of amounts
+   */
+  private def trusted(currency: Currency, values: DoubleArray): CurrencyAmountArray =
+    new Impl(currency, values)
+
+  /**
+   * Builds an instance, establishing the element invariant by raising it.
+   *
+   * This is the construction route of the members whose signature has nowhere to report a refused
+   * element: the direct factory, the scaling and the mapping. The check is a fail-fast
+   * [[ArgCheck]] for that reason, and the message is taken by name so that the happy path
+   * allocates nothing for it. A route that has a failure channel of its own does not reach the
+   * raise and does not reach this method either: [[checked]] and [[checkedOne]] perform the same
+   * examination and report what it finds.
    *
    * The scan itself is `DoubleArray.indexOf`, which compares bit patterns: that finds a
    * not-a-number value however it arose, where an ordinary comparison finds none, and it is one
-   * pass over the primitive array with nothing boxed and nothing allocated.
+   * pass over the primitive array with nothing boxed and nothing allocated. It is performed once
+   * per value built - the index it finds is read once for the decision and once for the message -
+   * and [[trusted]], which the construction itself goes through, performs no second pass.
    *
    * @param currency  the currency of the values
    * @param values  the values
@@ -716,24 +758,25 @@ object CurrencyAmountArray {
   private def create(currency: Currency, values: DoubleArray): CurrencyAmountArray = {
     val notANumberAt: Int = values.indexOf(Double.NaN)
     ArgCheck.isTrue(notANumberAt < 0, notANumberMessage(notANumberAt))
-    new Impl(currency, values)
+    trusted(currency, values)
   }
 
   /**
-   * Builds an instance as [[create]] does, reporting a refused element as a chain of failures.
+   * Establishes the element invariant as [[create]] does, reporting a refused element as a chain
+   * of failures rather than raising it.
    *
    * This is the route of the decoder, which has the failure channel every decoder of this port
    * has: a document whose values hold the tagged string `"NaN"` describes a run this type does
    * not have, and the only thing to do with it is to say so. Reading it into a value and letting
    * something later fail on it is precisely the defect this invariant closes.
    *
-   * The examination is performed here as well as in [[create]], and deliberately: this one
-   * decides ''what to answer with'' and needs the index for the message, while the one in
-   * [[create]] is the invariant of the construction point and answers to every route at once. A
-   * second pass over a primitive array is a small price for not having a construction point that
-   * trusts its callers, and it is paid only by the routes that report rather than raise - the
-   * value is built by the by-name argument of `cond`, which is evaluated only when the
-   * examination found nothing.
+   * The examination is performed here rather than by [[create]], and the value is built by
+   * [[trusted]] rather than by that method, so that a route which reports a refused element
+   * examines the run exactly once: the index this scan finds decides the answer and, where the
+   * answer is a failure, names the element in it. Routing through [[create]] instead would examine
+   * every element a second time to raise an invariant this method has just established cannot be
+   * broken. The value is the by-name argument of `cond`, so it is built only when the examination
+   * found nothing.
    *
    * @param currency  the currency of the values
    * @param values  the values
@@ -743,7 +786,7 @@ object CurrencyAmountArray {
   private def checked(currency: Currency, values: DoubleArray): ResultNec[CurrencyAmountArray] = {
     val notANumberAt: Int = values.indexOf(Double.NaN)
     Validate.toResult(
-      Validate.cond(notANumberAt < 0, create(currency, values), notANumber(notANumberAt)))
+      Validate.cond(notANumberAt < 0, trusted(currency, values), notANumber(notANumberAt)))
   }
 
   /**
@@ -752,7 +795,8 @@ object CurrencyAmountArray {
    * The four members that add or subtract, and the two conversions - this type's own and the one
    * [[MultiCurrencyAmountArray]] performs, which collapses its currencies into a run of this
    * type - each report one reason, so routing their results through this keeps the shape of what
-   * they return while the element invariant is still established by the one construction point.
+   * they return while the element invariant is still established by the one examination
+   * [[checked]] performs.
    * The chain is collapsed by [[Failure.collapse]], which joins the reasons of several failures
    * into one; the examination reports at most one, so the collapse is the shape change alone.
    *
@@ -784,7 +828,8 @@ object CurrencyAmountArray {
    * lets [[CurrencyAmountArray]] refuse in its own constructor to be any other implementation.
    *
    * @param currency  the currency of the values
-   * @param values  the values, whose count every route into [[create]] has already settled
+   * @param values  the values, of which every route into [[trusted]] has already established the
+   *   element invariant of this type
    */
   private final class Impl(currency: Currency, values: DoubleArray)
       extends CurrencyAmountArray(currency, values)

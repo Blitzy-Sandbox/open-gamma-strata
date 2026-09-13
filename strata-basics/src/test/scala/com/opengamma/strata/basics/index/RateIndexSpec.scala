@@ -152,4 +152,26 @@ class RateIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
       }
     }
   }
+
+  test("test_standardLookups_memoisedComposition") {
+    // The composition is assembled once and searched thereafter, so obtaining it twice yields a
+    // single value; it is searched rather than consumed, so a second search of the same value
+    // answers as the first one did, and the two probes stay the two families in their order.
+    val firstObtained = RateIndex.standardLookups
+    val secondObtained = RateIndex.standardLookups
+    firstObtained should be theSameInstanceAs secondObtained
+    firstObtained should have size 2
+    secondObtained should have size 2
+
+    List(IborIndices.GBP_LIBOR_3M.name, OvernightIndices.GBP_SONIA.name, "GB-RPI", "Rubbish", "")
+      .foreach { name =>
+        withClue(s"$name: ") {
+          val expected = RateIndex.valueOf(name)
+          Index.firstMatch(name, firstObtained) shouldBe expected
+          Index.firstMatch(name, secondObtained) shouldBe expected
+          Index.firstMatch(name, RateIndex.standardLookups) shouldBe expected
+          RateIndex.valueOf(name) shouldBe expected
+        }
+      }
+  }
 }

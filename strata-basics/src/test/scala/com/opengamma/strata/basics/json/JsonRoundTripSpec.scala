@@ -327,7 +327,10 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
   /** The reason shared by the function and contract types, which carry no data. */
   private val ContractReason: String = "function or contract type with no data of its own"
 
-  /** The reason shared by the typeclasses, helper objects and effect edges. */
+  /**
+   * The reason shared by the typeclasses, the witnesses they are carried as, the helper objects
+   * and the effect edges.
+   */
   private val MachineryReason: String = "typeclass, helper or effect rather than data"
 
   /** The reason shared by the abstract heads of the index families. */
@@ -355,6 +358,12 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
     ExcludedType(
       "com.opengamma.strata.basics.ReferenceDataId",
       "behavioural abstraction; HolidayCalendarId is the one identifier with a codec"),
+    // the witness an identifier carries for its own value type: publicly constructible, so it
+    // belongs in the inventory, and a name with a narrowing function rather than data of the
+    // domain, so it belongs in this half of it - which is the reading the identifier row above
+    // applies. It takes the machinery reason rather than the contract one, a witness being how an
+    // instance of a typeclass travels in these modules and this one carrying a name of its own
+    ExcludedType("com.opengamma.strata.basics.ReferenceDataType", MachineryReason),
     ExcludedType(
       "com.opengamma.strata.basics.date.DayCount.ScheduleInfo",
       "behavioural interface, implemented by the covered Schedule"),
@@ -2861,6 +2870,29 @@ class JsonRoundTripSpec extends AnyFunSuite with Matchers with ScalaCheckPropert
       assertDoesNotCompile("implicitly[io.circe.Encoder[com.opengamma.strata.basics.TestingReferenceDataId]]")
       assertDoesNotCompile("implicitly[io.circe.Decoder[com.opengamma.strata.basics.TestingReferenceDataId]]")
       assertCompiles("implicitly[io.circe.Encoder[com.opengamma.strata.basics.date.HolidayCalendarId]]")
+      summonControl()
+    }
+
+    test("excluded from JSON: ReferenceDataType") {
+      // the witness an identifier carries for its own value type. It is in the inventory because
+      // it is publicly constructible - an application defining reference data of its own declares
+      // a witness beside each identifier - and it is in this half of the inventory because what
+      // it carries is a name and a narrowing function rather than data of the domain, which is
+      // the reading the identifier row above applies
+      assertCompiles(
+        "type Probe = com.opengamma.strata.basics.ReferenceDataType[" +
+          "com.opengamma.strata.basics.date.HolidayCalendar]")
+      assertCompiles(
+        """com.opengamma.strata.basics.ReferenceDataType.of[String]("probe") { case text: String => text }""")
+      assertDoesNotCompile(
+        "implicitly[io.circe.Encoder[com.opengamma.strata.basics.ReferenceDataType[" +
+          "com.opengamma.strata.basics.date.HolidayCalendar]]]")
+      assertDoesNotCompile(
+        "implicitly[io.circe.Decoder[com.opengamma.strata.basics.ReferenceDataType[" +
+          "com.opengamma.strata.basics.date.HolidayCalendar]]]")
+      // the value the witness of this module narrows to does have a codec, and carries every
+      // calendar the reference data holds, so nothing this witness names is left unserializable
+      assertCompiles("implicitly[io.circe.Encoder[com.opengamma.strata.basics.date.HolidayCalendar]]")
       summonControl()
     }
 

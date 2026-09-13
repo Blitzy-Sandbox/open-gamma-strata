@@ -41,8 +41,15 @@
 #
 #   Those are the only accepted invocations: no other argument is understood,
 #   and no second argument is, so every other arity is a usage error rather
-#   than a silently ignored word. There is deliberately no flag that selects a
-#   subset of gates: a partial run is not an acceptance run.
+#   than a silently ignored word. That holds for the two flags as well -
+#   neither `--verify-publication` nor the help flag takes an argument of its
+#   own, and a word after either is rejected rather than discarded, because a
+#   word this script ignored would be an instruction it did not carry out.
+#   `classify_invocation` is the single place that decides this, and both
+#   `main` (which needs the mode before any side effect) and `parse_arguments`
+#   (which holds the side-effecting half) read its answer. There is
+#   deliberately no flag that selects a subset of gates: a partial run is not
+#   an acceptance run.
 #
 # SOURCING
 #   `source scripts/verify-gates.sh` DEFINES the helpers and the row functions
@@ -67,10 +74,16 @@
 #
 # ARTIFACTS (all under $ROOT/target)
 #   target/gate-report.md          the deliverable evidence: one row per gate,
-#                                  the run's identity - commit, branch, run id
-#                                  and working-tree state - a machine-readable
-#                                  summary line and the appendices each row
-#                                  contributed
+#                                  each stating the command it was measured
+#                                  with beside its verdict, detail and
+#                                  evidence path; the run's identity - commit,
+#                                  branch, run id and working-tree state - a
+#                                  machine-readable summary line and the
+#                                  appendices each row contributed. An earlier
+#                                  run's report is replaced by an IN PROGRESS
+#                                  stub when a run starts, so this file never
+#                                  states a verdict on a run other than the
+#                                  one it names
 #   target/parity-report/*.json    the six parity reports the specs write
 #   target/test-reports/TEST-*.xml the per-suite JUnit XML written by the one
 #                                  ScalaTest `-u` reporter `build.sbt`
@@ -177,9 +190,12 @@
 #     reaches Scala source through sbt's `set`, `markdown_cell` for every
 #     field of the report and of the boundary row's material file. The
 #     checkout path itself is refused outright by `assert_root_is_safe` if it
-#     carries a quote, a backslash, a backtick, a dollar sign, a space or a
-#     control character, which is cheaper and stronger than encoding it
-#     correctly in each of the places it is used.
+#     carries a quote, a backslash, a backtick, a dollar sign or a control
+#     character, which is cheaper and stronger than encoding it correctly in
+#     each of the places it is used. A SPACE is not in that list: it injects
+#     nothing into Scala source or Markdown, every path expansion here is
+#     quoted, and refusing it would make a checkout that merely sits in a
+#     directory with a space in its name unverifiable.
 #   * target/gate-report.md is the deliverable evidence, so it is written to a
 #     temporary file, verified, SCANNED for credential signatures and only
 #     then renamed atomically. Only a rename that succeeded marks the report
@@ -288,37 +304,86 @@ usage() {
 
 usage_error() {
   printf 'FATAL: %s\n\n' "$1" >&2
-  printf 'Usage: %s            run every gate and write the report\n' "$SCRIPT_NAME" >&2
-  printf '       %s -h|--help  print the usage and exit\n\n' "$SCRIPT_NAME" >&2
-  printf 'This script takes no options: it runs every gate, always. It accepts\n' >&2
-  printf 'either no argument at all or exactly one help flag - nothing else,\n' >&2
-  printf 'and never a second argument, because an argument it ignored would be\n' >&2
-  printf 'an instruction it did not carry out.\n' >&2
+  printf 'Usage: %s                       run every gate and write the report\n' "$SCRIPT_NAME" >&2
+  printf '       %s --verify-publication  re-check target/publish and exit\n' "$SCRIPT_NAME" >&2
+  printf '       %s -h|--help             print the usage and exit\n\n' "$SCRIPT_NAME" >&2
+  printf 'This script takes no options that change what it measures: it runs\n' >&2
+  printf 'every gate, always. It accepts no argument at all, or exactly one of\n' >&2
+  printf 'the two flags above - nothing else, and never a second argument, not\n' >&2
+  printf 'even after a flag it does understand, because an argument it ignored\n' >&2
+  printf 'would be an instruction it did not carry out.\n' >&2
 }
 
-# The complete argument contract: no argument, or exactly one help flag. Every
-# other arity is rejected, so a misspelled or surplus word can never be
-# silently discarded while the run reports success.
-parse_arguments() {
+# classify_invocation <arguments...> - the complete argument contract, in the
+# one place that holds it.
+#
+# Prints the mode on stdout - `run`, `help` or `verify-publication` - and
+# returns 0; reports the usage error on stderr and returns 1 for every other
+# spelling and every other arity. It never exits and has no other effect, so
+# it is safe to read through a command substitution, which is what `main`
+# needs: `main` has to know whether this is the publication check BEFORE
+# `init_run` takes the lock and empties anything, and a helper that exited
+# from inside `$( ... )` would exit only the subshell and let the run
+# continue.
+#
+# It exists because the mode used to be recognised in `main` on "${1:-}"
+# alone while this function held the arity rule, so the two disagreed:
+# `--verify-publication extra` matched the mode test, never reached the arity
+# check, and exited 0 having silently discarded the surplus word - the one
+# outcome the usage text above promises cannot happen. One decision, read by
+# both callers, is what keeps the promise and the behaviour the same thing.
+classify_invocation() {
   case "$#" in
     0)
+      printf 'run\n'
       return 0
       ;;
     1)
       case "$1" in
         -h | --help)
-          usage
-          exit 0
+          printf 'help\n'
+          return 0
+          ;;
+        --verify-publication)
+          printf 'verify-publication\n'
+          return 0
           ;;
         *)
           usage_error "unknown argument \"$1\"."
-          exit 2
+          return 1
           ;;
       esac
       ;;
     *)
-      usage_error "$# arguments given; this script accepts at most one, the help flag. Unexpected: $*"
+      usage_error "$# arguments given; this script accepts at most one - the help flag or --verify-publication - and never a second, whatever the first one is. Unexpected: $*"
+      return 1
+      ;;
+  esac
+}
+
+# The side-effecting half of the contract, called by `init_run`: it turns the
+# decision above into this process's behaviour. The help flag prints the usage
+# and exits 0 here - before the output lock is taken, which is what lets `-h`
+# answer while another acceptance run is in progress - and a usage error exits
+# 2. `verify-publication` is intercepted by `main` before `init_run` is
+# called, so reaching it here means a caller that sourced this file called
+# `init_run` with that mode itself: it is rejected rather than run, because
+# `init_run` is the function that would take the lock and empty the evidence
+# trees the mode exists to leave untouched.
+parse_arguments() {
+  local mode
+  mode="$(classify_invocation "$@")" || exit 2
+  case "$mode" in
+    help)
+      usage
+      exit 0
+      ;;
+    verify-publication)
+      usage_error "--verify-publication runs no gate and must not be started through init_run; call $SCRIPT_NAME --verify-publication directly."
       exit 2
+      ;;
+    *)
+      return 0
       ;;
   esac
 }
@@ -2259,10 +2324,22 @@ require_repository_root() {
 # instruction of the run rather than in whatever generated artifact was
 # reached first.
 #
-# The accepted set is deliberately conservative - letters, digits, and the
-# handful of punctuation characters a real checkout path uses - because this
-# is a build-machine path, not user data: a path outside that set is far more
-# likely to be an attempt at this than a directory somebody meant to create.
+# The accepted set is deliberately conservative - letters, digits, the space,
+# and the handful of punctuation characters a real checkout path uses -
+# because this is a build-machine path, not user data: a path outside that set
+# is far more likely to be an attempt at this than a directory somebody meant
+# to create.
+#
+# The SPACE is accepted, and that is a decision rather than an oversight. It
+# is not an injection character anywhere this path is used: it needs no
+# escaping inside a Scala string literal, it is ordinary text in a Markdown
+# cell, and every shell expansion of a path in this script is quoted (the one
+# that was not - `javac -d dir $(find ...)` in the construction-closure row -
+# is a `-print0` array read now, which is what makes accepting the space a
+# supported case instead of a hope). Refusing it bought nothing and cost the
+# whole run: a checkout under a directory whose name contains a space could
+# not be gate-verified at all, and "the delivery is unacceptable" and "this
+# script will not look at it" are not the same answer.
 assert_root_is_safe() {
   local path="$1"
 
@@ -2279,14 +2356,14 @@ assert_root_is_safe() {
     printf 'encoded. Move the checkout to a plain path and re-run.\n' >&2
     return 1
   fi
-  if [[ "$path" == *[^A-Za-z0-9/._+@%,=:~-]* ]]; then
+  if [[ "$path" == *[^A-Za-z0-9/._+@%,=:~\ -]* ]]; then
     printf 'FATAL: the repository root %s contains a character this script\n' "$path" >&2
     printf 'will not put into the Scala source it hands to sbt or into the\n' >&2
     printf 'Markdown report it writes. Quotation marks, backslashes,\n' >&2
-    printf 'backticks, dollar signs and spaces are all refused here rather\n' >&2
-    printf 'than escaped in every one of the places the path is used. Move\n' >&2
-    printf 'the checkout to a path made of letters, digits and . _ + @ %% , =\n' >&2
-    printf ': ~ - and re-run.\n' >&2
+    printf 'backticks and dollar signs are refused here rather than escaped\n' >&2
+    printf 'in every one of the places the path is used. Move the checkout to\n' >&2
+    printf 'a path made of letters, digits, spaces and . _ + @ %% , = : ~ -\n' >&2
+    printf 'and re-run.\n' >&2
     return 1
   fi
   return 0
@@ -2494,12 +2571,12 @@ init_run() {
 }
 
 #-----------------------------------------------------------------------------
-# Gate bookkeeping. Five ordered, parallel arrays: the row label, its verdict,
-# a one-line detail, the relative path of its evidence, and its kind -
-# `automated` for a measured row, `reported` for the one row that is stated
-# rather than measured, `preflight` for the tool check that precedes them all,
-# and `blocking` for a check that is neither a gate nor a tool check but stops
-# the run anyway.
+# Gate bookkeeping. Six ordered, parallel arrays: the row label, its verdict,
+# a one-line detail, the measurement command(s) it ran, the relative path of
+# its evidence, and its kind - `automated` for a measured row, `reported` for
+# the one row that is stated rather than measured, `preflight` for the tool
+# check that precedes them all, and `blocking` for a check that is neither a
+# gate nor a tool check but stops the run anyway.
 # The arrays are the single source of truth for every count in the report,
 # which is computed by tallying their entries: no count is ever derived by
 # subtracting one running total from another, because a row recorded under one
@@ -2509,6 +2586,14 @@ init_run() {
 GATE_LABEL=()
 GATE_STATUS=()
 GATE_DETAIL=()
+# What each row RAN. The validation table of the specification defines every
+# row as a measurement command, so a report that states the verdict and the
+# detail but not the command leaves the reader unable to tell what was
+# measured without reading the script - and unable to re-run it by hand. The
+# strings here are the same ones the row's evidence file prints on its
+# `# command:` lines, because `command_line` writes the line and records the
+# cell from one argument; see `record_command`.
+GATE_COMMAND=()
 GATE_EVIDENCE=()
 GATE_KIND=()
 GATE_FAILED=0
@@ -2525,6 +2610,15 @@ RUN_COMPLETED="no"
 
 GATE_DETAIL_OUT=""
 GATE_EVIDENCE_OUT=""
+GATE_COMMAND_OUT=""
+
+# The Command column of the two kinds of row that measure nothing. They are
+# named constants rather than inline defaults because the text they hold
+# carries an apostrophe, and `"${5:-a word's default}"` is quote-processed by
+# bash: the apostrophe inside a parameter-expansion default opens a quoted
+# string and everything after it is swallowed until the next one.
+GATE_COMMAND_OUTSIDE_TABLE="not one of the measurements of the validation table: a check outside it that stops the run, described in the detail"
+GATE_COMMAND_REPORTED="not measured by this script: an out-of-band pull-request review by a CODEOWNERS owner"
 
 # Tallies of the arrays above, recomputed by `gate_counts`. One implementation
 # feeds both the report and the closing summary, so the two cannot disagree.
@@ -2557,9 +2651,11 @@ gate_counts() {
 
   local rows="${#GATE_LABEL[@]}"
   if [[ "${#GATE_STATUS[@]}" -ne "$rows" || "${#GATE_DETAIL[@]}" -ne "$rows" ||
-    "${#GATE_EVIDENCE[@]}" -ne "$rows" || "${#GATE_KIND[@]}" -ne "$rows" ]]; then
-    GATE_ARRAY_PROBLEM="$(printf 'the gate arrays have diverged: %s labels, %s statuses, %s details, %s evidence paths, %s kinds' \
-      "$rows" "${#GATE_STATUS[@]}" "${#GATE_DETAIL[@]}" "${#GATE_EVIDENCE[@]}" "${#GATE_KIND[@]}")"
+    "${#GATE_COMMAND[@]}" -ne "$rows" || "${#GATE_EVIDENCE[@]}" -ne "$rows" ||
+    "${#GATE_KIND[@]}" -ne "$rows" ]]; then
+    GATE_ARRAY_PROBLEM="$(printf 'the gate arrays have diverged: %s labels, %s statuses, %s details, %s commands, %s evidence paths, %s kinds' \
+      "$rows" "${#GATE_STATUS[@]}" "${#GATE_DETAIL[@]}" "${#GATE_COMMAND[@]}" \
+      "${#GATE_EVIDENCE[@]}" "${#GATE_KIND[@]}")"
   fi
 
   local index
@@ -2724,6 +2820,44 @@ detail() {
   fi
 }
 
+# record_command <command> - adds one measurement command to the current row,
+# for the Command column of the report.
+#
+# Repeats are dropped: a row that runs the same grep over two trees, or that
+# names a command once in its own evidence and once through a shared helper,
+# should read as having run it once. Several DIFFERENT commands accumulate in
+# the order they ran, separated like `detail`'s clauses, because most rows
+# measure their pass condition with more than one.
+record_command() {
+  local command_text="$1"
+
+  [[ -n "$command_text" ]] || return 0
+  if [[ -z "$GATE_COMMAND_OUT" ]]; then
+    GATE_COMMAND_OUT="$command_text"
+    return 0
+  fi
+  case "; $GATE_COMMAND_OUT; " in
+    *"; $command_text; "*) return 0 ;;
+  esac
+  GATE_COMMAND_OUT="$GATE_COMMAND_OUT; $command_text"
+}
+
+# command_line <command> - prints the evidence file's `# command:` line for
+# <command> and records the same string for the report's Command column.
+#
+# One argument feeding both is the whole point: the command a reader finds in
+# the evidence and the command the report attributes to the row cannot drift
+# apart, because there is only one string. It prints to STDOUT, so it is
+# called from inside the block a row redirects into its evidence file - a
+# brace group, which is not a subshell, so the record survives it. It must
+# NOT be called inside a pipeline or a command substitution, where the
+# assignment would be discarded with the subshell; `record_command` on its own
+# is the form for those places.
+command_line() {
+  record_command "$1"
+  printf '# command: %s\n' "$1"
+}
+
 evidence() {
   GATE_EVIDENCE_OUT="${1#"$ROOT"/}"
 }
@@ -2819,6 +2953,7 @@ run_gate() {
 
   GATE_DETAIL_OUT=""
   GATE_EVIDENCE_OUT=""
+  GATE_COMMAND_OUT=""
 
   printf '\n=== %s ===\n' "$label"
 
@@ -2869,6 +3004,16 @@ run_gate() {
     fi
   fi
 
+  # A row that recorded no measurement command has not said WHAT it measured,
+  # and the report would carry a verdict nobody can reproduce by hand. Every
+  # row names its commands through `command_line` or `record_command`, so an
+  # unrecorded one is a defect in the row - the same reasoning, and the same
+  # verdict, as a row that declared no evidence file.
+  if [[ -z "$GATE_COMMAND_OUT" ]]; then
+    detail "this row recorded no measurement command"
+    rc=1
+  fi
+
   local status
   if [[ "$rc" -eq 0 ]]; then
     status="PASS"
@@ -2880,6 +3025,7 @@ run_gate() {
   GATE_LABEL+=("$label")
   GATE_STATUS+=("$status")
   GATE_DETAIL+=("${GATE_DETAIL_OUT:-no detail recorded}")
+  GATE_COMMAND+=("${GATE_COMMAND_OUT:-no command recorded}")
   GATE_EVIDENCE+=("${GATE_EVIDENCE_OUT:-none}")
   GATE_KIND+=("automated")
 
@@ -2887,13 +3033,16 @@ run_gate() {
   return 0
 }
 
-# record_blocking_row <label> <detail> <evidence> [kind]
+# record_blocking_row <label> <detail> <evidence> [kind] [command]
 #
 # Records a FAILED check that is not one of the table's rows and stops the
 # run: the preflight tool check, and the pre-run scan of the publication
 # artifacts a previous run left behind. `kind` defaults to `blocking`; the
 # preflight check passes `preflight`, because the report says something
-# different about a missing toolchain.
+# different about a missing toolchain. `command` is what the check ran, for
+# the report's Command column; it defaults to a statement that the row is not
+# one of the table's measurements, which is true of every one of these rows
+# and is what the column should say rather than nothing.
 #
 # It exists because those two branches used to do this by hand, and one of
 # them did it wrong: it appended four of the five parallel arrays and left
@@ -2908,6 +3057,7 @@ record_blocking_row() {
   GATE_LABEL+=("$1")
   GATE_STATUS+=("FAIL")
   GATE_DETAIL+=("${2:-no detail recorded}")
+  GATE_COMMAND+=("${5:-$GATE_COMMAND_OUTSIDE_TABLE}")
   GATE_EVIDENCE+=("${3:-none}")
   GATE_KIND+=("${4:-blocking}")
   GATE_FAILED=$((GATE_FAILED + 1))
@@ -2915,11 +3065,14 @@ record_blocking_row() {
 }
 
 # Records a row that is reported rather than measured. Its verdict text is
-# fixed by the specification and is written verbatim into the report.
+# fixed by the specification and is written verbatim into the report; its
+# Command column says so rather than naming a command, because there is no
+# command - that is what "reported rather than measured" means.
 record_reported_row() {
   GATE_LABEL+=("$1")
   GATE_STATUS+=("REPORTED")
   GATE_DETAIL+=("$2")
+  GATE_COMMAND+=("${4:-$GATE_COMMAND_REPORTED}")
   GATE_EVIDENCE+=("${3:-none}")
   GATE_KIND+=("reported")
   printf '\n=== %s ===\nREPORTED: %s -- %s\n' "$1" "$1" "$2"
@@ -2948,7 +3101,10 @@ assert_no_match() {
 
   {
     printf '## %s\n' "$description"
-    printf '# command: grep %s\n' "$*"
+    # Through `command_line`, so the grep this helper ran for the calling row
+    # reaches that row's Command column and not only its evidence file. The
+    # block is a brace group, so the record survives it.
+    command_line "grep $*"
     printf '# grep exit status: %s (1 = nothing matched, which is the pass)\n' "$rc"
     if [[ -n "$matches" ]]; then
       printf '%s\n' "$matches"
@@ -3423,7 +3579,7 @@ row_01_build_and_test() {
 
   {
     printf '## Gate 1 - builds and runs\n'
-    printf '# command: sbt -batch clean compile Test/compile test\n'
+    command_line 'sbt -batch clean compile Test/compile test'
     printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n\n' "${SBT_LOG#"$ROOT"/}"
     printf '# run summary lines from the sbt log\n'
@@ -3481,16 +3637,72 @@ row_01_build_and_test() {
     }
     END { print total + 0 }' "$SBT_LOG")"
 
+  # The XML's own account of the same run: the `tests` attribute of the
+  # `testsuite` element of each snapshotted report, summed. The documents are
+  # PARSED rather than grepped, so the count is the attribute of the suite
+  # element itself - a suite that prints the text `tests="n"` from a test of
+  # its own cannot inflate the total - and a report truncated mid-write is a
+  # parse error here rather than a number that happens to be readable.
+  local xml_tests xml_tests_rc=0
+  xml_tests="$(python3 -c 'import pathlib, sys, xml.etree.ElementTree as ET
+total = 0
+for path in sorted(pathlib.Path(sys.argv[1]).glob("TEST-*.xml")):
+    try:
+        total += int(ET.parse(path).getroot().get("tests") or 0)
+    except Exception as error:
+        sys.stderr.write("unparseable JUnit report " + str(path) + ": " + str(error) + "\n")
+        raise SystemExit(1)
+print(total)' "$SNAPSHOT_DIR/test-reports" 2>>"$EV")" || xml_tests_rc=$?
+  if [[ "$xml_tests_rc" -ne 0 ]]; then
+    detail "the snapshotted JUnit XML could not be counted (the parser exited $xml_tests_rc; see the evidence file for the report it rejected)"
+    failed=1
+    xml_tests=0
+  fi
+
+  # Two independent accounts of one run, and the DIRECTION of a disagreement is
+  # the diagnosis.
+  #
+  # Fewer tests in the XML than in the log means reports were lost between the
+  # run and the artifact this gate and the test-scope row count from, which is
+  # exactly the failure this row exists to refuse: an incomplete report set
+  # whose suites all say `failures="0"` reads like a passing run. The build
+  # itself now refuses such a run (`reportAuditingTestResultLogger` in
+  # build.sbt), so reaching this check means that refusal was bypassed or
+  # defeated, and the row fails rather than reporting a number it cannot trust.
+  #
+  # More tests in the XML than in the log is the opposite case and not a
+  # failure: ScalaTest's framework summary is printed from the events that
+  # reached its reporter, so a reporter that broke mid-run understates the log
+  # while the XML - completed by the build from sbt's own test events - remains
+  # whole. It is recorded, with the breakage count, so the difference is never
+  # silent.
+  local reporter_breakages promotions
+  reporter_breakages="$(grep -c "Reporter completed abruptly" "$SBT_LOG" || true)"
+  promotions="$(grep -c "were reported incompletely by ScalaTest" "$SBT_LOG" || true)"
+  if [[ "$xml_tests_rc" -eq 0 && "${xml_tests:-0}" -lt "${total_tests:-0}" ]]; then
+    detail "the JUnit XML accounts for ${xml_tests:-0} test(s) while the sbt log reports ${total_tests:-0}, so reports were lost and the artifact this gate counts is incomplete"
+    failed=1
+  fi
+
   {
     printf '\n# suites snapshotted: %s\n' "${SNAPSHOT_JUNIT_COUNT:-0}"
     printf '# files snapshotted from target/test-reports: %s\n' "${SNAPSHOT_JUNIT_FILES:-0}"
     printf '# parity reports snapshotted: %s\n' "${SNAPSHOT_PARITY_COUNT:-0}"
     printf '# files snapshotted from target/parity-report: %s\n' "${SNAPSHOT_PARITY_FILES:-0}"
     printf '# tests reported by sbt: %s\n' "$total_tests"
+    printf '# tests accounted for by the snapshotted JUnit XML: %s\n' "${xml_tests:-0}"
+    printf '# ScalaTest reporter breakages in the sbt log: %s\n' "${reporter_breakages:-0}"
+    printf '# runs whose reports the build completed from sbt test events: %s\n' "${promotions:-0}"
+    if [[ "${xml_tests:-0}" -gt "${total_tests:-0}" ]]; then
+      printf '# NOTE: the XML accounts for %s more test(s) than the sbt log.\n' \
+        "$((${xml_tests:-0} - ${total_tests:-0}))"
+      printf '#       The XML is the complete account of the two: the framework summary in the\n'
+      printf '#       log is printed from the events that reached the ScalaTest reporter.\n'
+    fi
   } >>"$EV"
 
   if [[ "$failed" -eq 0 ]]; then
-    detail "both modules compiled and every spec passed (${total_tests} tests, ${SNAPSHOT_JUNIT_COUNT} suites)"
+    detail "both modules compiled and every spec passed (${xml_tests:-0} tests in ${SNAPSHOT_JUNIT_COUNT} suite reports, ${total_tests} reported by sbt)"
   fi
   return "$failed"
 }
@@ -3529,6 +3741,7 @@ row_02_dependency_purity() {
 
   {
     printf '## Gate 2 / Rule 1 - dependency purity\n'
+    command_line 'sbt -batch "strata-basics/Compile/dependencyTree" "strata-basics/Test/dependencyTree" "strata-collect/Compile/dependencyTree" "strata-collect/Test/dependencyTree"'
     printf '# dependency tree log: %s (sbt exit %s)\n\n' "${tree_log#"$ROOT"/}" "$rc"
   } >>"$EV"
 
@@ -3560,6 +3773,7 @@ row_02_dependency_purity() {
   awk '!/^\[/' "$cp_log" | tr ':' '\n' | sed -e 's/^[[:space:]]*//' -e '/^$/d' >"$entries"
 
   {
+    command_line 'sbt -batch "export strata-basics/Compile/fullClasspath" "export strata-basics/Test/fullClasspath"'
     printf '# classpath log: %s (sbt exit %s)\n' "${cp_log#"$ROOT"/}" "$rc"
     printf '# classpath entries: %s (see %s)\n\n' \
       "$(wc -l <"$entries" | tr -d ' ')" "${entries#"$ROOT"/}"
@@ -3992,7 +4206,8 @@ row_03_two_scala_modules() {
   printf 'strata-basics\nstrata-collect\n' >"$expected_ids"
 
   {
-    printf '# command: sbt -batch projects (exit %s)\n' "$rc"
+    command_line 'sbt -batch projects'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# project ids found (every single-token entry of the project block):\n'
     cat "$ids"
     printf '# expected:\n'
@@ -4097,8 +4312,9 @@ row_03_two_scala_modules() {
   test_headers="$(awk '/^test-headers / { print $2 }' "$headers")"
 
   {
-    printf '\n# command: sbt -batch "show strata-basics/Compile/internalDependencyClasspath" '
-    printf '"show strata-basics/Test/internalDependencyClasspath" (exit %s)\n' "$rc"
+    printf '\n'
+    command_line 'sbt -batch "show strata-basics/Compile/internalDependencyClasspath" "show strata-basics/Test/internalDependencyClasspath"'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# key headers seen (only strata-basics own values are attributed):\n'
     cat "$headers"
     printf '# Compile section (strata-basics only):\n'
@@ -4182,8 +4398,9 @@ row_03_two_scala_modules() {
     java_count="$(awk 'END { print NR + 0 }' "$java_list")"
   fi
   {
-    printf '\n# command: find strata-collect strata-basics project -name "*.java" (exit %s)\n' \
-      "$find_rc"
+    printf '\n'
+    command_line 'find strata-collect strata-basics project -name "*.java"'
+    printf '# find exit status: %s\n' "$find_rc"
     printf '%s\n' "${java_count:-0}"
     cat "$java_list"
   } >>"$EV"
@@ -4311,12 +4528,11 @@ row_03_two_scala_modules() {
     done
 
     {
-      printf '\n# command: sbt -batch'
-      printf ' "%s"' "${base_show[@]}"
-      printf ' (exit %s)\n' "$base_rc"
-      printf '# command: sbt -batch'
-      printf ' "%s"' "${roots_show[@]}"
-      printf ' (exit %s)\n' "$roots_rc"
+      printf '\n'
+      command_line "sbt -batch$(printf ' \"%s\"' "${base_show[@]}")"
+      printf '# sbt exit status: %s\n' "$base_rc"
+      command_line "sbt -batch$(printf ' \"%s\"' "${roots_show[@]}")"
+      printf '# sbt exit status: %s\n' "$roots_rc"
       printf '# %s discovered project(s); %s base directory(ies) and %s source root(s) parsed\n' \
         "${id_count:-0}" "$base_count" "$roots_count"
       printf '# per-directory audit (%s absent, %s the checkout root as a base directory,\n' \
@@ -4408,8 +4624,9 @@ row_03_two_scala_modules() {
   sbt_show_values "$dirs_log" | sort -u >"$dirs"
 
   {
-    printf '\n# command: sbt -batch "show strata-basics/Compile/unmanagedSourceDirectories" '
-    printf '"show strata-collect/Compile/unmanagedSourceDirectories" (exit %s)\n' "$rc"
+    printf '\n'
+    command_line 'sbt -batch "show strata-basics/Compile/unmanagedSourceDirectories" "show strata-collect/Compile/unmanagedSourceDirectories"'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# source directories reported:\n'
     cat "$dirs"
   } >>"$EV"
@@ -4474,7 +4691,8 @@ row_04_numerical_parity() {
   run_sbt gate03-parity "testOnly *ParitySpec" || rc=$?
   {
     printf '## Gate 3 / Rule 2 - numerical parity at 1e-9 absolute and relative\n'
-    printf '# command: sbt -batch "testOnly *ParitySpec" (exit %s)\n' "$rc"
+    command_line 'sbt -batch "testOnly *ParitySpec"'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n\n' "${SBT_LOG#"$ROOT"/}"
   } >>"$EV"
   if [[ "$rc" -ne 0 ]]; then
@@ -4848,7 +5066,7 @@ EOF
 #
 # The REASON is part of the inventory, not decoration. Section 0.6.4 states
 # every exclusion together with the rationale that makes it legitimate, and
-# this block is published as the authoritative record of why 39 public types
+# this block is published as the authoritative record of why 40 public types
 # of the two modules carry no codec - so an exclusion that arrived with the
 # wrong rationale, or with none, would be a false statement in the deliverable
 # evidence. The whole `EXCLUDED <fqcn> <reason>` line is therefore compared,
@@ -4869,6 +5087,7 @@ EXCLUDED com.opengamma.strata.basics.ImmutableReferenceData heterogeneous identi
 EXCLUDED com.opengamma.strata.basics.ReferenceData heterogeneous identifier-to-value store; only calendars are serializable and HolidayCalendar carries them
 EXCLUDED com.opengamma.strata.basics.ReferenceData.Entry same reason as the store it populates
 EXCLUDED com.opengamma.strata.basics.ReferenceDataId behavioural abstraction; HolidayCalendarId is the one identifier with a codec
+EXCLUDED com.opengamma.strata.basics.ReferenceDataType typeclass, helper or effect rather than data
 EXCLUDED com.opengamma.strata.basics.Resolvable function or contract type with no data of its own
 EXCLUDED com.opengamma.strata.basics.ResolvableCalculationTarget function or contract type with no data of its own
 EXCLUDED com.opengamma.strata.basics.currency.FxConvertible function or contract type with no data of its own
@@ -4915,7 +5134,8 @@ row_05_serialization_round_trip() {
 
   {
     printf '## Gate 4 - serialization round-trip and codec coverage\n'
-    printf '# command: sbt -batch "testOnly *JsonRoundTripSpec *CodecsSpec" (exit %s)\n' "$rc"
+    command_line 'sbt -batch "testOnly *JsonRoundTripSpec *CodecsSpec"'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n\n' "${log#"$ROOT"/}"
   } >>"$EV"
 
@@ -5058,6 +5278,7 @@ row_06_no_var() {
   # -- the other half of Rule 3: the storage of the numeric types ----------
   {
     printf '## Gate 5 / Rule 3 - no bytecode member aliases a numeric backing array\n'
+    command_line 'javap -s -p over DoubleArray.class, DoubleArray$.class, DoubleMatrix.class and DoubleMatrix$.class, reading every member signature for a primitive-array return outside the copying accessors'
     printf '# allowed public array returns: %s\n\n' "$ARRAY_RETURN_ALLOWED"
   } >>"$EV"
 
@@ -5196,6 +5417,7 @@ row_07_no_boxing() {
 
   {
     printf '## Gate 5 / Rule 3 - no boxing in the numeric hot paths\n'
+    command_line 'javap -c -p over DoubleArray.class, DoubleArray$.class, DoubleMatrix.class, DoubleMatrix$.class and DoubleArrayMath$.class, restricted to the bodies of the hot methods and their transitive call graph, counting scala/runtime/BoxesRunTime, java/lang/Double.valueOf and Double.doubleValue calls'
     printf '# selection: the transitive, asserted-closed call graph of the hot methods\n'
     printf '# forbidden calls: %s\n\n' "$BOXING_FORBIDDEN"
   } >>"$EV"
@@ -5870,8 +6092,8 @@ row_08_explicit_error_handling() {
   outside="$(printf '%s\n' "$throws" | awk '!/\/ArgCheck\.scala/ && NF')"
   {
     printf '## throw new outside ArgCheck.scala\n'
-    printf '# command: grep -rnE "throw new" %s %s (exit %s), excluding /ArgCheck.scala\n' \
-      "$COLLECT_MAIN" "$BASICS_MAIN" "$throw_rc"
+    command_line "grep -rnE \"throw new\" $COLLECT_MAIN $BASICS_MAIN, excluding /ArgCheck.scala"
+    printf '# grep exit status: %s\n' "$throw_rc"
     printf '# all matches:\n%s\n' "$throws"
     printf '# matches outside ArgCheck.scala:\n%s\n\n' "$outside"
   } >>"$EV"
@@ -5900,8 +6122,8 @@ row_08_explicit_error_handling() {
   scan_out="$(rule5_throw_scan "$allowed_throws" "$COLLECT_MAIN" "$BASICS_MAIN" 2>&1)" || scan_rc=$?
   {
     printf '## every throw expression in either module, found lexically\n'
-    printf '# command: rule5_throw_scan %s %s %s (exit %s)\n' \
-      "${allowed_throws#"$ROOT"/}" "$COLLECT_MAIN" "$BASICS_MAIN" "$scan_rc"
+    command_line "rule5_throw_scan ${allowed_throws#"$ROOT"/} $COLLECT_MAIN $BASICS_MAIN"
+    printf '# scan exit status: %s\n' "$scan_rc"
     printf '%s\n\n' "$scan_out"
   } >>"$EV"
   local outside_throws
@@ -6012,8 +6234,8 @@ CONTROL
 
   run_sbt gate05-failable "testOnly *SmartConstructorSpec *FailableSurfaceSpec *ApiSurfaceSpec *FailureSpec" || rc=$?
   {
-    printf '# command: sbt -batch "testOnly *SmartConstructorSpec *FailableSurfaceSpec '
-    printf '*ApiSurfaceSpec *FailureSpec" (exit %s)\n' "$rc"
+    command_line 'sbt -batch "testOnly *SmartConstructorSpec *FailableSurfaceSpec *ApiSurfaceSpec *FailureSpec"'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n' "${SBT_LOG#"$ROOT"/}"
     awk '/Total number of tests run|Tests: succeeded|All tests passed/ { print }' "$SBT_LOG"
   } >>"$EV"
@@ -6048,6 +6270,7 @@ row_09_io_at_the_edges() {
   basics_leak="$(printf '%s\n' "$files" | awk '!/\/demo\// && NF')"
   {
     printf '## cats.effect or IO[ in strata-basics main sources outside /demo/\n'
+    command_line "grep -rlE \"cats\\.effect|\\bIO\\[\" $BASICS_MAIN | grep -v /demo/"
     printf '# grep exit status: %s\n' "$rc"
     printf '# files matched:\n%s\n' "$files"
     printf '# outside /demo/:\n%s\n\n' "$basics_leak"
@@ -6067,6 +6290,7 @@ row_09_io_at_the_edges() {
   collect_leak="$(printf '%s\n' "$files" | awk '!/\/io\/Resources\.scala/ && NF')"
   {
     printf '## cats.effect or IO[ in strata-collect main sources outside io/Resources.scala\n'
+    command_line "grep -rlE \"cats\\.effect|\\bIO\\[\" $COLLECT_MAIN | grep -v /io/Resources.scala"
     printf '# grep exit status: %s\n' "$rc"
     printf '# files matched:\n%s\n' "$files"
     printf '# outside io/Resources.scala:\n%s\n\n' "$collect_leak"
@@ -6114,7 +6338,8 @@ row_10_typeclass_instances() {
 
   {
     printf '## Gate 5 - typeclass instances and their laws\n'
-    printf '# command: sbt -batch "testOnly *TypeclassLawsSpec" (exit %s)\n' "$rc"
+    command_line 'sbt -batch "testOnly *TypeclassLawsSpec"'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n' "${SBT_LOG#"$ROOT"/}"
     printf '# instance lines: %s\n' "$lines"
     printf '# summary: %s\n\n' "${summary:-absent}"
@@ -6211,7 +6436,8 @@ row_11_closed_enums() {
   run_sbt gate05-named-enum "testOnly *NamedEnumClosedSpec *ReferenceDataManifestSpec" || rc=$?
   {
     printf '## Gate 5 / Rule 4 - closed named families and reference-data fidelity\n'
-    printf '# command: sbt -batch "testOnly *NamedEnumClosedSpec *ReferenceDataManifestSpec" (exit %s)\n' "$rc"
+    command_line 'sbt -batch "testOnly *NamedEnumClosedSpec *ReferenceDataManifestSpec"'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n' "${SBT_LOG#"$ROOT"/}"
     awk '/Total number of tests run|Tests: succeeded|All tests passed/ { print }' "$SBT_LOG"
     printf '\n'
@@ -6230,7 +6456,7 @@ row_11_closed_enums() {
   literal_lines="$(awk 'NF { n++ } END { print n + 0 }' "$literal_output")"
   {
     printf '## the specification'"'"'s resource scan, which decides this row\n'
-    printf '# command: grep -rn "\\.ini\\|\\.csv\\|\\.properties" strata-collect/src/main strata-basics/src/main\n'
+    command_line 'grep -rn "\.ini\|\.csv\|\.properties" strata-collect/src/main strata-basics/src/main'
     printf '# grep exit status: %s (0 = it matched, 1 = nothing matched, >=2 = error)\n' "$literal_rc"
     printf '# lines reported: %s (raw output: %s)\n' "$literal_lines" "${literal_output#"$ROOT"/}"
   } >>"$EV"
@@ -6522,6 +6748,13 @@ row_11a_jvm_closure() {
   local failed=0
   local rc=0
   local work="$AUDIT_DIR/jvm-closure"
+
+  {
+    printf '## Gate 5 / Rule 4 - JVM construction and serialization closure\n'
+    command_line 'sbt -batch "export strata-basics/Compile/fullClasspath"'
+    command_line 'javap -p over every class of both modules, then javac and java over the generated probes: Java serialization of each product, construction of each closed type, an external subclass of each sealed hierarchy, and the binary constructor of each hidden implementation'
+    printf '\n'
+  } >>"$EV"
 
   # A fresh tree per run: a probe or a forged subclass left by an earlier run
   # would be compiled and counted by this one.
@@ -7267,15 +7500,28 @@ classpath = collect_classes + ":" + basics_classes
 # type-check. What closes that is the type restating, over the fields it holds, the invariant its
 # factory establishes, and this requires one of every member of the set.
 #
-# No closed type carrying state is exempt from that, and the set below is kept - empty - rather
-# than removed, so that exempting one is a deliberate act recorded here.
+# Exempting one is a deliberate act, and it is recorded here with the reason, so that the set is
+# read as a decision rather than as a gap. One type is in it.
 #
-# `CurrencyAmountArray` was the single exemption while its `of` admitted every array of numbers.
-# It now refuses an element no amount holds, which is a condition on the field it carries and one
-# a direct construction could break, so it states that condition over its field like every other
-# stateful closed type and the exemption is gone. The empty run it still admits satisfies the
-# statement vacuously, which is why removing the exemption costs that value nothing.
-TOTAL_BY_CONSTRUCTION = set()
+# `CurrencyAmountArray` promises that every element of its values is a number, and that promise is
+# established once, by whichever route takes the numbers in - `create` raises it, `checked` reports
+# it, and the two factories that read `CurrencyAmount`s rest on the invariant that type states of
+# every instance of itself. What it does not do is restate the promise in its class body, because
+# this is the one invariant in either module that costs a pass over the whole run rather than a
+# constant or a step per currency: a constructor runs for every value built, so restating it there
+# examines every element of every array a second time, doubling the cost of `of` and of each
+# element-wise operation on a run of a hundred thousand scenarios - for the one route the supported
+# API does not have. The class body carries that reasoning at the point the restatement would go.
+# `requireSoleImplementation` is still called, so a foreign subtype is still refused; what is no
+# longer examined is an instance forged by a class file naming the private implementation directly,
+# a route design decision D-3 does not support, and such a value is refused by `CurrencyAmount` as
+# soon as any element of it is read as an amount.
+#
+# `MultiCurrencyAmountArray` is NOT exempt and is not listed: it keeps the two invariants that cost
+# a constant and a step per currency - its size, and its per-currency array lengths, which are what
+# stop a forged run being read past the end of one of its arrays - and loses only the per-element
+# walk. Nothing else in either module is exempt.
+TOTAL_BY_CONSTRUCTION = {"com.opengamma.strata.basics.currency.CurrencyAmountArray"}
 stateful = {}
 roots = {}
 for line in Path(audit_output).read_text(encoding="utf-8").splitlines():
@@ -7743,12 +7989,30 @@ JAVA
 
   local binary_log="$work/binary-javac.log"
   local binary_rc=0
-  # The stub is compiled WITHOUT the real classes on the classpath: the point is
-  # a compilation unit that declares the binary names itself, so that the
-  # attacker's bytecode carries them and the real class files answer for them at
-  # run time.
-  javac -d "$work/binary-stub-classes" $(find "$binary_stub" -name '*.java') \
-    >"$binary_log" 2>&1 || binary_rc=$?
+  # The stub sources, collected NUL-delimited into an array rather than left
+  # to word-splitting. `javac -d dir $(find ...)` compiles the right files
+  # only while every path in the result is free of whitespace, and these paths
+  # start at the checkout root - so an operator whose checkout sits in a
+  # directory with a space in its name would have seen this row fail for a
+  # reason that has nothing to do with what it measures. `-print0` and a
+  # `read -d ''` loop carry each name whole (shellcheck SC2046).
+  local -a binary_stub_sources=()
+  local stub_source
+  while IFS= read -r -d '' stub_source; do
+    binary_stub_sources+=("$stub_source")
+  done < <(find "$binary_stub" -name '*.java' -print0)
+  if [[ "${#binary_stub_sources[@]}" -eq 0 ]]; then
+    detail "the binary-constructor attack source was not found where it was written"
+    failed=1
+    binary_rc=1
+  else
+    # The stub is compiled WITHOUT the real classes on the classpath: the point
+    # is a compilation unit that declares the binary names itself, so that the
+    # attacker's bytecode carries them and the real class files answer for them
+    # at run time.
+    javac -d "$work/binary-stub-classes" "${binary_stub_sources[@]}" \
+      >"$binary_log" 2>&1 || binary_rc=$?
+  fi
   if [[ "$binary_rc" -eq 0 ]]; then
     javac -cp "$work/binary-stub-classes" -d "$work/binary-attack-classes" \
       "$binary_attack/atk/BinaryConstructors.java" >>"$binary_log" 2>&1 || binary_rc=$?
@@ -8197,8 +8461,8 @@ row_12_no_reflection() {
     local hits
     hits="$(awk '/^### matches: / { print $3 }' "$matches")"
     {
-      printf '# (a) command: find strata-collect/target strata-basics/target '
-      printf -- '-path "*scala-2.13/classes/*.class" -exec javap -c -p {} +\n'
+      printf '# (a)\n'
+      command_line 'find strata-collect/target strata-basics/target -path "*scala-2.13/classes/*.class" -exec javap -c -p {} +'
       printf '#     class files: %s, javap exit %s, disassembly lines %s\n' \
         "$class_count" "$javap_rc" "$(wc -l <"$dump" | tr -d ' ')"
       printf '#     reflection references: %s (see %s)\n\n' "$hits" "${matches#"$ROOT"/}"
@@ -8238,6 +8502,7 @@ row_12_no_reflection() {
     local digest
     digest="$(strip_sbt_prefix <"$SBT_LOG" | awk '/^CODEC-AUDIT-DIGEST / { print; exit }')"
     {
+      command_line "sbt -batch \"set \\\`strata-basics\\\` / Test / javaOptions ++= Seq(\\\"-Dcodec.audit=$mode\\\", \\\"-Xlog:class+load:file=<audit>/$mode-classload.log\\\")\" \"strata-basics/testOnly com.opengamma.strata.basics.json.JsonRoundTripSpec\""
       printf '# (b) %s run: sbt exit %s\n' "$mode" "$rc"
       printf '#     digest line: %s\n' "${digest:-absent}"
       printf '#     log: %s\n' "${SBT_LOG#"$ROOT"/}"
@@ -8746,7 +9011,11 @@ PY
 row_13_jvm21_bytecode() {
   new_evidence rule8-bytecode-version.txt
   local failed=0
-  printf '## Rule 8 - class-file major version 65 (JVM 21)\n\n' >>"$EV"
+  {
+    printf '## Rule 8 - class-file major version 65 (JVM 21)\n'
+    command_line 'javap -v over strata-basics .../currency/Currency.class and strata-collect .../array/DoubleArray.class, reading the major version line of each'
+    printf '\n'
+  } >>"$EV"
 
   local files=(
     "$BASICS_CLASSES/com/opengamma/strata/basics/currency/Currency.class"
@@ -8848,7 +9117,7 @@ row_14_warning_clean() {
   werror_lines="$(awk '/"-Werror"/ { print FILENAME ":" FNR ":" $0 }' build.sbt)"
   werror_count="$(printf '%s\n' "$werror_lines" | awk 'NF { n++ } END { print n + 0 }')"
   {
-    printf '# command: grep -n %s build.sbt\n' "'\"-Werror\"'"
+    command_line "grep -n '\"-Werror\"' build.sbt"
     printf '%s\n' "$werror_lines"
     printf '# occurrences: %s (exactly 1 expected)\n\n' "$werror_count"
   } >>"$EV"
@@ -8923,8 +9192,7 @@ row_14_warning_clean() {
   violations="$(printf '%s\n' "$classified" | awk '/^VIOLATION/')"
 
   {
-    printf '# command: grep -rn -E "nowarn|SuppressWarnings|-Wconf|Werror" build.sbt %s strata-collect/src strata-basics/src\n' \
-      "${build_definition[*]}"
+    command_line "grep -rn -E \"nowarn|SuppressWarnings|-Wconf|Werror\" build.sbt ${build_definition[*]} strata-collect/src strata-basics/src"
     printf '# grep exit status: %s (0 = matched, 1 = nothing matched, >=2 = error)\n' "$raw_rc"
     printf '# scope: build.sbt; project/ recursively minus sbt generated output\n'
     printf '#        (project/target, project/project, the compiled form of build.sbt);\n'
@@ -8978,7 +9246,8 @@ row_14_warning_clean() {
     failed=1
   fi
   {
-    printf '# command: sbt -batch clean compile Test/compile (exit %s)\n' "$rc"
+    command_line 'sbt -batch clean compile Test/compile'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n' "${SBT_LOG#"$ROOT"/}"
     printf '# NOTE: this row cleans, which empties target/test-reports and\n'
     printf '#       target/parity-report. Every file this run wrote into them was\n'
@@ -9038,8 +9307,7 @@ row_15_scala_collections_api() {
   hits="$(awk '/^### matches: / { print $3 }' "$matches")"
 
   {
-    printf '# command: find strata-collect/target strata-basics/target '
-    printf -- '-path "*scala-2.13/classes/*.class" -exec javap -s -protected {} +\n'
+    command_line 'find strata-collect/target strata-basics/target -path "*scala-2.13/classes/*.class" -exec javap -s -protected {} +'
     printf '#   javap exit %s, signature lines %s, descriptor lines %s\n' \
       "$javap_rc" "$(wc -l <"$dump" | tr -d ' ')" "$descriptors"
     printf '#   matches: %s (see %s)\n\n' "$hits" "${matches#"$ROOT"/}"
@@ -9131,7 +9399,8 @@ row_16_demo() {
 
   {
     printf '## Gate 6 - end-to-end demo\n'
-    printf '# command: sbt -batch "strata-basics/run" (exit %s)\n' "$rc"
+    command_line 'sbt -batch "strata-basics/run"'
+    printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n' "${SBT_LOG#"$ROOT"/}"
     printf '# currency/amount JSON fragments: %s\n' "$json_hits"
     printf '# ISO-8601 dates: %s\n\n' "$date_hits"
@@ -9201,6 +9470,32 @@ row_16_demo() {
 
 GATE7_MANUAL_TEXT="automated checks passed; manual approval: see PR review"
 
+# gate7_manual_detail <verdict of the automated Gate 7 row> - the detail cell
+# of the reported manual-approval row.
+#
+# The specification prescribes what this row says, verbatim, so
+# GATE7_MANUAL_TEXT is printed exactly as written and always: a reader or a
+# tool looking for that sentence finds it on every run, whatever happened.
+# What it must not do is ASSERT something the row above it contradicts. The
+# sentence opens with "automated checks passed", and when the automated half
+# of Gate 7 has just FAILED, a reader of the table was being told by one row
+# that the checks passed and by the row above it that they did not - with no
+# way to tell which statement was measured. So the prescribed sentence is
+# followed by a qualifier naming the automated row's actual verdict whenever
+# it is not a pass. Nothing is concealed either way: the automated half is its
+# own PASS/FAIL row immediately above, counted in the summary line and in the
+# exit status.
+gate7_manual_detail() {
+  local automated_status="${1:-absent}"
+
+  if [[ "$automated_status" == "PASS" ]]; then
+    printf '%s\n' "$GATE7_MANUAL_TEXT"
+    return 0
+  fi
+  printf '%s [QUALIFIED: the sentence before this one is the wording the specification prescribes for this row; the automated half of Gate 7 in the row above is %s on this run, so it describes the state required for approval and not the state observed]\n' \
+    "$GATE7_MANUAL_TEXT" "$automated_status"
+}
+
 row_17_migration_note() {
   new_evidence gate07-migration-note.txt
   local failed=0
@@ -9223,7 +9518,7 @@ row_17_migration_note() {
   headings="$(awk '/^## / { print }' "$note")"
   heading_count="$(printf '%s\n' "$headings" | awk 'NF { n++ } END { print n + 0 }')"
   {
-    printf '# command: grep -c "^## " %s\n' "$note"
+    command_line "grep -c \"^## \" $note"
     printf '%s\n' "$heading_count"
     printf '# headings:\n%s\n\n' "$headings"
     printf '# the six required sections of section 0.8.3:\n'
@@ -9368,7 +9663,11 @@ row_19_test_scope() {
   local failed=0
   local summary="$AUDIT_DIR/test-scope-summary.txt"
 
-  printf '## Test scope at least equal to the Java suites\n\n' >>"$EV"
+  {
+    printf '## Test scope at least equal to the Java suites\n'
+    command_line 'python3 (the traceability join): sum the tests attribute of every testsuite in target/audit/snapshot/test-reports/TEST-*.xml by module, then join strata-basics/src/test/resources/manifest/java-test-mapping.csv against the @Test/@ParameterizedTest methods under modules/basics/src/test/java and modules/collect/src/test/java and against the testcase elements of that XML'
+    printf '\n'
+  } >>"$EV"
 
   if ! python3 - \
     "$SNAPSHOT_DIR/test-reports" \
@@ -11291,9 +11590,26 @@ self_check_encoders() {
   local rc=0
   scala_string_literal "$(printf 'a\tb')" >/dev/null 2>&1 || rc=$?
   self_check "scala_string_literal refuses a control character" "1" "$rc"
+  # Each probe is an ABSOLUTE path, so the character rule is what decides it
+  # rather than the absolute-path rule one line above it - a relative probe
+  # would be refused for the wrong reason and the control would pass however
+  # the character set were spelled.
+  local probe
+  for probe in '/tmp/name"with-a-quote' '/tmp/name$with-a-dollar' \
+    '/tmp/name`with-a-backtick' '/tmp/name\with-a-backslash'; do
+    rc=0
+    ( assert_root_is_safe "$probe" >/dev/null 2>&1 ) || rc=$?
+    self_check "assert_root_is_safe refuses ${probe#/tmp/name}" "1" "$rc"
+  done
+  # The space is the one character of the awkward set this script SUPPORTS,
+  # because every path expansion is quoted; the control states that, so that
+  # re-tightening the set silently is not possible.
   rc=0
-  ( assert_root_is_safe 'name"with-a-quote' >/dev/null 2>&1 ) || rc=$?
-  self_check "assert_root_is_safe refuses a quote in the checkout path" "1" "$rc"
+  ( assert_root_is_safe '/tmp/a checkout with spaces' >/dev/null 2>&1 ) || rc=$?
+  self_check "  and accepts a space, which nothing here has to escape" "0" "$rc"
+  rc=0
+  ( assert_root_is_safe 'relative/path' >/dev/null 2>&1 ) || rc=$?
+  self_check "  and refuses a path that is not absolute" "1" "$rc"
   rc=0
   ( assert_root_is_safe "$ROOT" >/dev/null 2>&1 ) || rc=$?
   self_check "  and accepts this checkout" "0" "$rc"
@@ -11322,7 +11638,7 @@ self_check_appendix_fence() {
   return 0
 }
 
-# The ledger helper: all five arrays move together, or the report's table and
+# The ledger helper: all six arrays move together, or the report's table and
 # its counts describe different runs. Run in a subshell so the rows it records
 # are discarded rather than added to this run's table.
 self_check_ledger() {
@@ -11336,6 +11652,7 @@ self_check_ledger() {
   local was_labels="${#GATE_LABEL[@]}"
   local was_statuses="${#GATE_STATUS[@]}"
   local was_details="${#GATE_DETAIL[@]}"
+  local was_commands="${#GATE_COMMAND[@]}"
   local was_evidence="${#GATE_EVIDENCE[@]}"
   local was_kinds="${#GATE_KIND[@]}"
   local was_blocking="$GATE_COUNT_BLOCKING_FAILED"
@@ -11350,16 +11667,26 @@ self_check_ledger() {
     record_blocking_row "self-check row" "detail" "target/audit/self-check.txt" blocking \
       >/dev/null 2>&1
     gate_counts || printf 'diverged '
-    printf '%s/%s/%s/%s/%s blocking=%s failed=%s automated=%s' \
+    printf '%s/%s/%s/%s/%s/%s blocking=%s failed=%s automated=%s' \
       "$((${#GATE_LABEL[@]} - was_labels))" "$((${#GATE_STATUS[@]} - was_statuses))" \
-      "$((${#GATE_DETAIL[@]} - was_details))" "$((${#GATE_EVIDENCE[@]} - was_evidence))" \
+      "$((${#GATE_DETAIL[@]} - was_details))" "$((${#GATE_COMMAND[@]} - was_commands))" \
+      "$((${#GATE_EVIDENCE[@]} - was_evidence))" \
       "$((${#GATE_KIND[@]} - was_kinds))" \
       "$((GATE_COUNT_BLOCKING_FAILED - was_blocking))" \
       "$((GATE_FAILED - was_failed))" \
       "$((GATE_COUNT_AUTOMATED - was_automated))"
   )"
-  self_check "record_blocking_row moves all five arrays and tallies as blocking" \
-    "1/1/1/1/1 blocking=1 failed=1 automated=0" "$measured"
+  self_check "record_blocking_row moves all six arrays and tallies as blocking" \
+    "1/1/1/1/1/1 blocking=1 failed=1 automated=0" "$measured"
+  # The Command column of a row recorded outside the table is not left empty:
+  # the report states that the row is not one of the table's measurements.
+  measured="$(
+    record_blocking_row "self-check row" "detail" "target/audit/self-check.txt" blocking \
+      >/dev/null 2>&1
+    printf '%s' "${GATE_COMMAND[-1]}"
+  )"
+  self_check "  and says in the Command column that it measured nothing" "yes" \
+    "$(case "$measured" in "$GATE_COMMAND_OUTSIDE_TABLE") printf 'yes' ;; *) printf 'no' ;; esac)"
   return 0
 }
 
@@ -11665,7 +11992,9 @@ PYVERIFY
 
 # prune_inherited_evidence - examines what an earlier run left in this
 # checkout's evidence trees, takes any credential-bearing artifact out of
-# every publishable path, and then EMPTIES those trees.
+# every publishable path, and then EMPTIES those trees and replaces the gate
+# report an earlier run left behind with this run's in-progress stub. All four
+# publication paths are therefore this run's from here on, not three of them.
 #
 # It is called from `init_output_tree`, before this run has written a single
 # artifact of its own, and that ordering is the whole point. Deciding file by
@@ -11755,6 +12084,40 @@ prune_inherited_evidence() {
       "${holding#"$ROOT"/}" "${guard:-no reason given}" >&2
   fi
 
+  # The fourth publication path, and the last piece of inherited state: the
+  # gate report itself. The three trees above are emptied; this one cannot be,
+  # because the report is the deliverable and a run has to leave one behind -
+  # so it is REPLACED, now that the scan above has read whatever an earlier
+  # run left there, by a stub that belongs to this run.
+  #
+  # Two things were wrong without it, and both are about a figure or a
+  # sentence describing a run other than the one being read. The boundary
+  # row's enforced scan walks PUBLICATION_PATHS, of which this file is the
+  # first: whether a previous run's report happened to be on disk moved that
+  # row's artifact count by one and its "publication paths scanned" line
+  # between "3 of 4" and "4 of 4", so two otherwise identical runs reported
+  # different figures for the same tree. And until `write_report` renames the
+  # finished report into place - minutes later, at the end of the run -
+  # anyone reading target/gate-report.md saw the PREVIOUS run's complete
+  # verdict, including its RESULT line, with nothing to say it was stale.
+  # A stub fixes both at once: the count is this run's by construction, and a
+  # mid-run reader is told the run is still going.
+  if ! {
+    printf '# Acceptance gate report\n\n'
+    printf -- '- run id: %s, started (UTC) %s\n' "$RUN_ID" "$RUN_STARTED_UTC"
+    printf -- '- script: %s\n\n' "$SCRIPT_NAME"
+    printf 'RESULT: IN PROGRESS - run %s is measuring this checkout now, and this\n' "$RUN_ID"
+    printf 'file will be replaced by its report when it finishes. The report of any\n'
+    printf 'earlier run was cleared when this one started, together with the\n'
+    printf 'evidence trees, so that nothing here can be read as a verdict on a run\n'
+    printf 'other than the one named above. A run that is interrupted replaces this\n'
+    printf 'stub with a partial report saying how far it got; a stub still here\n'
+    printf 'afterwards means the run was killed before it could write either.\n'
+  } | guarded_write "$REPORT_FILE"; then
+    path_fatal "the gate report ${REPORT_FILE#"$ROOT"/} could not be replaced by this run's in-progress stub, so an earlier run's verdict would stay readable there and this run's artifact counts would depend on it"
+    return 1
+  fi
+
   # Recorded here rather than in `main`: this is where the finding was made,
   # and a row recorded now survives every later abort - including a preflight
   # failure, which would otherwise publish a report that never mentioned it.
@@ -11777,7 +12140,7 @@ row_20_repository_boundary() {
   status="$(git status --porcelain -- "${PROTECTED_PATHS[@]}" 2>&1)" || rc=$?
   {
     printf '## Repository boundary - the Maven tree and governance files are untouched\n'
-    printf '# command: git status --porcelain -- %s\n' "${PROTECTED_PATHS[*]}"
+    command_line "git status --porcelain -- ${PROTECTED_PATHS[*]}"
     printf '# git exit status: %s\n' "$rc"
     printf '# output (empty is the pass):\n%s\n' "$status"
   } >>"$EV"
@@ -11882,8 +12245,8 @@ row_20_repository_boundary() {
     {
       printf '# baseline ref: %s (%s), verified an ancestor of HEAD\n' \
         "$baseline_ref" "$baseline_commit"
-      printf '# command: git diff --name-status %s HEAD -- %s (exit %s)\n' \
-        "$baseline_commit" "${PROTECTED_PATHS[*]}" "$rc"
+      command_line "git diff --name-status $baseline_commit HEAD -- ${PROTECTED_PATHS[*]}"
+      printf '# git exit status: %s\n' "$rc"
       printf '# output (empty is the pass):\n%s\n' "$boundary_diff"
     } >>"$EV"
     if [[ "$rc" -ne 0 ]]; then
@@ -11927,10 +12290,11 @@ row_20_repository_boundary() {
     printf 'reported\t%s\n' "$GATE_COUNT_REPORTED"
     printf 'run completed\t%s\n' "$RUN_COMPLETED"
     for index in "${!GATE_LABEL[@]}"; do
-      printf '%s\t%s\t%s\t%s\n' \
+      printf '%s\t%s\t%s\t%s\t%s\n' \
         "$(markdown_cell "${GATE_LABEL[$index]}")" \
         "$(markdown_cell "${GATE_STATUS[$index]}")" \
         "$(markdown_cell "${GATE_DETAIL[$index]}")" \
+        "$(markdown_cell "${GATE_COMMAND[$index]}")" \
         "$(markdown_cell "${GATE_EVIDENCE[$index]}")"
     done
   } | guarded_write "$material"
@@ -12065,10 +12429,17 @@ assemble_report() {
     printf '  technical specification (AAP section 0.10.1), executed in that order.\n\n'
 
     printf '## Gates\n\n'
-    printf '| # | Gate / Rule | Verdict | Detail | Evidence |\n'
-    printf '|---|-------------|---------|--------|----------|\n'
+    # The Command column states what each row RAN, beside its verdict: the
+    # validation table defines every row as a measurement command, so a report
+    # that gave the verdict and the detail alone left the reader to find the
+    # command in this script - or in the row's evidence file, where five rows
+    # did not write one at all. Each cell holds the same string the row's
+    # evidence prints on its `# command:` line, because `command_line` writes
+    # both from one argument.
+    printf '| # | Gate / Rule | Verdict | Detail | Command | Evidence |\n'
+    printf '|---|-------------|---------|--------|---------|----------|\n'
     if [[ "${#GATE_LABEL[@]}" -eq 0 ]]; then
-      printf '| - | (no row completed) | - | the run ended before any row finished | `none` |\n'
+      printf '| - | (no row completed) | - | the run ended before any row finished | none | `none` |\n'
     fi
     # Every cell is encoded by `markdown_cell`, which depends on no external
     # tool for the reason given at its definition - and on all four values,
@@ -12078,12 +12449,16 @@ assemble_report() {
     # forges a column.
     for index in "${!GATE_LABEL[@]}"; do
       # The evidence path is a value a row supplied, so it is not wrapped in
-      # backticks either, for the reason given at the header above.
-      printf '| %s | %s | %s | %s | %s |\n' \
+      # backticks either, for the reason given at the header above - and the
+      # command cell least of all: it quotes grep patterns, sbt commands and
+      # javap invocations, which carry pipes, backticks and dollar signs of
+      # their own and are exactly what `markdown_cell` is for.
+      printf '| %s | %s | %s | %s | %s | %s |\n' \
         "$((index + 1))" \
         "$(markdown_cell "${GATE_LABEL[$index]}")" \
         "$(markdown_cell "${GATE_STATUS[$index]}")" \
         "$(markdown_cell "${GATE_DETAIL[$index]}")" \
+        "$(markdown_cell "${GATE_COMMAND[$index]}")" \
         "$(markdown_cell "${GATE_EVIDENCE[$index]}")"
     done
 
@@ -12377,10 +12752,19 @@ install_traps() {
 #-----------------------------------------------------------------------------
 
 main() {
+  # The mode, decided by the one function that holds the argument contract -
+  # so that an invocation this script does not understand is refused here just
+  # as it is refused inside `init_run`, and a surplus word after a flag that
+  # IS understood cannot be discarded on the way past. `classify_invocation`
+  # returns rather than exits, precisely so that it can be read here through a
+  # command substitution without the exit being swallowed by the subshell.
+  local invocation
+  invocation="$(classify_invocation "$@")" || exit 2
+
   # One mode runs no gate: the uploader's integrity check. It is intercepted
   # before `init_run` deliberately - it must take no lock, create nothing and
   # empty nothing, because it runs while and after another step owns the tree.
-  if [[ "${1:-}" == "--verify-publication" ]]; then
+  if [[ "$invocation" == "verify-publication" ]]; then
     set -uo pipefail
     export LC_ALL=C
     resolve_locations
@@ -12471,21 +12855,24 @@ main() {
   # out-of-band pull-request review by a CODEOWNERS owner, carried by
   # mergify's `#approved-reviews-by>=1` condition.
   #
-  # The wording is FIXED. The specification states what this row says -
-  # "automated checks passed; manual approval: see PR review" - and it says it
-  # verbatim, on every run. Substituting a different sentence when the
-  # automated half failed would make this row's text depend on another row's
-  # verdict, so a reader could no longer rely on finding the prescribed line,
-  # and a tool that looks for it would not find it. Nothing is concealed by
-  # that: the automated half is its own PASS/FAIL row immediately above, it is
-  # counted in the summary line and in the exit status, and the evidence file
-  # this row points at is that row's evidence.
+  # The prescribed WORDING is fixed. The specification states what this row
+  # says - "automated checks passed; manual approval: see PR review" - and
+  # `gate7_manual_detail` prints that sentence verbatim on every run, so a
+  # reader or a tool looking for it always finds it. What that function adds,
+  # and only when the automated half did not pass, is a qualifier naming that
+  # row's actual verdict: the prescribed sentence opens by asserting that the
+  # automated checks passed, and a table in which one row asserts that while
+  # the row above it says FAIL tells a reader something untrue about this run.
+  # Nothing is concealed either way - the automated half is its own PASS/FAIL
+  # row immediately above, counted in the summary line and in the exit status,
+  # and the evidence file this row points at is that row's evidence.
   #
-  # The evidence path is read positionally - the row that has just run is the
-  # last element of each array - so that inserting a row above cannot silently
-  # point this one at a different row's evidence.
+  # The verdict and the evidence path are both read positionally - the row
+  # that has just run is the last element of each array - so that inserting a
+  # row above cannot silently make this one describe a different row.
   local last=$((${#GATE_STATUS[@]} - 1))
-  record_reported_row "Gate 7 - migration note (manual approval)" "$GATE7_MANUAL_TEXT" \
+  record_reported_row "Gate 7 - migration note (manual approval)" \
+    "$(gate7_manual_detail "${GATE_STATUS[$last]:-absent}")" \
     "${GATE_EVIDENCE[$last]:-none}"
 
   run_gate "Test scope >= Java" row_19_test_scope

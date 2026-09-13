@@ -8,6 +8,8 @@ package com.opengamma.strata.basics.schedule
 import java.time.LocalDate
 import java.time.Period
 
+import scala.util.Try
+
 import cats.Eq
 import cats.Hash
 import cats.Order
@@ -25,6 +27,7 @@ import org.scalatest.prop.TableFor3
 import org.scalatest.prop.TableFor4
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.result.ResultNec
 import com.opengamma.strata.collect.testkit.ResultMatchers._
@@ -55,17 +58,21 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
 
   /**
-   * The number of draws the one generated property of this file is checked against: the
-   * idempotence and length-preservation property inside `test_normalized`.
+   * The number of draws the two generated properties of this file are checked against: the
+   * idempotence and length-preservation property inside `test_normalized`, and the agreement of
+   * the text parse with `java.time.Period` inside
+   * `test_parse_agrees_with_java_time_generated`.
    *
-   * That property draws a month count from 1 to 12,000 - the whole range the factories of this
+   * The first draws a month count from 1 to 12,000 - the whole range the factories of this
    * type admit - against a day count from 0 to 400, some 4.8 million pairs, so the default
    * sample of a handful of draws would say very little about it. Five hundred draws spread
    * across that range, and the three canonicalisation corners the property exists to pin are
    * named as generator specials at the property itself, which gives them far more weight than a
    * uniform draw would: reading the property probabilistically, those corners are very likely to
    * be visited within five hundred draws rather than certain to be. Five hundred is also cheap -
-   * the property builds four frequencies per draw and nothing else.
+   * the property builds four frequencies per draw and nothing else. The second draws text from a
+   * space of comparable size - a prefix and up to three sections of a sign, a count and a unit -
+   * and one parse per draw is cheaper still, so the same count serves it.
    *
    * The count governs generator-driven checks only, so the table-driven `forAll(data_...)` tests
    * below are unaffected by it: each of those evaluates every row of its table, always.
@@ -319,6 +326,85 @@ final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPrope
     ("-2D", FailureReason.INVALID),
     ("PTerm", FailureReason.PARSING)
   )
+
+  /**
+   * The corpus `test_parse_agrees_with_java_time` reads, one text per row.
+   *
+   * Every text of it is named for a reason, and the reasons are worth stating because the parse
+   * reads the text with a walk of its own rather than by handing it to `java.time.Period`, and
+   * the one thing that walk owes its caller is that no text reads differently than it did. The
+   * rows cover: the four term spellings in every case, which are decided before any period is
+   * read, and `PTerm` and `2T`, which are not among them; both spellings of an accepted
+   * frequency, with and without the ISO-8601 prefix; the case rules, which admit `3m` and `P3m`
+   * while refusing `p3m`, only an upper-case `P` counting as a prefix already present; the
+   * lengths canonicalisation moves - `P7D` to `P1W`, `P1Y` and `P12M` to the one annual value,
+   * `P30M` to `P2Y6M`; the counts at and past the bounds of an `Int`, including a week count
+   * whose folding into days overflows; the periods that read perfectly well and are then refused
+   * by [[Frequency.of]] for being zero, negative or longer than a thousand years; and the
+   * malformed shapes - empty text, a bare `P`, a bare number, a repeated or misordered section,
+   * a decimal point, a time part, surrounding space, a non-ASCII digit, and text that is not a
+   * period at all.
+   */
+  private val data_parseAgreement: TableFor1[String] = Table(
+    "text",
+    "", "P", "3M", "P3M", "p3m", "P3m", "3m", "2D", "2W", "6W", "12M", "1Y", "10Y", "P1Y2M3D",
+    "P1Y2M", "P2Y6M", "P1W3D", "P7D", "P0D", "0D", "P-2D", "-2D", "-P2D", "+P2D", "P+2D",
+    "P2147483647D", "P2147483648D", "P99999999999999999999D", "P2147483647W", "2K", "Rubbish",
+    "P3M4", "3M4", "PT1H", "P1D2Y", "P1M1Y", " P3M", "P3M ", "P3.5M", "P1M2", "M3", "3", "-",
+    "+", "PP3M", "P3MM", "p", "P3W4D", "P1Y1M1W1D", "Term", "TERM", "term", "tErM", "T", "t",
+    "0T", "1T", "2T", "PTerm", "P1y2m3w4d", "P000000000000003M", "P0Y0M0W0D", "P\uFF11M",
+    "P306783379W", "P306783379W-2147483645D", "P1W-2147483648D", "P-2147483648D",
+    "P-2147483649D", "P1D1D", "P2W1W", "P1Y1Y", "P 3M", "PD", "P-D", "1P", "P1", "P30M", "P1001Y",
+    "P12001M", "P91D", "P364D"
+  )
+
+  /**
+   * Every text the combination sweep of `test_parse_agrees_with_java_time` reads.
+   *
+   * The corpus above names the shapes a reader would think of; this is the mechanical
+   * complement, assembled from the pieces of the grammar rather than chosen: a prefix, then a
+   * section of a sign, a count and a unit letter, then a tail that is sometimes another section
+   * and sometimes debris. Four thousand three hundred and twenty texts result, the great majority
+   * of them refusals, which is the half of the behaviour that used to be reported by a
+   * constructed exception and is therefore the half most worth sweeping.
+   */
+  private val data_parseAgreementCombinations: TableFor1[String] = Table(
+    "text",
+    (for {
+      prefix <- List("P", "p", "")
+      sign <- List("", "-", "+")
+      count <- List("0", "1", "7", "12", "000012", "2147483647", "2147483648", "306783379")
+      unit <- List("Y", "y", "M", "m", "W", "w", "D", "d", "", "X")
+      tail <- List("", "3D", "-3d", "1Y", "2W7D", "4")
+    } yield prefix + sign + count + unit + tail): _*
+  )
+
+  /**
+   * Parses a frequency as the exception-driven implementation this port replaced parsed it.
+   *
+   * This is that implementation, in full: refuse text past the ceiling of the grammar, answer the
+   * term frequency for the four term spellings in any case, prefix a missing upper-case `P`, hand
+   * the text to `java.time.Period.parse` and let the `DateTimeParseException` it throws for text
+   * it cannot read stand for a refusal, then run [[Frequency.of]] over the period it read. It is
+   * the oracle of the agreement test, so that the walk [[Frequency.parse]] now reads text with is
+   * held to a statement of the grammar that does not depend on the walk being right.
+   *
+   * @param toParse  the text to parse
+   * @return the outcome the exception-driven implementation produced for that text
+   */
+  private def exceptionDrivenParse(toParse: String): Either[Failure, Frequency] =
+    if (toParse.length > 256) {
+      Left(Failure.Parsing("Frequency string must not exceed 256 characters"))
+    } else if (toParse.equalsIgnoreCase("Term") || toParse.equalsIgnoreCase("T") ||
+      toParse.equalsIgnoreCase("0T") || toParse.equalsIgnoreCase("1T")) {
+      Right(Frequency.TERM)
+    } else {
+      val prefixed = if (toParse.startsWith("P")) toParse else "P" + toParse
+      Try(Period.parse(prefixed)).toEither match {
+        case Right(period) => Frequency.of(period).left.map(Failure.collapse)
+        case Left(_) => Left(Failure.Parsing(s"Unable to parse frequency: '$toParse'"))
+      }
+    }
 
   //-------------------------------------------------------------------------
   test("test_of_int") {
@@ -643,6 +729,83 @@ final class FrequencySpec extends AnyFunSuite with Matchers with ScalaCheckPrope
   test("test_parse_String_bad") {
     forAll(data_parseBad) { (text: String, reason: FailureReason) =>
       Frequency.parse(text) should beFailureWith(reason)
+    }
+  }
+
+  /**
+   * Asserts that reading the text with a walk reads every text exactly as `java.time.Period`
+   * read it.
+   *
+   * No counterpart in the Java test class: the Java method handed the text to `Period.parse`
+   * inside a `try`/`catch`, and so did this port until the cost of that was measured. A
+   * rejection built a `DateTimeParseException` - message, captured text and stack trace - to be
+   * discarded by the `Try` that caught it, and an acceptance built a regular-expression matcher
+   * over the text; the parse answers a failure value, so neither was anything a caller could
+   * observe. The text is now read by a walk of its characters, and this test is what says the
+   * substitution moved nothing: the '''whole''' outcome is compared, so the value of an
+   * acceptance and the reason, the message and the attributes of a refusal are all compared, and
+   * the oracle it is compared against is the exception-driven implementation itself.
+   *
+   * Three things about this type make the comparison say more here than a comparison of readable
+   * text against unreadable text would. The term spellings are decided ahead of any period, so
+   * `T` is the term frequency while `PTerm` and `2T` are not periods at all; the length a period
+   * names is canonicalised, so `P7D`, `P1Y` and `P30M` must still arrive at `P1W`, the one
+   * annual value and `P2Y6M`; and a period this type cannot hold is refused by
+   * [[Frequency.of]] with that factory's own message, so `-2D` remains an `INVALID` failure
+   * saying the period is negative rather than a `PARSING` failure saying the text is bad.
+   */
+  test("test_parse_agrees_with_java_time") {
+    forAll(data_parseAgreement) { (text: String) =>
+      Frequency.parse(text) shouldBe exceptionDrivenParse(text)
+    }
+    forAll(data_parseAgreementCombinations) { (text: String) =>
+      Frequency.parse(text) shouldBe exceptionDrivenParse(text)
+    }
+    // the sweep is the size it claims to be, so a table that silently collapsed - a `for`
+    // comprehension over an empty list is still a table - could not leave this test passing
+    data_parseAgreementCombinations.size shouldBe 4320
+  }
+
+  /**
+   * Asserts the same agreement over generated text, drawn rather than tabulated.
+   *
+   * The two tables above are chosen, and a chosen corpus can only cover the shapes whoever chose
+   * it thought of. This property assembles its text from the pieces of the grammar - a prefix,
+   * then up to three sections of a sign, a count and a unit letter - and draws from the
+   * assembly, so a combination no table names is reachable: a unit repeated at a distance, a
+   * count whose digits overflow only after the earlier sections have been read, a letter the
+   * grammar does not admit in the position of a unit. The counts include both bounds of an `Int`
+   * and one past each, and the units include the four of the grammar in both cases, the empty
+   * string - which makes the section run into the next - and a letter that is no unit at all.
+   *
+   * The draw is compared against the same exception-driven oracle the tables are, which is what
+   * makes a generated text useful here: neither side of the comparison needs to know what the
+   * text means for the comparison to be decisive.
+   */
+  test("test_parse_agrees_with_java_time_generated") {
+    val sections: Gen[String] = for {
+      count <- Gen.choose(0, 3)
+      drawn <- Gen.listOfN(
+        count,
+        for {
+          sign <- Gen.oneOf("", "-", "+")
+          digits <- Gen.oneOf(
+            "0",
+            "1",
+            "7",
+            "12",
+            "0000007",
+            "306783378",
+            "306783379",
+            "2147483647",
+            "2147483648",
+            "9999999999999999999")
+          unit <- Gen.oneOf("Y", "y", "M", "m", "W", "w", "D", "d", "", "Q")
+        } yield sign + digits + unit)
+    } yield drawn.mkString
+    forAll(Gen.oneOf("P", "p", ""), sections) { (prefix: String, spelled: String) =>
+      val text = prefix + spelled
+      Frequency.parse(text) shouldBe exceptionDrivenParse(text)
     }
   }
 

@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics.currency
 
+import scala.collection.immutable.HashMap
+
 /**
  * The conventional currency pair reference data of the module, expressed as immutable Scala data.
  *
@@ -14,9 +16,12 @@ package com.opengamma.strata.basics.currency
  * to. Nothing is read at run time, so the table is complete once this object initialises and
  * cannot be absent or partial.
  *
- * It holds data only and no behaviour. `CurrencyPair` is its consumer and reads [[rows]] and
- * [[rateDigitsByCurrencies]] to answer `isConventional` and `getRateDigits`. Those two member
- * names are the published contract of this object and are kept stable.
+ * It holds data only and no behaviour. `CurrencyPair` is its consumer and reads [[rows]],
+ * [[rateDigitsByCurrencies]] and [[rateDigitsByBase]] to answer `isConventional` and
+ * `getRateDigits`. The first two member names are the published contract of this object and are
+ * kept stable - the reference-data manifest test reads both of them, `rateDigitsByCurrencies` down
+ * to its size and the shape of its keys - while the third is the lookup view the module's own
+ * predicates descend, added beside them rather than in place of either.
  *
  * That contract is offered to the module and to nothing outside it, which is why the object is
  * qualified `private[basics]`: these rows are reference data that the module's own types consume,
@@ -52,6 +57,8 @@ package com.opengamma.strata.basics.currency
  *  - [[rows]] holds exactly 92 entries, in the published order, with one number of fractional
  *    digits for each pair.
  *  - The 92 keys are distinct, and no key has its inverse also present.
+ *  - [[rateDigitsByCurrencies]] and [[rateDigitsByBase]] are two views of those same 92 rows and
+ *    answer identically for every pair of currencies, because both are derived from [[rows]].
  *  - `rateDigits` is 0 for 1 row, 2 for 14 rows, 3 for 10 rows, 4 for 61 rows and 5 for 6 rows.
  *  - The 54 currencies the table names are all members of [[Currency]], each reached through its
  *    named constant rather than through a code, so a currency that did not exist would be a
@@ -62,7 +69,7 @@ package com.opengamma.strata.basics.currency
  *
  * ===Thread safety===
  *
- * Both members are immutable values computed once while this object initialises, and nothing here
+ * Every member is an immutable value computed once while this object initialises, and nothing here
  * changes afterwards. They may be shared freely between threads.
  *
  * @see [[CurrencyData]] for the currency table and the market convention priority ordering
@@ -210,4 +217,59 @@ private[basics] object CurrencyPairData {
    */
   val rateDigitsByCurrencies: Map[(Currency, Currency), Int] =
     rows.iterator.map { case (base, counter, rateDigits) => (base, counter) -> rateDigits }.toMap
+
+  /**
+   * The rate digits of each conventional pair, keyed by base currency and then by counter
+   * currency, held for lookup rather than for iteration.
+   *
+   * This is the view `CurrencyPair.isConventional` and `CurrencyPair.getRateDigits` descend, and it
+   * exists because those two are pure predicates called in loops - a conversion walking a matrix of
+   * currencies asks them once per cell - and a lookup that allocates cannot be hoisted out of such
+   * a loop by the JIT. Reaching [[rateDigitsByCurrencies]] costs a `Tuple2` for the composite key
+   * and the `Some` that `get` wraps its answer in, on every call; descending this view costs
+   * neither, because a nested lookup is keyed by a currency each consumer already holds and
+   * `getOrElse` answers with the value itself rather than with an `Option` of it. Nothing is boxed
+   * per call either: the digits were boxed once, when this table was built, and the "not
+   * configured" answer the consumer supplies is a small enough integer to be served by the cache
+   * of `java.lang.Integer`.
+   *
+   * The type is written as `HashMap` rather than as `Map` deliberately, at both levels, and that
+   * is a statement about the representation rather than about the interface: the `Map` factory
+   * answers with one of `Map1`…`Map4` for a handful of entries and with a `HashMap` beyond that,
+   * so a `Map`-typed member would be a trie for the base currencies and a linear scan of up to
+   * four keys for most of the inner tables. Naming `HashMap` fixes one representation, so a
+   * lookup costs the same for the base currency with thirty counter currencies as for one with a
+   * single counter, and it is also exactly what the derivation below produces - `HashMap.updated`
+   * answers a `HashMap` - so the type states what is there rather than widening it.
+   *
+   * ===Why this is added rather than substituted===
+   *
+   * [[rateDigitsByCurrencies]] stays exactly as it is, with the same type and the same 92 entries:
+   * it is what the reference-data manifest test reads, keys included, to verify that the
+   * transcription of the published table is faithful, and that test is the reason this object can
+   * be trusted at all. A lookup view is not a reason to change what the data publishes, so the
+   * fast path is added beside the published table - the same relationship `CountryData` holds
+   * between its published code tables and its hash indexes - and both views are derived from
+   * [[rows]], so no second transcription exists that could disagree with the first.
+   *
+   * Like the table above it is keyed by the two currencies rather than by a `CurrencyPair`, for
+   * the reason recorded on this object: keying by the pair type would make this object depend on
+   * the very type that depends on it, leaving a cycle to be resolved while the two initialise.
+   * The nesting is the shape the consumer's questions have - is ''this'' direction configured,
+   * and then is the ''inverse'' configured - so each question is one descent from a base currency.
+   *
+   * The qualifier is stated on this member, where the two above leave it to the object, to record
+   * that it is the module's own fast path and not part of the contract the manifest verifies: a
+   * consumer outside this module could not reach it in any event, since the object itself is
+   * `private[basics]`.
+   */
+  private[basics] val rateDigitsByBase: HashMap[Currency, HashMap[Currency, Int]] =
+    rows.iterator.foldLeft(HashMap.empty[Currency, HashMap[Currency, Int]]) {
+      case (accumulated, (base, counter, rateDigits)) =>
+        accumulated.updated(
+          base,
+          accumulated
+            .getOrElse(base, HashMap.empty[Currency, Int])
+            .updated(counter, rateDigits))
+    }
 }

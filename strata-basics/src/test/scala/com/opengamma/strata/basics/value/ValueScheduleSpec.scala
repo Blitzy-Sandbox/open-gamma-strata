@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics.value
 
+import java.time.LocalDate
+
 import cats.Hash
 import cats.Show
 import cats.data.NonEmptyList
@@ -552,6 +554,223 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     result should beFailure
     result should beFailureWith(FailureReason.INVALID)
     result should haveFailureMessageMatching(".*two steps resolved to the same schedule period.*")
+  }
+
+  //-------------------------------------------------------------------------
+  // The fixtures of the four tests below, which resolve against a schedule long enough for the
+  // per-period cost of resolution to be visible and for both lookup strategies of
+  // `ValueStep.PeriodIndex` to be reached. Nothing above this line uses them.
+
+  /** The number of periods of the long schedule those four tests resolve against. */
+  private val LongScheduleSize: Int = 240
+
+  /** The unadjusted start date of the first period of that schedule. */
+  private val LongScheduleStart: LocalDate = date(2014, 1, 1)
+
+  /**
+   * A schedule of 240 consecutive monthly periods, needing no date adjustment.
+   *
+   * Long enough that a resolution placing a single step over it would be dominated by anything
+   * built per period, and long enough to hold more steps than the point at which a
+   * [[ValueStep.PeriodIndex]] switches from scanning its periods to indexing them, so the tests
+   * below reach both of its strategies through the public resolution entry point.
+   */
+  private val LongSchedule: Schedule = {
+    val periods: List[SchedulePeriod] =
+      List.tabulate(LongScheduleSize)(index =>
+        ok(
+          SchedulePeriod.of(
+            LongScheduleStart.plusMonths(index.toLong),
+            LongScheduleStart.plusMonths(index + 1L))))
+    ok(
+      Schedule.of(
+        NonEmptyList.fromList(periods).getOrElse(fail("the long schedule fixture has no periods")),
+        Frequency.P1M,
+        RollConventions.DAY_1))
+  }
+
+  /** The initial value every resolution of the long schedule starts from. */
+  private val LongScheduleInitialValue: Double = 10000.0d
+
+  /**
+   * The adjustment carried by the step placed at the specified period of the long schedule.
+   *
+   * Every index gets a different amount, so the value of a period depends on which adjustments
+   * were applied before it and in what order: a run filled with the wrong value in force, or
+   * adjustments applied out of index order, changes the expected array rather than leaving it
+   * coincidentally right.
+   *
+   * @param index  the index of the period the step is placed at
+   * @return the adjustment that step carries
+   */
+  private def adjustmentAt(index: Int): ValueAdjustment =
+    ValueAdjustment.ofDeltaAmount((index + 1).toDouble)
+
+  /**
+   * Date-positioned steps at the specified periods of the long schedule.
+   *
+   * Each step names the unadjusted start date of its period, which the first matching pass of
+   * resolution finds, so a step built here resolves to the index it was built from.
+   *
+   * @param indices  the indices of the periods to place steps at
+   * @return one step per index, in that order
+   */
+  private def dateStepsAt(indices: List[Int]): List[ValueStep] =
+    indices.map(index =>
+      ValueStep.of(LongSchedule.period(index).unadjustedStartDate, adjustmentAt(index)))
+
+  /**
+   * The adjustments the steps above assign to periods, keyed by period index.
+   *
+   * @param indices  the indices of the periods those steps are placed at
+   * @return the adjustment assigned to each of those periods
+   */
+  private def adjustmentsAt(indices: List[Int]): Map[Int, ValueAdjustment] =
+    indices.map(index => index -> adjustmentAt(index)).toMap
+
+  /**
+   * The values of the long schedule computed by the naive per-period recurrence.
+   *
+   * This is the reference the run-filling implementation is compared against, and it is written as
+   * the recurrence itself rather than as the implementation it checks: one lookup per period, the
+   * adjustment found applied to the value the previous period ended with, seeded with the initial
+   * value and with that seed dropped. It is deliberately the shape that is too expensive to ship -
+   * a lookup and a boxed value per period - so that the cheaper shape has something independent to
+   * agree with.
+   *
+   * @param adjustments  the adjustments assigned to periods, keyed by period index
+   * @return the value of each period of the long schedule, in schedule order
+   */
+  private def referenceValues(adjustments: Map[Int, ValueAdjustment]): DoubleArray =
+    DoubleArray.copyOf(
+      (0 until LongScheduleSize)
+        .scanLeft(LongScheduleInitialValue)((value, index) =>
+          adjustments.get(index).fold(value)(_.adjust(value)))
+        .tail
+        .toVector)
+
+  //-------------------------------------------------------------------------
+  test("test_resolveValues_manyPeriods_singleStep") {
+    // One step over a schedule of 240 periods, positioned both ways. Before the period it places,
+    // every value is the initial value; from that period on, every value is the adjusted one. This
+    // is the resolution whose per-period cost was the point of the fix - a definition holding a
+    // single step - and it is pinned to the naive recurrence rather than to a written-out array.
+    val stepIndex: Int = 100
+    val expected: DoubleArray = referenceValues(adjustmentsAt(List(stepIndex)))
+
+    val dateBased: ValueSchedule =
+      ok(ValueSchedule.of(LongScheduleInitialValue, dateStepsAt(List(stepIndex))))
+    dateBased.resolveValues(LongSchedule) should haveValue(expected)
+
+    val indexBased: ValueSchedule =
+      ok(
+        ValueSchedule.of(
+          LongScheduleInitialValue,
+          List(ok(ValueStep.of(stepIndex, adjustmentAt(stepIndex))))))
+    indexBased.resolveValues(LongSchedule) should haveValue(expected)
+
+    // The two positions of one step are two ways of naming one period, so the two resolutions are
+    // the same array - which is also what says the index-positioned step is answered from the
+    // period count alone and asks the periods nothing.
+    indexBased.resolveValues(LongSchedule) shouldBe dateBased.resolveValues(LongSchedule)
+
+    // The values either side of the step, stated directly, so a run filled with the wrong value
+    // in force fails here as well as against the reference.
+    expected.get(stepIndex - 1) shouldBe LongScheduleInitialValue
+    expected.get(stepIndex) shouldBe LongScheduleInitialValue + (stepIndex + 1).toDouble
+    expected.get(LongScheduleSize - 1) shouldBe expected.get(stepIndex)
+  }
+
+  test("test_resolveValues_piecewiseFill_matchesRecomputation") {
+    // Every shape the run-filling recurrence meets, each resolved through the public entry point
+    // and compared against the naive per-period recurrence: an adjustment on the first period,
+    // where there is no run before it; two on adjacent periods, where the run between them is
+    // empty; one on the last period, where there is no run after it; both ends at once; and step
+    // counts on either side of the point at which the period index stops scanning and starts
+    // indexing, so the same recurrence is checked under both of its strategies.
+    val threshold: Int = ValueStep.PeriodIndex.IndexedLookupThreshold
+    val cases: List[List[Int]] =
+      List(
+        List(0),
+        List(0, 1),
+        List(LongScheduleSize - 1),
+        List(LongScheduleSize - 2, LongScheduleSize - 1),
+        List(0, 1, 2, LongScheduleSize - 2, LongScheduleSize - 1),
+        (0 until threshold - 1).toList,
+        (0 until threshold).toList,
+        (0 until threshold + 1).toList,
+        (0 until LongScheduleSize by 3).toList,
+        (0 until LongScheduleSize).toList)
+    cases.foreach { indices =>
+      val test: ValueSchedule = ok(ValueSchedule.of(LongScheduleInitialValue, dateStepsAt(indices)))
+      test.resolveValues(LongSchedule) should haveValue(referenceValues(adjustmentsAt(indices)))
+    }
+
+    // A definition mixing an index-positioned step with date-positioned ones. Only the
+    // date-positioned steps are counted when the strategy is chosen, because they are the only
+    // ones that ask the periods anything, and the mixture resolves to what the same adjustments
+    // resolve to when every step is positioned by date.
+    val mixedIndices: List[Int] = List(0, 7, 30)
+    val mixedSteps: List[ValueStep] =
+      dateStepsAt(List(0)) ::: List(ok(ValueStep.of(7, adjustmentAt(7)))) ::: dateStepsAt(List(30))
+    ok(ValueSchedule.of(LongScheduleInitialValue, mixedSteps)).resolveValues(LongSchedule) should
+      haveValue(referenceValues(adjustmentsAt(mixedIndices)))
+    ok(ValueSchedule.of(LongScheduleInitialValue, mixedSteps)).resolveValues(LongSchedule) shouldBe
+      ok(ValueSchedule.of(LongScheduleInitialValue, dateStepsAt(mixedIndices)))
+        .resolveValues(LongSchedule)
+  }
+
+  test("test_resolveValues_manySteps_stepInsidePeriod") {
+    // A step whose date falls '''inside''' a period rather than on one of its boundaries, which is
+    // the only step that asks for the period preceding it - the question the period index answers
+    // either by walking its periods or by searching the prefix maxima of their start dates. The
+    // step is placed alongside enough date-positioned steps to reach the indexing strategy, so
+    // this is where that search is exercised through the public entry point; the same step on its
+    // own, below, is where the walk is.
+    val threshold: Int = ValueStep.PeriodIndex.IndexedLookupThreshold
+    val indices: List[Int] = (1 to threshold).toList
+    val insideDate: LocalDate = LongSchedule.period(5).unadjustedStartDate.plusDays(3L)
+
+    // an adjustment that changes nothing where it falls is allowed, whichever strategy answers
+    val noChangeStep: ValueStep = ValueStep.of(insideDate, ValueAdjustment.ofDeltaAmount(0.0d))
+    ok(ValueSchedule.of(LongScheduleInitialValue, dateStepsAt(indices) :+ noChangeStep))
+      .resolveValues(LongSchedule) should haveValue(referenceValues(adjustmentsAt(indices)))
+    ok(ValueSchedule.of(LongScheduleInitialValue, List(noChangeStep)))
+      .resolveValues(LongSchedule) should
+      haveValue(referenceValues(Map.empty[Int, ValueAdjustment]))
+
+    // one that would change the value of the period it falls in is reported, by the same message
+    // under both strategies
+    val changingStep: ValueStep = ValueStep.of(insideDate, ValueAdjustment.ofReplace(1.0d))
+    val indexed: FailureOr[DoubleArray] =
+      ok(ValueSchedule.of(LongScheduleInitialValue, dateStepsAt(indices) :+ changingStep))
+        .resolveValues(LongSchedule)
+    indexed should beFailure
+    indexed should beFailureWith(FailureReason.INVALID)
+    indexed should haveFailureMessageMatching("^ValueStep date does not match a period boundary.*")
+    val scanned: FailureOr[DoubleArray] =
+      ok(ValueSchedule.of(LongScheduleInitialValue, List(changingStep))).resolveValues(LongSchedule)
+    scanned should beFailure
+    scanned should haveFailureMessageMatching("^ValueStep date does not match a period boundary.*")
+  }
+
+  test("test_resolveValues_manyPeriods_duplicateStepMessage") {
+    // Two steps resolving to one period of the long schedule with different adjustments. The
+    // message names the unadjusted start date of that period, which the index reaches by walking
+    // its own period list to that position rather than from a vector of every start date, so the
+    // date in the message is what says that walk lands where the step did.
+    val duplicateIndex: Int = 42
+    val collidingSteps: List[ValueStep] =
+      dateStepsAt(List(duplicateIndex)) :::
+        List(ok(ValueStep.of(duplicateIndex, ValueAdjustment.ofReplace(1.0d))))
+
+    val result: FailureOr[DoubleArray] =
+      ok(ValueSchedule.of(LongScheduleInitialValue, collidingSteps)).resolveValues(LongSchedule)
+    result should beFailure
+    result should beFailureWith(FailureReason.INVALID)
+    result should haveFailureMessageMatching(
+      ".*two steps resolved to the same schedule period starting on " +
+        s"${LongSchedule.period(duplicateIndex).unadjustedStartDate}.*")
   }
 
   //-------------------------------------------------------------------------

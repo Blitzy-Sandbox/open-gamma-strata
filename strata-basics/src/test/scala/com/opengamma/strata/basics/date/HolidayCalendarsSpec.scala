@@ -10,6 +10,7 @@ import java.time.DayOfWeek.SATURDAY
 import java.time.DayOfWeek.SUNDAY
 import java.time.DayOfWeek.THURSDAY
 import java.time.LocalDate
+import java.util.concurrent.atomic.AtomicInteger
 
 import cats.Hash
 import cats.Show
@@ -41,8 +42,18 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * `Either`, so every lookup below is asserted as an outcome and every failure compared as a
  * `FailureReason` value.
  *
+ * The suite also covers how the built-in set is '''presented''' as reference data, because that
+ * is a property of the calendars rather than of the store: `ReferenceData.standard` is built from
+ * `StandardHolidayCalendars.deferredByIdentifier` through
+ * `ImmutableReferenceData.ofDeferredMap`, so a lookup generates the one calendar it names and the
+ * four enumeration and comparison members generate every one. Those tests state the mechanism -
+ * which thunk ran, and how often - rather than a duration, so they assert what the design
+ * guarantees instead of what a machine happened to measure.
+ *
  * @see [[HolidaySafeReferenceData]] for the decoration `defaultingReferenceData` applies
  * @see [[HolidayCalendar]] for the sealed family, its composites and its JSON form
+ * @see [[com.opengamma.strata.basics.ImmutableReferenceData]] for the store the built-in set is
+ *   presented through, and for what its deferral does and does not change
  */
 class HolidayCalendarsSpec extends AnyFunSuite with Matchers {
 
@@ -82,6 +93,27 @@ class HolidayCalendarsSpec extends AnyFunSuite with Matchers {
    */
   private val WEEK_2014_07: List[LocalDate] =
     List(THU_2014_07_10, FRI_2014_07_11, SAT_2014_07_12, SUN_2014_07_13, MON_2014_07_14)
+
+  /**
+   * The first identifier of the counting fixture, named so that it is no built-in calendar.
+   *
+   * The three identifiers below are what the deferred-store tests file their counting ways of
+   * obtaining a calendar under. None of them is a name this library defines, so nothing those
+   * tests observe can be answered by the built-in set instead of by the fixture.
+   */
+  private val FIRST_ID: HolidayCalendarId = HolidayCalendarId.of("XAAA")
+
+  /** The second identifier of the counting fixture. */
+  private val SECOND_ID: HolidayCalendarId = HolidayCalendarId.of("XBBB")
+
+  /**
+   * The third identifier of the counting fixture, the one no test ever asks the store for
+   * directly - so its count is what says a lookup for another identifier produced nothing here.
+   */
+  private val THIRD_ID: HolidayCalendarId = HolidayCalendarId.of("XCCC")
+
+  /** The three identifiers of the counting fixture, in the order they are filed. */
+  private val COUNTED_IDS: List[HolidayCalendarId] = List(FIRST_ID, SECOND_ID, THIRD_ID)
 
   /** The four calendars [[HolidayCalendars]] publishes, in the order the holder declares them. */
   private val BUILT_IN: List[HolidayCalendar] =
@@ -581,6 +613,158 @@ class HolidayCalendarsSpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  test("test_deferredStore_producesOnlyTheIdentifierAskedFor") {
+    // A store built from ways of obtaining its values runs the one a lookup names, and runs it
+    // once. This is the mechanism `ReferenceData.standard` presents the thirty built-in calendars
+    // through, stated over counting thunks so that what ran is observed rather than timed: the
+    // count of a calendar the store was never asked for stays at zero however often the others
+    // are read, and the count of one that was asked for stays at one however often it is read.
+    val counted: CountedStore = countedStore()
+
+    // filing the entries produced nothing
+    counted.runs(FIRST_ID).get shouldBe 0
+    counted.runs(SECOND_ID).get shouldBe 0
+    counted.runs(THIRD_ID).get shouldBe 0
+
+    // every way of asking about one identifier produces that one value, and only it
+    counted.store.findValue(FIRST_ID).isDefined shouldBe true
+    counted.runs(FIRST_ID).get shouldBe 1
+    counted.runs(SECOND_ID).get shouldBe 0
+    counted.runs(THIRD_ID).get shouldBe 0
+
+    counted.store.containsValue(FIRST_ID) shouldBe true
+    counted.store.getValue(FIRST_ID) should haveValue(calendarOf(FIRST_ID))
+    counted.store.findValue(FIRST_ID) shouldBe Some(calendarOf(FIRST_ID))
+    withClue("an entry is produced at most once, however often it is read: ")(
+      counted.runs(FIRST_ID).get shouldBe 1)
+    counted.runs(SECOND_ID).get shouldBe 0
+    counted.runs(THIRD_ID).get shouldBe 0
+
+    // and the instance is the one the first read produced, not an equal one built again -
+    // `ImmutableHolidayCalendar` compares equal on its identifier alone, so this is the
+    // assertion that says the value was memoised rather than the one above
+    val first: HolidayCalendar =
+      counted.store.findValue(FIRST_ID).getOrElse(fail("the deferred store lost its first value"))
+    counted.store.findValue(FIRST_ID).foreach(again => again should be theSameInstanceAs first)
+
+    // a second identifier costs the second value and nothing more
+    counted.store.findValue(SECOND_ID).isDefined shouldBe true
+    counted.runs(FIRST_ID).get shouldBe 1
+    counted.runs(SECOND_ID).get shouldBe 1
+    counted.runs(THIRD_ID).get shouldBe 0
+
+    // an identifier the store does not hold produces nothing at all
+    counted.store.findValue(HolidayCalendarId.of("XNONE")) shouldBe None
+    counted.store.containsValue(HolidayCalendarId.of("XNONE")) shouldBe false
+    counted.runs(THIRD_ID).get shouldBe 0
+
+    // nor does merging: a merge moves the ways of obtaining the values, so laying a store over
+    // this one leaves everything it had not produced unproduced
+    val merged: ReferenceData =
+      store(ReferenceData.Entry(HolidayCalendarIds.GBLO, HolidayCalendars.SAT_SUN))
+        .combinedWith(counted.store)
+    merged.findValue(HolidayCalendarIds.GBLO) shouldBe Some(HolidayCalendars.SAT_SUN)
+    counted.runs(THIRD_ID).get shouldBe 0
+    merged.findValue(THIRD_ID).isDefined shouldBe true
+    counted.runs(THIRD_ID).get shouldBe 1
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_deferredStore_enumeratingAndComparingProduceEverything") {
+    // The four members that cannot answer about a store without every entry of it produce every
+    // entry of it, deliberately: an enumeration that omitted what had not been produced would
+    // report a different store to each caller, and two equal stores could then compare unequal.
+    // Each is asserted over its own store so that the count it leaves behind is its own.
+    val enumerated: CountedStore = countedStore()
+    enumerated.store.values should have size 3
+    enumerated.store.values.keys should contain theSameElementsAs COUNTED_IDS
+    COUNTED_IDS.foreach(id => enumerated.runs(id).get shouldBe 1)
+    withClue("the entries are materialised once, so reading them again produces nothing: ") {
+      enumerated.store.values should have size 3
+      COUNTED_IDS.foreach(id => enumerated.runs(id).get shouldBe 1)
+    }
+
+    val compared: CountedStore = countedStore()
+    compared.store shouldBe eagerStore()
+    COUNTED_IDS.foreach(id => compared.runs(id).get shouldBe 1)
+
+    val hashed: CountedStore = countedStore()
+    hashed.store.hashCode shouldBe eagerStore().hashCode
+    COUNTED_IDS.foreach(id => hashed.runs(id).get shouldBe 1)
+
+    val rendered: CountedStore = countedStore()
+    rendered.store.toString shouldBe eagerStore().toString
+    rendered.store.toString should include(FIRST_ID.name)
+    COUNTED_IDS.foreach(id => rendered.runs(id).get shouldBe 1)
+  }
+
+  //-------------------------------------------------------------------------
+  test("test_standardReferenceData_observableBehaviourUnchanged") {
+    // Presenting the built-in set one identifier at a time changes when a calendar is generated
+    // and nothing else, which is what this states: the value, its identity, membership,
+    // enumeration, equality with the same set filed eagerly, composite resolution, and the
+    // layering `ReferenceData.of` performs all answer as they did.
+    val standard: ImmutableReferenceData = ReferenceData.standard
+    withClue("the store is computed once, so every read is the same store: ")(
+      (ReferenceData.standard eq standard) shouldBe true)
+
+    // the value a lookup answers with '''is''' the built-in calendar, not an equal one: an
+    // `ImmutableHolidayCalendar` compares equal on its identifier alone, so identity is the only
+    // assertion that can say the built-in instance was the one supplied
+    standard.findValue(HolidayCalendarIds.GBLO).isDefined shouldBe true
+    standard
+      .findValue(HolidayCalendarIds.GBLO)
+      .foreach(calendar => calendar should be theSameInstanceAs StandardHolidayCalendars.GBLO)
+    standard
+      .findValue(HolidayCalendarIds.USNY)
+      .foreach(calendar => calendar should be theSameInstanceAs StandardHolidayCalendars.USNY)
+
+    // membership and enumeration cover the whole built-in set
+    StandardHolidayCalendars.all should have size 30
+    StandardHolidayCalendars.all.keys.foreach { id =>
+      withClue(s"$id: ") {
+        standard.containsValue(id) shouldBe true
+        standard.findValue(id) shouldBe Some(StandardHolidayCalendars.all(id))
+      }
+    }
+    standard.values should have size 30
+    standard.values.keys should contain theSameElementsAs StandardHolidayCalendars.all.keys
+
+    // and the store is the store the same set filed eagerly would be
+    val eager: ImmutableReferenceData = ImmutableReferenceData.ofMap(StandardHolidayCalendars.all)
+    standard shouldBe eager
+    standard.hashCode shouldBe eager.hashCode
+    standard.toString shouldBe eager.toString
+    standard.values shouldBe eager.values
+
+    // a composite identifier resolves through the store part by part, as it always has
+    val composite = HolidayCalendarId.of("GBLO+USNY").resolve(standard)
+    composite should haveValue(
+      StandardHolidayCalendars.GBLO.combinedWith(StandardHolidayCalendars.USNY))
+    composite.map(calendar => calendar.name) should haveValue("GBLO+USNY")
+    HolidayCalendarId.of("USNY+GBLO").resolve(standard) shouldBe composite
+    HolidayCalendarId.of("XNONE").resolve(standard) should beFailureWith(FailureReason.MISSING_DATA)
+
+    // and a caller's own entry is still laid over the minimal four, which the standard set's
+    // presentation has nothing to do with
+    val custom: HolidayCalendar = calendarOf(FIRST_ID)
+    val layered: ReferenceData = ReferenceData.of(ReferenceData.Entry(FIRST_ID, custom)) match {
+      case Right(data) => data
+      case Left(failure) => fail(s"Fixture reference data could not be built: ${failure.message}")
+    }
+    layered.findValue(FIRST_ID) shouldBe Some(custom)
+    List(
+      HolidayCalendarIds.NO_HOLIDAYS,
+      HolidayCalendarIds.SAT_SUN,
+      HolidayCalendarIds.FRI_SAT,
+      HolidayCalendarIds.THU_FRI).foreach { id =>
+      withClue(s"$id: ")(layered.findValue(id) shouldBe Some(StandardHolidayCalendars.minimal(id)))
+    }
+    withClue("the minimal set is what is laid underneath, not the whole built-in set: ")(
+      layered.findValue(HolidayCalendarIds.GBLO) shouldBe None)
+  }
+
+  //-------------------------------------------------------------------------
   /**
    * Builds a set of reference data holding exactly the entries given.
    *
@@ -598,4 +782,74 @@ class HolidayCalendarsSpec extends AnyFunSuite with Matchers {
       case Right(data) => data
       case Left(failure) => fail(s"Fixture reference data could not be built: ${failure.message}")
     }
+
+  /**
+   * A deferred store together with the number of times each of its values has been produced.
+   *
+   * The counts are what the deferred-store tests assert over: a store that produces only the
+   * value a lookup names cannot be told from one that produces all of them by the values
+   * themselves, which are equal either way, so the observation has to be of the work that ran.
+   * An `AtomicInteger` is used rather than a counter of any other kind because a `lazy val` is
+   * what defers the work and a `lazy val` may be reached from several threads.
+   *
+   * It is a plain final class rather than a case class because nothing matches on it and this
+   * suite has no companion for a nested type to live in, where a case class declared inside the
+   * suite would carry an outer reference its own type test cannot check.
+   *
+   * @param store  the store, whose values are produced by the counting ways of obtaining them
+   * @param runs  the number of times each identifier's way of obtaining its value has run
+   */
+  private final class CountedStore(
+      val store: ImmutableReferenceData,
+      val runs: Map[HolidayCalendarId, AtomicInteger])
+
+  /**
+   * Builds a weekend-only calendar carrying the identifier given.
+   *
+   * The content is immaterial to every assertion that uses it - `ImmutableHolidayCalendar`
+   * compares equal on its identifier alone - and a fresh instance is returned on each call, which
+   * is what lets a test say the store answered with the instance it produced first rather than
+   * with an equal one produced again.
+   *
+   * @param id  the identifier the calendar carries
+   * @return a weekend-only calendar of that identifier
+   */
+  private def calendarOf(id: HolidayCalendarId): HolidayCalendar =
+    ImmutableHolidayCalendar.of(id, Nil, List(SATURDAY, SUNDAY))
+
+  /**
+   * Builds a store over the three counted identifiers, none of its values produced.
+   *
+   * This is `ReferenceData.standard` in miniature: the same factory, the same shape of table -
+   * an identifier mapped to a way of obtaining its value - and three values that record when they
+   * are produced instead of thirty calendars that take a hundred and fifty years of rules each. A
+   * fresh store, with fresh counts, is built per call so that a test reads only the work it
+   * caused.
+   *
+   * @return the store and the counts of its three ways of obtaining a calendar
+   */
+  private def countedStore(): CountedStore = {
+    val runs: Map[HolidayCalendarId, AtomicInteger] =
+      COUNTED_IDS.map(id => id -> new AtomicInteger(0)).toMap
+    val deferred: Map[HolidayCalendarId, () => HolidayCalendar] =
+      COUNTED_IDS.map { id =>
+        id -> (() => {
+          val _ = runs(id).incrementAndGet()
+          calendarOf(id)
+        })
+      }.toMap
+    new CountedStore(ImmutableReferenceData.ofDeferredMap(deferred), runs)
+  }
+
+  /**
+   * Builds the store the counted identifiers would make if their values were filed as values.
+   *
+   * The store a deferred one has to be indistinguishable from: equality, hashing and rendering
+   * are properties of the entries a store holds and not of when it produced them, so each of the
+   * three is asserted against this.
+   *
+   * @return the same three entries, filed eagerly
+   */
+  private def eagerStore(): ImmutableReferenceData =
+    ImmutableReferenceData.ofMap(COUNTED_IDS.map(id => id -> calendarOf(id)).toMap)
 }

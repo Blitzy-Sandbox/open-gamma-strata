@@ -780,6 +780,68 @@ package com.opengamma.strata.collect.array {
       assertThrows[IndexOutOfBoundsException](test.`with`(0, 3, 2.0))
     }
 
+    test("with_changes_one_element_and_leaves_the_source_and_every_export_independent") {
+      // The single-element replacement copies the array of row references and clones only the row
+      // it changes, so the two matrices share every other row. That is the shape of the Java
+      // original and it is unobservable, which is what this test establishes rather than assumes:
+      // the source keeps every element it had, and nothing either matrix hands out is a path from
+      // one to the other.
+      val test = matrix3x2
+      val updated = test.`with`(1, 0, 9.5)
+      assertMatrix(updated, 1.0, 2.0, 9.5, 4.0, 5.0, 6.0)
+
+      // the source is completely unchanged, element by element and through its own export
+      assertMatrix(test, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+      positionsOf(test).filterNot { case (row, column) =>
+        bitsOf(test.get(row, column)) == bitsOf(rows3x2(row)(column))
+      } shouldBe empty
+      Arrays.deepEquals(
+        Array[AnyRef](test.toArray),
+        Array[AnyRef](rows3x2)) shouldBe true
+
+      // the two exports are independent structures, outer array and every row alike - including
+      // the rows the two matrices share internally, which is the case a shallow export would get
+      // wrong: writing to a row of one export reaches neither matrix and neither other export
+      val fromSource = test.toArray
+      val fromUpdated = updated.toArray
+      (fromSource eq fromUpdated) shouldBe false
+      positionsOf(test).map { case (row, _) => fromSource(row) eq fromUpdated(row) }.distinct
+        .shouldBe(List(false))
+      fromSource(0)(0) = 100.0
+      fromSource(2)(1) = 200.0
+      fromUpdated(0)(1) = 300.0
+      fromUpdated(2) = Array(400.0, 500.0)
+      assertMatrix(test, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+      assertMatrix(updated, 1.0, 2.0, 9.5, 4.0, 5.0, 6.0)
+
+      // the same for the row and column accessors, which are the other way out of a shared row
+      updated.rowArray(0)(0) = 600.0
+      updated.columnArray(1)(2) = 700.0
+      test.rowArray(2)(0) = 800.0
+      assertMatrix(test, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+      assertMatrix(updated, 1.0, 2.0, 9.5, 4.0, 5.0, 6.0)
+      updated.row(0) shouldBe DoubleArray.of(1.0, 2.0)
+      updated.row(1) shouldBe DoubleArray.of(9.5, 4.0)
+      updated.column(0) shouldBe DoubleArray.of(1.0, 9.5, 5.0)
+
+      // replacing again derives from the derived matrix, and the chain leaves every earlier
+      // matrix as it was, which is what shows no shared row is ever written
+      val twice = updated.`with`(1, 0, 11.5).`with`(0, 1, 12.5)
+      assertMatrix(twice, 1.0, 12.5, 11.5, 4.0, 5.0, 6.0)
+      assertMatrix(updated, 1.0, 2.0, 9.5, 4.0, 5.0, 6.0)
+      assertMatrix(test, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+
+      // and an operation over a matrix built this way reads the shared rows without writing them
+      assertMatrix(updated.multipliedBy(2.0), 2.0, 4.0, 19.0, 8.0, 10.0, 12.0)
+      assertMatrix(updated.map(value => value + 1.0), 2.0, 3.0, 10.5, 5.0, 6.0, 7.0)
+      assertMatrix(updated.transpose, 1.0, 9.5, 5.0, 2.0, 4.0, 6.0)
+      assertMatrix(updated, 1.0, 2.0, 9.5, 4.0, 5.0, 6.0)
+      assertMatrix(test, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+
+      // an unchanged value is still the same instance, so the copy is not made at all
+      updated.`with`(1, 0, 9.5) should be theSameInstanceAs updated
+    }
+
     //-------------------------------------------------------------------------
     test("test_multipliedBy") {
       val test = matrix3x2
@@ -1087,6 +1149,58 @@ package com.opengamma.strata.collect.array {
       assertMatrix(tabulated, 9.0, 2.0, 3.0, 4.0, 5.0, 6.0)
     }
 
+    test("copy_safety_of_the_shape_driven_factories_and_of_transpose") {
+      // The factories that compute their own elements, and the transpose, build the rectangle
+      // they keep inside the constructor rather than handing one over, so there is no buffer for
+      // a caller to have kept. What that leaves to assert is that nothing they answer with is a
+      // path into them, and - for the transpose - that it shares no row with the matrix it was
+      // derived from, which is the one operation whose result could have been assembled from the
+      // source's own rows.
+      val identity = DoubleMatrix.identity(3)
+      identity.toArray(0)(0) = 9.0
+      identity.rowArray(1)(1) = 8.0
+      identity.columnArray(2)(2) = 7.0
+      assertMatrix(identity, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+      val diagonal = DoubleMatrix.diagonal(DoubleArray.of(2.0, 3.0))
+      diagonal.toArray(0)(0) = 9.0
+      diagonal.rowArray(1)(1) = 8.0
+      assertMatrix(diagonal, 2.0, 0.0, 0.0, 3.0)
+
+      val filled = DoubleMatrix.filled(2, 2, 1.5)
+      filled.toArray(1)(1) = 9.0
+      assertMatrix(filled, 1.5, 1.5, 1.5, 1.5)
+
+      val blank = DoubleMatrix.filled(2, 2)
+      blank.toArray(1)(0) = 9.0
+      assertMatrix(blank, 0.0, 0.0, 0.0, 0.0)
+
+      val source = matrix3x2
+      val transposed = source.transpose
+      assertMatrix(transposed, 1.0, 3.0, 5.0, 2.0, 4.0, 6.0)
+
+      // no row of the transpose is a row of the source, whatever either of them hands back
+      val sourceRows = source.toArray
+      val transposedRows = transposed.toArray
+      (for {
+        left <- sourceRows.toList
+        right <- transposedRows.toList
+      } yield left eq right).distinct shouldBe List(false)
+
+      // and writing to anything either matrix hands out reaches neither of them
+      transposedRows(0)(0) = 9.0
+      transposedRows(1) = Array(8.0, 8.0, 8.0)
+      sourceRows(2)(1) = 7.0
+      transposed.rowArray(0)(1) = 6.0
+      transposed.columnArray(0)(0) = 5.0
+      assertMatrix(source, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+      assertMatrix(transposed, 1.0, 3.0, 5.0, 2.0, 4.0, 6.0)
+
+      // the transpose of the transpose is the source's elements again, at the source's shape
+      assertMatrix(transposed.transpose, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+      transposed.transpose shouldBe source
+    }
+
     test("no_member_hands_out_the_stored_rows") {
       // The copy safety above is asserted through the source, which is the right level for what
       // each member does and the wrong level for the claim that no member does otherwise: a
@@ -1142,7 +1256,14 @@ package com.opengamma.strata.collect.array {
         classOf[DoubleMatrix.MappedWithIndex],
         classOf[DoubleMatrix.PlusEach],
         classOf[DoubleMatrix.MinusEach],
-        classOf[DoubleMatrix.CombinedWith])
+        classOf[DoubleMatrix.CombinedWith],
+        classOf[DoubleMatrix.Blank],
+        classOf[DoubleMatrix.FilledWith],
+        classOf[DoubleMatrix.Tabulated],
+        classOf[DoubleMatrix.DiagonalOf],
+        classOf[DoubleMatrix.RowsFrom],
+        classOf[DoubleMatrix.RowObjectsFrom],
+        classOf[DoubleMatrix.Transposed])
       val rewriteArrayMembers =
         rewrites.flatMap { rewrite =>
           rewrite.getDeclaredMethods.toList
@@ -1186,10 +1307,13 @@ package com.opengamma.strata.collect.array {
       // It takes four arguments - the rows, the shape, and the operation it is constructing for -
       // and there is deliberately no adopting route among them to test: the constructor ALLOCATES
       // the storage it keeps on every one of its branches, as the deep copy of the rows it was
-      // handed, and then rewrites that copy in place, which is what lets an operation of this type
-      // cost one rectangle instead of two. So no argument of any kind makes it keep the rows it
-      // was handed, and both routes below are handed a caller's rows and then measured for
-      // aliasing: the route every factory takes, and a route that rewrites the storage.
+      // handed, as a rectangle of the shape written once from those rows, or as a rectangle built
+      // from the operation alone, which is what lets a construction of this type cost one
+      // rectangle instead of two. So no argument of any kind makes it keep the rows it was handed,
+      // and the routes below are handed a caller's rows and then measured for aliasing: the route
+      // every factory handed rows takes, a route that writes a fresh rectangle from those rows,
+      // and the routes that produce their storage from the operation alone - which are handed a
+      // caller's rows they must ignore entirely.
       val constructors = classOf[DoubleMatrix].getConstructors.toList
       constructors should have size 1
       val constructor = constructors.head
@@ -1230,6 +1354,62 @@ package com.opengamma.strata.collect.array {
       assertMatrix(scaled, 2.0, 4.0, 6.0, 8.0)
       (scaled.toArray eq operand) shouldBe false
       (scaled.toArray(0) eq operand(0)) shouldBe false
+
+      // The routes that produce their storage from the operation and the shape alone, handed the
+      // same caller's rows: each ignores them, so the elements are those the operation describes
+      // and the rows are neither read, written nor kept. A branch that fell back on the argument
+      // would answer with the caller's elements here and be caught by the shape alone.
+      val ignored = Array(Array(1.0, 2.0), Array(3.0, 4.0))
+      def fromRewrite(rewrite: AnyRef, rowCount: Int, columnCount: Int): DoubleMatrix =
+        constructor
+          .newInstance(
+            ignored.asInstanceOf[AnyRef],
+            Integer.valueOf(rowCount),
+            Integer.valueOf(columnCount),
+            rewrite)
+          .asInstanceOf[DoubleMatrix]
+
+      assertMatrix(fromRewrite(DoubleMatrix.Blank, 2, 3), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+      assertMatrix(fromRewrite(new DoubleMatrix.FilledWith(7.5), 1, 2), 7.5, 7.5)
+      assertMatrix(
+        fromRewrite(new DoubleMatrix.Tabulated((row, column) => row * 2.0 + column), 2, 2),
+        0.0, 1.0, 2.0, 3.0)
+      assertMatrix(fromRewrite(new DoubleMatrix.DiagonalOf(_ => 5.0), 2, 2), 5.0, 0.0, 0.0, 5.0)
+      assertMatrix(
+        fromRewrite(new DoubleMatrix.RowsFrom(row => Array(row.toDouble, 8.0)), 2, 2),
+        0.0, 8.0, 1.0, 8.0)
+      assertMatrix(
+        fromRewrite(
+          new DoubleMatrix.RowObjectsFrom(row => DoubleArray.of(row.toDouble, 9.0)),
+          2,
+          2),
+        0.0, 9.0, 1.0, 9.0)
+      assertMatrix(
+        fromRewrite(
+          new DoubleMatrix.Transposed(DoubleMatrix.of(2, 3, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)),
+          3,
+          2),
+        1.0, 4.0, 2.0, 5.0, 3.0, 6.0)
+      Arrays.deepEquals(
+        Array[AnyRef](ignored),
+        Array[AnyRef](Array(Array(1.0, 2.0), Array(3.0, 4.0)))) shouldBe true
+
+      // and the single-element replacement, which derives its storage from the matrix the
+      // operation names rather than from the rows: the row it changes is cloned before it is
+      // written, so the matrix named there is unchanged and the caller's rows are untouched
+      val replacedIn = DoubleMatrix.of(2, 2, 1.0, 2.0, 3.0, 4.0)
+      assertMatrix(
+        fromRewrite(new DoubleMatrix.SetAt(replacedIn, 1, 1, 8.5), 2, 2),
+        1.0, 2.0, 3.0, 8.5)
+      assertMatrix(replacedIn, 1.0, 2.0, 3.0, 4.0)
+
+      // A shape that the storage the operation produces does not describe is refused, which is
+      // the check that measures the produced rectangle rather than the argument: the routes above
+      // ignore the rows entirely, so a check of the argument would have measured nothing at all.
+      val refused = intercept[java.lang.reflect.InvocationTargetException](
+        fromRewrite(new DoubleMatrix.RowsFrom(_ => Array(1.0, 2.0, 3.0)), 2, 2)).getCause
+      refused shouldBe an[IllegalArgumentException]
+      refused.getMessage shouldBe "Function returned array of incorrect length 3, expected 2"
 
       // The family of operations the constructor dispatches on is closed, which is what makes the
       // choice it makes total and keeps the routes to its storage the ones enumerated above: a

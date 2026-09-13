@@ -19,6 +19,7 @@ import org.scalatest.prop.TableDrivenPropertyChecks
 import org.scalatest.prop.TableFor1
 import org.scalatest.prop.TableFor2
 import org.scalatest.prop.TableFor3
+import org.scalatest.prop.TableFor4
 
 import com.opengamma.strata.basics.currency.Currency.AUD
 import com.opengamma.strata.basics.currency.Currency.BHD
@@ -32,6 +33,7 @@ import com.opengamma.strata.basics.currency.Currency.NOK
 import com.opengamma.strata.basics.currency.Currency.NZD
 import com.opengamma.strata.basics.currency.Currency.SEK
 import com.opengamma.strata.basics.currency.Currency.USD
+import com.opengamma.strata.basics.currency.Currency.VND
 import com.opengamma.strata.basics.currency.Currency.XAU
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
@@ -163,6 +165,29 @@ final class CurrencyPairSpec extends AnyFunSuite with Matchers with TableDrivenP
     (CurrencyPair.of(GBP, BRL), 4),
     (CurrencyPair.of(BRL, BHD), 5),
     (CurrencyPair.of(BHD, BRL), 5))
+
+  /**
+   * The two questions the configured table answers, for one pair per step of their fallbacks, with
+   * the step that decides each row named in the last column. Both are asserted from the same row
+   * so that a change to the single route into the table cannot move one answer without the other:
+   * `isConventional` asks whether a direction is configured and `getRateDigits` asks what it is
+   * configured to, and the two rows for `USD/VND` are the ones that pin the difference between "not
+   * configured" and "configured to no fractional digits at all".
+   */
+  private val data_conventionAndRateDigits: TableFor4[CurrencyPair, Boolean, Int, String] = Table(
+    ("pair", "conventional", "rateDigits", "step"),
+    (gbpUsd, true, 4, "configured pair"),
+    (usdGbp, false, 4, "configured inverse; a quote carries the same precision either way round"),
+    (CurrencyPair.of(USD, VND), true, 0, "configured pair quoted to no fractional digits"),
+    (CurrencyPair.of(VND, USD), false, 0, "configured inverse of that zero-digit pair"),
+    (CurrencyPair.of(GBP, BRL), true, 4, "priority; GBP is listed, BRL is not; digits 2 + 2"),
+    (CurrencyPair.of(BRL, GBP), false, 4, "priority; BRL cannot be the base; digits 2 + 2"),
+    (CurrencyPair.of(CHF, BHD), true, 5, "priority; CHF is listed, BHD is not; digits 2 + 3"),
+    (CurrencyPair.of(BHD, JPY), false, 3, "priority; JPY is listed, BHD is not; digits 3 + 0"),
+    (CurrencyPair.of(BHD, BRL), true, 5, "lexicographic; neither listed, BHD < BRL; digits 3 + 2"),
+    (CurrencyPair.of(BRL, BHD), false, 5, "lexicographic; neither listed, BRL > BHD; digits 2 + 3"),
+    (gbpGbp, true, 4, "identity; the final comparison is not strict; digits 2 + 2"),
+    (CurrencyPair.of(VND, VND), true, 0, "identity of a currency with no minor units"))
 
   //-------------------------------------------------------------------------
   test("test_getAvailable") {
@@ -383,6 +408,77 @@ final class CurrencyPairSpec extends AnyFunSuite with Matchers with TableDrivenP
     forAll(data_rateDigits) { (pair: CurrencyPair, expected: Int) =>
       pair.getRateDigits shouldBe expected
       pair.inverse.getRateDigits shouldBe expected
+    }
+  }
+
+  /**
+   * Both questions are asserted for the same pair at every step of their fallbacks, together with
+   * the three properties that hold whatever the step: the rate digits do not depend on the
+   * direction, exactly one direction of two distinct currencies is conventional, and an
+   * unconfigured pair answers the sum of the minor unit digits of its two currencies while a
+   * configured one answers what the table holds for its conventional direction.
+   */
+  test("isConventional and getRateDigits answer the same pair at every step of their fallbacks") {
+    forAll(data_conventionAndRateDigits) {
+      (pair: CurrencyPair, conventional: Boolean, rateDigits: Int, step: String) =>
+        withClue(s"$pair, $step: ") {
+          pair.isConventional shouldBe conventional
+          pair.getRateDigits shouldBe rateDigits
+
+          pair.inverse.getRateDigits shouldBe rateDigits
+          pair.inverse.isConventional shouldBe (if (pair.isIdentity) conventional else !conventional)
+          pair.toConventional shouldBe (if (conventional) pair else pair.inverse)
+
+          val configuredEitherWay: Boolean =
+            CurrencyPair.getAvailablePairs.contains(pair) ||
+              CurrencyPair.getAvailablePairs.contains(pair.inverse)
+          if (configuredEitherWay) {
+            val conventionalPair: CurrencyPair = pair.toConventional
+            rateDigits shouldBe CurrencyPairData.rateDigitsByCurrencies(
+              (conventionalPair.base, conventionalPair.counter))
+          } else {
+            rateDigits shouldBe (pair.base.minorUnitDigits + pair.counter.minorUnitDigits)
+          }
+        }
+    }
+  }
+
+  /**
+   * The predicates read one view of the configured table and the reference-data manifest verifies
+   * another, so the two views are asserted to hold the same 92 rows: a fast path that answered
+   * anything the published table does not hold, or missed a row it does, would make a pair
+   * conventional in one place and not in the other.
+   */
+  test("both views of the configured table hold the same rows, and the predicates agree with them") {
+    val available: Set[CurrencyPair] = CurrencyPair.getAvailablePairs
+    available.size shouldBe 92
+
+    CurrencyPairData.rateDigitsByCurrencies.size shouldBe 92
+    CurrencyPairData.rateDigitsByBase.valuesIterator
+      .map(counters => counters.size)
+      .sum shouldBe 92
+    CurrencyPairData.rateDigitsByCurrencies.foreach {
+      case ((rowBase, rowCounter), rowRateDigits) =>
+        withClue(s"$rowBase/$rowCounter: ") {
+          CurrencyPairData.rateDigitsByBase
+            .get(rowBase)
+            .flatMap(counters => counters.get(rowCounter)) shouldBe Some(rowRateDigits)
+        }
+    }
+
+    Inspectors.forAll(available.toVector) { pair =>
+      withClue(s"$pair: ") {
+        pair.isConventional shouldBe true
+        // no configured row names one currency twice, so every inverse here is a distinct pair
+        pair.isIdentity shouldBe false
+        pair.inverse.isConventional shouldBe false
+        pair.toConventional shouldBe pair
+        pair.inverse.toConventional shouldBe pair
+
+        val configured: Int = CurrencyPairData.rateDigitsByCurrencies((pair.base, pair.counter))
+        pair.getRateDigits shouldBe configured
+        pair.inverse.getRateDigits shouldBe configured
+      }
     }
   }
 

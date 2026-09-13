@@ -139,6 +139,78 @@ class ScheduleSpec extends AnyFunSuite with Matchers with ResultMatchers {
       failure => failure.message,
       schedule => fail(s"Expected a failure but a schedule was produced: $schedule"))
 
+  /**
+   * A one-month period of the lookup fixtures, running between two month offsets from [[JUN_15]].
+   *
+   * The adjusted dates are the unadjusted ones, which is what the lookup reads: `periodEndDate`
+   * compares the adjusted pair of each period.
+   *
+   * @param startMonths  the month offset of the start date
+   * @param endMonths  the month offset of the end date, which is after the start offset
+   * @return the period
+   */
+  private def monthlyPeriod(startMonths: Long, endMonths: Long): SchedulePeriod =
+    sp(SchedulePeriod.of(JUN_15.plusMonths(startMonths), JUN_15.plusMonths(endMonths)))
+
+  /**
+   * A chain of one-month periods, each starting `step` months after the one before it.
+   *
+   * A step of one produces the adjacent periods a generated schedule has. A step of two leaves a
+   * one-month gap between each period and the next, which [[Schedule.of]] accepts - gaps are
+   * allowed, disorder is not - and which is the shape that makes the `contains` test the lookup
+   * performs after locating its candidate period load-bearing.
+   *
+   * @param count  the number of periods, which is at least one
+   * @param step  the number of months from one period's start date to the next period's
+   * @return the periods, running from earliest to latest
+   */
+  private def monthlyChain(count: Long, step: Long): NonEmptyList[SchedulePeriod] =
+    NonEmptyList(
+      monthlyPeriod(0L, 1L),
+      (1L until count).toList.map(index => monthlyPeriod(index * step, index * step + 1L)))
+
+  /**
+   * The naive lookup that [[Schedule.periodEndDate]] answers exactly: the end date of the first
+   * period containing the date, found by walking the periods.
+   *
+   * @param schedule  the schedule to search
+   * @param date  the date to find
+   * @return the end date of the first period containing the date, empty if none does
+   */
+  private def linearPeriodEndDate(schedule: Schedule, date: LocalDate): Option[LocalDate] =
+    schedule.periods.find(period => period.contains(date)).map(period => period.endDate)
+
+  /**
+   * Every date a lookup over a schedule is probed at.
+   *
+   * Each period contributes seven dates - the day before its start date, its start date, the day
+   * after it, its midpoint, the day before its end date, its end date and the day after it - and
+   * the span of the schedule is then probed day by day, extended three days at each end so that a
+   * date before the first period and a date after the last one are probed as well. Over a
+   * schedule with gaps the day-by-day sweep covers every date of every gap.
+   *
+   * @param schedule  the schedule to probe
+   * @return the probe dates
+   */
+  private def lookupProbes(schedule: Schedule): List[LocalDate] = {
+    val boundaries: List[LocalDate] = (0 until schedule.size).toList.flatMap { index =>
+      val period: SchedulePeriod = schedule.period(index)
+      val midpoint: LocalDate =
+        period.startDate.plusDays((period.endDate.toEpochDay - period.startDate.toEpochDay) / 2L)
+      List(
+        period.startDate.minusDays(1L),
+        period.startDate,
+        period.startDate.plusDays(1L),
+        midpoint,
+        period.endDate.minusDays(1L),
+        period.endDate,
+        period.endDate.plusDays(1L))
+    }
+    val first: LocalDate = schedule.adjustedStartDate.minusDays(3L)
+    val span: Long = schedule.adjustedEndDate.plusDays(3L).toEpochDay - first.toEpochDay
+    boundaries ::: (0L to span).toList.map(offset => first.plusDays(offset))
+  }
+
   /** The absence of a stub, typed so that the tuples `stubs` answers compare without inference. */
   private val NoStub: Option[SchedulePeriod] = None
 
@@ -512,6 +584,88 @@ class ScheduleSpec extends AnyFunSuite with Matchers with ResultMatchers {
     // excludes its end date - on the schedule's own end date.
     info.periodEndDate(P2_NORMAL.startDate.minusDays(1)) shouldBe None
     info.periodEndDate(P3_NORMAL.endDate) shouldBe None
+  }
+
+  test("test_getPeriodEndDate_agreesWithLinearScan") {
+    // `periodEndDate` locates the one period that can contain the date by halving the ascending
+    // adjusted start dates rather than by walking the periods, so every shape of schedule is
+    // checked against the walk it replaces, date for date: the adjacent periods of a generated
+    // schedule, a schedule with a gap between every period and the next, the mixed fixtures of
+    // this spec, a single-period schedule and a term schedule. The two long fixtures are long
+    // enough that a lookup over them crosses several halvings.
+    val adjacent: Schedule =
+      sched(Schedule.of(monthlyChain(400L, 1L), Frequency.P1M, RollConventions.DAY_15))
+    val gapped: Schedule =
+      sched(Schedule.of(monthlyChain(250L, 2L), Frequency.P1M, RollConventions.DAY_15))
+    val mixed: Schedule = sched(
+      Schedule.of(
+        NonEmptyList.of(P1_STUB, P2_NORMAL, P3_NORMAL, P4_NORMAL, P5_NORMAL, P6_NORMAL),
+        Frequency.P1M,
+        RollConventions.DAY_17))
+    val singlePeriod: Schedule =
+      sched(Schedule.of(NonEmptyList.one(P2_NORMAL), Frequency.P1M, RollConventions.DAY_17))
+    val term: Schedule = Schedule.ofTerm(P1_3)
+    adjacent.size shouldBe 400
+    gapped.size shouldBe 250
+    mixed.size shouldBe 6
+    singlePeriod.isSinglePeriod shouldBe true
+    term.isTerm shouldBe true
+
+    List(adjacent, gapped, mixed, singlePeriod, term).foreach { schedule =>
+      val probes: List[LocalDate] = lookupProbes(schedule)
+      probes.size should be > schedule.size
+      val disagreements: List[LocalDate] =
+        probes.filter(date => schedule.periodEndDate(date) != linearPeriodEndDate(schedule, date))
+      withClue(
+        s"over a schedule of ${schedule.size} periods the lookup disagreed with the walk at " +
+          s"${disagreements.take(5)} of ${probes.size} probe dates: ") {
+        disagreements shouldBe empty
+      }
+    }
+
+    // The answers themselves, stated rather than compared with a second implementation. Over
+    // adjacent periods a date at a period's start date, inside it or on the day before its end
+    // date answers that period's end date, and the end date itself belongs to the period that
+    // follows - or to none, for the last period of the schedule.
+    (0 until adjacent.size).foreach { index =>
+      val period: SchedulePeriod = adjacent.period(index)
+      adjacent.periodEndDate(period.startDate) shouldBe Some(period.endDate)
+      adjacent.periodEndDate(period.startDate.plusDays(7L)) shouldBe Some(period.endDate)
+      adjacent.periodEndDate(period.endDate.minusDays(1L)) shouldBe Some(period.endDate)
+      adjacent.periodEndDate(period.endDate) shouldBe
+        (if (index == adjacent.size - 1) None else Some(adjacent.period(index + 1).endDate))
+    }
+
+    // Over a schedule with gaps the search still finds the containing period, and the date a
+    // period ends on - which begins the gap following it - lies in no period at all, which is the
+    // `contains` test after the search answering rather than the search itself.
+    (0 until gapped.size).foreach { index =>
+      val period: SchedulePeriod = gapped.period(index)
+      gapped.periodEndDate(period.startDate) shouldBe Some(period.endDate)
+      gapped.periodEndDate(period.startDate.plusDays(7L)) shouldBe Some(period.endDate)
+      gapped.periodEndDate(period.endDate) shouldBe None
+      gapped.periodEndDate(period.endDate.plusDays(7L)) shouldBe None
+    }
+
+    // A date outside every period, read through the schedule information interface as a day count
+    // reads it: before the first period, on the schedule's own end date and long after it.
+    val info: DayCount.ScheduleInfo = adjacent
+    info.periodEndDate(adjacent.adjustedStartDate) shouldBe Some(adjacent.period(0).endDate)
+    info.periodEndDate(adjacent.adjustedStartDate.minusDays(1L)) shouldBe None
+    info.periodEndDate(adjacent.adjustedEndDate) shouldBe None
+    info.periodEndDate(adjacent.adjustedEndDate.plusYears(5L)) shouldBe None
+    gapped.periodEndDate(gapped.adjustedStartDate.minusYears(5L)) shouldBe None
+    gapped.periodEndDate(gapped.adjustedEndDate) shouldBe None
+
+    // One period, and one 'Term' period, are the shortest schedules the search runs over.
+    singlePeriod.periodEndDate(P2_NORMAL.startDate) shouldBe Some(P2_NORMAL.endDate)
+    singlePeriod.periodEndDate(P2_NORMAL.startDate.plusDays(1L)) shouldBe Some(P2_NORMAL.endDate)
+    singlePeriod.periodEndDate(P2_NORMAL.startDate.minusDays(1L)) shouldBe None
+    singlePeriod.periodEndDate(P2_NORMAL.endDate) shouldBe None
+    term.periodEndDate(P1_3.startDate) shouldBe Some(P1_3.endDate)
+    term.periodEndDate(P1_3.endDate.minusDays(1L)) shouldBe Some(P1_3.endDate)
+    term.periodEndDate(P1_3.startDate.minusDays(1L)) shouldBe None
+    term.periodEndDate(P1_3.endDate) shouldBe None
   }
 
   test("test_period_indexedAccess") {

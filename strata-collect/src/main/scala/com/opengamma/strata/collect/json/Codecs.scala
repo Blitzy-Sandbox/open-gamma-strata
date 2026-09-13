@@ -73,6 +73,12 @@ import com.opengamma.strata.collect.result.Failure
  *    rather than written out as an explicitly empty field;
  *  - a '''numeric value''' uses `taggedDouble`, `doubleArrayCodec` or `doubleMatrixCodec`.
  *
+ * A type whose wire form mixes two of those shapes takes none of them and writes its codec out
+ * by hand. Two types of this port do, and what they still want from here is the one thing a
+ * helper would have given them for nothing: `decodingFailure` turns what a factory refused into
+ * a decoding failure by the same rule every helper-built decoder applies, bounded and on one
+ * line, so a hand-written codec states a refusal in the shape the rest of the surface states one.
+ *
  * ===How much a document may ask for===
  *
  * A decoder is the one place in this port where the size of what gets allocated is stated from
@@ -134,55 +140,6 @@ object Codecs {
 
   /** Decodes a JSON string, used wherever a value is represented by its text form. */
   private val stringDecoder: Decoder[String] = Decoder.decodeString
-
-  /**
-   * Reports accumulated failures as a single decoding failure.
-   *
-   * This is the only bridge in this object from the failure model of the library to the
-   * failure model of the JSON layer, and every helper that can reject a payload on the
-   * strength of a type's own factory routes through it. Having exactly one bridge is what
-   * makes the message uniform: the messages of the failures appear in the order they were
-   * accumulated, separated by a semicolon and a space. The position within the document is
-   * taken from the cursor that was being decoded, so a failure deep inside a payload still
-   * reports where it happened.
-   *
-   * ===It is also where rejected text is neutralised===
-   *
-   * A payload is written by whoever sends it, and a factory that rejects one quotes what it
-   * refused: the message of the failure carries that text as it arrived. A decoding failure
-   * is read where a failure is read - a log, a report, a line of a console - so this is the
-   * boundary at which such text has to be made safe, and it is made safe here rather than
-   * when the failure is built, because [[Failure.message]] hands back what was refused to
-   * the code that acts on it. Two bounds hold of the message this method produces, whatever
-   * the payload was:
-   *
-   *  - every message is rendered through `Failure.renderDiagnostic`, so each is a single
-   *    line, holds no character a line-oriented reader could act on, and is bounded in
-   *    length however large the rejected value was (CWE-117, CWE-400);
-   *  - at most `MaxReportedFailures` of them are reported, in the order they were
-   *    accumulated, followed by one marker naming how many were left out, so a payload that
-   *    drives a factory to accumulate a cause per element cannot make the report grow with
-   *    the payload.
-   *
-   * Neither bound changes what an ordinary failure reads as: text within the bound holding
-   * none of the escaped characters renders to itself, character for character, so a single
-   * failure still yields exactly its own message and a handful of them still read as the
-   * messages their factory wrote, joined by the separator.
-   *
-   * @param failures  the failures to report, at least one
-   * @param history  the position within the document, taken from the decoding cursor
-   * @return the decoding failure describing them all
-   */
-  private def decodingFailure(
-      failures: NonEmptyChain[Failure],
-      history: List[CursorOp]): DecodingFailure = {
-
-    val causes = failures.toNonEmptyList.toList
-    val reported = causes.take(MaxReportedFailures).map(cause => Failure.renderDiagnostic(cause.message))
-    val omitted = causes.length - reported.length
-    val parts = if (omitted > 0) reported :+ s"and $omitted more" else reported
-    DecodingFailure(parts.mkString(FailureMessageSeparator), history)
-  }
 
   //-------------------------------------------------------------------------
   /** Introduces the account a decoding failure gives of a factory that refused by raising. */
@@ -492,6 +449,88 @@ object Codecs {
 
   //-------------------------------------------------------------------------
   /**
+   * Reports accumulated failures as a single decoding failure.
+   *
+   * This is the only bridge in this port from the failure model of the library to the
+   * failure model of the JSON layer, and every helper that can reject a payload on the
+   * strength of a type's own factory routes through it. Having exactly one bridge is what
+   * makes the message uniform: the messages of the failures appear in the order they were
+   * accumulated, separated by a semicolon and a space. The position within the document is
+   * taken from the cursor that was being decoded, so a failure deep inside a payload still
+   * reports where it happened.
+   *
+   * ===It is also where rejected text is neutralised===
+   *
+   * A payload is written by whoever sends it, and a factory that rejects one quotes what it
+   * refused: the message of the failure carries that text as it arrived. A decoding failure
+   * is read where a failure is read - a log, a report, a line of a console - so this is the
+   * boundary at which such text has to be made safe, and it is made safe here rather than
+   * when the failure is built, because [[Failure.message]] hands back what was refused to
+   * the code that acts on it. Two bounds hold of the message this method produces, whatever
+   * the payload was:
+   *
+   *  - every message is rendered through `Failure.renderDiagnostic`, so each is a single
+   *    line, holds no character a line-oriented reader could act on, and is bounded in
+   *    length however large the rejected value was (CWE-117, CWE-400);
+   *  - at most `MaxReportedFailures` of them are reported, in the order they were
+   *    accumulated, followed by one marker naming how many were left out, so a payload that
+   *    drives a factory to accumulate a cause per element cannot make the report grow with
+   *    the payload.
+   *
+   * Neither bound changes what an ordinary failure reads as: text within the bound holding
+   * none of the escaped characters renders to itself, character for character, so a single
+   * failure still yields exactly its own message and a handful of them still read as the
+   * messages their factory wrote, joined by the separator.
+   *
+   * ===Why it is published===
+   *
+   * Every decoder built by a helper of this object reaches the bridge without its author
+   * having to know it exists. A '''hand-written''' codec has no derived decoder to route
+   * through - it is written out by hand precisely because its type mixes two wire forms -
+   * and so it has to state its refusals itself. This member is published for exactly that
+   * case: a hand-written codec states a refusal by the same rule every helper-built one
+   * does, rather than by a rule of its own, and the two bounds above therefore hold of the
+   * whole serialization surface rather than of the part of it that happens to be derived.
+   *
+   * It is accordingly the member to reach for, and building a `DecodingFailure` from a
+   * failure's message directly - `DecodingFailure(failure.message, cursor.history)` - is the
+   * thing it replaces: that spelling carries the text of the payload into the message as it
+   * arrived, which is the leak this bridge exists to close, and it applies no bound to the
+   * number of causes either.
+   *
+   * @param failures  the failures to report, at least one
+   * @param history  the position within the document, taken from the decoding cursor
+   * @return the decoding failure describing them all
+   */
+  def decodingFailure(
+      failures: NonEmptyChain[Failure],
+      history: List[CursorOp]): DecodingFailure = {
+
+    val causes = failures.toNonEmptyList.toList
+    val reported = causes.take(MaxReportedFailures).map(cause => Failure.renderDiagnostic(cause.message))
+    val omitted = causes.length - reported.length
+    val parts = if (omitted > 0) reported :+ s"and $omitted more" else reported
+    DecodingFailure(parts.mkString(FailureMessageSeparator), history)
+  }
+
+  /**
+   * Reports one failure as a decoding failure.
+   *
+   * This is the bridge above for the refusal that has a single cause, which is what a
+   * hand-written codec usually has to report: a name that no member of a family claims, an
+   * identifier that no reference data holds, a field that disagrees with the value it
+   * describes. A chain of one is just its own message, so the two forms are
+   * indistinguishable to a reader of the failure, and the rendering that neutralises the
+   * text of the payload applies exactly as it does to a chain of many.
+   *
+   * @param failure  the failure to report
+   * @param history  the position within the document, taken from the decoding cursor
+   * @return the decoding failure describing it
+   */
+  def decodingFailure(failure: Failure, history: List[CursorOp]): DecodingFailure =
+    decodingFailure(NonEmptyChain.one(failure), history)
+
+  /**
    * A decoder that builds a value through a validating factory reporting every cause.
    *
    * This is the decoding route for every type whose construction can reject its input. The
@@ -557,11 +596,122 @@ object Codecs {
    * The removal reaches nested objects as well as the outermost one, so wrapping only the
    * outermost encoder of a structure is sufficient.
    *
+   * ===What it costs===
+   *
+   * This wrapper is applied to '''every''' product encoder of the port, so it sits on the
+   * encoding path of every document the port writes, including the largest of them - and
+   * nearly every one of those documents has nothing to remove, an optional field that holds
+   * nothing being the exception rather than the rule. The removal is therefore written so
+   * that a document with nothing to remove costs nothing: [[withoutEmptyFields]] hands back
+   * the '''same''' JSON it was given, and only the objects that actually carry an empty
+   * field, and the containers on the path down to them, are rebuilt. Against the obvious
+   * spelling of this operation - the one the JSON library publishes, which rebuilds the whole
+   * tree whether or not anything is removed - the encode of a twelve-hundred-period schedule
+   * measured 6,215,534 bytes and 6.08 milliseconds, and measures 2,488,466 bytes and 1.89
+   * milliseconds through this one, for a document that holds no empty field at all.
+   *
+   * What the wrapper produces is unchanged by that, in every position and for every input:
+   * the rule it applies is the library's own, restated in [[withoutEmptyFields]] and held to
+   * it by a property over generated JSON in `CodecsSpec`.
+   *
    * @tparam A  the type encoded
    * @param encoder  the encoder to wrap, ordinarily a derived one
    * @return the encoder that omits fields holding no value
    */
-  def dropNulls[A](encoder: Encoder[A]): Encoder[A] = encoder.mapJson(_.deepDropNullValues)
+  def dropNulls[A](encoder: Encoder[A]): Encoder[A] = encoder.mapJson(json => withoutEmptyFields(json))
+
+  /**
+   * Removes every field that holds no value, at every depth, keeping what it does not change.
+   *
+   * The rule is exactly the one the JSON library's own deep removal applies, and it is
+   * restated here rather than borrowed only so that an unchanged structure can be handed back
+   * as itself. It has four parts, each of which matters to some document this port writes:
+   *
+   *  - a field of an object whose value is explicitly empty is removed, which is the whole
+   *    point of the operation;
+   *  - an element of an array that is explicitly empty is '''also''' removed, the library
+   *    treating the two positions alike; no encoder of this port writes such an element, so
+   *    this part of the rule is inherited rather than relied on, and it is restated because a
+   *    reader comparing the two implementations would otherwise find them to differ;
+   *  - a structure standing inside an array is treated exactly as one standing in a field,
+   *    so an object nested in a list of objects loses its empty fields too;
+   *  - an explicitly empty value that is not a field or an element of anything - the whole of
+   *    the document - is kept, there being no field to remove it from.
+   *
+   * An object left with no fields, and an array left with no elements, are kept as the empty
+   * object and the empty array: what is removed is the field, never the structure that held
+   * it.
+   *
+   * ===Why it is written as two passes===
+   *
+   * The first pass, [[holdsEmptyField]], decides whether this structure carries anything to
+   * remove; it allocates nothing beyond the handful of options the JSON library's accessors
+   * hand back, and for a structure that carries nothing the answer is the structure itself.
+   * The second pass rebuilds, and it recurses through this method, so a clean branch of a
+   * dirty structure is shared rather than copied. A structure that does carry an empty field
+   * is therefore walked more than once - once to find it and once to rebuild the containers
+   * above it - which is the cost of not allocating at all in the case that dominates: the
+   * products of this port that hold an optional field are small, and the documents that are
+   * large hold none.
+   *
+   * @param json  the JSON to remove from
+   * @return the JSON without its empty fields, or the JSON itself where it holds none
+   */
+  private def withoutEmptyFields(json: Json): Json =
+    if (holdsEmptyField(json)) rebuiltWithoutEmptyFields(json) else json
+
+  /**
+   * Tests whether a structure carries a field or an element that is explicitly empty.
+   *
+   * The question is asked of the whole structure rather than of its outermost object, because
+   * the removal reaches downwards; it is answered at the first one found, so a structure whose
+   * first field is empty costs one test however large the rest of it is.
+   *
+   * @param json  the JSON to examine
+   * @return true where some object at some depth holds an empty field, or some array an empty
+   *   element
+   */
+  private def holdsEmptyField(json: Json): Boolean =
+    json.asObject match {
+      case Some(fields) =>
+        fields.values.exists(value => value.isNull || holdsEmptyField(value))
+      case None =>
+        json.asArray.exists(elements =>
+          elements.exists(element => element.isNull || holdsEmptyField(element)))
+    }
+
+  /**
+   * Rebuilds one structure without its empty fields, sharing the branches it does not change.
+   *
+   * Reached only for a structure [[holdsEmptyField]] has already answered for, so each branch
+   * recurses through [[withoutEmptyFields]] and an unchanged branch is the value that was
+   * already there. The order of the fields of an object and of the elements of an array is the
+   * order they were written in, both here and in the library's own removal, which is what the
+   * byte stability of these documents rests on.
+   *
+   * A value that is neither an object nor an array holds no field and no element, so it is
+   * answered with itself - which is also what the removal would produce for it.
+   *
+   * @param json  the JSON to rebuild
+   * @return the JSON without its empty fields
+   */
+  private def rebuiltWithoutEmptyFields(json: Json): Json =
+    json.asObject match {
+      case Some(fields) =>
+        Json.fromJsonObject(
+          fields
+            .filter { case (_, value) => !value.isNull }
+            .mapValues(value => withoutEmptyFields(value)))
+      case None =>
+        json.asArray match {
+          case Some(elements) =>
+            Json.fromValues(
+              elements
+                .filter(element => !element.isNull)
+                .map(element => withoutEmptyFields(element)))
+          case None => json
+        }
+    }
 
   //-------------------------------------------------------------------------
   /** Recovers the three values that JSON cannot express as a number. */
@@ -587,7 +737,23 @@ object Codecs {
     "Expected a JSON number a double can hold; a magnitude beyond that range is written as " +
       s"the string $PositiveInfinityTag or $NegativeInfinityTag"
 
-  private val taggedDoubleEncoder: Encoder[Double] = Encoder.instance { value =>
+  /**
+   * Renders one double as the JSON this port writes for it.
+   *
+   * This is the whole of the encoding half of [[taggedDouble]], and it is a method over a
+   * '''primitive''' double rather than only the body of the encoder because the two numeric
+   * shapes render an element at a time: an encoder is a function of a boxed value, so every
+   * element of an array reaching the policy through one would be boxed on the way, which for
+   * the largest array this port reads is a million boxes that nothing ever looks at. The
+   * encoder below is this method, applied to the one value it is handed; a field of a product
+   * still reaches the policy through that encoder, as the derivation requires, and a member of
+   * an array reaches it through this method directly.
+   *
+   * @param value  the value to render
+   * @return the JSON number for a finite value, or the tag of one of the three values JSON
+   *   cannot express
+   */
+  private def taggedDoubleJson(value: Double): Json =
     if (java.lang.Double.isFinite(value)) {
       Json.fromDoubleOrNull(value)
     } else if (value.isNaN) {
@@ -597,7 +763,9 @@ object Codecs {
     } else {
       Json.fromString(NegativeInfinityTag)
     }
-  }
+
+  private val taggedDoubleEncoder: Encoder[Double] =
+    Encoder.instance(value => taggedDoubleJson(value))
 
   private val taggedDoubleDecoder: Decoder[Double] = Decoder.instance { cursor =>
     val json = cursor.value
@@ -875,11 +1043,21 @@ object Codecs {
    * would make the immutability of those types a convention rather than a property of their
    * compiled form, and encoding a value is not a reason to want one.
    *
+   * Each element goes to [[taggedDoubleJson]], which takes a primitive, rather than to the
+   * encoder that policy is also published as, which would take a boxed value: the element
+   * therefore travels from the run of values to the JSON number without being boxed on the way.
+   * What the JSON tree then costs is one JSON number per element - the number itself and the
+   * value it wraps - and the spine of the vector holding them, which is what a tree of one node
+   * per element costs and is not something this object can reduce further. On the largest arrays
+   * that tree is in any case the smaller part of the bill: printing a nine-megabyte document and
+   * parsing it back are each two to three times the cost of building the tree it prints, and both
+   * belong to the JSON library.
+   *
    * @param values  the array to render
    * @return the JSON array of its elements
    */
   private def elementsJson(values: DoubleArray): Json =
-    Json.fromValues(Vector.tabulate(values.size)(index => taggedDoubleEncoder(values.get(index))))
+    Json.fromValues(Vector.tabulate(values.size)(index => taggedDoubleJson(values.get(index))))
 
   private val doubleArrayEncoder: Encoder[DoubleArray] =
     Encoder.instance(values => elementsJson(values))
@@ -888,12 +1066,89 @@ object Codecs {
   private val doubleElementsDecoder: Decoder[Array[Double]] =
     Decoder.decodeArray[Double](taggedDoubleDecoder, implicitly)
 
+  /**
+   * Reads one already-parsed element into a run of values, reporting whether it was acceptable.
+   *
+   * The element is accepted on exactly the terms `taggedDouble` accepts one, and converted in
+   * exactly the way it converts one: a JSON number whose conversion is finite, or one of the
+   * three tags. Nothing else is accepted, an over-range literal included, so this method and
+   * the element decoder agree on every payload - which is what lets the one stand in for the
+   * other. It is written to report acceptance rather than to answer with the value because an
+   * answer would have to be an option of a double, and an option per element is the allocation
+   * this route exists to avoid; the value it read is in the run of values instead.
+   *
+   * @param json  the element as the document states it
+   * @param into  the run of values being filled, allocated by the caller and not yet published
+   * @param index  the position in that run this element occupies
+   * @return true where the element was acceptable and has been written
+   */
+  private def readTaggedDouble(json: Json, into: Array[Double], index: Int): Boolean =
+    json.asNumber match {
+      case Some(number) =>
+        val value = number.toDouble
+        if (java.lang.Double.isFinite(value)) {
+          into(index) = value
+          true
+        } else {
+          false
+        }
+      case None =>
+        json.asString.flatMap(text => NonFiniteByTag.get(text)) match {
+          case Some(value) =>
+            into(index) = value
+            true
+          case None => false
+        }
+    }
+
+  /**
+   * Reads the elements of an already-parsed JSON array, or reports that one was unacceptable.
+   *
+   * The elements of the payload are already values in memory by the time a decoder sees them, so
+   * reading them needs neither a cursor per element nor an answer per element: the run of values
+   * the copying factory is going to be handed is allocated once, at the length the payload states,
+   * and filled in place by a tail-recursive pass. The array is a local that nothing else can
+   * reach until the factory copies it, so filling it is not a mutation any caller can observe;
+   * threading the index through the recursion rather than through an assignment is what keeps the
+   * pass free of a mutable local, and the compiler turns it into the same loop.
+   *
+   * The pass stops at the first element that is not acceptable and reports nothing further about
+   * it. Reporting is not this method's business: the caller hands the whole array to the element
+   * decoder instead, so the refusal a reader sees - its message and its position within the
+   * document - is the one that decoder has always produced, at the element where it occurred.
+   *
+   * The run is allocated at the length the payload states, which the caller has already measured
+   * against `MaximumArrayElements`, so what a payload can ask for here is what that ceiling
+   * allows and nothing more - and an array within the ceiling whose elements this reader will not
+   * accept has cost that one run before the element decoder is reached.
+   *
+   * @param elements  the elements as the document states them
+   * @return the run of values, or nothing where some element was not acceptable
+   */
+  private def readTaggedDoubles(elements: Vector[Json]): Option[Array[Double]] = {
+    val values = new Array[Double](elements.size)
+
+    @tailrec
+    def reading(index: Int): Boolean =
+      if (index >= values.length) {
+        true
+      } else if (readTaggedDouble(elements(index), values, index)) {
+        reading(index + 1)
+      } else {
+        false
+      }
+
+    if (reading(0)) Some(values) else None
+  }
+
   // the length is taken from the payload before an element is read, so a document cannot choose
   // how much this port allocates. A payload that is not an array falls through to the element
   // reader, which reports it - and an element no double can hold - at the position where it
-  // occurred, so those two refusals are unchanged by the ceiling. The run of values that reader
-  // allocates is handed to the copying factory, which is the only construction path the array
-  // type publishes
+  // occurred, so those two refusals are unchanged by the ceiling. An array within the ceiling is
+  // read straight out of the parsed payload, and an array holding anything that reader will not
+  // accept is handed to the element decoder, which is what states the refusal. The run of values
+  // either route produces is handed to the copying factory, which is the only construction path
+  // the array type publishes
   private val doubleArrayDecoder: Decoder[DoubleArray] =
     Decoder.instance { cursor =>
       cursor.value.asArray match {
@@ -901,8 +1156,13 @@ object Codecs {
           Left(DecodingFailure(
             beyondCeiling("elements in the array", elements.size.toLong, MaximumArrayElements),
             cursor.history))
-        case _ =>
-          doubleElementsDecoder(cursor).map(elements => DoubleArray.copyOf(elements))
+        case Some(elements) =>
+          readTaggedDoubles(elements) match {
+            case Some(values) => Right(DoubleArray.copyOf(values))
+            case None => doubleElementsDecoder(cursor).map(values => DoubleArray.copyOf(values))
+          }
+        case None =>
+          doubleElementsDecoder(cursor).map(values => DoubleArray.copyOf(values))
       }
     }
 
@@ -942,6 +1202,25 @@ object Codecs {
    * Two other refusals are the element reader's rather than the ceiling's, and are reported
    * exactly as they would be without it: a payload that is not an array at all, and an element
    * that is not a value a double can hold. Both name the offending position.
+   *
+   * ===What reading one costs===
+   *
+   * A payload within the ceiling whose every element is a value this policy accepts is read
+   * straight out of the elements the parser has already produced, by [[readTaggedDoubles]]: one
+   * run of values is allocated at the stated length and filled in place, so an element costs the
+   * option the JSON library's own accessor hands back and the conversion of its number, rather
+   * than a cursor and an answer of its own as well. Reading the longest array this port accepts -
+   * a million elements - measured 168,160,160 bytes through a cursor for each of them and
+   * measures 84,274,008 bytes this way. Anything else - a payload that is not an array, and an array
+   * holding an element this policy does not accept - is handed to the element decoder of the
+   * JSON library, which is what produces the refusal; that is the whole reason the two routes
+   * exist, since the refusal a reader gets, its wording and its position within the document,
+   * is then the one that decoder has always produced and is not restated here.
+   *
+   * The two routes accept exactly the same payloads and read exactly the same values from them,
+   * which is a property `CodecsSpec` states over generated arrays rather than an intention
+   * recorded here: [[readTaggedDouble]] applies the same test and the same conversion the
+   * element decoder applies.
    */
   val doubleArrayCodec: Codec[DoubleArray] = Codec.from(doubleArrayDecoder, doubleArrayEncoder)
 
@@ -958,7 +1237,9 @@ object Codecs {
    *
    * The elements are read by row and column index, for the reason `elementsJson` reads an array
    * by index: the matrix publishes no member that hands out the rows it holds, and a row copied
-   * out to be read once would be an allocation per row with nothing to show for it.
+   * out to be read once would be an allocation per row with nothing to show for it. Each element
+   * goes to [[taggedDoubleJson]] over a primitive double, for the reason given there, so no
+   * element of a matrix is boxed on its way into the document either.
    *
    * @param matrix  the matrix to read
    * @param row  the zero-based row index to render
@@ -966,7 +1247,7 @@ object Codecs {
    */
   private def rowJson(matrix: DoubleMatrix, row: Int): Json =
     Json.fromValues(
-      Vector.tabulate(matrix.columnCount)(column => taggedDoubleEncoder(matrix.get(row, column))))
+      Vector.tabulate(matrix.columnCount)(column => taggedDoubleJson(matrix.get(row, column))))
 
   private val doubleMatrixEncoder: Encoder[DoubleMatrix] =
     Encoder.instance { matrix =>
@@ -1084,6 +1365,13 @@ object Codecs {
    * repetition of the first: it is what keeps assembly total, since the factory reached at that
    * point answers a row of the wrong length by raising an error rather than reporting one, and
    * no payload may be able to reach it.
+   *
+   * Each row is read by `doubleArrayCodec`, so a row of a matrix costs exactly what an array of
+   * the same length costs and inherits both of that codec's reading routes: a row whose elements
+   * this policy accepts is read straight out of the parsed payload, and a row holding anything
+   * else is reported by the element decoder at that element's own position. Nothing about the
+   * shape of a matrix is decided by that choice, the shape having been settled before any row is
+   * read.
    *
    * The rows are handed to the existing factory that assembles a matrix from them, so the
    * nested structure that a matrix keeps internally is built in the one file that owns it.

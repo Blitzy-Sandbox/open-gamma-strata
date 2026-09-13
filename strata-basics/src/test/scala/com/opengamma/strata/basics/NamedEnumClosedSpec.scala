@@ -8,6 +8,7 @@ package com.opengamma.strata.basics
 import java.lang.reflect.Modifier
 import java.util.Locale
 
+import scala.util.matching.Regex
 
 import cats.data.NonEmptyChain
 
@@ -403,6 +404,95 @@ class NamedEnumClosedSpec extends AnyFunSuite with Matchers with TableDrivenProp
         probed.size shouldBe family.expectedPatternLenient
       }
     }
+  }
+
+  test("every family resolves exactly what a naive pass over all of its lenient rows resolves") {
+    // The lenient stage does not offer text to a row whose own expression could not match it,
+    // and this is the property that makes the narrowing invisible: for every family, and for
+    // every text that family's own data can produce, the chain agrees with a reference that
+    // compiles each row the way the production rule compiles it and applies all of them in
+    // order, screening nothing. The reference is the ported algorithm written out, so the
+    // comparison is against the specification of the chain rather than against another copy of
+    // the implementation.
+    //
+    // Agreement is asserted at both of the places a caller can observe it: the chain itself,
+    // and the lookup's lenient parse, whose algorithm is reproduced here around the reference
+    // chain - the exact lookup, then the length bound, then the fold to upper case and the
+    // chain, then the exact lookup again. The family's own `parse` is held to the reference
+    // where the reference resolves; it is not held to a failure where the reference fails,
+    // because two families deliberately resolve more than their shared lookup does - the day
+    // counts add the `Bus/252` conventions and the published floating rate names add a
+    // concrete index name, both beyond the closed members.
+    forAll(families) { (family: Family) =>
+      val reference = naiveLenientRules(family.lenientRows)
+      val corpus = lenientCorpus(family)
+      withClue(s"${family.label}: ") {
+        corpus should not be empty
+
+        corpus.foreach { text =>
+          withClue(s"text [$text]: ") {
+            val rewritten = naiveRewrite(reference, family.lenientLengthCeiling, text)
+            family.lookupRewriteLeniently(text) shouldBe rewritten
+
+            val resolved =
+              family.lookupValueOf(text).orElse(
+                if (text.length > family.lenientLengthCeiling) None
+                else
+                  family.lookupValueOf(
+                    naiveRewrite(
+                      reference,
+                      family.lenientLengthCeiling,
+                      text.toUpperCase(Locale.ENGLISH))))
+
+            resolved match {
+              case Some(member) =>
+                family.lookupParse(text) should haveValue(member)
+                if (family.ownParseIsLenient) {
+                  family.parse(text) should haveValue(member)
+                }
+              case None =>
+                family.lookupParse(text) should beFailure
+            }
+          }
+        }
+
+        // The sweep is only worth running while the chain actually fires over the corpus, so
+        // the four families that declare rows are held to having rewritten some of it. A
+        // family that declares none is the identity over every text, which is the other half
+        // of the same statement and is asserted by the comparison above.
+        val rewrittenTexts = corpus.count { text =>
+          val folded = text.toUpperCase(Locale.ENGLISH)
+          naiveRewrite(reference, family.lenientLengthCeiling, folded) != folded
+        }
+        if (family.lenientRows.isEmpty) {
+          rewrittenTexts shouldBe 0
+        } else {
+          rewrittenTexts should be > 0
+        }
+        info(
+          s"${family.label}: ${corpus.size} texts swept against ${family.lenientRows.size} " +
+            s"reference rows, $rewrittenTexts of them rewritten by the chain")
+      }
+    }
+
+    // The one family whose own `parse` is not the lenient parse of its lookup, asserted rather
+    // than only declared: the published floating rate names resolve a name exactly, or as a
+    // concrete index name, and fold no case, so the sweep holds that family's own entry point to
+    // nothing. Were it to become lenient, this assertion is what says so.
+    familiesByLabel("FloatingRateName").ownParseIsLenient shouldBe false
+    families.filterNot(candidate => candidate.ownParseIsLenient).map(_.label).toSet shouldBe
+      Set("FloatingRateName")
+    FloatingRateName.valueOf("CHF-LIBOR").map(_.name) shouldBe Some("CHF-LIBOR")
+    toNec(FloatingRateName.parse("chf-libor")) should beFailure
+    FloatingRateName.namedEnum.parse("chf-libor") should haveValue(FloatingRateNames.CHF_LIBOR)
+
+    // The two day-count chains that are the canaries of the narrowed pass, named rather than
+    // left inside the sweep: each reaches its member only by a row rewriting a character that
+    // decides which rows the rest of the pass considers.
+    DayCount.namedEnum.rewriteLeniently("ACT/ACT.ISMA") shouldBe "Act/Act ICMA"
+    DayCount.namedEnum.rewriteLeniently("A/A ISMA") shouldBe "Act/Act ICMA"
+    DayCount.parse("ACT/ACT.ISMA") should haveValue(DayCount.ACT_ACT_ICMA)
+    DayCount.parse("A/A ISMA") should haveValue(DayCount.ACT_ACT_ICMA)
   }
 
   test("the lenient rewrites are reached only after the exact lookup has missed") {
@@ -1149,6 +1239,15 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
   private val PatternMetacharacters: Set[Char] = "\\^$.|?*+()[]{}".toSet
 
   /**
+   * The inline flag the shared lookup prefixes to a lenient source to make it ignore case.
+   *
+   * Written out here because the reference implementation of the chain has to compile each row
+   * exactly as the production rule compiles it, prefix included, or the two would disagree over
+   * every row a table spells in mixed case.
+   */
+  private val CaseInsensitiveFlag: String = "(?i)"
+
+  /**
    * A closed named family under assertion, with the type of its members erased to [[Named]].
    *
    * The families differ in their member type and nothing else that matters here, so each is
@@ -1174,6 +1273,13 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
    *   view, which is what a table comparison needs and which compiles no expression
    * @param lenientLengthCeiling  the greatest length of text the family's lenient stage is
    *   applied to, derived by the lookup from the family's own data
+   * @param lookupValueOf  the shared lookup's own exact lookup, which is narrower than the
+   *   family's for the two families that wrap it
+   * @param lookupParse  the shared lookup's own lenient lookup, likewise
+   * @param lookupRewriteLeniently  the shared lookup's chain of rewrites, run on its own
+   * @param ownParseIsLenient  whether the family's own `parse` is the lenient parse of the shared
+   *   lookup, which is false for the one family whose `parse` is an exact lookup widened with
+   *   index names rather than a lenient one
    * @param externalNameGroups  the names of the groups of protocol spellings published
    * @param externalNamesRaw  a group of protocol spellings as the family declared it
    * @param externalNames  a group of protocol spellings resolved onto values
@@ -1200,6 +1306,10 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       val byCanonicalName: Map[String, Named],
       val lenientRows: List[(String, String)],
       val lenientLengthCeiling: Int,
+      val lookupValueOf: String => Option[Named],
+      val lookupParse: String => ResultNec[Named],
+      val lookupRewriteLeniently: String => String,
+      val ownParseIsLenient: Boolean,
       val externalNameGroups: Set[String],
       val externalNamesRaw: String => Option[Map[String, String]],
       val externalNames: String => Option[Map[String, Named]],
@@ -1256,6 +1366,126 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
   }
 
   /**
+   * The lenient rows of a family as a naive reference implementation of the chain.
+   *
+   * Every row compiled exactly as the production rule compiles it - the flag that makes an
+   * expression insensitive to case prefixed unless the row carries it already - and nothing
+   * else: this is the table as the ported algorithm read it, with no screening of any kind.
+   *
+   * @param rows  the lenient rewrites of a family, in the order they are applied
+   * @return each row as a compiled expression and its replacement
+   */
+  private def naiveLenientRules(rows: List[(String, String)]): List[(Regex, String)] =
+    rows.map {
+      case (source, replacement) =>
+        ((if (source.startsWith(CaseInsensitiveFlag)) source else CaseInsensitiveFlag + source).r, replacement)
+    }
+
+  /**
+   * Applies every rule of a naive reference to text, in order, screening nothing.
+   *
+   * The ported algorithm exactly: each expression is matched against the whole of the current
+   * text and, where it matches, replaces it, the expression after it seeing the replacement.
+   * The length bound is the one the production chain applies, and it is applied here for the
+   * same reason - text beyond it is answered without an expression being run over it - so this
+   * function is a reference for `rewriteLeniently` on text of any length.
+   *
+   * @param rules  the reference rules of a family, in declaration order
+   * @param ceiling  the greatest length of text the family's lenient stage is applied to
+   * @param text  the text to rewrite
+   * @return the text that survives every rule
+   */
+  private def naiveRewrite(rules: List[(Regex, String)], ceiling: Int, text: String): String =
+    if (text.length > ceiling) {
+      text
+    } else {
+      rules.foldLeft(text) {
+        case (current, (expression, replacement)) =>
+          val matcher = expression.pattern.matcher(current)
+          if (matcher.matches()) matcher.replaceFirst(replacement) else current
+      }
+    }
+
+  /**
+   * Every text the equivalence sweep offers a family, built from that family's own data.
+   *
+   * The spellings a caller can plausibly offer - each member's name and its folded, lowered and
+   * screaming-snake forms, both sides of the alternate-name table, both sides of every group of
+   * protocol spellings, and both sides of every lenient row - together with the junk below, so
+   * that the sweep covers the text the family resolves and the text it must not. Duplicates are
+   * removed, the same spelling commonly arriving from two tables.
+   *
+   * @param family  the family to build the corpus for
+   * @return every text the sweep offers that family
+   */
+  private def lenientCorpus(family: Family): List[String] = {
+    val memberSpellings = family.members.flatMap { member =>
+      List(
+        member.name,
+        member.name.toUpperCase(Locale.ENGLISH),
+        member.name.toLowerCase(Locale.ENGLISH),
+        screamingSnakeOf(member.name))
+    }
+    val alternateSides = family.alternateNames.toList.flatMap {
+      case (spelling, canonicalName) => List(spelling, canonicalName)
+    }
+    val externalSides = family.externalNameGroups.toList.flatMap { group =>
+      family.externalNamesRaw(group).toList.flatMap(_.toList).flatMap {
+        case (spelling, canonicalName) => List(spelling, canonicalName)
+      }
+    }
+    val lenientSides = family.lenientRows.flatMap {
+      case (source, replacement) => List(source, replacement)
+    }
+    (memberSpellings ::: alternateSides ::: externalSides ::: lenientSides ::: corpusJunk).distinct
+  }
+
+  /**
+   * The text of the equivalence sweep that no family declares.
+   *
+   * The shapes that reach the rewrites differently from a spelling: nothing at all, whitespace,
+   * one character, text carrying a character outside the ASCII range or one whose case folds
+   * onto such a character, and text spelling a piece of a regular expression - a bracket left
+   * open, a quoted run, an alternation, an inline flag, a wildcard - which is what a family
+   * would be handed by anything trying to reach its expressions rather than its names. The last
+   * few are spellings the transcribed tables rewrite, held here so that every family is offered
+   * text that some family resolves.
+   */
+  private val corpusJunk: List[String] =
+    List(
+      "",
+      " ",
+      "  ",
+      "A",
+      "a",
+      "X",
+      "1",
+      "Zz9-Unknown-Family-Member",
+      "\u00dcn\u00efcod\u00e9",
+      "\u00c9\u00c9",
+      "\u00df",
+      "\u212a",
+      "k",
+      "K",
+      "(",
+      "[",
+      "([",
+      "\\Q",
+      "a|b",
+      "(?i)A",
+      ".*",
+      "ACT_360",
+      "actual/actual",
+      "ACT/ACT.ISMA",
+      "A/A ISMA",
+      "Act/Act (ISDA)",
+      "MOD_FOLLOW",
+      "Day_31",
+      "LAST_DAY",
+      "BUS/252",
+      "bus/252 brbd")
+
+  /**
    * The base class at the head of a family, found above one of its members.
    *
    * Every member of a closed family is an instance of a class the family's companion declares -
@@ -1305,6 +1535,7 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
    * @param expectedExternalsBeyondValues  the spellings of each group that resolve beyond `values`
    * @param expectedLiteralLenient  the number of lenient rows that are plain spellings
    * @param expectedPatternLenient  the number of lenient rows that are patterns
+   * @param ownParseIsLenient  whether the family's own `parse` is the lenient parse of the lookup
    * @param lookup  the name lookup the family's companion publishes
    * @tparam A  the member type of the family
    * @return the family, ready to be swept
@@ -1321,7 +1552,8 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       expectedExternals: Map[String, Int] = Map.empty,
       expectedExternalsBeyondValues: Map[String, Set[String]] = Map.empty,
       expectedLiteralLenient: Int = 0,
-      expectedPatternLenient: Int = 0)(implicit lookup: NamedEnum[A]): Family =
+      expectedPatternLenient: Int = 0,
+      ownParseIsLenient: Boolean = true)(implicit lookup: NamedEnum[A]): Family =
 
     new Family(
       label = label,
@@ -1335,6 +1567,10 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       byCanonicalName = lookup.byCanonicalName,
       lenientRows = lookup.lenientSources,
       lenientLengthCeiling = lookup.lenientLengthCeiling,
+      lookupValueOf = name => lookup.valueOf(name),
+      lookupParse = name => lookup.parse(name),
+      lookupRewriteLeniently = name => lookup.rewriteLeniently(name),
+      ownParseIsLenient = ownParseIsLenient,
       externalNameGroups = lookup.externalNameGroups,
       externalNamesRaw = group => lookup.externalNamesRaw(group),
       externalNames = group => lookup.externalNames(group),
@@ -1476,7 +1712,8 @@ private[basics] object NamedEnumClosedSpec extends TableDrivenPropertyChecks {
       expectedMembers = 351,
       valueOf = name => FloatingRateName.valueOf(name),
       parse = name => toNec(FloatingRateName.parse(name)),
-      foldedNameCollisions = Set("DKK-DESTR-OIS COMPOUND", "SEK-SWESTR-OIS COMPOUND")),
+      foldedNameCollisions = Set("DKK-DESTR-OIS COMPOUND", "SEK-SWESTR-OIS COMPOUND"),
+      ownParseIsLenient = false),
     family[FailureReason](
       label = "FailureReason",
       expectedMembers = 10,

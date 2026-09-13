@@ -42,6 +42,34 @@ nothing from the class path at run time; an application that needs calendars of 
 own `ReferenceData`, a parameter rather than a resource.
 
 
+### Reading a run of amounts
+
+`CurrencyAmountArray` and `MultiCurrencyAmountArray` hold a run of scenario amounts as one
+primitive `DoubleArray` per currency plus a currency or a size, rather than as a collection of
+amount objects, and the way a consumer reads one decides whether that layout pays off.
+
+* `getValues(currency)` (and `CurrencyAmountArray.values`) hands back the array the run already
+  holds. It is constant-time, copies nothing, and is the route to read the numbers of a run of any
+  length by.
+* `get(index)` answers with an amount, at a cost independent of the run's length. For
+  `MultiCurrencyAmountArray` that amount is a whole `MultiCurrencyAmount` and the map inside it -
+  0.2 to 0.8 microseconds and 1.1 to 1.4 kilobytes per index of a four-currency run when profiled -
+  so reading a long run index by index costs one such value per index: a hundred thousand indices
+  in four currencies is tens of milliseconds and of the order of a hundred megabytes of garbage,
+  all of it transposing values the run already holds. It is the right route for one scenario, and
+  `iterator` is the right route for the amounts in order, since it builds each only as it is read.
+* The arithmetic - `plus`, `minus`, `multipliedBy`, `mapAmounts`, `convertedTo` and
+  `MultiCurrencyAmountArray.total` - already works per currency rather than per index, one
+  operation over each primitive array, and looks up an FX rate once per currency rather than once
+  per element. Element-wise work belongs in those members rather than in a loop over indices.
+
+A run's element invariant - every value it holds is a value `CurrencyAmount` holds, so the
+infinities are held and a not-a-number value is refused - is established once per value built, by
+whichever route takes the numbers in, and is not restated when the value is constructed. A route
+that reads `CurrencyAmount` or `MultiCurrencyAmount` values establishes nothing, since the invariant
+of those types has already established it of every amount they hold.
+
+
 ### Building and running
 
 JDK 21 and sbt 1.13.0 are the prerequisites for the `sbt` commands below; the gate runner also

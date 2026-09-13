@@ -14,6 +14,7 @@ import java.time.temporal.TemporalUnit
 import java.time.temporal.UnsupportedTemporalTypeException
 
 import scala.util.Random
+import scala.util.Try
 
 import cats.Hash
 import cats.Order
@@ -26,6 +27,7 @@ import io.circe.syntax.EncoderOps
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
+import org.scalatest.prop.TableFor1
 import org.scalatest.prop.TableFor2
 import org.scalatest.prop.TableFor3
 
@@ -186,6 +188,77 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     ("-2D", FailureReason.INVALID)
   )
 
+  /**
+   * The corpus `test_parse_agrees_with_java_time` reads, one text per row.
+   *
+   * Every text of it is named for a reason, and the reasons are worth stating because the parse
+   * reads the text with a walk of its own rather than by handing it to `java.time.Period`, and
+   * the one thing that walk owes its caller is that no text reads differently than it did. The
+   * rows cover: both spellings of an accepted tenor, with and without the ISO-8601 prefix; the
+   * case rules, which admit `3m` and `P3m` while refusing `p3m`, only an upper-case `P` counting
+   * as a prefix already present; the multi-section forms, in order and out of it; the counts at
+   * and past the bounds of an `Int`, including a week count whose folding into days overflows;
+   * the periods that read perfectly well and are then refused by [[Tenor.of]] for being zero or
+   * negative; and the malformed shapes - empty text, a bare `P`, a bare number, a repeated or
+   * misordered section, a decimal point, a time part, surrounding space, a non-ASCII digit, and
+   * text that is not a period at all.
+   */
+  private val data_parseAgreement: TableFor1[String] = Table(
+    "input",
+    "", "P", "3M", "P3M", "p3m", "P3m", "3m", "2D", "2W", "6W", "12M", "1Y", "10Y", "P1Y2M3D",
+    "P1Y2M", "P2Y6M", "P1W3D", "P7D", "P0D", "0D", "P-2D", "-2D", "-P2D", "+P2D", "P+2D",
+    "P2147483647D", "P2147483648D", "P99999999999999999999D", "P2147483647W", "2K", "Rubbish",
+    "P3M4", "3M4", "PT1H", "P1D2Y", "P1M1Y", " P3M", "P3M ", "P3.5M", "P1M2", "M3", "3", "-",
+    "+", "PP3M", "P3MM", "p", "P3W4D", "P1Y1M1W1D", "P1y2m3w4d", "P000000000000003M", "P0Y0M0W0D",
+    "P\uFF11M", "P306783379W", "P306783379W-2147483645D", "P1W-2147483648D", "P-2147483648D",
+    "P-2147483649D", "P1D1D", "P2W1W", "P1Y1Y", "P3M\n", "P 3M", "PD", "P-D", "1P", "P1"
+  )
+
+  /**
+   * Every text the combination sweep of `test_parse_agrees_with_java_time` reads.
+   *
+   * The corpus above names the shapes a reader would think of; this is the mechanical
+   * complement, assembled from the pieces of the grammar rather than chosen: a prefix, then a
+   * section of a sign, a count and a unit letter, then a tail that is sometimes another section
+   * and sometimes debris. Four thousand three hundred and twenty texts result, the great majority
+   * of them refusals, which is the half of the behaviour that used to be reported by a
+   * constructed exception and is therefore the half most worth sweeping.
+   */
+  private val data_parseAgreementCombinations: TableFor1[String] = Table(
+    "input",
+    (for {
+      prefix <- List("P", "p", "")
+      sign <- List("", "-", "+")
+      count <- List("0", "1", "7", "12", "000012", "2147483647", "2147483648", "306783379")
+      unit <- List("Y", "y", "M", "m", "W", "w", "D", "d", "", "X")
+      tail <- List("", "3D", "-3d", "1Y", "2W7D", "4")
+    } yield prefix + sign + count + unit + tail): _*
+  )
+
+  /**
+   * Parses a tenor as the exception-driven implementation this port replaced parsed it.
+   *
+   * This is that implementation, in full: refuse text past the ceiling of the grammar, prefix a
+   * missing upper-case `P`, hand the text to `java.time.Period.parse` and let the
+   * `DateTimeParseException` it throws for text it cannot read stand for a refusal, then run
+   * [[Tenor.of]] over the period it read. It is the oracle of the agreement test, so that the
+   * walk [[Tenor.parse]] now reads text with is held to a statement of the grammar that does not
+   * depend on the walk being right.
+   *
+   * @param toParse  the text to parse
+   * @return the outcome the exception-driven implementation produced for that text
+   */
+  private def exceptionDrivenParse(toParse: String): Either[Failure, Tenor] =
+    if (toParse.length > 256) {
+      Left(Failure.Parsing("Tenor string must not exceed 256 characters"))
+    } else {
+      val prefixed = if (toParse.startsWith("P")) toParse else s"P$toParse"
+      Try(Period.parse(prefixed)).toEither match {
+        case Right(period) => Tenor.of(period).left.map(Failure.collapse)
+        case Left(_) => Left(Failure.Parsing(s"Unable to parse tenor: '$toParse'"))
+      }
+    }
+
   //-------------------------------------------------------------------------
   test("test_ofPeriod") {
     forAll(data_ofPeriod) { (period: Period, stored: Period, name: String) =>
@@ -289,6 +362,39 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     }
   }
 
+  /**
+   * Asserts that reading the text with a walk reads every text exactly as `java.time.Period`
+   * read it.
+   *
+   * No counterpart in the Java test class: the Java method handed the text to `Period.parse`
+   * inside a `try`/`catch`, and so did this port until the cost of that was measured. A
+   * rejection built a `DateTimeParseException` - message, captured text and stack trace - to be
+   * discarded by the `Try` that caught it, and an acceptance built a regular-expression matcher
+   * over the text; the parse answers a failure value, so neither was anything a caller could
+   * observe. The text is now read by a walk of its characters, and this test is what says the
+   * substitution moved nothing: the '''whole''' outcome is compared, so the value of an
+   * acceptance and the reason, the message and the attributes of a refusal are all compared, and
+   * the oracle it is compared against is the exception-driven implementation itself.
+   *
+   * The distinction the two halves of the grammar make is the one worth naming. `-2D` is a
+   * period `java.time` reads without complaint and a tenor refuses for being negative, so it is
+   * an `INVALID` failure carrying [[Tenor.of]]'s own message, while `2K` is not a period at all
+   * and is a `PARSING` failure quoting the text. A walk that decided either of those one step
+   * earlier or later would change the reason a caller is told, which is why the messages are
+   * compared and not only the reasons.
+   */
+  test("test_parse_agrees_with_java_time") {
+    forAll(data_parseAgreement) { (input: String) =>
+      Tenor.parse(input) shouldBe exceptionDrivenParse(input)
+    }
+    forAll(data_parseAgreementCombinations) { (input: String) =>
+      Tenor.parse(input) shouldBe exceptionDrivenParse(input)
+    }
+    // the sweep is the size it claims to be, so a table that silently collapsed - a `for`
+    // comprehension over an empty list is still a table - could not leave this test passing
+    data_parseAgreementCombinations.size shouldBe 4320
+  }
+
   test("parsing names the text it rejected in full, and the failure renders bounded and on one line") {
     // The failure quotes the text back, which is safe to write out because the rendering of a
     // failure bounds every part it writes and escapes anything that could forge a line.
@@ -315,8 +421,8 @@ class TenorSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks
     // ceiling instead of the text: the input is refused for its size, so writing it out is the
     // very thing the refusal exists to avoid, and the caller needs the bound rather than a copy
     // of what they sent (CWE-400/CWE-770). The wording is the one `Decimal` reports for the same
-    // condition on the numeral it reads. The refusal happens before the text is copied to be
-    // prefixed and before `java.time.Period` reads it, which is why a payload of ten thousand
+    // condition on the numeral it reads. The refusal happens before the leading `P` is looked
+    // for and before a character of the text is read, which is why a payload of ten thousand
     // characters costs no more than one of two hundred and fifty-seven.
     List("A" * 257, "A" * 10000, "P" + ("1" * 10000) + "D").foreach { oversized =>
       withClue(s"a payload of ${oversized.length} characters: ") {

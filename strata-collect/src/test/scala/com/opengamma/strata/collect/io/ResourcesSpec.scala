@@ -5,10 +5,12 @@
  */
 package com.opengamma.strata.collect.io
 
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.OutputStream
+import java.io.PrintStream
 import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, NoSuchFileException, Path, Paths}
@@ -39,6 +41,15 @@ import org.scalatest.matchers.should.Matchers
  * character and the fact that it parses as a non-empty JSON array. Its rows, their fields
  * and the numbers in them belong to the parity spec, which owns the tolerance that gives
  * them meaning, and are deliberately not asserted here.
+ *
+ * What that reader reads is a '''file''' of the classpath, and the three cases under "What the
+ * classpath reader reads" are what hold it to that: the directory holding the fixture, a
+ * package directory and the empty name all resolve for a class loader and denote no file, so
+ * each of them fails the read instead of returning the shape of the classpath as content, while
+ * the fixture itself still reads whole under both spellings of its name. Whether a class loader
+ * resolves such a name at all depends on the classpath in force, so those cases read the
+ * location first and assert the refusal it implies - never cancelling, because content is the
+ * one outcome no classpath may produce for a name like that.
  *
  * `readFileText` is exercised against files this spec creates under the temporary
  * directory of the platform and deletes again. Tests run in a forked process, so nothing
@@ -113,6 +124,29 @@ import org.scalatest.matchers.should.Matchers
  * reason stated where `mkfifo` cannot be run or where a platform turns out to read pipes after
  * all.
  *
+ * ===Cases about the runner rather than about the subject===
+ *
+ * Four of the cases here cancel themselves where the machine cannot carry them - too little
+ * heap for the case at the ceiling, no descriptor table to read, no endless device, no usable
+ * `mkfifo` - and printing the reason is the right thing for such a case to do. On its own,
+ * though, it hides the loss: a cancelled case is not a failed one, so a run that stopped
+ * exercising the ceiling or the descriptor table still reports itself green. The capability
+ * case at the foot of this file is the answer to that. It asserts those five properties of the
+ * runner directly, each naming what it observed, so a machine that lacks one of them fails this
+ * file and says which; the cases themselves keep their cancellations, so what is lost is still
+ * printed where the machine is genuinely incapable. Three further conditions those cases cancel
+ * on are outcomes of a race rather than properties of a machine, and the capability case states
+ * why it deliberately does not assert them.
+ *
+ * ===Where a failure goes===
+ *
+ * A failure of this subject is a value its caller receives, and the diagnostics case holds it
+ * to being '''only''' that: while two reads are refused, the error stream of this process is
+ * captured, and nothing naming the subject may appear in it. The capture is proved live by a
+ * canary the case writes itself, the original stream is restored by a finalizer, and the
+ * assertion is narrow - no line naming the subject, rather than an empty capture - because the
+ * suites here share one forked process and run in parallel.
+ *
  * One property of the implementation is still not asserted, deliberately rather than by
  * omission: release when the '''acquisition''' itself fails. That belongs to the same pairing
  * of acquisition with release, and it cannot be observed from outside for a reason no seam
@@ -124,8 +158,73 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   /** The committed parity fixture, named exactly as its own consumers name it. */
   private val FixturePath = "parity/double-array-baseline.json"
 
+  /**
+   * The size of that fixture in characters, which is also its size in bytes: it is ASCII JSON.
+   *
+   * Stated as a number rather than measured from the file, because measuring the source the
+   * subject reads and comparing it with itself would assert nothing. It is the one case that
+   * pins the '''whole''' of an ordinary read, so a reader that began truncating, or that
+   * refused a name it used to read, is caught here rather than by a case that only asks
+   * whether the text is non-empty. A fixture regenerated at another size is a deliberate
+   * change to a committed baseline, and updating this number is part of making it.
+   */
+  private val FixtureCharacters: Int = 90821
+
   /** A resource name the classpath does not hold, used by the failure and laziness cases. */
   private val AbsentResource = "parity/no-such-fixture.json"
+
+  /**
+   * The directory holding the fixture above, which denotes no file.
+   *
+   * It is the name a mistyped fixture name reduces to, and it resolves as readily as an entry
+   * does - a class loader locates a directory without complaint - so reading it would yield the
+   * shape of the classpath rather than content. That is why the subject refuses it.
+   */
+  private val FixtureDirectory = "parity"
+
+  /**
+   * A package directory, which denotes no file either and exists on any classpath this module
+   * is loaded from, so the property is asserted over a second name that nothing about this
+   * spec's own fixtures could explain.
+   */
+  private val PackageDirectory = "com/opengamma"
+
+  /**
+   * The empty resource name, which denotes the root of the classpath where it denotes anything.
+   *
+   * It is the degenerate case of the two above, and worth its own case because it is what a
+   * name assembled from an empty configured value comes to.
+   */
+  private val EmptyResource = ""
+
+  /** The wording the subject uses for a name it resolved to something that is not a file. */
+  private val DirectoryRefusal = "Classpath resource is a directory rather than a file: "
+
+  /** The wording the subject uses for a name the classpath does not hold at all. */
+  private val AbsentRefusal = "Classpath resource absent: "
+
+  /** A file path nothing on this platform bears, used by the laziness case of the file reader. */
+  private val AbsentFilePath = "/no-such-directory/no-such-file.txt"
+
+  /**
+   * The text the diagnostics case writes to the error stream itself, to prove the capture works.
+   *
+   * A case asserting that nothing of the subject reached the error stream is worthless if the
+   * capture was never connected to it, so the case writes this and asserts that '''it''' was
+   * captured. The value is distinctive enough that no other suite sharing this process could
+   * produce it.
+   */
+  private val StandardErrorCanary = "resources-spec-standard-error-canary"
+
+  /**
+   * How long the diagnostics case lets a report that is not the subject's own arrive.
+   *
+   * The duplicate report the case is about is written by the runtime rather than by the read,
+   * so it need not be written by the time the read's value is in hand. The case therefore waits
+   * before it looks, and this is that wait: long enough for a report that was going to be
+   * written to have been written, and short enough to cost the suite nothing that matters.
+   */
+  private val DiagnosticSettle: FiniteDuration = 250.millis
 
   /**
    * A name carrying the characters a forged record is made of: a line feed, a carriage
@@ -340,6 +439,52 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  // What the classpath reader reads: files, and nothing else
+  //
+  // A class loader resolves a name to a location, and a location need not be a file. A name
+  // denoting a directory of the classpath resolves exactly as an entry does, and reading it
+  // yields whatever the platform makes of a directory - the entry names it holds under exploded
+  // class directories, empty text from an archive - neither of which anybody stored there. The
+  // subject's contract is the classpath subset that names files, so the first two cases below
+  // assert that a name outside it is refused where an absent name is refused, rather than read,
+  // and the third asserts that refusing them narrowed nothing an ordinary read relies on.
+  //
+  // Whether the loader resolves such a name at all is a property of the classpath in force, so
+  // each refusal case reads the location first and asserts against the refusal that location
+  // implies. Both branches assert a failure: the one thing no classpath may do for a name like
+  // that is return content.
+  //-------------------------------------------------------------------------
+  test("readClasspathText fails the IO for a name that denotes a directory of the classpath") {
+    // Two such names: the directory holding the fixture, which is what a mistyped fixture name
+    // reduces to, and a package directory, which exists on any classpath this module loads from.
+    refusalOfANameThatDenotesNoFile(FixtureDirectory)
+      .flatMap(_ => refusalOfANameThatDenotesNoFile(PackageDirectory))
+  }
+
+  test("readClasspathText fails the IO for the empty resource name") {
+    // The same property at the root of the classpath. Under exploded class directories the
+    // empty name resolves to the directory the classes sit in; from an archive it resolves to
+    // nothing. Either way there is no file, so either way the read fails.
+    refusalOfANameThatDenotesNoFile(EmptyResource)
+  }
+
+  test("readClasspathText returns the whole committed fixture under both spellings of its name") {
+    // The positive half of the two cases above: refusing names that denote no file must not
+    // narrow what the reader accepts. Both spellings of the fixture's name return its content
+    // whole - every character of it, not merely a non-empty prefix - and return the same text.
+    for {
+      relative <- Resources.readClasspathText(FixturePath)
+      absolute <- Resources.readClasspathText("/" + FixturePath)
+    } yield withClue(
+      s"the fixture read as ${relative.length} characters by its bare name and " +
+        s"${absolute.length} by its slash-prefixed name: ") {
+      relative.length shouldBe FixtureCharacters
+      absolute.length shouldBe FixtureCharacters
+      absolute shouldBe relative
+    }
+  }
+
+  //-------------------------------------------------------------------------
   // How a failure names its source
   //
   // A caller chooses the name a read is given and the subject quotes that name back in
@@ -430,12 +575,80 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     }
   }
 
+  //-------------------------------------------------------------------------
+  // What a failure reaches, and what it does not
+  //
+  // The subject reports a failure by failing its effect, and that is meant to be the whole of
+  // what a failure does: the caller holds the exception and nothing else has been told about
+  // it. A reader that also wrote the failure somewhere would be reporting it twice - once as a
+  // value the caller can act on and once as text in a log nobody asked for - and the second
+  // report is the misleading one, because it looks like an error that escaped.
+  //-------------------------------------------------------------------------
+  test("a refused read reports its failure to its caller alone and prints nothing about itself") {
+    // Two reads in one composition, the second failing inside the read rather than in the
+    // acquisition: that is the pair a duplicate report needs, because the read is the part that
+    // runs on a fiber of its own and a fiber which ends errored is handed to the runtime's
+    // failure reporter as well as to whoever joins it.
+    //
+    // Two things about this case are worth stating. It asserts narrowly - that no captured line
+    // names the subject - rather than that the capture is empty, because suites here share one
+    // forked process and run in parallel, so another suite's output can arrive in the window
+    // this case holds the stream. And a duplicate report of this kind is written at most once
+    // per process, so inside a suite that has already refused a read this case can pass without
+    // having had the chance to fail; what establishes it is a run of these two reads in a
+    // process of their own, which is how the behaviour was found. The case earns its place by
+    // failing if the report ever comes back in the first refused read of a process.
+    withTempDirectory { directory =>
+      withCapturedStandardError(
+        for {
+          absent <- Resources.readClasspathText(AbsentResource).attempt
+          unreadable <- Resources.readFileText(directory.toString).attempt
+        } yield (absent, unreadable)
+      ).map { case ((absent, unreadable), capture) =>
+        // Both reads failed, so the case is about a failure that happened rather than about a
+        // stream nothing was written to.
+        val refusedAcquisition = refusalMessageOf(absent)
+        val refusedRead = refusalMessageOf(unreadable)
+        val framesOfTheSubject = capture.linesIterator
+          .filter(line => line.contains("Resources$") || line.contains("readBoundedText"))
+          .toList
+        withClue(
+          s"the acquisition was refused with '$refusedAcquisition', the read with " +
+            s"'$refusedRead', and ${capture.length} characters reached the error stream: ") {
+          // The canary first: it proves the capture is live and that a stack trace written to
+          // this stream would have been seen, so the emptiness asserted below is a fact about
+          // the subject rather than about the capture.
+          capture should include(StandardErrorCanary)
+          capture.linesIterator.count(line => line.trim.startsWith("at ")) should be >= 1
+          // And the subject wrote nothing: no frame of it, and no frame of the bounded read
+          // the fiber runs, reached the error stream while its two failures were produced.
+          framesOfTheSubject shouldBe empty
+        }
+      }
+    }
+  }
+
   test("readClasspathText suspends the read so that constructing the IO never throws") {
-    IO {
-      // Building the description of a read of an absent resource is not itself a read, so
-      // it cannot fail; only evaluating it can, which the case above evaluates.
-      val _ = Resources.readClasspathText(AbsentResource)
-      succeed
+    // Building the description of a read of an absent resource is not itself a read, so it
+    // cannot fail. What construction yields is a value, and this case asserts that value rather
+    // than only that construction returned: two constructions of the same read are two
+    // descriptions, and one description evaluated twice fails the same way both times, so
+    // nothing was read, memoised or cached while the description was being built.
+    val described = Resources.readClasspathText(AbsentResource)
+    val describedAgain = Resources.readClasspathText(AbsentResource)
+    for {
+      first <- described.attempt
+      again <- described.attempt
+      other <- describedAgain.attempt
+    } yield {
+      described should not be theSameInstanceAs(describedAgain)
+      val firstRefusal = refusalOf(first, AbsentResource)
+      firstRefusal shouldBe a[FileNotFoundException]
+      firstRefusal.getMessage should startWith(AbsentRefusal)
+      // The same description, evaluated a second time, and a second description of the same
+      // read: both fail exactly as the first did.
+      refusalMessageOf(again) shouldBe firstRefusal.getMessage
+      refusalMessageOf(other) shouldBe firstRefusal.getMessage
     }
   }
 
@@ -514,9 +727,32 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   }
 
   test("readFileText suspends the read so that constructing the IO never throws") {
-    IO {
-      val _ = Resources.readFileText("/no-such-directory/no-such-file.txt")
-      succeed
+    // The file reader can be held to this more sharply than the classpath reader, and this is
+    // how: the file '''exists''' when the description is built and is gone before the
+    // description is evaluated. A reader that had read at construction time would hand back the
+    // content it captured then; a reader that describes a read fails, because the file is no
+    // longer there when the read finally happens. The second description, of a path nothing has
+    // ever borne, adds the documented shape of that failure - the subject's own message with
+    // the platform's report kept as the cause.
+    withTempFile(HelloWorld) { path =>
+      val describedWhilePresent = Resources.readFileText(path.toString)
+      val describedAbsent = Resources.readFileText(AbsentFilePath)
+      for {
+        control <- describedWhilePresent
+        _ <- IO.blocking(Files.delete(path))
+        afterDeletion <- describedWhilePresent.attempt
+        absent <- describedAbsent.attempt
+      } yield {
+        // The control: the very same description read the file whole while it was there, so
+        // what follows is attributable to the deletion and to nothing else.
+        control shouldBe HelloWorld
+        val refusedAfterDeletion = refusalOf(afterDeletion, path.toString)
+        refusedAfterDeletion shouldBe an[IOException]
+        refusedAfterDeletion.getCause shouldBe a[NoSuchFileException]
+        val refusedAbsent = refusalOf(absent, AbsentFilePath)
+        refusedAbsent shouldBe an[IOException]
+        refusedAbsent.getCause shouldBe a[NoSuchFileException]
+      }
     }
   }
 
@@ -606,6 +842,14 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         """com.opengamma.strata.collect.io.Resources.openClasspathStream("parity/double-array-baseline.json", "parity/double-array-baseline.json")"""
       )
       assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.openFileStream("x", "x")""")
+      // Nor the two halves of the classpath acquisition: how a name is located and opened, and
+      // how a located name is judged to be a directory rather than a file, are the subject's own
+      // decisions. Both arguments below are well-typed - two strings, and a URL - so each
+      // snippet is refused for the visibility of the member and for nothing else.
+      assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.classpathEntry("x", "x")""")
+      assertDoesNotCompile(
+        """com.opengamma.strata.collect.io.Resources.denotesDirectory(java.net.URI.create("file:/x").toURL())"""
+      )
       // Nor the wording a failure uses to name its source, nor the wrapping of a platform
       // failure in it: a caller cannot compose a diagnostic that looks like one of this
       // object's own, and cannot reach past the rendering by asking for the label directly.
@@ -857,6 +1101,67 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  // What this runner has to provide
+  //
+  // Four of the cases above cancel themselves where the machine cannot carry them, and each
+  // prints the reason when it does. That is the right behaviour for the case - it has nothing to
+  // say about a subject it could not exercise - but on its own it is invisible: a cancelled case
+  // is not a failed one, and a run that quietly stopped exercising the ceiling, the descriptor
+  // table, the endless device or a named pipe still reports itself as green. The case below is
+  // what makes that visible. It asserts the five '''capabilities''' those cancellations rest on,
+  // separately and each naming what it observed, so a runner that lacks one fails here and says
+  // which one and why it matters, while the cases themselves still cancel with their reasons
+  // rather than failing on a machine that was never going to carry them.
+  //
+  // Three other conditions those cases cancel on are deliberately '''not''' asserted here,
+  // because they are outcomes of a race rather than properties of the machine: that a whole read
+  // of the endless device is slow enough to measure, that a read has not ended on its own inside
+  // the pause before it is cancelled, and that a read of a named pipe ends inside its bound. Any
+  // of the three can go either way on a machine that provides every capability below, so
+  // asserting one would make this suite fail intermittently for a reason that is not a defect.
+  // They remain cancellations, with the measurement printed in the reason, which is what lets a
+  // run that hit one be recognised by reading it.
+  //-------------------------------------------------------------------------
+  test("this runner provides every capability the cases above cancel themselves for the absence of") {
+    for {
+      heap <- IO(Runtime.getRuntime.maxMemory)
+      descriptorsExposed <- IO.blocking(Files.isDirectory(ProcessDescriptors))
+      fixtureProtocol <- IO.blocking(
+        Option(getClass.getClassLoader.getResource(FixturePath)).map(_.getProtocol))
+      continuousReadable <- IO.blocking(Files.isReadable(Paths.get(ContinuousSource)))
+      pipeCapability <- namedPipeCapability
+    } yield {
+      // The ceiling case decodes sixty-four mebibytes and the text made from them at once.
+      withClue(s"this runner allows $heap bytes of heap against the $CeilingCaseHeap the case " +
+        "at the documented ceiling needs; run the suite with a larger -Xmx: ") {
+        heap should be >= CeilingCaseHeap
+      }
+      // The three descriptor cases read the descriptor table of this process directly.
+      withClue(s"$ProcessDescriptors is not a directory on this runner, so the descriptor " +
+        "table cannot be read and handle reclamation cannot be observed; run the suite on a " +
+        "platform that exposes it: ") {
+        descriptorsExposed shouldBe true
+      }
+      // The descriptor case over a successful read distinguishes a handle on the fixture from a
+      // handle on an archive holding it, which it can only do where the fixture is an ordinary
+      // file. The protocol is read rather than assumed, because it is not the same under every
+      // way of running this suite: a staged archive resolves it to "jar".
+      withClue(s"the classpath fixture resolves to ${fixtureProtocol.getOrElse("nothing")} on " +
+        "this runner rather than to a file, so run the suite as a forked test over exploded " +
+        "class directories: ") {
+        fixtureProtocol shouldBe Some("file")
+      }
+      // The cancellation case needs a source that yields without ending.
+      withClue(s"$ContinuousSource is not readable on this runner, so no read can be caught in " +
+        "flight and prompt cancellation cannot be observed: ") {
+        continuousReadable shouldBe true
+      }
+      // And the pipe case needs a named pipe, which is made by running mkfifo.
+      pipeCapability
+    }
+  }
+
+  //-------------------------------------------------------------------------
   /**
    * Creates a file holding the given text as UTF-8 bytes, hands its path to the case, and
    * deletes it afterwards.
@@ -958,6 +1263,77 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         message
       case Right(text) =>
         fail(s"expected the read to fail, got ${text.length} characters")
+    }
+
+  /**
+   * Runs a case with the error stream of this process replaced by a capture, and hands back
+   * what reached it.
+   *
+   * Three things make the capture usable as evidence. It settles before it is read, because a
+   * report written by the runtime rather than by the read need not have been written by the
+   * time the read's value is in hand. It then writes a '''canary''' - a stack trace of this
+   * spec's own making - so that a case asserting the capture holds nothing of the subject can
+   * first assert that the capture holds something, which is what tells an empty capture apart
+   * from a capture that was never connected. And the original stream is restored by a
+   * finalizer, so it is restored on every outcome: a case that failed while the stream was
+   * swapped would otherwise take the error stream of the whole process with it.
+   *
+   * @param use  the case whose error output is to be captured
+   * @return the value of the case, and the text that reached the error stream
+   */
+  private def withCapturedStandardError[A](use: IO[A]): IO[(A, String)] =
+    IO.blocking((new ByteArrayOutputStream(), System.err)).flatMap { case (captured, original) =>
+      IO.blocking(System.setErr(new PrintStream(captured, true, StandardCharsets.UTF_8)))
+        .flatMap(_ => use)
+        .flatMap(value =>
+          IO.sleep(DiagnosticSettle)
+            .flatMap(_ =>
+              IO.blocking {
+                new RuntimeException(StandardErrorCanary).printStackTrace()
+                System.err.flush()
+              }
+            )
+            .map(_ => (value, captured.toString(StandardCharsets.UTF_8)))
+        )
+        .guarantee(IO.blocking(System.setErr(original)))
+    }
+
+  /**
+   * Asserts that a classpath name which denotes no readable file is refused, in the wording the
+   * classpath in force implies.
+   *
+   * Whether a class loader resolves such a name is a property of the classpath rather than of
+   * the subject: exploded class directories resolve a directory name to a location, an archive
+   * resolves some and not others, and the empty name resolves to the root of the first kind and
+   * to nothing on the second. So the location is read first and the assertion follows it - the
+   * directory wording where there was something to reject, the absence wording where the name
+   * reached nothing at all. Both branches assert a '''failure''': the one outcome no classpath
+   * may produce for a name like this is content, which is exactly what the subject used to
+   * produce. Neither branch cancels, so this case reports on every runner.
+   *
+   * @param name  the resource name, which must denote no readable file
+   * @return the effect of the assertions
+   */
+  private def refusalOfANameThatDenotesNoFile(name: String): IO[Assertion] =
+    for {
+      located <- IO.blocking(Option(getClass.getClassLoader.getResource(name)).map(_.getProtocol))
+      outcome <- Resources.readClasspathText(name).attempt
+    } yield {
+      val message = refusalMessageOf(outcome)
+      withClue(
+        s"the name '$name' resolved to ${located.getOrElse("nothing")} and the message was " +
+          s"'$message': ") {
+        // One line and naming the name, as every message of this subject is.
+        message.linesIterator.size shouldBe 1
+        message should endWith(name)
+        located match {
+          // A location the loader resolved, so the refusal says what was found rather than
+          // claiming the name reached nothing.
+          case Some(_) => message should startWith(DirectoryRefusal)
+          // Nothing resolved, so this is the absence the reader has always reported.
+          case None => message should startWith(AbsentRefusal)
+        }
+      }
     }
 
   /**
@@ -1073,6 +1449,44 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
           case Some(reason) => IO(cancel(reason))
           case None => use(pipe)
         }
+        .guarantee(
+          IO.blocking(Files.deleteIfExists(pipe)).void *>
+            IO.blocking(Files.deleteIfExists(directory)).void)
+    }
+
+  /**
+   * Asserts that this runner can make a named pipe, and removes the one it made.
+   *
+   * The capability is asserted by exercising it rather than by looking for the command, because
+   * a command that exists and cannot be run is the case the pipe case above cancels on. It uses
+   * the same `mkfifo` call that case uses, so the two cannot disagree, and it asserts three
+   * things about the result: that nothing was reported as a reason not to proceed, that the pipe
+   * is there, and that it is not an ordinary file - a platform whose `mkfifo` quietly produced a
+   * regular file would satisfy the first two and would not give the pipe case the source it
+   * needs.
+   *
+   * The pipe and the directory holding it are removed by a finalizer, so they are removed on
+   * every outcome, a failed assertion included.
+   *
+   * @return the effect of the assertions
+   */
+  private def namedPipeCapability: IO[Assertion] =
+    IO.blocking(Files.createTempDirectory("resources-spec-capability-")).flatMap { directory =>
+      val pipe = directory.resolve(PipeName)
+      makeNamedPipe(pipe)
+        .flatMap(refusal =>
+          IO.blocking((Files.exists(pipe), Files.isRegularFile(pipe))).map {
+            case (present, ordinary) =>
+              withClue(
+                s"mkfifo on this runner reported '${refusal.getOrElse("no reason not to proceed")}' " +
+                  s"and left present=$present, ordinaryFile=$ordinary at $pipe; the pipe case " +
+                  "cannot run without a usable mkfifo: ") {
+                refusal shouldBe None
+                present shouldBe true
+                ordinary shouldBe false
+              }
+          }
+        )
         .guarantee(
           IO.blocking(Files.deleteIfExists(pipe)).void *>
             IO.blocking(Files.deleteIfExists(directory)).void)
@@ -1419,11 +1833,16 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 //
 // ---------------------------------------------------------------------------
 // The seven cases named above are every case in this file that an original case landed on.
-// The other sixteen of the twenty-three have no origin in the original class and are
+// The other twenty-two of the twenty-nine have no origin in the original class and are
 // additive, because they hold the port to promises the original could not make - its reads
 // happened where they were written and it reported failure by throwing. They are:
 //
-//   * the two laziness cases, one per reader: describing a read performs none of it;
+//   * the two laziness cases, one per reader: describing a read performs none of it. Each
+//     asserts the description it built rather than only that building it returned - two
+//     constructions are two values and one description fails identically however often it is
+//     evaluated, and on the file side the file exists when the description is built and is
+//     deleted before it is evaluated, which is what a reader that read at construction time
+//     would fail;
 //   * the two remaining failure cases - a file that does not exist, and a path that is not
 //     a readable file - which hold the port to its promise that a source it cannot obtain
 //     fails the effect rather than yielding a sentinel or empty text;
@@ -1449,5 +1868,17 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 //     read is still under way, which the three descriptor observations above cannot reach
 //     because each of them looks at a read that has ended - and the pipe case, which
 //     establishes that a named pipe is refused rather than read, which is why the first uses
-//     a device and not a pipe.
+//     a device and not a pipe;
+//   * the three cases about what the classpath reader reads: a name denoting a directory of the
+//     classpath and the empty name, each refused rather than read - the reader takes the subset
+//     of the classpath that names files, and a name outside it fails where an absent name fails
+//     instead of yielding the shape of the classpath as content - and the whole-fixture case,
+//     which shows that refusing those names narrowed nothing, by reading every character of the
+//     committed fixture under both spellings of its name;
+//   * the diagnostics case, which holds a failure to one destination: a refused read reports
+//     itself to its caller as a value and writes nothing about itself to the error stream, so a
+//     caller that handles the failure is not also reading it in a log;
+//   * the capability case, which asserts the five properties of the runner that the four
+//     cancelling cases above rest on, so a machine that cannot carry one of them fails this
+//     file rather than passing it with a case silently skipped.
 // ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ package com.opengamma.strata.basics.currency
 
 import java.util.Locale
 
+import scala.collection.immutable.HashMap
 import scala.collection.immutable.ListSet
 import scala.collection.immutable.Set
 import scala.util.matching.Regex
@@ -116,6 +117,12 @@ final case class CurrencyPair(base: Currency, counter: Currency) extends NoJavaS
     } else if (currency == counter) {
       Right(base)
     } else {
+      // The message names the pair by its text form, as the library being ported does, and the
+      // whole of the cost of this branch is that message and the failure carrying it: nothing is
+      // built on the way to deciding that the currency is absent, and the two comparisons above
+      // are what a caller pays when it is present. A message naming the caller's own value cannot
+      // be prepared in advance the way the constant-message failures of this package are, so what
+      // is kept off the succeeding path here is everything except the failure itself.
       Left(Failure.Invalid(
         s"Unable to find other currency, ${currency.code} is not present in ${this.toString}"))
     }
@@ -218,12 +225,18 @@ final case class CurrencyPair(base: Currency, counter: Currency) extends NoJavaS
    * CurrencyPair(Currency.GBP, Currency.GBP).isConventional   // true - identity
    * }}}
    *
+   * The first two steps read the configured table through the single primitive-valued route
+   * [[CurrencyPair.configuredRateDigits]], so "configured" means here exactly what it means to
+   * [[getRateDigits]], and neither step allocates: this predicate is called once per cell by code
+   * that walks a matrix of currencies, and a predicate that allocates is one the JIT cannot lift
+   * out of such a walk.
+   *
    * @return true when this pair follows the market convention for its two currencies
    */
   def isConventional: Boolean =
-    if (CurrencyPair.configuredRateDigits(base, counter).isDefined) {
+    if (CurrencyPair.configuredRateDigits(base, counter) != CurrencyPair.NotConfigured) {
       true
-    } else if (CurrencyPair.configuredRateDigits(counter, base).isDefined) {
+    } else if (CurrencyPair.configuredRateDigits(counter, base) != CurrencyPair.NotConfigured) {
       false
     } else {
       val basePriority = CurrencyPair.marketConventionPriorityOf(base)
@@ -283,13 +296,26 @@ final case class CurrencyPair(base: Currency, counter: Currency) extends NoJavaS
    * CurrencyPair(Currency.BHD, Currency.BRL).getRateDigits   // 5 - unconfigured, 3 + 2
    * }}}
    *
+   * The three steps are tried in that order over the primitive answers of
+   * [[CurrencyPair.configuredRateDigits]], the sentinel of which is what distinguishes a direction
+   * the table does not hold from one it holds with zero digits - `USD/VND` is quoted to no
+   * fractional digits at all, so a zero here is a configured answer and not an absent one.
+   *
    * @return the number of digits in a market quote for this pair
    */
-  def getRateDigits: Int =
-    CurrencyPair
-      .configuredRateDigits(base, counter)
-      .orElse(CurrencyPair.configuredRateDigits(counter, base))
-      .getOrElse(base.minorUnitDigits + counter.minorUnitDigits)
+  def getRateDigits: Int = {
+    val configured: Int = CurrencyPair.configuredRateDigits(base, counter)
+    if (configured != CurrencyPair.NotConfigured) {
+      configured
+    } else {
+      val configuredInverse: Int = CurrencyPair.configuredRateDigits(counter, base)
+      if (configuredInverse != CurrencyPair.NotConfigured) {
+        configuredInverse
+      } else {
+        base.minorUnitDigits + counter.minorUnitDigits
+      }
+    }
+  }
 
   /**
    * Returns the text form of this pair, which is the two codes separated by a slash.
@@ -338,23 +364,55 @@ object CurrencyPair {
   private val PairTextLength: Int = 7
 
   /**
-   * The rate digits the reference data holds for a pair of currencies, if it holds any.
+   * The answer [[configuredRateDigits]] gives for a direction the reference data does not hold.
+   *
+   * A number of rate digits is a count of decimal places and is therefore never negative - the
+   * table holds values from zero to five - so a negative value cannot collide with a configured
+   * one and can stand for "not configured" without an `Option` around the answer. Zero is a
+   * configured answer and not an absent one: `USD/VND` is quoted to no fractional digits, which is
+   * why the sentinel is below the range rather than at its edge. That is the whole reason the
+   * sentinel is used: it keeps the lookup below a primitive `Int`, which is what makes the two
+   * predicates that consult it allocate nothing at all.
+   */
+  private val NotConfigured: Int = -1
+
+  /**
+   * The empty inner table answered for a base currency the reference data configures no pair for.
+   *
+   * It is held rather than built at each miss for the reason any empty immutable collection is:
+   * there is exactly one of it and building it again would only construct the same value. Being
+   * empty, every lookup into it misses, which is the correct answer for such a base currency.
+   */
+  private val NoConfiguredCounters: HashMap[Currency, Int] = HashMap.empty
+
+  /**
+   * The rate digits the reference data holds for a pair of currencies, or [[NotConfigured]].
    *
    * This is the single route from this type to the configured table, used by both questions that
    * consult it: whether a pair is conventional, which is whether the table holds it, and how
    * many digits a quote for it carries. Keeping one route means the two answers cannot disagree
-   * about what "configured" means.
+   * about what "configured" means, and it is why the sentinel is compared against in exactly two
+   * members and nowhere else.
    *
    * The table is keyed by the two currencies rather than by a pair, which is what lets
    * [[CurrencyPairData]] describe pairs without depending on this type; the lookup is written
-   * accordingly.
+   * accordingly, descending the nested view that object holds for it - base currency first,
+   * counter currency second - so that a question about one direction is two hash probes and no
+   * allocation at all: each level answers with `getOrElse`, which hands back the value rather than
+   * an `Option` of it, and the value was boxed once when the table was built. Asking
+   * `CurrencyPairData.rateDigitsByCurrencies` instead would allocate the `Tuple2` of its composite
+   * key and the `Some` of its answer on every call, which for a predicate called once per cell of
+   * a conversion matrix is the difference between a lookup the JIT can hoist out of the loop and
+   * one it cannot.
    *
    * @param pairBase     the base currency to look up
    * @param pairCounter  the counter currency to look up
-   * @return the configured rate digits, or nothing when that direction is not configured
+   * @return the configured rate digits, or [[NotConfigured]] when that direction is not configured
    */
-  private def configuredRateDigits(pairBase: Currency, pairCounter: Currency): Option[Int] =
-    CurrencyPairData.rateDigitsByCurrencies.get((pairBase, pairCounter))
+  private def configuredRateDigits(pairBase: Currency, pairCounter: Currency): Int =
+    CurrencyPairData.rateDigitsByBase
+      .getOrElse(pairBase, NoConfiguredCounters)
+      .getOrElse(pairCounter, NotConfigured)
 
   /**
    * The market convention priority of a currency, where a lower number means a higher priority.
@@ -366,8 +424,25 @@ object CurrencyPair {
    * @param currency  the currency whose priority is wanted
    * @return the position of the currency in the ordering, or the largest value when unlisted
    */
-  private def marketConventionPriorityOf(currency: Currency): Int =
-    CurrencyData.marketConventionPriorityIndex.getOrElse(currency.code, Int.MaxValue)
+  private def marketConventionPriorityOf(currency: Currency): Int = {
+    // `getOrElse` would hand the fallback back as a boxed integer - the priority of a currency the
+    // list does not name sits far outside the range of cached values - and this sits on the
+    // predicate path, so the absent case is answered with a membership test and a second lookup
+    // instead. Both return a primitive, so deciding the ordering of a pair allocates nothing
+    // whether the currencies are named by the list or not.
+    val priorities = CurrencyData.marketConventionPriorityIndex
+    val code = currency.code
+    if (priorities.contains(code)) priorities(code) else Unlisted
+  }
+
+  /**
+   * The market convention priority of a currency the ordered list does not name.
+   *
+   * Every currency the list names has a priority below this, so a currency it does not name
+   * sorts after every currency it does, which is what makes the comparison of two unnamed
+   * currencies fall through to the lexicographic order of their codes.
+   */
+  private val Unlisted: Int = Int.MaxValue
 
   /**
    * The set of configured currency pairs.

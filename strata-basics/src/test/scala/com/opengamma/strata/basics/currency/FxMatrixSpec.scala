@@ -579,6 +579,9 @@ final class FxMatrixSpec
 
     val result = unwrap(matrix1.merge(matrix2))
     result shouldBe matrix1
+    // and it is that matrix rather than a copy of it, since a merge that adds nothing has no rate
+    // to place and nothing to copy
+    result should be theSameInstanceAs matrix1
   }
 
   /**
@@ -988,6 +991,301 @@ final class FxMatrixSpec
     FxMatrix.of(new SingleUseRates(rateValues)) shouldBe FxMatrix.of(rateValues)
   }
 
+  //-------------------------------------------------------------------------
+  /**
+   * A collection of rates is placed into one accumulator of rows that is sealed into a matrix
+   * once, rather than into a matrix per rate, so the two routes to the same rates have to reach
+   * the same value: the collection placed in one call, and the same rates placed one at a time
+   * through [[FxMatrix.withRate]]. Equality of matrices reads the currencies in order and the
+   * rates by bit pattern, so the comparison below is of every rate exactly and not within a
+   * tolerance.
+   *
+   * The fixture chains thirteen currencies, so the rows the placement writes into are grown three
+   * times over the course of the fold - after the second, fourth and eighth currency - and the
+   * rates placed before each of those points have to survive it.
+   */
+  test("aCollectionOfRatesPlacesExactlyAsTheSameRatesPlacedOneAtATime") {
+    val collected = unwrap(FxMatrix.ofRates(chainedRates))
+    val oneByOne = unwrap(placedOneByOne(chainedRates: _*))
+
+    collected.currencies shouldBe chainedCurrencies
+    oneByOne.currencies shouldBe chainedCurrencies
+    collected shouldBe oneByOne
+    collected.rates shouldBe oneByOne.rates
+
+    // every rate of the chain brings a currency in, and the rate a currency arrives at is the
+    // rate given multiplied by the reference currency's rate against itself, which is one - so
+    // each placed rate is held exactly, and the opposite direction is exactly its reciprocal
+    chainedRates.foreach {
+      case (pair, rate) =>
+        withClue(s"fxRate($pair): ") {
+          collected.fxRate(pair.base, pair.counter) shouldBe Right(rate)
+          collected.fxRate(pair.counter, pair.base) shouldBe Right(1d / rate)
+        }
+    }
+
+    // and the value is one the structural checks accept, which is what a row or column left
+    // unwritten by the growth of the rows would break
+    unwrapNec(FxMatrix.fromMatrix(collected.currencies, collected.rates)) shouldBe collected
+  }
+
+  /**
+   * The rows a placement writes into are grown by doubling their number rather than by one per
+   * currency, so a matrix of more currencies than the initial room holds is built through several
+   * growths. This fixture is the case where every rate of the result is known exactly: ten
+   * currencies chained at a rate of one, whose every derived rate is one as well, because
+   * multiplying by one and dividing one by one are both exact. Every element of the ten by ten
+   * matrix is therefore asserted, which is what a cell left behind by a growth - or a cell of the
+   * room reserved beyond the currencies leaking into the result - fails.
+   */
+  test("aMatrixGrownPastItsInitialRoomHoldsEveryRateItWasGiven") {
+    val unitRates: Vector[(CurrencyPair, Double)] =
+      chainedCurrencies.take(10).sliding(2).map(pair => rateFor(pair(0), pair(1), 1d)).toVector
+
+    val matrix = unwrap(FxMatrix.ofRates(unitRates))
+
+    matrix.currencies shouldBe chainedCurrencies.take(10)
+    matrix.rates.rowCount shouldBe 10
+    matrix.rates.columnCount shouldBe 10
+    matrix.currencies.indices.foreach { row =>
+      matrix.currencies.indices.foreach { column =>
+        withClue(s"rates.get($row, $column): ") {
+          matrix.rates.get(row, column) shouldBe 1d
+        }
+      }
+    }
+
+    matrix shouldBe unwrap(placedOneByOne(unitRates: _*))
+
+    // the five-currency prefix crosses the first growth and the ten-currency matrix the second,
+    // so the shorter matrix is asserted as well rather than only implied by the longer one
+    val five = unwrap(FxMatrix.ofRates(unitRates.take(4)))
+    five.currencies shouldBe chainedCurrencies.take(5)
+    five.currencies.indices.foreach(row =>
+      five.currencies.indices.foreach(column => five.rates.get(row, column) shouldBe 1d))
+  }
+
+  /**
+   * The rates of the chain offered in an order that holds five of them back: the first link, then
+   * every second link from the third - none of which shares a currency with anything placed when
+   * it is offered - and then the links that connect them. Each of those connecting offers brings a
+   * currency in, and the pass over the rates held back then places the one rate that has become
+   * placeable, so the rates are placed in the order they connect and not in the order they were
+   * offered.
+   *
+   * That makes the sequence of placements the same sequence the connecting order performs, so the
+   * two orders must reach the very same matrix - the same currencies in the same positions and
+   * every rate equal bit for bit. This is the case a placement that shared rows between the value
+   * a pass read and the value it wrote would break.
+   */
+  test("ratesHeldBackAndRetriedReachTheSameMatrixAsTheConnectingOrder") {
+    val connecting: Vector[(CurrencyPair, Double)] = chainedRates.zipWithIndex.collect {
+      case (entry, index) if index >= 2 && index % 2 == 0 => entry
+    }
+    val connected: Vector[(CurrencyPair, Double)] = chainedRates.zipWithIndex.collect {
+      case (entry, index) if index % 2 == 1 => entry
+    }
+    val offered: Vector[(CurrencyPair, Double)] = chainedRates.head +: (connecting ++ connected)
+
+    val collected = unwrap(FxMatrix.ofRates(offered))
+
+    collected.currencies shouldBe chainedCurrencies
+    collected shouldBe unwrap(FxMatrix.ofRates(chainedRates))
+    chainedRates.foreach {
+      case (pair, rate) =>
+        withClue(s"fxRate($pair): ") {
+          collected.fxRate(pair.base, pair.counter) shouldBe Right(rate)
+        }
+    }
+
+    // the same rates offered the other way round hold nothing back and place their currencies in
+    // the order the offers reach them: the last link is the initial pair, in the order its own
+    // currencies are given, and every rate after it adds its base currency
+    val reversed = unwrap(FxMatrix.ofRates(chainedRates.reverse))
+    reversed.currencies shouldBe
+      Vector(chainedCurrencies(11), chainedCurrencies(12)) ++ chainedCurrencies.reverse.drop(2)
+    reversed shouldBe unwrap(placedOneByOne(chainedRates.reverse: _*))
+
+    // and a rate offered with its counter currency already placed is held as one divided by the
+    // reciprocal that was placed, which is the arithmetic asserted rather than a rounding of it
+    chainedRates.reverse.tail.foreach {
+      case (pair, rate) =>
+        withClue(s"fxRate($pair): ") {
+          reversed.fxRate(pair.base, pair.counter) shouldBe Right(1d / (1d / rate))
+          reversed.fxRate(pair.counter, pair.base) shouldBe Right(1d / rate)
+        }
+    }
+  }
+
+  /**
+   * A rate that becomes placeable part way through a pass over the rates held back waits for the
+   * next pass rather than being placed as soon as it can be, and the currency order is where that
+   * shows. Two of the rates held back here - `EUR/CHF` and `EUR/SEK` - become placeable together
+   * when `EUR` arrives, and placing the first of them brings `CHF` in, which is what `CHF/AUD` was
+   * waiting for. Because the pass places what it found placeable when it began, `SEK` takes its
+   * position before `AUD`; a placement that examined the rates held back again after each rate it
+   * placed would have brought `AUD` in first.
+   */
+  test("aRateThatBecomesPlaceablePartWayThroughAPassWaitsForTheNextPass") {
+    val collected: FailureOr[FxMatrix] = FxMatrix.ofRates(
+      Vector(
+        rateFor(GBP, USD, 1.6d),
+        rateFor(EUR, CHF, 1.2d), // held back
+        rateFor(EUR, SEK, 9.5d), // held back
+        rateFor(CHF, AUD, 1.4d), // held back, and placeable only once EUR/CHF has been placed
+        rateFor(USD, EUR, 0.9d))) // places EUR, so the two EUR rates become placeable together
+
+    collected should beSuccess
+    val matrix = unwrap(collected)
+    matrix.currencies shouldBe Vector(GBP, USD, EUR, CHF, SEK, AUD)
+
+    // the rates of that placement, each exact: every one of them brought its currency in
+    assertRates(
+      matrix,
+      Table(
+        ("base", "counter", "expected", "tolerance"),
+        (GBP, USD, 1.6d, Exactly),
+        (USD, EUR, 0.9d, Exactly),
+        (EUR, CHF, 1.2d, Exactly),
+        (EUR, SEK, 9.5d, Exactly),
+        (CHF, AUD, 1.4d, Exactly)))
+  }
+
+  /**
+   * A rate offered for one currency against itself, where the matrix already holds that currency,
+   * is an update whose reference currency and restated currency are the same one. It restates
+   * that currency against its own rates as they stood: the rates read are the rates in the column
+   * of the reference currency, which is exactly the column the update overwrites, so a matrix
+   * that wrote the restated rates as it computed them would restate the currency partly against
+   * its own new rates. The expectation is therefore written as the rule applied to a snapshot of
+   * the rates taken before the update, element by element.
+   *
+   * The snapshot also proves the update does not reach the matrix it was placed into: the rates of
+   * that matrix are asserted against the same snapshot afterwards.
+   */
+  test("updatingTheRateOfACurrencyAgainstItselfRestatesItFromTheRatesAsTheyStood") {
+    val matrix = matrixOf(
+      rateFor(GBP, USD, 1.5d),
+      rateFor(EUR, USD, 1.4d))
+    matrix.currencies shouldBe Vector(GBP, USD, EUR)
+
+    val size = matrix.currencies.size
+    val restated = 1 // the position of USD, the currency named on both sides of the rate
+    val rate = 1.7d
+    val before: Vector[Vector[Double]] =
+      Vector.tabulate(size, size)((row, column) => matrix.rates.get(row, column))
+
+    val updated = unwrap(matrix.withRate(USD, USD, rate))
+
+    updated.currencies shouldBe matrix.currencies
+    (0 until size).foreach { row =>
+      (0 until size).foreach { column =>
+        withClue(s"rates.get($row, $column): ") {
+          val expected =
+            if (row == restated && column == restated) before(row)(column)
+            else if (row == restated) 1d / (rate * before(column)(restated))
+            else if (column == restated) rate * before(row)(restated)
+            else before(row)(column)
+          updated.rates.get(row, column) shouldBe expected
+        }
+      }
+    }
+
+    // the matrix the update was placed into holds the rates it held before it
+    (0 until size).foreach(row =>
+      (0 until size).foreach(column => matrix.rates.get(row, column) shouldBe before(row)(column)))
+    matrix shouldBe matrixOf(rateFor(GBP, USD, 1.5d), rateFor(EUR, USD, 1.4d))
+
+    // and the rate of the currency against itself is still one, so the result is a value the
+    // structural checks accept
+    updated.rates.get(restated, restated) shouldBe 1d
+    unwrapNec(FxMatrix.fromMatrix(updated.currencies, updated.rates)) shouldBe updated
+  }
+
+  /**
+   * The lookup of a rate is two lookups of a position and one read of the rates, and the positions
+   * are numbers rather than options - so the four ways a query can turn out are asserted here:
+   * both currencies held, a currency against itself whether or not the matrix holds it, and each
+   * of the two positions absent. A refusal names the pair asked for and the currencies the matrix
+   * holds, whichever of the two currencies is the missing one.
+   */
+  test("aRateIsAnsweredForThePairsTheMatrixHoldsAndRefusedNamingThePairForTheRest") {
+    val matrix = matrixOf(
+      rateFor(GBP, USD, 1.6d),
+      rateFor(EUR, USD, 1.4d))
+    val held = Regex.quote("matrix only contains rates for [GBP, USD, EUR]")
+
+    matrix.fxRate(GBP, USD) shouldBe Right(1.6d)
+    matrix.fxRate(USD, GBP) shouldBe Right(1d / 1.6d)
+
+    // a currency against itself is one before the matrix is consulted, held or not
+    matrix.fxRate(GBP, GBP) shouldBe Right(1d)
+    matrix.fxRate(NZD, NZD) shouldBe Right(1d)
+
+    val baseAbsent: FailureOr[Double] = matrix.fxRate(NZD, USD)
+    baseAbsent should beFailureWith(FailureReason.CURRENCY_CONVERSION)
+    baseAbsent should haveFailureMessageMatching(
+      Regex.quote("No FX rate found for NZD/USD, ") + held)
+
+    val counterAbsent: FailureOr[Double] = matrix.fxRate(GBP, NZD)
+    counterAbsent should beFailureWith(FailureReason.CURRENCY_CONVERSION)
+    counterAbsent should haveFailureMessageMatching(
+      Regex.quote("No FX rate found for GBP/NZD, ") + held)
+
+    val bothAbsent: FailureOr[Double] = matrix.fxRate(NZD, CAD)
+    bothAbsent should beFailureWith(FailureReason.CURRENCY_CONVERSION)
+    bothAbsent should haveFailureMessageMatching(
+      Regex.quote("No FX rate found for NZD/CAD, ") + held)
+
+    // and the conversion of an amount carries the same refusal, since it is that lookup
+    matrix.convert(amountOf(NZD, 100d), USD) should beFailureWith(
+      FailureReason.CURRENCY_CONVERSION)
+  }
+
+  /**
+   * The listing of the currencies a refusal names is rendered once per matrix rather than once
+   * per refusal, because a caller that only tests whether a rate was found would otherwise pay
+   * for a rendering proportional to the matrix on every query that misses.
+   *
+   * What is asserted here is that holding the rendering changed nothing a caller can observe:
+   * every refusal of a matrix carries the same message it always did, whichever query produced
+   * it and however many came before it, and the rendering takes no part in the value - two
+   * matrices that are equal stay equal, and the JSON and the text form are untouched - because
+   * it is derived from the currencies rather than held as one of them.
+   */
+  test("theCurrencyListingOfARefusalIsRenderedOncePerMatrixAndIsNotPartOfTheValue") {
+    val matrix = matrixOf(
+      rateFor(GBP, USD, 1.6d),
+      rateFor(EUR, USD, 1.4d))
+    val expected: String =
+      Regex.quote("No FX rate found for NZD/USD, matrix only contains rates for [GBP, USD, EUR]")
+
+    // the first refusal renders the listing; every refusal after it reads the same rendering, and
+    // the message is identical whichever query missed and however often
+    matrix.fxRate(NZD, USD) should haveFailureMessageMatching(expected)
+    matrix.fxRate(NZD, USD) should haveFailureMessageMatching(expected)
+    matrix.fxRate(NZD, USD) should haveFailureMessageMatching(expected)
+    matrix.fxRate(NZD, USD) shouldBe matrix.fxRate(NZD, USD)
+
+    // a conversion reaches the same listing through the same query
+    matrix.convert(amountOf(NZD, 100d), USD) should haveFailureMessageMatching(expected)
+
+    // an equal matrix that has never refused anything answers the identical message, so the
+    // rendering is a function of the currencies and not of what the matrix has been asked
+    val untouched = matrixOf(
+      rateFor(GBP, USD, 1.6d),
+      rateFor(EUR, USD, 1.4d))
+    untouched shouldBe matrix
+    untouched.fxRate(NZD, USD) should haveFailureMessageMatching(expected)
+
+    // and the rendering is no part of the value: equality, hashing, JSON and the text form of a
+    // matrix that has refused a query are those of one that has not
+    Hash[FxMatrix].hash(matrix) shouldBe Hash[FxMatrix].hash(untouched)
+    matrix.asJson shouldBe untouched.asJson
+    Show[FxMatrix].show(matrix) shouldBe Show[FxMatrix].show(untouched)
+    matrix.toString shouldBe untouched.toString
+  }
+
   /**
    * The ordered set of currencies is a held value: two calls answer the same instance, which is
    * why the assertion is on identity rather than equality, and it iterates in matrix order.
@@ -1047,6 +1345,47 @@ final class FxMatrixSpec
     rateFor(Currency.THB, Currency.TRY, 1.1d),
     rateFor(Currency.TWD, Currency.UAH, 1.1d),
     rateFor(Currency.VND, Currency.ZAR, 1.1d))
+
+  /**
+   * Thirteen currencies, in the order a chain of rates over them places them.
+   *
+   * Thirteen is chosen so that a placement over these rates grows the rows it writes into three
+   * times - the room reserved holds two currencies, and it doubles as the third, the fifth and the
+   * ninth currency arrive - and so that the result is wider than the room the last of those
+   * growths reserved. The first five are the currencies the older fixtures use, so the two sets
+   * read alike.
+   */
+  private val chainedCurrencies: Vector[Currency] = Vector(
+    GBP,
+    USD,
+    EUR,
+    CHF,
+    AUD,
+    SEK,
+    JPY,
+    CAD,
+    NZD,
+    Currency.NOK,
+    Currency.DKK,
+    Currency.PLN,
+    Currency.CZK)
+
+  /**
+   * Twelve rates chaining the currencies above, each connecting one new currency to the currency
+   * before it, and no two of them equal.
+   *
+   * A chain is the fixture that pins the placement of a new currency: every rate brings a
+   * currency in, so the rate offered is the rate the matrix ends up holding for that pair, and
+   * offering the same rates in reverse makes every one of them but the first a rate held back and
+   * retried. The rates are distinct so that a rate written into the wrong row or column cannot
+   * agree with the rate that belongs there.
+   */
+  private val chainedRates: Vector[(CurrencyPair, Double)] =
+    chainedCurrencies
+      .sliding(2)
+      .zipWithIndex
+      .map { case (pair, index) => rateFor(pair(0), pair(1), 1.1d + 0.37d * index) }
+      .toVector
 
   //-------------------------------------------------------------------------
   /**

@@ -553,26 +553,44 @@ object DoubleArrayMath {
     array1.length == array2.length && allFuzzyEquals(array1, array2, tolerance, 0)
   }
 
-  // The comparison itself, with the tolerance already checked by the caller. The three
-  // cases are disjoint and are taken in this order: a not-a-number value has no distance
-  // from anything and is equal to nothing, itself included; an infinity is equal only to
-  // the same infinity, whatever the tolerance, which an unguarded distance would get wrong
-  // at an infinite one; and two finite values are equal within the tolerance, which covers
-  // the two zeroes because their distance is zero.
+  // The comparison itself, with the tolerance already checked by the caller. It decides the
+  // common case - two ordinary numbers - on the distance alone, and classifies an operand
+  // only where the distance cannot answer the question, which is what keeps a scan of an
+  // array of finite values to one subtraction and two comparisons per element.
   //
-  // Taking the two non-finite cases first is what makes the distance in the third case
-  // meaningful: by then both values are finite, so their difference is finite or overflows
-  // to an infinity, and in either event comparing its magnitude with the tolerance answers
-  // the question that was asked. The ordinary case - two ordinary numbers - reaches it after
-  // two cheap classifications of each operand.
-  private def fuzzyEqualsUnchecked(a: Double, b: Double, tolerance: Double): Boolean =
-    if (java.lang.Double.isNaN(a) || java.lang.Double.isNaN(b)) {
-      false
-    } else if (java.lang.Double.isInfinite(a) || java.lang.Double.isInfinite(b)) {
-      a == b
+  // The outcomes are exactly those the three disjoint cases of the documentation state, and
+  // the distance is what selects between them, because what the distance can be is already
+  // determined by what the operands are:
+  //
+  //   - a FINITE distance implies two finite operands. A not-a-number operand gives a
+  //     not-a-number difference, and an infinite operand gives an infinite difference or a
+  //     not-a-number one, so neither can produce a finite distance. The fast branch is
+  //     therefore precisely "two finite values within the tolerance", the outcome the third
+  //     documented case names, and the two zeroes reach it because their distance is zero;
+  //   - a NOT-A-NUMBER distance arises from a not-a-number operand or from two identical
+  //     infinities, and both are answered by `a == b`: such a value is equal to nothing at
+  //     all, itself included, and an infinity is equal to the same infinity. That is the
+  //     first documented case and half of the second, and it is where the comparison falls
+  //     through to, since no comparison with a not-a-number distance holds;
+  //   - an INFINITE distance arises from two finite values whose difference overflows, from
+  //     one infinite operand, or from the two opposite infinities. A tolerance short of
+  //     infinity excludes all three through the same fall-through, where `a == b` is false
+  //     for each; an infinite tolerance admits the distance, which is why the fast branch
+  //     tests for it: the overflowing pair of finite values is equal under such a tolerance,
+  //     as every pair of finite values is, and the pairs with an infinite operand are not,
+  //     which is the rest of the second documented case.
+  //
+  // So the guard on the fast branch is a guard against an infinite tolerance reaching an
+  // infinite operand, and it is the only classification this comparison ever makes.
+  private def fuzzyEqualsUnchecked(a: Double, b: Double, tolerance: Double): Boolean = {
+    val distance = math.abs(a - b)
+    if (distance <= tolerance) {
+      distance != Double.PositiveInfinity ||
+        (!java.lang.Double.isInfinite(a) && !java.lang.Double.isInfinite(b))
     } else {
-      math.abs(a - b) <= tolerance
+      a == b
     }
+  }
 
   @tailrec
   private def allFuzzyEqualsZero(array: Array[Double], tolerance: Double, index: Int): Boolean =

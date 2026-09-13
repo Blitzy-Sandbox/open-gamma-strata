@@ -474,6 +474,14 @@ object Failure {
   private val MaxRenderedPart: Int = 512
 
   /**
+   * The three characters written in place of the part of a text that did not fit the bound.
+   *
+   * This is named because the length of a rendering is the bound above plus this, and the buffer
+   * a rendering is assembled into is sized to exactly that, so the two are stated together.
+   */
+  private val Ellipsis: String = "..."
+
+  /**
    * Renders one part of a diagnostic - the message of a failure, an attribute key or value,
    * or any other text on its way to a reader - bounded in length and free of anything that
    * could forge a line.
@@ -526,11 +534,25 @@ object Failure {
    * it from their name, their text form, their rendering and their JSON, so that a caller
    * comparing, re-parsing or re-serializing one receives its own text back.
    *
-   * Rendering stays an act of writing text out and is not performed when a failure is built:
-   * a message is built with the value it rejected interpolated as it stands, exactly as in the
-   * library being ported, and [[Failure.message]] and [[Failure.attributes]] hand that value
-   * back whole to code that means to act on it rather than read it, as the JSON form does when
-   * it encodes the raw text.
+   * Rendering is chiefly an act of writing text out: a message is built with the value it
+   * rejected interpolated as it stands, exactly as in the library being ported, and
+   * [[Failure.message]] and [[Failure.attributes]] hand that value back whole to code that means
+   * to act on it rather than read it, as the JSON form does when it encodes the raw text. The one
+   * exception is a reporter that must bound the text it quotes because that text arrived from
+   * outside: a parser handed a megabyte of digits would otherwise carry the whole megabyte in the
+   * message of its refusal, and the cost of refusing would grow with the input rather than being
+   * settled by it. Such a reporter quotes the text as it stands while it is short enough to be
+   * read and reaches for this renderer beyond that, so the bound on the message of a refusal is
+   * this bound. That is why the cost of reaching this method is the concern of the paragraph
+   * below rather than a detail of writing a diagnostic out.
+   *
+   * Reaching it costs one buffer of `MaxRenderedPart` characters and one string of the same
+   * order, whatever the length of the text handed in: the rendering is assembled into that one
+   * buffer, so the work is ''linear'' in the bound. Assembling it by carrying the text rendered
+   * so far from step to step would copy that text at every step and make the work the square of
+   * the bound - a quarter of a million character copies for a bound of five hundred, paid on
+   * every refusal - which is the whole reason a buffer is used here where the rest of these two
+   * modules builds strings by interpolation.
    *
    * @param text  the part to render, as the failure carries it
    * @return the bounded, single-line rendering of that part
@@ -538,47 +560,75 @@ object Failure {
   private[strata] def renderDiagnostic(text: String): String = {
     // The rendering is assembled a unit at a time - a surrogate pair counting as one - and
     // stops as soon as the next unit would carry it past the bound, which is what keeps a
-    // pair whole and an escape entire. Threading the text rendered so far through a
-    // tail-recursive step rather than accumulating into a mutable local keeps the method
-    // free of assignment; each step copies the text rendered so far, and every intermediate
-    // string, like the result, is bounded by `MaxRenderedPart`, so that copying is bounded
-    // too - the work is bounded by the cap rather than by the length of the text handed in.
+    // pair whole and an escape entire. It is assembled into one buffer, sized once to the
+    // greatest length it can reach, rather than by carrying the text rendered so far from step
+    // to step: carrying it would copy it again at every step and make the work the square of
+    // the bound, where one buffer makes it linear in the bound. The buffer is a `val` that no
+    // other code can observe, the value answered is an ordinary immutable string, and the index
+    // walking the text is threaded through a tail-recursive step that runs as a loop, so the
+    // method holds no assignment.
+    //
+    // Whether the next unit fits is decided by writing it and reading the length back rather
+    // than by measuring it first: the width of the rendering of a character would otherwise be
+    // stated twice - once to measure and once to write - and the two statements could drift
+    // apart. A unit that does not fit is unwritten by shortening the buffer to the length it
+    // had before it, and the ellipsis is appended to that.
+    val rendering = new StringBuilder(MaxRenderedPart + Ellipsis.length)
+
     @tailrec
-    def rendering(index: Int, rendered: String): String =
+    def render(index: Int): String =
       if (index >= text.length) {
-        rendered
+        rendering.result()
       } else {
         val head = text.charAt(index)
         val pairsWithNext =
           Character.isHighSurrogate(head) &&
             index + 1 < text.length &&
             Character.isLowSurrogate(text.charAt(index + 1))
-        val unit = if (pairsWithNext) text.substring(index, index + 2) else describeChar(head)
-        if (rendered.length + unit.length > MaxRenderedPart) {
-          rendered + "..."
+        val lengthBefore = rendering.length
+        val consumed =
+          if (pairsWithNext) {
+            appendPair(rendering, head, text.charAt(index + 1))
+            2
+          } else {
+            appendChar(rendering, head)
+            1
+          }
+        if (rendering.length > MaxRenderedPart) {
+          rendering.setLength(lengthBefore)
+          rendering.append(Ellipsis).result()
         } else {
-          rendering(index + (if (pairsWithNext) 2 else 1), rendered + unit)
+          render(index + consumed)
         }
       }
 
-    rendering(0, "")
+    render(0)
   }
 
-  // Renders one character: the three control characters that have a short escape keep it,
-  // because a reader recognises them; anything else that must not be written out as itself
-  // becomes a fixed-width escape; and every other character stands as it is.
-  private def describeChar(ch: Char): String =
+  // Writes the rendering of one character into the buffer: the three control characters that
+  // have a short escape keep it, because a reader recognises them; anything else that must not
+  // be written out as itself becomes a fixed-width escape; and every other character stands as
+  // it is - written as the character rather than as a string holding it, so that ordinary text,
+  // which is nearly all text, costs the buffer and nothing besides.
+  private def appendChar(rendering: StringBuilder, ch: Char): Unit =
     if (ch == '\n') {
-      "\\n"
+      val _ = rendering.append("\\n")
     } else if (ch == '\r') {
-      "\\r"
+      val _ = rendering.append("\\r")
     } else if (ch == '\t') {
-      "\\t"
+      val _ = rendering.append("\\t")
     } else if (escapesAsUnicode(ch)) {
-      unicodeEscape(ch)
+      val _ = rendering.append(unicodeEscape(ch))
     } else {
-      ch.toString
+      val _ = rendering.append(ch)
     }
+
+  // Writes a surrogate pair into the buffer as it stands. The two units are one character and
+  // neither is a character on its own, so the pair is written whole rather than through the
+  // renderer of a single character above, which would escape each half of it.
+  private def appendPair(rendering: StringBuilder, high: Char, low: Char): Unit = {
+    val _ = rendering.append(high).append(low)
+  }
 
   // The characters that have no short escape and cannot be rendered as themselves: every ISO
   // control character other than the three above, the two Unicode separators that a reader

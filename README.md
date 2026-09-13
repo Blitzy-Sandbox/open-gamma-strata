@@ -49,6 +49,12 @@ Simply run this command to compile and install the source code locally:
   mvn install
 ```
 
+That command publishes the built artifacts into your local Maven repository (`~/.m2/repository`
+by default) under the mutable `2.12.74-SNAPSHOT` coordinates, so on a machine whose repository is
+shared with other builds it replaces an input of theirs. If you only need the jars, `mvn package`
+leaves them in each module's git-ignored `target/` and publishes nothing; if you want the `install`
+lifecycle without the shared publication, add `-Dmaven.repo.local=<a directory of your own>`.
+
 Strata is based on Java SE 8.
 Our continuous integration regularly builds on both Java 8 and Java 11.
 When using Java 8, version 8u40 or later is required due to bugs in earlier versions.

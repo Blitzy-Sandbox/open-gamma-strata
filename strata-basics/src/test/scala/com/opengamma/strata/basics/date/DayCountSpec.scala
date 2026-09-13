@@ -14,6 +14,7 @@ import cats.Hash
 import cats.Order
 import cats.Show
 
+import io.circe.DecodingFailure
 import io.circe.Json
 import io.circe.syntax.EncoderOps
 
@@ -30,6 +31,7 @@ import org.scalatest.time.Seconds
 import org.scalatest.time.Span
 
 import com.opengamma.strata.basics.ReferenceData
+import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.basics.schedule.Frequency
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.result.ResultNec
@@ -1010,6 +1012,83 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     Json.fromString("Actual/Actual (ISDA)").as[DayCount] shouldBe Right(DayCounts.ACT_ACT_ISDA)
   }
 
+  test("a refusal quoting the document's own text is bounded and stays on one line") {
+    // This codec is hand-written, so it states its refusals itself, and both of its refusal
+    // routes quote text the document supplied: the name string of the first form, and the two
+    // disagreeing fields of the `Bus252` form - whose expected name is derived from the
+    // identifier of the calendar the document carried, so it is document-controlled as well. A
+    // decoding failure is read where a failure is read, which is a log, a report or a line of a
+    // console, so a document must be able to decide neither the line structure nor the size of
+    // the diagnostic it provokes (CWE-117, CWE-400). Every refusal therefore goes through the
+    // one bridge `Codecs` publishes for hand-written codecs, and this test holds the two routes
+    // to exactly the bounds a codec built by a helper of that object has always had. `Currency`
+    // is the control: its codec is `Codecs.namedEnumCodec`, so it has gone through the bridge
+    // since it was written, and its refusal quotes the same rejected name.
+    def refusal(document: Json): DecodingFailure =
+      document.as[DayCount].swap.getOrElse(fail(s"the document was accepted: ${document.noSpaces}"))
+
+    def controlRefusal(document: Json): DecodingFailure =
+      document.as[Currency].swap.getOrElse(fail(s"the document was accepted: ${document.noSpaces}"))
+
+    // The `Bus252` form carrying a name that disagrees with the calendar beside it, which is the
+    // second route: the name is the document's, and `GBLO` names the library's London calendar,
+    // so every name below is a mismatch.
+    def bus252Document(name: String): Json =
+      Json.obj(
+        "Bus252" -> Json.obj(
+          "name" -> Json.fromString(name),
+          "calendar" -> Json.fromString("GBLO")))
+
+    // What a line-oriented reader could act on: every ISO control character, and the two Unicode
+    // separators such a reader may treat as ending a line. None of them may survive into a
+    // message, whatever the document held.
+    def forgesALine(message: String): Int =
+      message.count(character =>
+        Character.isISOControl(character) || character == '\u2028' || character == '\u2029')
+
+    // The bound the bridge puts on one rendered cause: 512 characters of it and the three of the
+    // ellipsis, plus the 21 characters of the prefix circe's own `getMessage` writes in front of
+    // it. Both figures are measured from the control below rather than assumed.
+    val renderedCeiling: Int = 515
+    val messageCeiling: Int = 536
+
+    forAll(HOSTILE_NAME_PAYLOADS) { (description: String, payload: String) =>
+      withClue(s"$description, as a name string: ") {
+        val message = refusal(Json.fromString(payload)).getMessage
+        forgesALine(message) shouldBe 0
+        message should include("DayCount name not found")
+        message.length should be <= messageCeiling
+        forgesALine(controlRefusal(Json.fromString(payload)).getMessage) shouldBe 0
+      }
+      withClue(s"$description, as the name of a `Bus252` object: ") {
+        val message = refusal(bus252Document(payload)).getMessage
+        forgesALine(message) shouldBe 0
+        message should include("does not match the calendar it carries")
+        message.length should be <= messageCeiling
+      }
+    }
+
+    // A name far larger than any convention: the refusal is the same size as the control's,
+    // rather than the size of the name, so a large document cannot make a large diagnostic.
+    val long: String = "X" * 10000
+    controlRefusal(Json.fromString(long)).message.length shouldBe renderedCeiling
+    controlRefusal(Json.fromString(long)).getMessage.length shouldBe messageCeiling
+    refusal(Json.fromString(long)).message.length shouldBe renderedCeiling
+    refusal(Json.fromString(long)).getMessage.length shouldBe messageCeiling
+    refusal(bus252Document(long)).message.length shouldBe renderedCeiling
+    refusal(bus252Document(long)).getMessage.length shouldBe messageCeiling
+
+    // Rendering leaves text within the bound holding none of the escaped characters alone,
+    // character for character, so the refusals an ordinary document provokes read as they did:
+    // the name that names no day count, the `Bus/252` name whose calendar is undefined, and the
+    // structural mismatch, each word for word the message its own reporter wrote.
+    refusal(Json.fromString("Rubbish")).message shouldBe "DayCount name not found: Rubbish"
+    refusal(Json.fromString("Bus/252 ZZZZ")).message shouldBe "HolidayCalendar name not found: ZZZZ"
+    refusal(bus252Document("Bus/252 USNY")).message shouldBe
+      "A day count named 'Bus/252 USNY' does not match the calendar it carries, " +
+        "which would be named 'Bus/252 GBLO'"
+  }
+
   test("test_jodaConvert") {
     // `Show` renders a member as text and `DayCount.parse` reads that text back as the member.
     Show[DayCount].show(DayCounts.THIRTY_360_ISDA) shouldBe "30/360 ISDA"
@@ -1162,6 +1241,28 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
    */
   lazy val wholeYearInfo: Info =
     Info(Some(JAN_01), Some(JAN_01_NEXT), Some(JAN_01_NEXT), false, Some(Frequency.P12M))
+
+  //-------------------------------------------------------------------------
+  /**
+   * Names a document can carry that a reader of lines would act on if a message repeated them.
+   *
+   * Each is an ordinary name with one such character in the middle of it, so a refusal quoting
+   * the name unrendered carries exactly one of them and one that renders it carries none. The
+   * six are the kinds the renderer distinguishes: the three control characters that have a short
+   * escape, a control character that has none, and the Unicode separator a reader may treat as
+   * ending a line - a paragraph separator behaves as the line separator does and adds nothing to
+   * the coverage. Read by the refusal-hygiene test above for both of this codec's refusal
+   * routes.
+   */
+  lazy val HOSTILE_NAME_PAYLOADS: TableFor2[String, String] = Table(
+    ("description", "payload"),
+    ("a line feed", "A\nB"),
+    ("a carriage return", "A\rB"),
+    ("a NUL", "A\u0000B"),
+    ("a line separator", "A\u2028B"),
+    ("an escape", "A\u001bB"),
+    ("a tab", "A\tB")
+  )
 
   //-------------------------------------------------------------------------
   /**

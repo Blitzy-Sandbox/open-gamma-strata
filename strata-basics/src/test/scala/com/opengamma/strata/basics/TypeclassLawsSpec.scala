@@ -321,6 +321,24 @@ object InstanceInventory {
  * that decide it are `NaN`, the infinities and both zeroes. [[MultiCurrencyAmount]] is drawn from
  * `genFiniteMultiCurrencyAmount` for its additive laws alone, its `EqTests` and `HashTests`
  * keeping the ordinary generator, which produces infinities.
+ *
+ * ===When the absence proofs are authoritative===
+ *
+ * The absences at the foot of this file are asserted with `assertDoesNotCompile` and
+ * `assertTypeError`, which are macros: each compiles its snippet while '''this file''' is
+ * compiled, and the test that runs later only reports the answer the macro already reached.
+ * Nothing in this suite's signature depends on the instances those snippets summon, so
+ * incremental compilation is free to recompile a companion without recompiling this suite - and
+ * then the run reports the previous compilation's answer, in either direction: an instance added
+ * and removed again is still reported as present until this file is recompiled, and one added
+ * without this file being recompiled is not reported at all. Those rows are therefore
+ * authoritative after a clean compilation, which is what the acceptance gate runs
+ * (`sbt -batch clean compile Test/compile test`); after an edit to a main source, re-run them as
+ * `sbt -batch clean Test/compile "strata-basics/testOnly
+ * com.opengamma.strata.basics.TypeclassLawsSpec"`. The law suites themselves and
+ * [[InstanceInventory]] carry no such caveat: the instances they use are resolved when this file
+ * is compiled and then '''exercised''' at run time, so a changed instance changes what they do.
+ * [[ApiSurfaceSpec]] and `json.JsonRoundTripSpec` use the same macros and share the caveat.
  */
 class TypeclassLawsSpec
     extends AnyFunSuite

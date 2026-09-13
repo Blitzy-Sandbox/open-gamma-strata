@@ -30,6 +30,7 @@ import com.opengamma.strata.collect.ArgCheck
 import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
 import com.opengamma.strata.collect.NoJavaSerialization
+import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
 
@@ -2038,8 +2039,6 @@ object DayCount {
 
   private val CalendarField: String = "calendar"
 
-  private val FailureMessageSeparator: String = "; "
-
   private val UnknownShapeMessage: String =
     s"A day count is either the string of its name or an object of one field named '$Bus252Key'"
 
@@ -2104,6 +2103,16 @@ object DayCount {
    * A string is a name and an object holding exactly one field named for the calendar-bearing form
    * is that form. Anything else is rejected, as is an object holding no field or several.
    *
+   * Every cause [[parse]] accumulates is reported through [[Codecs.decodingFailure]], which is the
+   * one bridge the whole serialization surface states a refusal by: it renders each cause on a
+   * single line with every character a line-oriented reader could act on escaped and its length
+   * bounded, and it caps how many causes one refusal reports. That matters here because the text
+   * `parse` quotes back arrived in the document, so its content and its size were chosen by
+   * whoever wrote the document; joining the raw messages here instead would let a
+   * document-supplied newline forge a line of a log and a ten-kilobyte name amplify into a
+   * ten-kilobyte diagnostic (CWE-117, CWE-400). Ordinary text renders to itself character for
+   * character, so a name that merely names no day count reads exactly as it did.
+   *
    * @param cursor  the position in the document
    * @return the day count, or the decoding failure: the document is neither a name string nor an
    *   object of the single field `Bus252`, the name string resolves to no day count, or the
@@ -2112,10 +2121,7 @@ object DayCount {
   private def decodeDayCount(cursor: HCursor): Decoder.Result[DayCount] =
     cursor.value.asString match {
       case Some(text) =>
-        parse(text).left.map(failures =>
-          DecodingFailure(
-            failures.toNonEmptyList.toList.map(failure => failure.message).mkString(FailureMessageSeparator),
-            cursor.history))
+        parse(text).left.map(failures => Codecs.decodingFailure(failures, cursor.history))
       case None =>
         cursor.keys.map(keys => keys.toList) match {
           case Some(Bus252Key :: Nil) =>
@@ -2137,6 +2143,19 @@ object DayCount {
    * produces. Without the check a document could name `Bus/252 BRBD` and carry a calendar of London
    * holidays, and the value read back would count the wrong days under a name that hid it.
    *
+   * The refusal names both texts, and '''both''' came out of the document - the declared name
+   * directly, and the expected name from the identifier of the calendar the document carried - so
+   * it is reported through [[Codecs.decodingFailure]] like every other refusal of this surface
+   * rather than built from the interpolated message here. What reaches a reader is therefore one
+   * bounded line whatever the document declared, instead of a diagnostic whose length and whose
+   * line structure the document chose (CWE-117, CWE-400). The wording is unchanged, and text
+   * holding none of the escaped characters renders to itself character for character, so an
+   * ordinary mismatch reads exactly as it did.
+   *
+   * The cause is stated as [[Failure.Invalid]] because nothing here failed to parse: two fields
+   * the document supplied are each well formed and disagree with each other, which is the reason
+   * that case names.
+   *
    * @param name  the name the document declares
    * @param calendar  the calendar the document carries
    * @param cursor  the position in the document, for the failure message
@@ -2149,9 +2168,10 @@ object DayCount {
       Right(ofBus252(calendar))
     } else {
       Left(
-        DecodingFailure(
-          s"A day count named '$name' does not match the calendar it " +
-            s"carries, which would be named '$expectedName'",
+        Codecs.decodingFailure(
+          Failure.Invalid(
+            s"A day count named '$name' does not match the calendar it " +
+              s"carries, which would be named '$expectedName'"),
           cursor.history))
     }
   }

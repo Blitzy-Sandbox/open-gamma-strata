@@ -8,6 +8,7 @@ package com.opengamma.strata.basics.currency
 import java.util.Arrays
 
 import scala.annotation.tailrec
+import scala.collection.immutable.HashMap
 import scala.collection.immutable.ListSet
 import scala.collection.immutable.Set
 import scala.collection.immutable.VectorMap
@@ -134,9 +135,38 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * a rate query performs two of them and a conversion of a multi-currency amount performs two
    * per amount. Being derived, it is not part of the value: it takes no part in equality, in
    * hashing or in the JSON form, and it is built on first use rather than on construction so that
-   * a matrix built as one step of a fold does not pay for a lookup table no caller will read.
+   * a matrix no caller ever queries does not pay for a lookup table no caller will read.
+   *
+   * The type is stated as a `HashMap` rather than left to the standard library's choice of
+   * representation, because the representation decides what a lookup allocates. A map built from
+   * a handful of pairs is one of the library's small fixed-size maps, and those do not override
+   * the lookup that answers a default: reading a position out of one materialises an option even
+   * where the caller wants a number. `HashMap` overrides it, so the lookup below answers the
+   * position of a currency without allocating anything - see [[indexOf]]. The positions are the
+   * indices of a vector of currencies drawn from a closed family of fewer than a hundred, so they
+   * are small enough that the platform's own cache of boxed integers holds every one of them and
+   * building this map boxes nothing either.
    */
-  private lazy val indexByCurrency: Map[Currency, Int] = currencies.zipWithIndex.toMap
+  private lazy val indexByCurrency: HashMap[Currency, Int] =
+    HashMap.from(currencies.zipWithIndex)
+
+  /**
+   * The currencies of this matrix rendered as the list a failure names them by.
+   *
+   * This is derived from [[currencies]] and held for the reason the lookup above is held, but for
+   * the failing side of a query rather than the succeeding one. The failure reported for a pair
+   * this matrix holds no rate for names every currency it does hold, which is the message the
+   * library being ported reports and which callers and tests read; rendering that list is
+   * proportional to the matrix, and building it inside the failure would charge it to every query
+   * that misses - including the queries of a caller that only tests whether a rate was found and
+   * never reads the message. Holding the rendering charges it once to the first miss of a given
+   * matrix and to nothing else: a matrix every query of which succeeds never renders it at all,
+   * and a matrix queried a thousand times for absent pairs renders it once.
+   *
+   * Being derived, it takes no part in equality, in hashing or in the JSON form, and it is built
+   * on first use, so the only matrices that pay for it are the ones that report a failure.
+   */
+  private lazy val renderedCurrencies: String = FxMatrix.renderCurrencies(currencies)
 
   /**
    * The currencies of this matrix as an insertion-ordered set, which is what [[getCurrencies]]
@@ -144,8 +174,8 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    *
    * This is derived from [[currencies]] and held for the same reason the lookup above is held: a
    * matrix cannot change, so the set derived from it cannot either, and answering with a set that
-   * is already held costs a caller nothing. It is built on first use, so a matrix built as one
-   * step of a fold pays nothing for a set no caller reads, and every caller thereafter reads the
+   * is already held costs a caller nothing. It is built on first use, so a matrix whose
+   * currencies no caller reads pays nothing for the set, and every caller thereafter reads the
    * same value. Being derived, it takes no part in equality, in hashing or in the JSON form -
    * those read the currencies in order, which is the value this set is a projection of.
    */
@@ -181,6 +211,12 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * failure naming the pair and the currencies this matrix does hold when it does not. A pair
    * this matrix holds is answered by two position lookups and one read of the rates.
    *
+   * The two positions are numbers rather than options and are tested as numbers, so nothing is
+   * allocated to describe the outcome of a lookup: what a successful query allocates is the rate
+   * it answers - the outcome and the number in it - and nothing besides. The base currency is
+   * looked up first and the counter currency is not looked up at all when the matrix does not
+   * hold the base, since the answer is the same failure either way.
+   *
    * {{{
    * val matrix = FxMatrix.of(Currency.GBP, Currency.USD, 1.6d)
    * matrix.fxRate(Currency.GBP, Currency.USD)   // Right(1.6)
@@ -198,9 +234,15 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
     if (baseCurrency == counterCurrency) {
       Right(1d)
     } else {
-      (indexOf(baseCurrency), indexOf(counterCurrency)) match {
-        case (Some(baseIndex), Some(counterIndex)) => Right(rates.get(baseIndex, counterIndex))
-        case _ => Left(FxMatrix.noRateFound(baseCurrency, counterCurrency, currencies))
+      val baseIndex = indexOf(baseCurrency)
+      // the counter currency is located only where the base currency was, both lookups answering
+      // the same absent position when they fail, so the test below is one comparison of numbers
+      val counterIndex =
+        if (baseIndex == FxMatrix.NoPosition) FxMatrix.NoPosition else indexOf(counterCurrency)
+      if (counterIndex == FxMatrix.NoPosition) {
+        Left(FxMatrix.noRateFound(baseCurrency, counterCurrency, renderedCurrencies))
+      } else {
+        Right(rates.get(baseIndex, counterIndex))
       }
     }
 
@@ -339,7 +381,8 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    *   pair this matrix has no currency in common with
    */
   def withRate(ccy1: Currency, ccy2: Currency, rate: Double): FailureOr[FxMatrix] =
-    FxMatrix.placed(FxMatrix.stepped(this, FxMatrix.NoPendingRates, ccy1, ccy2, rate))
+    FxMatrix.placed(
+      FxMatrix.stepped(FxMatrix.Accumulator.from(this), FxMatrix.NoPendingRates, ccy1, ccy2, rate))
 
   /**
    * Returns a matrix with the rates for the specified currency pairs added or updated.
@@ -368,6 +411,14 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * A rate still held back once every rate has been offered is one that could never be placed,
    * and it is the failure of this method, which lists the rates it could not place.
    *
+   * The rates are placed into one accumulator of currencies and rates that is threaded through
+   * the fold and sealed into a matrix once, at the end, rather than into a matrix per rate: the
+   * rates a matrix holds are therefore copied once however many rates are offered, which is what
+   * keeps placing one rate per currency proportional to the square of their number - see
+   * [[FxMatrix.Accumulator]]. Nothing of the accumulator is observable, and the matrix this
+   * answers with is the matrix placing the same rates one at a time through [[withRate]] answers
+   * with.
+   *
    * The retry proceeds in passes, and the shape of those passes is what settles the ''positions''
    * of the currencies in the result: after each rate that brings in a new currency, the rates
    * held back are examined as they stand and every one of them that has become placeable is
@@ -382,8 +433,9 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    */
   def withRates(rateEntries: Iterable[(CurrencyPair, Double)]): FailureOr[FxMatrix] =
     FxMatrix.placed(
-      rateEntries.foldLeft((this, FxMatrix.NoPendingRates)) { case ((matrix, pending), (pair, rate)) =>
-        FxMatrix.stepped(matrix, pending, pair.base, pair.counter, rate)
+      rateEntries.foldLeft((FxMatrix.Accumulator.from(this), FxMatrix.NoPendingRates)) {
+        case ((accumulator, pending), (pair, rate)) =>
+          FxMatrix.stepped(accumulator, pending, pair.base, pair.counter, rate)
       })
 
   /**
@@ -412,27 +464,44 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    *   in common
    */
   def merge(other: FxMatrix): FailureOr[FxMatrix] =
-    currencies.iterator
-      .flatMap(currency => other.indexOf(currency).map(index => (currency, index)))
-      .nextOption() match {
+    currencies.iterator.find(currency => other.holds(currency)) match {
       case None => Left(FxMatrix.noCommonCurrency(currencies, other.currencies))
-      case Some((commonCurrency, commonIndex)) =>
+      case Some(commonCurrency) =>
+        val commonIndex = other.indexOf(commonCurrency)
         // The currencies of the other matrix are walked in its own order and each is tested
-        // against the matrix as it stands at that point, so a currency added by an earlier step
-        // is not added twice. Each rate is read from the other matrix, between the common
-        // currency and the currency being added, and placed here through the ordinary placement
-        // of a rate - which for a currency this matrix does not hold yet is the addition of a new
-        // currency and cannot fail. Threading the outcome through the fold rather than discarding
-        // it is what keeps the method total.
-        other.currencies.zipWithIndex.foldLeft[FailureOr[FxMatrix]](Right(this)) {
-          case (merged, (currency, index)) =>
-            merged.flatMap { matrix =>
-              if (currency == commonCurrency || matrix.holds(currency)) {
-                Right(matrix)
+        // against the currencies placed so far, so a currency added by an earlier step is not
+        // added twice. Each rate is read from the other matrix, between the common currency and
+        // the currency being added, and placed through the ordinary placement of a rate - which
+        // for a currency not placed yet is the addition of a new currency and cannot fail, since
+        // the common currency is always present for it to be derived through. The placements go
+        // into one accumulator, for the reason [[withRates]] gives: a merge adds one currency at
+        // a time, and a matrix sealed per added currency would copy every rate already merged on
+        // each of them. Threading the outcome through the fold rather than discarding it is what
+        // keeps the method total, and no rate a merge places is ever held back, so the outcome
+        // below is a failure only for two matrices with no currency in common.
+        val outcome = other.currencies.zipWithIndex
+          .foldLeft((FxMatrix.Accumulator.from(this), FxMatrix.NoPendingRates)) {
+            case ((accumulator, pending), (currency, index)) =>
+              if (currency == commonCurrency || accumulator.holds(currency)) {
+                (accumulator, pending)
               } else {
-                matrix.withRate(commonCurrency, currency, other.rates.get(commonIndex, index))
+                FxMatrix.stepped(
+                  accumulator,
+                  pending,
+                  commonCurrency,
+                  currency,
+                  other.rates.get(commonIndex, index))
               }
-            }
+          }
+        val (accumulated, pending) = outcome
+        // a merge that adds nothing answers with this matrix itself rather than with a copy of it,
+        // which is both what this method documents and one fewer pass over the rates; a currency
+        // count that has not moved is the whole of that test, since a merge places a rate only for
+        // a currency it adds and never holds one back
+        if (pending.isEmpty && accumulated.currencies.size == currencies.size) {
+          Right(this)
+        } else {
+          FxMatrix.placed(outcome)
         }
     }
 
@@ -495,16 +564,21 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
       "]"
 
   /**
-   * The position of a currency within this matrix, if it holds it.
+   * The position of a currency within this matrix, or [[FxMatrix.NoPosition]].
    *
-   * This is the lookup every rate query and every placement of a rate is written in terms of, and
-   * answering with an option rather than with a position and a separate test is what makes those
-   * total: a position obtained here is known to index both the currencies and the rates.
+   * This is the lookup every rate query is written in terms of, and it answers a number: a
+   * position this answers that is not [[FxMatrix.NoPosition]] indexes both the currencies and the
+   * rates, and a caller that has not tested for that value has not established anything. An
+   * option would state the same thing in the type at the cost of an allocation per lookup, which
+   * a rate query performs twice and a conversion of a multi-currency amount performs twice per
+   * amount - see [[indexByCurrency]] for why the map answers the default without allocating.
    *
    * @param currency  the currency to locate
-   * @return the position of the currency, or nothing if this matrix does not hold it
+   * @return the position of the currency, or [[FxMatrix.NoPosition]] if this matrix does not hold
+   *   it
    */
-  private def indexOf(currency: Currency): Option[Int] = indexByCurrency.get(currency)
+  private def indexOf(currency: Currency): Int =
+    indexByCurrency.getOrElse(currency, FxMatrix.NoPosition)
 
   /**
    * Whether this matrix holds a currency.
@@ -512,7 +586,7 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * @param currency  the currency to test for
    * @return true if this matrix holds a rate for that currency
    */
-  private def holds(currency: Currency): Boolean = indexByCurrency.contains(currency)
+  private def holds(currency: Currency): Boolean = indexOf(currency) != FxMatrix.NoPosition
 }
 
 /**
@@ -553,9 +627,16 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
  * The four outcomes of offering a rate - the initial pair, a new currency, an update, and a rate
  * with no currency in common - are implemented by the private members below rather than by the
  * public methods, because the collection factories need them in a form that also carries the
- * rates held back. Each of them answers with a new matrix, and the rates held back are an ordinary
- * value threaded through a fold, so nothing of a part-built matrix is observable and no
- * half-constructed value exists to be handed out.
+ * rates held back.
+ *
+ * Each of them answers with the currencies and rates placed so far as an [[FxMatrix.Accumulator]]
+ * rather than as a matrix, and the rates held back are an ordinary value threaded through a fold
+ * beside it. A matrix is sealed out of the accumulator exactly once, where the placement ends -
+ * which is what makes placing a collection of rates cost the square of the number of currencies
+ * rather than the cube, since the rates already placed are copied once for the whole fold instead
+ * of once per rate. Neither the accumulator nor anything it holds is observable: it is private to
+ * this object, no member of [[FxMatrix]] is typed by it, and the matrix it is sealed into holds
+ * copies of its rates, so no half-constructed value exists to be handed out.
  */
 object FxMatrix {
 
@@ -588,6 +669,29 @@ object FxMatrix {
    * [[Currency]] holds.
    */
   private val MaxListedRates: Int = 8
+
+  /**
+   * The position answered for a currency that has no position.
+   *
+   * The lookup of a position answers a number rather than an option, and this is the number that
+   * states an absent currency. A position a matrix holds is an index into its currencies, so it
+   * is zero or greater and minus one cannot collide with one; every reader tests against this
+   * value rather than against a literal, which is what keeps the sentinel stated in one place.
+   *
+   * The reason the lookup is written this way is cost. A rate query performs two lookups and a
+   * conversion of a multi-currency amount performs two per amount, so an option per lookup is an
+   * allocation on the hottest path this type has, for information the number already carries.
+   */
+  private val NoPosition: Int = -1
+
+  /**
+   * The side length an accumulator of rates holds room for before it has to grow.
+   *
+   * A placement begins from a matrix of any size, the empty one included, and the smallest matrix
+   * a rate can produce holds two currencies, so two is the smallest capacity worth reserving.
+   * Beyond it the capacity doubles - see [[grown]].
+   */
+  private val InitialCapacity: Int = 2
 
   /**
    * An empty FX matrix containing neither currencies nor rates.
@@ -633,7 +737,8 @@ object FxMatrix {
    *   indicates the value of one unit of the first currency in terms of the second currency.
    * @return a matrix containing the single FX rate
    */
-  def of(ccy1: Currency, ccy2: Currency, rate: Double): FxMatrix = addInitial(ccy1, ccy2, rate)
+  def of(ccy1: Currency, ccy2: Currency, rate: Double): FxMatrix =
+    sealedMatrix(addInitial(Accumulator.from(empty), ccy1, ccy2, rate))
 
   /**
    * Obtains an instance containing the specified FX rates.
@@ -665,8 +770,9 @@ object FxMatrix {
    *   placed
    */
   def of(fxRates: Iterable[FxRate]): FailureOr[FxMatrix] =
-    placed(fxRates.foldLeft((empty, NoPendingRates)) { case ((matrix, pending), fxRate) =>
-      stepped(matrix, pending, fxRate.pair.base, fxRate.pair.counter, fxRate.rate)
+    placed(fxRates.foldLeft((Accumulator.from(empty), NoPendingRates)) {
+      case ((accumulator, pending), fxRate) =>
+        stepped(accumulator, pending, fxRate.pair.base, fxRate.pair.counter, fxRate.rate)
     })
 
   /**
@@ -726,8 +832,9 @@ object FxMatrix {
   /**
    * Obtains an instance from currencies and rates that are known to describe one.
    *
-   * This is the one place a matrix is instantiated, so every factory and every placement of a
-   * rate arrives here. The shape of the rates is checked against the currencies, which is a
+   * This is the one place a matrix is instantiated, so every factory arrives here - directly, or
+   * through [[sealedMatrix]], which is where a placement of rates ends. The shape of the rates is
+   * checked against the currencies, which is a
    * caller-contract check rather than a decision about data - the arguments come from this file
    * in every case, since the constructor of the type is not public - and it is stated because a
    * matrix whose rates did not match its currencies would answer a rate for a position that does
@@ -767,33 +874,240 @@ object FxMatrix {
       extends FxMatrix(currencies, rates)
 
   /**
-   * Places a rate into an empty matrix, as the initial pair of currencies.
+   * The currencies and rates of a matrix being built.
+   *
+   * ===Why it exists===
+   *
+   * Placing a rate answers a matrix holding one more rate, and a matrix is immutable, so a
+   * placement that wrote its result as a matrix would produce a whole new square of rates for
+   * every rate placed: a collection of rates connecting ''c'' currencies would materialise ''c''
+   * squares of ''c'' by ''c'' rates and throw all but the last of them away, which is time and
+   * allocation proportional to the cube of the number of currencies where the operation itself is
+   * quadratic. The placements write into this instead, and a matrix is sealed out of it once -
+   * see [[sealedMatrix]] - so placing a rate costs what that rate writes.
+   *
+   * ===What it holds===
+   *
+   * The currencies in the order that is their position, the position of each of them so that a
+   * placement locates a currency without scanning the vector, and the rates as row arrays. The
+   * rows are `capacity` arrays of `capacity` elements, where the capacity is at least the number
+   * of currencies, so a currency can arrive without the rows being reallocated. The elements
+   * outside the square the currencies span are not part of what the accumulator describes and are
+   * always written before they are read, because the row and the column of a currency are written
+   * in full by the placement that brings that currency in.
+   *
+   * ===Why sharing the row arrays is sound===
+   *
+   * A placement answers a new accumulator value that shares the row arrays of the value it was
+   * given and writes into them, rather than copying them. That is sound because no value of this
+   * type is ever read twice: each is produced by one placement and consumed by the next, a fold
+   * hands each step the value the previous step answered with, and nothing outside this object
+   * can hold one at all. So no reader can observe a row the way it stood before a later placement
+   * wrote to it. The one member that breaks the sharing is [[grown]], which answers with fresh
+   * rows - and it is under the same rule, since the value handed to it is never read again either.
+   *
+   * ===Why nothing of it escapes===
+   *
+   * The class is private to this object, no member of [[FxMatrix]] is typed by it, and the rows
+   * are handed to the matrix factory through a callback that copies each row it receives. A rate
+   * a later placement writes therefore cannot reach a matrix already sealed, and the arrays
+   * written here are never reachable from a value a caller holds.
+   *
+   * @param currencies  the currencies placed so far, in the order that is their position
+   * @param positions  the position of each of those currencies
+   * @param rows  the rates, as `capacity` rows of `capacity` elements, of which the leading square
+   *   of the number of currencies is the matrix being built
+   */
+  private final class Accumulator(
+      val currencies: Vector[Currency],
+      val positions: HashMap[Currency, Int],
+      val rows: Array[Array[Double]]) {
+
+    /** The number of currencies placed so far, which is the size of the matrix being built. */
+    def size: Int = currencies.size
+
+    /** The side length the rows hold room for, which is never below [[size]]. */
+    def capacity: Int = rows.length
+
+    /**
+     * The position of a currency, or [[NoPosition]] where it has not been placed.
+     *
+     * This is the lookup every placement of a rate is written in terms of, and it answers a
+     * number for the reason [[NoPosition]] records: a fold places one rate at a time and would
+     * otherwise allocate two options per rate.
+     *
+     * @param currency  the currency to locate
+     * @return the position of the currency, or [[NoPosition]]
+     */
+    def indexOf(currency: Currency): Int = positions.getOrElse(currency, NoPosition)
+
+    /**
+     * Whether a currency has been placed.
+     *
+     * @param currency  the currency to test for
+     * @return true if this accumulator holds a position for that currency
+     */
+    def holds(currency: Currency): Boolean = indexOf(currency) != NoPosition
+  }
+
+  /** Where an accumulator of currencies and rates comes from. */
+  private object Accumulator {
+
+    /**
+     * The accumulator holding the currencies and rates of a matrix.
+     *
+     * This is where every placement of a rate begins, including every placement that begins from
+     * [[FxMatrix.empty]]. The rows are built here and are the accumulator's own from the first
+     * placement, each element read straight out of the matrix rather than through a copy of its
+     * rates taken first, so beginning from a matrix costs one array per row and no rate of the
+     * matrix given can be changed by placing a rate into the accumulator built from it.
+     *
+     * The capacity leaves room for '''one''' currency beyond those the matrix holds, or is
+     * [[InitialCapacity]] where that is larger. That is the room a single placement can need: a
+     * placement brings in at most one currency it did not hold, so reserving one is what keeps
+     * the common case - a rate quoted against a currency the matrix does not yet hold - from
+     * copying every rate again to make room, while the doubling in [[grown]] is what keeps a fold
+     * that brings in many currencies from copying them more than a bounded number of times. The
+     * seal reads the leading square of the rows whatever the capacity, so the room reserved and
+     * not used costs one array of the side length and nothing at all in the matrix sealed.
+     *
+     * @param matrix  the matrix whose currencies and rates to begin from
+     * @return the accumulator holding them
+     */
+    def from(matrix: FxMatrix): Accumulator = {
+      val size = matrix.currencies.size
+      val capacity = math.max(size + 1, InitialCapacity)
+      val rates = matrix.rates
+      val rows: Array[Array[Double]] =
+        Array.tabulate(capacity)(row =>
+          if (row < size) {
+            Array.tabulate(capacity)(column => if (column < size) rates.get(row, column) else 0d)
+          } else {
+            new Array[Double](capacity)
+          })
+      // the positions of the currencies the matrix holds are the positions the matrix looks its
+      // own currencies up by, so the accumulator begins from that very map rather than assembling
+      // an identical one: the map is immutable, so sharing it is safe, and every position a
+      // placement adds is added to a map derived from it. A placement onto a matrix of many
+      // currencies would otherwise box and hash every one of them again before placing anything
+      new Accumulator(matrix.currencies, matrix.indexByCurrency, rows)
+    }
+  }
+
+  /**
+   * The accumulator with room for twice as many currencies.
+   *
+   * The capacity ''doubles'' rather than growing by the one currency that is arriving, and that is
+   * what buys back the complexity order: growing by one would copy every rate held on every
+   * currency and total the cube again, while doubling copies them only as the capacity passes each
+   * power of two, and those copies together come to less than twice the square the placement ends
+   * at. A fold over a collection of rates therefore copies the rates a bounded number of times
+   * however many currencies it ends up with.
+   *
+   * The rows answered are fresh arrays holding the rates of the rows they were grown from, so the
+   * accumulator handed here must not be read afterwards - which is the rule every placement
+   * already follows, as [[Accumulator]] records. Only the rows the currencies reach are copied;
+   * the capacity is full when this is called, so that is every row that holds a rate.
+   *
+   * @param accumulator  the accumulator whose capacity is full
+   * @return an accumulator of the same currencies and rates, with twice the capacity
+   */
+  private def grown(accumulator: Accumulator): Accumulator = {
+    val grownCapacity = accumulator.capacity * 2
+    val size = accumulator.size
+    val rows = accumulator.rows
+    new Accumulator(
+      accumulator.currencies,
+      accumulator.positions,
+      Array.tabulate(grownCapacity)(row =>
+        if (row < size) Arrays.copyOf(rows(row), grownCapacity)
+        else new Array[Double](grownCapacity)))
+  }
+
+  /**
+   * The accumulator holding one more currency, at the position after the currencies it holds.
+   *
+   * This reserves the position of the currency and the room for its row and column; the rates of
+   * that row and column are written by the placement that brought the currency in, which is
+   * [[addInitial]] or [[addNew]]. Where the capacity is full the rows are grown first, so the
+   * accumulator answered may hold rows the one given does not - a caller must read the rows of the
+   * value answered rather than of the value it passed in.
+   *
+   * @param accumulator  the accumulator to place the currency into
+   * @param currency  the currency to place, which the accumulator does not hold
+   * @return the accumulator holding that currency, grown first where its capacity was full
+   */
+  private def extended(accumulator: Accumulator, currency: Currency): Accumulator = {
+    val roomy = if (accumulator.size == accumulator.capacity) grown(accumulator) else accumulator
+    new Accumulator(
+      roomy.currencies :+ currency,
+      roomy.positions.updated(currency, roomy.size),
+      roomy.rows)
+  }
+
+  /**
+   * Seals an accumulator into the matrix its currencies and rates describe.
+   *
+   * This is the one place a placement answers with a matrix, and it is one pass over the rates.
+   * The rates are read element by element into rows the matrix factory builds for itself, which
+   * is what makes the pass exactly one copy of the leading square: the accumulator's own arrays
+   * do not become the rates of the matrix, so nothing a placement writes afterwards could reach a
+   * matrix already sealed, and the room the capacity left beyond the currencies placed is simply
+   * not read - it is neither trimmed into a row of the right width nor copied a second time by a
+   * factory that takes whole rows.
+   *
+   * @param accumulator  the accumulator to seal
+   * @return the matrix holding its currencies and rates
+   */
+  private def sealedMatrix(accumulator: Accumulator): FxMatrix = {
+    val size = accumulator.size
+    val rows = accumulator.rows
+    create(accumulator.currencies, DoubleMatrix.tabulate(size, size)((row, column) => rows(row)(column)))
+  }
+
+  /**
+   * Places a rate into an accumulator holding no currency, as the initial pair of currencies.
    *
    * The two currencies take positions zero and one, their rate is recorded at the first position
    * of the second, its reciprocal at the second position of the first, and both rates of a
    * currency against itself are one - the four elements of a two-by-two matrix.
    *
    * Two identical currencies describe one currency rather than a pair, and the rate given is then
-   * unobservable: the result is the one-currency matrix holding a rate of one.
+   * unobservable: the result is the one-currency accumulator holding a rate of one.
    *
+   * @param accumulator  the accumulator to place the rate into, which holds no currency
    * @param ccy1  the first currency of the pair
    * @param ccy2  the second currency of the pair
    * @param rate  the rate of the first currency in terms of the second
-   * @return the matrix of those two currencies
+   * @return the accumulator of those two currencies
    */
-  private def addInitial(ccy1: Currency, ccy2: Currency, rate: Double): FxMatrix =
+  private def addInitial(
+      accumulator: Accumulator,
+      ccy1: Currency,
+      ccy2: Currency,
+      rate: Double): Accumulator =
     if (ccy1 == ccy2) {
-      create(Vector(ccy1), DoubleMatrix.of(1, 1, 1d))
+      val single = extended(accumulator, ccy1)
+      single.rows(0)(0) = 1d
+      single
     } else {
-      create(Vector(ccy1, ccy2), DoubleMatrix.of(2, 2, 1d, rate, 1d / rate, 1d))
+      // both currencies are placed before either rate is written, so the rows written below are
+      // the rows of the accumulator answered - the extension may have grown them
+      val pair = extended(extended(accumulator, ccy1), ccy2)
+      val rows = pair.rows
+      rows(0)(0) = 1d
+      rows(0)(1) = rate
+      rows(1)(0) = 1d / rate
+      rows(1)(1) = 1d
+      pair
     }
 
   /**
-   * Places a rate that brings a new currency into a matrix.
+   * Places a rate that brings a new currency in.
    *
-   * The new currency takes the position after the currencies already held, and its rate against
+   * The new currency takes the position after the currencies already placed, and its rate against
    * each of them is computed from the rate given and the rate that currency already has against
-   * the reference currency - the currency of the offered pair the matrix already held. The rate
+   * the reference currency - the currency of the offered pair that was already placed. The rate
    * given is stated in the direction from the reference currency to the new one, which is why the
    * callers that hold the pair the other way round invert it before arriving here rather than
    * this deciding which way round it is: the inversion is one division, and performing it at the
@@ -802,115 +1116,140 @@ object FxMatrix {
    * The arithmetic is stated operand for operand - the cross rate is the rate multiplied by the
    * existing rate in that order, and the opposite rate is one divided by that same product.
    * Floating-point multiplication and division are neither exact nor associative, so a rearranged
-   * expression would agree with this one only to within rounding, and the rates this matrix holds
+   * expression would agree with this one only to within rounding, and the rates a matrix holds
    * are the numbers these expressions produce.
    *
-   * @param matrix  the matrix to place the rate into, which holds the reference currency
-   * @param indexRef  the position of the reference currency within that matrix
-   * @param other  the currency to add, which the matrix does not hold
+   * The rates written are the new currency's column of every row already placed and the whole of
+   * its own row, which is time proportional to the number of currencies rather than to their
+   * square: every other rate already stands where it belongs. No temporary is needed for it,
+   * because the cells read and the cells written do not overlap - every read is of the reference
+   * currency's column in a row below the new position, and the reference currency was placed
+   * before the new one, so its column is not the column being written.
+   *
+   * @param accumulator  the accumulator to place the rate into, which holds the reference currency
+   * @param indexRef  the position of the reference currency
+   * @param other  the currency to add, which the accumulator does not hold
    * @param updatedRate  the rate of the reference currency in terms of the currency to add
-   * @return the matrix holding the additional currency and every rate for it
+   * @return the accumulator holding the additional currency and every rate for it
    */
-  private def addNew(matrix: FxMatrix, indexRef: Int, other: Currency, updatedRate: Double): FxMatrix = {
-    val previous = matrix.rates
-    val indexOther = matrix.currencies.size
-    val size = indexOther + 1
-    create(
-      matrix.currencies :+ other,
-      DoubleMatrix.tabulate(size, size) { (row, column) =>
-        if (row == indexOther) {
-          if (column == indexOther) 1d else 1d / (updatedRate * previous.get(column, indexRef))
-        } else if (column == indexOther) {
-          updatedRate * previous.get(row, indexRef)
-        } else {
-          previous.get(row, column)
-        }
-      })
+  private def addNew(
+      accumulator: Accumulator,
+      indexRef: Int,
+      other: Currency,
+      updatedRate: Double): Accumulator = {
+    val indexOther = accumulator.size
+    val placed = extended(accumulator, other)
+    val rows = placed.rows
+    (0 until indexOther).foreach(row => rows(row)(indexOther) = updatedRate * rows(row)(indexRef))
+    (0 until indexOther).foreach(column =>
+      rows(indexOther)(column) = 1d / (updatedRate * rows(column)(indexRef)))
+    rows(indexOther)(indexOther) = 1d
+    placed
   }
 
   /**
-   * Places a rate for two currencies a matrix already holds, restating the second against the
-   * first.
+   * Places a rate for two currencies already placed, restating the second against the first.
    *
    * The currency at the first position is the reference and the currency at the second is
    * restated: every rate involving the restated currency is recomputed from the rate given and
    * the reference currency's existing rates, and the rate of the restated currency against itself
-   * is left at one, since a currency is worth one of itself whatever the update says.
+   * is left as it stands - one - since a currency is worth one of itself whatever the update says.
    *
-   * Every rate read here is read from the matrix as it stood before the update, so no element of
-   * the result is computed from another element of the result.
+   * Every rate read here is read as it stood before the update, so no element of the result is
+   * computed from another element of the result. That is what the two arrays are for: the restated
+   * row and the restated column are computed in full before either is written back, because the
+   * cells read and the cells written ''do'' overlap when the two positions are the same one. That
+   * case is reachable - `withRate(ccy, ccy, rate)` for a currency already placed arrives here with
+   * both positions equal - and there the restated row reads the reference currency's column, which
+   * is exactly the column the restated column overwrites. Writing as the rates were computed would
+   * then have restated the currency partly against its own new rates.
+   *
+   * The rates written are one row and one column, which is time proportional to the number of
+   * currencies: an update leaves every rate that involves neither of the two currencies alone.
    *
    * This is the asymmetric operation documented on [[FxMatrix.withRate]]: which of the two
    * currencies is the reference decides which rates of the rest of the matrix move.
    *
-   * @param matrix  the matrix to place the rate into, which holds both currencies
+   * @param accumulator  the accumulator to place the rate into, which holds both currencies
    * @param index1  the position of the reference currency
    * @param index2  the position of the currency being restated
    * @param rate  the rate of the reference currency in terms of the restated currency
-   * @return the matrix holding the restated rates
+   * @return the accumulator holding the restated rates
    */
-  private def updated(matrix: FxMatrix, index1: Int, index2: Int, rate: Double): FxMatrix = {
-    val previous = matrix.rates
-    val size = matrix.currencies.size
-    create(
-      matrix.currencies,
-      DoubleMatrix.tabulate(size, size) { (row, column) =>
-        if (row == index2) {
-          if (column == index2) previous.get(row, column) else 1d / (rate * previous.get(column, index1))
-        } else if (column == index2) {
-          rate * previous.get(row, index1)
-        } else {
-          previous.get(row, column)
-        }
-      })
+  private def updated(
+      accumulator: Accumulator,
+      index1: Int,
+      index2: Int,
+      rate: Double): Accumulator = {
+    val size = accumulator.size
+    val rows = accumulator.rows
+    val unchangedDiagonal = rows(index2)(index2)
+    val restatedRow: Array[Double] = Array.tabulate(size)(column =>
+      if (column == index2) unchangedDiagonal else 1d / (rate * rows(column)(index1)))
+    val restatedColumn: Array[Double] = Array.tabulate(size)(row =>
+      if (row == index2) unchangedDiagonal else rate * rows(row)(index1))
+    (0 until size).foreach(column => rows(index2)(column) = restatedRow(column))
+    (0 until size).foreach(row => rows(row)(index2) = restatedColumn(row))
+    accumulator
   }
 
   /**
-   * Offers one rate to a matrix, holding it back if it cannot be placed yet.
+   * Offers one rate to the currencies and rates placed so far, holding it back if it cannot be
+   * placed yet.
    *
    * This is the dispatch of the four outcomes described on [[FxMatrix.withRate]], and it is the
    * single step every factory and every placement of a rate is built from. It does not retry the
    * rates already held back; [[retried]] does that, and [[stepped]] is this offer followed by
    * that retry in the one case that can make a rate held back placeable - an offer that brought a
-   * currency into the matrix. Of the four outcomes only the initial pair and the addition of a
-   * new currency do so: an update returns a matrix of the same currencies, and a rate held back
-   * returns the matrix it was offered to.
+   * currency in. Of the four outcomes only the initial pair and the addition of a new currency do
+   * so: an update answers with the same currencies, and a rate held back answers with the
+   * accumulator it was offered to.
    *
-   * @param matrix  the matrix to offer the rate to
+   * The two positions are looked up as numbers and dispatched on as numbers, so offering a rate
+   * allocates nothing to describe where its currencies are - which matters because a collection
+   * of rates performs two of these lookups per rate offered and per rate retried.
+   *
+   * @param accumulator  the currencies and rates to offer the rate to
    * @param pending  the rates already held back
    * @param ccy1  the first currency of the pair, the reference currency of an update
    * @param ccy2  the second currency of the pair, the currency restated by an update
    * @param rate  the rate of the first currency in terms of the second
-   * @return the matrix after the offer, and the rates held back after it
+   * @return the currencies and rates after the offer, and the rates held back after it
    */
   private def offered(
-      matrix: FxMatrix,
+      accumulator: Accumulator,
       pending: PendingRates,
       ccy1: Currency,
       ccy2: Currency,
-      rate: Double): (FxMatrix, PendingRates) =
-    if (matrix.currencies.isEmpty) {
-      (addInitial(ccy1, ccy2, rate), pending)
+      rate: Double): (Accumulator, PendingRates) =
+    if (accumulator.currencies.isEmpty) {
+      (addInitial(accumulator, ccy1, ccy2, rate), pending)
     } else {
-      (matrix.indexOf(ccy1), matrix.indexOf(ccy2)) match {
-        case (Some(index1), Some(index2)) => (updated(matrix, index1, index2, rate), pending)
-        case (Some(index1), None) => (addNew(matrix, index1, ccy2, rate), pending)
-        case (None, Some(index2)) => (addNew(matrix, index2, ccy1, 1d / rate), pending)
-        case (None, None) => (matrix, parked(pending, CurrencyPair.of(ccy1, ccy2), rate))
+      val index1 = accumulator.indexOf(ccy1)
+      val index2 = accumulator.indexOf(ccy2)
+      if (index1 != NoPosition && index2 != NoPosition) {
+        (updated(accumulator, index1, index2, rate), pending)
+      } else if (index1 != NoPosition) {
+        (addNew(accumulator, index1, ccy2, rate), pending)
+      } else if (index2 != NoPosition) {
+        (addNew(accumulator, index2, ccy1, 1d / rate), pending)
+      } else {
+        (accumulator, parked(pending, CurrencyPair.of(ccy1, ccy2), rate))
       }
     }
 
   /**
-   * Places every rate held back that the matrix has since come to reach, repeatedly, until a pass
-   * places nothing.
+   * Places every rate held back that the currencies placed so far have come to reach, repeatedly,
+   * until a pass places nothing.
    *
    * The shape of the passes is what settles the positions of the currencies in the result: the
-   * rates held back are examined against the matrix as it stands at the start of a pass, every
-   * one of them that can be placed is then placed in the order they were offered in, and the
+   * rates held back are examined against the currencies as they stand at the start of a pass,
+   * every one of them that can be placed is then placed in the order they were offered in, and the
    * examination is repeated. A rate that becomes placeable part way through a pass is therefore
    * placed by the next pass rather than immediately, which is what distinguishes this from a
    * depth-first placement: the two order the currencies of a matrix built from rates that connect
-   * in a chain differently.
+   * in a chain differently. Partitioning the rates held back before any of them is placed is what
+   * fixes that: the examination reads the currencies of one pass, not of a placement within it.
    *
    * Each rate of a pass is placed through [[offered]] rather than directly as the addition of a
    * new currency, which is what makes one state well defined: where two rates held back name the
@@ -920,22 +1259,23 @@ object FxMatrix {
    * would have been.
    *
    * The recursion ends because every pass that places anything places at least one rate held
-   * back, and a rate a pass places cannot be held back again - a rate is only placed when the
-   * matrix holds one of its currencies, which is exactly when it is not held back.
+   * back, and a rate a pass places cannot be held back again - a rate is only placed when one of
+   * its currencies is present, which is exactly when it is not held back.
    *
-   * @param matrix  the matrix to place the rates into
+   * @param accumulator  the currencies and rates to place the rates into
    * @param pending  the rates held back
-   * @return the matrix after every placeable rate has been placed, and the rates still held back
+   * @return the currencies and rates after every placeable rate has been placed, and the rates
+   *   still held back
    */
   @tailrec
-  private def retried(matrix: FxMatrix, pending: PendingRates): (FxMatrix, PendingRates) = {
+  private def retried(accumulator: Accumulator, pending: PendingRates): (Accumulator, PendingRates) = {
     val (placeable, blocked) = pending.partition { case (pair, _) =>
-      matrix.holds(pair.base) || matrix.holds(pair.counter)
+      accumulator.holds(pair.base) || accumulator.holds(pair.counter)
     }
     if (placeable.isEmpty) {
-      (matrix, blocked)
+      (accumulator, blocked)
     } else {
-      val (advanced, stillPending) = placeable.foldLeft((matrix, blocked)) {
+      val (advanced, stillPending) = placeable.foldLeft((accumulator, blocked)) {
         case ((offeredTo, held), (pair, rate)) => offered(offeredTo, held, pair.base, pair.counter, rate)
       }
       retried(advanced, stillPending)
@@ -943,39 +1283,42 @@ object FxMatrix {
   }
 
   /**
-   * Offers one rate to a matrix and then, where the offer brought a currency in, places every
-   * rate held back that has become placeable.
+   * Offers one rate and then, where the offer brought a currency in, places every rate held back
+   * that has become placeable.
    *
    * This is the whole of placing a rate: the rate is offered, and the rates held back are retried
    * exactly when a currency arrived, which is the only thing that can make a held-back rate
-   * placeable. A rate held back is held back because the matrix contains neither of its
-   * currencies, so a pass over the rates held back against a set of currencies that has not
-   * changed since the previous pass places nothing; performing that pass after every offer would
-   * therefore reach the same state while examining every rate held back once per offer, which is
-   * time proportional to the square of the number of rates a caller offered - the amplification
-   * this member exists to avoid.
+   * placeable. A rate held back is held back because neither of its currencies is present, so a
+   * pass over the rates held back against a set of currencies that has not changed since the
+   * previous pass places nothing; performing that pass after every offer would therefore reach the
+   * same state while examining every rate held back once per offer, which is time proportional to
+   * the square of the number of rates a caller offered - the amplification this member exists to
+   * avoid.
    *
    * Whether a currency arrived is read from the number of currencies, which is the whole of the
    * test: of the four outcomes of an offer only the initial pair and the addition of a new
-   * currency change [[FxMatrix.currencies]], an update leaves it as it stands, and a rate held
-   * back leaves the matrix itself untouched. The retry is also skipped when nothing is held back,
-   * which is the common case of a collection whose rates connect in the order they are offered.
+   * currency change the currencies, an update leaves them as they stand, and a rate held back
+   * leaves them untouched. The count is read before the offer, because the offer writes into the
+   * rates it was given and the value it answers with is the one to read afterwards. The retry is
+   * also skipped when nothing is held back, which is the common case of a collection whose rates
+   * connect in the order they are offered.
    *
-   * @param matrix  the matrix to offer the rate to
+   * @param accumulator  the currencies and rates to offer the rate to
    * @param pending  the rates already held back
    * @param ccy1  the first currency of the pair, the reference currency of an update
    * @param ccy2  the second currency of the pair, the currency restated by an update
    * @param rate  the rate of the first currency in terms of the second
-   * @return the matrix after the offer and any retry, and the rates still held back
+   * @return the currencies and rates after the offer and any retry, and the rates still held back
    */
   private def stepped(
-      matrix: FxMatrix,
+      accumulator: Accumulator,
       pending: PendingRates,
       ccy1: Currency,
       ccy2: Currency,
-      rate: Double): (FxMatrix, PendingRates) = {
-    val (advanced, offeredPending) = offered(matrix, pending, ccy1, ccy2, rate)
-    val currencyArrived = advanced.currencies.size > matrix.currencies.size
+      rate: Double): (Accumulator, PendingRates) = {
+    val countBefore = accumulator.size
+    val (advanced, offeredPending) = offered(accumulator, pending, ccy1, ccy2, rate)
+    val currencyArrived = advanced.size > countBefore
     if (currencyArrived && offeredPending.nonEmpty) {
       retried(advanced, offeredPending)
     } else {
@@ -1002,19 +1345,21 @@ object FxMatrix {
     pending.updated(pair, rate)
 
   /**
-   * Answers with the matrix a fold reached, or with the failure listing the rates it could never
-   * place.
+   * Answers with the matrix a placement reached, or with the failure listing the rates it could
+   * never place.
    *
-   * This is where the outcome of a fold is decided: a rate still held back once every rate has
-   * been offered is a rate that has no currency in common with the matrix and never will, so the
-   * fold has failed rather than partly succeeded.
+   * This is where the outcome of a placement is decided and where the accumulated rates become a
+   * matrix: a rate still held back once every rate has been offered is a rate that has no currency
+   * in common with the matrix and never will, so the placement has failed rather than partly
+   * succeeded. A failure seals nothing, so the rates a refused placement accumulated are never
+   * copied into a matrix no caller receives.
    *
-   * @param outcome  the matrix a fold reached and the rates it still holds back
+   * @param outcome  the currencies and rates a placement reached and the rates it still holds back
    * @return the matrix, or the failure listing the rates that could never be placed
    */
-  private def placed(outcome: (FxMatrix, PendingRates)): FailureOr[FxMatrix] = {
-    val (matrix, pending) = outcome
-    if (pending.isEmpty) Right(matrix) else Left(unplaceableRates(pending))
+  private def placed(outcome: (Accumulator, PendingRates)): FailureOr[FxMatrix] = {
+    val (accumulator, pending) = outcome
+    if (pending.isEmpty) Right(sealedMatrix(accumulator)) else Left(unplaceableRates(pending))
   }
 
   /**
@@ -1086,18 +1431,23 @@ object FxMatrix {
    * It names the pair asked for and the currencies the matrix holds, so a caller can see at once
    * whether the pair is outside the matrix or the matrix is not the one they meant to query.
    *
+   * The currencies arrive already rendered, from [[FxMatrix.renderedCurrencies]], so that a query
+   * a matrix cannot answer costs one message rather than a listing of every currency the matrix
+   * holds. A caller that only tests whether a query succeeded would otherwise pay for a rendering
+   * proportional to the matrix on every query it makes.
+   *
    * @param baseCurrency  the base currency asked for
    * @param counterCurrency  the counter currency asked for
-   * @param currencies  the currencies the matrix holds, in matrix order
+   * @param renderedCurrencies  the currencies the matrix holds, in matrix order, already rendered
    * @return the failure describing the absent rate
    */
   private def noRateFound(
       baseCurrency: Currency,
       counterCurrency: Currency,
-      currencies: Vector[Currency]): Failure =
+      renderedCurrencies: String): Failure =
     Failure.CurrencyConversion(
       s"No FX rate found for $baseCurrency/$counterCurrency, matrix only contains rates for " +
-        renderCurrencies(currencies))
+        renderedCurrencies)
 
   /**
    * The failure reported for two matrices that cannot be merged.

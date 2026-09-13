@@ -46,8 +46,13 @@ Maven module. The fixtures are the product; the script is the audit trail.
 (Rule 1 / Gate 2) is measured on the sbt `Compile` and `Test` classpaths of `strata-collect` and
 `strata-basics`. `tools/` is on neither: it is on no sbt source root, and it is compiled by
 nothing. No CI job runs it. `.circleci/config.yml` carries the Maven jobs and the Scala job
-`scala_build21` (`:285-340`, wired into the `build` workflow at `:403`), which installs sbt 1.13.0
-on the JDK 21 executor and runs `scripts/verify-gates.sh`; that script drives `sbt` and mentions
+`scala_build21` — the job key under the file's `jobs:` map, wired in under `workflows:` → `build:` →
+`jobs:`, both of which `grep -n scala_build21 .circleci/config.yml` prints in that order (the
+definition first, the wiring second). Those two anchors are named rather than numbered on purpose:
+the job body is edited far more often than this document is, so a line range here goes stale without
+anything a reader can see changing — which is how an earlier revision came to point at a comment
+inside the job. The job installs sbt 1.13.0 on the JDK 21 executor and runs
+`scripts/verify-gates.sh`; that script drives `sbt` and mentions
 neither Maven nor JShell nor this script anywhere —
 `grep -cE '\bmvn\b|jshell|capture-baseline' scripts/verify-gates.sh` answers `0`. So CI asserts the
 Scala port against the **committed** documents and never regenerates them: a capture is always a
@@ -157,7 +162,10 @@ container is involved.
 
 #### Step 1 — build the two Java modules
 
-The **canonical prerequisite**, and the one the project plan specifies:
+The **canonical prerequisite**, and the one the project plan specifies — **for a machine whose local
+Maven repository is yours alone.** It publishes into that repository, so on a shared or CI host use
+alternative 1 instead, or redirect the publication as alternative 1 shows; the difference is spelled
+out there rather than left to be discovered:
 
 ```
 mvn -B -q -pl modules/collect,modules/basics -am -DskipTests -Dcheckstyle.skip=true \
@@ -188,6 +196,21 @@ every other build on the machine resolves, overwriting whatever generation was t
 harmless on a dedicated machine and is what makes route (a) and route (c) below work at all, but on
 a shared or CI cache it changes an input of builds that are not yours. Prefer `package` (route (b))
 unless you want that publication.
+
+If you want the canonical `install` spelling itself on a shared machine — to rehearse it, or because
+a reviewer asks for the documented command rather than its alternative — give it a repository of its
+own and the publication lands there:
+
+```
+mvn -B -q -pl modules/collect,modules/basics -am -DskipTests -Dcheckstyle.skip=true \
+    -Dmaven.javadoc.skip=true -Dmaven.repo.local="$PARITY_SCRATCH/m2" install
+```
+
+`-Dmaven.repo.local` moves *the whole* local repository for that invocation, so the copy has to be
+able to resolve the build's dependencies: seed it with `cp -a ~/.m2/repository "$PARITY_SCRATCH/m2"`
+(a plain copy — never `cp -al`, whose hard links would put the shared originals back in the
+publication's path), or leave it empty and let Maven re-resolve from the network. That is exactly
+how the *Verification record* below exercised this line without touching the shared repository.
 
 **Alternative 2 — no build at all.** If both jars are already in the local repository, route (c) of
 step 2 skips step 1 entirely — with the provenance caveat that route states.
@@ -312,11 +335,40 @@ jshell --class-path "$CP" -R-Xmx900m tools/parity-capture/capture-baseline.jsh
 Before anything else the script runs a **classpath preflight** over the types it needs. An
 incomplete classpath is the most common mistake, and the preflight puts an actionable message
 **first** — naming the missing classes and the build command that fixes them — instead of leaving
-JShell's "package does not exist" errors as the only diagnostic. It does not suppress them: the
-preflight prints and returns, JShell carries on loading the snippets that follow, and the Strata
-imports a few lines later fail exactly as they would have. So read the *first* block of output
-rather than the last. The run still fails closed — the capture driver checks the preflight result
-before building anything, so nothing is written and the exit status is non-zero.
+JShell's "package does not exist" errors as the only diagnostic. It does not suppress them, and it
+cannot end the run where it stands: a JShell command cannot be made conditional, so there is no
+`/exit 1` to put inside an `if`, and `System.exit` inside a snippet does not propagate — it kills
+the execution engine, whereupon JShell falls through to its REPL and terminates with status
+**zero**. So the preflight prints and returns, JShell carries on loading the snippets that follow,
+and the Strata imports a few lines later fail exactly as they would have. Read the *first* block of
+output rather than the last.
+
+The run fails closed regardless, and how it does is worth knowing, because the obvious construction
+does not work. The status is **not** computed in the exit expression. The capture publishes its
+verdict into the `capture.exit.status` property in one statement it has to reach and earn — every
+document built, every check passed — and the script's last statement is
+`/exit (Integer.getInteger("capture.exit.status", 1))`, an expression that names nothing but
+`java.lang.Integer` and defaults to **failure**. The driver re-checks the preflight before building
+anything, so nothing is written either. An incomplete classpath is precisely the case in which the
+script's own declarations do not survive the load, so a verdict carried in a snippet-declared
+symbol would be unreadable exactly when it carries the most information; a property is not. A value
+you pass in yourself is reported and discarded rather than believed, so
+`-R-Dcapture.exit.status=0` cannot buy a success.
+
+One classpath shape needs a further layer, and the script carries it. A classpath holding the
+Strata jars **without Guava** lets javac resolve the Strata signatures but not the Guava types
+inside them, and on JDK 21.0.12.1 that combination makes **javac itself** fail with an internal
+`NullPointerException` while generating code for one of the script's methods ("An exception has
+occurred in the compiler … `Type.getTag()` because `type` is null"). From there every later snippet
+is rejected with a spurious `cannot find symbol / symbol: class` pair — the exit expression
+included, and a bare `/exit 1` with it, both measured — so no exit expression of any shape can be
+evaluated and the run would fall through to the REPL and terminate zero. Two further JShell
+behaviours recover it: a failed `/exit` does not end the file, JShell reads the next line; and
+`/reset` is a command, needs no compilation, and discards the corrupted compilation context along
+with every snippet. So the file's final two lines are `/reset` and the literal `/exit 1`, reached
+only when the expression above could not be evaluated at all — which is only ever a run whose own
+declarations did not survive, so nothing was built and nothing was written. Every classpath shape
+in the *Verification record*'s table exits non-zero, including that one.
 
 **Output root, temporary directory and locking.** The script writes the seven documents
 **relative** to the value of the `parity.out.dir` system property, whose default is `.` — the
@@ -415,7 +467,11 @@ finding: a `DIFFERS` line, or a `not committed` line for a document section 4 li
 is something to investigate before you replace a committed file.
 
 **Exit status.** Zero only when every document was built *and* every self-check passed; non-zero
-on any check failure, count mismatch, preflight failure or exception in the driver. The documents
+on any check failure, count mismatch, preflight failure or exception in the driver — and non-zero
+as well when the load is broken enough that the script's own declarations never compile, which is
+the case step 3 above describes the two layers for. Zero is stated positively, once, by a statement
+the run must reach and earn; every other path, including every way of not reaching that statement,
+leaves the default in place. The documents
 are accumulated in memory and flushed only once every check has passed, so any failure that
 happens **before the flush begins** — a failed check, a count mismatch, the preflight, or an
 exception raised while the documents are being built — writes **nothing at all**: no document is
@@ -487,7 +543,7 @@ statement about a script's output stays checkable:
 | Pinned to | Value |
 |---|---|
 | Measured against | the revision of the script whose hash is the next row |
-| `capture-baseline.jsh` | sha256 `2a79e8d536253434b11f5ed7aa3b143c046ec79e81747c687118c6c46658b676` |
+| `capture-baseline.jsh` | sha256 `1fc8dc5f2df21a491066d222bad851f63f9da87884a3362bd83d9ea6fcb38ba6` |
 | Java sources measured | `modules/**` at commit `86d8c8a32d73f6621b5b7ac901ad58a80d2257bd`, unchanged since `39c46e342a4a95ac083d66287f038f6ae276692a` (item 4 below) |
 | Toolchain | OpenJDK 21.0.12.1 (Temurin 21.0.12.1+1 LTS), Apache Maven 3.9.16 |
 
@@ -508,9 +564,11 @@ Commands run, in this order:
    test-scope JUnit/AssertJ/Mockito/byte-buddy jars the script never loads.
 3. The capture **three times**, each into its own scratch output root: twice with the route-(c)
    classpath (the six jars named directly out of `~/.m2`) and once with the route-(b) classpath
-   built in items 1-2 from this checkout. All three printed `all checks passed`, wrote seven
-   documents and exited 0, at `-R-Xmx900m`. One of the route-(c) runs was timed: **53 s wall** on a
-   busy machine — read that as the order of magnitude, not as a benchmark.
+   built in items 1-2 from this checkout. All three printed `all checks passed` and `capture
+   complete.`, wrote seven documents and exited 0, at `-R-Xmx900m`. All three were timed:
+   **54-57 s wall** on a busy machine — read that as the order of magnitude, not as a benchmark. The
+   route-(b) run additionally carried `-R-Dcapture.exit.status=5`, which is the probe recorded
+   below the failure table: it exited 0, so the preset was discarded rather than returned.
 4. The provenance check route (c) asks for: `Implementation-Build` read from both local-repository
    jars' manifests — `39c46e342a4a95ac083d66287f038f6ae276692a` on each — and
    `git diff --stat 39c46e342a4a95ac083d66287f038f6ae276692a..HEAD -- modules`, which printed
@@ -519,10 +577,16 @@ Commands run, in this order:
 5. `git status --porcelain -- modules examples eclipse pom.xml src .github` — no output, before and
    after every run, including the Maven build of item 1 and every refusal probe below.
 
-Route (a)'s `install` line was **not** run: both artifacts were already in this environment's
-local repository, and installing them again is what routes (b) and (c) exist to avoid. So route (a)
-is documented and its classpath step unverified here, while routes (b) and (c) were both measured
-end to end.
+Step 1's canonical `install` line **was** run, in the redirected form step 1 documents —
+`-Dmaven.repo.local` pointed at a plain `cp -a` copy of the local repository — because this
+environment's repository is shared with other builds and republishing the mutable
+`2.12.74-SNAPSHOT` coordinates would change an input of theirs. It exited **0** and published
+`strata-basics` and `strata-collect` (jars and test-jars) under
+`com/opengamma/strata/…/2.12.74-SNAPSHOT/` inside that copy, while the shared repository's own two
+jars stayed byte-identical — `sha256sum` and `stat` before and after, compared and equal. What that
+does not measure is the publication landing in the *default* repository, which is the one thing the
+redirect exists to avoid; route (a)'s classpath step then resolves against whichever repository the
+install populated. Routes (b) and (c) were measured end to end.
 
 **The three captures produced byte-identical documents** — `cmp` over the three output roots, all
 seven documents, no differences, and each of the seven equal to the committed file as well. Two of
@@ -569,13 +633,36 @@ The seven together are the **24,302,650 bytes** section 2 asks you to have free 
 capture reproduces all seven hash for hash. Every figure in these three tables moves when a
 document's coverage changes, so refresh them together rather than one at a time.
 
-The failure path was measured too, with a deliberately incomplete classpath (the `strata-collect`
-jar alone): the preflight's twenty-two lines named all twelve missing classes **first**, then
-several thousand JShell errors followed it (4,213 lines of output in total at this revision) as
-JShell carried on loading the snippets, the run exited 1, the output root was **never created** and
-**zero** files were written. The line count is incidental and moves with JShell's diagnostics; the
-load-bearing properties are the three that follow it — preflight first, non-zero exit, nothing
-written.
+The failure path was measured across **every** incomplete-classpath shape that can be assembled
+from the six jars, not one of them. Measuring one is what let an earlier revision of this document
+claim a guarantee the script did not yet have: the `strata-collect`-jar-alone shape it measured was
+one of the shapes that did behave, while a classpath missing only Guava exited **0** having written
+nothing — the failure mode step 3 now describes, and the reason the script ends in `/reset` and a
+literal. In every row the preflight's twenty-two lines named the missing classes **first**, the run
+exited **1**, the output root was **never created** and **zero** files were written:
+
+| Classpath | Missing classes named | Exit | Files | How it exited |
+|---|---|---|---|---|
+| both Strata jars + Joda, **no Guava** | 7 | 1 | 0 | `/reset` + literal: javac crashed and the exit expression was rejected |
+| the same shape, run again | 7 | 1 | 0 | identical, so the recovery is not incidental |
+| the same shape + `-R-Dcapture.exit.status=0` | 7 | 1 | 0 | the preset was reported and discarded, then as above |
+| both Strata jars + Guava, **no Joda** | 8 | 1 | 0 | exit expression; the property was never set |
+| `strata-collect` jar alone | 12 | 1 | 0 | exit expression |
+| `strata-basics` jar alone | 12 | 1 | 0 | exit expression (javac crashed; the context survived it) |
+| everything but the `strata-basics` jar | 8 | 1 | 0 | exit expression |
+| everything but the `strata-collect` jar | 10 | 1 | 0 | exit expression (javac crashed; the context survived it) |
+| empty classpath | 13 | 1 | 0 | exit expression |
+
+Three of those nine shapes crash javac; only the two Guava-less ones lose the exit expression with
+it, which is why a shape-by-shape reading is the only safe one — "an incomplete classpath" is not
+one behaviour. Output length ranged from 162 to 4,394 lines and is incidental: it moves with
+JShell's diagnostics. The load-bearing properties are the four the table asserts — preflight
+first, non-zero exit, output root never created, nothing written.
+
+The converse was measured on the same script: the full classpath plus a hostile
+`-R-Dcapture.exit.status=5` exited **0** with seven byte-identical documents, so clearing the
+property discards a caller's value without costing a legitimate run its zero (had the preset been
+believed, that run would have exited 5).
 
 The write-boundary refusals were measured in the same session, each exiting 1 and leaving nothing
 behind:
@@ -783,10 +870,13 @@ change one alone.
   scalar arrays are chunked at a fixed ten items per line, so a long array is neither one unreadable
   line nor one line per element. Same inputs, same bytes: three runs produced byte-identical
   documents, as the *Verification record* shows.
-* **`holiday-baseline.json` alone is written one row object per line**, unindented, because its
-  3,846 rows carry about 445,000 date strings: pretty-printing them costs roughly 2 MB of pure
-  indentation and buys nothing, since the unit anyone reads or diffs there is the row. It is the
-  same deterministic writer (`Jn.writeCompact`) with newlines and padding omitted — key order,
+* **`holiday-baseline.json` alone is written one row object per line**, each row compact on its own
+  line — the array's own two-space indent still prefixes every one of those lines, so the document
+  is `[`, then 3,846 lines of the form `  {"id":"gblo-1950",…}`, then `]`. What is dropped is the
+  indentation and the newlines *inside* a row, not the line prefix. It is done because those rows
+  carry about 445,000 date strings: pretty-printing them costs roughly 2 MB of pure indentation and
+  buys nothing, since the unit anyone reads or diffs there is the row. It is the same deterministic
+  writer (`JArray.writeRowsPerLine`, rendering each row through `Jn.writeCompact`) — key order,
   escaping and number rendering are unchanged, and the document still ends with exactly one
   newline. Every other JSON document is pretty-printed as described above.
 
@@ -1468,7 +1558,7 @@ and a `ported` or `consolidated` row fills both.
 ### 8. Notes for maintainers
 
 Each of the following silently corrupts a baseline if forgotten. Most are verified properties of
-the Java sources this capture reads; the first and the last are properties of the capture's own
+the Java sources this capture reads; the first two and the last are properties of the capture's own
 design. None is a style preference. Check them before changing how anything is captured.
 
 * **Every committed document is regenerable, so a diff after a re-capture is a finding.** All
@@ -1477,6 +1567,19 @@ design. None is a style preference. Check them before changing how anything is c
   document as step 3 describes, and treat any difference as something to investigate before
   committing rather than as the new baseline.
 
+* **The last four lines of the script are the exit status, and each is load-bearing.** They read
+  `if (CHECK.ok() && CAPTURE_COMPLETED) { System.setProperty("capture.exit.status", "0"); }`, then
+  `/exit (Integer.getInteger("capture.exit.status", 1))`, then `/reset` and `/exit 1`. Three
+  temptations each reintroduce a silent success, and all three were measured: computing the verdict
+  in the exit expression (`/exit ((CHECK.ok() && CAPTURE_COMPLETED) ? 0 : 1)`) surrenders the status
+  whenever the load destroys those declarations, because an `/exit` expression that fails to compile
+  does not exit — JShell falls through to its REPL and terminates **zero**; `/exit`-ing from inside
+  the preflight is impossible, since a JShell command cannot be conditional and `System.exit` in a
+  snippet only kills the execution engine; and deleting the trailing `/reset` + `/exit 1` as dead
+  code removes the only recovery from a javac internal crash, after which no exit expression of any
+  shape — literal included — can be evaluated. Section 3 gives the mechanism and the nine-shape
+  measurement. If you add a way for the capture to fail, make it a path that does *not* reach the
+  `setProperty` statement, and add nothing to the exit expression.
 * **Public API only.** A `.jsh` script runs in the unnamed package, so the package-private classes
   the Java tests reach by sharing their package are **unreachable** here:
   `GlobalHolidayCalendars` (`date/GlobalHolidayCalendars.java:43`), `StandardDayCounts` (`:21`),

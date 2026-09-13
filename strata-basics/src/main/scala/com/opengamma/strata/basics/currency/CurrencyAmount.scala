@@ -19,7 +19,6 @@ import com.opengamma.strata.collect.DoubleArrayMath
 import com.opengamma.strata.collect.FailureOr
 import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.NoJavaSerialization
-import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -149,7 +148,7 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
     if (amountToAdd.currency == currency) {
       Right(plus(amountToAdd.amount))
     } else {
-      Left(Failure.Invalid(CurrencyAmount.DifferentCurrenciesAddMessage))
+      Left(CurrencyAmount.DifferentCurrenciesAddFailure)
     }
 
   /**
@@ -185,7 +184,7 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
     if (amountToSubtract.currency == currency) {
       Right(minus(amountToSubtract.amount))
     } else {
-      Left(Failure.Invalid(CurrencyAmount.DifferentCurrenciesSubtractMessage))
+      Left(CurrencyAmount.DifferentCurrenciesSubtractFailure)
     }
 
   /**
@@ -360,7 +359,7 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
       if (DoubleArrayMath.fuzzyEquals(fxRate, 1d, CurrencyAmount.NoConversionTolerance)) {
         Right(this)
       } else {
-        Left(Failure.Invalid(CurrencyAmount.NonUnitRateMessage))
+        Left(CurrencyAmount.NonUnitRateFailure)
       }
     } else {
       CurrencyAmount.of(resultCurrency, amount * fxRate)
@@ -460,17 +459,68 @@ object CurrencyAmount {
    */
   private val AmountField: String = "amount"
 
+  /**
+   * The message reported for a value that is not a number.
+   *
+   * It is written here rather than at the one place that reports it because two routes have to
+   * agree on it and only one of them builds it: [[of]] reports this text as a value, while
+   * [[checkedAmount]] reports the very same text by raising it through
+   * [[com.opengamma.strata.collect.ArgCheck.notNaN]], which composes it from the argument name.
+   * Naming the field once above and the sentence once here is what keeps the two from drifting -
+   * a caller that reads a failure and a caller that catches the invariant see one wording - and
+   * `CurrencyAmountSpec` asserts the equality against
+   * [[com.opengamma.strata.collect.Validate.notNaN]] itself rather than against a copy of the
+   * text, so a change on either side of the two modules is a failing test and not a silent
+   * divergence.
+   */
+  private val NotANumberMessage: String = s"Argument '$AmountField' must not be NaN"
+
+  /**
+   * The failure [[of]] reports for a value that is not a number.
+   *
+   * There is exactly one thing that can be wrong with the arguments of [[of]], and what is wrong
+   * with them does not depend on what they were, so the failure describing it is one value and
+   * not a value per call. Holding it here means the rejection allocates only the `Left` that
+   * carries it: the message is not composed, no chain is built to hold one element and no
+   * collapse of that chain is performed, which is what a caller testing an outcome for failure
+   * used to pay for on a path where it reads nothing.
+   *
+   * Its reason, message and attributes are the ones the accumulating check of this library
+   * produces for the same rejection - `Failure.Invalid` with this message and no attributes,
+   * which is what collapsing a chain of one `Validate.notNaN` failure returns - so two failures
+   * over the same cause remain equal, their rendering is unchanged and their encoded form is
+   * identical.
+   */
+  private val NotANumberFailure: Failure = Failure.Invalid(NotANumberMessage)
+
   /** Reported when two amounts of different currencies are added. */
   private val DifferentCurrenciesAddMessage: String =
     "Unable to add amounts in different currencies"
+
+  /**
+   * The failure [[CurrencyAmount.plus]] reports for a currency mismatch.
+   *
+   * The condition has one cause and its message names neither operand, so the failure is one
+   * value: a mismatch allocates the `Left` around it and nothing else. The two failures below
+   * exist for the same reason.
+   */
+  private val DifferentCurrenciesAddFailure: Failure =
+    Failure.Invalid(DifferentCurrenciesAddMessage)
 
   /** Reported when two amounts of different currencies are subtracted. */
   private val DifferentCurrenciesSubtractMessage: String =
     "Unable to subtract amounts in different currencies"
 
+  /** The failure [[CurrencyAmount.minus]] reports for a currency mismatch. */
+  private val DifferentCurrenciesSubtractFailure: Failure =
+    Failure.Invalid(DifferentCurrenciesSubtractMessage)
+
   /** Reported when a rate other than one is supplied for a conversion that does not convert. */
   private val NonUnitRateMessage: String =
     "FX rate must be 1 when no conversion required"
+
+  /** The failure [[CurrencyAmount.convertedTo]] reports for a rate other than one. */
+  private val NonUnitRateFailure: Failure = Failure.Invalid(NonUnitRateMessage)
 
   /** The tolerance within which a rate counts as one for a conversion that does not convert. */
   private val NoConversionTolerance: Double = 1e-8
@@ -492,18 +542,72 @@ object CurrencyAmount {
    * so, exactly as with an identifier, the only bound available is one this type states. Without
    * one, a sender chooses how much text [[parse]] copies and how much numeric reading it does.
    *
-   * The number is chosen from what it takes to write a double exactly rather than from what a
-   * machine can hold. The longest exact decimal spelling of a finite double is that of the
-   * smallest subnormal, which needs 767 significant digits after a leading zero and a point, and
-   * every other value needs fewer; a thousand characters is above all of them, so no spelling
-   * that names a double exactly is refused for its size. What is refused is text carrying digits
-   * that cannot change the value it names, which is the only thing beyond this bound.
+   * ===Why it is the bound the decimal types use, and not a wider one===
    *
-   * [[Money]] and [[BigMoney]] read the same text form and are bounded already, at the 256
-   * characters their [[com.opengamma.strata.collect.Decimal]] reads within; this is looser
-   * because a double spells values that a decimal of eighteen digits does not.
+   * The number is the 256 characters [[Money]] and [[BigMoney]] already read within, and it is
+   * one bound across the four types of this package that read this text form. It is deliberately
+   * narrower than the bound that would follow from spelling a double exactly: the longest exact
+   * decimal spelling of a finite double is that of the smallest subnormal, at 767 significant
+   * digits after a leading zero and a point, so a bound calibrated on that argument is a
+   * thousand characters and refuses no spelling that names a double exactly.
+   *
+   * That wider bound was what this type carried, and it left the four types disagreeing about
+   * the same text: a 500-digit amount was read here and refused by `Money.parse` of the
+   * identical text, which is a difference a caller has no way to predict from the form they
+   * wrote. What the narrowing refuses is text whose extra digits cannot change any value the
+   * domain trades in - beyond about seventeen significant digits no further digit moves the
+   * double that is read, and beyond the eighteen digits a
+   * [[com.opengamma.strata.collect.Decimal]] holds no further digit is representable at all -
+   * so the amounts this type is asked about in practice are three orders of magnitude inside it.
+   * The narrowing is therefore a deliberate choice of consistency over a calibration on exact
+   * spellings, and not the correction of a defect.
+   *
+   * Text past it is reported with the wording of an amount that could not be read rather than
+   * one of its own, so what reaches a caller for an oversized amount is what has always reached
+   * one for an unreadable one.
    */
-  private val MaxAmountTextLength: Int = 1024
+  private val MaxAmountTextLength: Int = 256
+
+  /**
+   * The longest text a failure of [[parse]] quotes back in full.
+   *
+   * It is the longest text this type can accept: a three-letter currency code, the separator
+   * after it and an amount at the ceiling above. Every text that could plausibly name an amount
+   * is therefore quoted character for character, so the message a caller reads, logs and asserts
+   * on for an ordinary rejection is exactly the text they wrote - a line break and every other
+   * character among them, because neutralising such a character remains the act of writing the
+   * failure out rather than the act of reporting it.
+   *
+   * Beyond this length the text cannot name an amount whatever it holds, so there is nothing a
+   * caller can learn from the whole of it that the bounded quotation does not tell them, and
+   * quoting it in full would make the cost of a rejection proportional to the length a sender
+   * chose (CWE-400/CWE-770). [[quoted]] is where that is applied.
+   */
+  private val MaxQuotedTextLength: Int = SeparatorIndex + 1 + MaxAmountTextLength
+
+  /**
+   * Quotes rejected text into a failure message, in full where the text could have named an
+   * amount and bounded where it could not.
+   *
+   * Text within [[MaxQuotedTextLength]] is returned exactly as it was given - the same instance,
+   * with no copy and no escaping - so every message this type reports for a realistic rejection
+   * is character for character the message it has always reported. Longer text is handed to
+   * [[com.opengamma.strata.collect.result.Failure.renderDiagnostic]], the one renderer these two
+   * modules hold for text on its way to a reader of lines, which bounds it to a few hundred
+   * characters, marks with an ellipsis that there was more and escapes anything that could forge
+   * a line.
+   *
+   * The effect on a rejection is that its cost stops being a function of the length of the input:
+   * a message built here is at most a few hundred characters whether the text handed to [[parse]]
+   * was a thousand characters or a million. What a reader sees is unchanged, because the text form
+   * of a failure bounds every part it writes in exactly this way; what changes is that the bound is
+   * now reached before the message is built rather than only when it is written out.
+   *
+   * @param text  the rejected text, as it was given to [[parse]]
+   * @return the text itself where it is within the bound, and its bounded rendering beyond it
+   */
+  private def quoted(text: String): String =
+    if (text.length <= MaxQuotedTextLength) text else Failure.renderDiagnostic(text)
 
   /**
    * Obtains a zero amount in the specified currency.
@@ -532,17 +636,33 @@ object CurrencyAmount {
    * CurrencyAmount.of(Currency.GBP, Double.NaN)                 // Left(Failure.Invalid(…))
    * }}}
    *
+   * ===Why the single check is written out rather than composed===
+   *
+   * The check is one predicate over one argument, and it is written as that predicate rather than
+   * assembled from the accumulating validators of this library. Reaching it through
+   * [[com.opengamma.strata.collect.Validate.notNaN]] built a `Validated` holding the amount, a
+   * chain to hold the one failure it might carry, an `Either` converted from that `Validated` and
+   * two mappings over it, and then collapsed a chain of one element through a de-duplication, a
+   * message join, a reason reduction and an attribute fold - all to decide something a single
+   * comparison decides, on the factory every amount in the library is built through. The success
+   * path allocated nothing only because escape analysis removed those temporaries, so the same
+   * call allocated a few hundred bytes wherever the factory was too large to inline or the
+   * temporaries escaped, and the failure path paid for the whole of that machinery on top of a
+   * message it composed for a caller that may only be testing whether the outcome is a failure.
+   *
+   * What a caller observes is unchanged, because the failure this reports is the value that
+   * machinery produced: `Failure.Invalid` carrying [[NotANumberMessage]] and no attributes, which
+   * is what collapsing a one-element chain of `Validate.notNaN`'s failure returns. Its reason,
+   * message and attributes are therefore identical, and so are its equality, its rendering and
+   * its encoded form. The accumulating validators remain the right tool where several checks have
+   * to be reported together, which is what `FxRate.of` uses them for.
+   *
    * @param currency  the currency the amount is in
    * @param amount  the amount of that currency
    * @return the amount, or the failure describing why the value is not one
    */
   def of(currency: Currency, amount: Double): FailureOr[CurrencyAmount] =
-    Validate
-      .notNaN(amount, AmountField)
-      .toEither
-      .left
-      .map(Failure.collapse)
-      .map(checked => create(currency, checked))
+    if (amount.isNaN) Left(NotANumberFailure) else Right(create(currency, amount))
 
   /**
    * Obtains an amount in the currency with the specified code.
@@ -590,10 +710,14 @@ object CurrencyAmount {
    * keeping the failure to that one message keeps two failures over the same text equal and their
    * encoded form identical.
    *
-   * Both wordings name the text as it was given. The text came from outside the library, so
-   * bounding it and escaping what it may hold belong to the writing of a failure, which
-   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure perform
-   * for every part they write.
+   * Both wordings name the text as it was given, for every text that could have named an amount:
+   * the quotation is bounded at [[MaxQuotedTextLength]], which is the longest text this type
+   * accepts, so a realistic rejection reads back exactly what a caller wrote - a line break among
+   * it - and only text that could not have named an amount at any length is quoted bounded. That
+   * is what keeps the cost of a rejection from being a function of the length a sender chose,
+   * and it is applied by [[quoted]]. Escaping what the text may hold remains the act of writing
+   * a failure out, which [[com.opengamma.strata.collect.result.Failure.show]] and the text form
+   * of a failure perform for every part they write.
    *
    * @param amountStr  the amount as text, in the form `AAA 12.34`
    * @return the amount the text names, or the failure naming the broken condition: the text has
@@ -614,11 +738,12 @@ object CurrencyAmount {
       // rather than from a copy of the part it was found in
       Left(invalidFormat(amountStr))
     } else if (amountStr.length - (SeparatorIndex + 1) > MaxAmountTextLength) {
-      // Text longer than any number can be written with names no amount, which is exactly what
-      // the wording below says, so the ceiling reports through it rather than through a wording
-      // of its own: what reaches a caller for an oversized amount is what has always reached it
-      // for an unreadable one. The text is not read and neither part is copied.
-      Left(Failure.Parsing(s"Unable to parse amount: $amountStr"))
+      // Text longer than any amount this type reads names no amount, which is exactly what the
+      // wording below says, so the ceiling reports through it rather than through a wording of
+      // its own: what reaches a caller for an oversized amount is what has always reached it
+      // for an unreadable one. The text is not read and neither part is copied, and the
+      // quotation is bounded, so the whole of the rejection is bounded too.
+      Left(Failure.Parsing(s"Unable to parse amount: ${quoted(amountStr)}"))
     } else {
       val currencyCode = amountStr.substring(0, SeparatorIndex)
       val amountText = amountStr.substring(SeparatorIndex + 1)
@@ -627,9 +752,9 @@ object CurrencyAmount {
         parsedAmount <- amountText.toDoubleOption
         value <- of(currency, parsedAmount).toOption
       } yield value
-      // the text is rendered rather than interpolated as it stands, which bounds the message
-      // and keeps it to one line while leaving an in-bound spelling quoted as it was given
-      parsed.toRight(Failure.Parsing(s"Unable to parse amount: $amountStr"))
+      // text of this shape is within the quotation bound by the two tests above, so it is named
+      // in full here and the bound never takes effect on this branch
+      parsed.toRight(Failure.Parsing(s"Unable to parse amount: ${quoted(amountStr)}"))
     }
 
   /**
@@ -746,12 +871,13 @@ object CurrencyAmount {
   /**
    * The failure reported for text whose shape does not admit an amount.
    *
-   * The text is quoted as it stands; bounding it and escaping what it may hold belong to the
-   * writing of a failure, which the text form of one and [[Failure.show]] perform for every part
-   * they write.
+   * The text is quoted through [[quoted]], so it stands as it was given wherever it is within
+   * the length this type can accept and is bounded beyond it; escaping what it may hold belongs
+   * to the writing of a failure, which the text form of one and [[Failure.show]] perform for
+   * every part they write.
    */
   private def invalidFormat(amountStr: String): Failure =
-    Failure.Parsing(s"Unable to parse amount, invalid format: $amountStr")
+    Failure.Parsing(s"Unable to parse amount, invalid format: ${quoted(amountStr)}")
 
   /**
    * Renders an amount without a fractional part when it is a whole number.

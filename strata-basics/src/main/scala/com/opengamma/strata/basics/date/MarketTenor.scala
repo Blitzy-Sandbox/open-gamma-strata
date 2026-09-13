@@ -296,9 +296,9 @@ object MarketTenor {
    * are.
    *
    * It bounds work rather than meaning. The four comparisons and the tenor parse that follows
-   * them each read text that arrived from outside this library, and the tenor parse copies it
-   * (CWE-400/CWE-770); testing the length first means none of that is reached by text no market
-   * tenor could be named by.
+   * them each read text that arrived from outside this library, and the tenor parse walks the
+   * whole of it (CWE-400/CWE-770); testing the length first means none of that is reached by
+   * text no market tenor could be named by.
    */
   private val MaxTextLength: Int = 256
 
@@ -445,9 +445,15 @@ object MarketTenor {
    * Text longer than [[MaxTextLength]] characters is refused ahead of all of that, naming the
    * ceiling rather than the text: no market tenor is named by text of that size - the grammar is
    * the tenor grammar and four two-character codes - and refusing it first is what keeps the
-   * four comparisons and the copy the tenor parse makes off text written to be large
-   * (CWE-400/CWE-770). Empty text still reaches the argument check above, being well inside the
-   * ceiling, and every text within the ceiling reads exactly as it did.
+   * four comparisons and the walk the tenor parse makes over the text off text written to be
+   * large (CWE-400/CWE-770). Empty text still reaches the argument check above, being well
+   * inside the ceiling, and every text within the ceiling reads exactly as it did.
+   *
+   * What that walk is, and the grammar of a period it implements, belong to
+   * [[PeriodText.readOptionallyPrefixed]], which [[Tenor.parse]] reads its text with: this type
+   * inherits the whole of it, so a text that is none of the four market codes is accepted or
+   * refused here exactly as the tenor accepts or refuses it, and neither a period nor a
+   * `java.time.format.DateTimeParseException` is built on the way to a refusal.
    *
    * @param toParse  the text to parse
    * @return the market tenor the text names, or the failure naming the broken constraint: the text

@@ -5,7 +5,10 @@
  */
 package com.opengamma.strata.basics.date
 
+import java.time.Period
+
 import scala.util.Random
+import scala.util.Try
 
 import cats.Hash
 import cats.Order
@@ -17,12 +20,14 @@ import io.circe.syntax.EncoderOps
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.prop.TableDrivenPropertyChecks
+import org.scalatest.prop.TableFor1
 import org.scalatest.prop.TableFor2
 
 import com.opengamma.strata.basics.date.Tenor.TENOR_1D
 import com.opengamma.strata.basics.date.Tenor.TENOR_1W
 import com.opengamma.strata.basics.date.Tenor.TENOR_2M
 import com.opengamma.strata.basics.date.Tenor.TENOR_3Y
+import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
@@ -91,6 +96,103 @@ class MarketTenorSpec extends AnyFunSuite with Matchers with TableDrivenProperty
     ("-2D", FailureReason.INVALID),
     ("PON", FailureReason.PARSING)
   )
+
+  /**
+   * The corpus `test_parse_agrees_with_java_time` reads, one text per row.
+   *
+   * This type reads its own four market codes and hands everything else to [[Tenor.parse]], so
+   * the rows are the four codes and their near misses together with the corpus of the tenor: both
+   * spellings of an accepted tenor, the case rules that admit `3m` and `P3m` while refusing
+   * `p3m`, the multi-section forms in order and out of it, the counts at and past the bounds of
+   * an `Int` including a week count whose folding into days overflows, the periods a tenor
+   * refuses for being zero or negative, the day and week tenors the spot-starting factory names
+   * `ON` and `SW` rather than by their own codes, and the malformed shapes.
+   */
+  private val data_parseAgreement: TableFor1[String] = Table(
+    "input",
+    "", "ON", "TN", "SN", "SW", "on", "PON", "ONN", "P", "1D", "1W", "P1D", "P1W", "7D", "P7D",
+    "3M", "P3M", "p3m", "P3m", "3m", "2D", "2W", "6W", "12M", "1Y", "10Y", "P1Y2M3D", "P1Y2M",
+    "P2Y6M", "P1W3D", "P0D", "0D", "P-2D", "-2D", "-P2D", "+P2D", "P+2D", "P2147483647D",
+    "P2147483648D", "P99999999999999999999D", "P2147483647W", "2K", "Rubbish", "P3M4", "3M4",
+    "PT1H", "P1D2Y", "P1M1Y", " P3M", "P3M ", "P3.5M", "P1M2", "M3", "3", "-", "+", "PP3M",
+    "P3MM", "p", "P3W4D", "P1Y1M1W1D", "P1y2m3w4d", "P000000000000003M", "P0Y0M0W0D",
+    "P\uFF11M", "P306783379W", "P306783379W-2147483645D", "P1W-2147483648D", "P-2147483648D",
+    "P-2147483649D", "P1D1D", "P2W1W", "P1Y1Y", "P 3M", "PD", "P-D", "1P", "P1"
+  )
+
+  /**
+   * Every text the combination sweep of `test_parse_agrees_with_java_time` reads.
+   *
+   * The corpus above names the shapes a reader would think of; this is the mechanical
+   * complement, assembled from the pieces of the grammar of a period rather than chosen: a
+   * prefix, then a section of a sign, a count and a unit letter, then a tail that is sometimes
+   * another section and sometimes debris. Four thousand three hundred and twenty texts result,
+   * the great majority of them refusals, which is the half of the behaviour that used to be
+   * reported by a constructed exception.
+   */
+  private val data_parseAgreementCombinations: TableFor1[String] = Table(
+    "input",
+    (for {
+      prefix <- List("P", "p", "")
+      sign <- List("", "-", "+")
+      count <- List("0", "1", "7", "12", "000012", "2147483647", "2147483648", "306783379")
+      unit <- List("Y", "y", "M", "m", "W", "w", "D", "d", "", "X")
+      tail <- List("", "3D", "-3d", "1Y", "2W7D", "4")
+    } yield prefix + sign + count + unit + tail): _*
+  )
+
+  /**
+   * Parses a market tenor as the exception-driven implementation this port replaced parsed it.
+   *
+   * This is [[MarketTenor.parse]] with one substitution: the tenor's own text is read by handing
+   * it to `java.time.Period.parse` inside a `Try`, which is how this port read it until the cost
+   * of the discarded `DateTimeParseException` was measured. Everything around that - the ceiling
+   * of the grammar, the argument check that refuses empty text before anything else, the four
+   * market codes, and the spot-starting factory the period is handed to - is reproduced as the
+   * method performs it, so the oracle differs from the method under test in exactly the one place
+   * the change was made.
+   *
+   * @param toParse  the text to parse
+   * @return the outcome the exception-driven implementation produced for that text
+   */
+  private def exceptionDrivenParse(toParse: String): Either[Failure, MarketTenor] =
+    if (toParse.length > 256) {
+      Left(Failure.Parsing("Market tenor string must not exceed 256 characters"))
+    } else {
+      Validate
+        .notEmpty(toParse, "toParse")
+        .toEither
+        .left
+        .map(Failure.collapse)
+        .flatMap {
+          case "ON" => Right(MarketTenor.ON)
+          case "TN" => Right(MarketTenor.TN)
+          case "SN" => Right(MarketTenor.SN)
+          case "SW" => Right(MarketTenor.SW)
+          case text => exceptionDrivenTenor(text).flatMap(MarketTenor.ofSpot)
+        }
+    }
+
+  /**
+   * Reads the tenor of a text as the exception-driven implementation read it.
+   *
+   * The tail of the oracle above, kept separate because it is the part that changed: the ceiling,
+   * the prefixing of a missing upper-case `P`, the throw that stands for a refusal, and
+   * [[Tenor.of]] over the period that was read.
+   *
+   * @param toParse  the text to parse
+   * @return the tenor the exception-driven implementation read from that text
+   */
+  private def exceptionDrivenTenor(toParse: String): Either[Failure, Tenor] =
+    if (toParse.length > 256) {
+      Left(Failure.Parsing("Tenor string must not exceed 256 characters"))
+    } else {
+      val prefixed = if (toParse.startsWith("P")) toParse else s"P$toParse"
+      Try(Period.parse(prefixed)).toEither match {
+        case Right(period) => Tenor.of(period).left.map(Failure.collapse)
+        case Left(_) => Left(Failure.Parsing(s"Unable to parse tenor: '$toParse'"))
+      }
+    }
 
   //-------------------------------------------------------------------------
   test("test_on") {
@@ -207,6 +309,38 @@ class MarketTenorSpec extends AnyFunSuite with Matchers with TableDrivenProperty
     forAll(data_parseBad) { (input: String, reason: FailureReason) =>
       MarketTenor.parse(input) should beFailureWith(reason)
     }
+  }
+
+  /**
+   * Asserts that reading the text with a walk reads every text exactly as `java.time.Period`
+   * read it.
+   *
+   * No counterpart in the Java test class. This type parses its own four codes and hands
+   * everything else to [[Tenor.parse]], which read its text by handing it to `Period.parse`
+   * inside a `try`/`catch` until the cost of that was measured: a rejection built a
+   * `DateTimeParseException` - message, captured text and stack trace - only to be discarded, and
+   * an acceptance built a regular-expression matcher over the text. The text is now read by a
+   * walk of its characters, and this test says the substitution moved nothing '''here''' as well
+   * as in the tenor, which matters because this type is the one caller of that parse whose own
+   * factory can refuse what it read: the '''whole''' outcome is compared, so the value of an
+   * acceptance and the reason, the message and the attributes of a refusal are all compared
+   * against the exception-driven implementation.
+   *
+   * The three refusals this type distinguishes are all in the corpus and all compared by message:
+   * empty text is refused by the argument check before any reading, `2K` is not a period at all
+   * and is a `PARSING` failure quoting the text, and `-2D` is a period that a tenor refuses for
+   * being negative and is an `INVALID` failure carrying the tenor factory's message.
+   */
+  test("test_parse_agrees_with_java_time") {
+    forAll(data_parseAgreement) { (input: String) =>
+      MarketTenor.parse(input) shouldBe exceptionDrivenParse(input)
+    }
+    forAll(data_parseAgreementCombinations) { (input: String) =>
+      MarketTenor.parse(input) shouldBe exceptionDrivenParse(input)
+    }
+    // the sweep is the size it claims to be, so a table that silently collapsed - a `for`
+    // comprehension over an empty list is still a table - could not leave this test passing
+    data_parseAgreementCombinations.size shouldBe 4320
   }
 
   //-------------------------------------------------------------------------

@@ -5,9 +5,12 @@
  */
 package com.opengamma.strata.basics.currency
 
+import java.lang.reflect.Constructor
+import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
+import scala.collection.immutable.SortedMap
 import scala.util.matching.Regex
 
 import cats.Eq
@@ -869,6 +872,111 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   }
 
   /**
+   * Asserts where the element property is established, and that it is established once.
+   *
+   * Of the three properties of this type, two cost a constant and a step per currency and are
+   * restated for every instance in the class body, where the construction closure states an
+   * invariant. The third - every value of every currency is a number - costs a pass over every
+   * array of the run, so it is established once, by whichever route takes the numbers in: the
+   * checking factory and the aggregation report what their pass found, the two total arithmetic
+   * members raise it, and the routes that read amounts examine nothing because the invariant of
+   * [[MultiCurrencyAmount]] has already established it. The construction point they all reach
+   * examines nothing further, which on a run of a hundred thousand scenarios in four currencies is
+   * the difference between one traversal of each array and two.
+   *
+   * A behavioural test cannot count traversals, so the placement is read off the compiled form:
+   * the class file of the type refers to no scan of its arrays at all, while the companion - where
+   * every examining route lives - refers to one. The rest of the test is what the type still
+   * promises: one wording for the refused element whichever channel states it, the premise the
+   * amount-reading factories rest on, and the two class-body properties still being stated.
+   */
+  test("the element property is established where the numbers arrive, not once per construction") {
+    compiledFormOf(classOf[MultiCurrencyAmountArray]) should not include "indexOf"
+    compiledFormOf(
+      Class.forName("com.opengamma.strata.basics.currency.MultiCurrencyAmountArray$")) should
+      include("indexOf")
+
+    // one examination means one wording: the same refused element raises and reports the same
+    // sentence, naming the same currency and index
+    val raised: IllegalArgumentException = intercept[IllegalArgumentException](
+      arrayOf(GBP -> DoubleArray.of(1d, Double.PositiveInfinity)).multipliedBy(0d))
+    raised.getMessage shouldBe "Argument 'values' for GBP must not be NaN at index 1"
+    failureMessages(
+      MultiCurrencyAmountArray.of(
+        Map(GBP -> DoubleArray.of(1d, Double.NaN)))) shouldBe List(raised.getMessage)
+
+    // what keeps the amount-reading factories inside the property without examining anything is
+    // the invariant of the amounts they read, asserted here as the premise it is
+    MultiCurrencyAmount.of(GBP, Double.NaN) should beFailureWith(FailureReason.INVALID)
+    the[IllegalArgumentException] thrownBy CurrencyAmount.create(GBP, Double.NaN) should
+      have message "Argument 'amount' must not be NaN"
+
+    // so a run transposed from amounts holds only values it admits, the infinities included, and
+    // the padded zero where an amount named no value for a currency
+    val extremes: List[MultiCurrencyAmount] = List(
+      multiOf(amountOf(GBP, Double.PositiveInfinity)),
+      multiOf(amountOf(USD, Double.NegativeInfinity)))
+    val transposed: MultiCurrencyAmountArray = MultiCurrencyAmountArray.of(extremes)
+    transposed.getValues(GBP) should haveValue(DoubleArray.of(Double.PositiveInfinity, 0d))
+    transposed.getValues(USD) should haveValue(DoubleArray.of(0d, Double.NegativeInfinity))
+
+    // and the two properties that are cheap to state are still stated at construction, for every
+    // instance however it came to be constructed - which is what keeps an index of a run from
+    // reading past the end of one of its arrays. The constructor the compiled implementation
+    // publishes is reached here as a caller in another language would reach it
+    val forged: Constructor[_] = Class
+      .forName("com.opengamma.strata.basics.currency.MultiCurrencyAmountArray$Impl")
+      .getDeclaredConstructors
+      .headOption
+      .getOrElse(fail("the compiled implementation no longer has the constructor this test reads"))
+    forged.setAccessible(true)
+    val refusalOf = (size: Int, values: SortedMap[Currency, DoubleArray]) =>
+      Option(
+        intercept[InvocationTargetException](
+          forged.newInstance(Array[AnyRef](Int.box(size), values): _*)).getCause)
+        .getOrElse(fail("the constructor refused the representation without saying why"))
+
+    val ragged: Throwable = refusalOf(3, sortedValues(GBP -> DoubleArray.of(1d)))
+    ragged shouldBe an[IllegalArgumentException]
+    ragged.getMessage should include(
+      "it holds exactly one value per index of the run for each of its currencies")
+    refusalOf(-1, sortedValues()).getMessage should include("its size is not negative")
+
+    // a representation the factories do produce is admitted by that same constructor, so the
+    // refusals above are the properties talking and not the route
+    forged.newInstance(Array[AnyRef](Int.box(1), sortedValues(GBP -> DoubleArray.of(1d))): _*) shouldBe
+      arrayOf(GBP -> DoubleArray.of(1d))
+  }
+
+  /**
+   * Asserts the route a consumer reads a run of any length by, and that it agrees with the route
+   * that answers with amounts.
+   *
+   * Reading a currency's values hands back the array the run already holds, in constant time;
+   * reading an index builds a whole amount for it, at a cost independent of the run's length, so a
+   * consumer that walks a long run index by index pays one amount per index for numbers the run
+   * already has. The two are pinned here to agree element by element, because that agreement is
+   * what makes the cheaper route a substitute rather than a different answer.
+   */
+  test("getValues reads the run without materialising an amount per index, and agrees with get") {
+    val currencies: List[Currency] = List(EUR, GBP, USD)
+    currencies.foreach { currency =>
+      val column: DoubleArray = unwrap(VALUES_ARRAY.getValues(currency))
+      column.size shouldBe VALUES_ARRAY.size
+      // the same numbers the per-index route reconstructs, for every index of the run
+      column.toList shouldBe
+        List.tabulate(VALUES_ARRAY.size)(index =>
+          VALUES_ARRAY.get(index).getAmountOrZero(currency).amount)
+    }
+
+    // the array is the one the run holds rather than a copy of it, which is what makes the route
+    // constant-time: two reads answer with the same instance
+    val first: DoubleArray = unwrap(VALUES_ARRAY.getValues(GBP))
+    unwrap(VALUES_ARRAY.getValues(GBP)) should be theSameInstanceAs first
+    VALUES_ARRAY.values(GBP) should be theSameInstanceAs first
+  }
+
+  /**
    * Asserts that the collection, varargs and function forms share one transposition: each produces
    * the same two full-length arrays, with the padded zero where the amount named no value.
    */
@@ -1044,6 +1152,38 @@ final class MultiCurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   /** Builds a run from values per currency - one value per index - in any order of the pairs. */
   private def arrayOf(values: (Currency, DoubleArray)*): MultiCurrencyAmountArray =
     unwrap(MultiCurrencyAmountArray.of(values.toMap))
+
+  /**
+   * Builds the representation a run holds - values per currency in code order - without going
+   * through a factory, for the constructor the compiled implementation publishes.
+   *
+   * The order is the order of the currency codes, as the type's own is, so a representation built
+   * here is one a factory could have produced and the constructor's refusals are about the values
+   * rather than about their order.
+   *
+   * @param values  the values per currency, in any order of the pairs
+   * @return the same values, ordered by currency code
+   */
+  private def sortedValues(values: (Currency, DoubleArray)*): SortedMap[Currency, DoubleArray] =
+    SortedMap.from(values)(Ordering.by((currency: Currency) => currency.code))
+
+  /**
+   * Reads the compiled form of a class as text, for an assertion about what was emitted.
+   *
+   * The bytes are read as `ISO-8859-1` because that maps every byte to exactly one character: the
+   * names a class refers to are plain ASCII in its constant pool, so searching the text for one
+   * finds the reference and nothing is lost in the decoding.
+   *
+   * @param target  the class whose compiled form is wanted
+   * @return the bytes of its class file, one byte per character
+   */
+  private def compiledFormOf(target: Class[_]): String = {
+    val resource: String = target.getName.replace('.', '/') + ".class"
+    val stream: java.io.InputStream = Option(getClass.getClassLoader.getResourceAsStream(resource))
+      .getOrElse(fail(s"the compiled form of ${target.getName} is not on the class path"))
+    try new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.ISO_8859_1)
+    finally stream.close()
+  }
 
   /** Asserts the run the three total factories build from `[GBP 1]` then `[USD 2]`. */
   private def assertDisjointRun(run: MultiCurrencyAmountArray): Assertion = {

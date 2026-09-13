@@ -328,7 +328,47 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     // And a combination that normalises down to one part is that part, not a composite of one.
     HolidayCalendarId.of("GB+NoHolidays") shouldBe HolidayCalendarId.of("GB")
     HolidayCalendarId.of("GB+NoHolidays").isComposite shouldBe false
-    HolidayCalendarId.of("NoHolidays+NoHolidays") shouldBe HolidayCalendarIds.NO_HOLIDAYS
+
+    // A combination in which *every* part is the no-holidays calendar normalises to the
+    // no-holidays identifier - a deliberate departure, recorded as divergence (c)-55: the
+    // implementation being ported answered with the empty name here, and resolving that name
+    // then found nothing. The value below is the one Java's own `'~'` branch already gives for
+    // the same request, and it is well formed in the three ways an empty name is not.
+    val allNoHolidays: HolidayCalendarId = HolidayCalendarId.of("NoHolidays+NoHolidays")
+    allNoHolidays shouldBe HolidayCalendarIds.NO_HOLIDAYS
+    allNoHolidays.name shouldBe "NoHolidays"
+    allNoHolidays.toString shouldBe "NoHolidays"
+    allNoHolidays.isComposite shouldBe false
+    HolidayCalendarId.of(allNoHolidays.name) shouldBe allNoHolidays
+    allNoHolidays.resolve(ReferenceData.standard).map(calendar => calendar.name) should
+      haveValue("NoHolidays")
+    HolidayCalendarId.of("NoHolidays+NoHolidays+NoHolidays") shouldBe HolidayCalendarIds.NO_HOLIDAYS
+  }
+
+  // What a caller relies on when it hoists the construction of a composite identifier out of a
+  // loop, which divergence (c)-56 asks it to do: this port keeps no instance cache, so two
+  // constructions of one name are equal values rather than one value, and everything a caller
+  // reads from either must agree. No identity is asserted, because none is promised.
+  test("test_of_composite_repeatedConstructionAgrees") {
+    val first: HolidayCalendarId = HolidayCalendarId.of("GBLO+USNY")
+    val second: HolidayCalendarId = HolidayCalendarId.of("GBLO+USNY")
+    val reordered: HolidayCalendarId = HolidayCalendarId.of("USNY+GBLO")
+
+    List(second, reordered).foreach { other =>
+      withClue(s"${other.name} against ${first.name}: ") {
+        other shouldBe first
+        other.hashCode shouldBe first.hashCode
+        other.name shouldBe first.name
+        other.isComposite shouldBe first.isComposite
+        other.resolve(ReferenceData.standard).map(calendar => calendar.name) shouldBe
+          first.resolve(ReferenceData.standard).map(calendar => calendar.name)
+      }
+    }
+
+    // A value already held answers without reconstructing anything, which is why holding one in
+    // a `val` is the contract the divergence states.
+    first.name shouldBe "GBLO+USNY"
+    HolidayCalendarId.of(first.name) shouldBe first
   }
 
   test("test_of_combined_resolve") {

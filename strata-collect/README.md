@@ -24,7 +24,13 @@ This module provides the data structures, the error model and the codec helpers 
 * array - immutable `DoubleArray` and `DoubleMatrix` over private primitive arrays, with the `Matrix`
   trait and the `DoubleArrayMath` helpers; the public API is copy-safe, as the Java `ofUnsafe` and
   `toArrayUnsafe` escape hatches are module-private, and these two types carry the port's 1e-9
-  numerical parity responsibility
+  numerical parity responsibility. Copy-safety has one cost a consumer has to plan for: the four
+  row and column accessors of `DoubleMatrix` - `row`, `rowArray`, `column` and `columnArray` -
+  each answer with freshly allocated data, so a call is linear in the length of the row or column
+  it returns and is paid again on every call, where the Java original handed out a view of the
+  stored row at constant cost. Code that reads a row or column more than once should bind it and
+  index the result rather than call the accessor inside a loop, and code reading single elements
+  at scattered positions should use `get(row, column)`, which copies nothing
 * decimal - `Decimal` and `FixedScaleDecimal`
 * collections - only the `Guavate` and `MapStream` helpers `strata-basics` uses, such as
   `ensureOnlyOne` and the sorted-map and order-preserving grouping helpers, expressed over

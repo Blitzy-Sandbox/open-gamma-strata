@@ -970,4 +970,30 @@ final class FixedScaleDecimalSpec extends AnyFunSuite with Matchers with ScalaCh
       value.toBigDecimal.compareTo(value.decimal.toBigDecimal) shouldBe 0
     }
   }
+
+  test("both invariants of this type refuse with the sentence the type states") {
+    // The two phrases are the ones the construction block of the type states, and the
+    // sentences are the complete text a refusal reports - which is contract, because a value
+    // forged by a class file compiled outside this library is refused by these very words.
+    //
+    // The refusal is provoked through the member the construction block calls: the case proving
+    // that `of` is the only way a value can be built is the same fact that stops this one from
+    // forging a value whose fixed scale is below the scale of its decimal, so the sentences are
+    // stated here and the region the factory accepts is asserted by the cases of the factory
+    // section.
+    intercept[IllegalArgumentException](JvmClosure.requireInvariant(
+      "its fixed scale is at least the scale of its decimal",
+      condition = false)).getMessage shouldBe
+      "a value of this type requires that its fixed scale is at least the scale of its " +
+        "decimal, and the value being constructed does not: a value of this type is obtained " +
+        "from its factory"
+    intercept[IllegalArgumentException](JvmClosure.requireInvariant(
+      "its fixed scale is at most the largest scale a decimal has",
+      condition = false)).getMessage shouldBe
+      "a value of this type requires that its fixed scale is at most the largest scale a " +
+        "decimal has, and the value being constructed does not: a value of this type is " +
+        "obtained from its factory"
+    // the largest scale the second sentence speaks of is the one the decimal publishes
+    Decimal.MAX_SCALE shouldBe 18
+  }
 }

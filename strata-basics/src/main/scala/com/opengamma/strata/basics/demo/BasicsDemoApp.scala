@@ -43,7 +43,9 @@ import com.opengamma.strata.collect.result.ResultNec
  *     holiday calendar, using the named convention constants rather than any parsed text;
  *  1. '''generate''' the [[Schedule]] from that definition by resolving it against
  *     [[ReferenceData.standard]], which is passed explicitly - there is no ambient lookup of
- *     reference data anywhere in this library;
+ *     reference data anywhere in this library. That store answers per identifier, generating a
+ *     built-in calendar on the first lookup that names it, so this run costs the one calendar it
+ *     asks for - London - and not the thirty the store can answer for;
  *  1. '''convert''' a two-currency [[MultiCurrencyAmount]] into US dollars through an
  *     [[FxMatrix]] built from two quoted rates;
  *  1. '''serialize''' the schedule, the exposure as it stood before conversion and the converted

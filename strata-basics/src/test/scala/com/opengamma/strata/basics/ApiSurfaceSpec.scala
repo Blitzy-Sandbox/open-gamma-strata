@@ -152,6 +152,25 @@ import com.opengamma.strata.collect.result.FailureReason
  * A value referenced '''only''' inside a snippet string counts as unused under the build's
  * `-Wunused` setting, with warnings as errors, and fails the build; every fixture here is
  * therefore also used in ordinary code.
+ *
+ * ===When the compile-time proofs are authoritative===
+ *
+ * `assertTypeError`, `assertDoesNotCompile` and `assertCompiles` are macros: each one compiles
+ * its snippet while '''this file''' is compiled, and the test that runs later only reports what
+ * the macro already decided. Nothing in this suite's signature depends on the members those
+ * snippets probe, so incremental compilation is free to recompile a main source without
+ * recompiling this suite - and then the run reports the previous compilation's answer. Both
+ * directions are affected: a member added to a companion and removed again is still reported as
+ * present until this file is recompiled, and a member added without this file being recompiled is
+ * not reported at all.
+ *
+ * These rows are therefore authoritative '''after a clean compilation''' - which is what the
+ * acceptance gate runs, `sbt -batch clean compile Test/compile test` - and after an edit to a
+ * main source they should be re-run as `sbt -batch clean Test/compile "strata-basics/testOnly
+ * com.opengamma.strata.basics.ApiSurfaceSpec"` before either answer is believed. The two policy
+ * rows at the end of the inventory do not share the limitation: they read the compiled output
+ * while the test runs, so they see whatever was last compiled. The same caveat applies wherever
+ * else these macros are used - `TypeclassLawsSpec` and `json.JsonRoundTripSpec`.
  */
 class ApiSurfaceSpec extends AnyFunSuite with Matchers {
 
@@ -330,23 +349,98 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   private def subjectsOf(kind: Kind): Set[String] =
     inventory.filter(entry => entry.kind == kind).map(entry => entry.subject).toSet
 
+  /** The system property `build.sbt` supplies the root of the checkout through. */
+  private val BuildRootProperty: String = "strata.build.root"
+
   /**
-   * The root of the checkout, found by walking up from wherever the tests were started.
+   * How many candidate roots the failure message lists.
    *
-   * It is identified by what it contains rather than by a path handed in, so the derivation below
-   * works from any working directory a runner might choose.
+   * The candidates are an iterator of every ancestor of two starting points, so it is bounded by
+   * the depth of the filesystem rather than by a small number; enough of it to identify what was
+   * searched is reported, and the rest left out of the message.
+   */
+  private val RepositoryRootCandidatesReported: Int = 12
+
+  /**
+   * The root of the checkout, which the module sources and the compiled output are read from.
+   *
+   * Three places are consulted, in order, and the first that '''looks''' like the checkout wins:
+   *
+   *  1. the `strata.build.root` system property, which `build.sbt` hands to every forked test
+   *     JVM as an absolute path, exactly as it hands `parity.report.dir`;
+   *  1. the directory this suite's own class file was loaded from, walked upwards - under sbt
+   *     that is `<root>/strata-basics/target/scala-2.13/test-classes`, so the checkout is four
+   *     levels above it, and this is what makes a bare `java -cp <classpath>` run work with no
+   *     property set;
+   *  1. the working directory, walked upwards, which is what a run at the build root or in any
+   *     subdirectory of it resolves through.
+   *
+   * The working directory alone will not do: the two projects' test JVMs are forked with
+   * different base directories, and a run started by hand, by the gate script or by an IDE has a
+   * third. Looking like the checkout means holding the build definition and both modules' main
+   * sources ([[isRepositoryRoot]]), so a property pointing somewhere else is passed over rather
+   * than believed, and a failure to find one at all is reported with every candidate named.
    */
   private lazy val repositoryRoot: Path =
-    Iterator
-      .unfold(Option(Paths.get("").toAbsolutePath.normalize)) {
-        case Some(path) => Some((path, Option(path.getParent)))
-        case None => None
-      }
+    repositoryRootCandidates
       .find(isRepositoryRoot)
       .getOrElse(
         fail(
-          "the public surface is derived from the module sources, and the root of the checkout " +
-            s"could not be found above ${Paths.get("").toAbsolutePath.normalize}"))
+          "the public surface is derived from the module sources and the compiled output, and " +
+            "the root of the checkout could not be found. A directory is the root when it holds " +
+            "build.sbt and both modules' src/main/scala. Candidates tried, in order: " +
+            repositoryRootCandidates
+              .take(RepositoryRootCandidatesReported)
+              .map(candidate => candidate.toString)
+              .mkString("; ") +
+            s". Set -D$BuildRootProperty=<checkout> to name it explicitly."))
+
+  /**
+   * The directories that might be the root of the checkout, in the order they are consulted.
+   *
+   * Rebuilt on each call, since an iterator is consumed by the search that reads it.
+   */
+  private def repositoryRootCandidates: Iterator[Path] =
+    namedRepositoryRoot.iterator ++
+      ancestorsOf(ownCodeLocation) ++
+      ancestorsOf(Some(Paths.get("")))
+
+  /** The root named by the system property, if it is set to something non-blank. */
+  private def namedRepositoryRoot: Option[Path] =
+    Option(System.getProperty(BuildRootProperty))
+      .map(value => value.trim)
+      .filter(value => value.nonEmpty)
+      .flatMap(value => Try(Paths.get(value).toAbsolutePath.normalize).toOption)
+
+  /**
+   * The directory this suite's own class file was loaded from.
+   *
+   * `None` where the class was not loaded from a location the JVM reports, which is the case for
+   * a class loaded by the bootstrap loader or by a loader that hides its source; the search then
+   * falls through to the working directory.
+   */
+  private def ownCodeLocation: Option[Path] =
+    for {
+      source <- Option(getClass.getProtectionDomain).flatMap(domain => Option(domain.getCodeSource))
+      location <- Option(source.getLocation)
+      path <- Try(Paths.get(location.toURI)).toOption
+    } yield path
+
+  /**
+   * A path and every directory above it, nearest first.
+   *
+   * @param start  the path to walk up from, absolute or relative
+   * @return the starting path and its ancestors, or nothing where there is no starting point
+   */
+  private def ancestorsOf(start: Option[Path]): Iterator[Path] =
+    start
+      .map(path => path.toAbsolutePath.normalize)
+      .iterator
+      .flatMap(path =>
+        Iterator.unfold(Option(path)) {
+          case Some(current) => Some((current, Option(current.getParent)))
+          case None => None
+        })
 
   /**
    * Checks whether a directory is the root of the checkout.
@@ -2236,6 +2330,59 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
 
   register(inventory)
 
+  /**
+   * The report of the inventory: one line per kind of surface, then one line of counts.
+   *
+   * Each line names the kind, its tag, how many rows it holds, how many distinct subjects those
+   * rows are about, and the subjects themselves in alphabetical order - which is what turns the
+   * audit into something a reader of the gate report can check a type against. The subjects are
+   * sorted rather than left in declaration order so the report of one build is comparable with
+   * the report of another.
+   *
+   * @return the lines of the report, the counts last
+   */
+  private def surfaceReport: List[String] = {
+    val perKind: List[String] =
+      Kinds.map { kind =>
+        val subjects: List[String] = subjectsOf(kind).toList.sorted
+        val rows: Int = inventory.count(entry => entry.kind == kind)
+        s"$ReportLinePrefix $kind ${kind.tag} rows=$rows subjects=${subjects.size} " +
+          subjects.mkString(", ")
+      }
+    val summary: String =
+      s"$ReportSummaryPrefix kinds=${Kinds.size} rows=${inventory.size} " +
+        s"subjects=${inventory.map(entry => entry.subject).distinct.size}"
+    perKind :+ summary
+  }
+
+  test("the construction-policy inventory is reported, kind by kind, for the acceptance gate") {
+    // The inventory is what this suite audits, so it is printed rather than left implicit in a
+    // thousand test names: a reader of the gate report can see which subjects were held to which
+    // construction kind without reading this file. The report is asserted as well as printed -
+    // one line per kind and one of counts, every line under its own prefix, the totals equal to
+    // the inventory itself - so a kind that lost all of its rows, or a row belonging to no kind,
+    // is reported here rather than quietly dropping out of the printed surface.
+    val report: List[String] = surfaceReport
+    report should have size (Kinds.size + 1).toLong
+    report.init.map(line => line.takeWhile(character => character != ' ')).distinct shouldBe
+      List(ReportLinePrefix)
+    report.init.zip(Kinds).foreach {
+      case (line, kind) =>
+        withClue(s"the line reporting $kind: ")(line should include(s" ${kind.tag} rows="))
+        ()
+    }
+    Kinds.map(kind => inventory.count(entry => entry.kind == kind)).sum shouldBe inventory.size
+    report.last shouldBe
+      s"$ReportSummaryPrefix kinds=${Kinds.size} rows=${inventory.size} " +
+        s"subjects=${inventory.map(entry => entry.subject).distinct.size}"
+    // stable between calls, so the figure in a gate report is reproducible from the same build
+    surfaceReport shouldBe report
+    report.foreach(println)
+    info(
+      s"reported ${inventory.size} construction-policy rows over " +
+        s"${inventory.map(entry => entry.subject).distinct.size} subjects in ${Kinds.size} kinds")
+  }
+
   test("the construction-policy inventory is exactly the one the port's policy fixes") {
     // A type that loses its audit loses its row, and a row added for a type the construction
     // policy does not classify has nowhere to be counted, so either shows up here.
@@ -2257,7 +2404,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   test("every inventory row registers its own test, and every test of this suite comes from one") {
     // Both halves are needed. The first says the inventory is exercised: every row's name is a
     // test ScalaTest holds. The second says the inventory is the whole of the audit: the only
-    // tests not derived from a row are the three of this section, the sensitivity control and the
+    // tests not derived from a row are the four of this section, the sensitivity control and the
     // source derivation, so an audit added outside the inventory changes the total and fails.
     inventory.map(entry => entry.testName).distinct should have size inventory.size.toLong
     inventory.map(entry => entry.testName).toSet.subsetOf(testNames) shouldBe true
@@ -2401,6 +2548,32 @@ private object ApiSurfaceSpec {
 
   /** A policy that spans several types, such as the copy safety of the numeric wrappers. */
   case object Policy extends Kind("policy")
+
+  /**
+   * Every kind of surface the inventory classifies rows into, in the order they are reported.
+   *
+   * The list is what makes the report complete: a kind left out of it would be audited and not
+   * reported, and a kind whose rows were all deleted is reported as empty rather than silently
+   * disappearing, which is what the reporting test asserts.
+   */
+  val Kinds: List[Kind] =
+    List(
+      Validated,
+      Normalising,
+      Total,
+      ClosedFamily,
+      OpenContract,
+      FunctionSurface,
+      AliasSurface,
+      WitnessSurface,
+      ModuleInternal,
+      Policy)
+
+  /** The prefix every reported inventory line carries, so the report can be extracted by name. */
+  val ReportLinePrefix: String = "API-SURFACE"
+
+  /** The prefix of the single counts line that closes the report. */
+  val ReportSummaryPrefix: String = "API-SURFACE-SUMMARY"
 
   /**
    * One row of the audit: what it is about, what it claims, and the assertions that prove it.
@@ -2574,12 +2747,13 @@ private object ApiSurfaceSpec {
   /**
    * The number of tests this suite declares outside the inventory.
    *
-   * The two coverage assertions, the registration assertion, the sensitivity control for the
-   * sealing probes, and the derivation that reads the function, alias and witness surfaces out of
-   * the module sources. The registration assertion compares this number plus the size of the
-   * inventory against what ScalaTest holds, so an audit written outside a row fails it.
+   * The reporting test, the two coverage assertions, the registration assertion, the sensitivity
+   * control for the sealing probes, and the derivation that reads the function, alias and witness
+   * surfaces out of the module sources. The registration assertion compares this number plus the
+   * size of the inventory against what ScalaTest holds, so an audit written outside a row fails
+   * it.
    */
-  val StandaloneTests: Int = 5
+  val StandaloneTests: Int = 6
 
   /**
    * A host's own reference data, wrapping another source and passing every question to it.

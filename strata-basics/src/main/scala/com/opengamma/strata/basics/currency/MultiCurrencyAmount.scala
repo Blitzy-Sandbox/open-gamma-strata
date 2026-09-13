@@ -8,6 +8,7 @@ package com.opengamma.strata.basics.currency
 import scala.annotation.tailrec
 import scala.collection.immutable.SortedMap
 import scala.collection.immutable.SortedSet
+import scala.collection.mutable
 
 import cats.Hash
 import cats.Monoid
@@ -294,10 +295,11 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * // is [EUR 75, GBP 100, USD 250]
    * }}}
    *
-   * The map this value holds is the accumulator the other value's entries are merged into, which
-   * is what makes each sum `what is held plus what arrives` and what keeps the amounts of a
-   * currency only one of the two values holds exactly the numbers they were, since nothing is
-   * added to them.
+   * The map this value holds is the map the other value's entries are merged into, one entry at a
+   * time, which is what makes each sum `what is held plus what arrives` and what keeps the amounts
+   * of a currency only one of the two values holds exactly the numbers they were - the entries of
+   * this value are carried over by the sharing of the immutable map rather than read again, and
+   * nothing is added to them.
    *
    * @param amountToAdd  the value whose amounts are to be added
    * @return this value with the other value's amounts added
@@ -306,7 +308,7 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    */
   def plus(amountToAdd: MultiCurrencyAmount): MultiCurrencyAmount =
     MultiCurrencyAmount.instantiate(
-      MultiCurrencyAmount.mergedEntries(amountToAdd.amounts.iterator, amounts))
+      MultiCurrencyAmount.mergedInto(amounts, amountToAdd.amounts.iterator))
 
   /**
    * Returns a copy of this value with the specified amount of the specified currency subtracted.
@@ -611,13 +613,18 @@ object MultiCurrencyAmount {
   private val currencyAmountOrdering: Ordering[CurrencyAmount] = Order[CurrencyAmount].toOrdering
 
   /**
-   * The empty map every assembly in this file starts from.
+   * The empty map the single-entry routes of this file start from.
    *
    * It is held rather than built at each use for the reason any empty immutable collection is:
-   * there is exactly one of it, it is shared by every accumulation, and building it again would
-   * only construct the same value. It also fixes the ordering of every map this type holds at one
-   * place - the ordering above - so an accumulator and the map it grows into cannot be ordered
-   * differently.
+   * there is exactly one of it, it is shared by every use, and building it again would only
+   * construct the same value. It also fixes the ordering of every map this type holds at one
+   * place - the ordering above - so a map that grows by insertion and a map that is assembled in
+   * bulk cannot be ordered differently.
+   *
+   * The routes that add exactly one entry - [[empty]] itself, and [[of]] of a currency and a
+   * number - start from it and insert into it, because one insertion into an empty tree is the
+   * whole of the work. The routes that assemble a whole collection do not: they accumulate into a
+   * buffer and seal it in one step, for the reason [[distinct]] records.
    */
   private val noAmounts: SortedMap[Currency, Double] =
     SortedMap.empty[Currency, Double](currencyOrdering)
@@ -701,7 +708,7 @@ object MultiCurrencyAmount {
    *   appeared twice
    */
   def of(amounts: Iterable[CurrencyAmount]): FailureOr[MultiCurrencyAmount] =
-    distinct(amounts.iterator, noAmounts)
+    distinct(amounts.iterator)
 
   /**
    * Obtains a value from the specified map of currency to number.
@@ -768,111 +775,212 @@ object MultiCurrencyAmount {
    * silently replace an earlier one, which is precisely the condition being reported.
    *
    * The recursion is in tail position and runs as a loop, so a collection of any size is
-   * traversed without consuming stack, and the map it threads is an immutable value passed from
-   * one step to the next. The map is small by nature - it holds
-   * at most one entry per currency this library defines - so the path copied by each insertion
-   * costs a constant that no realistic input makes matter. That map is the map of the value
-   * returned, handed to [[instantiate]] as it stands: every number in it came out of a
+   * traversed without consuming stack. The map the traversal accumulates into is the map of the
+   * value returned, handed to [[instantiate]] once it is sealed: every number in it came out of a
    * [[CurrencyAmount]], so it is already normalised and already within the invariant, and
    * re-deciding it would only build a second map to arrive at the same one.
    *
-   * @param remaining  the amounts still to be examined
-   * @param accumulated  the amounts accepted up to this step, keyed by currency
+   * ===How the map is built: accumulate into a buffer, then seal it===
+   *
+   * This is the shape every route of this file that assembles a ''collection'' uses - this one,
+   * [[mergedAmounts]], [[mergedEntries]] and [[create]] - and it is recorded here once:
+   *
+   *   - the accumulator is a local `mutable.TreeMap` built with [[currencyOrdering]], the very
+   *     ordering instance this type holds its maps by, and each entry is written into it with
+   *     `update`. Writing an entry therefore costs one node, where inserting into a persistent
+   *     red-black tree copies the whole path from the root - so assembling a value of `c`
+   *     currencies allocates the `c` nodes it needs rather than the `c log c` a fold of
+   *     `updated` allocates, which is the one order of complexity this port had over the Java
+   *     original;
+   *   - the buffer is then sealed by `SortedMap.from(buffer)(currencyOrdering)`. That reaches
+   *     the ordered-entries construction of `scala.collection.immutable.TreeMap`: a
+   *     `mutable.TreeMap` ''is'' a `scala.collection.SortedMap`, and its ordering is the same
+   *     instance, so the factory recognises the source as already sorted and builds the
+   *     immutable tree from its entries in one linear pass instead of re-inserting them one at a
+   *     time. Sealing an unsorted source - a `Vector`, an `Array`, a `mutable.HashMap` - would
+   *     miss that branch and pay for the per-entry insertions after all, which is why the buffer
+   *     is a sorted mutable map and not any cheaper container;
+   *   - the buffer is a `val` local to the private method that fills it. It is never returned,
+   *     never stored and never named by any signature, so no value of this type and no caller
+   *     can reach it, and the map that leaves the method is an immutable one that nothing else
+   *     holds a reference to. That is what keeps this type immutable and safely shared while the
+   *     assembly of it is not.
+   *
+   * @param amounts  the amounts to examine, pulled one at a time and no further than the first
+   *   repeated currency
    * @return the value holding the accumulated amounts, or the failure naming the repeated currency
    */
-  @tailrec
-  private def distinct(
-      remaining: Iterator[CurrencyAmount],
-      accumulated: SortedMap[Currency, Double]): FailureOr[MultiCurrencyAmount] =
-    if (!remaining.hasNext) {
-      Right(instantiate(accumulated))
-    } else {
-      val next = remaining.next()
-      if (accumulated.contains(next.currency)) {
-        Left(duplicateCurrency(next.currency))
+  private def distinct(amounts: Iterator[CurrencyAmount]): FailureOr[MultiCurrencyAmount] = {
+    val buffer: mutable.TreeMap[Currency, Double] =
+      mutable.TreeMap.empty[Currency, Double](currencyOrdering)
+
+    @tailrec
+    def accumulate(remaining: Iterator[CurrencyAmount]): FailureOr[MultiCurrencyAmount] =
+      if (!remaining.hasNext) {
+        Right(instantiate(SortedMap.from(buffer)(currencyOrdering)))
       } else {
-        distinct(remaining, accumulated.updated(next.currency, next.amount))
+        val next = remaining.next()
+        // one walk of the buffer decides both questions: the insertion answers what was held for
+        // the currency before it, which is nothing for a currency arriving for the first time, so
+        // testing membership first and inserting afterwards would walk the tree twice per amount
+        if (buffer.put(next.currency, next.amount).isDefined) {
+          // the traversal stops here: the outcome is settled, and reading the rest of a
+          // single-use collection would consume it for nothing. What the insertion just wrote is
+          // discarded with the buffer, which no value of this type is built from on this path
+          Left(duplicateCurrency(next.currency))
+        } else {
+          accumulate(remaining)
+        }
       }
-    }
+
+    accumulate(amounts)
+  }
 
   /**
    * Assembles a value from amounts of any currencies, adding up those of the same currency.
    *
    * This is the merging aggregation that [[total]] and
    * [[MultiCurrencyAmount.mapCurrencyAmounts]] are written in terms of, so the way a collection of
-   * amounts combines is stated once. It is a fold: [[mergedAmounts]] threads one map through the
-   * collection and [[instantiate]] takes that very map as the map of the value returned, so an
-   * aggregation of any number of amounts builds exactly one map and no intermediate amount.
+   * amounts combines is stated once. [[mergedAmounts]] accumulates the collection into one map and
+   * [[instantiate]] takes that very map as the map of the value returned, so an aggregation of any
+   * number of amounts builds exactly one map and no intermediate amount.
    *
    * @param amounts  the amounts to combine, of any currencies, consumed once
    * @return the value holding the total per currency
    * @throws java.lang.IllegalArgumentException if any total is not a number
    */
   private def merged(amounts: IterableOnce[CurrencyAmount]): MultiCurrencyAmount =
-    instantiate(mergedAmounts(amounts.iterator, noAmounts))
+    instantiate(mergedAmounts(amounts.iterator))
 
   /**
-   * Merges the amounts of a collection into an accumulated map, adding up a repeated currency.
+   * Merges the amounts of a collection into one map, adding up a repeated currency.
    *
-   * The amounts arrive as an iterator and are pulled one at a time into [[mergedAmount]], which
-   * is where the combination and the invariant live. The recursion is in tail position and runs
-   * as a loop, so a collection of any size is aggregated without consuming stack, and the map it
-   * threads is an immutable value handed from one step to the next - the same shape [[distinct]]
-   * uses, for the same reason: the map holds at most one entry per currency this library defines,
-   * so the path each insertion copies is a constant no realistic input makes matter.
+   * The amounts arrive as an iterator and are pulled one at a time. The recursion is in tail
+   * position and runs as a loop, so a collection of any size is aggregated without consuming
+   * stack, and the map is assembled in the accumulate-then-seal shape [[distinct]] documents -
+   * one node per currency held rather than a copied tree path per amount that arrives.
    *
-   * @param remaining  the amounts still to be merged
-   * @param accumulated  the total per currency up to this step
+   * How two amounts of one currency combine is what [[mergedAmount]] states for the single-amount
+   * route, and this loop states the same thing over the buffer: a currency the buffer does not
+   * hold is written with the number as it stands, since it arrived as the amount of a
+   * [[CurrencyAmount]] and is therefore already normalised and already within the invariant; a
+   * currency it holds is written `accumulated + arriving`, in that operand order, because
+   * floating point addition rounds and the reverse order can differ in the last bit. The sum is
+   * the one number that has not been decided yet, so it - and only it - goes through the
+   * number-level form of the invariant that [[CurrencyAmount]] publishes to this package, which
+   * keeps the invariant of an amount defined in one place in this library.
+   *
+   * @param amounts  the amounts to merge, of any currencies, consumed once
    * @return the total per currency once the collection is exhausted
    * @throws java.lang.IllegalArgumentException if any total is not a number
    */
-  @tailrec
-  private def mergedAmounts(
-      remaining: Iterator[CurrencyAmount],
-      accumulated: SortedMap[Currency, Double]): SortedMap[Currency, Double] =
-    if (!remaining.hasNext) {
-      accumulated
-    } else {
-      val arriving = remaining.next()
-      mergedAmounts(remaining, mergedAmount(accumulated, arriving.currency, arriving.amount))
-    }
+  private def mergedAmounts(amounts: Iterator[CurrencyAmount]): SortedMap[Currency, Double] = {
+    val buffer: mutable.TreeMap[Currency, Double] =
+      mutable.TreeMap.empty[Currency, Double](currencyOrdering)
+
+    @tailrec
+    def accumulate(remaining: Iterator[CurrencyAmount]): Unit =
+      if (remaining.hasNext) {
+        val arriving = remaining.next()
+        buffer.update(
+          arriving.currency,
+          buffer
+            .get(arriving.currency)
+            .fold(arriving.amount)(held => CurrencyAmount.checkedAmount(held + arriving.amount)))
+        accumulate(remaining)
+      }
+
+    accumulate(amounts)
+    SortedMap.from(buffer)(currencyOrdering)
+  }
 
   /**
-   * Merges the entries of a map of currency to number into an accumulated map.
+   * Merges the entries of a map of currency to number into one map.
    *
    * This is [[mergedAmounts]] over the raw entries of a value of this type rather than over
-   * amounts, and it exists so that aggregating whole values - [[MultiCurrencyAmount.plus]] of a
-   * value, and `combineAll` of the additive instance - reads the numbers those values hold
-   * directly. Building a [[CurrencyAmount]] per entry only to unwrap it again would allocate two
-   * objects for every entry of every input before any addition happened.
+   * amounts, and it exists so that aggregating whole values - `combineAll` of the additive
+   * instance - reads the numbers those values hold directly. Building a [[CurrencyAmount]] per
+   * entry only to unwrap it again would allocate two objects for every entry of every input
+   * before any addition happened.
+   *
+   * This is the route for an aggregation that assembles a map from '''nothing''', where the
+   * entries of every input are read once whichever shape is used and the buffer is what avoids a
+   * copied tree path per entry. Adding ''one'' value to another starts from a map that is already
+   * assembled, and [[mergedInto]] is that route.
    *
    * The entries are expected to come from a value of this type, so each number is already an
    * amount and each map already names its currencies once; what a repeated currency across
-   * several inputs means is decided by [[mergedAmount]], exactly as it is for a collection of
-   * amounts.
+   * several inputs means is decided exactly as it is for a collection of amounts - the sum in
+   * arrival order, checked as it is computed - and the map is assembled in the
+   * accumulate-then-seal shape [[distinct]] documents.
    *
-   * @param remaining  the entries still to be merged
-   * @param accumulated  the total per currency up to this step
+   * @param entries  the entries to merge, consumed once
    * @return the total per currency once the entries are exhausted
    * @throws java.lang.IllegalArgumentException if any total is not a number
    */
+  private def mergedEntries(entries: Iterator[(Currency, Double)]): SortedMap[Currency, Double] = {
+    val buffer: mutable.TreeMap[Currency, Double] =
+      mutable.TreeMap.empty[Currency, Double](currencyOrdering)
+
+    @tailrec
+    def accumulate(remaining: Iterator[(Currency, Double)]): Unit =
+      if (remaining.hasNext) {
+        val (currency, amount) = remaining.next()
+        buffer.update(
+          currency,
+          buffer
+            .get(currency)
+            .fold(amount)(held => CurrencyAmount.checkedAmount(held + amount)))
+        accumulate(remaining)
+      }
+
+    accumulate(entries)
+    SortedMap.from(buffer)(currencyOrdering)
+  }
+
+  /**
+   * Merges the entries arriving into the map already held, adding up a repeated currency.
+   *
+   * This is the route [[MultiCurrencyAmount.plus]] of a whole value takes, and it differs from
+   * [[mergedEntries]] in where it starts rather than in what it computes. The map held is already
+   * assembled and already sorted, so the entries arriving are merged ''into'' it one at a time,
+   * each step sharing the nodes the step before it built - which is [[mergedAmount]] repeated,
+   * and is why this loop is written in terms of it rather than restating the combination.
+   *
+   * Accumulating both sides into a buffer instead would read the entries of the value held a
+   * second time for nothing: a value of `c` currencies gaining one entry would pay `c + 1`
+   * insertions and a seal where this pays one insertion into a map that already exists. The
+   * buffer is therefore kept for the routes that assemble a map from nothing and this route is
+   * kept over the immutable map, which is the same division [[mergedAmount]] records for one
+   * arriving amount.
+   *
+   * @param held  the map to merge into, which is the map of the value being added to
+   * @param arriving  the entries to merge into it, consumed once
+   * @return the map with every arriving entry merged into it
+   * @throws java.lang.IllegalArgumentException if any total is not a number
+   */
   @tailrec
-  private def mergedEntries(
-      remaining: Iterator[(Currency, Double)],
-      accumulated: SortedMap[Currency, Double]): SortedMap[Currency, Double] =
-    if (!remaining.hasNext) {
-      accumulated
+  private def mergedInto(
+      held: SortedMap[Currency, Double],
+      arriving: Iterator[(Currency, Double)]): SortedMap[Currency, Double] =
+
+    if (!arriving.hasNext) {
+      held
     } else {
-      val (currency, amount) = remaining.next()
-      mergedEntries(remaining, mergedAmount(accumulated, currency, amount))
+      val (currency, amount) = arriving.next()
+      mergedInto(mergedAmount(held, currency, amount), arriving)
     }
 
   /**
-   * Merges one currency and number into an accumulated map, adding to what is held for it.
+   * Merges one currency and number into an immutable map, adding to what is held for it.
    *
-   * This is the single step every merging route of this type is built from - the two loops above,
-   * and [[MultiCurrencyAmount.plus]] of a single amount, which is one step and nothing else - so
-   * the way two amounts of one currency combine is written once:
+   * This is the route [[MultiCurrencyAmount.plus]] of a single amount takes, which is one step and
+   * nothing else. One arriving amount changes one entry, so the map it merges into is the map the
+   * value already holds and the step is a single insertion into it: the other entries are carried
+   * over by the sharing of the immutable map, and no buffer is worth assembling for one entry -
+   * which is why this step stays written over the immutable map while the routes that assemble a
+   * whole collection accumulate into a buffer. The two loops above state the same combination over
+   * their buffer, and the way two amounts of one currency combine is the same in both places:
    *
    *   - a currency the map does not hold is inserted with the number as it stands. The number
    *     arrived as the amount of a [[CurrencyAmount]] or out of the map of a value of this type,
@@ -929,25 +1037,48 @@ object MultiCurrencyAmount {
    * an amount fails here with the message [[CurrencyAmount]] reports for it,
    * `Argument 'amount' must not be NaN`.
    *
-   * Exactly one map is built: the entries are normalised as they are read and the result is the
-   * map of the value returned. The normalisation and the check are not restated - each number goes
-   * through the number-level form of the invariant that [[CurrencyAmount]] publishes to this
-   * package, so the invariant of an amount is defined in one place in this library and a value of
-   * this type holds exactly the amounts a collection of [[CurrencyAmount]] could hold, while
-   * nothing is allocated per entry beyond the entry itself.
+   * Exactly one map is built: the entries are normalised as they are read, accumulated into a
+   * buffer and sealed in the shape [[distinct]] documents, and the sealed map is the map of the
+   * value returned. The normalisation and the check are not restated - each number goes through
+   * the number-level form of the invariant that [[CurrencyAmount]] publishes to this package, so
+   * the invariant of an amount is defined in one place in this library and a value of this type
+   * holds exactly the amounts a collection of [[CurrencyAmount]] could hold, while nothing is
+   * allocated per entry beyond the node the entry occupies.
+   *
+   * The entries a caller supplies are in no particular order - a run transposed per currency, a
+   * mapping applied to the amounts of an existing value - which is a second reason the buffer is
+   * a sorted mutable map: it puts them in currency order as they are written, so the seal finds
+   * them ordered however they arrived.
    *
    * @param entries  the amount per currency, naming each currency at most once
    * @return the value holding those amounts, normalised
    * @throws java.lang.IllegalArgumentException if any amount is not a number
    */
-  private[currency] def create(entries: IterableOnce[(Currency, Double)]): MultiCurrencyAmount =
-    instantiate(
-      // one map is built, and each number is decided as it goes into it by the number-level form
-      // of the invariant of an amount: building an amount per entry and reading its number back
-      // would allocate an object per entry that nothing keeps
-      SortedMap.from(entries.iterator.map { case (currency, amount) =>
-        (currency, CurrencyAmount.checkedAmount(amount))
-      })(currencyOrdering))
+  private[currency] def create(entries: IterableOnce[(Currency, Double)]): MultiCurrencyAmount = {
+    val buffer: mutable.TreeMap[Currency, Double] =
+      mutable.TreeMap.empty[Currency, Double](currencyOrdering)
+
+    // The traversal is a tail-recursive local method rather than a `foreach` for a reason that is
+    // about the class file rather than about the loop: a function literal that reads the buffer is
+    // lifted into a synthetic '''public''' static method whose parameter list names the buffer's
+    // type, where a local method is compiled private and named by nothing. The module is held to a
+    // surface that mentions no mutable collection anywhere - it is scanned with `javap` over the
+    // compiled classes, not over the sources - so the buffer must not appear even in a signature
+    // the compiler wrote.
+    @tailrec
+    def accumulate(remaining: Iterator[(Currency, Double)]): Unit =
+      if (remaining.hasNext) {
+        val (currency, amount) = remaining.next()
+        // each number is decided as it goes into the buffer by the number-level form of the
+        // invariant of an amount: building an amount per entry and reading its number back would
+        // allocate an object per entry that nothing keeps
+        buffer.update(currency, CurrencyAmount.checkedAmount(amount))
+        accumulate(remaining)
+      }
+
+    accumulate(entries.iterator)
+    instantiate(SortedMap.from(buffer)(currencyOrdering))
+  }
 
   /**
    * Instantiates the type from a map that already holds what a value of it holds.
@@ -962,10 +1093,12 @@ object MultiCurrencyAmount {
    * builds the map, [[distinct]] by accumulating numbers that were already amounts, [[merged]]
    * and [[mergedAmount]] by doing the same and checking the one number that is new - a sum - as
    * it is computed, and [[MultiCurrencyAmount.plus]] by merging into the map a value of this type
-   * already holds. The split exists so that an aggregation is one pass: the map it produced is the
-   * map
-   * of the value returned, where routing it through [[create]] would iterate it into a second map
-   * to reach a value it already had. It is private to this file, so no caller outside it can take
+   * already holds. The routes that assemble a collection hand over a map sealed from a buffer
+   * built with [[currencyOrdering]], so the order of the sealed map is that ordering and not one
+   * of the buffer's own; each currency occurs once because a map, mutable or not, holds a key
+   * once. The split exists so that an aggregation is one pass: the map it produced is the map of
+   * the value returned, where routing it through [[create]] would iterate it into a second map to
+   * reach a value it already had. It is private to this file, so no caller outside it can take
    * the trusted route by mistake - the currency package is offered [[create]], which decides the
    * numbers it is given.
    *
@@ -1112,8 +1245,7 @@ object MultiCurrencyAmount {
       x.plus(y)
 
     override def combineAll(as: IterableOnce[MultiCurrencyAmount]): MultiCurrencyAmount =
-      instantiate(
-        mergedEntries(as.iterator.flatMap(value => value.amounts.iterator), noAmounts))
+      instantiate(mergedEntries(as.iterator.flatMap(value => value.amounts.iterator)))
   }
 
   /**

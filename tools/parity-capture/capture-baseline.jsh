@@ -32,10 +32,18 @@
  *             tools/parity-capture/capture-baseline.jsh
  *
  *  `parity.out.dir` (default `.`, expected to be the repository root) is the
- *  only property the capture itself defines; the seven output paths are
- *  relative to it. Pass it through JShell's `-R` prefix. Run it from the
- *  repository root, and see the README for the two ways of assembling the
- *  classpath.
+ *  only property the capture READS; the seven output paths are relative to it.
+ *  Pass it through JShell's `-R` prefix. Run it from the repository root, and
+ *  see the README for the two ways of assembling the classpath.
+ *
+ *  The capture WRITES one property, `capture.exit.status`, and it is not an
+ *  input: it is the channel the run's verdict travels on. SECTION 0 clears it
+ *  before anything can fail, SECTION 14 sets it to "0" only once every
+ *  document has been built and every check has passed, and the final `/exit`
+ *  reads it with `Integer.getInteger`, defaulting to 1. A value supplied by
+ *  the caller is reported and discarded, so `-R-Dcapture.exit.status=0`
+ *  cannot pre-authorise a success this run has not earned. Behaviour 4 below
+ *  is why the verdict cannot simply be computed in the exit expression.
  *
  *  CLASSPATH - READ BEFORE "FIXING" IT
  *  -----------------------------------
@@ -134,8 +142,8 @@
  *  to obtain a provably complete constant list. Where an `ExtendedEnum`
  *  accessor gives the same answer, the accessor is preferred.
  *
- *  THREE JSHELL BEHAVIOURS THIS SCRIPT RELIES ON (all verified on JDK 21)
- *  ---------------------------------------------------------------------
+ *  FOUR JSHELL BEHAVIOURS THIS SCRIPT RELIES ON (all verified on JDK 21)
+ *  --------------------------------------------------------------------
  *  1. `/set feedback silent` is NOT used. In script-file (non-interactive)
  *     mode JShell registers no predefined feedback modes, so that command
  *     fails and prints "Does not match any current feedback mode: silent" to
@@ -152,6 +160,23 @@
  *     names an undeclared method until the method arrives, but rejects one that
  *     names an undeclared type, so every helper class precedes the snippets
  *     that mention it - which is why the lock code follows `OutputDirectory`.
+ *  4. AN `/exit` WHOSE EXPRESSION FAILS TO COMPILE DOES NOT EXIT. JShell
+ *     reports the compilation error and then falls through to its interactive
+ *     REPL, which reads EOF from a redirected stdin and terminates with status
+ *     ZERO - or, when stdin is a terminal, waits at a prompt and never
+ *     terminates at all. The exit expression must therefore be compilable
+ *     under every load this script can suffer, and the only loads it has to
+ *     survive are the ones where its own declarations are gone: an incomplete
+ *     classpath takes down whole sections at once. So the expression names
+ *     `java.lang.Integer` and two literals and nothing else, the verdict
+ *     travels in the `capture.exit.status` property, and the default is
+ *     failure. Nothing else in this script may be added to that expression.
+ *     Two related behaviours are ruled out for the same reason and must not be
+ *     reintroduced: a JShell COMMAND cannot be made conditional, so the
+ *     preflight cannot `/exit 1` on its own; and `System.exit` inside a
+ *     snippet does not propagate - it kills the remote execution JVM, upon
+ *     which JShell prints "State engine terminated." and again falls through
+ *     to the REPL with status zero.
  *
  *  A snippet that throws does not stop JShell - it prints a trace and the next
  *  snippet runs. The whole capture is therefore performed by one guarded
@@ -160,7 +185,7 @@
  */
 
 /* ===========================================================================
- * SECTION 0 - CLASSPATH PREFLIGHT
+ * SECTION 0 - THE EXIT-STATUS CHANNEL, THEN THE CLASSPATH PREFLIGHT
  *
  * Runs before anything else and fails loudly on the most common environment
  * error: an incomplete --class-path.
@@ -170,8 +195,33 @@
  * which is precisely the case it has to diagnose. Without it a developer sees
  * only JShell's wall of "package does not exist" errors; with it, the first
  * thing printed names the missing classes and the classpath to fix.
+ *
+ * The preflight cannot end the run itself, and that is a property of JShell
+ * rather than a choice: a JShell command cannot be made conditional, so there
+ * is no `/exit 1` to put here, and `System.exit` inside a snippet does not
+ * propagate (header behaviour 4). The preflight therefore prints, sets
+ * PREFLIGHT_OK and returns; the run fails closed through the exit-status
+ * channel opened immediately below, and PREFLIGHT_OK is checked again by the
+ * driver so that nothing is built or written.
+ *
+ * THE EXIT-STATUS CHANNEL. `capture.exit.status` is cleared here - first, and
+ * by a snippet that names nothing but `java.lang` and so cannot itself be
+ * lost - and is set to "0" by SECTION 14 only once every document has been
+ * built and every check has passed. The final `/exit` reads it with
+ * `Integer.getInteger`, defaulting to 1, which is what makes failure the
+ * default for every load of this file. Clearing it also means a
+ * caller-supplied `-R-Dcapture.exit.status=0` cannot pre-authorise a success
+ * this run has not earned: such a value is reported and discarded.
  * ===========================================================================
  */
+
+String PRESET_EXIT_STATUS = System.clearProperty("capture.exit.status");
+
+if (PRESET_EXIT_STATUS != null) {
+  System.out.println("note: discarding the caller-supplied capture.exit.status="
+      + PRESET_EXIT_STATUS);
+  System.out.println("  that property is this run's own verdict, not an input.");
+}
 
 String[] REQUIRED_CLASSES = {
     "com.opengamma.strata.basics.ReferenceData",
@@ -10671,6 +10721,20 @@ Jn buildManifest() {
  * here, but it would leave the failure list empty and the run would exit 0 on
  * a capture that never happened. The flag closes that hole, so the exit status
  * means "every document was built and every check passed".
+ *
+ * Neither `CHECK` nor `CAPTURE_COMPLETED` is named by the `/exit` expression,
+ * and that is the point. Both are snippet declarations, and an incomplete
+ * classpath does not merely skip one snippet - it can take a whole section's
+ * declarations down at once, leaving an exit expression that names something
+ * which no longer exists. Such an expression does not exit: JShell falls
+ * through to its REPL and terminates with status ZERO (header behaviour 4),
+ * which would turn the worst environment error into a silent success. So this
+ * section states its verdict POSITIVELY, once, into the `capture.exit.status`
+ * property that SECTION 0 cleared, and the exit expression reads that property
+ * with `Integer.getInteger` and defaults to 1. Every way of not reaching that
+ * statement - a failed check, a driver exception, the preflight, a snippet
+ * that failed to compile, the statement itself failing to compile - leaves the
+ * property unset and the run exits non-zero.
  * ===========================================================================
  */
 
@@ -10743,4 +10807,69 @@ try {
   }
 }
 
-/exit ((CHECK.ok() && CAPTURE_COMPLETED) ? 0 : 1)
+// The verdict, published to the channel SECTION 0 cleared. This is the ONLY
+// statement in the file that can make the run exit 0, and it says so
+// positively: every document built (CAPTURE_COMPLETED) and every check passed
+// (CHECK.ok()). Reaching it at all requires that this snippet compiled, which
+// requires that the declarations it names survived the load - so an incomplete
+// classpath, which destroys them, cannot reach it either.
+if (CHECK.ok() && CAPTURE_COMPLETED) {
+  System.setProperty("capture.exit.status", "0");
+}
+
+// A closing pointer for the preflight case, whose symptom is the thousands of
+// JShell compilation errors standing between the preflight's own block and
+// this line: without it the last thing a reader sees is a compilation error
+// about a symbol they never wrote. It is guarded by PREFLIGHT_OK, which
+// SECTION 0 declares without naming one Strata or Guava type and which
+// therefore survives exactly the loads that destroy everything else. It
+// decides nothing - the status is already settled by the property above, and
+// this snippet failing to compile could only cost the message.
+if (!PREFLIGHT_OK) {
+  System.out.println();
+  System.out.println("ABORTED: the classpath preflight failed - read the FIRST block of");
+  System.out.println("  output above rather than the JShell errors that follow it. Nothing");
+  System.out.println("  was written, and this run exits non-zero.");
+}
+
+// `java.lang.Integer` and two literals, and it must stay that way: an /exit
+// expression that fails to compile does not exit (header behaviour 4), so
+// naming a snippet-declared symbol here would surrender the exit status in
+// precisely the case where it carries the most information. Property absent or
+// unparseable => 1, so failure is the default and every path above it has to
+// earn the zero.
+/exit (Integer.getInteger("capture.exit.status", 1))
+
+// ---------------------------------------------------------------------------
+// THE TWO LINES BELOW ARE THE FALLBACK, AND THEY ARE REACHED ONLY WHEN THE
+// /exit ABOVE COULD NOT BE EVALUATED AT ALL. Do not delete them as dead code:
+// on every ordinary run they ARE dead, because the line above terminates the
+// process - which is exactly why they cost nothing and why they are the only
+// thing standing between an unusable classpath and a silent success.
+//
+// The case they exist for is not hypothetical. A classpath that carries the
+// Strata jars WITHOUT their Guava dependency lets javac resolve the Strata
+// signatures but not the Guava types inside them, and on JDK 21.0.12.1 that
+// combination makes javac itself fail with an internal NullPointerException
+// while generating code for one of this script's methods
+// ("An exception has occurred in the compiler ... Type.getTag() because
+// "type" is null"). After that crash JShell's compilation context is
+// corrupted: EVERY later snippet is rejected with a spurious
+// "cannot find symbol / symbol: class" pair, and that includes the /exit
+// expression above - and, measured, a bare `/exit 1` as well. So no exit
+// expression of any shape survives it, and the run would fall through to the
+// REPL and terminate ZERO.
+//
+// Two measured JShell behaviours make the recovery possible. First, a failed
+// /exit does not end the file: JShell reports the error and reads the NEXT
+// line, so these lines run. Second, `/reset` is a command and needs no
+// compilation, and it discards every snippet and restarts the execution
+// engine - which throws the corrupted compilation context away with them - so
+// the literal below is compiled in a pristine context and does exit.
+//
+// The status is the literal 1 rather than the property, because `/reset`
+// restarts the JVM the property lived in, and because reaching this line is
+// itself proof of failure: it means the capture's own declarations did not
+// survive the load, so nothing was built and nothing was written.
+/reset
+/exit 1

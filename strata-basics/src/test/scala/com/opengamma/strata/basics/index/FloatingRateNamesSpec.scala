@@ -486,13 +486,46 @@ class FloatingRateNamesSpec extends AnyFunSuite with Matchers with TableDrivenPr
       haveValue(IborIndices.DKK_CIBOR_6M)
 
     // `DKK-CIBOR-DKNA13` declares an offset of zero days moved back to the preceding business
-    // day, while `DKK-CIBOR2-DKNA13` keeps the index's own two-business-day offset.
-    test.toIborIndexFixingOffset should haveValue(
+    // day, while `DKK-CIBOR2-DKNA13` keeps the index's own two-business-day offset. Both agree
+    // with the implementation being ported.
+    val declaredOffset: DaysAdjustment =
       DaysAdjustment.ofCalendarDays(
         0,
-        BusinessDayAdjustment.of(BusinessDayConventions.PRECEDING, HolidayCalendarIds.DKCO)))
-    named("DKK-CIBOR2-DKNA13").toIborIndexFixingOffset should
-      haveValue(DaysAdjustment.ofBusinessDays(-2, HolidayCalendarIds.DKCO))
+        BusinessDayAdjustment.of(BusinessDayConventions.PRECEDING, HolidayCalendarIds.DKCO))
+    val indexOwnOffset: DaysAdjustment =
+      DaysAdjustment.ofBusinessDays(-2, HolidayCalendarIds.DKCO)
+    test.toIborIndexFixingOffset should haveValue(declaredOffset)
+    named("DKK-CIBOR2-DKNA13").toIborIndexFixingOffset should haveValue(indexOwnOffset)
+
+    // The two mixed-case names of the same section are a DELIBERATE DEPARTURE, not parity, and
+    // the assertions below are written to be read as one. Divergence (c)-57 states it in full:
+    // the source section declares `0` for all three rows, but the loader being ported registered
+    // every name under its own spelling and under its upper-case spelling and then wrote each
+    // offset back under the upper-case key alone. For the row that is already upper case the two
+    // keys coincide; for these two they do not, so Java held TWO values reporting one name -
+    // `of("DKK-CIBOR-DKNA13-Bloomberg")` answered `OptionalInt.empty` and `-2 business days
+    // using calendar DKCO`, while `of("DKK-CIBOR-DKNA13-BLOOMBERG")` answered `OptionalInt[0]`
+    // and `0 calendar days then apply Preceding using calendar DKCO`. A closed family has one
+    // value per name, so this port keeps the one the section declares: a caller of either name
+    // reads a fixing date offset two business days later than Java's.
+    List("DKK-CIBOR-DKNA13-Bloomberg", "DKK-CIBOR-Reference Banks").foreach { externalName =>
+      withClue(s"$externalName: ") {
+        val mixedCase = named(externalName)
+        mixedCase.name shouldBe externalName
+        mixedCase.fixingDateOffsetDays shouldBe Some(0)
+        mixedCase.toIborIndexFixingOffset should haveValue(declaredOffset)
+        mixedCase.toIborIndexFixingOffset should not be Right(indexOwnOffset)
+
+        // One value per name: the upper-case spelling is an alias of this value rather than a
+        // second value carrying a different offset, which is what made Java's two disagree.
+        FloatingRateName.parse(externalName.toUpperCase(Locale.ENGLISH)) shouldBe
+          Right(mixedCase)
+      }
+    }
+
+    // The all-upper-case row of the section is unaffected and matches Java on both members.
+    test.fixingDateOffsetDays shouldBe Some(0)
+    named("DKK-CIBOR2-DKNA13").fixingDateOffsetDays shouldBe None
   }
 
   test("test_tiee") {
@@ -804,6 +837,13 @@ class FloatingRateNamesSpec extends AnyFunSuite with Matchers with TableDrivenPr
         "DKK-CIBOR-DKNA13-Bloomberg" -> 0,
         "DKK-CIBOR-Reference Banks" -> 0)
 
+    // All three declared rows reach the value they name, which is where the port parts company
+    // with the implementation being ported: Java's loader wrote each offset back under the
+    // upper-case spelling of its key alone, so only the row that is already upper case reached
+    // the value the file names and the two mixed-case rows below reached a second value that
+    // shared its name. A closed family has one value per name (divergence (c)-5), so the offset
+    // the section declares is the one the named value carries - a deliberate departure, stated
+    // in full as divergence (c)-57 and asserted on the values themselves in `test_cibor`.
     val carryingAnOffset = FloatingRateNameData.rows.filter(_.fixingDateOffsetDays.isDefined)
     carryingAnOffset.map(_.externalName) shouldBe
       Vector("DKK-CIBOR-DKNA13", "DKK-CIBOR-DKNA13-Bloomberg", "DKK-CIBOR-Reference Banks")

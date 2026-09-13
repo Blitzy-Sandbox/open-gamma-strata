@@ -1698,6 +1698,39 @@ class DecimalSpec
     }
   }
 
+  test("each of the three invariants of this type refuses with the sentence the type states") {
+    // The three phrases below are the ones the construction block of the type states, and the
+    // sentences are the complete text a refusal reports - which is contract, because a value
+    // forged by a class file compiled outside this library is refused by these very words and
+    // nothing else records why it was refused.
+    //
+    // The refusal is provoked through the member the construction block calls, since no route
+    // exists from Scala source to an instance that breaks one of these: the implementation is
+    // a private class of the companion, the case class is abstract and has a private
+    // constructor, so neither the constructor nor a `copy` nor a subclass can be written here.
+    // What the properties above establish is the other half of the same statement - that no
+    // value the factories produce breaks any of the three.
+    intercept[IllegalArgumentException](JvmClosure.requireInvariant(
+      s"its scale is between 0 and ${Decimal.MAX_SCALE}",
+      condition = false)).getMessage shouldBe
+      "a value of this type requires that its scale is between 0 and 18, and the value being " +
+        "constructed does not: a value of this type is obtained from its factory"
+    intercept[IllegalArgumentException](JvmClosure.requireInvariant(
+      "its unscaled value carries no trailing zero that its scale could absorb",
+      condition = false)).getMessage shouldBe
+      "a value of this type requires that its unscaled value carries no trailing zero that " +
+        "its scale could absorb, and the value being constructed does not: a value of this " +
+        "type is obtained from its factory"
+    intercept[IllegalArgumentException](JvmClosure.requireInvariant(
+      "its unscaled value is within the precision of this type",
+      condition = false)).getMessage shouldBe
+      "a value of this type requires that its unscaled value is within the precision of this " +
+        "type, and the value being constructed does not: a value of this type is obtained " +
+        "from its factory"
+    // the scale bound quoted by the first sentence is the one the type publishes
+    Decimal.MAX_SCALE shouldBe 18
+  }
+
   test("comparison returns zero exactly when two decimals are equal") {
     forAll(genDecimal, genDecimal) { (left, right) =>
       (left.compareTo(right) == 0) shouldBe (left == right)

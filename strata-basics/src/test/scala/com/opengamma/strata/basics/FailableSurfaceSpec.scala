@@ -1980,14 +1980,115 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   //=========================================================================
 
   /**
-   * The main source roots of the two modules, relative to the repository root.
+   * The main source roots of the two modules, relative to the root of the checkout.
    *
-   * The test JVM is forked with the build root as its working directory, so both paths resolve as
-   * written. [[scalaSourcesOf]] refuses a root that is not a directory rather than enumerating
-   * nothing, which would make every coverage assertion here pass for the wrong reason.
+   * They are resolved against [[buildRoot]] rather than against the working directory, because
+   * the working directory is not something this suite can rely on: the two projects' test JVMs
+   * are forked with different base directories, and a run started by hand, by the gate script or
+   * by an IDE has a third. [[scalaSourcesOf]] refuses a root that is not a directory rather than
+   * enumerating nothing, which would make every coverage assertion here pass for the wrong
+   * reason.
    */
   private val SourceRoots: List[String] =
     List("strata-collect/src/main/scala", "strata-basics/src/main/scala")
+
+  /** The system property `build.sbt` supplies the root of the checkout through. */
+  private val BuildRootProperty: String = "strata.build.root"
+
+  /**
+   * How many candidate roots the failure message lists.
+   *
+   * The candidates are an iterator of every ancestor of two starting points, so it is bounded by
+   * the depth of the filesystem rather than by a small number; enough of it to identify what was
+   * searched is reported, and the rest left out of the message.
+   */
+  private val BuildRootCandidatesReported: Int = 12
+
+  /**
+   * The root of the checkout, which the two source roots above are resolved against.
+   *
+   * Three places are consulted, in order, and the first that '''looks''' like the checkout wins:
+   *
+   *  1. the `strata.build.root` system property, which `build.sbt` hands to every forked test
+   *     JVM as an absolute path, exactly as it hands `parity.report.dir`;
+   *  1. the directory this suite's own class file was loaded from, walked upwards - under sbt
+   *     that is `<root>/strata-basics/target/scala-2.13/test-classes`, so the checkout is four
+   *     levels above it, and this is what makes a bare `java -cp <classpath>` run work with no
+   *     property set;
+   *  1. the working directory, walked upwards, which is what a run at the build root or in any
+   *     subdirectory of it resolves through.
+   *
+   * Looking like the checkout means holding the build definition and both modules' main sources
+   * ([[isBuildRoot]]), so a property pointing somewhere else is passed over rather than believed.
+   * When none of the three yields a checkout the suite fails loudly, naming each candidate: an
+   * enumeration taken from the wrong place would be empty, and an empty enumeration would satisfy
+   * every coverage assertion below for the wrong reason.
+   */
+  private lazy val buildRoot: File =
+    buildRootCandidates
+      .find(isBuildRoot)
+      .getOrElse(
+        sys.error(
+          "The failable-surface enumeration reads both modules' main sources, and the root of " +
+            "the checkout could not be found. A directory is the root when it holds build.sbt " +
+            "and both modules' src/main/scala. Candidates tried, in order: " +
+            buildRootCandidates.take(BuildRootCandidatesReported).map(_.getAbsolutePath).mkString("; ") +
+            s". Set -D$BuildRootProperty=<checkout> to name it explicitly."))
+
+  /**
+   * The directories that might be the root of the checkout, in the order they are consulted.
+   *
+   * Rebuilt on each call, since an iterator is consumed by the search that reads it.
+   */
+  private def buildRootCandidates: Iterator[File] =
+    namedBuildRoot.iterator ++ ancestorsOf(ownCodeLocation) ++ ancestorsOf(Some(new File(".")))
+
+  /** The root named by the system property, if it is set to something non-blank. */
+  private def namedBuildRoot: Option[File] =
+    Option(System.getProperty(BuildRootProperty))
+      .map(value => value.trim)
+      .filter(value => value.nonEmpty)
+      .map(value => new File(value).getAbsoluteFile.toPath.normalize.toFile)
+
+  /**
+   * The directory this suite's own class file was loaded from.
+   *
+   * `None` where the class was not loaded from a location the JVM reports, which is the case for
+   * a class loaded by the bootstrap loader or by a loader that hides its source; the search then
+   * falls through to the working directory.
+   */
+  private def ownCodeLocation: Option[File] =
+    for {
+      source <- Option(getClass.getProtectionDomain).flatMap(domain => Option(domain.getCodeSource))
+      location <- Option(source.getLocation)
+      file <- scala.util.Try(new File(location.toURI)).toOption
+    } yield file
+
+  /**
+   * A file and every directory above it, nearest first.
+   *
+   * @param start  the file to walk up from, absolute or relative
+   * @return the starting directory and its ancestors, or nothing where there is no starting point
+   */
+  private def ancestorsOf(start: Option[File]): Iterator[File] =
+    start
+      .map(file => file.getAbsoluteFile.toPath.normalize.toFile)
+      .iterator
+      .flatMap(file =>
+        Iterator.unfold(Option(file)) {
+          case Some(current) => Some((current, Option(current.getParentFile)))
+          case None => None
+        })
+
+  /**
+   * Answers whether a directory is the root of the checkout.
+   *
+   * @param candidate  the directory to test
+   * @return true where it holds the build definition and both modules' main Scala sources
+   */
+  private def isBuildRoot(candidate: File): Boolean =
+    new File(candidate, "build.sbt").isFile &&
+      SourceRoots.forall(root => new File(candidate, root).isDirectory)
 
   /**
    * The number of lines a declaration's signature is read across.
@@ -2013,20 +2114,48 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * Lists the Scala sources under one source root, refusing a root that is not a directory.
    *
-   * @param root  the source root, relative to the repository root
+   * @param root  the source root, relative to the root of the checkout
    * @return every Scala source under it, ordered by path
    */
   private def scalaSourcesOf(root: String): List[File] = {
-    val directory: File = new File(root)
+    val directory: File = sourceRootDirectory(root)
     if (!directory.isDirectory) {
       sys.error(
-        s"The failable-surface enumeration reads '$root' relative to the working directory " +
-          s"'${new File(".").getAbsolutePath}', which holds no such directory. The forked test " +
-          "JVM is expected to run at the build root; anywhere else the enumeration is empty and " +
-          "every coverage assertion of this suite would pass for the wrong reason.")
+        s"The failable-surface enumeration reads '$root' against the checkout at " +
+          s"'${buildRoot.getAbsolutePath}', which holds no such directory. The enumeration is " +
+          "empty without it, and an empty enumeration would make every coverage assertion of " +
+          s"this suite pass for the wrong reason. Set -D$BuildRootProperty=<checkout> to name " +
+          "the checkout explicitly.")
     } else {
       filesUnder(directory).filter(_.getName.endsWith(".scala")).sortBy(_.getPath)
     }
+  }
+
+  /**
+   * Resolves one source root against the checkout.
+   *
+   * @param root  the source root, relative to the root of the checkout
+   * @return the directory it names
+   */
+  private def sourceRootDirectory(root: String): File = new File(buildRoot, root)
+
+  /**
+   * The path of a source file relative to the checkout.
+   *
+   * Every declaration carries its source this way rather than as an absolute path: the two module
+   * names are what the coverage report counts declarations by, and a relative path is also what a
+   * failure message needs in order to say where to look. The files being enumerated all sit under
+   * the checkout, so relativising is total; a path that somehow does not is left absolute rather
+   * than being rewritten with `..` segments.
+   *
+   * @param file  the source file, under the checkout
+   * @return its path relative to the checkout, or its absolute path if it lies outside
+   */
+  private def relativePathOf(file: File): String = {
+    val absolute: java.nio.file.Path = file.getAbsoluteFile.toPath.normalize
+    val root: java.nio.file.Path = buildRoot.getAbsoluteFile.toPath.normalize
+    if (absolute.startsWith(root)) { root.relativize(absolute).toString }
+    else { absolute.toString }
   }
 
   /**
@@ -2273,7 +2402,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
    * @return the declarations it holds
    */
   private def scannedFile(file: File): ScanState = {
-    val path: String = file.getPath
+    val path: String = relativePathOf(file)
     val lines: Vector[String] = linesOf(file)
     lines.zipWithIndex.foldLeft(EmptyScan) {
       case (state, (line, index)) =>
@@ -4489,11 +4618,12 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   test("derived_inventory_counts") {
     // The size of the surface is reported rather than asserted: what was enumerated and what
     // accounts for it are printed for a reader, and the assertions below are what hold the two
-    // together. Both source roots have to contribute, which catches an enumeration taken from the
-    // wrong working directory.
+    // together. Both source roots have to contribute, which catches an enumeration taken from a
+    // directory that is not the checkout.
+    info(s"enumerated from the checkout at '${buildRoot.getAbsolutePath}'")
     SourceRoots.foreach { root =>
-      withClue(s"source root '$root' relative to '${new File(".").getAbsolutePath}': ") {
-        new File(root).isDirectory shouldBe true
+      withClue(s"source root '$root' under '${buildRoot.getAbsolutePath}': ") {
+        sourceRootDirectory(root).isDirectory shouldBe true
       }
     }
     info(

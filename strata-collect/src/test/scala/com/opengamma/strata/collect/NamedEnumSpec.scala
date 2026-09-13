@@ -775,6 +775,177 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
     longSourceRewrite.parse("MORE" + "-" * 5000) should beFailure
   }
 
+  //-------------------------------------------------------------------------
+  // which rules a pass reaches, and the shapes no requirement is read from
+  //-------------------------------------------------------------------------
+
+  test("the two chains of the sample family resolve as they always did, whatever a pass skips") {
+    // The canaries of the narrowed pass. The three rewrites of the sample family are
+    //
+    //   A([1-2]) -> B$1        B1 -> Standard        B2 -> More
+    //
+    // and only the first of them could match the text either chain starts from: the second
+    // requires the text to end in `1` and the third in `2`, so each becomes reachable only
+    // because the rewrite before it changed the last character of the text. A pass that
+    // selected its rules from the text it was handed and never looked again would resolve
+    // neither of these, which is what makes them the two chains to assert together.
+    sample.lenientSources shouldBe List("A([1-2])" -> "B$1", "B1" -> "Standard", "B2" -> "More")
+    sample.rewriteLeniently("A1") shouldBe "Standard"
+    sample.rewriteLeniently("A2") shouldBe "More"
+    sample.parse("A1") should haveValue(SampleNamed.STANDARD)
+    sample.parse("A2") should haveValue(SampleNamed.MORE)
+    // And the intermediate forms are named by nothing, so neither result can have been
+    // reached without the second rewrite of the table running over the first one's output.
+    sample.valueOf("B1") shouldBe None
+    sample.valueOf("B2") shouldBe None
+  }
+
+  test("a rewrite that changes the last character of the text makes a later rule reachable") {
+    // The same property as the sample family's chains, in the smallest family that has it and
+    // with the rewritten character asserted rather than implied: the second rule of this
+    // family can only match text ending in `Y`, and the text handed to the family ends in `X`.
+    reachableAfterRewrite.lenientSources shouldBe List("AX" -> "BY", "BY" -> "Standard")
+    reachableAfterRewrite.rewriteLeniently("AX") shouldBe "Standard"
+    reachableAfterRewrite.parse("AX") should haveValue(SampleNamed.STANDARD)
+    // The second rule reached on its own, and text that neither rule matches.
+    reachableAfterRewrite.parse("BY") should haveValue(SampleNamed.STANDARD)
+    reachableAfterRewrite.parse("AY") should beFailure
+    reachableAfterRewrite.parse("BX") should beFailure
+  }
+
+  test("a rewrite is not offered to a rule the family declared before the one that fired") {
+    // The other half of the chain: a rewrite is seen by the rules after it and by no others,
+    // so text rewritten into the spelling an earlier rule claims does not resolve through that
+    // rule. This family's second rule produces exactly what its first rule matches, and the
+    // chain still stops - a pass that started again from the top would answer `Standard`.
+    backwardRewrite.lenientSources shouldBe List("P1" -> "Standard", "Q2" -> "P1")
+    backwardRewrite.rewriteLeniently("Q2") shouldBe "P1"
+    backwardRewrite.parse("Q2") should beFailure
+    // The first rule is reachable by the text it was written for, so the rule is live and it
+    // is the order of the pass that decides the case above.
+    backwardRewrite.rewriteLeniently("P1") shouldBe "Standard"
+    backwardRewrite.parse("P1") should haveValue(SampleNamed.STANDARD)
+  }
+
+  test("the first rule that matches is the one that fires, and the rest see what it produced") {
+    // Two rules that could both match one text, in each order. The text resolves through the
+    // rule the family declared first in either case, and the rule after it is applied to the
+    // name that one produced rather than to the text.
+    overlappingRewrites.parse("AB") should haveValue(SampleNamed.STANDARD)
+    overlappingRewritesReversed.parse("AB") should haveValue(SampleNamed.MORE)
+    overlappingRewrites.rewriteLeniently("AB") shouldBe "Standard"
+    overlappingRewritesReversed.rewriteLeniently("AB") shouldBe "More"
+    // The two families declare the same pair of rules, in opposite orders.
+    overlappingRewrites.lenientSources.map { case (source, _) => source }.toSet shouldBe
+      overlappingRewritesReversed.lenientSources.map { case (source, _) => source }.toSet
+    overlappingRewrites.lenientSources should not be overlappingRewritesReversed.lenientSources
+  }
+
+  test("a rule holding an alternation is applied whatever the text begins or ends with") {
+    // An alternation is the shape neither requirement is read from, because either branch may
+    // begin and end the match. The two branches of this one begin and end with different
+    // characters, so a requirement read from either branch would refuse the text of the other,
+    // and both texts resolve.
+    alternationRewrite.lenientSources shouldBe List(AlternationSource -> "Standard")
+    alternationRewrite.parse("A1") should haveValue(SampleNamed.STANDARD)
+    alternationRewrite.parse("B2") should haveValue(SampleNamed.STANDARD)
+    alternationRewrite.rewriteLeniently("A1") shouldBe "Standard"
+    alternationRewrite.rewriteLeniently("B2") shouldBe "Standard"
+    // And text matching neither branch is answered as it always was.
+    alternationRewrite.parse("A2") should beFailure
+    alternationRewrite.parse("B1") should beFailure
+  }
+
+  test("a rule whose leading character carries a quantifier is applied to text without it") {
+    // A quantifier applies to the character before it, and three of the four spellings of one
+    // make that character optional, so the leading character of such a source is no character
+    // the text must begin with. Each rule here carries a different quantifier, and each is
+    // asserted through the text its quantifier admits and the text it does not.
+    quantifiedLeadRewrites.parse("BC") should haveValue(SampleNamed.STANDARD)
+    quantifiedLeadRewrites.parse("ABC") should haveValue(SampleNamed.STANDARD)
+    quantifiedLeadRewrites.parse("YZ") should haveValue(SampleNamed.MORE)
+    quantifiedLeadRewrites.parse("XXYZ") should haveValue(SampleNamed.MORE)
+    quantifiedLeadRewrites.parse("PQR") should haveValue(SampleNamed.OTHER)
+    quantifiedLeadRewrites.parse("PPQR") should haveValue(SampleNamed.OTHER)
+    quantifiedLeadRewrites.parse("ZW") should haveValue(SampleNamed.ANOTHER1)
+    quantifiedLeadRewrites.parse("ZZW") should haveValue(SampleNamed.ANOTHER1)
+    // The two quantifiers that require the character are still honoured by the expression
+    // itself, so the leniency is that of the rule rather than of the requirement read from it.
+    quantifiedLeadRewrites.parse("QR") should beFailure
+    quantifiedLeadRewrites.parse("W") should beFailure
+    quantifiedLeadRewrites.parse("ZZZW") should beFailure
+  }
+
+  test("a rule holding a quoted run matches the text it spells and no other") {
+    // Inside a quoted run no character means what it otherwise would, so neither end of such a
+    // source proves anything about the text and no requirement is read from it. The quoted run
+    // here holds two characters that would otherwise be a quantifier and a wildcard, and the
+    // rule matches them literally.
+    quotedRunRewrite.lenientSources shouldBe List(QuotedRunSource -> "Standard")
+    quotedRunRewrite.parse("A?.B") should haveValue(SampleNamed.STANDARD)
+    quotedRunRewrite.rewriteLeniently("A?.B") shouldBe "Standard"
+    quotedRunRewrite.parse("AB") should beFailure
+    quotedRunRewrite.parse("AXYB") should beFailure
+  }
+
+  test("a rule of a single character requires that character at both ends of the text") {
+    // The smallest source there is, whose one character is both the first and the last of it.
+    // Both requirements are read from that character, and they agree.
+    singleCharacterRewrite.parse("A") should haveValue(SampleNamed.STANDARD)
+    singleCharacterRewrite.parse("a") should haveValue(SampleNamed.STANDARD)
+    singleCharacterRewrite.parse("M") should haveValue(SampleNamed.MORE)
+    singleCharacterRewrite.rewriteLeniently("A") shouldBe "Standard"
+    singleCharacterRewrite.rewriteLeniently("a") shouldBe "Standard"
+    // Text of any other shape is answered exactly as the expression would have answered it.
+    singleCharacterRewrite.parse("AA") should beFailure
+    singleCharacterRewrite.parse("AM") should beFailure
+    singleCharacterRewrite.parse("") should beFailure
+    singleCharacterRewrite.rewriteLeniently("") shouldBe ""
+  }
+
+  test("a rule whose ends are a class, a group or an anchor is applied to all the text it admits") {
+    // The shapes a reader of a source must decline, each declared as a rule of one family and
+    // each asserted through text that resolves only if the rule was applied. Were the leading
+    // character of a class read as a character the text must begin with, none of these would
+    // resolve: the text begins with a member of the class, never with the bracket.
+    declinedShapeSpellings.foreach {
+      case (spelling, expected) =>
+        withClue(s"$spelling: ") {
+          declinedShapeRewrites.parse(spelling) should haveValue(expected)
+          declinedShapeRewrites.parse(spelling.toLowerCase(Locale.ENGLISH)) should haveValue(expected)
+        }
+    }
+    // The rules are the five declared, and the spellings above cover each of them.
+    declinedShapeRewrites.lenientSources.map { case (source, _) => source } shouldBe
+      List("[AB]1", "(M|N)2", "^O3$", "A[45]", ".6")
+    declinedShapeSpellings.map { case (_, expected) => expected }.distinct.size shouldBe 5
+    // And text no rule of the family admits is still answered as text naming no member.
+    declinedShapeRewrites.parse("C1") should beFailure
+    declinedShapeRewrites.parse("O4") should beFailure
+  }
+
+  test("a rule requiring a character outside the ASCII range is applied to the text carrying it") {
+    // The requirement is compared without regard to case because the expressions are, and that
+    // comparison folds both ways rather than once - which is what a single character of text
+    // cannot be keyed by outside the ASCII range, the inline flag the rules carry folding the
+    // ASCII letters and nothing else. Text ending in such a character is therefore offered to
+    // every rule of its family, and the rule that spells it resolves.
+    nonAsciiRewrites.parse(NonAsciiSource) should haveValue(SampleNamed.STANDARD)
+    nonAsciiRewrites.rewriteLeniently(NonAsciiSource) shouldBe "Standard"
+    nonAsciiRewrites.parse(AccentedSource) should haveValue(SampleNamed.MORE)
+    nonAsciiRewrites.rewriteLeniently(AccentedSource) shouldBe "More"
+    // The ASCII letter whose case folds onto the first of those characters is admitted by the
+    // requirement and refused by the expression itself, which is the direction that costs a
+    // match that could not have happened rather than one that could.
+    ("(?i)" + NonAsciiSource).r.matches("AK") shouldBe false
+    nonAsciiRewrites.parse("AK") should beFailure
+    // The fold of the input reaches the accented rule where the chain on its own does not, the
+    // expressions being insensitive to case only over the ASCII letters.
+    nonAsciiRewrites.parse(AccentedSource.toLowerCase(Locale.ENGLISH)) should haveValue(SampleNamed.MORE)
+    nonAsciiRewrites.rewriteLeniently(AccentedSource.toLowerCase(Locale.ENGLISH)) shouldBe
+      AccentedSource.toLowerCase(Locale.ENGLISH)
+  }
+
   test("parsing names the text it rejected in full, and the failure renders bounded and on one line") {
     // The message names the family and then the text as it was supplied, so a caller
     // correcting its input is handed back exactly what was refused.
@@ -1690,6 +1861,172 @@ private[collect] object NamedEnumFixtures {
       SampleNamed.values,
       lenient = List("^MORE[_]*$".r -> "More"),
       familyName = "LongSourceRewrite")
+
+  /**
+   * A lookup whose two rules chain through a change to the last character of the text.
+   *
+   * The second rule can only match text ending in `Y` and the text the family is handed ends
+   * in `X`, so the rule is reachable only because the rule before it rewrote that character.
+   * It is the sample family's chain in the smallest family that has it, with the character that
+   * changes written out rather than hidden inside a captured group.
+   */
+  val reachableAfterRewrite: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List("AX" -> "BY", "BY" -> "Standard"),
+      familyName = "ReachableAfterRewrite")
+
+  /**
+   * A lookup whose second rule produces exactly what its first rule matches.
+   *
+   * A rewrite is seen by the rules declared after it and by no others, so the text this family
+   * rewrites stops one step short of a member: it becomes the spelling the first rule claims,
+   * and that rule has already had its turn. A pass that began again from the top of the table
+   * would resolve it, which is what makes this family the control on the order of the chain.
+   */
+  val backwardRewrite: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List("P1" -> "Standard", "Q2" -> "P1"),
+      familyName = "BackwardRewrite")
+
+  /**
+   * A lookup whose two rules could both match one text, the wildcard first.
+   *
+   * The text `AB` matches both rules, so the family answers with the target of the rule it
+   * declared first and the other rule is applied to that target rather than to the text.
+   */
+  val overlappingRewrites: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List("A." -> "Standard", "AB" -> "More"),
+      familyName = "OverlappingRewrites")
+
+  /** The same pair of rules as above, declared in the opposite order. */
+  val overlappingRewritesReversed: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List("AB" -> "More", "A." -> "Standard"),
+      familyName = "OverlappingRewritesReversed")
+
+  /**
+   * The source of a rule whose two branches begin and end with different characters.
+   *
+   * Either branch may be the one that matches, so nothing about the first or the last
+   * character of the text follows from this source; reading a character from either branch
+   * would refuse the text of the other. Held as a value so the family below and the assertion
+   * over its table cannot drift apart.
+   */
+  val AlternationSource: String = "A1|B2"
+
+  val alternationRewrite: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List(AlternationSource -> "Standard"),
+      familyName = "AlternationRewrite")
+
+  /**
+   * A lookup whose four rules each carry a quantifier on their leading character.
+   *
+   * A quantifier follows the character it applies to, and `?`, `*` and a lower bound of zero
+   * all make that character optional, so the leading character of such a source is not one the
+   * text must begin with. The four spellings are declared together because a requirement read
+   * from any of them would refuse the text of that rule while the other three still resolved.
+   */
+  val quantifiedLeadRewrites: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List(
+        "A?BC" -> "Standard",
+        "X*YZ" -> "More",
+        "P+QR" -> "Other",
+        "Z{1,2}W" -> "Another1"),
+      familyName = "QuantifiedLeadRewrites")
+
+  /**
+   * The source of a rule holding a quoted run.
+   *
+   * Between `\Q` and `\E` no character means what it otherwise would, so the two characters
+   * quoted here - a quantifier and a wildcard - are matched literally, and neither end of the
+   * source proves anything about the text.
+   */
+  val QuotedRunSource: String = "A\\Q?.\\EB"
+
+  val quotedRunRewrite: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List(QuotedRunSource -> "Standard"),
+      familyName = "QuotedRunRewrite")
+
+  /**
+   * A lookup whose rules are each one character long.
+   *
+   * The smallest source there is: its single character is both the first and the last of it, so
+   * both requirements are read from that one character and they agree.
+   */
+  val singleCharacterRewrite: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List("A" -> "Standard", "M" -> "More"),
+      familyName = "SingleCharacterRewrite")
+
+  /**
+   * A lookup declaring one rule of each shape no requirement may be read from.
+   *
+   * A class of two characters, a group holding an alternation, a pair of anchors, a class
+   * closing a source that is not a class of one character, and a wildcard opening one. Each
+   * rule names a member of its own, so the spellings below reach one rule each and a rule
+   * wrongly refused shows up as one spelling that stops resolving rather than as a family that
+   * resolves nothing.
+   */
+  val declinedShapeRewrites: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List(
+        "[AB]1" -> "Standard",
+        "(M|N)2" -> "More",
+        "^O3$" -> "Other",
+        "A[45]" -> "Another1",
+        ".6" -> "Another2"),
+      familyName = "DeclinedShapeRewrites")
+
+  /** One spelling per rule of the family above, with the member that rule names. */
+  val declinedShapeSpellings: List[(String, SampleNamed)] =
+    List(
+      "A1" -> SampleNamed.STANDARD,
+      "B1" -> SampleNamed.STANDARD,
+      "M2" -> SampleNamed.MORE,
+      "N2" -> SampleNamed.MORE,
+      "O3" -> SampleNamed.OTHER,
+      "A4" -> SampleNamed.ANOTHER1,
+      "A5" -> SampleNamed.ANOTHER1,
+      "X6" -> SampleNamed.ANOTHER2)
+
+  /**
+   * The source of a rule ending in a character no ASCII character can stand for.
+   *
+   * The Kelvin sign folds to the lower-case `k` under one of the two folds the comparison of
+   * characters performs and to itself under the other, so it is not a character an index keyed
+   * by one case could speak for - which is why text ending outside the ASCII range is offered
+   * to every rule of its family. The expression itself matches this character only where the
+   * text carries it exactly, the inline flag the rules carry folding the ASCII letters alone.
+   */
+  val NonAsciiSource: String = "A\u212a"
+
+  /**
+   * The source of a rule ending in an accented letter.
+   *
+   * The counterpart of the source above for a character whose case the fold of the input does
+   * convert: the expression cannot match the lower-case spelling of it, and `parse` reaches the
+   * rule all the same because it folds its input before the chain runs.
+   */
+  val AccentedSource: String = "K\u00c9"
+
+  val nonAsciiRewrites: NamedEnum[SampleNamed] =
+    NamedEnum.ofSources(
+      SampleNamed.values,
+      lenient = List(NonAsciiSource -> "Standard", AccentedSource -> "More"),
+      familyName = "NonAsciiRewrites")
 
   /**
    * A family whose single member is named at far greater length than any other fixture here.

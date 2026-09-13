@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics
 
+import java.lang.reflect.Modifier
+
 import scala.util.matching.Regex
 
 import cats.Hash
@@ -252,6 +254,42 @@ final class ReferenceDataSpec extends AnyFunSuite with Matchers {
 
     assertDoesNotCompile("""ReferenceData.Entry(countId, "a value")""")
     assertCompiles("""ReferenceData.Entry(countId, 1)""")
+  }
+
+  // The witness is the one member of the trait without a default, so implementing the trait means
+  // naming the type of data the identifier refers to and nothing else - and a class that omits it
+  // stays abstract. That is the divergence (c)-53 records against the two-member shape AAP §0.4.1
+  // sketches, in which `resolve` and `toReader`, both already defaulted, would be the whole of it.
+  //
+  // The claim is asserted over the emitted trait rather than with `assertDoesNotCompile`, because
+  // that macro type-checks its snippet and stops: `needs to be abstract` is raised by a later
+  // compiler phase, so a snippet omitting the member passes the macro and is caught only by an
+  // ordinary compile - which is how the omission was found.
+  test("test_valueType_isRequiredOfEveryImplementation") {
+    val declared: List[java.lang.reflect.Method] =
+      classOf[ReferenceDataId[_]].getDeclaredMethods.toList
+    val abstractMembers: List[String] =
+      declared.filter(member => Modifier.isAbstract(member.getModifiers)).map(_.getName).distinct
+
+    abstractMembers shouldBe List("valueType")
+    declared.map(_.getName) should contain allOf ("resolve", "toReader")
+
+    // Supplying it is the whole of implementing the trait: the two defaulted members need no
+    // mention, and the identifier is then usable in every position the trait is accepted in.
+    assertCompiles("""
+      final case class WitnessBearingId(id: String) extends ReferenceDataId[java.lang.Number] {
+        override def valueType: ReferenceDataType[java.lang.Number] = TestingReferenceDataId.number
+        override def toString: String = id
+      }
+      WitnessBearingId("carries-its-witness").resolve(ReferenceData.empty)
+    """)
+
+    // What the required member buys, asserted on a store rather than on the signature: an
+    // identifier is answered only with a value its own witness recognises.
+    val numberId: TestingReferenceDataId = TestingReferenceDataId("witnessed")
+    numberId.valueType.narrow(VAL1) shouldBe Some(VAL1)
+    numberId.valueType.narrow("not a number") shouldBe None
+    store(ReferenceData.Entry(numberId, VAL1)).findValue(numberId) shouldBe Some(VAL1)
   }
 
   //-------------------------------------------------------------------------
