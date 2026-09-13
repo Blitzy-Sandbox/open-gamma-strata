@@ -787,12 +787,11 @@ class ValidateSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChec
   }
 
   test("matches names the argument it rejected in full, and the failure renders bounded and on one line") {
-    // No counterpart in the ported tests: the check being ported interpolated the argument into
-    // the message as it stood, and this port does the same, so the wording is that one
-    // character for character. What the port adds is the boundary at which such a message is
-    // written out - the rendering of a failure bounds every part it writes and escapes anything
-    // that could forge a line. Both forms of the check are asserted, because both build their
-    // message here.
+    // The check interpolates the argument into its message as it stands, so the message names
+    // in full whatever was rejected, however large it is and whatever it holds. The boundary
+    // sits at the point the message is written out instead: the rendering of a failure bounds
+    // every part it writes and escapes anything that could forge a line. Both forms of the
+    // check are asserted, because both build their message here.
     val payload = "H" * 10000
     val bounded = Validate.matches("[A-Z]{2}".r, payload, Name)
     bounded should beFailureWith(FailureReason.INVALID)

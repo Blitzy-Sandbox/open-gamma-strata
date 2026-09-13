@@ -16,7 +16,9 @@ import cats.data.NonEmptyList
 
 import io.circe.Codec
 
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
@@ -41,37 +43,36 @@ import com.opengamma.strata.collect.result.Failure
  * The family has exactly seven members and every one of them is declared in this file. The type
  * is `sealed`, the constructor is not visible outside this package, and the name lookup is built
  * from those seven members alone, so nothing can add an eighth. A `match` over a convention is
- * therefore checked for exhaustiveness by the compiler.
+ * therefore exhaustive once the seven are covered.
  *
  * The seven are reached in three ways, all of which yield the same objects:
  *
  * {{{
  * BusinessDayConvention.ModifiedFollowing        // the member itself
- * BusinessDayConventions.MODIFIED_FOLLOWING      // the identifier the ported library used
+ * BusinessDayConventions.MODIFIED_FOLLOWING      // the screaming-snake constant
  * BusinessDayConvention.parse("MODFOLLOWING")    // text, leniently resolved
  * }}}
  *
- * ===What this replaces===
- *
- * The type being ported was an interface whose implementations were discovered while the program
- * ran: a registry read the constants of an enum reflectively and merged in whatever further
- * members, external spellings and lenient rewrites it found declared in a configuration resource
- * on the class path, and the public constants were indirected through that registry so they could
- * be replaced by configuration. None of that machinery survives. What the configuration
- * ''declared'' does survive, in full: the two groups of external spellings and the ordered list
- * of lenient rewrite patterns are transcribed into this file as Scala data and handed to the
- * shared name lookup, so text that resolved before resolves now. What is gone is only the ability
- * to change the family from outside the program.
- *
- * The other change of shape is at the edge where text arrives. The original `of` raised an error
- * for text it did not recognise; [[BusinessDayConvention.parse]] reports it instead, as a
- * [[com.opengamma.strata.collect.result.Failure]] on the left of an `EitherNec`.
+ * The name space of the family is fixed by this file. The seven canonical names, the two groups
+ * of external spellings that the family publishes and the ordered list of lenient rewrite
+ * patterns are all held as data in the companion and handed to the shared name lookup; nothing is
+ * read from outside the program, so no configuration can change the family or its names. Text
+ * reaches a convention through [[BusinessDayConvention.parse]], which reports text it cannot
+ * resolve as a [[com.opengamma.strata.collect.result.Failure]] on the left of an `EitherNec`.
  *
  * Every member is immutable and safe to share between threads.
  *
  * @param name  the unique name of the convention, which is its identity in text and on the wire
  */
-sealed abstract class BusinessDayConvention private[date] (val name: String) extends Named {
+sealed abstract class BusinessDayConvention private[date] (val name: String)
+    extends Named
+    with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to the package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be an eighth convention, outside the
+  // seven this type publishes - is refused here instead.
+  JvmClosure.requireDeclaredMember(this, classOf[BusinessDayConvention])
 
   /**
    * Adjusts the date as necessary if it is not a business day.
@@ -104,8 +105,7 @@ sealed abstract class BusinessDayConvention private[date] (val name: String) ext
  * The seven business day conventions, together with their name lookup and typeclass instances.
  *
  * Each member is a `case object`, so it is a singleton whose identity is its own and whose
- * pattern match needs no extractor. The members are declared in the order the enum being ported
- * declared them, and [[values]] preserves that order.
+ * pattern match needs no extractor. [[values]] lists them in the order they are declared here.
  */
 object BusinessDayConvention {
 
@@ -117,7 +117,6 @@ object BusinessDayConvention {
    */
   private val MidMonthDay: Int = 15
 
-  //-------------------------------------------------------------------------
   /**
    * The 'NoAdjust' convention which makes no adjustment.
    *
@@ -163,10 +162,9 @@ object BusinessDayConvention {
    * day unless that day is in a different half-month, in which case the previous business day is
    * returned.
    *
-   * The half-month test is the one the ported implementation made, and it is deliberately not
-   * symmetric: crossing from the first half into the second is a crossing, while a date in the
-   * second half is only ever held back by the month boundary. The month is compared by its
-   * number here, as the original did.
+   * The half-month test is deliberately not symmetric: crossing from the first half into the
+   * second is a crossing, while a date in the second half is only ever held back by the month
+   * boundary. The month itself is compared by its number.
    */
   case object ModifiedFollowingBiMonthly
       extends BusinessDayConvention("ModifiedFollowingBiMonthly") {
@@ -202,9 +200,9 @@ object BusinessDayConvention {
    * previous business day unless that day is in a different calendar month, in which case the
    * next business day is returned.
    *
-   * The month is compared by its value of the month-of-year enum here rather than by its number,
-   * which is the comparison the ported implementation made. The two differ only for dates a year
-   * or more apart, which no single adjustment can produce.
+   * The month is compared by its month-of-year value rather than by its number. The two
+   * comparisons differ only for dates a year or more apart, which no single adjustment can
+   * produce.
    */
   case object ModifiedPreceding extends BusinessDayConvention("ModifiedPreceding") {
     override def adjust(date: LocalDate, calendar: HolidayCalendar): LocalDate = {
@@ -223,8 +221,7 @@ object BusinessDayConvention {
    * Despite the name the result may not be the business day that is actually nearest: the choice
    * of direction is made from the day of the week of the input alone, before the calendar is
    * searched, so a Monday holiday in a week whose Tuesday is also a holiday adjusts forward past
-   * both. This is the behaviour of the implementation being ported and is relied upon by dates
-   * defined to fall on the nearest business day.
+   * both. Dates defined to fall on the nearest business day rely on that rule.
    */
   case object Nearest extends BusinessDayConvention("Nearest") {
     override def adjust(date: LocalDate, calendar: HolidayCalendar): LocalDate =
@@ -237,13 +234,12 @@ object BusinessDayConvention {
       }
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The complete set of business day conventions, in declaration order.
    *
-   * The order is the declaration order of the enum being ported, which is also the order in which
-   * the members claim their lookup keys and the order a report over the family follows. It is not
-   * the order the `Order` instance below imposes, which is alphabetical by name. The list is
+   * The order is the order the members are declared in above, which is also the order in which
+   * they claim their lookup keys and the order a report over the family follows. It is not the
+   * order the `Order` instance below imposes, which is alphabetical by name. The list is
    * non-empty by construction, which is what lets every operation over the family be written
    * without a case for a family that has no members.
    *
@@ -261,17 +257,17 @@ object BusinessDayConvention {
     )
 
   /**
-   * The spellings this family publishes for the FpML protocol, each mapped to a canonical name.
+   * The five spellings this family publishes for the FpML protocol, each mapped to a canonical
+   * name.
    *
-   * These are the rows of the FpML group of external names that the configuration resource of the
-   * ported library declared, transcribed unchanged. They take part in no lookup - reading
-   * `MODFOLLOWING` as a convention is the business of the lenient patterns below, which happen to
-   * accept it - and exist so that a caller writing or reading that protocol can map between the
-   * two vocabularies explicitly, through `NamedEnum.externalNames`.
+   * The group takes part in no lookup - reading `MODFOLLOWING` as a convention is the business of
+   * the lenient patterns below, which happen to accept it - and exists so that a caller writing
+   * or reading that protocol can map between the two vocabularies explicitly, through
+   * `NamedEnum.externalNames`.
    *
    * Note that `NONE` names the convention that makes no adjustment, which this library calls
    * `NoAdjust`; the two vocabularies disagree about that one word, which is exactly why the
-   * mapping is data rather than a naming convention.
+   * mapping is held as data rather than derived from a rule over the names.
    */
   private val FpMLNames: Map[String, String] =
     Map(
@@ -283,13 +279,12 @@ object BusinessDayConvention {
     )
 
   /**
-   * The spellings this family publishes for the SWIFT message standard, each mapped to a
+   * The three spellings this family publishes for the SWIFT message standard, each mapped to a
    * canonical name.
    *
-   * These are the rows of the SWIFT group of external names that the configuration resource of
-   * the ported library declared, transcribed unchanged. The group is smaller than the FpML one
-   * because the standard defines only three of the seven conventions, and `MODIFIEDF` is a
-   * spelling no lenient pattern accepts, so this table is the only route from it to a convention.
+   * The group is smaller than the FpML one because the standard defines only three of the seven
+   * conventions, and `MODIFIEDF` is a spelling no lenient pattern accepts, so this table is the
+   * only route from it to a convention.
    */
   private val SwiftNames: Map[String, String] =
     Map(
@@ -299,14 +294,12 @@ object BusinessDayConvention {
     )
 
   /**
-   * The lenient rewrites of this family, in the order they are applied.
+   * The eleven lenient rewrites of this family, in the order they are applied.
    *
-   * These are the rows of the lenient patterns that the configuration resource of the ported
-   * library declared, in the order that resource listed them, and the order is part of the data:
-   * [[parse]] folds its input to upper case and then applies every pattern in turn, a pattern
-   * whose expression matches the whole of the current text replacing that text, so a later
-   * pattern sees what an earlier one produced. Reordering these rows would change which text
-   * resolves and to what.
+   * The order is part of the data: [[parse]] folds its input to upper case and then applies every
+   * pattern in turn, a pattern whose expression matches the whole of the current text replacing
+   * that text before the next pattern is tried, so a later pattern sees what an earlier one
+   * produced. Reordering these rows would change which text resolves and to what.
    *
    * The chain is what lets abbreviations, the screaming-snake spellings of the constant
    * identifiers, and the spaced and hyphen-free spellings of a name all reach the same member:
@@ -318,12 +311,10 @@ object BusinessDayConvention {
    * parse("MP")                 // ModifiedPreceding - rewritten twice, to the same text
    * }}}
    *
-   * Each expression is matched insensitively to case by the name lookup, which is why they are
-   * written here in the mixed case of the original rows rather than folded by hand.
-   *
-   * The rows are the source of each expression rather than a compiled expression, and are handed
-   * to the name lookup in that form, which compiles each of them once - insensitively to case,
-   * and only when this family first parses a name.
+   * Each expression is matched insensitively to case by the name lookup, which is why the rows
+   * are written here in mixed case rather than folded by hand. They are held as the text of each
+   * expression: the name lookup prepares each expression once, insensitively to case, and only
+   * when this family first parses a name.
    */
   private val LenientSources: List[(String, String)] =
     List(
@@ -344,15 +335,13 @@ object BusinessDayConvention {
    * The name lookup for this family.
    *
    * This instance is the single route from text to a convention, and it is built from [[values]]
-   * and the three transcribed tables alone. The family declares no alternate spelling, because
-   * the resource of the ported library declared none for it: every spelling other than the seven
-   * canonical names is reached through the lenient patterns, and the two external groups are
-   * published rather than looked up. Nothing is read from a class or from the class path, so the
-   * name space of the family is fixed when this file is compiled.
+   * and the three tables above alone. The family declares no alternate spelling: every spelling
+   * other than the seven canonical names is reached through the lenient patterns, and the two
+   * external groups are published rather than looked up.
    *
    * The instance also carries the tables themselves - `lenientSources`, `externalNamesRaw` and
-   * `alternateNames` - which is how a caller or a specification reads the transcribed data back
-   * without this object having to publish it twice.
+   * `alternateNames` - which is how a caller reads that data back without this object having to
+   * publish it twice.
    *
    * @return the name lookup for the seven conventions
    */
@@ -391,13 +380,14 @@ object BusinessDayConvention {
    * parse("Rubbish")             // Left - text this family has never accepted
    * }}}
    *
-   * Where the type being ported signalled unrecognised text by raising an error, this method
-   * reports it as a value: the result is `Left` of a chain holding one
-   * [[com.opengamma.strata.collect.result.Failure]] whose reason is `PARSING` and whose message
-   * names both this family and the text that could not be resolved.
+   * Text that no canonical name and no lenient rewrite reaches is reported as a value on the left
+   * of the result rather than raised, so a caller parsing text it did not write handles the
+   * outcome in the same way it handles a convention.
    *
    * @param name  the text to parse
-   * @return the convention the text names, or the failure describing why it names none
+   * @return the convention the text names, or the failure reporting that the text matches none of
+   *   the seven canonical names, neither as written, nor folded to upper case, nor after the
+   *   lenient rewrites have been applied in order
    */
   def parse(name: String): EitherNec[Failure, BusinessDayConvention] = namedEnum.parse(name)
 
@@ -429,10 +419,9 @@ object BusinessDayConvention {
    * The JSON codec for conventions.
    *
    * A convention is written as the bare string of its canonical name - `"ModifiedFollowing"` -
-   * and never as an object, which is the single-string form the type being ported wrote through
-   * its string conversion, so a document written by either side names the same convention.
-   * Decoding goes through [[parse]], so the leniency of the two is identical and unresolvable
-   * text is reported as a decoding failure rather than raised.
+   * and never as an object. Decoding goes through [[parse]], so a document is read with exactly
+   * the leniency that method applies and unresolvable text is reported as a decoding failure
+   * rather than raised.
    *
    * @return the codec reading and writing a convention as its canonical name
    */
@@ -440,23 +429,18 @@ object BusinessDayConvention {
 }
 
 /**
- * Constants for the standard business day conventions, published under the identifiers the ported
- * library used.
+ * Constants for the standard business day conventions, published under their screaming-snake
+ * identifiers.
  *
  * The purpose of each convention is to define how to handle non-business days. When processing
  * dates in finance it is typically intended that non-business days, such as weekends and
  * holidays, are converted to a nearby valid business day. The convention, in conjunction with a
  * [[HolidayCalendar]], defines exactly how the adjustment should be made.
  *
- * Every constant here is one of the members of [[BusinessDayConvention]], exposed under the name
- * the original constants holder gave it so that a call site reading
- * `BusinessDayConventions.MODIFIED_FOLLOWING` ports across unchanged. The values are the same
- * objects as the members of the companion, so a constant taken from here and the matching member
- * are indistinguishable - including by `eq`, by `==` and in a pattern match.
- *
- * Unlike the holder being ported, these constants are not indirected through a registry: each one
- * names its member directly, because the family is closed and no configuration can replace a
- * member of it.
+ * Every constant here is one of the seven members of [[BusinessDayConvention]] under a second
+ * name, and each names its member directly. The values are therefore the same objects as the
+ * members of the companion, so a constant taken from here and the matching member are
+ * indistinguishable - including by `eq`, by `==` and in a pattern match.
  */
 object BusinessDayConventions {
 

@@ -22,8 +22,8 @@ import com.opengamma.strata.collect.ArgCheck
  * PriceIndex.valueOf("GB-RPI").contains(PriceIndices.GB_RPI)  // true
  * }}}
  *
- * A price index publishes a level rather than a rate per tenor, so - unlike an Ibor or an
- * overnight index - these constants carry no tenor and no fixing calendar, and their day count
+ * A price index publishes a level rather than a rate per tenor, so where an Ibor or an overnight
+ * index carries a tenor and a fixing calendar these constants carry neither, and their day count
  * is the one-to-one convention the [[PriceIndex]] type itself fixes rather than a column of the
  * data. Four of the names below, `GB-RPI`, `EU-EXT-CPI`, `US-CPI-U` and `FR-EXT-CPI`, are also
  * spelled by a constant of `FloatingRateNames`; those are values of a different type resolved
@@ -31,20 +31,15 @@ import com.opengamma.strata.collect.ArgCheck
  * resolves to the index rather than to the family, because `FloatingRate.tryParse` probes the
  * index families first.
  *
- * The nine constants are exactly the nine indices the implementation being ported published, in
- * its declaration order, and they cover the published index data exactly - nine constants for
- * nine rows. The data behind the family declares an alternate name section, but every entry of
- * that section is commented out, so no alternate name resolved to an index and none is offered
- * here: `UK-HICP`, `UK-RPI`, `UK-RPIX`, `SWF-CPI`, `EUR-AI-CPI`, `JPY-CPI-EXF` and `USA-CPI-U`
- * are not names of anything. Adding an index, or reviving one of those names, would be new
- * behaviour rather than a port of existing behaviour.
+ * The nine constants cover the published index data exactly - nine constants for nine rows - and
+ * are declared in published order. No alternate name resolves to a price index, so `UK-HICP`,
+ * `UK-RPI`, `UK-RPIX`, `SWF-CPI`, `EUR-AI-CPI`, `JPY-CPI-EXF` and `USA-CPI-U` are not names of
+ * anything; adding an index, or introducing one of those names, would be new behaviour.
  *
- * Where the class being ported indirected its constants through a run-time registry so that
- * configuration on the classpath could replace them, these constants resolve against the closed
- * family at class initialisation: no file is read, no registry is consulted and no index can be
- * substituted. The lookup of an index by name, and the enumeration of the family, are the
- * business of `PriceIndex.valueOf` and `PriceIndex.values`, which this object does not
- * duplicate.
+ * The constants resolve against the closed family while this object is initialised: no file is
+ * read, nothing is looked up at run time and no index can be substituted. The lookup of an index
+ * by name, and the enumeration of the family, are the business of `PriceIndex.valueOf` and
+ * `PriceIndex.values`, which this object does not duplicate.
  *
  * All members are immutable values initialised once, so this object is thread-safe.
  */
@@ -57,10 +52,9 @@ object PriceIndices {
    * The name passed in is a literal of this file, never caller input, so a missing member is not
    * a data-dependent failure to be reported through `Either`: it means this directory and the
    * published index data of `Index.scala` disagree, which is a defect in the library that has to
-   * surface at once and loudly - exactly what the static initialiser being ported did when its
-   * registry could not resolve a constant. The failure is raised through the module's single
-   * sanctioned fail-fast channel, [[com.opengamma.strata.collect.ArgCheck]], so that every
-   * invariant breach in the library reports the same kind of error.
+   * surface at once and loudly. The failure is raised through the module's single sanctioned
+   * fail-fast channel, [[com.opengamma.strata.collect.ArgCheck]], so that every invariant breach
+   * in the library reports the same kind of error.
    *
    * The second statement is unreachable: it exists only because the check is declared to return
    * no value, while this operation has to produce an index.

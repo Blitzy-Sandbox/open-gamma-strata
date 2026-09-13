@@ -27,65 +27,17 @@ import com.opengamma.strata.collect.testkit.TestHelper._
 /**
  * Test [[DateSequence]].
  *
- * The Java original ran twenty-four annotated methods: twelve plain tests and twelve
- * parameterised ones fed by six data providers, each provider serving one `nextOrSame`
- * method and one `next` method. That shape is preserved exactly. Every provider becomes
- * one table declared once, and each of the twelve parameterised methods keeps its own
- * test under its own name, driven from the shared table, so the method-level mapping of
- * the migration stays one-to-one rather than collapsing a pair into a single test.
- *
- * The pairing is the structural heart of the spec and is the reason the pairs are not
- * merged. The `nextOrSame` test of a pair proves that a date which is itself a date of
- * the sequence is returned unchanged; the `next` test proves that the very same date is
- * stepped over. The two therefore derive different expectations from one row, and a
- * merged test could only assert one of the two semantics.
- *
- * ===Three ported constructs that changed shape===
- *
- *  - '''Lookup by name reports rather than raises.''' The original resolved a name
- *    through a factory that threw when the name matched no member. Here
- *    [[DateSequence.parse]] answers `EitherNec[Failure, DateSequence]`, so the six
- *    lookup tests assert the value on the right through the `haveValue` matcher, and
- *    the one name that belongs to no member is asserted as a `PARSING` failure by value
- *    rather than as a thrown error. No test transcribed from the original expects an
- *    exception, which matches it: it contained no exception assertion of any kind. The one
- *    test here that does is `test_nth_sequenceNumberNotPositive`, which asserts the
- *    caller-contract precondition of `nth` and `nthOrSame` that the original left
- *    unasserted; the reasoning is set out at that test.
- *  - '''There is no run-time registry to interrogate.''' The original asked the registry
- *    that had assembled the family from a configuration resource for the complete map of
- *    names it had loaded. The family is closed at compile time here, so `test_extendedEnum`
- *    asserts the equivalent property over the name tables the typeclass derives from the
- *    members themselves.
- *  - '''The fixture subtype has no Scala target.''' The original declared its own
- *    implementation of the interface in order to exercise the four methods the interface
- *    implemented for its subtypes. [[DateSequence]] is `sealed`, so no implementation can
- *    be declared here; `test_dummy` records what the fixture proved and proves it against
- *    the members of the family instead. The reasoning is set out at that test.
- *
- * Numerical parity of the sequence arithmetic against the original is a separate concern,
- * owned by the schedule parity fixture and its spec; what is asserted here is the dates
- * the original test asserted, transcribed row for row.
- *
- * @see [[DateSequences]] for the constants under the identifiers the original published
- * @see [[SequenceDate]] for the instruction type, whose cases belong to its own spec
+ * The stepping tests come in `nextOrSame`/`next` pairs: the two differ on exactly one class of
+ * input, a date that is itself a date of the sequence, which `nextOrSame` returns and `next`
+ * steps over. Each pair derives different expectations from one table row, so the `next` walks
+ * start at the base date itself and the `nextOrSame` walks at the day after it.
  */
 final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
   /**
-   * The inclusive range of dates the original's `while` loops walked.
-   *
-   * Each parameterised method of the original advanced a date one day at a time while it
-   * was not after the first expected date, asserting on every day in between. The
-   * iterator returned here is that sequence of days: it starts at `start`, steps by one
-   * day and stops after `end`, so a caller folds over exactly the days the original
-   * asserted on and in the same order. It is lazy and finite - the underlying iteration
-   * is unbounded and is cut by the stopping condition - and it is empty when `start` is
-   * already after `end`, which is the loop that never ran.
-   *
-   * @param start  the first date to visit
-   * @param end  the last date to visit, inclusive
-   * @return the days from `start` to `end` inclusive, in ascending order
+   * The days from `start` to `end` inclusive, in ascending order - lazy and finite, the
+   * unbounded iteration being cut by the stopping condition, and empty when `start` is already
+   * after `end`.
    */
   private def datesFrom(start: LocalDate, end: LocalDate): Iterator[LocalDate] =
     Iterator.iterate(start)(_.plusDays(1L)).takeWhile(!_.isAfter(end))
@@ -100,9 +52,8 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
   }
 
   //-------------------------------------------------------------------------
-  // The six lookup tests. Each asserts that the name resolves to its sequence and that
-  // the sequence names the right base sequence - the two serial sequences are halves of
-  // a pair whose base is the quarterly sequence, and the other four are their own base.
+  // The two serial sequences are halves of a pair whose base is the quarterly sequence; the
+  // other four are their own base.
   //-------------------------------------------------------------------------
   test("test_QUARTERLY_IMM_of") {
     DateSequence.parse("Quarterly-IMM") should haveValue(DateSequences.QUARTERLY_IMM)
@@ -138,15 +89,9 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
 
   //-------------------------------------------------------------------------
   /**
-   * The quarterly IMM provider, transcribed row for row from the original.
-   *
-   * A row is a base date followed by the three quarterly IMM dates that the sequence
-   * produces from it: the third Wednesday of the next March, June, September or December
-   * on or after the base date, and the two quarterly dates after that. The base date of
-   * each row after the first is the first expected date of the row before it, so the five
-   * rows walk a chain of consecutive quarterly dates from January 2013 into September
-   * 2014, which is what makes a single shifted date visible as a failure in two rows
-   * rather than one.
+   * A base date and the three quarterly IMM dates that follow it - the third Wednesday of the
+   * next March, June, September or December, then the next two. Each row's base date is the
+   * previous row's first expected date, so a single shifted date shows up in two rows, not one.
    */
   private val data_quarterlyImm: TableFor4[LocalDate, LocalDate, LocalDate, LocalDate] = Table(
     ("base", "immDate1", "immDate2", "immDate3"),
@@ -160,9 +105,7 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
   test("test_nextOrSameQuarterlyImm") {
     forAll(data_quarterlyImm) {
       (base: LocalDate, immDate1: LocalDate, immDate2: LocalDate, immDate3: LocalDate) =>
-        // every day from the day after the base date up to and including the first
-        // expected date answers with that first expected date, which is the whole of
-        // what "or same" adds: the last day of the walk is the expected date itself
+        // the whole walk answers with the first expected date, its last day being that date
         datesFrom(base.plusDays(1L), immDate1).foreach { current =>
           withClue(s"nextOrSame from $current: ") {
             DateSequences.QUARTERLY_IMM.nextOrSame(current) shouldBe immDate1
@@ -171,9 +114,8 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
             DateSequences.QUARTERLY_IMM.nthOrSame(current, 3) shouldBe immDate3
           }
         }
-        // the original made this assertion once, after its loop, with the date the loop
-        // had advanced to - the day after the first expected date, whose month is the
-        // month of that date for every row of this provider
+        // `dateMatching` associates a month with the sequence date of that month; for every
+        // row of this table the day after the first expected date lies in that same month
         val monthOfFirst = YearMonth.from(immDate1.plusDays(1L))
         DateSequences.QUARTERLY_IMM.dateMatching(monthOfFirst) shouldBe immDate1
     }
@@ -182,8 +124,6 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
   test("test_nextQuarterlyImm") {
     forAll(data_quarterlyImm) {
       (base: LocalDate, immDate1: LocalDate, immDate2: LocalDate, immDate3: LocalDate) =>
-        // this walk starts at the base date itself rather than the day after it, so a
-        // base date that is a date of the sequence is visited and stepped over
         datesFrom(base, immDate1).foreach { current =>
           withClue(s"next from $current: ") {
             if (current == immDate1) {
@@ -205,13 +145,10 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
 
   //-------------------------------------------------------------------------
   /**
-   * The six-serial provider, transcribed row for row from the original.
-   *
-   * A row is a base date alone, because the expectations of the two tests it drives are
-   * not literal dates but the dates the monthly and quarterly sequences produce from the
-   * same base date. The six dates straddle the January, February and March IMM dates of
-   * 2013 - two dates per month, one before its IMM date and one after it - which is what
-   * exercises the boundary at which the serial count moves on a month.
+   * Base dates alone; the expectations are the dates the monthly and quarterly sequences give
+   * from them. The six straddle the January, February and March IMM dates of 2013 - two per
+   * month, one either side of its IMM date - which exercises the boundary where the serial count
+   * moves on a month.
    */
   private val data_quarterlyImm6Serial: TableFor1[LocalDate] = Table(
     "base",
@@ -226,8 +163,7 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
   test("test_nextOrSameQuarterlyImm6Serial") {
     forAll(data_quarterlyImm6Serial) { (base: LocalDate) =>
       withClue(s"nextOrSame from $base: ") {
-        // the first six dates of the six-serial sequence are the IMM dates of six
-        // consecutive months, so they are the monthly sequence exactly
+        // the first six dates are the IMM dates of six consecutive months: the monthly sequence
         DateSequences.QUARTERLY_IMM_6_SERIAL.nextOrSame(base) shouldBe
           DateSequences.MONTHLY_IMM.nextOrSame(base)
         DateSequences.QUARTERLY_IMM_6_SERIAL.nthOrSame(base, 1) shouldBe
@@ -242,8 +178,8 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
           DateSequences.MONTHLY_IMM.nthOrSame(base, 5)
         DateSequences.QUARTERLY_IMM_6_SERIAL.nthOrSame(base, 6) shouldBe
           DateSequences.MONTHLY_IMM.nthOrSame(base, 6)
-        // those six subsume the first two quarterly dates, so from the seventh onwards
-        // the sequence is quarterly again with its count four lower
+        // those six subsume the first two quarterly dates, so from the seventh the sequence is
+        // quarterly again with its count four lower
         DateSequences.QUARTERLY_IMM_6_SERIAL.nthOrSame(base, 7) shouldBe
           DateSequences.QUARTERLY_IMM.nthOrSame(base, 3)
         DateSequences.QUARTERLY_IMM_6_SERIAL.nthOrSame(base, 8) shouldBe
@@ -279,12 +215,8 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
 
   //-------------------------------------------------------------------------
   /**
-   * The three-serial provider, transcribed row for row from the original.
-   *
-   * The original declared this provider separately from the six-serial one even though
-   * the two hold the same six dates, and it stays separate here: the two providers feed
-   * different sequences, and merging them would tie the coverage of one sequence to the
-   * coverage of the other.
+   * The same six base dates as the six-serial table, kept separate because the two feed
+   * different sequences: merging them would tie the coverage of one to the coverage of the other.
    */
   private val data_quarterlyImm3Serial: TableFor1[LocalDate] = Table(
     "base",
@@ -299,8 +231,7 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
   test("test_nextOrSameQuarterlyImm3Serial") {
     forAll(data_quarterlyImm3Serial) { (base: LocalDate) =>
       withClue(s"nextOrSame from $base: ") {
-        // the first three dates of the three-serial sequence are the IMM dates of three
-        // consecutive months, so they are the monthly sequence exactly
+        // the first three dates are the IMM dates of three consecutive months: the monthly one
         DateSequences.QUARTERLY_IMM_3_SERIAL.nextOrSame(base) shouldBe
           DateSequences.MONTHLY_IMM.nextOrSame(base)
         DateSequences.QUARTERLY_IMM_3_SERIAL.nthOrSame(base, 1) shouldBe
@@ -309,8 +240,8 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
           DateSequences.MONTHLY_IMM.nthOrSame(base, 2)
         DateSequences.QUARTERLY_IMM_3_SERIAL.nthOrSame(base, 3) shouldBe
           DateSequences.MONTHLY_IMM.nthOrSame(base, 3)
-        // those three subsume the first quarterly date, so from the fourth onwards the
-        // sequence is quarterly again with its count two lower
+        // those three subsume the first quarterly date, so from the fourth the sequence is
+        // quarterly again with its count two lower
         DateSequences.QUARTERLY_IMM_3_SERIAL.nthOrSame(base, 4) shouldBe
           DateSequences.QUARTERLY_IMM.nthOrSame(base, 2)
         DateSequences.QUARTERLY_IMM_3_SERIAL.nthOrSame(base, 5) shouldBe
@@ -340,13 +271,8 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
 
   //-------------------------------------------------------------------------
   /**
-   * The monthly IMM provider, transcribed row for row from the original.
-   *
-   * A row is a base date followed by the three monthly IMM dates that follow it - the
-   * third Wednesday of each of the next three months. As in the quarterly provider the
-   * base date of each row is the first expected date of the row before it, so the three
-   * rows walk a chain from December 2014 into May 2015. The chain crosses a year end,
-   * which is where a month-arithmetic error surfaces.
+   * A base date and the three monthly IMM dates that follow it. The rows chain as the quarterly
+   * rows do, and this chain crosses a year end, which is where a month-arithmetic error surfaces.
    */
   private val data_monthlyImm: TableFor4[LocalDate, LocalDate, LocalDate, LocalDate] = Table(
     ("base", "immDate1", "immDate2", "immDate3"),
@@ -366,9 +292,6 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
             DateSequences.MONTHLY_IMM.nthOrSame(current, 3) shouldBe immDate3
           }
         }
-        // the monthly sequence associates a month with the IMM date of that very month,
-        // and the date the original's loop had advanced to is the day after the first
-        // expected date, which lies in the same month as it
         val monthOfFirst = YearMonth.from(immDate1.plusDays(1L))
         DateSequences.MONTHLY_IMM.dateMatching(monthOfFirst) shouldBe immDate1
     }
@@ -397,13 +320,9 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
 
   //-------------------------------------------------------------------------
   /**
-   * The quarterly tenth provider, transcribed row for row from the original.
-   *
-   * A row is a base date followed by the three sequence dates that follow it - the tenth
-   * day of the next March, June, September or December on or after the base date, and the
-   * two quarterly dates after that. The base dates are those of the quarterly IMM
-   * provider, which are IMM dates rather than tenths, so every row starts from a date
-   * that is deliberately not a date of this sequence.
+   * A base date and the three sequence dates that follow it - the tenth day of the next March,
+   * June, September or December, then the next two. The base dates are the quarterly IMM dates
+   * rather than tenths, so every row starts from a date deliberately not in this sequence.
    */
   private val data_quarterly10th: TableFor4[LocalDate, LocalDate, LocalDate, LocalDate] = Table(
     ("base", "expect1", "expect2", "expect3"),
@@ -453,14 +372,10 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
 
   //-------------------------------------------------------------------------
   /**
-   * The monthly first provider, transcribed row for row from the original.
-   *
-   * A row is a base date followed by the first days of the next three months. The first
-   * two rows differ only in their base date - the first of January, which is itself a
-   * date of this sequence, and the second of January, which is the day after one - and
-   * they carry the same three expectations. That pair is the provider's point: it is what
-   * distinguishes the two tests it drives, since the `nextOrSame` test answers the base
-   * date itself for the first row and the `next` test never does.
+   * A base date and the first days of the next three months. The first two rows differ only in
+   * their base date - the first of January, itself a date of this sequence, and the second, the
+   * day after one - and carry the same expectations, which is what separates the two tests they
+   * drive: for the first row `nextOrSame` answers the base date, `next` the one after it.
    */
   private val data_monthly1st: TableFor4[LocalDate, LocalDate, LocalDate, LocalDate] = Table(
     ("base", "expect1", "expect2", "expect3"),
@@ -508,13 +423,11 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
 
   //-------------------------------------------------------------------------
   /**
-   * The dates the fixture of the original was probed at, reused by `test_dummy`.
-   *
-   * The first three are the dates the original probed - the day before one of its
-   * fixture's dates, that date itself, and the day after it - and the remaining three
-   * add the calendar boundaries that the derivation of one method from another is most
-   * likely to get wrong: the first day of a year, its last day, and the last day of a
-   * month whose sequence date has already passed.
+   * The dates every member is probed at, here and in `test_nth_sequenceNumberNotPositive`: three
+   * consecutive days in mid-October 2015, so neighbouring probes differ by the one day the
+   * `next`/`nextOrSame` derivation turns on, plus the calendar boundaries that derivation is most
+   * likely to get wrong - a year start (itself a date of the monthly first-day sequence), a year
+   * end, and a month end later than any sequence date in its month.
    */
   private val dummyProbeDates: List[LocalDate] = list(
     date(2015, 10, 14),
@@ -525,31 +438,8 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
     date(2015, 10, 31)
   )
 
-  /**
-   * What the fixture of the original proved, proved against the members of the family.
-   *
-   * The original declared its own implementation of the interface - supplying only
-   * `nextOrSame`, a weekly rule over three dates of October 2015 - in order to exercise
-   * the four methods the interface implemented on behalf of its subtypes. That fixture
-   * has no target here: [[DateSequence]] is `sealed`, so no implementation of it can be
-   * declared outside its own file, which is the property that makes the family closed and
-   * is asserted in `test_extendedEnum`. The two halves below prove the same thing the
-   * fixture proved, without one:
-   *
-   *  - '''the shape of the original's eighteen assertions''', over the monthly first-day
-   *    sequence. The original probed the day before one of its dates, the date itself and
-   *    the day after it; the three probes below stand in exactly that relation to the
-   *    first of October 2015, so every one of the eighteen expectations maps across - the
-   *    first, second and third sequence dates here play the parts that the 15th, 22nd and
-   *    29th of October played there.
-   *  - '''the derivation the fixture existed to demonstrate'''. The four methods of the
-   *    original's interface derived from one another: the next date is the date on or
-   *    after the following day, the nth is the next date stepped on n - 1 times, and the
-   *    nth on or after is the date on or after stepped on n - 1 times. Every member of
-   *    this family overrides all four with a direct calculation, so nothing exercises
-   *    the derivation - which is precisely what makes it worth asserting that each
-   *    member's calculation agrees with it.
-   */
+  // Every member overrides all four stepping methods with a direct calculation, so nothing else
+  // here exercises the derivation identities; they are asserted over every member and probe date.
   test("test_dummy") {
     val test = DateSequences.MONTHLY_1ST
     val before = date(2015, 9, 30) // the day before a date of the sequence
@@ -603,16 +493,11 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
 
   //-------------------------------------------------------------------------
   /**
-   * The two sequence numbers that name no date, each with the message the guard reports.
-   *
-   * A sequence number is 1-based, so zero and every negative number describe no date of any
-   * sequence. Both rejected values are carried here with the exact text
-   * `ArgCheck.notNegativeOrZero` builds for them - the argument name followed by the value it
-   * was given - so the message is asserted character for character rather than by a fragment
-   * that a differently-worded refusal would still satisfy. The negative value is -1 because it
-   * sits immediately below the boundary: a guard written with the wrong comparison - `< 0`
-   * where `<= 0` was meant - refuses -1 and admits zero, so the two rows together tell a
-   * mis-written guard apart from a missing one.
+   * The two sequence numbers that name no date, each with the text `ArgCheck.notNegativeOrZero`
+   * builds for it: a sequence number is 1-based, so zero and every negative number name no date
+   * of any sequence. The message is asserted character for character rather than by a fragment a
+   * differently-worded refusal would also satisfy, and -1 sits immediately below the boundary, so
+   * a guard written `< 0` where `<= 0` was meant is told apart from a missing one.
    */
   private val data_rejectedSequenceNumbers: TableFor2[Int, String] = Table(
     ("sequenceNumber", "message"),
@@ -620,30 +505,12 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
     (-1, "Argument 'sequenceNumber' must not be negative or zero but has value -1")
   )
 
-  /**
-   * The public precondition of `nth` and `nthOrSame`, over every member of the family.
-   *
-   * Neither method can answer for a sequence number that is not positive, and both document
-   * that as a precondition of the call rather than as a property of the data: a caller that
-   * asks for the zeroth date of a sequence is wrong, whatever dates the sequence holds. That
-   * is the classification rule of AAP section 0.3.3, and it is why this is a fail-fast
-   * `IllegalArgumentException` raised through `ArgCheck` rather than a `Failure` returned as a
-   * value - unlike [[SequenceDate.of]], which validates a sequence number that arrived as
-   * data and reports it through `EitherNec`.
-   *
-   * The guard is not written once. Every one of the six members overrides both methods with a
-   * direct calculation and restates the check itself, so it exists twelve times over, and the
-   * two methods inherited from [[DateSequence]] that hold the general form are never reached
-   * for any member. Nothing else in this spec supplies a sequence number that is not positive,
-   * so without this test any one of those twelve guards could be deleted and the suite would
-   * stay green while the member answered with a date computed from a negative count.
-   *
-   * Every member is therefore driven through both methods with both rejected numbers, on each
-   * of the probe dates `test_dummy` uses, and the message is asserted exactly. The positive
-   * controls that follow are what make the assertion two-sided: a guard that rejected every
-   * sequence number rather than the non-positive ones would satisfy the refusals above and
-   * fail the controls below.
-   */
+  // A non-positive sequence number is a broken precondition of the call rather than a property of
+  // the data, so both methods fail fast with `IllegalArgumentException` from `ArgCheck` instead
+  // of returning a `Failure` - unlike `SequenceDate.of`, which validates one that arrived as
+  // data. Each of the six members restates the guard in both methods, so twelve guards exist and
+  // nothing else here supplies a non-positive number: without this test one could be deleted
+  // while the suite stayed green.
   test("test_nth_sequenceNumberNotPositive") {
     forAll(data_rejectedSequenceNumbers) { (sequenceNumber: Int, message: String) =>
       DateSequence.values.toList.foreach { sequence =>
@@ -662,8 +529,8 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
       }
       succeed
     }
-    // the positive controls: the smallest sequence number the guard admits, and the one after
-    // it, answer with the dates the two stepping methods reach on every member and every probe
+    // the positive controls make the assertion two-sided: the smallest sequence number the guard
+    // admits, and the one after it, answer with the dates the two stepping methods reach
     DateSequence.values.toList.foreach { sequence =>
       dummyProbeDates.foreach { probe =>
         withClue(s"$sequence from $probe with a positive sequence number: ") {
@@ -678,23 +545,10 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The replacement for the original's interrogation of its run-time registry.
-   *
-   * The original asked the registry that had assembled the family from a configuration
-   * resource for the complete map of the names it had loaded, and looked one name up in
-   * it. There is no registry here - the members are declared in the companion and fixed
-   * when it is compiled - so the equivalent assertion is made against the name tables the
-   * lookup derives from those members: the map keyed by canonical name is the map the
-   * original's normalised lookup returned.
-   *
-   * All three tables a named family may declare are empty for this family, because the
-   * configuration resource of the original declared none of them: no alternate spelling
-   * of any sequence, no pattern rewriting text before it is looked up, and no group of
-   * names published for an external protocol. That is asserted rather than assumed, and
-   * it is why there is nothing further to assert here: the name space of the family is
-   * exactly its six canonical names, and a seventh name resolves to nothing.
-   */
+  // `byCanonicalName` is the map keyed by canonical name. The family declares none of the three
+  // optional name tables - no alternate spelling, no lenient pattern, no external name group -
+  // asserted rather than assumed, because that is what makes its six canonical names the whole
+  // name space, so a seventh name resolves to nothing.
   test("test_extendedEnum") {
     val lookup = NamedEnum[DateSequence]
     lookup.byCanonicalName.get("Quarterly-IMM") shouldBe Some(DateSequences.QUARTERLY_IMM)
@@ -707,32 +561,20 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
       "Monthly-1st" -> DateSequences.MONTHLY_1ST
     )
     lookup.familyName shouldBe "DateSequence"
-    // the family holds six distinct members and no more
     lookup.values.toList should have size 6
     lookup.values.toList.distinct shouldBe lookup.values.toList
     lookup.values shouldBe DateSequence.values
-    // the three declarable tables are empty, as they were in the original's configuration
     lookup.alternateNames shouldBe Map.empty[String, String]
     lookup.lenientPatterns shouldBe List.empty[(scala.util.matching.Regex, String)]
     lookup.externalNameGroups shouldBe Set.empty[String]
-    // so the six canonical names are the whole name space of the family
     DateSequence.valueOf("Rubbish") shouldBe None
     DateSequence.parse("Rubbish") should beFailureWith(FailureReason.PARSING)
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The replacement for the original's two reflective coverage sweeps.
-   *
-   * The original swept the enumeration holding the implementations and the class holding
-   * the constants, asserting reflectively that every enum constant was reachable and that
-   * the constants holder could not be instantiated. Neither sweep has a target here: the
-   * implementations are `case object`s of a `sealed` class, and a Scala `object` has no
-   * constructor to hide. What the sweeps stood in for is asserted directly instead - that
-   * the family is the closed set of six, that the constants republish exactly those six
-   * under the identifiers of the original, and that the single equality-bearing instance
-   * and the rendering behave by name.
-   */
+  // The family is the closed set of six, `DateSequences` republishes exactly those six, and
+  // equality, ordering and rendering are by name - so the ordering is alphabetical rather than
+  // the declaration order of `values`.
   test("coverage") {
     DateSequence.values.toList shouldBe list(
       DateSequences.QUARTERLY_IMM,
@@ -750,17 +592,13 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
       "Quarterly-10th",
       "Monthly-1st"
     )
-    // every member is reachable from its own name, which is what the enum sweep of the
-    // original established by reflection
     DateSequence.values.toList.foreach { sequence =>
       withClue(s"$sequence: ") {
         DateSequence.valueOf(sequence.name) shouldBe Some(sequence)
       }
     }
 
-    // `Order` and `Hash` both extend `Eq`, so the one instance the companion publishes is
-    // the only notion of equality the type has; comparison and hashing are both by name,
-    // which makes the ordering alphabetical rather than the declaration order of `values`
+    // `Order` and `Hash` both extend `Eq`, so one instance carries equality, hashing and order
     val firstByName = DateSequences.MONTHLY_1ST
     val lastByName = DateSequences.QUARTERLY_IMM_6_SERIAL
     Hash[DateSequence].hash(firstByName) shouldBe firstByName.name.hashCode
@@ -779,24 +617,15 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
     )
     Show[DateSequence].show(firstByName) shouldBe "Monthly-1st"
     Show[DateSequence].show(lastByName) shouldBe "Quarterly-IMM-6-Serial"
-    // equality never holds between two members, and never against another type at all;
-    // the method form is used for the second because the compiler rejects a comparison
-    // between unrelated types written with the operator
+    // `equals` is called as a method because the compiler rejects `==` between unrelated types
     firstByName.equals(lastByName) shouldBe false
     firstByName.equals("Monthly-1st") shouldBe false
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The replacement for the original's binary serialization assertions.
-   *
-   * The original round-tripped two sequences through Java serialization. This port has no
-   * Java serialization and no reflective serialization framework: a sequence travels as
-   * JSON, written by the codec its companion publishes, and the form is the bare string
-   * of its canonical name rather than an object with a field in it. Both halves matter,
-   * so the shape is asserted as well as the round trip - an encoding that became an
-   * object would still round-trip, and would still be wrong.
-   */
+  // A sequence travels as the bare string of its canonical name rather than as an object with a
+  // field in it, so the shape is asserted as well as the round trip: an encoding that became an
+  // object would still round-trip, and would still be wrong.
   test("test_serialization") {
     list(DateSequences.QUARTERLY_IMM, DateSequences.MONTHLY_IMM).foreach { sequence =>
       withClue(s"$sequence: ") {
@@ -812,15 +641,8 @@ final class DateSequenceSpec extends AnyFunSuite with Matchers with TableDrivenP
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The replacement for the original's string-conversion assertions.
-   *
-   * The original checked that the annotation-driven string converter of its serialization
-   * framework rendered a sequence and read it back. That framework is gone; rendering is
-   * the `Show` instance and reading back is `parse`, and this asserts that the two are
-   * inverse over the two sequences the original named, with the rendered text pinned to
-   * the exact names the original produced so that text written by it still resolves here.
-   */
+  // Rendering is the `Show` instance and reading back is `parse`; the two are inverse, with the
+  // rendered text pinned to the exact names so that text carrying them still resolves.
   test("test_jodaConvert") {
     list(DateSequences.QUARTERLY_IMM, DateSequences.MONTHLY_IMM).foreach { sequence =>
       withClue(s"$sequence: ") {

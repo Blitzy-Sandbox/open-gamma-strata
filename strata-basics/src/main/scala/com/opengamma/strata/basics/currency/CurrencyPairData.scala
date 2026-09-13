@@ -8,23 +8,21 @@ package com.opengamma.strata.basics.currency
 /**
  * The conventional currency pair reference data of the module, expressed as immutable Scala data.
  *
- * This object carries the currency pair table transcribed verbatim from the Java currency pair
- * configuration, which was a classpath resource loaded at class initialisation time in the
- * implementation being ported. It is compiled data here, so there is no resource to locate, no
- * registry to populate and no load failure to recover from - the Java loader swallowed a load
- * failure and returned an empty table, silently turning every pair into an unconfigured one, and
- * that failure mode does not exist for data the compiler has already read.
+ * This object is the currency pair table itself, compiled into the module. It has 92 rows and
+ * three columns: the base [[Currency]] of a pair quoted in standard market convention, its
+ * counter currency, and the number of fractional digits a typical rate for that pair is quoted
+ * to. Nothing is read at run time, so the table is complete once this object initialises and
+ * cannot be absent or partial.
  *
  * It holds data only and no behaviour. `CurrencyPair` is its consumer and reads [[rows]] and
  * [[rateDigitsByCurrencies]] to answer `isConventional` and `getRateDigits`. Those two member
  * names are the published contract of this object and are kept stable.
  *
  * That contract is offered to the module and to nothing outside it, which is why the object is
- * qualified `private[basics]`: these rows are a transcription that the module's own types consume,
+ * qualified `private[basics]`: these rows are reference data that the module's own types consume,
  * not an extension point a caller elsewhere should be able to reach for and then depend on, and
- * `CurrencyData` carries the same qualifier for the same reason. The restriction still reaches
- * every part of the module, so `ReferenceDataManifestSpec` reads the table directly to make the
- * comparison described under the invariants below.
+ * `CurrencyData` carries the same qualifier for the same reason. The restriction reaches every
+ * part of the module, so any type of the module may read the table directly.
  *
  * ===Each row is the pair in standard market convention===
  *
@@ -35,36 +33,32 @@ package com.opengamma.strata.basics.currency
  * decidable: a pair present in the table is conventional, a pair whose inverse is present is not,
  * and a pair with neither direction present falls back to the priority ordering held in
  * [[CurrencyData]]. Storing both directions would answer the first two questions the same way and
- * so would silently destroy the distinction. The Java configuration stated the same rule from the
- * other side, declaring it an error to define two sections for the same effective pair.
+ * so would silently destroy the distinction, which is why no pair and its inverse are both
+ * present.
  *
  * ===Keyed by the two currencies, not by the pair===
  *
  * The table is keyed by the base and counter [[Currency]] of the conventional pair rather than by
  * a `CurrencyPair`, even though a `CurrencyPair` is what the consumer looks up. Keying it by the
  * pair type would make this object depend on the very type that depends on it, leaving a cycle to
- * be resolved while these objects initialise; harmless to compile, since the module compiles as a
- * whole, but a hazard at run time whose outcome depends on which object a program happens to touch
- * first. The Java implementation met the same class of problem in its currency table and solved it
- * the same way, holding a triangulation currency as a plain code rather than as a currency.
- * Keying by the components keeps initialisation strictly one way: [[CurrencyData]] to
- * [[Currency]] to this object to `CurrencyPair`.
+ * be resolved while these objects initialise - a hazard at run time whose outcome depends on which
+ * object a program happens to touch first. Keying by the components keeps initialisation strictly
+ * one way: [[CurrencyData]] to [[Currency]] to this object to `CurrencyPair`.
  *
  * ===Invariants===
  *
- * All of the following are asserted row for row against the Java captured reference data manifest
- * by `ReferenceDataManifestSpec`, so a self consistent but mistranscribed row cannot pass:
+ * These hold row for row, and a consumer may rely on each of them:
  *
- *  - [[rows]] holds exactly 92 entries, in the declaration order of the Java configuration, with
- *    the same number of fractional digits for each pair.
+ *  - [[rows]] holds exactly 92 entries, in the published order, with one number of fractional
+ *    digits for each pair.
  *  - The 92 keys are distinct, and no key has its inverse also present.
  *  - `rateDigits` is 0 for 1 row, 2 for 14 rows, 3 for 10 rows, 4 for 61 rows and 5 for 6 rows.
  *  - The 54 currencies the table names are all members of [[Currency]], each reached through its
  *    named constant rather than through a code, so a currency that did not exist would be a
  *    compile error rather than a lookup that fails later.
  *
- * No pair may be added to, removed from or edited in this table: it is a transcription of existing
- * reference data, and introducing a new market convention is outside the scope of the port.
+ * No pair may be added to, removed from or edited in this table: it is published reference data,
+ * and a new market convention is not established here.
  *
  * ===Thread safety===
  *
@@ -76,13 +70,13 @@ package com.opengamma.strata.basics.currency
 private[basics] object CurrencyPairData {
 
   /**
-   * The 92 transcribed conventional currency pairs with the number of fractional digits of a
-   * typical rate, in the declaration order of the Java currency pair configuration.
+   * The 92 conventional currency pairs with the number of fractional digits of a typical rate, in
+   * the published order.
    *
    * Each entry is the base currency, the counter currency and the rate digits of the pair, read in
-   * the conventional direction described above. The order is observable through any iteration a
-   * consumer performs, so it is kept stable and deterministic rather than re-sorted, and the
-   * comments mark the groupings the Java configuration carried.
+   * the conventional direction described above. The order is part of the meaning of the table and
+   * is observable through any iteration a consumer performs, so it is kept exactly as published
+   * rather than re-sorted. The comments mark the groupings the pairs are published in.
    */
   val rows: Vector[(Currency, Currency, Int)] = Vector(
     // Major currencies

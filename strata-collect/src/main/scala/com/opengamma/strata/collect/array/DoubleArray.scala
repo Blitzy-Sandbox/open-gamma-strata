@@ -31,43 +31,59 @@ import com.opengamma.strata.collect.DoubleArrayMath
  *
  * ===The stored array never escapes===
  *
- * Immutability here is enforced rather than promised. Every factory that is handed an array or
- * a sequence copies it before storing it, and `toArray` answers with a copy, so no caller can
- * reach the array an instance holds and change the value from underneath it. Two members skip
- * that copy - `ofUnsafe`, which adopts an array, and `toArrayUnsafe`, which hands back the
- * stored one - and both are visible only inside this module, where the array involved is known
- * to be freshly allocated and published nowhere else. The Java original exposed both to every
- * caller and relied on a documented convention instead; scoping them is what turns the
- * convention into a rule the compiler keeps.
+ * Immutability here is enforced by the compiled code rather than promised by a convention, and
+ * the enforcement rests on two facts about this class that hold together. The sole constructor
+ * copies the run of values it is handed and stores the copy, so an instance's storage is
+ * allocated by that constructor and is reachable from nowhere the caller can name; and no member
+ * hands that storage out - `toArray` answers with a copy of it, and every other member answers
+ * with an element, a count or a new array. Whoever holds an array, and whatever they do with it
+ * afterwards, they cannot change a value built from it.
+ *
+ * Stating it that way is deliberate, because the alternative does not hold on this platform. A
+ * member restricted to this module is restricted in ''source'' only: the compiler emits it as a
+ * public method, so a caller compiled against the class - in this language or in Java, in this
+ * package or in one that merely claims the name - reaches it regardless. The same is true of the
+ * constructor, which a companion has to reach and which is therefore public whatever it is
+ * declared to be. A guarantee that depended on either would be a guarantee about what a source
+ * file may say and not about what a run-time can do, which is why the copy sits in the one place
+ * every construction path passes through instead.
+ *
+ * The Java original published two members that skipped the copy - `ofUnsafe`, which adopted an
+ * array, and `toArrayUnsafe`, which handed back the stored one - and relied on a documented
+ * convention that no caller would write through either. Neither is ported, under any name or
+ * any visibility: the copy the constructor makes is cheap next to the arithmetic these arrays
+ * exist for, and an aliasing pair of members is the one way this type could stop being immutable
+ * in fact while still being immutable in its documentation.
  *
  * ===Numerical fidelity===
  *
- * This type carries the numerical parity duty of the port: its results are compared element by
- * element against values captured from the Java original, to an absolute and relative tolerance
- * of 1e-9. Floating-point arithmetic is neither associative nor distributive, so the order in
- * which elements are visited, and the exact form each expression takes, are part of the answer
- * rather than implementation detail. Every operation therefore visits elements in ascending
- * index order, every reduction accumulates sequentially from the documented starting value, and
- * no operation is rewritten into an algebraically equal but numerically different form - there
- * is no compensated summation and no reordered or tree-shaped reduction anywhere in this class.
- * Two consequences are worth naming, because both are observable:
+ * This type carries the numerical parity duty of this module: its results are compared element
+ * by element against the captured baseline values that the parity fixture of this module holds,
+ * to an absolute and relative tolerance of 1e-9. Floating-point arithmetic is neither
+ * associative nor distributive, so the order in which elements are visited, and the exact form
+ * each expression takes, are part of the answer rather than implementation detail. Every
+ * operation therefore visits elements in ascending index order, every reduction accumulates
+ * sequentially from the documented starting value, and no operation is rewritten into an
+ * algebraically equal but numerically different form - there is no compensated summation and no
+ * reordered or tree-shaped reduction anywhere in this class. Two consequences are worth naming,
+ * because both are observable:
  *
- *   - dividing by a scalar computes the reciprocal once and multiplies each element by it, as
- *     the original does, which differs in the last bits from dividing each element in turn;
+ *   - dividing by a scalar computes the reciprocal once and multiplies each element by it, which
+ *     differs in the last bits from dividing each element in turn;
  *   - adding or subtracting zero, multiplying by one and dividing by one answer with the same
  *     instance rather than with a copy, so `plus(0.0)` is not a way to obtain a distinct value.
  *
  * ===Equality===
  *
  * Two arrays are equal when they are the same length and their elements agree bit for bit,
- * which is the comparison the Java original makes and the one the rest of the library uses for
- * every type holding doubles. A not-a-number element is therefore equal to itself, so an array
- * holding one can still be compared and used as a map key, and a negative zero is not equal to
- * a positive zero. `contains`, `indexOf` and `lastIndexOf` search by that same comparison, so
- * they find a not-a-number element that an ordinary comparison could never match. Hashing
- * agrees with equality, and the `Hash` instance in the companion is the single equality-bearing
- * instance of the type. There is deliberately no ordering: arrays are compared for equality
- * only, and no useful total order over vectors exists to offer.
+ * which is the comparison the rest of the library uses for every type holding doubles. A
+ * not-a-number element is therefore equal to itself, so an array holding one can still be
+ * compared and used as a map key, and a negative zero is not equal to a positive zero.
+ * `contains`, `indexOf` and `lastIndexOf` search by that same comparison, so they find a
+ * not-a-number element that an ordinary comparison could never match. Hashing agrees with
+ * equality, and the `Hash` instance in the companion is the single equality-bearing instance of
+ * the type. There is deliberately no ordering: arrays are compared for equality only, and no
+ * useful total order over vectors exists to offer.
  *
  * ===Failures===
  *
@@ -78,18 +94,12 @@ import com.opengamma.strata.collect.DoubleArrayMath
  *   - a size, length or state violation - a negative size asked of a factory, two arrays that
  *     have to match in length and do not, a sub-array boundary beyond the end of the array, or
  *     the smallest or largest element of an array that has none - is checked before anything is
- *     allocated or read and raised as an `IllegalArgumentException` through `ArgCheck`, carrying
- *     the message of the Java original wherever that original carried one. This is the category
- *     whose exception type differs from the Java original, which raised a state exception from
- *     `min` and `max`, an index exception from the `copyOf` range checks, and left a negative
- *     size to the exception the runtime raises from the allocation; each difference is recorded
- *     on the member concerned. Checking a size first is what keeps an invalid size from
- *     allocating at all, and an invalid size is a contract violation like any other, so it is
- *     reported like one;
+ *     allocated or read and raised as an `IllegalArgumentException` through `ArgCheck`. Checking
+ *     a size before acting on it is what keeps an invalid size from allocating at all, and an
+ *     invalid size is a caller-contract violation like any other, so it is reported like one;
  *   - an index outside the array surfaces as the index exception the runtime raises for the
- *     array access itself, which is exactly what the Java original did. `get`, `with` and the
- *     other members that address a single element read the stored array directly, and no check
- *     stands in front of them to change that.
+ *     array access itself. `get`, `with` and the other members that address a single element
+ *     read the stored array directly, and no check stands in front of them to change that.
  *
  * ===Implementation===
  *
@@ -105,7 +115,18 @@ import com.opengamma.strata.collect.DoubleArrayMath
  * An instance is immutable, so it is safe to share between any number of threads without
  * synchronisation.
  */
-final class DoubleArray private (private val array: Array[Double]) extends Matrix {
+final class DoubleArray private (values: Array[Double]) extends Matrix {
+
+  // The values of this array, copied out of whatever was handed to the constructor.
+  //
+  // This is the single line that makes the type immutable in the compiled code, which is why it
+  // is a copy and not the argument itself: every factory of the companion, and every operation
+  // that produces a new array, reaches this constructor, so a run of values stored here was
+  // allocated here and is held by nothing else. The field is private to the class and is read
+  // only from within it - including from another instance of it, which the platform allows and
+  // which `equals` and the element-wise operations do - so the compiler emits no accessor for it
+  // beyond the private one, and there is no member of this type through which it can be reached.
+  private val array: Array[Double] = values.clone()
 
   //-------------------------------------------------------------------------
   /**
@@ -140,7 +161,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    *
    * @param index  the zero-based index to retrieve
    * @return the value at the index
-   * @throws IndexOutOfBoundsException if the index is outside this array
+   * @throws java.lang.IndexOutOfBoundsException if the index is outside this array
    */
   def get(index: Int): Double = array(index)
 
@@ -208,9 +229,9 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    *
    * @param fromIndexInclusive  the start index of the array to copy from
    * @return an array holding the values from the index to the end of this array
-   * @throws IllegalArgumentException if the start index is beyond the end of this array,
+   * @throws java.lang.IllegalArgumentException if the start index is beyond the end of this array,
    *   where the Java original raised an index exception
-   * @throws IndexOutOfBoundsException if the start index is negative
+   * @throws java.lang.IndexOutOfBoundsException if the start index is negative
    */
   def subArray(fromIndexInclusive: Int): DoubleArray =
     subArray(fromIndexInclusive, array.length)
@@ -221,10 +242,10 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * @param fromIndexInclusive  the start index of the array to copy from
    * @param toIndexExclusive  the end index of the array to copy to
    * @return an array holding the values between the two indices
-   * @throws IllegalArgumentException if either index is beyond the end of this array, where the
+   * @throws java.lang.IllegalArgumentException if either index is beyond the end of this array, where the
    *   Java original raised an index exception, or if the start index is after the end index,
    *   which includes a negative end index
-   * @throws IndexOutOfBoundsException if the start index is negative
+   * @throws java.lang.IndexOutOfBoundsException if the start index is negative
    */
   def subArray(fromIndexInclusive: Int, toIndexExclusive: Int): DoubleArray =
     DoubleArray.copyOf(array, fromIndexInclusive, toIndexExclusive)
@@ -233,23 +254,15 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
   /**
    * Converts this instance to an independent array of doubles.
    *
-   * The result is a copy, so a caller is free to modify it without affecting this instance.
+   * The result is a copy, so a caller is free to modify it without affecting this instance, and
+   * a fresh copy is made on every call, so two calls hand back two arrays. This is the only
+   * member of this type that answers with an array of values at all: every other member answers
+   * with an element, a count, a collection built for the call, or another array of this type,
+   * which is what leaves the stored run of values unreachable from outside the class.
    *
    * @return a copy of the underlying array
    */
   def toArray: Array[Double] = array.clone()
-
-  /**
-   * Returns the underlying array itself.
-   *
-   * This is visible only inside this module, because the array it hands back is the one this
-   * instance holds: modifying it would violate the immutability of this class. It exists for
-   * the few places within the module - the codecs above all - that read every element of an
-   * array they never retain, where copying would be waste with no safety to show for it.
-   *
-   * @return the stored array, which the caller must not modify
-   */
-  private[collect] def toArrayUnsafe: Array[Double] = array
 
   /**
    * Returns an immutable list holding the values of this array.
@@ -309,7 +322,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * @param index  the zero-based index to set
    * @param newValue  the new value to store at the index
    * @return a copy of this array with the value at the index changed
-   * @throws IndexOutOfBoundsException if the index is outside this array
+   * @throws java.lang.IndexOutOfBoundsException if the index is outside this array
    */
   def `with`(index: Int, newValue: Double): DoubleArray =
     if (DoubleArray.bitsOf(array(index)) == DoubleArray.bitsOf(newValue)) {
@@ -317,7 +330,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
     } else {
       val result = array.clone()
       result(index) = newValue
-      DoubleArray.ofUnsafe(result)
+      DoubleArray.copyOf(result)
     }
 
   //-------------------------------------------------------------------------
@@ -338,7 +351,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
     } else {
       val result = new Array[Double](array.length)
       plusInto(result, amount, 0)
-      DoubleArray.ofUnsafe(result)
+      DoubleArray.copyOf(result)
     }
 
   // fills the result from the index upwards with each value plus the amount, in index order
@@ -366,7 +379,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
     } else {
       val result = new Array[Double](array.length)
       minusInto(result, amount, 0)
-      DoubleArray.ofUnsafe(result)
+      DoubleArray.copyOf(result)
     }
 
   // fills the result from the index upwards with each value minus the amount, in index order
@@ -393,7 +406,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
     } else {
       val result = new Array[Double](array.length)
       scaledInto(result, factor, 0)
-      DoubleArray.ofUnsafe(result)
+      DoubleArray.copyOf(result)
     }
 
   /**
@@ -417,7 +430,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
       val factor = 1 / divisor
       val result = new Array[Double](array.length)
       scaledInto(result, factor, 0)
-      DoubleArray.ofUnsafe(result)
+      DoubleArray.copyOf(result)
     }
 
   // fills the result from the index upwards with each value times the factor, in index order;
@@ -451,7 +464,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
   def map(operator: Double => Double): DoubleArray = {
     val result = new Array[Double](array.length)
     mapInto(result, operator, 0)
-    DoubleArray.ofUnsafe(result)
+    DoubleArray.copyOf(result)
   }
 
   // fills the result from the index upwards with the operator applied to each value
@@ -479,7 +492,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
   def mapWithIndex(function: (Int, Double) => Double): DoubleArray = {
     val result = new Array[Double](array.length)
     mapWithIndexInto(result, function, 0)
-    DoubleArray.ofUnsafe(result)
+    DoubleArray.copyOf(result)
   }
 
   // fills the result from the index upwards with the function applied to each indexed value
@@ -506,13 +519,13 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    *
    * @param other  the other array
    * @return a copy of this array with the matching elements added
-   * @throws IllegalArgumentException if the arrays have different sizes
+   * @throws java.lang.IllegalArgumentException if the arrays have different sizes
    */
   def plus(other: DoubleArray): DoubleArray = {
     ArgCheck.isTrue(array.length == other.array.length, DoubleArray.differentSizes)
     val result = new Array[Double](array.length)
     plusEachInto(result, other.array, 0)
-    DoubleArray.ofUnsafe(result)
+    DoubleArray.copyOf(result)
   }
 
   // fills the result from the index upwards with the sum of the matching elements
@@ -534,13 +547,13 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    *
    * @param other  the other array
    * @return a copy of this array with the matching elements subtracted
-   * @throws IllegalArgumentException if the arrays have different sizes
+   * @throws java.lang.IllegalArgumentException if the arrays have different sizes
    */
   def minus(other: DoubleArray): DoubleArray = {
     ArgCheck.isTrue(array.length == other.array.length, DoubleArray.differentSizes)
     val result = new Array[Double](array.length)
     minusEachInto(result, other.array, 0)
-    DoubleArray.ofUnsafe(result)
+    DoubleArray.copyOf(result)
   }
 
   // fills the result from the index upwards with the difference of the matching elements
@@ -562,13 +575,13 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    *
    * @param other  the other array
    * @return a copy of this array with the matching elements multiplied
-   * @throws IllegalArgumentException if the arrays have different sizes
+   * @throws java.lang.IllegalArgumentException if the arrays have different sizes
    */
   def multipliedBy(other: DoubleArray): DoubleArray = {
     ArgCheck.isTrue(array.length == other.array.length, DoubleArray.differentSizes)
     val result = new Array[Double](array.length)
     multipliedByEachInto(result, other.array, 0)
-    DoubleArray.ofUnsafe(result)
+    DoubleArray.copyOf(result)
   }
 
   // fills the result from the index upwards with the product of the matching elements
@@ -592,13 +605,13 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    *
    * @param other  the other array
    * @return a copy of this array with the matching elements divided
-   * @throws IllegalArgumentException if the arrays have different sizes
+   * @throws java.lang.IllegalArgumentException if the arrays have different sizes
    */
   def dividedBy(other: DoubleArray): DoubleArray = {
     ArgCheck.isTrue(array.length == other.array.length, DoubleArray.differentSizes)
     val result = new Array[Double](array.length)
     dividedByEachInto(result, other.array, 0)
-    DoubleArray.ofUnsafe(result)
+    DoubleArray.copyOf(result)
   }
 
   // fills the result from the index upwards with the quotient of the matching elements
@@ -625,13 +638,13 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * @param other  the other array
    * @param operator  the operator used to combine each pair of values
    * @return a copy of this array combined with the other array
-   * @throws IllegalArgumentException if the arrays have different sizes
+   * @throws java.lang.IllegalArgumentException if the arrays have different sizes
    */
   def combine(other: DoubleArray, operator: (Double, Double) => Double): DoubleArray = {
     ArgCheck.isTrue(array.length == other.array.length, DoubleArray.differentSizes)
     val result = new Array[Double](array.length)
     combineEachInto(result, other.array, operator, 0)
-    DoubleArray.ofUnsafe(result)
+    DoubleArray.copyOf(result)
   }
 
   // fills the result from the index upwards with the operator applied to the matching elements
@@ -671,7 +684,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * @param other  the other array
    * @param operator  the operator used to combine each pair of values with the running total
    * @return the result of the reduction
-   * @throws IllegalArgumentException if the arrays have different sizes
+   * @throws java.lang.IllegalArgumentException if the arrays have different sizes
    */
   def combineReduce(other: DoubleArray, operator: DoubleArray.DoubleTernaryOperator): Double = {
     ArgCheck.isTrue(array.length == other.array.length, DoubleArray.differentSizes)
@@ -703,10 +716,10 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * The result is as long as this array plus the number of values supplied. Concatenating
    * nothing answers with this instance.
    *
-   * The result is allocated once, at its final length, and each source is moved into it in one
-   * bulk copy: the stored elements into the front, the supplied values into the tail. Asking the
-   * sequence for an array of its own first would copy those values twice, once into that array
-   * and once out of it again.
+   * The elements are gathered once, at their final length, and each source is moved in one bulk
+   * copy: the stored elements into the front, the supplied values into the tail. Asking the
+   * sequence for an array of its own first would move those values twice before the gathering
+   * even began, once into that array and once out of it again.
    *
    * This instance is immutable and unaffected by this method.
    *
@@ -717,13 +730,14 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
     if (values.isEmpty) {
       this
     } else {
-      // the result is freshly allocated here and published nowhere else, which is what makes it
-      // safe to adopt rather than copy; `copyToArray` answers with the number of elements it
-      // moved, which is the length of the sequence and so tells us nothing we do not know
+      // the two sources are gathered into one run of values here, each in a single bulk move, and
+      // the factory below turns that run into the result; `copyToArray` answers with the number of
+      // elements it moved, which is the length of the sequence and so tells us nothing we do not
+      // know, and the value is bound and discarded because an ignored result is a warning
       val result = new Array[Double](array.length + values.length)
       System.arraycopy(array, 0, result, 0, array.length)
       val _ = values.copyToArray(result, array.length)
-      DoubleArray.ofUnsafe(result)
+      DoubleArray.copyOf(result)
     }
 
   /**
@@ -751,7 +765,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
   private def concatArray(other: Array[Double]): DoubleArray = {
     val result = Arrays.copyOf(array, array.length + other.length)
     System.arraycopy(other, 0, result, array.length, other.length)
-    DoubleArray.ofUnsafe(result)
+    DoubleArray.copyOf(result)
   }
 
   //-------------------------------------------------------------------------
@@ -772,7 +786,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
     } else {
       val result = array.clone()
       Arrays.sort(result)
-      DoubleArray.ofUnsafe(result)
+      DoubleArray.copyOf(result)
     }
 
   //-------------------------------------------------------------------------
@@ -785,7 +799,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * argument through `ArgCheck`, keeping the message unchanged.
    *
    * @return the minimum value
-   * @throws IllegalArgumentException if this array is empty
+   * @throws java.lang.IllegalArgumentException if this array is empty
    */
   def min: Double = {
     ArgCheck.isTrue(array.length > 0, "Unable to find minimum of an empty array")
@@ -814,7 +828,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * argument through `ArgCheck`, keeping the message unchanged.
    *
    * @return the maximum value
-   * @throws IllegalArgumentException if this array is empty
+   * @throws java.lang.IllegalArgumentException if this array is empty
    */
   def max: Double = {
     ArgCheck.isTrue(array.length > 0, "Unable to find maximum of an empty array")
@@ -901,7 +915,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    * @param other  the other array
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if the arrays are equal up to the tolerance
-   * @throws IllegalArgumentException if the tolerance is negative or is not a number
+   * @throws java.lang.IllegalArgumentException if the tolerance is negative or is not a number
    */
   def equalWithTolerance(other: DoubleArray, tolerance: Double): Boolean =
     DoubleArrayMath.fuzzyEquals(array, other.array, tolerance)
@@ -917,7 +931,7 @@ final class DoubleArray private (private val array: Array[Double]) extends Matri
    *
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if every value is equal to zero up to the tolerance
-   * @throws IllegalArgumentException if the tolerance is negative or is not a number
+   * @throws java.lang.IllegalArgumentException if the tolerance is negative or is not a number
    */
   def equalZeroWithTolerance(tolerance: Double): Boolean =
     DoubleArrayMath.fuzzyEqualsZero(array, tolerance)
@@ -1021,9 +1035,7 @@ object DoubleArray {
   /**
    * Obtains an instance holding the specified values.
    *
-   * This one member replaces the ten arity-specific factories of the Java original - one for no
-   * values, one for each count up to eight, and one taking eight and any number more - which
-   * existed only to spare a caller the cost of an array allocation per call:
+   * The values are held in the order they are supplied, however many of them there are:
    *
    * {{{
    * val empty = DoubleArray.of()             // the empty array
@@ -1034,14 +1046,15 @@ object DoubleArray {
    * A call supplying no values is the shared empty instance, which a caller may recognise by
    * identity as well as by equality. The sequence copies itself into a fresh array, so a caller
    * that expanded a sequence of its own into this call cannot reach the array the result holds.
-   * A caller that already holds an array, or any other collection, is better served by `copyOf`,
+   * This is the member a caller reaches for in place of allocating an array and wrapping it. A
+   * caller that already holds an array, or any other collection, is better served by `copyOf`,
    * which takes it without a sequence in between, and a caller computing its values from their
    * positions by `tabulate`.
    *
    * @param values  the values to hold, in order
    * @return an array holding the specified values, the empty array if none are supplied
    */
-  def of(values: Double*): DoubleArray = ofUnsafe(values.toArray)
+  def of(values: Double*): DoubleArray = copyOf(values.toArray)
 
   /**
    * Obtains an instance with entries filled using a function.
@@ -1061,7 +1074,7 @@ object DoubleArray {
    * @param size  the number of elements, zero or greater
    * @param valueFunction  the function from index to value
    * @return an array of the specified size populated by the function
-   * @throws IllegalArgumentException if the size is negative
+   * @throws java.lang.IllegalArgumentException if the size is negative
    */
   def tabulate(size: Int)(valueFunction: Int => Double): DoubleArray = {
     ArgCheck.notNegative(size, "size")
@@ -1086,26 +1099,6 @@ object DoubleArray {
       tabulateInto(result, valueFunction, index + 1)
     }
 
-  /**
-   * Obtains an instance by adopting an array without copying it.
-   *
-   * This is visible only inside this module, because it makes the caller responsible for the
-   * immutability of the result: the array passed in must be freshly allocated, or otherwise
-   * published nowhere else, and must never be modified afterwards. Inside the module that
-   * condition is met and checkable by reading the call site - each one either allocates the
-   * array a line earlier or takes it from a sequence that has just copied itself - which is what
-   * makes the copying elsewhere in this class complete rather than conventional.
-   *
-   * @param array  the array to adopt, which the caller must never modify
-   * @return an array instance holding the specified array
-   */
-  private[collect] def ofUnsafe(array: Array[Double]): DoubleArray =
-    if (array.length == 0) {
-      EMPTY
-    } else {
-      new DoubleArray(array)
-    }
-
   //-------------------------------------------------------------------------
   /**
    * Obtains an instance from an iterable of doubles.
@@ -1117,12 +1110,19 @@ object DoubleArray {
    * @param collection  the iterable to initialise from
    * @return an array holding the values of the iterable in iteration order
    */
-  def copyOf(collection: Iterable[Double]): DoubleArray = ofUnsafe(collection.toArray)
+  def copyOf(collection: Iterable[Double]): DoubleArray = copyOf(collection.toArray)
 
   /**
    * Obtains an instance by copying an array of doubles.
    *
-   * The input array is copied and never modified, so the caller may go on using it.
+   * The input array is copied and never modified, so the caller may go on using it. The copy is
+   * the one the constructor makes, which is why there is no second one here: every construction
+   * path of this type copies, so a factory that copied first would move the same values twice.
+   *
+   * This is also the factory the operations of this class use to wrap a run of values they have
+   * just computed. Doing so costs one copy of a freshly allocated array, and buys the property
+   * that no array anywhere - inside this class or outside it - is reachable both by a caller and
+   * by an instance.
    *
    * @param array  the array to copy
    * @return an array holding the values of the specified array
@@ -1131,7 +1131,7 @@ object DoubleArray {
     if (array.length == 0) {
       EMPTY
     } else {
-      new DoubleArray(array.clone())
+      new DoubleArray(array)
     }
 
   /**
@@ -1142,9 +1142,9 @@ object DoubleArray {
    * @param array  the array to copy
    * @param fromIndexInclusive  the index of the input array to copy from
    * @return an array holding the values from the index to the end of the input array
-   * @throws IllegalArgumentException if the start index is beyond the end of the input array,
+   * @throws java.lang.IllegalArgumentException if the start index is beyond the end of the input array,
    *   where the Java original raised an index exception
-   * @throws IndexOutOfBoundsException if the start index is negative
+   * @throws java.lang.IndexOutOfBoundsException if the start index is negative
    */
   def copyOf(array: Array[Double], fromIndexInclusive: Int): DoubleArray =
     copyOf(array, fromIndexInclusive, array.length)
@@ -1166,9 +1166,9 @@ object DoubleArray {
    * @param fromIndexInclusive  the start index of the input array to copy from
    * @param toIndexExclusive  the end index of the input array to copy to
    * @return an array holding the values between the two indices
-   * @throws IllegalArgumentException if either index is beyond the end of the input array, where
+   * @throws java.lang.IllegalArgumentException if either index is beyond the end of the input array, where
    *   the Java original raised an index exception, or if the start index is after the end index
-   * @throws IndexOutOfBoundsException if the start index is negative
+   * @throws java.lang.IndexOutOfBoundsException if the start index is negative
    */
   def copyOf(array: Array[Double], fromIndexInclusive: Int, toIndexExclusive: Int): DoubleArray = {
     ArgCheck.isTrue(
@@ -1190,7 +1190,7 @@ object DoubleArray {
    *
    * @param size  the number of elements, zero or greater
    * @return an array of the specified size filled with zeroes
-   * @throws IllegalArgumentException if the size is negative
+   * @throws java.lang.IllegalArgumentException if the size is negative
    */
   def filled(size: Int): DoubleArray = {
     ArgCheck.notNegative(size, "size")
@@ -1207,7 +1207,7 @@ object DoubleArray {
    * @param size  the number of elements, zero or greater
    * @param value  the value of every element
    * @return an array of the specified size filled with the specified value
-   * @throws IllegalArgumentException if the size is negative
+   * @throws java.lang.IllegalArgumentException if the size is negative
    */
   def filled(size: Int, value: Double): DoubleArray = {
     ArgCheck.notNegative(size, "size")

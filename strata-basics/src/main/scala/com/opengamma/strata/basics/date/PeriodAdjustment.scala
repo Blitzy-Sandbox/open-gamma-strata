@@ -18,6 +18,8 @@ import _root_.io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.Resolvable
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.ValidatedFailures
@@ -43,9 +45,9 @@ import com.opengamma.strata.collect.result.Failure
  * In step two, the result of step one is optionally adjusted to be a business day using the
  * [[BusinessDayAdjustment]] this adjustment carries.
  *
- * For example, a rule represented by this class might be: "the end date is 5 years after the
- * start date, with end-of-month rule based on the last business day of the month, adjusted to be
- * a valid London business day using the 'ModifiedFollowing' convention".
+ * For example, this class represents a rule such as "the end date is 5 years after the start
+ * date, with end-of-month rule based on the last business day of the month, adjusted to be a
+ * valid London business day using the 'ModifiedFollowing' convention".
  *
  * {{{
  * val adjustment = PeriodAdjustment.ofLastDay(
@@ -57,11 +59,11 @@ import com.opengamma.strata.collect.result.Failure
  * adjustment.flatMap(_.adjust(LocalDate.of(2014, 2, 28), ReferenceData.standard))
  * }}}
  *
- * The order of the two steps matters and is the order of the library being ported: the addition
- * convention runs first and the business day convention runs on its result, both against the
- * '''same''' resolved calendar. Applying them the other way round would move a date off the
- * month end before the end-of-month rule had a chance to read it, which is a different - and
- * wrong - answer for every base date that is the last business day of its month.
+ * The order of the two steps matters: the addition convention runs first and the business day
+ * convention runs on its result, both against the '''same''' resolved calendar. Applying them
+ * the other way round would move a date off the month end before the end-of-month rule had a
+ * chance to read it, which is a different - and wrong - answer for every base date that is the
+ * last business day of its month.
  *
  * ===Reference data is supplied, not looked up===
  *
@@ -98,22 +100,21 @@ import com.opengamma.strata.collect.result.Failure
  * val endDate: RefDataReader[LocalDate] = adjustment.toReader.map(_.adjust(startDate))
  * }}}
  *
- * ===Failure is returned, not thrown===
+ * ===Failure is returned===
  *
- * The Java original returned a bare date and threw `ReferenceDataNotFoundException` where the
- * calendar was absent from the reference data. Here both methods answer with
- * `Either[Failure, _]`, reporting `Failure.MissingData` naming the identifier that could not be
- * found, which is the failure [[HolidayCalendarId.resolve]] produces. Neither step can fail once
- * the calendar is in hand: calendar addition is defined for every date and every period, and
- * every business day convention answers for every date its calendar answers for.
+ * Both [[adjust]] and [[resolve]] answer with `Either[Failure, _]`, and there is exactly one way
+ * either of them fails: the reference data supplied holds no calendar for the identifier the
+ * business day adjustment names, and the failure [[HolidayCalendarId.resolve]] produces names
+ * that identifier. Neither step can fail once the calendar is in hand: calendar addition is
+ * defined for every date and every period, and every business day convention answers for every
+ * date its calendar answers for.
  *
  * ===Construction is validated===
  *
- * This type carries one invariant, the one the validator of the bean being ported carried: a
- * period holding days cannot be combined with a month-based addition convention. Both
- * end-of-month rules are expressed in terms of the month a date falls in, so a period measured
- * partly in days has no defined meaning under them, and the pairing is rejected rather than
- * silently producing a date nobody intended.
+ * This type carries one invariant: a period holding days cannot be combined with a month-based
+ * addition convention. Both end-of-month rules are expressed in terms of the month a date falls
+ * in, so a period measured partly in days has no defined meaning under them, and the pairing is
+ * rejected rather than silently producing a date nobody intended.
  *
  * The primary constructor is private and no `apply` or `copy` exists, so [[PeriodAdjustment.of]]
  * and its two convention-specific forms are the only ways to obtain an instance, and each of
@@ -122,15 +123,15 @@ import com.opengamma.strata.collect.result.Failure
  * Pattern matching is unaffected: `unapply` is available, so
  * `case PeriodAdjustment(period, convention, adjustment) => ...` reads the three fields.
  *
- * The Java bean's builder is not ported. It offered no construction the three factories do not,
- * and being able to build an instance field by field would have meant an instance existing
- * before its invariant had been checked.
+ * There is deliberately no field-by-field builder: an instance assembled a field at a time would
+ * exist before its invariant had been checked, and the three factories reach every adjustment
+ * this type can hold.
  *
  * This type is immutable and thread-safe.
  *
  * @param period  the period to be added, which is added to the input date when the adjustment is
  *   performed
- * @param additionConvention  the addition convention to apply, used to refine the added date -
+ * @param additionConvention  the addition convention to apply, which refines the added date -
  *   most commonly by moving an end date to the last business day of its month when the start
  *   date was the last business day of its own
  * @param adjustment  the business day adjustment applied to the result of the addition, which is
@@ -143,7 +144,27 @@ sealed abstract case class PeriodAdjustment private (
     period: Period,
     additionConvention: PeriodAdditionConvention,
     adjustment: BusinessDayAdjustment)
-    extends Resolvable[DateAdjuster] {
+    extends Resolvable[DateAdjuster]
+    with NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // would carry a period and an addition convention no factory had checked against one another -
+  // can be stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[PeriodAdjustment.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the class file of the implementation carries
+  // a public constructor whatever the source asked for: a class compiled outside this library can
+  // reach it directly, and the check above would admit what it built, its runtime class being the
+  // one class that check admits. What is left to state is the one condition the factories check -
+  // both end-of-month rules are expressed in terms of the month a date falls in, so a period
+  // measured partly in days has no meaning under either of them. It is the factories' own test,
+  // written the same way round, so the two reject the same pairings.
+  JvmClosure.requireInvariant(
+    "a month-based addition convention is paired with a period holding no days",
+    !additionConvention.isMonthBased || period.getDays == 0)
 
   /**
    * Adjusts the date, adding the period and then applying the business day adjustment.
@@ -157,13 +178,13 @@ sealed abstract case class PeriodAdjustment private (
    * adjustment's [[BusinessDayAdjustment]].
    *
    * The holiday calendar is resolved once, before either step, and both steps read that one
-   * calendar - which is what the original did, and what matters for a composite identifier,
-   * whose resolution assembles a calendar from its parts.
+   * calendar, which is what matters for a composite identifier, whose resolution assembles a
+   * calendar from its parts.
    *
    * @param date  the date to adjust
-   * @param refData  the reference data, used to find the holiday calendar
-   * @return the adjusted date, or `Left(Failure.MissingData)` where the reference data does not
-   *   supply the calendar this adjustment names
+   * @param refData  the reference data that supplies the holiday calendar
+   * @return the adjusted date, or the failure reporting that the reference data holds no calendar
+   *   for the identifier this adjustment names
    */
   def adjust(date: LocalDate, refData: ReferenceData): Either[Failure, LocalDate] =
     adjustment.calendar.resolve(refData).map { holCal =>
@@ -183,9 +204,9 @@ sealed abstract case class PeriodAdjustment private (
    * persistence layer. The unresolved adjustment has no such caveat, which is why both forms
    * exist.
    *
-   * @param refData  the reference data, used to find the holiday calendar
-   * @return the adjuster bound to a specific holiday calendar, or `Left(Failure.MissingData)`
-   *   where the reference data does not supply the calendar this adjustment names
+   * @param refData  the reference data that supplies the holiday calendar
+   * @return the adjuster bound to a specific holiday calendar, or the failure reporting that the
+   *   reference data holds no calendar for the identifier this adjustment names
    */
   override def resolve(refData: ReferenceData): Either[Failure, DateAdjuster] =
     adjustment.calendar.resolve(refData).map { holCal =>
@@ -194,7 +215,6 @@ sealed abstract case class PeriodAdjustment private (
         businessDayConvention.adjust(additionConvention.adjust(date, period, holCal), holCal))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a string describing the adjustment.
    *
@@ -206,8 +226,8 @@ sealed abstract case class PeriodAdjustment private (
    * `P3M with LastDay then apply Following using calendar Sat/Sun`, while the adjustment that
    * does nothing at all renders as `P0D`.
    *
-   * This is the grammar of the library being ported, word for word, and it is what the `Show`
-   * instance renders.
+   * This is the grammar the `Show` instance renders as well, so the two ways of putting an
+   * adjustment into a message agree.
    *
    * @return the descriptive string
    */
@@ -226,17 +246,18 @@ sealed abstract case class PeriodAdjustment private (
  *
  * Each factory answers with `ResultNec` - a value or a non-empty chain of failures - because the
  * one invariant of the type is a property of a caller's arguments rather than of its own code.
- * The chain is the accumulating shape every validating factory of this port returns, so a second
- * invariant added here would report alongside the first rather than hiding it, and a caller that
- * only wants the value reaches it with `map` or `flatMap` as it would any other result.
+ * The chain is the accumulating shape every validating factory of this library returns, so a
+ * second invariant added here would report alongside the first rather than hiding it, and a
+ * caller that only wants the value reaches it with `map` or `flatMap` as it would any other
+ * result.
  */
 object PeriodAdjustment {
 
   /**
    * The message reporting a period that holds days under a month-based addition convention.
    *
-   * This is the wording of the validator being ported, character for character, because it
-   * reaches logs and test expectations.
+   * It is held once so that every route into the type, all three factories funnelling through
+   * the same check, reports the rejected pairing in identical words.
    */
   private val MonthBasedMessage: String =
     "Period must not contain days when addition convention is month-based"
@@ -257,13 +278,12 @@ object PeriodAdjustment {
   val NONE: PeriodAdjustment =
     create(Period.ZERO, PeriodAdditionConventions.NONE, BusinessDayAdjustment.NONE)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance that can adjust a date by the specified period.
    *
    * When adjusting a date, the specified period is added to the input date using the specified
-   * addition convention. The business day adjustment will then be used to ensure the result is a
-   * valid business day.
+   * addition convention. The business day adjustment then ensures the result is a valid business
+   * day.
    *
    * The period and the convention have to agree: a period holding days is rejected for either of
    * the two month-based conventions, which is the one invariant of this type.
@@ -276,9 +296,10 @@ object PeriodAdjustment {
    * }}}
    *
    * @param period  the period to add to the input date
-   * @param additionConvention  the convention used to perform the addition
+   * @param additionConvention  the convention that performs the addition
    * @param adjustment  the business day adjustment to apply to the result of the addition
-   * @return the period adjustment, or the failure describing why the arguments describe none
+   * @return the period adjustment, or the failure naming the broken constraint: a period whose
+   *   day amount is not zero cannot be paired with a month-based addition convention
    */
   def of(
       period: Period,
@@ -294,14 +315,15 @@ object PeriodAdjustment {
    *
    * When adjusting a date, the specified period is added to the input date, shifting to the end
    * of the month where the input date is the last day of its own month. The business day
-   * adjustment will then be used to ensure the result is a valid business day.
+   * adjustment then ensures the result is a valid business day.
    *
    * The period must consist only of months and/or years, since the convention applied here is
    * month-based; a period holding days is reported as a failure.
    *
    * @param period  the period to add to the input date
    * @param adjustment  the business day adjustment to apply to the result of the addition
-   * @return the period adjustment, or the failure describing why the arguments describe none
+   * @return the period adjustment, or the failure naming the broken constraint: the convention
+   *   applied here is month-based, so the day amount of the period must be zero
    */
   def ofLastDay(period: Period, adjustment: BusinessDayAdjustment): ResultNec[PeriodAdjustment] =
     of(period, PeriodAdditionConventions.LAST_DAY, adjustment)
@@ -312,28 +334,28 @@ object PeriodAdjustment {
    *
    * When adjusting a date, the specified period is added to the input date, shifting to the last
    * business day of the month where the input date is the last business day of its own month.
-   * The business day adjustment will then be used to ensure the result is a valid business day.
+   * The business day adjustment then ensures the result is a valid business day.
    *
    * The period must consist only of months and/or years, since the convention applied here is
    * month-based; a period holding days is reported as a failure.
    *
    * @param period  the period to add to the input date
    * @param adjustment  the business day adjustment to apply to the result of the addition
-   * @return the period adjustment, or the failure describing why the arguments describe none
+   * @return the period adjustment, or the failure naming the broken constraint: the convention
+   *   applied here is month-based, so the day amount of the period must be zero
    */
   def ofLastBusinessDay(
       period: Period,
       adjustment: BusinessDayAdjustment): ResultNec[PeriodAdjustment] =
     of(period, PeriodAdditionConventions.LAST_BUSINESS_DAY, adjustment)
 
-  //-------------------------------------------------------------------------
   /**
    * Checks that the period agrees with the addition convention it is paired with.
    *
    * A month-based convention is one whose rule is expressed in terms of the month a date falls
    * in, and a period holding days has no defined meaning under such a rule, so the two cannot be
-   * combined. The check reads exactly as the validator of the bean being ported read, and
-   * reports the same wording.
+   * combined: the check passes unless the convention is month-based and the day amount of the
+   * period is not zero.
    *
    * There is nothing worth returning from it - both values it reads are already in the caller's
    * hands - so its outcome carries `Unit`, which combines with further checks exactly as any
@@ -342,7 +364,8 @@ object PeriodAdjustment {
    *
    * @param period  the period to check
    * @param additionConvention  the convention the period is paired with
-   * @return a passing outcome, or the failure describing the pairing that was rejected
+   * @return a passing outcome, or the failure naming the rejected pairing of a month-based
+   *   convention with a period whose day amount is not zero
    */
   private def checkedAdditionConvention(
       period: Period,
@@ -355,9 +378,9 @@ object PeriodAdjustment {
    * This is the only instantiation of the type and it is private, so the factories above and the
    * constant are the only ways into it from outside this file. The constructor of a
    * `sealed abstract case class` is reachable only from inside the file that declares it, and
-   * `new PeriodAdjustment(...) {}` - an anonymous subclass of the abstract case class - is how
-   * it is reached; that is what leaves the type without a public `apply` or `copy` while keeping
-   * the `equals`, `hashCode` and `unapply` a case class provides.
+   * the companion's hidden [[Impl]] subclass is how it is reached; that is what leaves the type
+   * without a public `apply` or `copy` while keeping the `equals`, `hashCode` and `unapply` a
+   * case class provides.
    *
    * The method performs no check of its own, and both of its callers have already established
    * the invariant: [[of]] through [[checkedAdditionConvention]], on behalf of all three
@@ -375,26 +398,45 @@ object PeriodAdjustment {
       period: Period,
       additionConvention: PeriodAdditionConvention,
       adjustment: BusinessDayAdjustment): PeriodAdjustment =
-    new PeriodAdjustment(period, additionConvention, adjustment) {}
+    new Impl(period, additionConvention, adjustment)
 
-  //-------------------------------------------------------------------------
+  /**
+   * The one implementation of a period adjustment.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[PeriodAdjustment]] refuse in its own constructor to be any other implementation.
+   *
+   * @param period  the period to be added
+   * @param additionConvention  the addition convention, already checked against the period
+   * @param adjustment  the business day adjustment applied after the addition
+   */
+  private final class Impl(
+      period: Period,
+      additionConvention: PeriodAdditionConvention,
+      adjustment: BusinessDayAdjustment)
+      extends PeriodAdjustment(period, additionConvention, adjustment)
+
   /**
    * The hashing and equality of adjustments.
    *
    * Taken from the `equals` and `hashCode` of the case class, which compare the three fields by
    * their own equality - the amount of a period, the identity of an addition convention, and the
    * convention and calendar name of a business day adjustment. No field holds a `Double`, so
-   * there is no bit-pattern comparison to arrange, and equality is exactly the structural
-   * equality the bean being ported computed from the same three properties.
+   * there is no bit-pattern comparison to arrange, and equality is structural over the three
+   * fields.
    *
    * Note that period equality is that of `java.time.Period`, which is equality of its three
    * amounts rather than of the length of time they denote: an adjustment adding `P1Y` is not
-   * equal to one adding `P12M`, which is the behaviour the original had for the same reason.
+   * equal to one adding `P12M`.
    *
    * This is the type's only equality-bearing instance, and `Eq[PeriodAdjustment]` is obtained
-   * from it by subtyping rather than declared separately. There is no `Order`: the bean being
-   * ported is not `Comparable`, and an ordering over a period, a convention and a calendar would
-   * be this port's invention.
+   * from it by subtyping rather than declared separately. No `Order` is declared, because an
+   * ordering over a period, an addition convention and a calendar would have to invent a
+   * precedence among the three.
    *
    * @return the hashing of adjustments
    */
@@ -403,14 +445,13 @@ object PeriodAdjustment {
   /**
    * The rendering of adjustments as text.
    *
-   * Renders what `toString` renders, which is the grammar of the Java original, so the two ways
-   * of putting an adjustment into a message agree.
+   * Renders what `toString` renders, so the two ways of putting an adjustment into a message
+   * agree.
    *
    * @return the rendering of an adjustment
    */
   implicit val show: Show[PeriodAdjustment] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The field shape both codecs are derived from, which the decoder reads before validation.
    *
@@ -419,8 +460,8 @@ object PeriodAdjustment {
    * same two steps in reverse, so both codecs below derive from this one declaration and the
    * JSON shape of an adjustment is stated exactly once. It is private and never returned - the
    * only values of it that exist are the ones the two codecs build. Its field names are the JSON
-   * keys, and they are the names of the three fields of [[PeriodAdjustment]] itself, which are
-   * the names of the three properties of the bean being ported, in their declaration order.
+   * keys, and they are the names of the three fields of [[PeriodAdjustment]] itself, in their
+   * declaration order.
    *
    * @param period  the period, carried as the ISO `P3M` string form by the codec of its own type
    * @param additionConvention  the addition convention, carried as its canonical name
@@ -430,11 +471,10 @@ object PeriodAdjustment {
       period: Period,
       additionConvention: PeriodAdditionConvention,
       adjustment: BusinessDayAdjustment)
+      extends NoJavaSerialization
 
-  /** The derived decoder of the raw field shape, used by the validating decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
   /**
@@ -458,8 +498,8 @@ object PeriodAdjustment {
    *
    * No part of the encoding inspects a class while the program runs, and two adjustments that
    * are equal encode to identical bytes. The result is wrapped so that a field holding no value
-   * would be omitted, which is the policy every product of this port follows - this type has no
-   * optional field, so the wrapping changes nothing about its output and exists so that the
+   * would be omitted, which is the policy every product of this library follows - this type has
+   * no optional field, so the wrapping changes nothing about its output and exists so that the
    * policy holds without exception.
    *
    * @return the JSON encoding of an adjustment

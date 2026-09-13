@@ -16,6 +16,7 @@ import io.circe.generic.semiauto.deriveDecoder
 import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 
 /**
@@ -27,13 +28,13 @@ import com.opengamma.strata.collect.json.Codecs
  *
  * ===The sign carries the direction===
  *
- * A payment has no separate pay-or-receive flag; the sign of the amount is the direction, exactly
- * as in the type being ported. A '''negative''' amount is money to be paid away and a
- * '''positive''' amount money to be received, so a portfolio of payments is summed without any
- * per-payment inspection of direction. The two factories [[Payment.ofPay]] and
- * [[Payment.ofReceive]] exist for callers that know the direction but hold an amount of unknown
- * sign, and each normalises the sign it needs rather than negating unconditionally - see their
- * own documentation, since the distinction is observable.
+ * A payment has no separate pay-or-receive flag; the sign of the amount is the direction. A
+ * '''negative''' amount is money to be paid away and a '''positive''' amount money to be
+ * received, so a portfolio of payments is summed without any per-payment inspection of
+ * direction. The two factories [[Payment.ofPay]] and [[Payment.ofReceive]] exist for callers
+ * that know the direction but hold an amount of unknown sign, and each normalises the sign it
+ * needs rather than negating unconditionally - see their own documentation, since the
+ * distinction is observable.
  *
  * ===Construction is total, and how the amount is obtained decides where failure lives===
  *
@@ -54,10 +55,7 @@ import com.opengamma.strata.collect.json.Codecs
  * `ofPay`, `ofReceive`, the constructor and `copy` - takes an amount that has already been
  * checked and is consequently total.
  *
- * The generated builder of the bean being ported is not carried over; `copy` replaces it, with
- * the compiler rather than a run-time check ensuring that both fields are supplied. The
- * meta-bean, the property map and Java serialization are likewise not carried over: the JSON
- * codec below is this port's single serialized form.
+ * The JSON codec published by the companion is the serialized form of a payment.
  *
  * ===Arithmetic, adjustment and conversion===
  *
@@ -69,10 +67,9 @@ import com.opengamma.strata.collect.json.Codecs
  *
  * Both [[adjustDate]] and [[convertedTo]] return '''this''' instance where the operation asks for
  * no change - an adjuster that leaves the date alone, or a conversion into the currency the
- * payment already has. That is the behaviour of the type being ported, whose test asserts it by
- * reference identity, and it is preserved here: the short-circuit is part of the contract and not
- * merely an optimisation, since it is what lets a payment be pushed through a chain of
- * adjustments without allocating at every step.
+ * payment already has. The short-circuit is part of the contract and not merely an optimisation,
+ * since it is what lets a payment be pushed through a chain of adjustments without allocating at
+ * every step.
  *
  * ===Equality, ordering and text===
  *
@@ -81,8 +78,8 @@ import com.opengamma.strata.collect.json.Codecs
  * and a negative zero differs from a positive zero - and the date by its own. No bit-pattern
  * comparison is arranged here, deliberately: the only `Double` a payment holds is inside the
  * amount, and one source of truth for the equality of a double belongs with the type that holds
- * it. The companion publishes a `Hash` and a `Show` and, following the type being ported, which
- * is not `Comparable`, no `Order`.
+ * it. The companion publishes a `Hash` and a `Show`, and no `Order`, since whether an amount or
+ * a date ranks first depends on what the caller is doing.
  *
  * Instances are immutable and every operation is a pure function of the instance and its
  * arguments, so a payment may be shared freely between threads.
@@ -94,14 +91,15 @@ import com.opengamma.strata.collect.json.Codecs
  * @see [[CurrencyAmount]] for the amount held and for what a valid amount is
  * @see [[FxConvertible]] for the conversion contract this type implements
  */
-final case class Payment(value: CurrencyAmount, date: LocalDate) extends FxConvertible[Payment] {
+final case class Payment(value: CurrencyAmount, date: LocalDate)
+    extends FxConvertible[Payment]
+    with NoJavaSerialization {
 
   /**
    * Gets the currency of the payment.
    *
-   * This is `value.currency`, offered under the name the type being ported gave it so that a call
-   * site reads unchanged. The currency is a property of the amount rather than of the payment, so
-   * changing it means converting the payment - see [[convertedTo]].
+   * This is `value.currency`. The currency is a property of the amount rather than of the
+   * payment, so changing it means converting the payment - see [[convertedTo]].
    *
    * @return the currency of the amount paid
    */
@@ -110,44 +108,39 @@ final case class Payment(value: CurrencyAmount, date: LocalDate) extends FxConve
   /**
    * Gets the amount of the payment.
    *
-   * This is `value.amount`, offered under the name the type being ported gave it. The amount is
-   * signed: negative to pay, positive to receive.
+   * This is `value.amount`. The amount is signed: negative to pay, positive to receive.
    *
    * @return the signed amount paid, in the currency of the payment
    */
   def getAmount: Double = value.amount
 
-  //-------------------------------------------------------------------------
   /**
    * Adjusts the payment date using the specified function.
    *
    * The function is applied to the date and the result becomes the date of the payment returned;
    * the amount is untouched. Where the function returns the date it was given, '''this''' payment
-   * is returned rather than an equal copy of it, which is the behaviour of the type being ported
-   * and is asserted by reference identity in its test. The function is expected to be pure; it is
+   * is returned rather than an equal copy of it. The function is expected to be pure; it is
    * applied exactly once, to this payment's date.
    *
-   * ===Why a function and not a `TemporalAdjuster`===
+   * ===The adjuster is a date function===
    *
-   * The type being ported took a `java.time.temporal.TemporalAdjuster` here. This port takes the
-   * Scala function type instead, and takes '''only''' that, which keeps every idiomatic call
-   * shape available - a placeholder lambda, an explicitly typed lambda, and a method converted to
-   * a function - because the parameter type is unambiguous:
+   * The parameter is the Scala function type and '''only''' that, which keeps every idiomatic
+   * call shape available - a placeholder lambda, an explicitly typed lambda, and a method
+   * converted to a function - because the parameter type is unambiguous:
    *
    * {{{
    * payment.adjustDate(_.plusDays(1))
    * payment.adjustDate(date => if (date.getDayOfWeek == SATURDAY) date.plusDays(2) else date)
    * }}}
    *
-   * A second, overloaded method taking a `TemporalAdjuster` was measured and rejected: because a
-   * `TemporalAdjuster` is itself a single-abstract-method type, its presence stops the compiler
-   * inferring the parameter type of an un-annotated lambda and stops a method being converted to
-   * a function at the call site, so it would have cost the mandated form exactly the two shapes
-   * above. Nothing is lost by leaving it out, since both kinds of adjuster reach this method in
-   * one step:
+   * There is no overload taking a `TemporalAdjuster`: because a `TemporalAdjuster` is itself a
+   * single-abstract-method type, its presence would stop the parameter type of an un-annotated
+   * lambda being inferred and stop a method being converted to a function at the call site, so
+   * it would cost exactly the two shapes above. Both kinds of adjuster reach this method in one
+   * step regardless:
    *
    * {{{
-   * // any java.time adjuster, applied through `LocalDate.with` - `with` is a Scala keyword,
+   * // any temporal adjuster, applied through `LocalDate.with` - `with` is a Scala keyword,
    * // hence the back-ticks
    * payment.adjustDate(_.`with`(TemporalAdjusters.lastDayOfMonth))
    *
@@ -166,15 +159,14 @@ final case class Payment(value: CurrencyAmount, date: LocalDate) extends FxConve
     if (adjusted == date) this else copy(date = adjusted)
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a payment with the amount negated.
    *
    * A payment to be made becomes one to be received and the other way about, on the same date.
    * The negation is that of [[CurrencyAmount.negated]], so it is unconditional - applying it
-   * twice returns to the original amount - and it is the operation to use where the direction of
-   * a known payment is reversed. Where instead the direction is known and the sign of the amount
-   * is not, use [[Payment.ofPay]] or [[Payment.ofReceive]].
+   * twice returns the amount it started from - and it is the operation to use where the direction
+   * of a known payment is reversed. Where instead the direction is known and the sign of the
+   * amount is not, use [[Payment.ofPay]] or [[Payment.ofReceive]].
    *
    * This instance is immutable and unaffected by this method.
    *
@@ -189,11 +181,10 @@ final case class Payment(value: CurrencyAmount, date: LocalDate) extends FxConve
    * the date is unchanged - a conversion changes the currency of a payment and never when it is
    * made. A payment already in the requested currency is returned as '''this''' instance and the
    * provider is not consulted, so such a conversion succeeds even under
-   * [[FxRateProvider.noConversion]]; that is the behaviour of the type being ported.
+   * [[FxRateProvider.noConversion]].
    *
-   * Where the type being ported declared that a missing rate raised a runtime exception, here it
-   * is a value: the converted payment is a `Right`, and a rate the provider cannot supply is the
-   * `Left` the provider reported, typically a
+   * The converted payment is a `Right`, and a rate the provider cannot supply is the `Left` the
+   * provider reported, typically a
    * [[com.opengamma.strata.collect.result.Failure.CurrencyConversion]] naming the pair.
    *
    * {{{
@@ -215,15 +206,13 @@ final case class Payment(value: CurrencyAmount, date: LocalDate) extends FxConve
       value.convertedTo(resultCurrency, rateProvider).map(converted => Payment.of(converted, date))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns this payment as text.
    *
-   * The form is the one the Joda-Beans generated bean produced, the two fields named in
-   * declaration order between braces, as in `Payment{value=GBP 1000, date=2015-06-30}`, with the
-   * amount rendered by [[CurrencyAmount.toString]] and the date in ISO-8601. It is kept exactly
-   * so that ported code and the logs it writes read as they did before, and it is what the `Show`
-   * instance of the companion renders.
+   * The two fields are named in declaration order between braces, as in
+   * `Payment{value=GBP 1000, date=2015-06-30}`, with the amount rendered by
+   * [[CurrencyAmount.toString]] and the date in ISO-8601. It is what the `Show` instance of the
+   * companion renders.
    *
    * @return the rendering of this payment
    */
@@ -233,19 +222,17 @@ final case class Payment(value: CurrencyAmount, date: LocalDate) extends FxConve
 /**
  * The factories, typeclass instances and JSON form of [[Payment]].
  *
- * The four factories are those of the type being ported, under the names it gave them, and they
- * differ only in how the amount reaches them: from a currency and a raw number, from an amount
- * that has already been checked, or from such an amount whose sign is to be normalised in one
- * direction or the other. The constructor and `copy` of the case class are public alongside them,
- * since a payment imposes no invariant of its own, so a caller holding an amount and a date needs
- * no factory at all.
+ * The four factories differ only in how the amount reaches them: from a currency and a raw
+ * number, from an amount that has already been checked, or from such an amount whose sign is to
+ * be normalised in one direction or the other. The constructor and `copy` of the case class are
+ * public alongside them, since a payment imposes no invariant of its own, so a caller holding an
+ * amount and a date needs no factory at all.
  *
  * Two typeclass instances are published, and exactly two: a `Hash`, which is the single
  * equality-bearing instance of the type - `Hash` extends `Eq`, so declaring an `Eq` as well would
  * leave two instances that could disagree and one of them ambiguous - and a `Show`. There is
- * deliberately no `Order`: the bean being ported is not `Comparable`, and an ordering of payments
- * would be this port's invention, since whether an amount or a date ranks first depends on what
- * the caller is doing. A caller that needs one sorts by the field it means, as in
+ * deliberately no `Order`, since whether an amount or a date ranks first depends on what the
+ * caller is doing. A caller that needs one sorts by the field it means, as in
  * `payments.sortBy(_.date)`.
  */
 object Payment {
@@ -330,7 +317,6 @@ object Payment {
    */
   def ofReceive(value: CurrencyAmount, date: LocalDate): Payment = Payment(value.positive, date)
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of payments.
    *
@@ -339,7 +325,7 @@ object Payment {
    * that an amount which is not a number equals itself and a negative zero is distinct from a
    * positive zero, and the date by the equality of the platform. Nothing about the hash depends on
    * where an instance sits in memory, so the hash of a payment is the same in every run of every
-   * program, which is what the byte-stability properties of the test suite rely on.
+   * program.
    *
    * This is the type's only equality-bearing instance; `Eq[Payment]` is obtained from it by
    * subtyping rather than declared separately. There is no `Order`, as the companion's own
@@ -353,20 +339,19 @@ object Payment {
    * The rendering of payments as text.
    *
    * Renders what [[Payment.toString]] renders, the `Payment{value=GBP 1000, date=2015-06-30}`
-   * form of the bean being ported, so the two ways of putting a payment into a message agree.
+   * form, so the two ways of putting a payment into a message agree.
    *
    * @return the rendering of a payment
    */
   implicit val show: Show[Payment] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The JSON encoding of payments.
    *
    * The encoding is derived when this file is compiled, so no part of it inspects a class while
-   * the program runs. A payment encodes as an object holding its two fields under the names the
-   * Java bean declared, in declaration order, each written by the codec its own type publishes -
-   * the amount as the object of [[CurrencyAmount]], and the date as an ISO-8601 string:
+   * the program runs. A payment encodes as an object holding its two fields under their own
+   * names, in declaration order, each written by the codec its own type publishes - the amount as
+   * the object of [[CurrencyAmount]], and the date as an ISO-8601 string:
    *
    * {{{
    * {"value":{"currency":"GBP","amount":1000.0},"date":"2015-06-30"}
@@ -374,10 +359,10 @@ object Payment {
    *
    * An amount outside the real numbers is written by the amount's own codec as the tagged string
    * that codec defines - `"Infinity"` for an infinite payment - so every payment this type admits
-   * survives a round trip. Neither field is optional, so there is no absent value to drop; the
-   * encoder is wrapped in the single policy of this port for products all the same, so that the
-   * rule holds of every product encoder without a reader having to check which products have an
-   * optional field today.
+   * survives a round trip. A payment holds both of its fields, the amount and the date, so
+   * nothing is ever omitted here; the encoder is wrapped in the same policy every product encoder
+   * of this library carries, which omits a field holding no value, so that the rule holds of
+   * every product encoder alike.
    *
    * @return the JSON encoding of a payment
    */

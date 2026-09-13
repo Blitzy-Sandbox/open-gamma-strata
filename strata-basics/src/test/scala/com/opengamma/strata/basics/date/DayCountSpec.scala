@@ -37,108 +37,17 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 import com.opengamma.strata.collect.testkit.TestHelper.date
 
 /**
- * Test [[DayCount]], ported from the Java `DayCountTest`.
+ * Test [[DayCount]].
  *
- * This is the largest test class of the folder being ported - 49 annotated methods, 26 of them
- * plain and 23 parameterised over nine data providers - and it is the front line for day-count
- * correctness. Every method keeps the name it had, so the method-level traceability recorded in
- * `manifest/java-test-mapping.csv` stays one-to-one, and each parameterised method becomes one
- * test whose table is driven inside it rather than several tests: the roster of names is the
- * join key the acceptance gate uses, so it is closed and exact.
+ * The two numeric tables mark a row on which the `30/360` family applies no day-of-month
+ * adjustment, and the test body computes the unadjusted expectation for such a row instead of
+ * reading a literal. The day-count marker is the integer zero, so an expectation that evaluates
+ * to zero is read as the marker and recomputed; [[DayCountSpec.SIMPLE_30_360DAYS]] names the one
+ * row where that happens.
  *
- * ===The nine providers===
- *
- * Every provider is transcribed in full, and the row counts here are the counts in the Java
- * source rather than round numbers:
- *
- *   - `data_types` - the 21 standard members, driving `test_null`, `test_wrongOrder`,
- *     `test_same`, `test_halfYear` and `test_wholeYear`;
- *   - `data_yearFraction` - '''201''' rows, driving `test_yearFraction`,
- *     `test_relativeYearFraction` and `test_relativeYearFraction_reverse`;
- *   - `data_days` - '''185''' rows;
- *   - `data_30U360` - 22 rows, each carrying the expectation for the flag set both ways,
- *     driving four tests;
- *   - `data_30E360ISDA` - 19 rows, each carrying the expectation for the second date being the
- *     maturity and not being it, driving two tests;
- *   - `data_ACTACTAFB` - '''57''' rows, with the commentary of the original provider kept
- *     because it records how an under-specified rule was interpreted;
- *   - `data_ACT365L` - 12 rows;
- *   - `data_name` - the 21 names, driving five tests;
- *   - `data_lenient` - '''80''' rows.
- *
- * The last count is worth a word, because it is easy to confuse with another. 80 is the number
- * of rows in the Java `data_lenient` provider, which is what this spec drives; 67 is the number
- * of ordered rewrite rules in the configuration resource those rows exercise, which the port
- * transcribes into `DayCount` as code. Both are asserted: the 80 rows here, and the size and
- * replacement order of the 67-row table in `test_extendedEnum`, so neither a lost row nor a
- * reordered rule can pass unnoticed.
- *
- * ===The sentinel in the numeric providers===
- *
- * `data_yearFraction` marks a row on which the `30/360` family applies no day-of-month
- * adjustment with the sentinel `SIMPLE_30_360`, and `data_days` does the same with
- * `SIMPLE_30_360DAYS`; the test body then computes the unadjusted expectation for such a row.
- * That branching is reproduced here exactly rather than expanded into literals, because it is
- * load-bearing in a way a reader would not guess: the integer sentinel is zero, so a row whose
- * transcribed expectation happens to '''be''' zero is also rewritten, and `data_days` contains
- * one such row - `30E/365` from 2012-02-29 to 2016-02-29, written as
- * `calc360Days(2012, 2, 30, 2012, 2, 30)`, which is zero and whose correct answer, 1440, the
- * sentinel branch supplies. Expanding the sentinels would have silently asserted zero there.
- *
- * ===How the shape of the port changes the assertions===
- *
- *   - `test_null` passed the absent reference in each of six argument positions and asserted a
- *     throw. The `notNull` family of the argument checker that raised those throws has no target
- *     in this port, because the argument it guarded against cannot be expressed: both dates are
- *     required parameters of a required type. The case is asserted as a compile-time proof - six
- *     of them, one per Java position - and no `null` is written anywhere in this file.
- *   - `test_wrongOrder` stays a throw, and deliberately so. Supplying the dates out of order
- *     breaks the documented contract of `yearFraction` and `days` rather than handing them data
- *     they might legitimately be asked about, which is the classification AAP 0.3.3 applies: a
- *     caller-contract violation is raised through `ArgCheck`, and only a failure that depends on
- *     the data of the arguments is returned as a value. The same classification keeps the
- *     absence of schedule information a throw (see `test_scheduleInfo`) while making
- *     unresolvable text a `Left` (see `test_of_lookup_notFound`).
- *   - `test_of_lookup` asserted one throwing factory, `DayCount.of`. Two members replaced it -
- *     [[DayCount.valueOf]], the exact lookup returning an `Option`, and [[DayCount.parse]], the
- *     lenient lookup returning `EitherNec[Failure, _]` - and both are asserted wherever Java
- *     asserted `of`, so the two entry points cannot drift apart.
- *   - `test_extendedEnum` read the registry the Java type assembled by loading a configuration
- *     resource from the class path. There is no registry here: the family is closed and the
- *     tables are code (AAP D-2 / Rule 4). The counterpart of the Java `lookupAll` is the union
- *     of `byCanonicalName` and `byUpperName`, and of `lookupAllNormalized` is
- *     `byCanonicalName`; both are asserted by their exact key sets, along with the two groups
- *     of external spellings and the ordered lenient table, because a row lost in transcription
- *     would otherwise be invisible.
- *   - `test_lenientLookup_constants` reflected over the public fields of `DayCounts`. This port
- *     performs no reflection of any kind, so the 21 identifiers are written out as a table; that
- *     they are exactly the members is asserted in `coverage`.
- *   - `test_relativeYearFraction_defaultMethod` built an anonymous subclass of `DayCount`. The
- *     family is sealed, so that form is unrepresentable here; the property the Java method was
- *     really about is asserted over real members instead.
- *   - `test_scheduleInfo` asserted that four accessors of the bare interface raise. They are
- *     total in this port and answer `None` (AAP 0.6.1), so that is what is asserted - together
- *     with the two refusals that did '''not''' move: a day count asked to calculate against a
- *     schedule that cannot tell it what its rule is defined in terms of, and `Act/Act ICMA`
- *     asked to accrue over a schedule whose frequency has no whole number of events in a year,
- *     which is a complete schedule that the convention is none the less not defined over.
- *   - `coverage` invoked a private constructor and read the values of a Java enum reflectively,
- *     to satisfy a coverage tool. Neither has a target here, so what they stood for is asserted
- *     directly: the constants are the members, `values` is closed and in declaration order, and
- *     the typeclass instances agree with each other.
- *   - `test_serialization` round-tripped through Java serialization and through the bean
- *     library's own encodings, all three reflective. None is a dependency of this port, so the
- *     round trip is asserted through the circe codec that replaced them, whose document for a
- *     standard member is the bare canonical name.
- *   - `test_jodaConvert` asserted a round trip through the reflective string-conversion library
- *     the type was annotated for. Those two annotations became `Show` and [[DayCount.parse]].
- *
- * `Bus/252` is covered by `Business252DayCountSpec`, the 1e-9 comparison against the captured
- * Java baseline by `parity.DayCountParitySpec`, the cross-family alias sweep by
- * `NamedEnumClosedSpec`, the equality of the transcribed tables with the captured manifest by
- * `ReferenceDataManifestSpec`, and the property-based codec round trip by
- * `json.JsonRoundTripSpec`. This spec carries the hand-written Java expectations and nothing
- * else.
+ * A broken call is refused and a data-dependent failure is returned: dates out of order and
+ * absent schedule information raise through `ArgCheck`, while text that names no day count is
+ * reported as a value. `Bus/252` is covered by `Business252DayCountSpec`.
  */
 class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks with TimeLimits {
 
@@ -146,14 +55,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   test("test_null") {
-    // Reinterpretation. The Java method made six calls - `yearFraction` and `days`, each with
-    // the absent reference first, second and in both positions - and asserted that every one of
-    // them raised. What raised was the `notNull` guard of the argument checker, which this port
-    // does not carry, because what it guarded against is not expressible: both dates are
-    // required parameters of a required type, so a call that omits one, supplies one, or
-    // supplies something that is not a date is rejected when this spec is compiled rather than
-    // when it runs. Each of the six Java positions therefore becomes a compile-time proof, and
-    // no `null` appears anywhere in this file.
+    // Both dates are required parameters of a required type, so a call that omits one or supplies
+    // something else is rejected at compile time; each assertion states that of one expression.
     assertDoesNotCompile("DayCounts.ACT_360.yearFraction()")
     assertDoesNotCompile("DayCounts.ACT_360.yearFraction(java.time.LocalDate.of(2010, 1, 1))")
     assertDoesNotCompile("""DayCounts.ACT_360.yearFraction("2010-01-01", "2010-01-02")""")
@@ -161,9 +64,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     assertDoesNotCompile("DayCounts.ACT_360.days(java.time.LocalDate.of(2010, 1, 1))")
     assertDoesNotCompile("DayCounts.ACT_360.days(2010, 1, 1)")
 
-    // The other half of what the Java method established: given the two dates it requires, every
-    // member of the family answers and none of them raises. The schedule information is the
-    // whole-year fixture, so the four members that read something are given what they read.
+    // The schedule information is the whole-year fixture, so the four members that read
+    // something are given what they read.
     forAll(dataTypes) { (dayCount: DayCount) =>
       withClue(s"${dayCount.name}: ") {
         noException should be thrownBy dayCount.yearFraction(JAN_01, JUL_01, wholeYearInfo)
@@ -175,13 +77,9 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   test("test_wrongOrder") {
     forAll(dataTypes) { (dayCount: DayCount) =>
-      // A sanctioned refusal rather than a returned failure. `yearFraction` and `days` are
-      // documented to take their dates in time-line order, so a reversed pair is a broken call
-      // and not an input whose data happens to be unanswerable - the distinction AAP 0.3.3
-      // draws, and the reason this precondition stays an `IllegalArgumentException` raised
-      // through `ArgCheck` exactly as the Java implementation raised it. The member that
-      // accepts a reversed pair is `relativeYearFraction`, which bypasses this check on
-      // purpose; `test_relativeYearFraction_reverse` is where that is asserted.
+      // The precondition: `yearFraction` and `days` are documented to take their dates in
+      // time-line order, so a reversed pair is a broken call and is raised through `ArgCheck`.
+      // `relativeYearFraction` is the member that accepts one.
       withClue(s"${dayCount.name} yearFraction: ") {
         val thrown = intercept[IllegalArgumentException](dayCount.yearFraction(JAN_02, JAN_01))
         thrown.getMessage shouldBe DatesOutOfOrderMessage
@@ -197,16 +95,12 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     forAll(dataTypes) { (dayCount: DayCount) =>
       withClue(s"${dayCount.name}: ") {
         if (dayCount != DayCounts.ONE_ONE) {
-          // A period of no length is no fraction of a year and no days, for every member but
-          // one. Note that this holds for the four members that read schedule information as
-          // well, and with the two-argument overload that carries none: each of them answers
-          // for equal dates before reading anything, which is the short circuit the Java
-          // implementation had and the reason this case needs no fixture.
+          // Every member but one answers for equal dates before reading any schedule
+          // information, which is why the two-argument overload suffices here.
           dayCount.yearFraction(JAN_02, JAN_02) shouldBe 0d
           dayCount.days(JAN_02, JAN_02) shouldBe 0
         } else {
-          // `1/1` is the member the Java method excluded, because it answers one whatever the
-          // dates. Asserting what it does answer states why it is excluded.
+          // `1/1` answers one whatever the dates, which is why the sanity tests exclude it.
           dayCount.yearFraction(JAN_02, JAN_02) shouldBe 1d
           dayCount.days(JAN_02, JAN_02) shouldBe 1
         }
@@ -215,8 +109,6 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_halfYear") {
-    // A sanity check that half a year is a fraction close to a half, for every rule. The
-    // tolerances are the Java ones: a hundredth of a year, and two days on a count of 182.
     forAll(dataTypes) { (dayCount: DayCount) =>
       if (dayCount != DayCounts.ONE_ONE) {
         withClue(s"${dayCount.name}: ") {
@@ -230,9 +122,7 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_wholeYear") {
-    // The same sanity check over a whole year, with the Java tolerances of two hundredths of a
-    // year and five days on a count of 365. The `30/360` members are the ones that use the
-    // whole of the day tolerance, answering 360.
+    // The `30/360` members use the whole of the five-day tolerance, answering 360.
     forAll(dataTypes) { (dayCount: DayCount) =>
       if (dayCount != DayCounts.ONE_ONE) {
         withClue(s"${dayCount.name}: ") {
@@ -247,9 +137,7 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   test("test_yearFraction") {
-    // The sentinel is the not-a-number value, which is how one row can be marked as carrying no
-    // expectation of its own: the Java body compared the boxed expectation against the boxed
-    // constant by identity, and testing for not-a-number is the same test made on the primitive.
+    // The year-fraction marker is not-a-number, which is what `expectedFraction` tests for.
     SIMPLE_30_360.isNaN shouldBe true
 
     forAll(dataYearFraction) {
@@ -264,8 +152,7 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_relativeYearFraction") {
-    // Dates in order: the relative form agrees with the plain one to the last bit, because it
-    // reaches the same calculation without the order check in front of it.
+    // The relative form reaches the same calculation without the order check in front of it.
     forAll(dataYearFraction) {
       (dayCount: DayCount, y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int, value: Double) =>
         val expected = expectedFraction(value, y1, m1, d1, y2, m2, d2)
@@ -278,9 +165,7 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_relativeYearFraction_reverse") {
-    // Dates reversed: the relative form answers the negation where the plain form refuses, which
-    // is the whole point of the two-layer split between the public method that checks the order
-    // and the calculation that does not.
+    // Dates reversed: the relative form answers the negation where the plain form refuses.
     forAll(dataYearFraction) {
       (dayCount: DayCount, y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int, value: Double) =>
         val expected = expectedFraction(value, y1, m1, d1, y2, m2, d2)
@@ -309,7 +194,7 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   test("test_yearFraction_30U360_notEom") {
     // `30U/360` is the one member that reads the end-of-month flag, choosing between two
     // day-of-month rules by it. With the flag clear it behaves as `30/360 ISDA`, which is why
-    // the first expectation column of the provider is shared with `test_yearFraction_30360ISDA`.
+    // both read the first expectation column.
     forAll(data30U360) {
       (y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int, valueNotEom: Double, valueEom: Double) =>
         val expected = expectedFraction(valueNotEom, y1, m1, d1, y2, m2, d2)
@@ -322,8 +207,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_yearFraction_30U360_eom") {
-    // The same member with the flag set, which is where the end-of-February rule applies and
-    // the second expectation column parts company with the first.
+    // The same member with the flag set, where the end-of-February rule applies and the second
+    // expectation column parts company with the first.
     forAll(data30U360) {
       (y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int, valueNotEom: Double, valueEom: Double) =>
         val expected = expectedFraction(valueEom, y1, m1, d1, y2, m2, d2)
@@ -336,9 +221,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_yearFraction_30360ISDA") {
-    // `30/360 ISDA` reads no schedule information at all, so it answers the first expectation
-    // column even though the flag is set - which is exactly what this test, driven with the
-    // flag set, establishes.
+    // `30/360 ISDA` reads no schedule information, so it answers the first expectation column
+    // even though this test sets the flag.
     forAll(data30U360) {
       (y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int, valueNotEom: Double, valueEom: Double) =>
         val expected = expectedFraction(valueNotEom, y1, m1, d1, y2, m2, d2)
@@ -351,8 +235,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_yearFraction_30U360EOM") {
-    // `30U/360 EOM` applies the end-of-February rule unconditionally, reading no flag, so it
-    // answers the second expectation column.
+    // `30U/360 EOM` applies the end-of-February rule unconditionally, so it answers the second
+    // expectation column whatever the flag says.
     forAll(data30U360) {
       (y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int, valueNotEom: Double, valueEom: Double) =>
         val expected = expectedFraction(valueEom, y1, m1, d1, y2, m2, d2)
@@ -366,16 +250,10 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   test("test_yearFraction_30E360ISDA_notMaturity") {
-    // `30E/360 ISDA` changes a second day-of-month at the end of February to 30 unless that
-    // date is the maturity of the schedule, so it reads the end date - and only in that one
-    // case, which is the short circuit the ported expression performs.
-    //
-    // The Java fixture for this half of the provider carried no end date at all and relied on
-    // the comparison against the absent reference answering "not the maturity". An absent end
-    // date is `None` here, and the port refuses to guess for a member that has reached the
-    // point of reading it, so the fixture states the same fact positively: the schedule ends
-    // somewhere other than the second date. Four rows of this provider - those whose second
-    // date is the last day of February - are the ones that depend on it.
+    // `30E/360 ISDA` changes a second day-of-month at the end of February to 30 unless that date
+    // is the maturity, so it reads the end date, and only in that case. An end date it reaches
+    // the point of reading may not be absent, so the fixture states the schedule ending a year
+    // after the second date; the four rows ending on the last day of February depend on it.
     forAll(data30E360ISDA) {
       (y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int, valueNotMaturity: Double, valueMaturity: Double) =>
         val expected = expectedFraction(valueNotMaturity, y1, m1, d1, y2, m2, d2)
@@ -389,8 +267,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_yearFraction_30E360ISDA_maturity") {
-    // The same provider with the second date declared to be the maturity, which suppresses the
-    // end-of-February rule on it. The fixture is the Java one field for field.
+    // The same rows with the second date declared to be the maturity, which suppresses the
+    // end-of-February rule on it.
     forAll(data30E360ISDA) {
       (y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int, valueNotMaturity: Double, valueMaturity: Double) =>
         val expected = expectedFraction(valueMaturity, y1, m1, d1, y2, m2, d2)
@@ -405,10 +283,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   test("test_yearFraction_ACTACTAFB") {
-    // The rule is poorly specified, and these rows are the interpretation the library being
-    // ported settled on - including the cases where it deliberately departs from the ISDA
-    // clarification, which the provider records in its own commentary. They are transcribed
-    // unchanged, because they are the specification of this member's behaviour.
+    // The rule is under-specified, so these rows, and the reading recorded with the table, are
+    // the specification of this member's behaviour.
     forAll(dataACTACTAFB) { (y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int, expected: Double) =>
       val date1 = LocalDate.of(y1, m1, d1)
       val date2 = LocalDate.of(y2, m2, d2)
@@ -446,12 +322,9 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   //-------------------------------------------------------------------------
-  // The canonical `Act/Act ICMA` worked examples. Each builds its schedule by hand and states
-  // the expected fraction as the arithmetic of the nominal periods it is defined over, and each
-  // is transcribed date for date and term for term: these are the examples the whole day-count
-  // baseline is trusted on, so a "simplified" expectation here would remove the only
-  // independent statement of what the answer should be. The nominal periods each case relies on
-  // are named in the comment the Java method carried.
+  // The canonical `Act/Act ICMA` worked examples. Each states its expectation as the arithmetic
+  // of the nominal periods the convention is defined over - named above the case where it spans
+  // more than one - so a "simplified" expectation would remove the statement of the answer.
   test("test_actActIcma_singlePeriod") {
     val start = LocalDate.of(2003, 11, 1)
     val end = LocalDate.of(2004, 5, 1)
@@ -574,9 +447,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   // The official `Act/Act` examples - http://www.isda.org/c_and_a/pdf/ACT-ACT-ISDA-1999.pdf -
-  // each asserting the three `Act/Act` members against the same pair of dates, which is what
-  // makes them worth keeping as one test per case rather than one per member: the three answers
-  // differing in the documented way is the statement being made.
+  // each asserting the three `Act/Act` members against one pair of dates, because the statement
+  // being made is that the three answers differ in the documented way.
   test("test_actAct_isdaTestCase_normal") {
     val start = LocalDate.of(2003, 11, 1)
     val end = LocalDate.of(2004, 5, 1)
@@ -590,10 +462,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     val start = LocalDate.of(1999, 2, 1)
     val firstRegular = LocalDate.of(1999, 7, 1)
     val end = LocalDate.of(2000, 7, 1)
-    // initial period
     val info1 =
       Info(Some(start), Some(end.plus(Frequency.P12M.period)), Some(firstRegular), true, Some(Frequency.P12M))
-    // regular period
     val info2 = Info(Some(start), Some(end.plus(Frequency.P12M.period)), Some(end), true, Some(Frequency.P12M))
     DayCounts.ACT_ACT_ISDA.yearFraction(start, firstRegular) shouldBe (150d / 365d)
     DayCounts.ACT_ACT_ICMA.yearFraction(start, firstRegular, info1) shouldBe (150d / (365d * 1d))
@@ -608,9 +478,7 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     val start = LocalDate.of(2002, 8, 15)
     val firstRegular = LocalDate.of(2003, 7, 15)
     val end = LocalDate.of(2004, 1, 15)
-    // initial period
     val info1 = Info(Some(start), Some(end), Some(firstRegular), true, Some(Frequency.P6M))
-    // regular period
     val info2 = Info(Some(start), Some(end), Some(end), true, Some(Frequency.P6M))
     DayCounts.ACT_ACT_ISDA.yearFraction(start, firstRegular) shouldBe (334d / 365d)
     DayCounts.ACT_ACT_ICMA.yearFraction(start, firstRegular, info1) shouldBe
@@ -626,9 +494,7 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     val start = LocalDate.of(1999, 7, 30)
     val lastRegular = LocalDate.of(2000, 1, 30)
     val end = LocalDate.of(2000, 6, 30)
-    // regular period
     val info1 = Info(Some(start), Some(end), Some(lastRegular), true, Some(Frequency.P6M))
-    // final period
     val info2 = Info(Some(start), Some(end), Some(end), true, Some(Frequency.P6M))
     DayCounts.ACT_ACT_ISDA.yearFraction(start, lastRegular) shouldBe ((155d / 365d) + (29d / 366d))
     DayCounts.ACT_ACT_ICMA.yearFraction(start, lastRegular, info1) shouldBe (184d / (184d * 2d))
@@ -650,14 +516,10 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   test("test_actActYearVsIcma") {
-    // Over 400 consecutive start dates and, for each, every period of up to a year, the annual
-    // `Act/Act ICMA` answer and the `Act/Act Year` answer agree to the last bit. That is 146,000
-    // comparisons of two independently written rules, and it is the strongest single statement
-    // in this spec about the `Act/Act ICMA` nominal-period machinery.
-    //
-    // The comparison is made without a clue built per iteration - at this volume the strings
-    // would cost more than the arithmetic - and the failure message is assembled only for a
-    // pair that disagrees, naming the dates, which is what a reader of a failure needs.
+    // Over a sweep of 400 consecutive start dates and every period of up to a year from each,
+    // the annual `Act/Act ICMA` answer and the `Act/Act Year` answer agree to the last bit. No
+    // clue is built per iteration: at this volume the strings would cost more than the
+    // arithmetic, so a message is assembled only for a pair that disagrees.
     val firstStart = LocalDate.of(2011, 1, 1)
     (0 until 400).foreach { i =>
       val start = firstStart.plusDays(i.toLong)
@@ -677,8 +539,6 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   //-------------------------------------------------------------------------
   test("test_name") {
     forAll(dataName) { (dayCount: DayCount, name: String) =>
-      // The 21 names are the contract, not a label: they are what a caller writes, what the
-      // codec puts on the wire, and what the captured Java manifest is compared against.
       dayCount.name shouldBe name
     }
   }
@@ -687,18 +547,14 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     forAll(dataName) { (dayCount: DayCount, name: String) =>
       withClue(s"$name: ") {
         dayCount.toString shouldBe name
-        // `Show` is the third way of rendering a day count as text, and it agrees with the
-        // other two - which is what lets a message, a document and a log line all name the
-        // same convention the same way.
         Show[DayCount].show(dayCount) shouldBe name
       }
     }
   }
 
   test("test_of_lookup") {
-    // The Java `DayCount.of(name)` was one throwing factory. Both members that replaced it are
-    // asserted here for every canonical name, and for the upper-case spelling of it, because
-    // those are the two keys each member is registered under.
+    // Each member is keyed under its canonical name and the upper case of it, and both lookups
+    // are asserted for both spellings so the two entry points are held to the same answer.
     forAll(dataName) { (dayCount: DayCount, name: String) =>
       withClue(s"$name: ") {
         DayCount.valueOf(name) shouldBe Some(dayCount)
@@ -712,12 +568,9 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_lenientLookup_standardNames") {
-    // The Java method asked the registry for the lower-case spelling of each canonical name,
-    // through `findLenient`; `parse` is that method here. The exact lookup is asserted
-    // alongside it to show where the answer comes from: for the 20 names that contain a letter
-    // the lower-case spelling is outside the exact key space and resolves only because of the
-    // leniency, and for `1/1`, which contains none, the lower-case spelling *is* the canonical
-    // name and the exact lookup answers directly.
+    // For the 20 names that contain a letter the lower-case spelling is outside the exact key
+    // space and resolves only through the leniency; `1/1` contains none, so its lower-case
+    // spelling *is* the canonical name and the exact lookup answers it directly.
     forAll(dataName) { (dayCount: DayCount, name: String) =>
       val lowerCase = name.toLowerCase(Locale.ENGLISH)
       withClue(s"$lowerCase: ") {
@@ -732,16 +585,10 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_extendedEnum") {
-    // The Java method read `extendedEnum().lookupAll()` - the registry assembled by loading
-    // `DayCount.ini` from the class path - and looked each canonical name up in it. There is no
-    // registry here and nothing is loaded: the family is closed and the three tables of that
-    // resource are code in the companion (AAP D-2 / Rule 4). This test is therefore where those
-    // tables are asserted, because a row lost in transcription would otherwise be invisible.
+    // The family is closed and its tables are data, so this is where they are read row for row.
     val lookup = DayCount.namedEnum
 
     forAll(dataName) { (dayCount: DayCount, name: String) =>
-      // `byCanonicalName` is the Java `lookupAllNormalized`: the members re-keyed by their own
-      // name, which is the view the Java method's `map.get(name)` was really asking for.
       withClue(s"$name: ")(lookup.byCanonicalName.get(name) shouldBe Some(dayCount))
     }
 
@@ -754,21 +601,17 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     lookup.byUpperName should have size 21
     lookup.byUpperName.keySet shouldBe standardNames.map(_.toUpperCase(Locale.ENGLISH)).toSet
 
-    // The Java `lookupAll` key set was the union of the two: every canonical name and the
-    // English upper case of it, first registration winning. Ten of the 21 names contain a
-    // lower-case letter and so contribute a second key; the other eleven are already their own
-    // upper case and contribute one, which is why the union holds 31 keys and not 42.
+    // Ten of the 21 names contain a lower-case letter and so contribute a second key; the other
+    // eleven are already their own upper case, which is why the union holds 31 keys and not 42.
     val allKeys = lookup.byCanonicalName.keySet ++ lookup.byUpperName.keySet
     allKeys should have size 31
     standardNames.filter(name => name != name.toUpperCase(Locale.ENGLISH)) should have size 10
 
-    // This family declares no alternate spelling, because the resource declared none for it:
-    // every spelling beyond those 31 keys arrives through the lenient chain.
+    // Every spelling beyond those 31 keys arrives through the lenient chain.
     lookup.alternateNames shouldBe Map.empty[String, String]
 
-    // The two groups of external spellings, asserted row for row. They take part in no lookup -
-    // `ACT/360` resolves because the lenient chain accepts it, not because FpML publishes it -
-    // so they exist to be read explicitly, and this is the only place they are read.
+    // The external spellings take part in no lookup: `ACT/360` resolves because the lenient
+    // chain accepts it, not because FpML publishes it.
     lookup.externalNameGroups shouldBe Set("FpML", "SWIFT")
     lookup.externalNamesRaw("FpML") shouldBe
       Some(
@@ -799,16 +642,10 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
           "EXA/EXA" -> "Act/Act AFB",
           "ICM/ACT" -> "Act/Act ICMA"))
 
-    // The resolved views hold the same rows as values, all 14 of them and all 8. The FpML group
-    // is the one place in this module where a published external row names something that is not
-    // a member of the closed family: `BUS/252` names `Bus/252 BRBD`, one of the calendar-bearing
-    // conventions, of which there is one per holiday calendar rather than one per family. It
-    // resolves none the less, because an external row is resolved through the '''family's own'''
-    // lookup - `DayCount.valueOf`, which spans the 21 standard members and the `Bus/252`
-    // conventions together - exactly as the external lookup of the ported registry resolved such
-    // a row by delegating the name it carries to its second provider. So the resolved view is the
-    // raw table row for row, while `values` still holds the 21 and not that convention, and
-    // `parse("BUS/252")` reaches the same day count by the lenient route.
+    // The FpML group is the one place a published external row names something outside the
+    // closed family. `BUS/252` resolves none the less, because an external row is resolved
+    // through `DayCount.valueOf`, which spans the standard members and the calendar-bearing
+    // `Bus/252` conventions together, while `values` holds only the former.
     lookup.externalNames("FpML").map(_.size) shouldBe Some(14)
     lookup.externalNames("FpML").map(_.keySet) shouldBe lookup.externalNamesRaw("FpML").map(_.keySet)
     lookup.externalNames("FpML").flatMap(_.get("BUS/252")) shouldBe
@@ -820,51 +657,39 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
     lookup.externalNames("FpML").flatMap(_.get("ACT/ACT.ISMA")) shouldBe Some(DayCounts.ACT_ACT_ICMA)
     lookup.externalNames("SWIFT").map(_.size) shouldBe Some(8)
-    // The two groups disagree about two spellings, which is exactly why they are published
-    // separately rather than merged into one table of aliases.
+    // The two groups disagree about two spellings, which is why they are held separately.
     lookup.externalNames("FpML").flatMap(_.get("30E/360")) shouldBe Some(DayCounts.THIRTY_E_360)
     lookup.externalNames("SWIFT").flatMap(_.get("30E/360")) shouldBe Some(DayCounts.THIRTY_E_360_ISDA)
     lookup.externalNames("FpML").flatMap(_.get("ACT/365")) shouldBe Some(DayCounts.ACT_365F)
     lookup.externalNames("SWIFT").flatMap(_.get("ACT/365")) shouldBe Some(DayCounts.ACT_ACT_ISDA)
 
-    // A group the family does not publish is an empty answer rather than a failure.
     lookup.externalNames("Rubbish") shouldBe None
     lookup.externalNamesRaw("Rubbish") shouldBe None
 
-    // The ordered lenient table: the 67 rows of the `[lenientPatterns]` section of the resource,
-    // in the order it listed them. The order is part of the data, because `parse` applies every
-    // pattern in turn and a later one sees what an earlier one produced, so the sequence of
-    // replacements is asserted rather than just the count - reordering the rows would change
-    // what resolves and to what, and is the one change to this table that no individual row
-    // assertion would catch.
-    // Read as text through `lenientSources`, the raw view, rather than through the compiled
-    // projection: the rows are what is being asserted, and reading them this way compiles none of
-    // the sixty-seven expressions.
+    // The order of the lenient table is part of the data: `parse` applies every pattern in turn
+    // and a later one sees what an earlier one produced, so the sequence of replacements is
+    // asserted and not only the size. `lenientSources` is the raw text view, so reading the rows
+    // this way compiles none of the expressions.
     lookup.lenientSources should have size 67
     lookup.lenientSources.map { case (_, replacement) => replacement } shouldBe lenientReplacements
     lookup.lenientSources.map { case (source, _) => source }.head shouldBe "ACTUAL/ACTUAL(.*)"
   }
 
   test("test_of_lookup_notFound") {
-    // Where the Java factory raised for text naming no member, the port reports it as a value.
-    // This is the data-dependent half of the Rule 5 split: the text is an input whose content
-    // decides the outcome, so the outcome is a `Left` carrying a reason from the closed family
-    // of reasons and a message naming both the family and the text.
+    // Text naming no member is reported as a value rather than raised: its content decides the
+    // outcome, so the outcome carries a reason and a message naming the family and the text.
     DayCount.valueOf("Rubbish") shouldBe None
     DayCount.parse("Rubbish") should beFailureWith(FailureReason.PARSING)
     DayCount.parse("Rubbish") should haveFailureMessageMatching("DayCount name not found: Rubbish")
 
-    // A `Bus/252` name whose calendar this library does not define is recognised as far as its
-    // prefix and then fails on the calendar, so the calendar's own failure is what is reported -
-    // the more specific answer, and the one the ported implementation raised from the same place.
+    // A `Bus/252` name is recognised as far as its prefix, so an undefined calendar makes the
+    // calendar's own failure the one reported.
     DayCount.valueOf("Bus/252 ZZZZ") shouldBe None
     DayCount.parse("Bus/252 ZZZZ") should beFailureWith(FailureReason.PARSING)
     DayCount.parse("Bus/252 ZZZZ") should
       haveFailureMessageMatching("HolidayCalendar name not found: ZZZZ")
 
-    // The reference-data form of the same lookup: an identifier the supplied data cannot
-    // resolve is missing data rather than unparseable text, which is the reason the resolution
-    // reports and the second data-dependent failure of this type's surface.
+    // An identifier the reference data cannot resolve is missing data, not unparseable text.
     DayCount.ofBus252(HolidayCalendarId.of("ZZZZ"), ReferenceData.standard) should
       beFailureWith(FailureReason.MISSING_DATA)
     DayCount.ofBus252(HolidayCalendarIds.BRBD, ReferenceData.standard) should
@@ -872,18 +697,13 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_of_lookup_null") {
-    // Reinterpretation, as in `test_null`: the Java method handed the absent reference to the
-    // factory and asserted a throw. The `notNull` guard behind that throw has no target here,
-    // because the name is a required parameter of a required type, so the case becomes a
-    // compile-time proof and no `null` is written.
+    // The name is a required parameter of a required type, so an omitted or mistyped argument is
+    // rejected at compile time; each assertion states that of one expression.
     assertDoesNotCompile("DayCount.parse()")
     assertDoesNotCompile("DayCount.valueOf()")
     assertDoesNotCompile("DayCount.parse(1)")
     assertDoesNotCompile("DayCount.valueOf(1)")
 
-    // What a caller can actually supply is text that names nothing, so the rest of the case is
-    // every spelling of "no usable name" - empty, blank, padded, and several near-misses - each
-    // of which resolves to nothing, reports the parsing reason, and raises nothing at all.
     val hostile: List[String] =
       List(
         "",
@@ -906,54 +726,70 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
       }
     }
 
-    // `Bus/252` is in the list above to be excluded from it deliberately: it is the one entry
-    // that does resolve, because the resource declared a lenient row defaulting it to the
-    // Brazilian calendar. Stating that here keeps the near-miss `"Bus/252  "`, which does not
-    // resolve, from reading as an accident.
+    // `Bus/252` sits in the list above to be excluded from it: it is the one entry that does
+    // resolve, the lenient table defaulting it to the Brazilian calendar, which is what keeps
+    // the near-miss `"Bus/252  "` from reading as an accident.
     DayCount.parse("Bus/252") should haveValue(DayCount.ofBus252(StandardHolidayCalendars.BRBD))
 
-    // The last thing a caller can supply is a lot of text. `parse` folds its input to upper case
-    // and runs all 67 rewrites over it, several of which hold a group that can consume text of
-    // unbounded length, so the cost of rejecting text has to be a function of its length and not
-    // of its length squared. Two hundred thousand open brackets is the input that made that
-    // difference visible: `(.*)[(](.*)[)]` has an open bracket to try at every one of those
-    // positions and, before the rewrites learned what a full match of them must end with, took
-    // minutes to decide it could not match. It is asserted as the other entries are - nothing
-    // resolves, the parsing reason is reported, and nothing is raised - inside a generous time
-    // limit that is a regression guard on the cost rather than a measurement of it: the work is
-    // now one pass, so thirty seconds cannot flake however loaded the host is, while the
-    // quadratic behaviour could not fit in it.
+    // `parse` runs all 67 rewrites over its input, several of which hold a group that can consume
+    // text of unbounded length, so the cost of rejecting text must be a function of its length
+    // and not of its length squared: `(.*)[(](.*)[)]` has an open bracket to try at every one of
+    // two hundred thousand positions. The time limit is a regression guard on that cost.
     val oversized: String = "(" * 200000
     val oversizedOutcome: ResultNec[DayCount] = failAfter(Span(30L, Seconds))(DayCount.parse(oversized))
     oversizedOutcome should beFailureWith(FailureReason.PARSING)
     noException should be thrownBy DayCount.parse(oversized)
     DayCount.valueOf(oversized) shouldBe None
 
-    // And the other half of that statement, which is why the cost is bounded by the rewrites
-    // rather than by refusing long text outright: text is never rejected for its size, at either
-    // stage of the lookup. A `Bus/252` name may carry a combined calendar of any number of parts,
-    // so ten thousand characters naming two thousand and one calendars resolve to the day count
-    // over London and New York - the duplicate parts folding away, as a calendar combined with
-    // itself does - where a length cutoff would have refused the name outright.
+    // And the other half of that statement: text is never rejected for its size at the exact
+    // stage of the lookup, which is the stage a `Bus/252` name resolves in - it is claimed by the
+    // wider provider of this family, never by the rewrites. A `Bus/252` name may carry a combined
+    // calendar of any number of parts, so ten thousand characters naming two thousand and one
+    // calendars resolve to the day count over London and New York - the duplicate parts folding
+    // away, as a calendar combined with itself does - where a length cutoff applied to the exact
+    // stage would have refused the name outright.
     val longCalendar: String = "Bus/252 " + ("GBLO+" * 2000) + "USNY"
     longCalendar.length shouldBe 10012
     DayCount.parse(longCalendar).map(dayCount => dayCount.name) should haveValue("Bus/252 GBLO+USNY")
     DayCount.valueOf(longCalendar).map(dayCount => dayCount.name) shouldBe Some("Bus/252 GBLO+USNY")
 
-    // The lenient stage is reached by text of any length as well, which is the same statement
-    // about the second stage: the chain rewrites the head of this ten-thousand-character input
-    // and hands the rest of it back untouched, rather than being skipped because the input is
-    // long. That the result then names no day count is beside the point being made here - what
-    // matters is that the rewrites ran.
-    DayCount.namedEnum.rewriteLeniently("ACT/ACT" + ("X" * 10000)) shouldBe "Act/Act" + ("X" * 10000)
+    // The lenient stage is the bounded one, and this is where the two stages part company. The
+    // ceiling the name lookup derives from this family's own data - its longest key, alternate
+    // spelling, alternate target and expression source, plus the margin the typeclass adds - is
+    // what the chain is applied within: text inside it is rewritten row by row as it always was,
+    // and text beyond it comes back exactly as it was handed over, no rule having run over it.
+    // That bound is what makes refusing a name cost what the name costs, and this family is the
+    // one it matters most for, holding sixty-seven rows and running the chain itself rather than
+    // through `parse`.
+    DayCount.namedEnum.rewriteLeniently("ACT/ACT") shouldBe "Act/Act ISDA"
+    val beyondTheCeiling: String = "ACT/ACT" + ("X" * 10000)
+    beyondTheCeiling.length should be > DayCount.namedEnum.lenientLengthCeiling
+    DayCount.namedEnum.rewriteLeniently(beyondTheCeiling) shouldBe beyondTheCeiling
+
+    // And this family applies that same bound itself, ahead of the fold, because it runs stage two
+    // rather than delegating it. The distinction is invisible in the assertions above - their text
+    // is upper case already, so folding it copies nothing - and it is the whole of the cost for
+    // text that is not: a fold is a copy of the whole input, and the input is as long as whoever
+    // supplied it chose. Lower-case text beyond the ceiling is therefore reported unresolved
+    // without being folded and without a rewrite being offered it, through `parse` and through the
+    // decoder of a document alike, and the failure is the ordinary one this family gives.
+    val lowerCaseBeyondTheCeiling: String = "act/act" + ("x" * 10000)
+    lowerCaseBeyondTheCeiling.length should be > DayCount.namedEnum.lenientLengthCeiling
+    DayCount.parse(lowerCaseBeyondTheCeiling) should beFailureWith(FailureReason.PARSING)
+    DayCount.parse(lowerCaseBeyondTheCeiling, ReferenceData.standard) should
+      beFailureWith(FailureReason.PARSING)
+    DayCount.valueOf(lowerCaseBeyondTheCeiling) shouldBe None
+    Json.fromString(lowerCaseBeyondTheCeiling).as[DayCount].isLeft shouldBe true
+
+    // The spelling inside the ceiling still resolves through the fold and the rewrites, which is
+    // what makes the assertion above a statement about length rather than about case.
+    DayCount.parse("act/act") should haveValue(DayCounts.ACT_ACT_ISDA)
   }
 
   //-------------------------------------------------------------------------
   test("test_lenientLookup_specialNames") {
-    // The Java method drove every row of `data_lenient` through `findLenient` after folding it
-    // to lower case. `parse` is that method here, and each row is asserted in three spellings -
-    // as written, folded down and folded up - because the input is folded to upper case before
-    // the patterns are applied and the patterns themselves are matched insensitively to case.
+    // Each row is asserted in three spellings: the input is folded to upper case before the
+    // patterns are applied, and the patterns match insensitively to case.
     forAll(dataLenient) { (name: String, dayCount: DayCount) =>
       withClue(s"$name: ") {
         DayCount.parse(name.toLowerCase(Locale.ENGLISH)) should haveValue(dayCount)
@@ -964,11 +800,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
   }
 
   test("test_lenientLookup_constants") {
-    // The port of the reflective sweep over the public fields of `DayCounts`: each identifier
-    // resolves leniently to the constant it names, in its own spelling and folded to lower
-    // case, exactly as the Java method asserted for the field names it discovered. No
-    // reflection is performed - the 21 identifiers are a table, and `coverage` is where they
-    // are shown to be exactly the members.
+    // Each identifier the constants holder publishes resolves leniently to the constant it
+    // names, in its own spelling and folded to lower case.
     forAll(dataConstantIdentifiers) { (identifier: String, dayCount: DayCount) =>
       withClue(s"$identifier: ") {
         DayCount.parse(identifier) should haveValue(dayCount)
@@ -979,17 +812,9 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   test("test_relativeYearFraction_defaultMethod") {
-    // Reinterpretation. The Java method declared an anonymous subclass of `DayCount` whose
-    // `yearFraction` and `days` both answered one, and then asserted that the inherited
-    // `relativeYearFraction` answered one forwards and minus one backwards - a test of the
-    // default method in isolation from any real rule.
-    //
-    // `DayCount` is sealed in this port (Rule 4), so the anonymous-subclass form is
-    // unrepresentable: every member exists in the companion and no subtype can be declared
-    // outside that file. The property the Java method was about is therefore asserted over
-    // real members instead - that the relative form agrees with the plain one on dates in
-    // order, and negates itself when they are reversed - which is the same statement about the
-    // same inherited implementation, made through the only subtypes there are.
+    // `DayCount` is sealed, so no stand-in implementation can be declared here to exercise the
+    // inherited `relativeYearFraction` in isolation; the property it carries is asserted over
+    // real members instead.
     val date1 = date(2015, 6, 1)
     val date2 = date(2015, 7, 1)
 
@@ -1000,22 +825,18 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     DayCounts.ACT_365F.relativeYearFraction(date1, date2) shouldBe (30d / 365d)
     DayCounts.ACT_365F.relativeYearFraction(date2, date1) shouldBe (-30d / 365d)
 
-    // The member the Java stub stood in for most directly: `1/1` answers one whatever the
-    // dates, so the two assertions of the Java method are reproduced literally by it.
     DayCounts.ONE_ONE.relativeYearFraction(date1, date2) shouldBe 1d
     DayCounts.ONE_ONE.relativeYearFraction(date2, date1) shouldBe -1d
 
-    // And the whole family, so that no member's inherited default can drift: the relative form
-    // is antisymmetric, and it answers for a reversed pair where the plain form refuses.
+    // Over the whole family: the relative form is antisymmetric and answers for a reversed pair.
     forAll(dataTypes) { (dayCount: DayCount) =>
       withClue(s"${dayCount.name}: ") {
         dayCount.relativeYearFraction(date1, date2, wholeYearInfo) shouldBe
           dayCount.yearFraction(date1, date2, wholeYearInfo)
         dayCount.relativeYearFraction(date2, date1, wholeYearInfo) shouldBe
           -dayCount.relativeYearFraction(date1, date2, wholeYearInfo)
-        // The contrast that makes the relative form worth having, and a sanctioned refusal of
-        // the same kind as `test_wrongOrder`: a reversed pair breaks the documented contract of
-        // `yearFraction`, so it is raised through `ArgCheck` rather than returned.
+        // The same precondition as `test_wrongOrder`: a reversed pair breaks the documented
+        // contract of `yearFraction`, so it is raised through `ArgCheck` rather than returned.
         intercept[IllegalArgumentException](dayCount.yearFraction(date2, date1, wholeYearInfo))
           .getMessage shouldBe DatesOutOfOrderMessage
       }
@@ -1024,11 +845,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   test("test_scheduleInfo") {
-    // Reinterpretation. The Java method instantiated the bare interface and asserted that the
-    // end-of-month flag defaulted to true and that the other four accessors raised
-    // `UnsupportedOperationException`. In this port those four are total and answer `None`
-    // (AAP 0.6.1): "this schedule does not know" is stated as a value, so an implementation
-    // overrides only what it knows and none of them has to raise.
+    // The bare schedule information reports the end-of-month convention as in use and `None`
+    // to everything else: "this schedule does not know" is a value, not a refusal.
     val test = DayCount.ScheduleInfo.simple
     test.isEndOfMonthConvention shouldBe true
     test.startDate shouldBe None
@@ -1036,11 +854,9 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     test.frequency shouldBe None
     test.periodEndDate(JAN_01) shouldBe None
 
-    // What that change does *not* do is make a day count answer without the facts its rule is
-    // defined in terms of. A caller handing such a convention a schedule that cannot supply
-    // them has broken the contract of the call - which is what the Java
-    // `UnsupportedOperationException` said too - so it is still a refusal raised through
-    // `ArgCheck`, and this is the inventory of it:
+    // Total accessors do not make a day count answer without the facts its rule is defined in
+    // terms of: a schedule that cannot supply them breaks the contract of the call and is
+    // refused through `ArgCheck`. The precondition, member by member, is
     //
     //   - `Act/Act ICMA` reads the end of the schedule, the end of the period containing the
     //     first date, the frequency and the flag;
@@ -1057,13 +873,10 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
       DayCounts.THIRTY_E_360_ISDA.yearFraction(LocalDate.of(2011, 12, 28), LocalDate.of(2012, 2, 29), test))
       .getMessage shouldBe "The end date of the schedule is required"
 
-    // The second refusal of the same kind, and the one a schedule reaches with '''every''' fact
-    // present. `Act/Act ICMA` divides each nominal period by the number of events the schedule's
-    // frequency has in a year, so a frequency that has no whole number of them - `P5M`, which no
-    // whole number of periods fills a year with - describes a schedule the convention is not
-    // defined over. The frequency type reports that as a value, because for its own callers it
-    // depends on data; here it is the contract of the call, so it is raised through `ArgCheck`
-    // carrying the frequency's own message, which is what the implementation being ported threw.
+    // The second precondition, and the one a schedule reaches with '''every''' fact present.
+    // `Act/Act ICMA` divides each nominal period by the number of events the schedule's frequency
+    // has in a year, so `P5M` describes a schedule it is not defined over. The frequency type
+    // reports that as a value; here it is the contract of the call, so it is raised.
     val fiveMonthly = frequencyOf(Frequency.of(Period.ofMonths(5)))
     fiveMonthly.name shouldBe "P5M"
     fiveMonthly.eventsPerYear.left.map(failure => failure.message) shouldBe
@@ -1077,27 +890,24 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     intercept[IllegalArgumentException](DayCounts.ACT_ACT_ICMA.yearFraction(JAN_01, JUL_01, fiveMonthlyInfo))
       .getMessage shouldBe NonIntegralEventsMessage
 
-    // The control that keeps the assertion above about the frequency and not about the fixture:
-    // the same schedule shape with a frequency that does divide the year answers. Two six-month
-    // events fill the year from `JAN_01`, the period measured is the first of them, and its 181
-    // days over the 362 the two nominal periods span is exactly half a year.
+    // The control that keeps the assertion above about the frequency and not the fixture: the
+    // same shape with a frequency that does divide the year answers, the measured period's 181
+    // days over that length taken twice being exactly half a year.
     val sixMonthlyInfo = Info(Some(JAN_01), Some(JAN_01_NEXT), Some(JAN_01_NEXT), false, Some(Frequency.P6M))
     Frequency.P6M.eventsPerYear shouldBe Right(2)
     DayCounts.ACT_ACT_ICMA.yearFraction(JAN_01, JUL_01, sixMonthlyInfo) shouldBe 0.5d
 
-    // The 17 members that read nothing calculate against it, and so do the two that read only
-    // what it always carries or only in a case these dates avoid.
+    // The seventeen members that read nothing calculate against it, and so do the two that read
+    // only what it always carries or only in a case these dates avoid.
     DayCounts.ACT_365F.yearFraction(JAN_01, JUL_01, test) shouldBe (181d / 365d)
     DayCounts.THIRTY_U_360.yearFraction(JAN_01, JUL_01, test) shouldBe (180d / 360d)
     DayCounts.THIRTY_E_360_ISDA.yearFraction(JAN_01, JUL_01, test) shouldBe (180d / 360d)
 
-    // And the schedule information carried by the fixtures of this spec is the same contract
-    // seen from the other side: an implementation that answers `Some` for what it knows.
     wholeYearInfo.startDate shouldBe Some(JAN_01)
     wholeYearInfo.endDate shouldBe Some(JAN_01_NEXT)
     wholeYearInfo.periodEndDate(JAN_01) shouldBe Some(JAN_01_NEXT)
-    // The Java fixture returned its single period end date for *any* date asked about, and that
-    // is reproduced exactly, because the worked ICMA examples depend on it.
+    // The fixture answers its single period end date for *any* date asked about, which the
+    // worked ICMA examples depend on.
     wholeYearInfo.periodEndDate(JUL_01) shouldBe Some(JAN_01_NEXT)
     wholeYearInfo.frequency shouldBe Some(Frequency.P12M)
     wholeYearInfo.isEndOfMonthConvention shouldBe false
@@ -1110,18 +920,9 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // The Java method was `coverPrivateConstructor(DayCounts.class)` and
-    // `coverEnum(StandardDayCounts.class)`: the first reflectively invoked the private
-    // constructor of a static holder and the second read the values of a package-private enum,
-    // both so that a coverage tool would not report them as unexercised. A Scala `object` has no
-    // constructor to reach and there is no second enum - the members are declared in the
-    // companion - so what those calls stood for is asserted directly.
-
-    // The family has exactly 21 standard members, in the declaration order of the enum being
-    // ported, which is not the alphabetical order the `Order` instance imposes. The
-    // calendar-bearing `Bus/252` conventions are deliberately absent: there is one per holiday
-    // calendar, so the set is open and cannot be enumerated - the same line the ported library
-    // drew between its two providers.
+    // `values` holds the 21 standard members in declaration order, which is not the alphabetical
+    // order the `Order` instance imposes, and excludes the calendar-bearing `Bus/252`
+    // conventions: there is one per holiday calendar, so they are built on demand.
     DayCount.values.toList shouldBe declarationOrder
     DayCount.values.toList should have size 21
     DayCount.values.toList.distinct should have size 21
@@ -1129,9 +930,7 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     DayCount.values.toList.map(_.name) shouldBe standardNames
     DayCount.values.toList.contains(DayCount.ofBus252(StandardHolidayCalendars.BRBD)) shouldBe false
 
-    // Each constant of the holder is the very member of the family, not a copy and not a
-    // registry indirection, so a call site reading the constant and one reading the member are
-    // indistinguishable - including by reference.
+    // Each constant of the holder is the very member, so the two agree by reference.
     forAll(dataConstantIdentifiers) { (identifier: String, dayCount: DayCount) =>
       withClue(s"$identifier: ")(declarationOrder.exists(_ eq dayCount) shouldBe true)
     }
@@ -1140,12 +939,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
     DayCounts.THIRTY_360_ISDA should be theSameInstanceAs DayCount.THIRTY_360_ISDA
     DayCounts.THIRTY_E_365 should be theSameInstanceAs DayCount.THIRTY_E_365
 
-    // The holder publishes those 21 and nothing else, which is the other half of what the
-    // reflective sweep would have discovered.
     dataConstantIdentifiers.map { case (_, dayCount) => dayCount }.toList shouldBe declarationOrder
 
-    // Every member is reachable by its own name through both entry points, and its three text
-    // renderings agree.
     DayCount.values.toList.foreach { dayCount =>
       withClue(s"${dayCount.name}: ") {
         DayCount.valueOf(dayCount.name) shouldBe Some(dayCount)
@@ -1155,9 +950,8 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
       }
     }
 
-    // The companion publishes one equality-bearing instance - an ordering that is also a
-    // hashing - so summoning the equality, the hashing or the ordering yields that one value
-    // and the three can never disagree. Every ordered pair of members is asked all three.
+    // The companion publishes one equality-bearing instance - an ordering that is also a hashing
+    // - so the equality, the hashing and the ordering summoned here are that one value.
     val all: List[DayCount] = DayCount.values.toList
     for (left <- all; right <- all) {
       val sameValue = left == right
@@ -1173,34 +967,21 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
       }
     }
 
-    // The ordering is by name, which is alphabetical rather than the declaration order above,
-    // and a concrete pair states the direction so the assertion is not self-referential.
+    // The ordering is by name, and a concrete pair states its direction so that the sorted
+    // assertion is not self-referential.
     all.sorted(Order[DayCount].toOrdering).map(_.name) shouldBe all.map(_.name).sorted
     Order[DayCount].compare(DayCounts.ACT_360, DayCounts.ACT_364) should be < 0
     Order[DayCount].compare(DayCounts.ACT_364, DayCounts.ACT_360) should be > 0
     Order[DayCount].compare(DayCounts.ONE_ONE, DayCounts.ONE_ONE) shouldBe 0
 
-    // Equality of a member with something that is not a day count at all is false rather than a
-    // type error, which is the contract of `equals` and worth stating once for a sealed family
-    // whose members are singletons.
     DayCounts.ACT_360.equals("Act/360") shouldBe false
     DayCounts.ACT_360.equals(DayCounts.ACT_364) shouldBe false
     DayCounts.ACT_360.equals(DayCounts.ACT_360) shouldBe true
   }
 
   test("test_serialization") {
-    // The Java method was `assertSerialization(ACT_364)`: a round trip through Java
-    // serialization and through the binary and JSON encodings of the bean library the type
-    // belonged to, all three of which read the class back reflectively. None of them is a
-    // dependency of this port, and neither Java serialization nor wire compatibility with that
-    // library's JSON is in its scope (AAP 0.2.2). What replaced them is the circe codec the
-    // companion publishes, so the round trip is asserted through that - over the member the
-    // Java method named, and then over all 21.
-    //
-    // The document of a standard member is the bare canonical name and never an object: that is
-    // the single-string form the annotated string conversion of the ported type wrote. The
-    // object form belongs to the calendar-bearing `Bus/252` conventions alone, and asserting
-    // that it is *not* used here is the point - `Business252DayCountSpec` owns that shape.
+    // The document of a standard member is the bare canonical name and never an object: the
+    // object form belongs to the `Bus/252` conventions, which `Business252DayCountSpec` owns.
     val encoded: Json = DayCounts.ACT_364.asJson
     encoded.isString shouldBe true
     encoded.isObject shouldBe false
@@ -1219,26 +1000,18 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
       }
     }
 
-    // Text that names no day count is rejected by the reader, as is a document of the wrong
-    // JSON type - which is what keeps an unrecognised name a decoding failure and not an
-    // exception.
+    // An unrecognised name, or a document of the wrong type, is a decoding failure.
     Json.fromString("Rubbish").as[DayCount].isLeft shouldBe true
     Json.fromInt(1).as[DayCount].isLeft shouldBe true
     Json.obj("name" -> Json.fromString("Act/364")).as[DayCount].isLeft shouldBe true
 
-    // The reader is as lenient as `parse`, which is what lets a document written by hand, or by
-    // the ported library through one of its external vocabularies, still be read.
+    // The reader is as lenient as `parse`, so a hand-written document is still read.
     Json.fromString("ACT/364").as[DayCount] shouldBe Right(DayCounts.ACT_364)
     Json.fromString("Actual/Actual (ISDA)").as[DayCount] shouldBe Right(DayCounts.ACT_ACT_ISDA)
   }
 
   test("test_jodaConvert") {
-    // The Java method asserted, for two members, a round trip through the reflective
-    // string-conversion library the type was annotated for: the annotated renderer produced one
-    // string and the annotated factory read it back as the same value. That library is not a
-    // dependency of this port, and its two annotations became `Show` and `DayCount.parse`, so
-    // the guarantee is asserted over those - for the two members the Java method named, whose
-    // exact text is the contract, and then for all 21.
+    // `Show` renders a member as text and `DayCount.parse` reads that text back as the member.
     Show[DayCount].show(DayCounts.THIRTY_360_ISDA) shouldBe "30/360 ISDA"
     DayCount.parse(Show[DayCount].show(DayCounts.THIRTY_360_ISDA)) should
       haveValue(DayCounts.THIRTY_360_ISDA)
@@ -1256,15 +1029,9 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 
   //-------------------------------------------------------------------------
   /**
-   * Unwraps the outcome of a frequency factory for use as a fixture.
-   *
-   * The frequencies this spec names as constants need no unwrapping, but the one frequency it
-   * builds - the five-month period of `test_scheduleInfo`, which no constant offers because no
-   * whole number of such periods fills a year - comes from a factory that reports a period it
-   * cannot accept as a value. Threading that outcome through here rather than forcing it with
-   * `getOrElse` and a fabricated fallback keeps a mistake in the fixture visible: a period that
-   * is not a frequency fails this spec naming its failures, instead of quietly testing some
-   * other value.
+   * Unwraps the outcome of a frequency factory for use as a fixture. Threading it through here
+   * rather than forcing it with `getOrElse` and a fabricated fallback keeps a mistake in the
+   * fixture visible: a period that is not a frequency fails this spec naming its failures.
    *
    * @param result  the outcome of a frequency factory, expected to hold a frequency
    * @return the frequency the outcome holds
@@ -1280,30 +1047,20 @@ class DayCountSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChe
 }
 
 /**
- * The fixtures and the nine transcribed data providers of this spec.
+ * The fixtures and the nine transcribed data tables of this spec.
  *
- * The Java class declared its providers as public static methods and its schedule stub as a
- * static nested class; both belong here for the same reason they belonged there - they are
- * fixtures of this spec rather than a published surface - and the object is visible within the
- * `date` test package alone.
- *
- * Every table is a `lazy val`. That is not decoration: the nine providers hold 597 rows between
- * them, and building all of them in one initialiser would put a single method uncomfortably
- * close to the 64KB limit the JVM places on method bytecode. One accessor per table keeps each
- * well inside it.
+ * Every table is a `lazy val`. That is not decoration: the nine hold 618 rows between them, and
+ * building all of them in one initialiser would put a single method uncomfortably close to the
+ * 64KB limit the JVM places on method bytecode.
  */
 private[date] object DayCountSpec extends TableDrivenPropertyChecks {
 
-  /** The first of January, the start date of the sanity-check fixtures. */
   val JAN_01: LocalDate = LocalDate.of(2010, 1, 1)
 
-  /** The second of January, used by the equal-date and reversed-date cases. */
   val JAN_02: LocalDate = LocalDate.of(2010, 1, 2)
 
-  /** The first of July, half a year after [[JAN_01]]. */
   val JUL_01: LocalDate = LocalDate.of(2010, 7, 1)
 
-  /** The first of January of the following year, a whole year after [[JAN_01]]. */
   val JAN_01_NEXT: LocalDate = LocalDate.of(2011, 1, 1)
 
   /** The message the date-order precondition reports, asserted rather than paraphrased. */
@@ -1311,114 +1068,70 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
 
   /**
    * The message a frequency with no whole number of events in a year reports, asserted rather
-   * than paraphrased.
-   *
-   * This is the text `Frequency.eventsPerYear` puts in its failure, which `Act/Act ICMA` raises
-   * as it stands rather than wrapping: a caller that supplied `P5M` is told which frequency the
-   * convention could not accrue over, and the wording comes from the type that owns the rule.
+   * than paraphrased. The wording is `Frequency.eventsPerYear`'s own, which `Act/Act ICMA`
+   * raises as it stands rather than wrapping.
    */
   val NonIntegralEventsMessage: String = "Unable to calculate events per year: P5M"
 
   /**
-   * The marker the numeric providers use for a row on which no day-of-month adjustment applies.
-   *
-   * The Java provider stored the boxed not-a-number constant in such a row and the test body
-   * compared the row's expectation against it by identity, which worked precisely because
-   * not-a-number is equal to nothing including itself. Testing the primitive for not-a-number is
-   * that same test: no row of either provider carries a genuine expectation of not-a-number, so
-   * the two agree row for row, and [[expectedFraction]] is the single place the branch is taken.
+   * The marker [[dataYearFraction]] uses for a row on which no day-of-month adjustment applies.
+   * Not-a-number is equal to nothing, including itself, so no row can carry it as a genuine
+   * expectation, and [[expectedFraction]] is the single place the branch is taken.
    */
   val SIMPLE_30_360: Double = Double.NaN
 
   /**
-   * The same marker for the day-count provider, whose expectations are whole numbers.
+   * The same marker for the day-count table, whose expectations are whole numbers.
    *
-   * Zero, as in the Java provider - and, as there, a row whose transcribed expectation evaluates
-   * to zero is therefore also treated as unmarked. That is not a defect being copied blindly:
-   * `data_days` contains exactly one such row, `30E/365` from 2012-02-29 to 2016-02-29, written
-   * as `calc360Days(2012, 2, 30, 2012, 2, 30)`, and the unadjusted computation the branch
-   * substitutes - 1440 - is the answer that rule gives, where the literal zero would not be.
+   * The marker is zero, and [[expectedDays]] takes its branch when `value == SIMPLE_30_360DAYS`,
+   * so a row whose transcribed expectation evaluates to zero is read '''as''' the marker and its
+   * expectation is recomputed by [[calc360Days]]. [[dataDays]] holds exactly one such row -
+   * `30E/365` from 2012-02-29 to 2016-02-29, written as `calc360Days(2012, 2, 30, 2012, 2, 30)` -
+   * and the recomputed 1440 is the answer that rule gives, where the literal zero would not be.
    */
   val SIMPLE_30_360DAYS: Int = 0
 
   /**
-   * The year fraction of a `30/360` rule over two dates whose days-of-month need no adjustment.
-   *
-   * @param y1  the year of the first date
-   * @param m1  the month of the first date
-   * @param d1  the day-of-month of the first date, already adjusted where a row adjusts it
-   * @param y2  the year of the second date
-   * @param m2  the month of the second date
-   * @param d2  the day-of-month of the second date, already adjusted where a row adjusts it
-   * @return the year fraction, being the day count over 360
+   * The year fraction of a `30/360` rule over two dates whose days-of-month need no adjustment,
+   * being [[calc360Days]] over 360. Each date arrives as year, month and day-of-month, the day
+   * already adjusted where a row adjusts it.
    */
   def calc360(y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int): Double =
     calc360Days(y1, m1, d1, y2, m2, d2).toDouble / 360d
 
   /**
-   * The day count of a `30/360` rule over two dates whose days-of-month need no adjustment.
-   *
-   * @param y1  the year of the first date
-   * @param m1  the month of the first date
-   * @param d1  the day-of-month of the first date, already adjusted where a row adjusts it
-   * @param y2  the year of the second date
-   * @param m2  the month of the second date
-   * @param d2  the day-of-month of the second date, already adjusted where a row adjusts it
-   * @return the day count, months being thirty days and years three hundred and sixty
+   * The day count of a `30/360` rule over two dates whose days-of-month need no adjustment,
+   * months being thirty days and years three hundred and sixty.
    */
   def calc360Days(y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int): Int =
     (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1)
 
   /**
-   * Resolves the expectation of a year-fraction row, expanding the marker where it carries one.
-   *
-   * This is the branch the Java test bodies made, reproduced rather than expanded: see
-   * [[SIMPLE_30_360]] for why the two forms of the test agree.
-   *
-   * @param value  the expectation the row carries, or [[SIMPLE_30_360]]
-   * @param y1  the year of the first date
-   * @param m1  the month of the first date
-   * @param d1  the day-of-month of the first date
-   * @param y2  the year of the second date
-   * @param m2  the month of the second date
-   * @param d2  the day-of-month of the second date
-   * @return the year fraction the row expects
+   * The year fraction a row expects: the value it carries, or [[calc360]] over its two dates
+   * where that value is [[SIMPLE_30_360]].
    */
   def expectedFraction(value: Double, y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int): Double =
     if (value.isNaN) calc360(y1, m1, d1, y2, m2, d2) else value
 
   /**
-   * Resolves the expectation of a day-count row, expanding the marker where it carries one.
-   *
-   * @param value  the expectation the row carries, or [[SIMPLE_30_360DAYS]]
-   * @param y1  the year of the first date
-   * @param m1  the month of the first date
-   * @param d1  the day-of-month of the first date
-   * @param y2  the year of the second date
-   * @param m2  the month of the second date
-   * @param d2  the day-of-month of the second date
-   * @return the day count the row expects
+   * The day count a row expects: the value it carries, or [[calc360Days]] over its two dates
+   * where that value is [[SIMPLE_30_360DAYS]], which a zero expectation also takes.
    */
   def expectedDays(value: Int, y1: Int, m1: Int, d1: Int, y2: Int, m2: Int, d2: Int): Int =
     if (value == SIMPLE_30_360DAYS) calc360Days(y1, m1, d1, y2, m2, d2) else value
 
   //-------------------------------------------------------------------------
   /**
-   * The schedule stub of the Java test class, field for field.
+   * The schedule information the parameterised cases and the worked examples are driven with.
+   * `periodEndDate` answers the one date it holds for '''any''' date asked about, ignoring its
+   * argument: the worked `Act/Act ICMA` examples supply a period end that is not the end of the
+   * period containing every date they pass, and they depend on getting it back regardless.
    *
-   * Two things about it are deliberate and load-bearing. The first is that `periodEndDate`
-   * answers the one date it holds for '''any''' date asked about, ignoring its argument exactly
-   * as the Java stub did: the worked `Act/Act ICMA` examples supply a period end that is not the
-   * end of the period containing every date they pass, and they depend on getting it back
-   * regardless. The second is that each field the Java stub could hold as an absent reference is
-   * an `Option` here, so a Java `null` is written as `None` and nothing has to raise to report
-   * that the schedule does not know.
-   *
-   * @param startDate  the start date of the schedule, where the fixture declares one
-   * @param endDate  the end date of the schedule, where the fixture declares one
-   * @param periodEnd  the period end date returned for every date, where the fixture declares one
+   * @param startDate  the start date of the schedule, where one is declared
+   * @param endDate  the end date of the schedule, where one is declared
+   * @param periodEnd  the period end date answered for every date, where one is declared
    * @param isEndOfMonthConvention  whether the end-of-month convention is in use
-   * @param frequency  the frequency of the schedule, where the fixture declares one
+   * @param frequency  the frequency of the schedule, where one is declared
    */
   final case class Info(
       override val startDate: Option[LocalDate],
@@ -1431,42 +1144,30 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     override def periodEndDate(date: LocalDate): Option[LocalDate] = periodEnd
   }
 
-  /**
-   * The second construction shape of the Java stub: the end-of-month flag and nothing else.
-   *
-   * Called positionally, as the Java constructor was, because naming an argument of an
-   * overloaded application is a restriction this port has no reason to test.
-   */
   object Info {
 
     /**
-     * Obtains a schedule stub that carries the end-of-month flag and no dates or frequency.
+     * Obtains schedule information carrying the end-of-month flag and no dates or frequency.
      *
      * @param eom  whether the end-of-month convention is in use
-     * @return the schedule stub
+     * @return the schedule information
      */
     def apply(eom: Boolean): Info = Info(None, None, None, eom, None)
   }
 
   /**
    * The schedule of one annual period from [[JAN_01]] to [[JAN_01_NEXT]], with the end-of-month
-   * convention not in use.
-   *
-   * This is the fixture the five `data_types` tests of the Java class built inline, and it is
-   * the one that supplies every fact any member reads, which is what lets those tests drive all
-   * 21 members through the three-argument overload without a member refusing.
+   * convention not in use. It supplies every fact any member reads, which is what lets the
+   * sanity tests drive all 21 members through the three-argument overload.
    */
   lazy val wholeYearInfo: Info =
     Info(Some(JAN_01), Some(JAN_01_NEXT), Some(JAN_01_NEXT), false, Some(Frequency.P12M))
 
   //-------------------------------------------------------------------------
   /**
-   * The Java `data_name` provider: each of the 21 standard members with the name it renders as.
-   *
-   * The provider lists the members in the declaration order of the enum being ported, which is
-   * why [[declarationOrder]] and [[standardNames]] are read from it: doing so keeps the order
-   * this spec asserts `DayCount.values` against a transcription of the Java source rather than a
-   * restatement of the Scala source.
+   * Each of the 21 standard members with the name it renders as, in declaration order.
+   * [[declarationOrder]] and [[standardNames]] are read from this table, so the order and the
+   * names `DayCount.values` is asserted against come from here and not from the type under test.
    */
   lazy val dataName: TableFor2[DayCount, String] = Table(
     ("dayCount", "name"),
@@ -1493,32 +1194,23 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.THIRTY_E_365, "30E/365")
   )
 
-  /** The 21 standard members in the declaration order the Java provider lists them in. */
+  /** The 21 standard members in the declaration order [[dataName]] lists them in. */
   lazy val declarationOrder: List[DayCount] = dataName.map { case (dayCount, _) => dayCount }.toList
 
   /** The 21 canonical names in that same order. */
   lazy val standardNames: List[String] = dataName.map { case (_, name) => name }.toList
 
   /**
-   * The Java `data_types` provider: the members of the enum being ported.
-   *
-   * The Java method read `StandardDayCounts.values()`, the package-private enum that declared
-   * the 21 standard members. Its counterpart is [[declarationOrder]], read from the name
-   * provider above. The calendar-bearing `Bus/252` conventions are not members of it - in Java
-   * they came from a second provider, and here they are built on demand from a calendar - so
-   * they are absent from these five tests exactly as they were absent from the Java ones.
+   * The 21 standard members as a one-column table, read from [[declarationOrder]]. The
+   * calendar-bearing `Bus/252` conventions are not among them, so they take no part in the tests
+   * this table drives.
    */
   lazy val dataTypes: TableFor1[DayCount] = Table("dayCount", declarationOrder: _*)
 
   /**
    * The identifiers the `DayCounts` constants holder publishes, paired with the member each
-   * names, in declaration order.
-   *
-   * This is the table that replaces the reflective sweep of the Java `test_lenientLookup_
-   * constants`: the field names that method discovered by reflection are written out, and the
-   * list being exactly the members is asserted in `coverage`. Each identifier resolves through
-   * the lenient chain because the configuration resource declared a row for it, which is why
-   * this table doubles as the statement that those 21 rows survived transcription.
+   * names, in declaration order. `coverage` is where the list is asserted to be exactly the
+   * members; each identifier also resolves through the lenient chain, which holds a row for it.
    */
   lazy val dataConstantIdentifiers: TableFor2[String, DayCount] = Table(
     ("identifier", "dayCount"),
@@ -1546,14 +1238,10 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
   )
 
   /**
-   * The replacement of each of the 67 lenient rewrite rules, in the order the configuration
-   * resource of the ported library listed them.
-   *
-   * Transcribed from that resource rather than from the Scala transcription of it, so that
-   * `test_extendedEnum` compares the port against the original and not against itself. The
-   * order is the data: `parse` folds its input to upper case and then applies every rule in
-   * turn, a rule whose expression matches the whole of the current text replacing that text, so
-   * a later rule sees what an earlier one produced.
+   * The replacement of each of the 67 lenient rewrite rules, in the order they are applied,
+   * transcribed from the published configuration they come from rather than from the table under
+   * test. The order is the data: a rule whose expression matches the whole of the current text
+   * replaces that text, so a later rule sees what an earlier one produced.
    */
   lazy val lenientReplacements: List[String] =
     List(
@@ -1628,13 +1316,11 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
 
   //-------------------------------------------------------------------------
   /**
-   * The Java `data_yearFraction` provider, all 201 rows, in the order the provider listed them.
-   *
-   * Each row is a member, the two dates as year, month and day, and the year fraction expected -
-   * or [[SIMPLE_30_360]] where the `30/360` rule of that member needs no day-of-month
-   * adjustment and the unadjusted computation is the expectation. The expectations are written
-   * as the arithmetic that produces them, `4d / 365d + 58d / 366d` rather than a decimal, which
-   * is both the Java form and the only form that states the rule being asserted.
+   * All 201 year-fraction rows, in order: a member, the two dates as year, month and day, and
+   * the year fraction expected - or [[SIMPLE_30_360]] where the `30/360` rule of that member
+   * needs no day-of-month adjustment. The expectations are written as the arithmetic that
+   * produces them, `4d / 365d + 58d / 366d` rather than a decimal, which is the only form that
+   * states the rule being asserted.
    */
   lazy val dataYearFraction: TableFor8[DayCount, Int, Int, Int, Int, Int, Int, Double] = Table(
     ("dayCount", "y1", "m1", "d1", "y2", "m2", "d2", "value"),
@@ -1648,7 +1334,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ONE_ONE, 2012, 2, 29, 2012, 3, 28, 1d),
     (DayCounts.ONE_ONE, 2012, 3, 1, 2012, 3, 28, 1d),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_ACT_ISDA, 2011, 12, 28, 2012, 2, 28, (4d / 365d + 58d / 366d)),
     (DayCounts.ACT_ACT_ISDA, 2011, 12, 28, 2012, 2, 29, (4d / 365d + 59d / 366d)),
     (DayCounts.ACT_ACT_ISDA, 2011, 12, 28, 2012, 3, 1, (4d / 365d + 60d / 366d)),
@@ -1659,7 +1344,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_ACT_ISDA, 2012, 2, 29, 2012, 3, 28, 28d / 366d),
     (DayCounts.ACT_ACT_ISDA, 2012, 3, 1, 2012, 3, 28, 27d / 366d),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_ACT_AFB, 2011, 12, 28, 2012, 2, 28, (62d / 365d)),
     (DayCounts.ACT_ACT_AFB, 2011, 12, 28, 2012, 2, 29, (63d / 365d)),
     (DayCounts.ACT_ACT_AFB, 2011, 12, 28, 2012, 3, 1, (64d / 366d)),
@@ -1670,7 +1354,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_ACT_AFB, 2012, 2, 29, 2012, 3, 28, 28d / 366d),
     (DayCounts.ACT_ACT_AFB, 2012, 3, 1, 2012, 3, 28, 27d / 365d),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_ACT_YEAR, 2011, 12, 28, 2012, 2, 28, (62d / 366d)),
     (DayCounts.ACT_ACT_YEAR, 2011, 12, 28, 2012, 2, 29, (63d / 366d)),
     (DayCounts.ACT_ACT_YEAR, 2011, 12, 28, 2012, 3, 1, (64d / 366d)),
@@ -1687,7 +1370,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_ACT_YEAR, 2012, 2, 28, 2016, 3, 2, (3d / 366d) + 4d),
     (DayCounts.ACT_ACT_YEAR, 2012, 2, 29, 2016, 3, 2, (2d / 365d) + 4d),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_365_ACTUAL, 2011, 12, 28, 2012, 2, 28, (62d / 365d)),
     (DayCounts.ACT_365_ACTUAL, 2011, 12, 28, 2012, 2, 29, (63d / 366d)),
     (DayCounts.ACT_365_ACTUAL, 2011, 12, 28, 2012, 3, 1, (64d / 366d)),
@@ -1698,7 +1380,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_365_ACTUAL, 2012, 2, 29, 2012, 3, 28, 28d / 365d),
     (DayCounts.ACT_365_ACTUAL, 2012, 3, 1, 2012, 3, 28, 27d / 365d),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_360, 2011, 12, 28, 2012, 2, 28, (62d / 360d)),
     (DayCounts.ACT_360, 2011, 12, 28, 2012, 2, 29, (63d / 360d)),
     (DayCounts.ACT_360, 2011, 12, 28, 2012, 3, 1, (64d / 360d)),
@@ -1709,7 +1390,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_360, 2012, 2, 29, 2012, 3, 28, 28d / 360d),
     (DayCounts.ACT_360, 2012, 3, 1, 2012, 3, 28, 27d / 360d),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_364, 2011, 12, 28, 2012, 2, 28, (62d / 364d)),
     (DayCounts.ACT_364, 2011, 12, 28, 2012, 2, 29, (63d / 364d)),
     (DayCounts.ACT_364, 2011, 12, 28, 2012, 3, 1, (64d / 364d)),
@@ -1720,7 +1400,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_364, 2012, 2, 29, 2012, 3, 28, 28d / 364d),
     (DayCounts.ACT_364, 2012, 3, 1, 2012, 3, 28, 27d / 364d),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_365F, 2011, 12, 28, 2012, 2, 28, (62d / 365d)),
     (DayCounts.ACT_365F, 2011, 12, 28, 2012, 2, 29, (63d / 365d)),
     (DayCounts.ACT_365F, 2011, 12, 28, 2012, 3, 1, (64d / 365d)),
@@ -1731,7 +1410,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_365F, 2012, 2, 29, 2012, 3, 28, 28d / 365d),
     (DayCounts.ACT_365F, 2012, 3, 1, 2012, 3, 28, 27d / 365d),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_365_25, 2011, 12, 28, 2012, 2, 28, (62d / 365.25d)),
     (DayCounts.ACT_365_25, 2011, 12, 28, 2012, 2, 29, (63d / 365.25d)),
     (DayCounts.ACT_365_25, 2011, 12, 28, 2012, 3, 1, (64d / 365.25d)),
@@ -1742,7 +1420,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_365_25, 2012, 2, 29, 2012, 3, 28, 28d / 365.25d),
     (DayCounts.ACT_365_25, 2012, 3, 1, 2012, 3, 28, 27d / 365.25d),
 
-    //-------------------------------------------------------
     (DayCounts.NL_360, 2011, 12, 28, 2012, 2, 28, (62d / 360d)),
     (DayCounts.NL_360, 2011, 12, 28, 2012, 2, 29, (62d / 360d)),
     (DayCounts.NL_360, 2011, 12, 28, 2012, 3, 1, (63d / 360d)),
@@ -1754,7 +1431,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.NL_360, 2012, 3, 1, 2012, 3, 28, 27d / 360d),
     (DayCounts.NL_360, 2011, 12, 1, 2012, 12, 1, 365d / 360d),
 
-    //-------------------------------------------------------
     (DayCounts.NL_365, 2011, 12, 28, 2012, 2, 28, (62d / 365d)),
     (DayCounts.NL_365, 2011, 12, 28, 2012, 2, 29, (62d / 365d)),
     (DayCounts.NL_365, 2011, 12, 28, 2012, 3, 1, (63d / 365d)),
@@ -1766,7 +1442,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.NL_365, 2012, 3, 1, 2012, 3, 28, 27d / 365d),
     (DayCounts.NL_365, 2011, 12, 1, 2012, 12, 1, 365d / 365d),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_360_ISDA, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360),
     (DayCounts.THIRTY_360_ISDA, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360),
     (DayCounts.THIRTY_360_ISDA, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360),
@@ -1789,7 +1464,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.THIRTY_360_ISDA, 2012, 5, 31, 2013, 8, 30, calc360(2012, 5, 30, 2013, 8, 30)),
     (DayCounts.THIRTY_360_ISDA, 2012, 5, 31, 2013, 8, 31, calc360(2012, 5, 30, 2013, 8, 30)),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_360_PSA, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360),
     (DayCounts.THIRTY_360_PSA, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360),
     (DayCounts.THIRTY_360_PSA, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360),
@@ -1812,7 +1486,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.THIRTY_360_PSA, 2012, 5, 31, 2013, 8, 30, calc360(2012, 5, 30, 2013, 8, 30)),
     (DayCounts.THIRTY_360_PSA, 2012, 5, 31, 2013, 8, 31, calc360(2012, 5, 30, 2013, 8, 30)),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_E_360, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360),
     (DayCounts.THIRTY_E_360, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360),
     (DayCounts.THIRTY_E_360, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360),
@@ -1835,7 +1508,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.THIRTY_E_360, 2012, 5, 31, 2013, 8, 30, calc360(2012, 5, 30, 2013, 8, 30)),
     (DayCounts.THIRTY_E_360, 2012, 5, 31, 2013, 8, 31, calc360(2012, 5, 30, 2013, 8, 30)),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_EPLUS_360, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360),
     (DayCounts.THIRTY_EPLUS_360, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360),
     (DayCounts.THIRTY_EPLUS_360, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360),
@@ -1859,7 +1531,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.THIRTY_EPLUS_360, 2012, 5, 31, 2013, 8, 30, calc360(2012, 5, 30, 2013, 8, 30)),
     (DayCounts.THIRTY_EPLUS_360, 2012, 5, 31, 2013, 8, 31, calc360(2012, 5, 30, 2013, 9, 1)),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_E_365, 2011, 12, 28, 2012, 2, 28, calc360Days(2011, 12, 28, 2012, 2, 28).toDouble / 365d),
     (DayCounts.THIRTY_E_365, 2011, 12, 28, 2012, 2, 29, calc360Days(2011, 12, 28, 2012, 2, 30).toDouble / 365d),
     (DayCounts.THIRTY_E_365, 2011, 12, 28, 2012, 3, 1, calc360Days(2011, 12, 28, 2012, 3, 1).toDouble / 365d),
@@ -1884,10 +1555,8 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
   )
 
   /**
-   * The Java `data_days` provider, all 185 rows, in the order the provider listed them.
-   *
-   * As above, with the day count expected in place of the year fraction and
-   * [[SIMPLE_30_360DAYS]] as the marker.
+   * All 185 day-count rows, in order: as above, with the day count expected in place of the year
+   * fraction and [[SIMPLE_30_360DAYS]] as the marker.
    */
   lazy val dataDays: TableFor8[DayCount, Int, Int, Int, Int, Int, Int, Int] = Table(
     ("dayCount", "y1", "m1", "d1", "y2", "m2", "d2", "value"),
@@ -1901,7 +1570,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ONE_ONE, 2012, 2, 29, 2012, 3, 28, 1),
     (DayCounts.ONE_ONE, 2012, 3, 1, 2012, 3, 28, 1),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_ACT_ISDA, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.ACT_ACT_ISDA, 2011, 12, 28, 2012, 2, 29, 63),
     (DayCounts.ACT_ACT_ISDA, 2011, 12, 28, 2012, 3, 1, 64),
@@ -1909,7 +1577,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_ACT_ISDA, 2011, 12, 28, 2016, 2, 29, 1524),
     (DayCounts.ACT_ACT_ISDA, 2011, 12, 28, 2016, 3, 1, 1525),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_ACT_AFB, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.ACT_ACT_AFB, 2011, 12, 28, 2012, 2, 29, 63),
     (DayCounts.ACT_ACT_AFB, 2011, 12, 28, 2012, 3, 1, 64),
@@ -1917,7 +1584,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_ACT_AFB, 2011, 12, 28, 2016, 2, 29, 1524),
     (DayCounts.ACT_ACT_AFB, 2011, 12, 28, 2016, 3, 1, 1525),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_ACT_YEAR, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.ACT_ACT_YEAR, 2011, 12, 28, 2012, 2, 29, 63),
     (DayCounts.ACT_ACT_YEAR, 2011, 12, 28, 2012, 3, 1, 64),
@@ -1925,7 +1591,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_ACT_YEAR, 2011, 12, 28, 2016, 2, 29, 1524),
     (DayCounts.ACT_ACT_YEAR, 2011, 12, 28, 2016, 3, 1, 1525),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_365_ACTUAL, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.ACT_365_ACTUAL, 2011, 12, 28, 2012, 2, 29, 63),
     (DayCounts.ACT_365_ACTUAL, 2011, 12, 28, 2012, 3, 1, 64),
@@ -1936,7 +1601,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_365_ACTUAL, 2012, 2, 29, 2012, 3, 28, 28),
     (DayCounts.ACT_365_ACTUAL, 2012, 3, 1, 2012, 3, 28, 27),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_360, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.ACT_360, 2011, 12, 28, 2012, 2, 29, 63),
     (DayCounts.ACT_360, 2011, 12, 28, 2012, 3, 1, 64),
@@ -1944,7 +1608,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_360, 2011, 12, 28, 2016, 2, 29, 63 + 366 + 365 + 365 + 365),
     (DayCounts.ACT_360, 2011, 12, 28, 2016, 3, 1, 64 + 366 + 365 + 365 + 365),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_364, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.ACT_364, 2011, 12, 28, 2012, 2, 29, 63),
     (DayCounts.ACT_364, 2011, 12, 28, 2012, 3, 1, 64),
@@ -1955,7 +1618,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_364, 2012, 2, 29, 2012, 3, 28, 28),
     (DayCounts.ACT_364, 2012, 3, 1, 2012, 3, 28, 27),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_365F, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.ACT_365F, 2011, 12, 28, 2012, 2, 29, 63),
     (DayCounts.ACT_365F, 2011, 12, 28, 2012, 3, 1, 64),
@@ -1966,7 +1628,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_365F, 2012, 2, 29, 2012, 3, 28, 28),
     (DayCounts.ACT_365F, 2012, 3, 1, 2012, 3, 28, 27),
 
-    //-------------------------------------------------------
     (DayCounts.ACT_365_25, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.ACT_365_25, 2011, 12, 28, 2012, 2, 29, 63),
     (DayCounts.ACT_365_25, 2011, 12, 28, 2012, 3, 1, 64),
@@ -1977,7 +1638,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.ACT_365_25, 2012, 2, 29, 2012, 3, 28, 28),
     (DayCounts.ACT_365_25, 2012, 3, 1, 2012, 3, 28, 27),
 
-    //-------------------------------------------------------
     (DayCounts.NL_360, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.NL_360, 2011, 12, 28, 2012, 2, 29, 62),
     (DayCounts.NL_360, 2011, 12, 28, 2012, 3, 1, 63),
@@ -1989,7 +1649,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.NL_360, 2012, 3, 1, 2012, 3, 28, 27),
     (DayCounts.NL_360, 2011, 12, 1, 2012, 12, 1, 365),
 
-    //-------------------------------------------------------
     (DayCounts.NL_365, 2011, 12, 28, 2012, 2, 28, 62),
     (DayCounts.NL_365, 2011, 12, 28, 2012, 2, 29, 62),
     (DayCounts.NL_365, 2011, 12, 28, 2012, 3, 1, 63),
@@ -2001,7 +1660,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.NL_365, 2012, 3, 1, 2012, 3, 28, 27),
     (DayCounts.NL_365, 2011, 12, 1, 2012, 12, 1, 365),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_360_ISDA, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS),
     (DayCounts.THIRTY_360_ISDA, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360DAYS),
     (DayCounts.THIRTY_360_ISDA, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS),
@@ -2024,7 +1682,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.THIRTY_360_ISDA, 2012, 5, 31, 2013, 8, 30, calc360Days(2012, 5, 30, 2013, 8, 30)),
     (DayCounts.THIRTY_360_ISDA, 2012, 5, 31, 2013, 8, 31, calc360Days(2012, 5, 30, 2013, 8, 30)),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_360_PSA, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS),
     (DayCounts.THIRTY_360_PSA, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360DAYS),
     (DayCounts.THIRTY_360_PSA, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS),
@@ -2047,7 +1704,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.THIRTY_360_PSA, 2012, 5, 31, 2013, 8, 30, calc360Days(2012, 5, 30, 2013, 8, 30)),
     (DayCounts.THIRTY_360_PSA, 2012, 5, 31, 2013, 8, 31, calc360Days(2012, 5, 30, 2013, 8, 30)),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_E_360, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS),
     (DayCounts.THIRTY_E_360, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360DAYS),
     (DayCounts.THIRTY_E_360, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS),
@@ -2070,7 +1726,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.THIRTY_E_360, 2012, 5, 31, 2013, 8, 30, calc360Days(2012, 5, 30, 2013, 8, 30)),
     (DayCounts.THIRTY_E_360, 2012, 5, 31, 2013, 8, 31, calc360Days(2012, 5, 30, 2013, 8, 30)),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_EPLUS_360, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS),
     (DayCounts.THIRTY_EPLUS_360, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360DAYS),
     (DayCounts.THIRTY_EPLUS_360, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS),
@@ -2094,7 +1749,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (DayCounts.THIRTY_EPLUS_360, 2012, 5, 31, 2013, 8, 30, calc360Days(2012, 5, 30, 2013, 8, 30)),
     (DayCounts.THIRTY_EPLUS_360, 2012, 5, 31, 2013, 8, 31, calc360Days(2012, 5, 30, 2013, 9, 1)),
 
-    //-------------------------------------------------------
     (DayCounts.THIRTY_E_365, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS),
     (DayCounts.THIRTY_E_365, 2011, 12, 28, 2012, 2, 29, calc360Days(2011, 12, 28, 2012, 2, 30)),
     (DayCounts.THIRTY_E_365, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS),
@@ -2119,13 +1773,10 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
   )
 
   /**
-   * The Java `data_30U360` provider, all 22 rows, in the order the provider listed them.
-   *
-   * Each row carries two expectations for the same pair of dates: the one that holds when the
-   * end-of-month convention is not in use and the one that holds when it is. Four tests are
-   * driven from it - `30U/360` with the flag both ways, `30/360 ISDA`, which reads no flag and
-   * so answers the first column, and `30U/360 EOM`, which applies the rule unconditionally and
-   * so answers the second.
+   * All 22 rows of the `30U/360` family, in order. Each carries two expectations for the same
+   * pair of dates: the one that holds when the end-of-month convention is not in use and the one
+   * that holds when it is. `30/360 ISDA` reads no flag and so answers the first column;
+   * `30U/360 EOM` applies the rule unconditionally and so answers the second.
    */
   lazy val data30U360: TableFor8[Int, Int, Int, Int, Int, Int, Double, Double] = Table(
     ("y1", "m1", "d1", "y2", "m2", "d2", "valueNotEom", "valueEom"),
@@ -2156,10 +1807,9 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
   )
 
   /**
-   * The Java `data_30E360ISDA` provider, all 19 rows, in the order the provider listed them.
-   *
-   * Each row carries the expectation for the second date being the maturity of the schedule and
-   * for it not being the maturity, which is the one fact `30E/360 ISDA` reads from a schedule.
+   * All 19 `30E/360 ISDA` rows, in order. Each carries the expectation for the second date being
+   * the maturity of the schedule and for it not being the maturity, which is the one fact this
+   * member reads from a schedule.
    */
   lazy val data30E360ISDA: TableFor8[Int, Int, Int, Int, Int, Int, Double, Double] = Table(
     ("y1", "m1", "d1", "y2", "m2", "d2", "valueNotMaturity", "valueMaturity"),
@@ -2187,29 +1837,17 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
   )
 
   //-------------------------------------------------------------------------
-  // The AFB day count is poorly defined, so tests were used to identify a sensible
-  // interpretation
-  // 1) The ISDA use of "Calculation Period" is a translation of "Periode d'Application"
-  // where the original simply meant the period the day count is applied over
-  // and NOT the regular periodic schedule (ISDA's definition of "Calculation Period").
-  // 2) The ISDA "clarification" for rolling backward does not appear in the original French.
-  // The ISDA rule produce strange results (in comments below) which can be avoided.
-  // OpenGamma interprets that February 29th should only be chosen if the end date of the period
-  // is February 29th and the rolled back date is a leap year.
-  // 3) No document indicates precisely when to stop rolling back and treat the remainder as a
-  // fraction
-  // OpenGamma interprets that rolling back in whole years continues until the remainder
-  // is less than one year, and possibly zero if two dates are an exact number of years apart
-  // 4) In all cases, the rule has strange effects when interest through a period encounters
-  // February 29th and the denominator suddenly changes from 365 to 366 for the rest of the year
   /**
-   * The Java `data_ACTACTAFB` provider, all 57 rows, in the order the provider listed them.
+   * All 57 `Act/Act AFB` rows, in order.
    *
-   * The commentary above and the per-row commentary below are the Java provider's own, kept
-   * because they are the record of how an under-specified rule was interpreted - the rows
-   * marked with what the ISDA end-of-February reading would have given are the interpretation
-   * decisions themselves, and a row changed without reading them would be a change of
-   * behaviour dressed as a correction.
+   * The rule is under-specified, and these rows are the record of how it is read: ISDA's
+   * "Calculation Period" translates "Periode d'Application", which meant the period the day
+   * count is applied over and not the regular periodic schedule; ISDA's clarification for
+   * rolling backward does not appear in the original French, so February 29th is chosen only
+   * where the end date of the period is February 29th and the rolled-back date is in a leap
+   * year; and, no document saying when to stop, rolling back in whole years continues until the
+   * remainder is less than one year. The rows annotated with what the ISDA end-of-February
+   * reading would have given are those decisions themselves.
    */
   lazy val dataACTACTAFB: TableFor7[Int, Int, Int, Int, Int, Int, Double] = Table(
     ("y1", "m1", "d1", "y2", "m2", "d2", "expected"),
@@ -2224,7 +1862,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (2004, 3, 1, 2005, 3, 1, 1d),
 
     // examples over one year, from a fixed start date
-    // from Feb28 2003
     (2003, 2, 28, 2005, 2, 27, 1d + (364d / 365d)),
     (2003, 2, 28, 2005, 2, 28, 2d),
     (2003, 2, 28, 2005, 3, 1, 2d + (1d / 365d)),
@@ -2232,7 +1869,6 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (2003, 2, 28, 2008, 2, 28, 5d),
     (2003, 2, 28, 2008, 2, 29, 5d),
     (2003, 2, 28, 2008, 3, 1, 5d + (1d / 365d)),
-    // from Feb28 2004
     (2004, 2, 28, 2005, 2, 27, (365d / 366d)),
     (2004, 2, 28, 2005, 2, 28, 1d),
     (2004, 2, 28, 2005, 3, 1, 1d + (2d / 366d)),
@@ -2240,21 +1876,18 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (2004, 2, 28, 2008, 2, 28, 4d),  // ISDA end-of-February would give (4d + (1d / 365d))
     (2004, 2, 28, 2008, 2, 29, 4d + (1d / 365d)),
     (2004, 2, 28, 2008, 3, 1, 4d + (2d / 366d)),
-    // from Feb29 2004
     (2004, 2, 29, 2005, 2, 28, 365d / 366d),
     (2004, 2, 29, 2005, 3, 1, 1d + (1d / 366d)),
     (2004, 2, 29, 2008, 2, 27, 3d + (364d / 366d)),
     (2004, 2, 29, 2008, 2, 28, 3d + (365d / 366d)),  // ISDA end-of-February would give (4d)
     (2004, 2, 29, 2008, 2, 29, 4d),
     (2004, 2, 29, 2008, 3, 1, 4d + (1d / 366d)),
-    // from Mar01 2004
     (2004, 3, 1, 2005, 2, 28, 364d / 365d),
     (2004, 3, 1, 2005, 3, 1, 1d),
     (2004, 3, 1, 2008, 2, 27, 3d + (363d / 365d)),
     (2004, 3, 1, 2008, 2, 28, 3d + (364d / 365d)),
     (2004, 3, 1, 2008, 2, 29, 3d + (364d / 365d)),
     (2004, 3, 1, 2008, 3, 1, 4d),
-    // from Mar01 2003
     (2003, 3, 1, 2005, 2, 27, 1d + (363d / 365d)),
     (2003, 3, 1, 2005, 2, 28, 1d + (364d / 365d)),  // ISDA end-of-February would give (2d)
     (2003, 3, 1, 2005, 3, 1, 2d),
@@ -2263,37 +1896,29 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
     (2003, 3, 1, 2008, 2, 29, 5d),
     (2003, 3, 1, 2008, 3, 1, 5d),
 
-    // examples over one year, up to a fixed end date (not relevant in real life)
-    // up to Mar01 from leap year
+    // examples over one year, up to a fixed end date
     (2004, 2, 28, 2006, 3, 1, 2d + (2d / 366d)),
     (2004, 2, 29, 2006, 3, 1, 2d + (1d / 366d)),
     (2004, 3, 1, 2006, 3, 1, 2d),
-    // up to Mar01 from non leap year
     (2005, 2, 28, 2007, 3, 1, 2d + (1d / 365d)),
     (2005, 3, 1, 2007, 3, 1, 2d),
-    // up to Feb28 in leap year from leap year
     (2004, 2, 27, 2008, 2, 28, 4d + (1d / 365d)),  // ISDA end-of-February would give (4d + (2d / 365d))
     (2004, 2, 28, 2008, 2, 28, 4d),  // ISDA end-of-February would give (4d + (1d / 365d))
     (2004, 2, 29, 2008, 2, 28, 3d + (365d / 366d)),  // ISDA end-of-February would give (4d)
     (2004, 3, 1, 2008, 2, 28, 3d + (364d / 365d)),
-    // up to Feb28 in leap year from non leap year
     (2006, 2, 27, 2008, 2, 28, 2d + (1d / 365d)),
     (2006, 2, 28, 2008, 2, 28, 2d),
     (2006, 3, 1, 2008, 2, 28, 1d + (364d / 365d)),
-    // up to Feb29 in leap year from leap year
     (2004, 2, 28, 2008, 2, 29, 4d + (1d / 365d)),
     (2004, 2, 29, 2008, 2, 29, 4d),
     (2004, 3, 1, 2008, 2, 29, 3d + (364d / 365d)),
-    // up to Feb29 in leap year from non leap year
     (2006, 2, 27, 2008, 2, 29, 2d + (1d / 365d)),
     (2006, 2, 28, 2008, 2, 29, 2d),
     (2006, 3, 1, 2008, 2, 29, 1d + (364d / 365d))
   )
 
   /**
-   * The Java `data_ACT365L` provider, all 12 rows, in the order the provider listed them.
-   *
-   * Each row carries the two dates, the frequency of the schedule and the end of the schedule
+   * All 12 `Act/365L` rows, in order: the two dates, the frequency and the end of the schedule
    * period - the two facts this member reads - and the expected fraction. The rows pair an
    * annual frequency, which puts the leap-day test on the whole period, against a semi-annual
    * one, which asks only whether the period ends in a leap year.
@@ -2319,18 +1944,10 @@ private[date] object DayCountSpec extends TableDrivenPropertyChecks {
   )
 
   /**
-   * The Java `data_lenient` provider, all 80 rows, in the order the provider listed them.
-   *
-   * Every row is a spelling that the ordered chain of 67 rewrites turns into a canonical name:
-   * the long and short spellings of `Actual`, the bracketed and dotted qualifier forms, the
-   * `ISMA` spelling of `ICMA`, a shelf of market nicknames, and the screaming-snake spellings
-   * of the constant identifiers. Two rows appear twice in the Java provider - `Actual/Actual
-   * ISDA` and `Act/Act` - and both are kept, because this table is a transcription and a
-   * de-duplicated table would no longer be one.
-   *
-   * The last row is the one that does not name a member of the closed family: `BUS/252` resolves
-   * to the calendar-bearing convention over the Brazilian calendar, which the resource declared
-   * as the default for that spelling.
+   * All 80 lenient spellings, in order, each with the member it resolves to. Two spellings
+   * appear twice - `Actual/Actual ISDA` and `Act/Act` - and both occurrences are kept, because
+   * this table is a transcription of the published list. The last row does not name a member of
+   * the closed family: `BUS/252` resolves to the convention over the Brazilian calendar.
    */
   lazy val dataLenient: TableFor2[String, DayCount] = Table(
     ("name", "dayCount"),

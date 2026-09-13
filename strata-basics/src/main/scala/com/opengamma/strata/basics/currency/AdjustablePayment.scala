@@ -19,6 +19,7 @@ import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.Resolvable
 import com.opengamma.strata.basics.date.AdjustableDate
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -61,10 +62,7 @@ import com.opengamma.strata.collect.result.Failure
  * `ofPay`, `ofReceive`, `of` from a [[Payment]], the constructor and `copy` - takes an amount
  * that has already been checked and is consequently total.
  *
- * The generated builder of the bean being ported is not carried over; `copy` replaces it, with
- * the compiler rather than a run-time check ensuring that both fields are supplied. The
- * meta-bean, the property map and Java serialization are likewise not carried over: the JSON
- * codec of the companion is this port's single serialized form.
+ * The JSON codec published by the companion is the serialized form of an adjustable payment.
  *
  * ===Resolution, and why it is the only reference-data call here===
  *
@@ -76,13 +74,12 @@ import com.opengamma.strata.collect.result.Failure
  * [[com.opengamma.strata.basics.date.AdjustableDate]] and the types beneath it, none of which
  * this type needs to know about.
  *
- * Where the bean being ported declared that a calendar missing from the reference data raised a
- * runtime exception, here the outcome is a value: the resolved payment is a `Right`, and a
- * calendar the data cannot supply is a
+ * Resolution answers a value: the resolved payment is a `Right`, and a calendar the
+ * reference data cannot supply is a
  * `Left(`[[com.opengamma.strata.collect.result.Failure.MissingData]]`)` naming the identifier.
  * [[com.opengamma.strata.basics.Resolvable.toReader]] is inherited and offers the same
- * resolution as a value awaiting its data, so several resolutions compose before any reference
- * data is to hand:
+ * resolution as a value awaiting its reference data, so several resolutions compose and the data
+ * is supplied once:
  *
  * {{{
  * import cats.syntax.apply._
@@ -93,11 +90,10 @@ import com.opengamma.strata.collect.result.Failure
  *
  * ===What this type deliberately does not do===
  *
- * There is no `convertedTo`, and this type is '''not''' an
- * [[FxConvertible]] - matching the bean being ported, which implements only `Resolvable`. An
- * amount whose payment date is not yet fixed is not a sensible thing to convert, because the
- * rate a conversion should use generally depends on a date; a holder therefore resolves first
- * and converts the resulting [[Payment]], which is the convertible type:
+ * There is no `convertedTo`, and this type is '''not''' an [[FxConvertible]]. An amount whose
+ * payment date is still to be adjusted is not a sensible thing to convert, because the rate a
+ * conversion should use generally depends on a date; a holder therefore resolves first and
+ * converts the resulting [[Payment]], which is the convertible type:
  *
  * {{{
  * adjustablePayment.resolve(refData).flatMap(_.convertedTo(Currency.EUR, rateProvider))
@@ -111,8 +107,8 @@ import com.opengamma.strata.collect.result.Failure
  * equality [[com.opengamma.strata.basics.date.AdjustableDate]] defines. No bit-pattern
  * comparison is arranged here, deliberately: the only `Double` an adjustable payment holds is
  * inside the amount, and one source of truth for the equality of a double belongs with the type
- * that holds it. The companion publishes a `Hash` and a `Show` and, following the bean being
- * ported, which is not `Comparable`, no `Order`.
+ * that holds it. The companion publishes a `Hash` and a `Show`, and no `Order`, since whether an
+ * amount or a date ranks first depends on what the caller is doing.
  *
  * Instances are immutable and every operation is a pure function of the instance and its
  * arguments, so an adjustable payment may be shared freely between threads.
@@ -129,13 +125,13 @@ import com.opengamma.strata.collect.result.Failure
  *   implements
  */
 final case class AdjustablePayment(value: CurrencyAmount, date: AdjustableDate)
-    extends Resolvable[Payment] {
+    extends Resolvable[Payment]
+    with NoJavaSerialization {
 
   /**
    * Gets the currency of the payment.
    *
-   * This is `value.currency`, offered under the name the bean being ported gave it so that a
-   * call site reads unchanged. The currency is a property of the amount rather than of the
+   * This is `value.currency`. The currency is a property of the amount rather than of the
    * payment, so changing it means converting - which this type leaves to the [[Payment]] that
    * [[resolve]] produces, as the class documentation explains.
    *
@@ -146,14 +142,12 @@ final case class AdjustablePayment(value: CurrencyAmount, date: AdjustableDate)
   /**
    * Gets the amount of the payment.
    *
-   * This is `value.amount`, offered under the name the bean being ported gave it. The amount is
-   * signed: negative to pay, positive to receive.
+   * This is `value.amount`. The amount is signed: negative to pay, positive to receive.
    *
    * @return the signed amount paid, in the currency of the payment
    */
   def getAmount: Double = value.amount
 
-  //-------------------------------------------------------------------------
   /**
    * Resolves the date on this payment, returning a payment with a fixed date.
    *
@@ -167,15 +161,13 @@ final case class AdjustablePayment(value: CurrencyAmount, date: AdjustableDate)
    * [[com.opengamma.strata.basics.Resolvable]] documents for every resolved form.
    *
    * Reference data that cannot supply the calendar the date's adjustment names yields
-   * `Left(`[[com.opengamma.strata.collect.result.Failure.MissingData]]`)` naming the identifier -
-   * where the bean being ported threw. Nothing here throws.
+   * `Left(`[[com.opengamma.strata.collect.result.Failure.MissingData]]`)` naming the identifier.
    *
    * A date carrying [[com.opengamma.strata.basics.date.BusinessDayAdjustment.NONE]] moves no
    * date, but it is '''not''' exempt from that lookup: it names the no-holidays calendar, and the
    * adjustment resolves the identifier before applying a convention that does nothing with it.
-   * That is the behaviour of the library being ported, whose `adjust` likewise resolves the
-   * calendar unconditionally, and it is preserved here. The consequence is worth stating, because
-   * it is the one way a payment that adjusts nothing can still fail to resolve: the no-holidays
+   * The calendar is resolved unconditionally, and the consequence is worth stating, because it
+   * is the one way a payment that adjusts nothing can still fail to resolve: the no-holidays
    * calendar is supplied by [[com.opengamma.strata.basics.ReferenceData.standard]], by
    * [[com.opengamma.strata.basics.ReferenceData.minimal]] and by every set built with
    * [[com.opengamma.strata.basics.ReferenceData.of]], which includes the minimal calendars, so
@@ -199,15 +191,14 @@ final case class AdjustablePayment(value: CurrencyAmount, date: AdjustableDate)
   override def resolve(refData: ReferenceData): Either[Failure, Payment] =
     date.adjusted(refData).map(adjusted => Payment.of(value, adjusted))
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this payment with the value negated.
    *
    * A payment to be made becomes one to be received and the other way about, on the same
    * adjustable date. The negation is that of [[CurrencyAmount.negated]], so it is unconditional -
-   * applying it twice returns to the original amount - and it is the operation to use where the
-   * direction of a known payment is reversed. Where instead the direction is known and the sign
-   * of the amount is not, use [[AdjustablePayment.ofPay]] or [[AdjustablePayment.ofReceive]].
+   * applying it twice returns the amount it started from - and it is the operation to use where
+   * the direction of a known payment is reversed. Where instead the direction is known and the
+   * sign of the amount is not, use [[AdjustablePayment.ofPay]] or [[AdjustablePayment.ofReceive]].
    *
    * This instance is immutable and unaffected by this method.
    *
@@ -215,18 +206,15 @@ final case class AdjustablePayment(value: CurrencyAmount, date: AdjustableDate)
    */
   def negated: AdjustablePayment = AdjustablePayment.of(value.negated, date)
 
-  //-------------------------------------------------------------------------
   /**
    * Returns this payment as text.
    *
-   * The form is the one the Joda-Beans generated bean produced, the two fields named in
-   * declaration order between braces, as in
+   * The two fields are named in declaration order between braces, as in
    * `AdjustablePayment{value=GBP 1000, date=2015-06-30}`, with the amount rendered by
    * [[CurrencyAmount.toString]] and the date by
    * [[com.opengamma.strata.basics.date.AdjustableDate.toString]] - so a date needing no
    * adjustment renders as the bare date and any other renders as
-   * `2015-06-28 adjusted by Following using calendar GBLO`. It is kept exactly so that ported
-   * code and the logs it writes read as they did before, and it is what the `Show` instance of
+   * `2015-06-28 adjusted by Following using calendar GBLO`. It is what the `Show` instance of
    * the companion renders.
    *
    * @return the rendering of this payment
@@ -237,22 +225,20 @@ final case class AdjustablePayment(value: CurrencyAmount, date: AdjustableDate)
 /**
  * The factories, typeclass instances and JSON form of [[AdjustablePayment]].
  *
- * The nine factories are those of the bean being ported, under the names it gave them. They form
- * a grid: three intents - take the sign as given (`of`), force it negative (`ofPay`), force it
- * positive (`ofReceive`) - each in a fixed-date and an adjustable-date form, plus the two `of`
- * overloads that take a currency and a raw number, and one that lifts a fixed [[Payment]]. Every
- * fixed-date form is its adjustable-date counterpart applied to
- * [[com.opengamma.strata.basics.date.AdjustableDate.of]], exactly as in the bean, so the two
- * forms of one intent cannot drift apart. The constructor and `copy` of the case class are
- * public alongside them, since an adjustable payment imposes no invariant of its own, so a
- * caller holding an amount and an adjustable date needs no factory at all.
+ * The nine factories form a grid: three intents - take the sign as given (`of`), force it
+ * negative (`ofPay`), force it positive (`ofReceive`) - each in a fixed-date and an
+ * adjustable-date form, plus the two `of` overloads that take a currency and a raw number, and
+ * one that lifts a fixed [[Payment]]. Every fixed-date form is its adjustable-date counterpart
+ * applied to [[com.opengamma.strata.basics.date.AdjustableDate.of]], so the two forms of one
+ * intent cannot drift apart. The constructor and `copy` of the case class are public alongside
+ * them, since an adjustable payment imposes no invariant of its own, so a caller holding an
+ * amount and an adjustable date needs no factory at all.
  *
  * Two typeclass instances are published, and exactly two: a `Hash`, which is the single
  * equality-bearing instance of the type - `Hash` extends `Eq`, so declaring an `Eq` as well
  * would leave two instances that could disagree and one of them ambiguous - and a `Show`. There
- * is deliberately no `Order`: the bean being ported is not `Comparable`, and an ordering of
- * payments would be this port's invention, since whether an amount or a date ranks first depends
- * on what the caller is doing. A caller that needs one sorts by the field it means, as in
+ * is deliberately no `Order`, since whether an amount or a date ranks first depends on what the
+ * caller is doing. A caller that needs one sorts by the field it means, as in
  * `payments.sortBy(_.date.unadjusted)`.
  */
 object AdjustablePayment {
@@ -328,8 +314,8 @@ object AdjustablePayment {
    * is taken as given. The date carries its own business day adjustment, which [[resolve]]
    * applies.
    *
-   * Construction cannot fail, and this factory is exactly the constructor of the case class,
-   * which leaves it nothing to add. It is kept so that ported call sites read as they did.
+   * Construction cannot fail: this factory is exactly the constructor of the case class, offered
+   * under the `of` name the other factories share.
    *
    * @param value  the signed amount of the payment
    * @param date  the date on which the payment is made, with its adjustment
@@ -435,7 +421,6 @@ object AdjustablePayment {
    */
   def of(payment: Payment): AdjustablePayment = of(payment.value, payment.date)
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of adjustable payments.
    *
@@ -445,7 +430,7 @@ object AdjustablePayment {
    * positive zero, and the date by the structural equality of
    * [[com.opengamma.strata.basics.date.AdjustableDate]]. Nothing about the hash depends on where
    * an instance sits in memory, so the hash of an adjustable payment is the same in every run of
-   * every program, which is what the byte-stability properties of the test suite rely on.
+   * every program.
    *
    * This is the type's only equality-bearing instance; `Eq[AdjustablePayment]` is obtained from
    * it by subtyping rather than declared separately. There is no `Order`, as the companion's own
@@ -459,21 +444,20 @@ object AdjustablePayment {
    * The rendering of adjustable payments as text.
    *
    * Renders what [[AdjustablePayment.toString]] renders, the
-   * `AdjustablePayment{value=GBP 1000, date=2015-06-30}` form of the bean being ported, so the
-   * two ways of putting an adjustable payment into a message agree.
+   * `AdjustablePayment{value=GBP 1000, date=2015-06-30}` form, so the two ways of putting an
+   * adjustable payment into a message agree.
    *
    * @return the rendering of an adjustable payment
    */
   implicit val show: Show[AdjustablePayment] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The JSON encoding of adjustable payments.
    *
    * The encoding is derived when this file is compiled, so no part of it inspects a class while
-   * the program runs. An adjustable payment encodes as an object holding its two fields under the
-   * names the Java bean declared, in declaration order, each written by the codec its own type
-   * publishes - the amount as the object of [[CurrencyAmount]], and the date as the object of
+   * the program runs. An adjustable payment encodes as an object holding its two fields under
+   * their own names, in declaration order, each written by the codec its own type publishes -
+   * the amount as the object of [[CurrencyAmount]], and the date as the object of
    * [[com.opengamma.strata.basics.date.AdjustableDate]], whose own two fields are the ISO-8601
    * date and the adjustment:
    *
@@ -484,10 +468,10 @@ object AdjustablePayment {
    *
    * An amount outside the real numbers is written by the amount's own codec as the tagged string
    * that codec defines - `"Infinity"` for an infinite payment - so every adjustable payment this
-   * type admits survives a round trip. Neither field is optional, so there is no absent value to
-   * drop; the encoder is wrapped in the single policy of this port for products all the same, so
-   * that the rule holds of every product encoder without a reader having to check which products
-   * have an optional field today.
+   * type admits survives a round trip. An adjustable payment holds both of its fields, the amount
+   * and the date, so nothing is ever omitted here; the encoder is wrapped in the same policy
+   * every product encoder of this library carries, which omits a field holding no value, so that
+   * the rule holds of every product encoder alike.
    *
    * @return the JSON encoding of an adjustable payment
    */

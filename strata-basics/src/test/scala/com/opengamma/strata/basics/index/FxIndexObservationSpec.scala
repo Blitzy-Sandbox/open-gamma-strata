@@ -114,9 +114,12 @@ class FxIndexObservationSpec extends AnyFunSuite with Matchers {
   /**
    * The expected JSON of the observation of the Java test.
    *
-   * Three fields under the names of the three properties of the bean being ported, in their
-   * declaration order: the index as its canonical name - a bare string, whose slash is part of
-   * the name and is carried unescaped - and the two dates in their ISO forms.
+   * Three fields under the three property names, in their declaration order: the index as a bare
+   * string holding its canonical name, which contains a slash, and the two dates in their ISO
+   * forms. This literal is parsed before it is used and the comparison is made between documents,
+   * so what it pins is the fields present, their names and their decoded values - not how the
+   * printed text spells them, a decoded string being the same whether or not its slash arrived
+   * escaped.
    */
   private val ExpectedJson: String =
     """{"index":"GBP/USD-WM","fixingDate":"2016-02-22","maturityDate":"2016-02-24"}"""
@@ -278,9 +281,12 @@ class FxIndexObservationSpec extends AnyFunSuite with Matchers {
     test2.fixingDate shouldBe date(2016, 2, 23)
     test2.maturityDate shouldBe date(2016, 2, 25)
 
-    // Two observations that differ in both index and fixing date are not equal, and hashing
-    // agrees with equality. `Hash` is the type's single equality-bearing instance, from which
-    // `Eq` is obtained by subtyping, and it reports the same relation as platform equality does.
+    // Two observations that differ in both index and fixing date are not equal. `Hash` is the
+    // type's single equality-bearing instance, from which `Eq` is obtained by subtyping, and it
+    // reports the same relation as platform equality does. The hash contract runs one way - equal
+    // observations share a hash, which is asserted further down on two observations that are
+    // equal - so the differing hash codes of these two fixtures are an observation about them and
+    // not a requirement: unequal values are free to collide.
     test should not be test2
     test.hashCode should not be test2.hashCode
     Hash[FxIndexObservation].eqv(test, test2) shouldBe false
@@ -351,8 +357,10 @@ class FxIndexObservationSpec extends AnyFunSuite with Matchers {
     test.asJson.asObject.map(_.keys.toList) shouldBe
       Some(List("index", "fixingDate", "maturityDate"))
 
-    // The index rides its family's codec and is written as its bare canonical name - not as an
-    // object, and not with its slash escaped - while both dates are written in their ISO forms.
+    // The index rides its family's codec and is written as a bare string, not as an object: the
+    // value read back is its canonical name, slash included. Both dates are read back as their
+    // ISO forms. These are decoded values, so they say nothing about how the printed document
+    // spells them.
     test.asJson.hcursor.downField("index").as[String] shouldBe Right("GBP/USD-WM")
     test.asJson.hcursor.downField("fixingDate").as[String] shouldBe Right("2016-02-22")
     test.asJson.hcursor.downField("maturityDate").as[String] shouldBe Right("2016-02-24")

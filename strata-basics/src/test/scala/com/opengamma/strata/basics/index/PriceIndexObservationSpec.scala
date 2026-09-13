@@ -88,11 +88,16 @@ import com.opengamma.strata.basics.currency.Currency
  *    reader's result.
  *  - Rule 4 (closed families) does not govern an observation, which is an ordinary value built
  *    on demand rather than a member of a published set. [[IndexObservation]] is open by design,
- *    its four implementations being four files, so nothing here asserts that it cannot be
- *    extended. The closedness of [[PriceIndex]], which the subject carries, belongs to
- *    `PriceIndexSpec` and `NamedEnumClosedSpec`.
+ *    its four implementations being four files, and the open-contract row `ApiSurfaceSpec`
+ *    carries for the trait is where that is established: it implements the trait from outside
+ *    `IndexObservation.scala` and compiles a second implementation. Nothing here speaks to
+ *    whether the trait can be extended. The closedness of [[PriceIndex]], which the subject
+ *    carries, belongs to `PriceIndexSpec` and `NamedEnumClosedSpec`.
  *  - Rule 7 keeps effects at the edges: this spec is pure, and runs no effect type.
- *  - Rule 3 (immutability) holds trivially - every value here is a `val`.
+ *  - Rule 3 (immutability) is the subject's own property, not this spec's: a `final case class`
+ *    over a `PriceIndex` and a `java.time.YearMonth`, both immutable, so no value of it can be
+ *    mutated after construction. This spec binds its fixtures with `val` and mutates nothing,
+ *    which is consistent with that property rather than evidence of it.
  *
  * @see [[PriceIndexObservation]] for the subject
  * @see [[PriceIndices]] for the two indices used as subjects
@@ -152,7 +157,11 @@ class PriceIndexObservationSpec extends AnyFunSuite with Matchers {
     // value as a bean and then compared it against a second instance differing in both fields.
     // Neither helper exists here, so the cover is written over the very two subjects the
     // original used, and asserts what those sweeps were there to guarantee: that equality,
-    // hashing and rendering exist, agree with one another, and distinguish the two values.
+    // hashing and rendering exist, agree with one another, and that equality and rendering
+    // separate the two values. Hashing is not asked to separate them: its contract runs one way
+    // only - equal values must hash alike, unequal values are permitted to collide - so of the
+    // differing subject the real property is asserted instead, that the instance answers with
+    // the value's own `hashCode`. The alike-in-hash direction is asserted of an equal pair below.
     val test: PriceIndexObservation = PriceIndexObservation.of(PriceIndices.GB_HICP, FixingMonth)
     val test2: PriceIndexObservation =
       PriceIndexObservation.of(PriceIndices.CH_CPI, FixingMonth.plusMonths(1))
@@ -160,7 +169,7 @@ class PriceIndexObservationSpec extends AnyFunSuite with Matchers {
     test should not be test2
     Eq[PriceIndexObservation].eqv(test, test2) shouldBe false
     Hash[PriceIndexObservation].eqv(test, test2) shouldBe false
-    Hash[PriceIndexObservation].hash(test) should not be Hash[PriceIndexObservation].hash(test2)
+    Hash[PriceIndexObservation].hash(test2) shouldBe test2.hashCode
 
     // Equality is the all-field equality the case class generates, so each field on its own
     // distinguishes two observations. This is the property the Overnight and exchange-rate

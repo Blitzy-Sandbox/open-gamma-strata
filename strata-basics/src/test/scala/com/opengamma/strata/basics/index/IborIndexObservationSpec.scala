@@ -20,6 +20,7 @@ import org.scalatest.matchers.should.Matchers
 
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.currency.Currency
+import com.opengamma.strata.basics.date.DayCounts
 import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
@@ -49,11 +50,16 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * compares exactly those five fields - and it is a more specific one, because a mismatch names the
  * field that is wrong rather than printing two whole values.
  *
- * The year fraction is expected from the same call the Java test made of it,
- * `index.dayCount.yearFraction(effectiveDate, maturityDate)`, so the comparison is exact and needs
- * no tolerance. The 1e-9 parity discipline of the request (AAP Rule 2) governs the captured
- * baseline fixtures under `parity/`, where a Java-produced number is compared with a
- * Scala-produced one; here both sides are one computation, and a tolerance would only weaken it.
+ * The year fraction is expected twice over. Once from `index.dayCount.yearFraction(effectiveDate,
+ * maturityDate)`, which is the call the Java test made of it and says the stored value is the one
+ * the index derives; and once from the arithmetic the day count of the fixture prescribes, stated
+ * in this suite from the fixture and not read back out of the subject - `USD-LIBOR-3M` counts on
+ * `Act/360`, and the actual days from `2016-02-22` to `2016-05-23` are 91, so the year fraction is
+ * `91.0 / 360.0`. Neither comparison carries a tolerance and neither needs one: an actual/360 year
+ * fraction is a count of days divided by 360, so the division the day count performs and the
+ * division written here are the same double to the bit. The 1e-9 parity discipline of the request
+ * (AAP Rule 2) governs the captured baseline fixtures under `parity/`, where a Java-produced
+ * number is compared with a Scala-produced one.
  *
  * ===A failure the original could not express===
  *
@@ -74,9 +80,10 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * runs, so neither helper has a target - the retained test helper of the ported collect module has
  * five members and neither of these is among them. Their substance does have a target: they stood
  * for the claims that two instances built independently from equal parts are equal and hash
- * equally, that instances differing in a field are not, and that an instance renders itself
- * faithfully. Those claims are asserted directly, over the same two subjects the Java call used,
- * on the type's own members and on its two typeclass instances.
+ * equally, that instances differing in a field are not equal - the hash contract running one way
+ * only, so nothing is claimed of the hashes of two unequal instances - and that an instance
+ * renders itself faithfully. Those claims are asserted directly, over the same two subjects the
+ * Java call used, on the type's own members and on its two typeclass instances.
  *
  * The absence of a `copy` is proved there too, by compiling a snippet and requiring it to fail,
  * because it is the fact that makes the field assertions of `test_of` the faithful port rather
@@ -106,10 +113,14 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * `double`, which `coverage` states explicitly.
  *
  * No ordering is asserted: the bean does not implement `Comparable` and the port declares no
- * `Order`. Nor is anything asserted about the sealing of [[IndexObservation]], which is a
- * deliberately open trait in this port - its four implementations are four files, which Scala 2's
- * same-file rule forbids for a sealed type - so an application may still add an observation of its
- * own, exactly as the interface being ported allows.
+ * `Order`. [[IndexObservation]] is a deliberately open trait in this port - sealing it would pull
+ * its four implementations into its own file, Scala 2 admitting a subtype of a sealed type only
+ * from the file that type is declared in, and would deny an application the observation of its own
+ * that the interface being ported allows it to supply. This suite asserts nothing about that
+ * openness: the module's API-surface spec carries an open-contract row for the trait, implements
+ * it from outside its file and compiles a further implementation to show the openness is a
+ * property of the trait rather than of that one host, and owns the property for every type of the
+ * module at once.
  *
  * @see [[IborIndexObservation]] for the type under test
  */
@@ -193,12 +204,26 @@ final class IborIndexObservationSpec extends AnyFunSuite with Matchers {
       IborIndices.USD_LIBOR_3M.calculateMaturityFromEffective(UsdEffectiveDate, RefData)
     unwrap(fromEffective) shouldBe UsdMaturityDate
 
-    // The year fraction, expected from the same call the Java test made of it, so that the
-    // comparison is of one computation with itself and is exact to the bit. Both sides are doubles
-    // and neither is a literal transcribed from a printed value.
+    // The year fraction, against the call the Java test made of it: this is the claim that the
+    // stored value is the one the index derives from the two dates above, rather than a number
+    // computed some other way and carried along.
     val expectedYearFraction: Double =
       IborIndices.USD_LIBOR_3M.dayCount.yearFraction(UsdEffectiveDate, UsdMaturityDate)
     test.yearFraction shouldBe expectedYearFraction
+
+    // and against the arithmetic that day count prescribes, stated here rather than obtained from
+    // the subject - which is what makes the assertion evidence and not a comparison of one
+    // computation with itself. `USD-LIBOR-3M` counts days on `Act/360`, so the year fraction is
+    // the actual days from the effective date to the maturity date over 360. The days are the 7
+    // left in the leap February of 2016 after the 22nd, the 31 of March, the 30 of April and the
+    // 23 of May to the maturity date: 91. The day span and the day count of the index are each
+    // asserted as well, so the numerator and the divisor of the expectation are pinned and not
+    // only the quotient. No tolerance is taken and none is needed: an actual/360 year fraction is
+    // one division of a day count by 360, which is the division written below, so the two sides
+    // are the same double to the bit.
+    java.time.temporal.ChronoUnit.DAYS.between(UsdEffectiveDate, UsdMaturityDate) shouldBe 91L
+    IborIndices.USD_LIBOR_3M.dayCount shouldBe DayCounts.ACT_360
+    test.yearFraction shouldBe 91.0d / 360.0d
 
     // The currency of an observation is the currency of the index it observes, which is the last
     // fact the Java test asserted.
@@ -281,11 +306,16 @@ final class IborIndexObservationSpec extends AnyFunSuite with Matchers {
     Hash[IborIndexObservation].hash(same) shouldBe test.hashCode
 
     // The pair of the Java coverage call is unequal, under the equality of the platform and under
-    // the typeclass alike, and their hashes differ. This replaces the second sweep, which compared
-    // two beans property by property.
+    // the typeclass alike. This replaces the second sweep, which compared two beans property by
+    // property. Nothing is asserted about the two hashes being different, because the hash
+    // contract runs one way only: equal values must hash equally, which is what the pair above
+    // asserts, while unequal values are permitted to collide. Requiring these two to hash apart
+    // would assert a property the type does not promise and would fail this suite for a field or
+    // a seed change that is no defect. What the unequal subject does owe is the agreement of its
+    // `Hash` instance with its own hash, so that is what is asserted of it.
     test2 should not be test
     Hash[IborIndexObservation].eqv(test2, test) shouldBe false
-    test2.hashCode should not be test.hashCode
+    Hash[IborIndexObservation].hash(test2) shouldBe test2.hashCode
 
     // Each of the two subjects differs from the other in the index and in the fixing date at once,
     // so each field is varied on its own as well, which is what proves that all five participate

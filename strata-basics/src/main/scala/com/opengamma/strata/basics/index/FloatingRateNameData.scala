@@ -10,6 +10,7 @@ import java.util.Locale
 import scala.collection.immutable.ListMap
 
 import com.opengamma.strata.basics.currency.Currency
+import com.opengamma.strata.collect.NoJavaSerialization
 
 /**
  * A single transcribed row of the floating rate name reference data.
@@ -21,11 +22,9 @@ import com.opengamma.strata.basics.currency.Currency
  * The external name is the published identifier, and it is the contract with the outside world:
  * it is the text that arrives in an FpML message or an ISDA definition, so it is transcribed
  * exactly as published, including the spaces that several names contain - `USD-Federal Funds`,
- * `DKK-CIBOR-Reference Banks` and `EUR-EuroSTR-OIS Compound` among them. Two external names even
- * contain an equals sign, `CNY-CNREPOFIX=CFXS-Reuters` and `HKD-HIBOR-HIBOR=`, which the parser of
- * the Java implementation admitted because it split a published line on the first ` = ` rather
- * than on the first `=`. Nothing here may be tidied: a name that is corrected stops matching the
- * messages it exists to match.
+ * `DKK-CIBOR-Reference Banks` and `EUR-EuroSTR-OIS Compound` among them - and including the equals
+ * sign that two of them contain, `CNY-CNREPOFIX=CFXS-Reuters` and `HKD-HIBOR-HIBOR=`. Nothing here
+ * may be tidied: a name that is corrected stops matching the messages it exists to match.
  *
  * Many external names share one index name. The 159 Ibor rows resolve onto 31 index families -
  * five spellings of CHF LIBOR all name `CHF-LIBOR-` - which is deliberate, and is how a family
@@ -41,31 +40,27 @@ import com.opengamma.strata.basics.currency.Currency
  * @param fixingDateOffsetDays  the number of days of the non-standard fixing date offset the row
  *   declares, or nothing when the row declares none and the offset of the index applies
  *
- * The row is a transcription of one line of the reference data this module was built from, so it
- * is visible within `com.opengamma.strata.basics` and no further - the same visibility
- * `PriceIndexRow` has, and for the same reason. It is the shape the table below is written in
- * rather than a value of the published API: a caller reads this data as the index family the
- * companion of `Index.scala` builds from it, never as rows, so publishing the row type would add
- * a type to the module's surface that nothing outside it can use and that the port's construction
- * and codec inventories would then have to account for.
+ * The row is the shape the table below is written in rather than a value of the published API: a
+ * caller reads this data as the index family the companion of `Index.scala` builds from it, never
+ * as rows. It is therefore visible within `com.opengamma.strata.basics` and no further - the same
+ * visibility `PriceIndexRow` has, and for the same reason - so that the row type adds nothing to
+ * the published surface of the module.
  */
 private[basics] final case class FloatingRateNameRow(
     externalName: String,
     indexName: String,
     rateType: FloatingRateType,
     fixingDateOffsetDays: Option[Int])
+    extends NoJavaSerialization
 
 /**
  * The floating rate name reference data of this module, expressed as immutable Scala data.
  *
  * This object carries the whole of the published floating rate name table: 351 name rows over
  * four kinds of rate, the three rows that declare a non-standard fixing date offset, and the two
- * tables that name the default Ibor and Overnight rate of a currency - 404 rows in total. In the
- * Java implementation that table was a classpath resource, read and parsed at class-initialisation
- * time by a loader that caught and logged any failure and left the registry empty when one
- * occurred. Here the rows are Scala literals fixed at compile time: there is no resource to
- * locate, no text to parse, no registry to populate and no load failure to recover from, so the
- * table cannot be absent, partial or overridden at run time.
+ * tables that name the default Ibor and Overnight rate of a currency - 404 rows in total. The rows
+ * are Scala literals fixed at compile time, so the table cannot be absent, partial or overridden
+ * at run time.
  *
  * ===Sections and counts===
  *
@@ -73,9 +68,8 @@ private[basics] final case class FloatingRateNameRow(
  * the section a row belongs to is what decides how the row is read:
  *
  *  - 159 Ibor rows, in [[iborRows]]. The published value of an Ibor row is the stem of an index
- *    name, and the loader of the Java implementation appended a `-` to it, because an Ibor index
- *    name is completed by a tenor. [[iborRows]] carries the appended form, so no consumer repeats
- *    that step.
+ *    name, which a tenor completes; [[iborRows]] carries that stem with a `-` appended to it, so no
+ *    consumer repeats that step.
  *  - 3 fixing date offset rows, in [[iborFixingDateOffsets]], which also reach [[iborRows]] as the
  *    `fixingDateOffsetDays` of the three rows they name.
  *  - 156 Overnight compounded rows, in [[overnightCompoundedRows]], 6 Overnight averaged rows, in
@@ -89,12 +83,9 @@ private[basics] final case class FloatingRateNameRow(
  * identify the ISDA 2021 and FpML codes of a family are carried over with the rows they annotate,
  * for the same reason.
  *
- * ===Invariants, and what pins them===
+ * ===Invariants===
  *
- * Every row of every table is asserted against the Java-captured reference data manifest by
- * `ReferenceDataManifestSpec`, section by section, so a row that is self-consistent but
- * mistranscribed is caught independently of any check this object could make on itself. The
- * invariants are:
+ * The tables below hold all of the following, and a consumer may rely on them:
  *
  *  - the section sizes above, 159 + 3 + 156 + 6 + 30 + 23 + 27 = 404 rows;
  *  - the 351 name rows have 351 distinct external names, within each section and across all four,
@@ -120,14 +111,13 @@ private[basics] final case class FloatingRateNameRow(
  * name of a rate rather than to a rate, leaving the resolution to the consumer that owns the
  * members. The lookup route it does offer - [[fixingDateOffsetOf]], visible to this package alone
  * - constructs nothing either: it answers a name with the published value of a row, and it exists
- * because the table published beside it is ordered for the manifest comparison and an ordered map
- * answers a key by walking to it, while the 159 Ibor rows assembled here each ask it a question.
+ * because [[iborFixingDateOffsets]] keeps the published order, so answering one key from it walks
+ * an insertion chain, while the 159 Ibor rows assembled here each ask it a question.
  *
- * There is also no table of alternate, lenient or external-group names here, and that is not an
- * omission: the configuration of the Java implementation declares none for this family. Its 404
- * published rows are the whole of the name space, and the upper-case spelling of each external
- * name resolves through the key space that `NamedEnum` builds for a named family rather than
- * through a table transcribed here.
+ * There is no table of alternate, lenient or external-group names here: the 404 published rows are
+ * the whole of the name space, and the upper-case spelling of each external name resolves through
+ * the key space that `NamedEnum` builds for a named family rather than through a table transcribed
+ * here.
  *
  * All members are immutable values, and this object is therefore thread-safe.
  *
@@ -142,8 +132,8 @@ private[basics] object FloatingRateNameData {
   // object is emitted into that object's single constructor method, so chunking into values would
   // leave one method holding every row and approaching the per-method size limit of the virtual
   // machine. Each method below stays well inside that limit, and every boundary falls between two
-  // published families, so each method is still a contiguous run of published rows. Keep them
-  // separate.
+  // published families, so each method is still a contiguous run of published rows; the split is
+  // therefore load-bearing rather than cosmetic.
 
   /**
    * The Ibor rows of the CHF LIBOR, EUR LIBOR, EUR EURIBOR, GBP LIBOR, JPY LIBOR, JPY TIBOR and
@@ -250,7 +240,7 @@ private[basics] object FloatingRateNameData {
     "CAD-BA" -> "CAD-CDOR",
     "CAD-CBA" -> "CAD-CDOR",
 
-    // "CNY-CNREPOFIX" may be the ISDA 2021 code (sources differ)
+    // "CNY-CNREPOFIX" is provided here as an alias of "CNY-REPO"
     "CNY-REPO" -> "CNY-REPO",
     "CNY-CNREPOFIX=CFXS-Reuters" -> "CNY-REPO",
     "CNY-CFRR" -> "CNY-REPO",
@@ -329,8 +319,7 @@ private[basics] object FloatingRateNameData {
     "NOK-NIBR" -> "NOK-NIBOR",
 
     // "NZD-BKBM FRA"/"NZD-BKBM Bid" are the ISDA 2021 codes
-    // "NZD-BBR FRA" mentioned by another source
-    // "FRA" seems to be the main one, but including "Bid" as well
+    // both spellings are provided as aliases of "NZD-BKBM", as is "NZD-BBR FRA"
     "NZD-BKBM" -> "NZD-BKBM",
     "NZD-BBR" -> "NZD-BKBM",
     "NZD-BBR-BID" -> "NZD-BKBM",
@@ -430,7 +419,7 @@ private[basics] object FloatingRateNameData {
     "CHF-TOIS-OIS-COMPOUND" -> "CHF-TOIS",
 
     // "EUR-EONIA-OIS-COMPOUND" is the FpML/ISDA code
-    // "EUR-EONIA"/"EUR-EONIA-OIS Compound" are the ISDA 2021 codes, soon to be phased out
+    // "EUR-EONIA"/"EUR-EONIA-OIS Compound" are the ISDA 2021 codes
     "EUR-EONIA" -> "EUR-EONIA",
     "EUR-EONIA-COMPOUND" -> "EUR-EONIA",
     "EUR-EONIA-OIS-COMPOUND" -> "EUR-EONIA",
@@ -496,7 +485,7 @@ private[basics] object FloatingRateNameData {
     "USD-Federal Funds-OIS Compound" -> "USD-FED-FUND",
 
     // "USD-SOFR-COMPOUND" is the FpML/ISDA code
-    // "USD-SOFR"/"USD-SOFR-OIS Compound" are the ISDA 2021 codea
+    // "USD-SOFR"/"USD-SOFR-OIS Compound" are the ISDA 2021 codes
     "USD-SOFR" -> "USD-SOFR",
     "USD-SOFR-COMPOUND" -> "USD-SOFR",
     "USD-SOFR-OIS-COMPOUND" -> "USD-SOFR",
@@ -590,7 +579,8 @@ private[basics] object FloatingRateNameData {
     "IDR-INDONIA" -> "IDR-INDONIA",
 
     // No FpML/ISDA code
-    // "ILS-TELBOR" is the ISDA 2021 code (probably covers Overnight and Ibor)
+    // "ILS-TELBOR" is the ISDA 2021 code; this section provides "ILS-TELBOR-OIS Compound" as an
+    // alias of "ILS-OTELBOR", while "ILS-TELBOR" itself is an Ibor row
     "ILS-OTELBOR" -> "ILS-OTELBOR",
     "ILS-TELBOR-OIS Compound" -> "ILS-OTELBOR",
 
@@ -713,7 +703,7 @@ private[basics] object FloatingRateNameData {
    * @return the published external name to index name pairs of the Overnight averaged section
    */
   private def overnightAveragedPairs: Vector[(String, String)] = Vector(
-    // "USD-Federal Funds" is an ISDA 2021 code, assume it links here
+    // "USD-Federal Funds" is an ISDA 2021 code, provided here as an alias of "USD-FED-FUND-AVG"
     "USD-FED-FUND-AVG" -> "USD-FED-FUND-AVG",
     "USD-Federal Funds-H.15" -> "USD-FED-FUND-AVG",
     "USD-Federal Funds-H.15-Bloomberg" -> "USD-FED-FUND-AVG",
@@ -852,31 +842,25 @@ private[basics] object FloatingRateNameData {
    * Finds the non-standard fixing date offset that the fixing date offset section declares for an
    * external name, matching the name without regard to case.
    *
-   * The loader of the Java implementation registered every row twice, under its published external
-   * name and under the upper-case form of that name, and then applied this section to the
-   * upper-case entry alone. Of the three names the section declares, two are already upper case,
-   * so for them the two entries were the same entry; the third, `DKK-CIBOR-Reference Banks`,
-   * carried the offset under its upper-case spelling only. The key space of this port has one row
-   * per external name - the upper-case spelling of a name resolves to that same row through the key
-   * space `NamedEnum` builds - so the offset belongs to the row itself, and matching without regard
-   * to case is what places it there. The three rows are the Danish CIBOR variants that fix on the
-   * day of the period rather than two days before it.
+   * The three rows the section declares are the Danish CIBOR variants that fix on the day of the
+   * period rather than two days before it. The offset belongs to the row it names, and matching
+   * without regard to case is what places it there: this table holds one row per external name, and
+   * the upper-case spelling of a name resolves to that same row through the key space `NamedEnum`
+   * builds. Two of the three names are already upper case; the third,
+   * `DKK-CIBOR-Reference Banks`, is not, and the fold is what covers it.
    *
    * The match is made through `iborFixingDateOffsetsByUpperCaseName`, the table of the same three
    * offsets built once under upper-case keys, so a lookup is one direct lookup in a table of three
    * entries rather than a reconstruction of the section followed by a scan of it. Normalising the
-   * argument the same way the table was keyed is how case is discounted here, which mirrors the key
-   * normalisation the Java loader itself performed on the entry it read this section into; the
-   * standard library returns the argument unchanged when it is already upper case, so only a name
-   * that is not produces a second string.
+   * argument the same way that table was keyed is how case is discounted here; the standard library
+   * returns the argument unchanged when it is already upper case, so only a name that is not
+   * produces a second string.
    *
    * This is the lookup route for the fixing date offset section, and it is visible to the package
    * rather than to this object alone so that a consumer of the section asks a question of it
-   * instead of searching [[iborFixingDateOffsets]]: the published table is ordered for comparison
-   * with the reference data manifest, and answering a single name from it walks its insertion
-   * chain, while this route is one hit in a plain map. The case-insensitive key space it reads
-   * covers every published key, the one name that is not already upper case,
-   * `DKK-CIBOR-Reference Banks`, included.
+   * instead of searching [[iborFixingDateOffsets]]: that table keeps the published order, so
+   * answering a single name from it walks its insertion chain, while this route is one hit in a
+   * plain map.
    *
    * @param externalName  the published external name of an Ibor row
    * @return the offset in days declared for that name, or nothing when none is declared
@@ -909,12 +893,13 @@ private[basics] object FloatingRateNameData {
   /**
    * The 3 non-standard fixing date offsets, keyed by the published external name they apply to.
    *
-   * Published as a table of its own so that it can be compared with the corresponding section of
-   * the reference data manifest, and consumed by [[iborRows]], where the same three offsets appear
-   * as the `fixingDateOffsetDays` of the rows they name. The order is the published order, and it
-   * stays published order because that order is part of what the manifest compares; an ordered map
-   * answers a single key by walking its insertion chain, so ask [[fixingDateOffsetOf]] for one
-   * name and read this table when the whole ordered section is what is wanted.
+   * Published as a table of its own, because the section is part of the published data in its own
+   * right, and consumed by [[iborRows]], where the same three offsets appear as the
+   * `fixingDateOffsetDays` of the rows they name; the two places agree because both read this one
+   * table. The order is the published order, which is part of what the section states, so the table
+   * is ordered rather than hashed. An ordered map answers a single key by walking its insertion
+   * chain, so ask [[fixingDateOffsetOf]] for one name and read this table when the whole ordered
+   * section is what is wanted.
    *
    * This value is declared before the private `iborFixingDateOffsetsByUpperCaseName` lookup table
    * and before [[iborRows]] because both are built from it.
@@ -935,8 +920,8 @@ private[basics] object FloatingRateNameData {
    *
    * Upper-case keys - folded with `Locale.ENGLISH`, so the folding is independent of the default
    * locale of the host - are what make the lookup case-insensitive, as [[fixingDateOffsetOf]]
-   * explains. Being private, this table is invisible to the reference data manifest comparison,
-   * which reads [[iborFixingDateOffsets]].
+   * explains. Being private, this table is not published; [[iborFixingDateOffsets]] is the
+   * published view of the section.
    *
    * This value is declared after [[iborFixingDateOffsets]], which it is derived from, and before
    * [[iborRows]], which reads it through [[fixingDateOffsetOf]]: the vals of an object initialise
@@ -951,9 +936,9 @@ private[basics] object FloatingRateNameData {
   /**
    * The 159 Ibor rows, in published order.
    *
-   * The index name of each row is the published value with a `-` appended, which is the form the
-   * Java loader produced and the form a tenor completes: `GBP-LIBOR-` plus `3M` names the index
-   * `GBP-LIBOR-3M`. The three rows named by [[iborFixingDateOffsets]] carry their declared offset;
+   * The index name of each row is the published value with a `-` appended, which is the form a
+   * tenor completes: `GBP-LIBOR-` plus `3M` names the index `GBP-LIBOR-3M`. The three rows named by
+   * [[iborFixingDateOffsets]] carry their declared offset;
    * the other 156 carry none and so defer to the offset of the index they name.
    */
   val iborRows: Vector[FloatingRateNameRow] =
@@ -991,9 +976,8 @@ private[basics] object FloatingRateNameData {
    * All 351 name rows, in published order: the Ibor rows, then the Overnight compounded rows, then
    * the Overnight averaged rows, then the price rows.
    *
-   * This is the order in which the Java loader processed the sections, and it is the order in which
-   * a consumer that builds one member per row should build them, so that the member list of the
-   * family is the published list.
+   * The sections follow one another in published order, so a consumer that builds one member per
+   * row builds them in that order and the member list of the family is the published list.
    */
   val rows: Vector[FloatingRateNameRow] =
     iborRows ++ overnightCompoundedRows ++ overnightAveragedRows ++ priceRows
@@ -1019,11 +1003,11 @@ private[basics] object FloatingRateNameData {
    * A currency absent from this table has no published default Ibor rate, which is a value the
    * consumer reports rather than a case this table can fill.
    *
-   * The order is the published order and stays that way because the reference data manifest
-   * compares the section in order, which also means that answering one currency from here walks
-   * the insertion chain as far as that currency sits along it. That cost is paid once rather than
-   * per lookup: the consumer that answers a currency, `FloatingRateName`, resolves the whole of
-   * this table into a map of its own members while it initialises and answers from there.
+   * The order is the published order, which is part of what the section states, so the table is
+   * ordered rather than hashed; answering one currency from here therefore walks the insertion
+   * chain as far as that currency sits along it. That cost is paid once rather than per lookup: the
+   * consumer that answers a currency, `FloatingRateName`, resolves the whole of this table into a
+   * map of its own members while it initialises and answers from there.
    */
   val currencyDefaultIbor: Map[Currency, String] = ListMap.from(currencyDefaultIborPairs)
 

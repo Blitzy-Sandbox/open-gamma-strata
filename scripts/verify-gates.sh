@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #
-# verify-gates.sh - the single authoritative acceptance-gate runner for the
-#                   Scala port of `strata-collect` and `strata-basics`.
+# verify-gates.sh - the acceptance-gate runner for this repository.
 #
 # PROVENANCE
 #   Every row this script runs, and every row's pass condition, comes from the
 #   validation table of the technical specification (AAP section 0.10.1). The
-#   nineteen automated rows are executed in that table's order, followed by the
-#   one row that is reported rather than measured (Gate 7's manual approval,
+#   twenty automated rows are executed in that table's order - the closure row
+#   beside the Rule 4 row whose source-level claim it completes - followed by
+#   the one row that is reported rather than measured (Gate 7's manual approval,
 #   which is an out-of-band pull-request review and never blocks this script).
-#   No row may be relaxed, skipped or short-circuited: nothing else in the
+#   No row may be relaxed, skipped or short-circuited, and nothing absent is
+#   read as agreement: a row whose input artifact is missing, whose marker is
+#   not there, or whose command failed, FAILS. Nothing else in the
 #   repository enforces the deliverable, because `.github/mergify.yml` gates
 #   auto-merge on `check-success=build` alone and the CircleCI `scala_build21`
 #   job - which invokes this script exactly once - is informational for
@@ -24,14 +26,23 @@
 #   evidence file can ever land in a scanned path and trip a gate it measures.
 #
 # USAGE
-#   scripts/verify-gates.sh            run every gate and write the report
-#   scripts/verify-gates.sh -h|--help  print this usage and exit
+#   scripts/verify-gates.sh                      run every gate, write the
+#                                                report, publish the evidence
+#   scripts/verify-gates.sh --verify-publication re-check target/publish
+#                                                against the digests that were
+#                                                approved, and exit non-zero if
+#                                                it is not the tree that was
+#                                                scanned. Read-only: it runs no
+#                                                gate, takes no lock, creates
+#                                                nothing and deletes nothing,
+#                                                which is what lets the step
+#                                                that uploads the tree run it.
+#   scripts/verify-gates.sh -h|--help            print this usage and exit
 #
-#   Those are the only two accepted invocations: no argument other than the
-#   help flag is understood, and no second argument is, so every other arity
-#   is a usage error rather than a silently ignored word. There is deliberately
-#   no flag that selects a subset of gates: a partial run is not an acceptance
-#   run.
+#   Those are the only accepted invocations: no other argument is understood,
+#   and no second argument is, so every other arity is a usage error rather
+#   than a silently ignored word. There is deliberately no flag that selects a
+#   subset of gates: a partial run is not an acceptance run.
 #
 # SOURCING
 #   `source scripts/verify-gates.sh` DEFINES the helpers and the row functions
@@ -42,33 +53,63 @@
 #   `init_run` first - that is the function holding every side effect.
 #
 # EXIT CODES
-#   0  every automated row passed
-#   1  one or more automated rows failed
-#   2  usage error, or a required tool is missing (preflight failure)
+#   0  every automated row passed AND the evidence was published safely
+#   1  one or more automated rows failed, or the evidence could not be
+#      published safely (which fails a run whose rows all passed: the
+#      artifacts are the deliverable)
+#   2  usage error, a required tool is missing (preflight failure), an output
+#      path was rejected, the evidence an earlier run left behind carries a
+#      credential signature, or another acceptance run already holds this
+#      checkout's output lock
 #
-# ARTIFACTS (all under $ROOT/target, all published by CI with `when: always`)
+#   With --verify-publication: 0 when target/publish is exactly the tree the
+#   run approved, 1 when it is not, 2 when this is not a repository checkout.
+#
+# ARTIFACTS (all under $ROOT/target)
 #   target/gate-report.md          the deliverable evidence: one row per gate,
-#                                  a machine-readable summary line and the
-#                                  appendices each row contributed
+#                                  the run's identity - commit, branch, run id
+#                                  and working-tree state - a machine-readable
+#                                  summary line and the appendices each row
+#                                  contributed
 #   target/parity-report/*.json    the six parity reports the specs write
 #   target/test-reports/TEST-*.xml the per-suite JUnit XML written by the one
 #                                  ScalaTest `-u` reporter `build.sbt`
 #                                  configures - the only test report this
 #                                  build produces at the repository root
-#   target/audit/                  per-row evidence, sbt logs, class-load logs
-#                                  and the snapshots the late rows read
+#   target/audit/                  per-row evidence, sbt logs, class-load logs,
+#                                  run-identity.txt, the scan summaries and the
+#                                  snapshots the late rows read
+#   target/publish/                THE ONLY TREE CI UPLOADS: a sanitized copy
+#                                  of each of the four above, every copy proved
+#                                  to belong to this run and scanned for
+#                                  credential signatures before it was kept,
+#                                  with PUBLICATION-STATUS.txt stating APPROVED
+#                                  or NOT APPROVED and MANIFEST.txt listing
+#                                  what was staged, what was redacted from it
+#                                  and what was withheld
+#   target/quarantine/<run-id>/    artifacts withheld from publication because
+#                                  they matched a credential signature, moved
+#                                  out of every path anything uploads
 #
-#   The report is written on every exit path, including an interruption. The
-#   one exception is a rejected output path: if target/ cannot be created
-#   safely there is nowhere to write the report, so the run stops with exit 2
-#   and the reason on stderr.
+#   Sanitized means: the JUnit `<properties>` block and the suite `hostname`
+#   attribute are removed, and the checkout, home, temporary and toolchain
+#   paths and the machine name are replaced by placeholders. The raw artifacts
+#   stay on disk for whoever is at the machine; they are not what leaves it.
+#
+#   The report is written on every exit path, including an interruption, and
+#   the publication tree is built on every exit path too - so an aborted or
+#   interrupted run uploads scanned copies exactly as a finished one does.
+#   There are two exceptions, both stated rather than silent: a rejected
+#   output path (if target/ cannot be created safely there is nowhere to write
+#   anything, so the run stops with exit 2 and the reason on stderr), and a
+#   report that carries a credential signature its reassembly cannot remove
+#   (it is quarantined instead of published, and the run exits non-zero).
 #
 # REQUIRED TOOLCHAIN
-#   JDK 21 (`java`, `javap`) and sbt 1.13.0 on PATH, as installed by the
-#   `scala_build21` CI job, plus git, python3 and the POSIX text utilities.
-#   `jq`, `xmllint` and `shellcheck` are NOT required and NOT used: every JSON,
-#   XML and CSV document is parsed with python3 and its standard library only.
-#   On a small host export SBT_OPTS first, e.g.
+#   JDK 21 (`java`, `javap`) and sbt 1.13.0 on PATH, plus git, python3 and the
+#   POSIX text utilities. `jq`, `xmllint` and `shellcheck` are neither required
+#   nor used: every JSON, XML and CSV document is parsed with python3 and its
+#   standard library only. On a small host export SBT_OPTS first, e.g.
 #   SBT_OPTS="-Xmx1200m -Xss8m -XX:MaxMetaspaceSize=512m".
 #
 # DESIGN NOTES THAT MATTER WHEN EDITING THIS FILE
@@ -86,6 +127,19 @@
 #   * grep exits 0 when it matched, 1 when it did not and >=2 on error. Every
 #     "must find nothing" row goes through `assert_no_match`, which passes only
 #     on 1 and reports 0 and >=2 differently.
+#   * The three evidence trees are EMPTIED before the first row runs, after
+#     what they held has been scanned and anything credential-bearing has been
+#     quarantined. Provenance then needs no inference: everything found in them
+#     afterwards was produced by this run. A modification time is metadata any
+#     process can set, so "newer than the run started" was a guess; it survives
+#     only as a second, independent check at staging time, together with a
+#     refusal of any timestamp in the future.
+#   * The approval of the published bytes is carried across the handover to
+#     whoever uploads them: MANIFEST.txt records the sha256 of every published
+#     copy, and `--verify-publication` re-checks the marker, those digests and
+#     the absence of any file the manifest does not name. The CI job runs it
+#     and replaces an unapproved or altered tree with a notice before the
+#     upload step, so `when: always` cannot upload what the scan rejected.
 #   * A row whose input artifact is missing FAILS. There is no path on which a
 #     missing file, an absent marker or a failed command is read as a pass. A
 #     row that records no evidence, or empty evidence, fails for the same
@@ -97,10 +151,52 @@
 #     verified to contain no symbolic-link component and to resolve inside the
 #     canonical repository root before anything is created in it (CWE-59 /
 #     CWE-22): target/ is git-ignored, so its contents are not trustworthy.
-#   * target/gate-report.md is published by CI with `when: always` and is the
-#     deliverable evidence, so it is written to a temporary file, verified and
+#     Those pathname checks are the first refusal, not the decision: nothing
+#     under target/ is created, written, emptied or deleted BY PATHNAME, and
+#     that includes the WRITE and not only the check before it - a truncation
+#     proved safe and then written through a second lookup of the same name is
+#     the same race with an extra step. A whole-file write goes into a new
+#     inode created O_EXCL inside the parent's descriptor and takes the name by
+#     rename; an append goes through a descriptor whose properties were read
+#     with fstat; and every row's evidence file is opened ONCE, proved to be
+#     that file, and written through `/proc/self/fd/N` for the rest of the row.
+#     `fs_guard`
+#     re-opens every component no-follow from its parent's descriptor and
+#     refuses a symbolic link, a hard-linked file, a foreign owner, a FIFO or
+#     a non-directory before any write happens, which is what a check on a
+#     name cannot do (CWE-367). target/audit is this run's own, and private.
+#   * One acceptance run per checkout. `init_run` takes an exclusive lock -
+#     the directory target/.gate-lock - before it creates or empties
+#     anything, and the EXIT path releases it after the report is written. A
+#     lock left behind by a process that is no longer running is reclaimed
+#     and noted in target/audit/output-lock.txt; one held by a live process
+#     stops this run with exit 2, because two runs share every evidence file
+#     and the report that survived would describe neither of them.
+#   * A value this script did not choose is ENCODED where it crosses into
+#     something that parses it: `scala_string_literal` for the one path that
+#     reaches Scala source through sbt's `set`, `markdown_cell` for every
+#     field of the report and of the boundary row's material file. The
+#     checkout path itself is refused outright by `assert_root_is_safe` if it
+#     carries a quote, a backslash, a backtick, a dollar sign, a space or a
+#     control character, which is cheaper and stronger than encoding it
+#     correctly in each of the places it is used.
+#   * target/gate-report.md is the deliverable evidence, so it is written to a
+#     temporary file, verified, SCANNED for credential signatures and only
 #     then renamed atomically. Only a rename that succeeded marks the report
 #     written, which is what lets the EXIT trap replace a partial one.
+#   * Composing the report, staging it and verifying everything that would be
+#     uploaded are ONE transaction (`finalize_publication`), and nothing is
+#     marked published until the scan governing the uploaded bytes has passed.
+#     A finding is acted on - the copy withdrawn, its original quarantined, a
+#     blocking row recorded - and the report is recomposed so the PUBLISHED
+#     report states it; a tree that cannot be proved clean is replaced by an
+#     incident-only notice. Every failure of that transaction is recorded
+#     through `record_blocking_row` before the report is composed, so the
+#     table, the printed tally and the exit status cannot disagree.
+#   * Nothing is uploaded from where it was written. CI uploads target/publish
+#     and nothing else, and `finalize_publication` builds that tree from sanitized
+#     copies it has scanned - on every exit path, because an aborted run has
+#     produced just as much to upload as a finished one.
 #
 
 #-----------------------------------------------------------------------------
@@ -124,21 +220,44 @@ resolve_locations() {
   PARITY_DIR="$TARGET_DIR/parity-report"
   TEST_REPORT_DIR="$TARGET_DIR/test-reports"
   AUDIT_DIR="$TARGET_DIR/audit"
+  # The tree CI uploads, and the only one it uploads: sanitized copies of the
+  # evidence, each one scanned before it is kept. Built by
+  # `finalize_publication`; see the publication section below for why the raw
+  # evidence is not what leaves the machine.
+  PUBLISH_DIR="$TARGET_DIR/publish"
+  # Where an artifact that carries a credential signature is MOVED to, so
+  # that detecting one takes it out of every path CI publishes instead of
+  # merely returning a non-zero status. Private, never uploaded.
+  QUARANTINE_DIR="$TARGET_DIR/quarantine"
+  PUBLICATION_STATUS_FILE="$PUBLISH_DIR/PUBLICATION-STATUS.txt"
+  PUBLICATION_MANIFEST_FILE="$PUBLISH_DIR/MANIFEST.txt"
   LOG_DIR="$AUDIT_DIR/logs"
   SNAPSHOT_DIR="$AUDIT_DIR/snapshot"
   REPORT_FILE="$TARGET_DIR/gate-report.md"
   APPENDIX_FILE="$AUDIT_DIR/appendices.md"
   FRAMEWORK_ERROR_FILE="$AUDIT_DIR/framework-errors.txt"
+  # Which commit, which run, and when - written before the first row and
+  # copied into the published tree, so a reader can tell whether a report
+  # describes the tree in front of them or one from an earlier day.
+  RUN_IDENTITY_FILE="$AUDIT_DIR/run-identity.txt"
+  # The exclusive per-checkout output lock; see `acquire_output_lock`. It is a
+  # directory, and it lives beside the evidence it protects rather than in a
+  # temporary directory, so it is per CHECKOUT - which is the scope that
+  # matters, because it is the evidence files of this checkout that two runs
+  # would interleave their writes into. `sbt clean` does not reach it: the
+  # build's `cleanFiles` cover target/test-reports and target/parity-report,
+  # not target/ itself.
+  OUTPUT_LOCK_DIR="$TARGET_DIR/.gate-lock"
 }
 
 resolve_locations
 
-# The two Scala module roots, named once.
 COLLECT_MAIN="strata-collect/src/main/scala"
 BASICS_MAIN="strata-basics/src/main/scala"
 COLLECT_CLASSES="strata-collect/target/scala-2.13/classes"
 BASICS_CLASSES="strata-basics/target/scala-2.13/classes"
 COLLECT_TEST_CLASSES="strata-collect/target/scala-2.13/test-classes"
+BASICS_TEST_CLASSES="strata-basics/target/scala-2.13/test-classes"
 
 #-----------------------------------------------------------------------------
 # Usage and argument handling.
@@ -167,7 +286,6 @@ usage() {
        { exit }' "$self"
 }
 
-# Prints the usage error common to every rejected invocation.
 usage_error() {
   printf 'FATAL: %s\n\n' "$1" >&2
   printf 'Usage: %s            run every gate and write the report\n' "$SCRIPT_NAME" >&2
@@ -219,6 +337,21 @@ parse_arguments() {
 # Every file this framework truncates is checked the same way, because a
 # symbolic link left in place of an evidence file would redirect that write on
 # its own.
+#
+# Those checks are necessary and they are not sufficient, because a check made
+# on a PATHNAME is a check on what the name meant at that instant. Between
+# `[[ -L $path ]]` and the write that follows it, the name can be pointed
+# somewhere else; `[[ -e && ! -d ]]` says nothing about a REGULAR file that is
+# a second hard link to a file elsewhere, and truncating it truncates that
+# file too; and a parent component validated one call ago can be renamed and
+# replaced before the next one (CWE-367 check-to-use race, CWE-59). So the
+# pathname checks below are a fast, readable first refusal, and the decision
+# is made a second time by `fs_guard` - which opens every component no-follow
+# relative to its parent's DESCRIPTOR, reads every property with `fstat` on
+# the descriptor it is about to write through, and refuses a file with more
+# than one link or an owner other than this run's. A name that changes after
+# `fs_guard` has opened it changes nothing: there is no second lookup left to
+# subvert.
 #-----------------------------------------------------------------------------
 
 path_fatal() {
@@ -239,15 +372,1304 @@ is_inside_root() {
   [[ -n "$ROOT_REAL" && ("$1" == "$ROOT_REAL" || "$1" == "$ROOT_REAL"/*) ]]
 }
 
-# ensure_output_dir <absolute directory below $ROOT>
+# fs_guard <verb> <repository root> <arguments...>
+#
+# The descriptor-bound half of this framework, and the only code here that
+# creates, empties or deletes anything under target/. It is written in python3
+# because bash cannot open a path without following it, cannot read a
+# descriptor's link count, owner or inode, and cannot write through a
+# descriptor it has already validated - and those three are exactly what
+# distinguishes a safe write into a git-ignored tree from a hope. python3 is
+# in `preflight`'s required list and only its standard library is used, so
+# this adds no dependency; it is invoked once per directory and once per
+# truncation, and an interpreter start per evidence file is not a cost worth
+# trading a class of filesystem race for.
+#
+# It prints its result on stdout and the reason for a refusal on stderr, and
+# exits non-zero on refusal, so a caller reads it as
+# `guard="$(fs_guard ... 2>&1)" || path_fatal "... ($guard)"` and never has to
+# parse a status code. It is called BEFORE `install_checked_commands`, which is
+# why it wraps no text utility and needs none.
+fs_guard() {
+  # The program is read from descriptor 3, not from stdin: two of the verbs
+  # take the bytes they write ON stdin, and `python3 - ` would consume that
+  # stream as the program itself. Argument indexing is unchanged - the verb is
+  # still sys.argv[1].
+  python3 /dev/fd/3 "$@" 3<<'PY'
+"""fs_guard - the descriptor-bound half of this script's output framework.
+
+Everything under $ROOT/target arrives from outside this run: target/ is
+git-ignored, so a symbolic link, a hard link, a renamed parent or a planted
+FIFO inside it is attacker-supplied input, and a check made on a PATHNAME is
+undone by whatever happens between that check and the write it guards
+(CWE-59 link following, CWE-367 check-to-use race, CWE-22 traversal). So
+nothing here trusts a name twice: every component is opened with O_NOFOLLOW
+relative to a descriptor for its parent, every property is read from the
+DESCRIPTOR with fstat, and every mutation - mkdir, fchmod, ftruncate, unlink,
+rmdir - is applied to that descriptor or relative to it. A rename or a relink
+between two steps therefore cannot redirect a write, because there is no
+second lookup of the name left to subvert.
+
+Verbs, each with the repository root as its first argument so that this
+program derives nothing from the environment:
+
+  ensure-dir <root> <dir> <mode>     create/validate, print "dev:ino"
+  verify-dir <root> <dir> <dev:ino>  re-open and confirm the same directory
+  truncate   <root> <file>           empty one regular file, print "dev:ino"
+  write      <root> <file>           replace it with stdin by O_EXCL + rename
+  append     <root> <file>           append stdin through a checked descriptor
+  verify-fd  <root> <file> <fd> <id> confirm an inherited append descriptor
+  copy-tree  <root> <from> <to>      descriptor-bound recursive copy
+  lock-dir   <root> <dir>            create the lock directory, or say who has it
+  prune      <root> <dir>...         empty a directory, keeping the directory
+  rmtree     <root> <dir>            delete one subtree below <root>/target
+  stage      ...                     build the publication tree (see `stage`)
+  quarantine <root> <dest> <path>... move artifacts out of every published path
+  withdraw   <root> <file> <reason>  replace a staged copy with a marker
+
+Exit 0 with the result on stdout, or exit 1 with the reason on stderr.
+"""
+
+import errno
+import fcntl
+import hashlib
+import os
+import re
+import stat
+import sys
+import time
+from xml.etree import ElementTree
+
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+NOFOLLOW_DIR_FLAGS = DIR_FLAGS | os.O_NOFOLLOW
+# An evidence file is opened O_CREAT WITHOUT O_TRUNC, so nothing is emptied
+# before fstat has proved what was opened, and O_NONBLOCK, so that a FIFO left
+# in place of an evidence file makes this refuse rather than hang waiting for
+# a reader that never comes.
+FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+EUID = os.geteuid()
+GROUP_OTHER_WRITE = stat.S_IWGRP | stat.S_IWOTH
+GROUP_OTHER_ALL = stat.S_IRWXG | stat.S_IRWXO
+# Ancestors are brought into existence with the conventional directory mode:
+# the mode the caller asks for describes the directory it named, not the tree
+# above it, so ensuring a private directory never tightens target/ itself.
+ANCESTOR_MODE = 0o755
+# The one subtree of the checkout this program may delete from.
+DELETABLE_ROOT = "target"
+LINK_ERRNOS = (errno.ELOOP, errno.EMLINK)
+
+
+def fail(reason):
+    """Refuses the operation, naming what was refused and why."""
+    sys.stderr.write(reason + "\n")
+    raise SystemExit(1)
+
+
+def relative_components(root, path):
+    """The components of <path> below <root>, or a refusal."""
+    if not root.startswith("/"):
+        fail("the repository root %s is not an absolute path" % root)
+    if not path.startswith("/"):
+        fail("%s is not an absolute path" % path)
+    prefix = root.rstrip("/") + "/"
+    if not path.startswith(prefix):
+        fail("%s is not below %s" % (path, root))
+    components = path[len(prefix):].split("/")
+    for component in components:
+        if component in ("", ".", ".."):
+            fail('%s contains the path element "%s"' % (path, component))
+    return components
+
+
+def open_root(root):
+    """A descriptor for the checkout root, the one path taken on trust."""
+    try:
+        return os.open(root, DIR_FLAGS)
+    except OSError as error:
+        fail("the repository root %s cannot be opened as a directory (%s)"
+             % (root, error))
+
+
+def describe_obstacle(parent_fd, name):
+    """Why a component could not be opened as a directory, for the message."""
+    try:
+        info = os.lstat(name, dir_fd=parent_fd)
+    except OSError as error:
+        return "could not be examined (%s)" % error
+    if stat.S_ISLNK(info.st_mode):
+        return "is a symbolic link"
+    return "exists and is not a directory"
+
+
+def open_or_make(parent_fd, name, shown, mode):
+    """Opens one component of the path, creating it when `mode` is not None.
+
+    Returns (descriptor, created). The descriptor is what every check and
+    every change afterwards uses. `created` says whether THIS call made the
+    directory, which is what decides between setting its mode outright and
+    only tightening what was already there. mkdir's mode is masked by the
+    umask, so the caller sets the final mode on the descriptor.
+    """
+    created = False
+    for attempt in (1, 2):
+        try:
+            return os.open(name, NOFOLLOW_DIR_FLAGS, dir_fd=parent_fd), created
+        except FileNotFoundError:
+            if attempt == 2 or mode is None:
+                fail("%s does not exist" % shown)
+            try:
+                os.mkdir(name, mode, dir_fd=parent_fd)
+                created = True
+            except FileExistsError:
+                # Another process created it between the open and the mkdir.
+                # The next open decides what it actually is; a symlink or a
+                # file planted in that window is refused there.
+                created = False
+            except OSError as error:
+                fail("%s could not be created (%s)" % (shown, error))
+        except OSError as error:
+            if error.errno in LINK_ERRNOS or error.errno == errno.ENOTDIR:
+                # Which of the two it is decides what the operator has to fix,
+                # and the kernel does not distinguish them here: O_NOFOLLOW
+                # with O_DIRECTORY reports ENOTDIR for a symbolic link as well
+                # as for a plain file. One lstat on the same descriptor-
+                # relative name says which, and it is read for the MESSAGE
+                # only - the refusal above is already decided.
+                fail("%s %s" % (shown, describe_obstacle(parent_fd, name)))
+            fail("%s could not be opened as a directory (%s)" % (shown, error))
+    fail("%s could not be opened as a directory" % shown)
+
+
+def set_directory_mode(fd, info, shown, mode, created):
+    """Brings a directory's mode to what this run needs, never loosening it.
+
+    A directory this run created gets exactly the mode asked for, keeping any
+    set-group-id or sticky bit it inherited: neither grants write access, and
+    a shared checkout relies on the group bit. A directory that was already
+    there is only ever TIGHTENED - the group and other WRITE bits go, because
+    a group- or world-writable evidence directory is an open invitation to
+    plant the very links this program refuses, and when the caller asks for a
+    private mode (no group or other bits at all) the remaining group and other
+    bits go with them. No permission is ever ADDED to a directory this run
+    did not create.
+    """
+    current = stat.S_IMODE(info.st_mode)
+    if created:
+        wanted = mode | (current & (stat.S_ISGID | stat.S_ISVTX))
+    else:
+        wanted = current & ~GROUP_OTHER_WRITE
+        if not mode & GROUP_OTHER_ALL:
+            wanted &= ~GROUP_OTHER_ALL
+    if wanted != current:
+        try:
+            os.fchmod(fd, wanted)
+        except OSError as error:
+            fail("the mode of %s could not be set to %04o (%s)"
+                 % (shown, wanted, error))
+
+
+def walk(root, components, modes):
+    """Descends the components from the root, returning the last descriptor.
+
+    `modes[i]` is the mode component i is created with, or None to require it
+    to exist already. Every component is opened no-follow from its parent's
+    descriptor and every one is proved to be a directory this run's uid owns:
+    a directory owned by somebody else below target/ is refused rather than
+    written into, because its owner can replace anything inside it at will.
+    """
+    fd = open_root(root)
+    shown = root.rstrip("/")
+    try:
+        for index, component in enumerate(components):
+            shown = shown + "/" + component
+            child, created = open_or_make(fd, component, shown, modes[index])
+            os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            if not stat.S_ISDIR(info.st_mode):
+                fail("%s is not a directory" % shown)
+            if info.st_uid != EUID:
+                fail("%s is owned by uid %d, not by this run's uid %d"
+                     % (shown, info.st_uid, EUID))
+            if modes[index] is not None:
+                set_directory_mode(fd, info, shown, modes[index], created)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def identity(fd):
+    info = os.fstat(fd)
+    return "%d:%d" % (info.st_dev, info.st_ino)
+
+
+def ensure_dir(root, path, mode_text):
+    try:
+        mode = int(mode_text, 8)
+    except ValueError:
+        fail('"%s" is not an octal directory mode' % mode_text)
+    if mode & ~0o777:
+        fail('"%s" is not a plain permission mode' % mode_text)
+    components = relative_components(root, path)
+    modes = [ANCESTOR_MODE] * (len(components) - 1) + [mode]
+    fd = walk(root, components, modes)
+    try:
+        sys.stdout.write(identity(fd) + "\n")
+    finally:
+        os.close(fd)
+
+
+def verify_dir(root, path, expected):
+    components = relative_components(root, path)
+    fd = walk(root, components, [None] * len(components))
+    try:
+        found = identity(fd)
+    finally:
+        os.close(fd)
+    if found != expected:
+        fail("%s is no longer the directory this run validated "
+             "(expected dev:ino %s, found %s)" % (path, expected, found))
+    sys.stdout.write(found + "\n")
+
+
+def truncate(root, path):
+    components = relative_components(root, path)
+    parents = components[:-1]
+    name = components[-1]
+    fd = walk(root, parents, [None] * len(parents))
+    try:
+        try:
+            handle = os.open(name, FILE_FLAGS, 0o600, dir_fd=fd)
+        except OSError as error:
+            if error.errno in LINK_ERRNOS:
+                fail("%s is a symbolic link" % path)
+            if error.errno == errno.EISDIR:
+                fail("%s is a directory" % path)
+            if error.errno == errno.ENXIO:
+                fail("%s is a pipe or a device, not a regular file" % path)
+            fail("%s could not be opened for writing (%s)" % (path, error))
+    finally:
+        os.close(fd)
+    try:
+        info = os.fstat(handle)
+        if not stat.S_ISREG(info.st_mode):
+            fail("%s is not a regular file" % path)
+        # The hard-link check is the one a pathname cannot make: a second name
+        # for this inode, planted anywhere this uid can write, would have its
+        # content emptied by the ftruncate below just as surely as the
+        # evidence file would.
+        if info.st_nlink != 1:
+            fail("%s has %d hard links, so emptying it would empty every "
+                 "other name for the same file" % (path, info.st_nlink))
+        if info.st_uid != EUID:
+            fail("%s is owned by uid %d, not by this run's uid %d"
+                 % (path, info.st_uid, EUID))
+        os.ftruncate(handle, 0)
+        os.fchmod(handle, 0o600)
+        # The identity of what was emptied, so the caller can bind a later
+        # descriptor to THIS inode: `guarded_open_append` opens the same name
+        # and refuses unless the descriptor it gets back is this file.
+        identity_text = identity(handle)
+    finally:
+        os.close(handle)
+    sys.stdout.write("%s\n" % identity_text)
+
+
+def open_write_parent(root, path):
+    """(parent descriptor, final component) for a file this program may write."""
+    components = relative_components(root, path)
+    parents = components[:-1]
+    return walk(root, parents, [None] * len(parents)), components[-1]
+
+
+def write_atomic(root, path):
+    """Replaces <path> with stdin, atomically, without ever opening the target.
+
+    The bytes go into a brand-new inode created O_EXCL inside the parent's
+    DESCRIPTOR, are flushed to the device, and only then take the name by a
+    rename relative to that same descriptor. Nothing about the object the name
+    referred to before matters: it is not opened, not truncated and not
+    followed, so a symbolic link, a hard link to a file elsewhere, a FIFO or a
+    file owned by another account planted at that name cannot receive a single
+    byte of what this writes - it is simply replaced. The rename is atomic, so
+    a reader of the name sees either the whole previous file or the whole new
+    one, never a half-written report.
+    """
+    payload = sys.stdin.buffer.read()
+    parent, name = open_write_parent(root, path)
+    temporary = ".%s.%d.tmp" % (name, os.getpid())
+    try:
+        try:
+            handle = os.open(temporary,
+                             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                             | os.O_CLOEXEC, 0o600, dir_fd=parent)
+        except OSError as error:
+            fail("%s could not be staged for writing as %s (%s)"
+                 % (path, temporary, error))
+        written = 0
+        try:
+            try:
+                while written < len(payload):
+                    written += os.write(handle, payload[written:])
+                os.fsync(handle)
+                info = os.fstat(handle)
+            finally:
+                os.close(handle)
+            try:
+                os.rename(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+            except OSError as error:
+                fail("%s could not be given its name (%s)" % (path, error))
+        except BaseException:
+            unlink_gone_is_fine(temporary, parent, path)
+            raise
+    finally:
+        os.close(parent)
+    sys.stdout.write("bytes=%d %d:%d\n" % (len(payload), info.st_dev, info.st_ino))
+
+
+def rename_checked(root, source, destination):
+    """Gives <source>'s inode the name <destination>, refusing a destination
+    that is not a plain file.
+
+    This is how the gate report is published, and it publishes the very inode
+    that was scanned rather than a re-read copy of it, so nothing can change
+    between the scan and the publication. `mv` cannot do this job: `mv -f file
+    directory` does not replace the directory, it moves the file INSIDE it and
+    reports success - so a directory planted at the report's name left the run
+    announcing a report that was not at that name, which is the one thing the
+    scan-before-rename order exists to prevent. Both names are resolved inside
+    a single parent DESCRIPTOR opened without following links; the source must
+    be a regular file with one link, so the bytes that were scanned cannot
+    also be reachable under another name; the destination is refused unless it
+    is absent or itself a regular file; and the rename is relative to that
+    descriptor, so a parent swapped after the checks cannot redirect it.
+
+    A rename never follows a link, so neither this nor `mv` could write
+    through one - refusing a link here is about not consuming a name the run
+    did not create, not about a victim outside the tree.
+    """
+    source_directory = os.path.dirname(source)
+    if source_directory != os.path.dirname(destination):
+        fail("%s and %s are not in one directory, which this rename requires"
+             % (source, destination))
+    parent, name = open_write_parent(root, destination)
+    try:
+        source_name = os.path.basename(source)
+        try:
+            info = os.lstat(source_name, dir_fd=parent)
+        except OSError as error:
+            fail("%s cannot be published (%s)" % (source, error))
+        if not stat.S_ISREG(info.st_mode):
+            fail("%s is not a regular file, so it is not published" % source)
+        if info.st_nlink != 1:
+            fail("%s has %d links, so it is not published"
+                 % (source, info.st_nlink))
+        try:
+            existing = os.lstat(name, dir_fd=parent)
+        except FileNotFoundError:
+            existing = None
+        except OSError as error:
+            fail("%s could not be examined (%s)" % (destination, error))
+        if existing is not None and not stat.S_ISREG(existing.st_mode):
+            fail("%s exists and is not a regular file, so nothing is renamed "
+                 "onto it" % destination)
+        try:
+            os.rename(source_name, name, src_dir_fd=parent, dst_dir_fd=parent)
+        except OSError as error:
+            fail("%s could not be renamed onto %s (%s)"
+                 % (source, destination, error))
+    finally:
+        os.close(parent)
+    sys.stdout.write("renamed %d:%d\n" % (info.st_dev, info.st_ino))
+
+
+def append_checked(root, path):
+    """Appends stdin to <path> through a descriptor it has proved is the file.
+
+    O_APPEND|O_NOFOLLOW|O_CREAT, then `fstat` on the descriptor: a regular
+    file, one link, this run's uid. The write happens through that descriptor,
+    so the decision and the write are the same object - the name cannot be
+    pointed elsewhere in between. Appending cannot use `write_atomic`'s
+    replace-by-rename, because the point of an append is to keep what is
+    already there.
+    """
+    payload = sys.stdin.buffer.read()
+    parent, name = open_write_parent(root, path)
+    try:
+        try:
+            handle = os.open(name,
+                             os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
+                             | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=parent)
+        except OSError as error:
+            if error.errno in LINK_ERRNOS:
+                fail("%s is a symbolic link" % path)
+            if error.errno == errno.EISDIR:
+                fail("%s is a directory" % path)
+            if error.errno == errno.ENXIO:
+                fail("%s is a pipe or a device, not a regular file" % path)
+            fail("%s could not be opened for appending (%s)" % (path, error))
+    finally:
+        os.close(parent)
+    try:
+        info = os.fstat(handle)
+        if not stat.S_ISREG(info.st_mode):
+            fail("%s is not a regular file" % path)
+        if info.st_nlink != 1:
+            fail("%s has %d hard links, so appending to it appends to every other "
+                 "name for the same file" % (path, info.st_nlink))
+        if info.st_uid != EUID:
+            fail("%s is owned by uid %d, not by this run's uid %d"
+                 % (path, info.st_uid, EUID))
+        written = 0
+        while written < len(payload):
+            written += os.write(handle, payload[written:])
+    finally:
+        os.close(handle)
+    sys.stdout.write("bytes=%d\n" % len(payload))
+
+
+def verify_fd(root, path, descriptor_text, expected):
+    """Confirms an inherited descriptor is the append handle for <path>.
+
+    The shell opens the evidence file once with `exec {fd}>>`, which is a
+    pathname open and therefore the last moment at which a swap could still
+    redirect it. This is the check that closes that moment: the descriptor -
+    inherited by this process, so `fstat` describes exactly what the shell
+    will write through - must be a regular, singly-linked file owned by this
+    run, opened in append mode, and the SAME inode `truncate` validated when
+    it created the file. Every write the shell makes afterwards goes to that
+    inode whatever happens to the name, so this is checked once and holds for
+    the life of the descriptor.
+    """
+    relative_components(root, path)
+    try:
+        descriptor = int(descriptor_text)
+    except ValueError:
+        fail('"%s" is not a file descriptor number' % descriptor_text)
+    try:
+        info = os.fstat(descriptor)
+    except OSError as error:
+        fail("descriptor %d for %s cannot be examined (%s); it was not inherited"
+             % (descriptor, path, error))
+    if not stat.S_ISREG(info.st_mode):
+        fail("descriptor %d for %s is not a regular file" % (descriptor, path))
+    if info.st_nlink != 1:
+        fail("descriptor %d for %s has %d hard links"
+             % (descriptor, path, info.st_nlink))
+    if info.st_uid != EUID:
+        fail("descriptor %d for %s is owned by uid %d, not by this run's uid %d"
+             % (descriptor, path, info.st_uid, EUID))
+    actual = "%d:%d" % (info.st_dev, info.st_ino)
+    if expected and actual != expected:
+        fail("descriptor %d is %s, not the %s this run created for %s, so the name "
+             "was replaced between creating the file and opening it"
+             % (descriptor, actual, expected, path))
+    try:
+        flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+    except OSError as error:
+        fail("the mode of descriptor %d for %s cannot be read (%s)"
+             % (descriptor, path, error))
+    if not flags & os.O_APPEND:
+        fail("descriptor %d for %s is not in append mode, so a write through it "
+             "could overwrite what is already recorded" % (descriptor, path))
+    sys.stdout.write("%s\n" % actual)
+
+
+def unlink_gone_is_fine(name, dir_fd, shown):
+    """Unlinks one name; already gone is the outcome asked for, not a failure."""
+    try:
+        os.unlink(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        fail("%s could not be deleted (%s)" % (shown, error))
+
+
+def remove_tree(parent_fd, name, shown, device):
+    """Deletes one subtree, descending only into real directories."""
+    try:
+        fd = os.open(name, NOFOLLOW_DIR_FLAGS, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        if error.errno in LINK_ERRNOS or error.errno == errno.ENOTDIR:
+            # A symbolic link or a plain file: unlinked, never descended, so
+            # nothing outside this tree is touched by deleting it.
+            unlink_gone_is_fine(name, parent_fd, shown)
+            return
+        fail("%s could not be opened for deletion (%s)" % (shown, error))
+    try:
+        info = os.fstat(fd)
+        if info.st_dev != device:
+            fail("%s is on a different filesystem (device %s) than the output "
+                 "tree (device %s), so it is not deleted"
+                 % (shown, info.st_dev, device))
+        entries = []
+        with os.scandir(fd) as scan:
+            for entry in scan:
+                entries.append((entry.name, entry.is_dir(follow_symlinks=False)))
+        for child_name, is_directory in entries:
+            if is_directory:
+                remove_tree(fd, child_name, shown + "/" + child_name, device)
+            else:
+                unlink_gone_is_fine(child_name, fd, shown + "/" + child_name)
+    finally:
+        os.close(fd)
+    try:
+        os.rmdir(name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        fail("%s could not be removed (%s)" % (shown, error))
+
+
+def rmtree(root, path):
+    components = relative_components(root, path)
+    if components[0] != DELETABLE_ROOT:
+        fail("%s is not below %s/%s, so this run will not delete it"
+             % (path, root, DELETABLE_ROOT))
+    if len(components) < 2:
+        fail("%s is the output tree itself, which is never deleted" % path)
+    parents = components[:-1]
+    fd = walk(root, parents, [None] * len(parents))
+    try:
+        remove_tree(fd, components[-1], path, os.fstat(fd).st_dev)
+    finally:
+        os.close(fd)
+    sys.stdout.write("ok\n")
+
+
+# --------------------------------------------------------------------------
+# Publication: the copies that leave the machine.
+#
+# CI uploads ONE tree, and this is what builds it. Nothing is uploaded from
+# where it was written: every artifact is copied into the publication tree
+# first, and on the way it is
+#
+#   * proved to be what it claims - opened no-follow, then a regular,
+#     singly-linked file owned by this run's uid, read from the DESCRIPTOR -
+#     so a link or a file swapped into the evidence tree after the row that
+#     wrote it cannot have its content published (CWE-59, CWE-367);
+#   * proved to belong to THIS run, by a modification time at or after the
+#     run's start: a report from an earlier run is withheld and named rather
+#     than published as current evidence (CWE-345);
+#   * SANITIZED - the JUnit `<properties>` block and the `hostname` attribute
+#     go, and every path in the redaction table is replaced by a placeholder,
+#     so the published copy carries no runner hostname, account, home
+#     directory, checkout path, temporary directory or toolchain location
+#     (CWE-200).
+#
+# The bytes are transformed through `str` with `surrogateescape`, which
+# round-trips any byte sequence exactly, so a binary artifact is copied
+# faithfully rather than skipped or corrupted.
+#
+# What is NOT done here is the secret scan: the caller scans the tree this
+# produces, because scanning the copies means scanning the exact bytes that
+# will be uploaded, and because one scanner implementation - the one whose
+# rules and allowlists are auditable in one place - is better than two.
+# --------------------------------------------------------------------------
+
+# A file written in the same second the run started is this run's: filesystem
+# timestamps and the shell's `date` do not share a sub-second clock.
+STALE_GRACE_SECONDS = 2
+# The same allowance in the other direction. A timestamp later than now was
+# set deliberately - no process writing a file honestly produces one - and an
+# artifact carrying it is withheld rather than published.
+FUTURE_SKEW_SECONDS = 2
+# The JUnit XML `<properties>` element, which ScalaTest's `-u` reporter fills
+# from `System.getProperties()` - every JVM property of the build machine,
+# `user.dir`, `user.home`, `java.io.tmpdir` and the JDK's own library path
+# among them. The reporter has no option to suppress it, so the published
+# copy has it removed instead. Non-greedy, so two suites in one file each
+# lose their own block.
+PROPERTIES_ELEMENT = re.compile(r"[ \t]*<properties>.*?</properties>[ \t]*\n?", re.S)
+# The suite's `hostname` attribute: the build machine's name, in a document
+# whose value is the test counts.
+HOSTNAME_ATTRIBUTE = re.compile(r'(hostname=")[^"]*(")')
+
+
+def read_checked(root, path, what):
+    """The bytes of a file whose content drives a decision, read no-follow.
+
+    An ordinary `open` follows a symbolic link and reads whatever it points
+    at. For a file this program merely copies that would be caught by the
+    staging checks; for a file that TELLS this program what to redact or what
+    to verify, a substituted file silently changes the decision - an emptied
+    redaction table means nothing is redacted (CWE-59 leading to CWE-200). So
+    the parent is walked descriptor by descriptor and the file is opened
+    no-follow and proved, on its descriptor, to be a regular file this run
+    owns before a byte of it is believed.
+    """
+    parent, name = open_write_parent(root, path)
+    try:
+        handle, info = open_regular_checked(parent, name)
+    finally:
+        os.close(parent)
+    if handle is None:
+        fail("%s %s (%s)" % (path, info, what))
+    try:
+        with os.fdopen(handle, "rb") as reader:
+            return reader.read()
+    except OSError as error:
+        fail("%s could not be read (%s)" % (path, error))
+
+
+def read_redactions(root, path):
+    """The redaction table: literal needle, TAB, replacement, longest first.
+
+    Literal rather than regular expressions, because the needles are paths
+    that come from the environment and would otherwise have to be escaped;
+    longest first, so `$HOME/.cache/coursier` is replaced before `$HOME` and
+    the more specific placeholder wins.
+    """
+    pairs = []
+    payload = read_checked(root, path, "the redaction table")
+    for line in payload.decode("utf-8", "surrogateescape").split("\n"):
+        line = line.rstrip("\r")
+        if not line or line.startswith("#"):
+            continue
+        needle, _, replacement = line.partition("\t")
+        if needle:
+            pairs.append((needle, replacement))
+    if not pairs:
+        fail("the redaction table %s named nothing to redact, so no copy would be "
+             "sanitized; it is a defect rather than an empty rule set" % path)
+    pairs.sort(key=lambda pair: len(pair[0]), reverse=True)
+    return pairs
+
+
+def well_formed_xml(text):
+    """(True, None) if this parses as XML, else (False, the parser's reason).
+
+    Redaction is a literal text substitution, and a substitution inside an XML
+    document can only be published if the result is still a document. A
+    placeholder carrying `<` or `>` - which is what `<checkout>` was - lands
+    inside attribute values such as name="fails at /home/x/repo" and produces
+    name="fails at <checkout>", which is not well-formed; `store_test_results`
+    then rejects the whole suite file, and it does so precisely on a FAILING
+    run, where the paths appear in failure text rather than only in the
+    stripped properties block. The placeholders no longer contain markup
+    characters, and this is the check that proves it for every document
+    actually published rather than trusting that they never will.
+    """
+    try:
+        ElementTree.fromstring(text)
+    except ElementTree.ParseError as error:
+        return False, str(error)
+    except ValueError as error:
+        return False, str(error)
+    return True, None
+
+
+def sanitize(name, text, redactions):
+    """Returns the publishable text and the notes describing what was removed."""
+    notes = []
+    if name.endswith(".xml") and "<testsuite" in text:
+        text, count = PROPERTIES_ELEMENT.subn("", text)
+        if count:
+            notes.append("properties-stripped=%d" % count)
+        text, count = HOSTNAME_ATTRIBUTE.subn(r"\1redacted\2", text)
+        if count:
+            notes.append("hostname-redacted=%d" % count)
+    redacted = 0
+    for needle, replacement in redactions:
+        occurrences = text.count(needle)
+        if occurrences:
+            text = text.replace(needle, replacement)
+            redacted += occurrences
+    if redacted:
+        notes.append("paths-redacted=%d" % redacted)
+    if name.endswith(".xml"):
+        parsed, reason = well_formed_xml(text)
+        if not parsed:
+            # Withheld, not published unredacted and not published broken:
+            # either would defeat one of the two things this pass is for.
+            return None, "UNSAFE:the sanitized XML would not parse (%s)" % reason
+        notes.append("xml-parsed=ok")
+    return text, notes
+
+
+class Staging(object):
+    """The state of one staging pass, so the verbs stay free of globals."""
+
+    def __init__(self, epoch, redactions):
+        self.epoch = epoch
+        # The present moment, read once so that every artifact of one pass is
+        # judged against the same instant.
+        self.now = time.time()
+        self.redactions = redactions
+        self.rows = []
+        self.staged = 0
+        self.bytes = 0
+        self.sanitized = 0
+        self.stale = 0
+        self.unsafe = 0
+        self.missing = 0
+
+    def withhold(self, source_label, note):
+        """Records an artifact that is NOT published, and why."""
+        if note.startswith("STALE"):
+            self.stale += 1
+        elif note.startswith("MISSING"):
+            self.missing += 1
+        else:
+            self.unsafe += 1
+        self.rows.append("-\t%s\t0\t-\t%s" % (source_label, note))
+
+    def keep(self, staged_label, source_label, size, digest, notes):
+        self.staged += 1
+        self.bytes += size
+        if notes:
+            self.sanitized += 1
+        self.rows.append("%s\t%s\t%d\t%s\t%s"
+                         % (staged_label, source_label, size, digest,
+                            ",".join(notes) if notes else "verbatim"))
+
+    def failed(self):
+        return self.stale or self.unsafe or self.missing
+
+
+def open_regular_checked(parent_fd, name):
+    """(descriptor, stat) for a regular, singly-linked, own file, or (None, note)."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=parent_fd)
+    except OSError as error:
+        if error.errno in LINK_ERRNOS:
+            return None, "UNSAFE:is a symbolic link, so its target is not published"
+        return None, "UNSAFE:could not be opened (%s)" % error
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        os.close(fd)
+        return None, "UNSAFE:not a regular file"
+    if info.st_nlink != 1:
+        os.close(fd)
+        return None, ("UNSAFE:has %d hard links, so it is not the only name for this "
+                      "content" % info.st_nlink)
+    if info.st_uid != EUID:
+        os.close(fd)
+        return None, "UNSAFE:owned by uid %d, not by this run's uid %d" % (info.st_uid, EUID)
+    return fd, info
+
+
+def stage_one_file(state, source_fd, name, dest_fd, dest_name, source_label, staged_label):
+    fd, info = open_regular_checked(source_fd, name)
+    if fd is None:
+        state.withhold(source_label, info)
+        return
+    # Provenance is established by emptying the evidence trees before the
+    # first row (see `prune`), so every artifact found here was produced
+    # during this run. These two checks are the second, independent statement
+    # of the same fact, and they are stated about the DESCRIPTOR: a timestamp
+    # before the run started cannot be this run's work, and one in the future
+    # is not a timestamp any process on this host wrote honestly - both are
+    # withheld and named rather than published as current evidence.
+    if info.st_mtime < state.epoch - STALE_GRACE_SECONDS:
+        os.close(fd)
+        state.withhold(source_label,
+                       "STALE:written at %d, before this run started at %d, so it is not "
+                       "this run's evidence" % (int(info.st_mtime), int(state.epoch)))
+        return
+    if info.st_mtime > state.now + FUTURE_SKEW_SECONDS:
+        os.close(fd)
+        state.withhold(source_label,
+                       "STALE:dated %d, which is after the present moment %d, so its "
+                       "timestamp was set rather than written"
+                       % (int(info.st_mtime), int(state.now)))
+        return
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            payload = handle.read()
+    except OSError as error:
+        state.withhold(source_label, "UNSAFE:could not be read (%s)" % error)
+        return
+    text, notes = sanitize(dest_name, payload.decode("utf-8", "surrogateescape"),
+                           state.redactions)
+    if text is None:
+        state.withhold(source_label, notes)
+        return
+    output = text.encode("utf-8", "surrogateescape")
+    # The destination is unlinked first, through the destination directory's
+    # descriptor, and then created O_EXCL. Both halves matter: the unlink makes
+    # a second staging pass possible - the finalization transaction restages
+    # the report after a finding has been acted on - and the O_EXCL means the
+    # bytes still go into a new inode rather than into whatever object was
+    # sitting at that name.
+    unlink_gone_is_fine(dest_name, dest_fd, staged_label)
+    try:
+        handle = os.open(dest_name,
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=dest_fd)
+    except OSError as error:
+        state.withhold(source_label, "UNSAFE:the published copy could not be created (%s)"
+                       % error)
+        return
+    try:
+        with os.fdopen(handle, "wb") as sink:
+            sink.write(output)
+    except OSError as error:
+        state.withhold(source_label, "UNSAFE:the published copy could not be written (%s)"
+                       % error)
+        return
+    # The digest of the bytes that were PUBLISHED, not of the source: it is
+    # the published copy the uploader is handed, so it is the published copy
+    # the manifest lets it re-check. The window between this scan-approved
+    # copy and the upload belongs to a different process, and a digest is what
+    # carries the approval across it (CWE-345).
+    state.keep(staged_label, source_label, len(output),
+               hashlib.sha256(output).hexdigest(), notes)
+
+
+def stage_one_directory(state, source_fd, dest_fd, source_label, staged_label):
+    """Copies one directory's contents, descending only into real directories."""
+    entries = []
+    with os.scandir(source_fd) as scan:
+        for entry in scan:
+            entries.append((entry.name, entry.is_symlink(),
+                            entry.is_dir(follow_symlinks=False)))
+    for name, is_link, is_directory in sorted(entries):
+        child_source = source_label + "/" + name
+        child_staged = staged_label + "/" + name
+        if is_link:
+            state.withhold(child_source,
+                           "UNSAFE:is a symbolic link, so its target is not published")
+            continue
+        if is_directory:
+            try:
+                child_fd = os.open(name, NOFOLLOW_DIR_FLAGS, dir_fd=source_fd)
+            except OSError as error:
+                state.withhold(child_source, "UNSAFE:could not be opened (%s)" % error)
+                continue
+            try:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=dest_fd)
+                except FileExistsError:
+                    pass
+                child_dest = os.open(name, NOFOLLOW_DIR_FLAGS, dir_fd=dest_fd)
+            except OSError as error:
+                os.close(child_fd)
+                state.withhold(child_source,
+                               "UNSAFE:its published directory could not be created (%s)"
+                               % error)
+                continue
+            try:
+                stage_one_directory(state, child_fd, child_dest, child_source, child_staged)
+            finally:
+                os.close(child_fd)
+                os.close(child_dest)
+            continue
+        stage_one_file(state, source_fd, name, dest_fd, name, child_source, child_staged)
+
+
+def stage(root, publish_dir, epoch_text, redactions_path, manifest_path, manifest_mode,
+          *specs):
+    """Builds the publication tree from `source=destination` specifications."""
+    try:
+        epoch = float(epoch_text)
+    except ValueError:
+        fail('"%s" is not an epoch second' % epoch_text)
+    if manifest_mode not in ("truncate", "append"):
+        fail('"%s" is neither truncate nor append' % manifest_mode)
+    state = Staging(epoch, read_redactions(root, redactions_path))
+    publish_components = relative_components(root, publish_dir)
+
+    for spec in specs:
+        source_rel, separator, dest_rel = spec.partition("=")
+        if not separator or not source_rel or not dest_rel:
+            fail('"%s" is not a source=destination specification' % spec)
+        source_abs = root.rstrip("/") + "/" + source_rel
+        source_components = relative_components(root, source_abs)
+        source_parent = walk(root, source_components[:-1],
+                             [None] * (len(source_components) - 1))
+        try:
+            name = source_components[-1]
+            try:
+                info = os.lstat(name, dir_fd=source_parent)
+            except FileNotFoundError:
+                state.withhold(source_rel, "MISSING:this run produced no such artifact")
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                state.withhold(source_rel,
+                               "UNSAFE:is a symbolic link, so its target is not published")
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                source_fd = os.open(name, NOFOLLOW_DIR_FLAGS, dir_fd=source_parent)
+                try:
+                    dest_fd = walk(root, publish_components + dest_rel.split("/"),
+                                   [None] * len(publish_components)
+                                   + [0o700] * len(dest_rel.split("/")))
+                    try:
+                        stage_one_directory(state, source_fd, dest_fd, source_rel, dest_rel)
+                    finally:
+                        os.close(dest_fd)
+                finally:
+                    os.close(source_fd)
+                continue
+            dest_components = publish_components + dest_rel.split("/")
+            dest_parent = walk(root, dest_components[:-1],
+                               [None] * len(publish_components)
+                               + [0o700] * (len(dest_components) - len(publish_components) - 1))
+            try:
+                stage_one_file(state, source_parent, name, dest_parent,
+                               dest_components[-1], source_rel, dest_rel)
+            finally:
+                os.close(dest_parent)
+        finally:
+            os.close(source_parent)
+
+    # The manifest is written through a descriptor for the publication
+    # directory, like everything else this program writes: it is the record
+    # the uploader re-checks the tree against, so a link planted at its name
+    # must not be able to receive it or to redirect it.
+    rows = list(state.rows)
+    if manifest_mode == "truncate":
+        rows.insert(0, "# staged-path\tsource-path\tpublished-bytes\tsha256\tnotes")
+    payload = "".join(row + "\n" for row in rows).encode("utf-8", "surrogateescape")
+    manifest_parent, manifest_name = open_write_parent(root, manifest_path)
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+        flags |= os.O_APPEND if manifest_mode == "append" else os.O_TRUNC
+        try:
+            handle = os.open(manifest_name, flags, 0o600, dir_fd=manifest_parent)
+        except OSError as error:
+            fail("the publication manifest %s could not be opened (%s)"
+                 % (manifest_path, error))
+    finally:
+        os.close(manifest_parent)
+    try:
+        info = os.fstat(handle)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != EUID:
+            fail("the publication manifest %s is not a regular, singly-linked file "
+                 "owned by this run" % manifest_path)
+        written = 0
+        while written < len(payload):
+            written += os.write(handle, payload[written:])
+    finally:
+        os.close(handle)
+
+    sys.stdout.write("staged=%d bytes=%d sanitized=%d stale=%d unsafe=%d missing=%d\n"
+                     % (state.staged, state.bytes, state.sanitized, state.stale,
+                        state.unsafe, state.missing))
+    if state.failed():
+        raise SystemExit(1)
+
+
+def quarantine(root, destination, *paths):
+    """MOVES artifacts out of every published path, into a private directory.
+
+    This is what makes a detection act on the artifact instead of only on the
+    process status: a file that carries a credential signature stops being
+    somewhere a later run, a later step or an operator can upload. The
+    destination is 0700 and is never staged, and the move is a rename between
+    two directories of the same output tree, so the content never passes
+    through a third path.
+    """
+    destination_components = relative_components(root, destination)
+    moved = 0
+    for path_rel in paths:
+        source_abs = root.rstrip("/") + "/" + path_rel
+        source_components = relative_components(root, source_abs)
+        source_parent = walk(root, source_components[:-1],
+                             [None] * (len(source_components) - 1))
+        try:
+            flat = path_rel.replace("/", "_")
+            dest_parent = walk(root, destination_components,
+                               [0o700] * len(destination_components))
+            try:
+                os.rename(source_components[-1], flat,
+                          src_dir_fd=source_parent, dst_dir_fd=dest_parent)
+                moved += 1
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                fail("%s could not be quarantined into %s (%s)"
+                     % (path_rel, destination, error))
+            finally:
+                os.close(dest_parent)
+        finally:
+            os.close(source_parent)
+    sys.stdout.write("quarantined=%d\n" % moved)
+
+
+def withdraw(root, path, reason):
+    """Removes one staged copy and leaves a marker in its place.
+
+    The marker is what keeps a withdrawn artifact from looking like one that
+    was never produced: it names the file and the reason, and deliberately
+    not the value that caused it.
+    """
+    components = relative_components(root, path)
+    parent = walk(root, components[:-1], [None] * (len(components) - 1))
+    try:
+        unlink_gone_is_fine(components[-1], parent, path)
+        marker = components[-1] + ".WITHHELD.txt"
+        try:
+            handle = os.open(marker,
+                             os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+                             | os.O_CLOEXEC,
+                             0o600, dir_fd=parent)
+        except OSError as error:
+            fail("the marker for %s could not be created (%s)" % (path, error))
+        with os.fdopen(handle, "w", encoding="utf-8") as sink:
+            sink.write("This artifact was WITHHELD from publication.\n"
+                       "reason: %s\n"
+                       "The original has been quarantined outside every published path "
+                       "and its content is not reproduced here.\n" % reason)
+    finally:
+        os.close(parent)
+    sys.stdout.write("withdrawn=1\n")
+
+
+def prune(root, *directories):
+    """Empties each directory, keeping the directory itself.
+
+    This is how a run establishes that its evidence trees hold its OWN
+    evidence and nothing else. The alternative - deciding file by file whether
+    something looks recent enough to belong to this run - cannot be made
+    sound: a modification time is metadata any process with write access can
+    set to any value, so "newer than the run started" is a guess about
+    provenance rather than a fact about it (CWE-345). Emptying the tree before
+    the first row runs needs no guess: everything found in it afterwards was
+    put there during this run.
+
+    The directory inode is preserved rather than removed and recreated, so the
+    dev:ino this run validated and re-checks at every handover stays valid.
+    Each entry is removed through `remove_tree`, which descends only into real
+    directories and unlinks a symbolic link instead of following it.
+    """
+    removed = 0
+    for directory in directories:
+        components = relative_components(root, directory)
+        if components[0] != DELETABLE_ROOT:
+            fail("%s is not below %s/%s" % (directory, root, DELETABLE_ROOT))
+        if len(components) < 2:
+            fail("%s is the output tree itself, which is never emptied" % directory)
+        parent = walk(root, components[:-1], [None] * (len(components) - 1))
+        try:
+            try:
+                fd = os.open(components[-1], NOFOLLOW_DIR_FLAGS, dir_fd=parent)
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                if error.errno in LINK_ERRNOS or error.errno == errno.ENOTDIR:
+                    fail("%s is a symbolic link or not a directory" % directory)
+                fail("%s could not be opened (%s)" % (directory, error))
+            try:
+                device = os.fstat(fd).st_dev
+                entries = []
+                with os.scandir(fd) as scan:
+                    for entry in scan:
+                        entries.append((entry.name,
+                                        entry.is_dir(follow_symlinks=False)))
+                for child, is_directory in sorted(entries):
+                    shown = directory + "/" + child
+                    if is_directory:
+                        remove_tree(fd, child, shown, device)
+                    else:
+                        unlink_gone_is_fine(child, fd, shown)
+                    removed += 1
+            finally:
+                os.close(fd)
+        finally:
+            os.close(parent)
+    sys.stdout.write("removed=%d\n" % removed)
+
+
+def copy_tree(root, source, destination):
+    """Copies a directory's contents descriptor-bound, for snapshots.
+
+    `cp -a` resolves every name itself, which in a git-ignored tree means
+    following whatever link or replaced parent it finds (CWE-59). This reads
+    each file from a descriptor it has proved is a regular, singly-linked file
+    owned by this run, and writes each copy into a fresh O_EXCL inode inside a
+    descriptor for the destination directory. A symbolic link in the source is
+    refused rather than dereferenced, and the destination is never opened by
+    name, so nothing outside the tree can receive a byte.
+    """
+    copied = 0
+    refused = []
+
+    def copy_into(source_fd, dest_fd, shown):
+        nonlocal copied
+        entries = []
+        with os.scandir(source_fd) as scan:
+            for entry in scan:
+                entries.append((entry.name, entry.is_symlink(),
+                                entry.is_dir(follow_symlinks=False)))
+        for name, is_link, is_directory in sorted(entries):
+            child = shown + "/" + name
+            if is_link:
+                refused.append("%s is a symbolic link" % child)
+                continue
+            if is_directory:
+                child_source = os.open(name, NOFOLLOW_DIR_FLAGS, dir_fd=source_fd)
+                try:
+                    try:
+                        os.mkdir(name, 0o700, dir_fd=dest_fd)
+                    except FileExistsError:
+                        pass
+                    child_dest = os.open(name, NOFOLLOW_DIR_FLAGS, dir_fd=dest_fd)
+                    try:
+                        copy_into(child_source, child_dest, child)
+                    finally:
+                        os.close(child_dest)
+                finally:
+                    os.close(child_source)
+                continue
+            handle, info = open_regular_checked(source_fd, name)
+            if handle is None:
+                refused.append("%s %s" % (child, info))
+                continue
+            try:
+                with os.fdopen(handle, "rb") as reader:
+                    payload = reader.read()
+            except OSError as error:
+                refused.append("%s could not be read (%s)" % (child, error))
+                continue
+            unlink_gone_is_fine(name, dest_fd, child)
+            try:
+                sink = os.open(name,
+                               os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                               | os.O_CLOEXEC, 0o600, dir_fd=dest_fd)
+            except OSError as error:
+                refused.append("%s could not be created in the destination (%s)"
+                               % (child, error))
+                continue
+            try:
+                with os.fdopen(sink, "wb") as writer:
+                    writer.write(payload)
+            except OSError as error:
+                refused.append("%s could not be written (%s)" % (child, error))
+                continue
+            copied += 1
+
+    source_components = relative_components(root, source)
+    dest_components = relative_components(root, destination)
+    source_parent = walk(root, source_components[:-1],
+                         [None] * (len(source_components) - 1))
+    try:
+        try:
+            source_fd = os.open(source_components[-1], NOFOLLOW_DIR_FLAGS,
+                                dir_fd=source_parent)
+        except FileNotFoundError:
+            fail("%s does not exist, so there is nothing to copy" % source)
+        except OSError as error:
+            fail("%s could not be opened (%s)" % (source, error))
+    finally:
+        os.close(source_parent)
+    try:
+        dest_fd = walk(root, dest_components,
+                       [None] * (len(dest_components) - 1) + [0o700])
+        try:
+            copy_into(source_fd, dest_fd, source)
+        finally:
+            os.close(dest_fd)
+    finally:
+        os.close(source_fd)
+    if refused:
+        fail("%d file(s) could not be copied safely: %s"
+             % (len(refused), "; ".join(refused)))
+    sys.stdout.write("copied=%d\n" % copied)
+
+
+def lock_dir(root, path):
+    """Creates the output lock directory relative to its parent's descriptor.
+
+    `mkdir` on a pathname would create the lock THROUGH a symbolic link left
+    in target/, putting this run's lock - and the exclusion every other run
+    depends on - outside the checkout. The mkdir here is relative to a
+    descriptor for target/ that was opened no-follow, and its success is the
+    atomic act that takes the lock. "held" on stdout means another run has it.
+    """
+    components = relative_components(root, path)
+    if components[0] != DELETABLE_ROOT or len(components) != 2:
+        fail("%s is not a direct child of %s/%s" % (path, root, DELETABLE_ROOT))
+    parent = walk(root, components[:-1], [None])
+    try:
+        try:
+            os.mkdir(components[-1], 0o700, dir_fd=parent)
+        except FileExistsError:
+            sys.stdout.write("held\n")
+            return
+        except OSError as error:
+            fail("the output lock %s could not be created (%s)" % (path, error))
+        try:
+            fd = os.open(components[-1], NOFOLLOW_DIR_FLAGS, dir_fd=parent)
+        except OSError as error:
+            fail("the output lock %s was created but cannot be opened (%s)"
+                 % (path, error))
+        try:
+            os.fchmod(fd, 0o700)
+            sys.stdout.write("acquired %s\n" % identity(fd))
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
+
+
+VERBS = {
+    "ensure-dir": (ensure_dir, 3),
+    "verify-dir": (verify_dir, 3),
+    "truncate": (truncate, 2),
+    "write": (write_atomic, 2),
+    "append": (append_checked, 2),
+    "rename": (rename_checked, 3),
+    "verify-fd": (verify_fd, 4),
+    "copy-tree": (copy_tree, 3),
+    "lock-dir": (lock_dir, 2),
+    "rmtree": (rmtree, 2),
+    # Variadic: every evidence root the run empties before its first row.
+    "prune": (prune, -2),
+    # Variadic verbs, which is what the negative arity means: the publication
+    # step names every artifact it stages, quarantines or sweeps.
+    "stage": (stage, -7),
+    "quarantine": (quarantine, -2),
+    "withdraw": (withdraw, 3),
+}
+
+if len(sys.argv) < 2 or sys.argv[1] not in VERBS:
+    fail("fs_guard: unknown verb %r; expected one of %s"
+         % (sys.argv[1:2], ", ".join(sorted(VERBS))))
+action, arity = VERBS[sys.argv[1]]
+arguments = sys.argv[2:]
+# A negative arity is a MINIMUM: the variadic verbs take a fixed head followed
+# by one or more artifacts, and a verb invoked with nothing to act on is a
+# defect in the caller rather than a no-op to be tolerated.
+if arity < 0:
+    if len(arguments) < -arity:
+        fail("fs_guard %s expects at least %d argument(s), got %d"
+             % (sys.argv[1], -arity, len(arguments)))
+elif len(arguments) != arity:
+    fail("fs_guard %s expects %d argument(s), got %d"
+         % (sys.argv[1], arity, len(arguments)))
+action(*arguments)
+PY
+}
+
+# ensure_output_dir <absolute directory below $ROOT> [octal mode]
 #
 # Creates it if needed, refusing a symlinked or non-directory component on the
 # way, and confirms the canonical result is inside the canonical repository
 # root. Returns 1 - it never exits - so a caller inside a gate can record the
 # failure as that row's verdict.
+#
+# The mode is the one the directory NAMED is to have, and defaults to 0755 -
+# the mode of the directories this script shares with sbt and the forked test
+# JVMs. The private evidence directories are ensured with 0700 by
+# `init_output_tree`. An existing directory is only ever tightened, never
+# loosened: see `set_directory_mode` inside `fs_guard`. Ancestors are created
+# 0755 whatever the mode argument says, so ensuring a private directory
+# cannot make target/ itself unreachable to the build.
+#
+# On success ENSURED_DIR_ID carries the dev:ino `fs_guard` validated, which is
+# what `verify_output_tree_identity` later re-checks the directory against.
+ENSURED_DIR_ID=""
 ensure_output_dir() {
   local dir="$1"
+  local mode="${2:-0755}"
 
+  ENSURED_DIR_ID=""
   if [[ -z "$ROOT" || -z "$ROOT_REAL" ]]; then
     path_fatal "$dir (the repository root has not been resolved yet)"
     return 1
@@ -260,6 +1682,10 @@ ensure_output_dir() {
       ;;
   esac
 
+  # The first refusal, by pathname: cheap, readable, and it names the problem
+  # in the terms an operator sees in `ls`. It is deliberately NOT the one the
+  # writes rely on - the loop below creates nothing, because creating a
+  # directory by name is the step that can be redirected between components.
   local remainder="${dir#"$ROOT"/}"
   local path="$ROOT"
   local component
@@ -283,11 +1709,19 @@ ensure_output_dir() {
       path_fatal "$path exists and is not a directory"
       return 1
     fi
-    if [[ ! -e "$path" ]] && ! mkdir "$path"; then
-      path_fatal "$path could not be created"
-      return 1
-    fi
   done
+
+  # The decision, by descriptor: every component is re-opened no-follow from
+  # its parent's descriptor, created there if it is absent, proved to be a
+  # directory this run's uid owns, and tightened if it was left group- or
+  # world-writable. Whatever the names meant during the loop above, this is
+  # what is actually written into.
+  local guard
+  if ! guard="$(fs_guard ensure-dir "$ROOT" "$dir" "$mode" 2>&1)"; then
+    path_fatal "$dir (${guard:-fs_guard refused it without a reason, which is itself a defect})"
+    return 1
+  fi
+  ENSURED_DIR_ID="$guard"
 
   local real
   real="$(canonical_dir "$dir")"
@@ -321,28 +1755,176 @@ ensure_output_file() {
   return 0
 }
 
-# copy_through_shell <from> <to> - a copy that needs no external tool, used
-# only where the report must exist and `mv` has just proved unavailable.
+# copy_through_shell <from> <to> - a copy whose transfer needs no external
+# tool, used only where the report must exist and `mv` has just proved
+# unavailable. The read-and-write loop is builtins alone; the destination is
+# emptied through `safe_truncate` like every other file this framework
+# creates, because a fallback copy is still a write into the git-ignored tree
+# and `: >"$to"` would follow a link or truncate a hard-linked file there just
+# as readily as anywhere else. If the destination cannot be emptied safely
+# this returns 1 and the caller reports that the copy was not made.
 copy_through_shell() {
   local from="$1"
   local to="$2"
-  local line
 
-  ensure_output_file "$to" || return 1
-  : >"$to" || return 1
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    printf '%s\n' "$line" >>"$to" || return 1
-  done <"$from"
-  return 0
+  # The read loop is builtins alone; the destination is written by
+  # `guarded_write`, which replaces the name with a new inode instead of
+  # opening whatever is at it. `: >"$to"` followed by appends - what this used
+  # to do - decided what it was writing to and then looked the name up again
+  # for every line.
+  {
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      printf '%s\n' "$line"
+    done <"$from"
+  } | guarded_write "$to"
 }
 
 # safe_truncate <absolute file below $ROOT> - the only way this framework
 # empties or creates a file, so that no write can be redirected by a link.
+#
+# `: >"$file"` was not that: it follows a symbolic link, and it truncates a
+# REGULAR file that is a second hard link to something else this uid can write
+# - a link a previous process could have planted in the git-ignored target/
+# tree, whose real target `[[ -e ]]` and `[[ -L ]]` cannot see. So the file is
+# opened through `fs_guard` instead: O_CREAT without O_TRUNC and O_NOFOLLOW,
+# then `fstat` on the DESCRIPTOR, then a refusal unless it is a regular file
+# with exactly one link owned by this run's uid, and only then `ftruncate`.
+# Nothing is emptied before it is known what would be emptied. The file is
+# left mode 0600, which is also what keeps the evidence out of other accounts'
+# reach while it is being written.
+# On success TRUNCATED_FILE_ID carries the dev:ino of the file that was
+# emptied, which is what `guarded_open_append` binds its descriptor to.
+TRUNCATED_FILE_ID=""
 safe_truncate() {
   ensure_output_file "$1" || return 1
-  if ! : >"$1"; then
-    path_fatal "$1 could not be truncated"
+  local guard
+  if ! guard="$(fs_guard truncate "$ROOT" "$1" 2>&1)"; then
+    path_fatal "$1 could not be truncated (${guard:-fs_guard refused it without a reason, which is itself a defect})"
     return 1
+  fi
+  TRUNCATED_FILE_ID="$guard"
+  return 0
+}
+
+# guarded_write <absolute file below $ROOT>  - stdin becomes the whole file.
+#
+# The counterpart to `safe_truncate` for a file this framework writes in one
+# go, and the reason it exists is that emptying a file safely is not the same
+# as writing it safely. `safe_truncate` proves, on a descriptor, what it is
+# about to empty - but a caller that then writes with `>"$file"` opens the
+# NAME a second time, and everything the first check established is undone by
+# whatever happened to the name in between (CWE-367). The bytes here never go
+# near the existing name: `fs_guard write` creates a new inode O_EXCL inside
+# the parent's descriptor, writes and flushes it, and renames it into place.
+# A link, a hard link, a FIFO or a foreign-owned file at that name is
+# replaced, not written through, and a reader of the name sees the whole old
+# file or the whole new one.
+guarded_write() {
+  local file="$1"
+  local dir="${file%/*}"
+
+  # Only the directory is validated here. What is AT the name does not need to
+  # be - and must not be refused - because nothing is written through it: the
+  # bytes go into a new inode and the name is replaced by a rename. Refusing a
+  # link planted at an output path would hand any process that can write into
+  # the git-ignored tree a way to stop this run from recording anything, while
+  # replacing it is both safe and correct.
+  if [[ "$dir" == "$file" || -z "$dir" ]]; then
+    path_fatal "$file has no directory part"
+    return 1
+  fi
+  ensure_output_dir "$dir" || return 1
+  local guard
+  if ! guard="$(fs_guard write "$ROOT" "$file" 2>&1)"; then
+    path_fatal "$file could not be written (${guard:-fs_guard refused it without a reason, which is itself a defect})"
+    return 1
+  fi
+  return 0
+}
+
+# guarded_append <absolute file below $ROOT> - stdin is added to the end.
+#
+# Used where what is already in the file has to stay. `fs_guard append` opens
+# it O_APPEND|O_NOFOLLOW and re-reads every property from the DESCRIPTOR it is
+# about to write through, so the decision and the write are the same object.
+guarded_append() {
+  local file="$1"
+  ensure_output_file "$file" || return 1
+  local guard
+  if ! guard="$(fs_guard append "$ROOT" "$file" 2>&1)"; then
+    path_fatal "$file could not be appended to (${guard:-fs_guard refused it without a reason, which is itself a defect})"
+    return 1
+  fi
+  return 0
+}
+
+# guarded_open_append <absolute file below $ROOT> <name of a variable>
+#
+# Creates the file, opens ONE append descriptor on it for the life of the run
+# or the row, proves that descriptor is that file, and publishes the
+# descriptor number in the named variable. Writing through it - `>&"$FD"`, or
+# the `/dev/fd` path `guarded_fd_path` derives from it - reaches the inode
+# that was validated and nothing else: there is no second lookup of the name,
+# so renaming it, unlinking it or replacing it with a link afterwards cannot
+# redirect a single byte (CWE-59, CWE-367).
+#
+# One pathname open remains, the `exec` below, and `fs_guard verify-fd` is
+# what closes it: the descriptor is compared against the dev:ino
+# `safe_truncate` had just validated, so a name replaced in that window is
+# detected rather than written to.
+guarded_open_append() {
+  local file="$1"
+  local variable="$2"
+  local descriptor=""
+  local identity
+
+  safe_truncate "$file" || return 1
+  identity="$TRUNCATED_FILE_ID"
+  if ! exec {descriptor}>>"$file"; then
+    path_fatal "$file could not be opened for appending"
+    return 1
+  fi
+  local guard
+  if ! guard="$(fs_guard verify-fd "$ROOT" "$file" "$descriptor" "$identity" 2>&1)"; then
+    path_fatal "the descriptor opened for $file is not that file (${guard:-no reason given})"
+    exec {descriptor}>&-
+    return 1
+  fi
+  declare -g "$variable=$descriptor"
+  return 0
+}
+
+# guarded_fd_path <descriptor> - the path form of a descriptor this run holds.
+#
+# `/proc/self/fd/N` resolves to the INODE the descriptor refers to, not by
+# walking the evidence directory again, so `>>"$(guarded_fd_path "$FD")"`
+# writes to the validated file even if its name has since been replaced by a
+# link to somewhere else. Children inherit the descriptor, so a command, a
+# block, a pipeline or a subshell redirected to this path writes to the same
+# inode in the same append sequence.
+guarded_fd_path() {
+  # A descriptor this run does not hold must NOT produce "/proc/self/fd/",
+  # which is the process's own descriptor DIRECTORY: `[[ -s ]]` reports a
+  # directory as non-empty, so a reader guarded that way went on to `cat` it
+  # and printed "Is a directory" instead of treating the evidence as absent.
+  # A name nothing can open is the honest answer.
+  if [[ ! "$1" =~ ^[0-9]+$ ]]; then
+    printf '/proc/self/fd/none\n'
+    return 0
+  fi
+  printf '/proc/self/fd/%s\n' "$1"
+}
+
+# guarded_close <name of the variable holding a descriptor> - closes it and
+# clears the variable, so nothing can write through a descriptor whose row has
+# ended.
+guarded_close() {
+  local variable="$1"
+  local descriptor="${!variable:-}"
+  if [[ -n "$descriptor" ]]; then
+    exec {descriptor}>&-
+    declare -g "$variable="
   fi
   return 0
 }
@@ -370,13 +1952,50 @@ assert_no_symlinks_below() {
 #-----------------------------------------------------------------------------
 # The output tree, created before anything can write into it - in particular
 # before any JVM writes a class-load log, which the specification calls out.
+#
+# Two kinds of directory, with two modes, because they have two audiences:
+#
+#   * target/, target/parity-report and target/test-reports are SHARED with
+#     sbt and with the forked test JVMs that write the JUnit XML and the
+#     parity reports, so they keep the conventional 0755. What this script
+#     does own about them is that they are not group- or world-WRITABLE: a
+#     writable evidence directory is where the links `fs_guard` refuses get
+#     planted in the first place, so those bits are cleared when we own the
+#     directory rather than treated as a reason to refuse an otherwise valid
+#     tree.
+#   * target/audit and everything below it is this run's own evidence - sbt
+#     never writes there - so it is private, 0700. That is also the cheapest
+#     answer to the runner metadata those logs carry: what is not readable is
+#     not leaked to another account on the build host.
 #-----------------------------------------------------------------------------
+
+# The dev:ino of the two directories every later write depends on, as
+# validated at startup. Recorded so that `verify_output_tree_identity` can
+# prove, at any later point, that the tree being written into is still the one
+# that was validated - a renamed or replaced parent is otherwise invisible to
+# a run that only ever re-resolves the name.
+TARGET_DIR_ID=""
+AUDIT_DIR_ID=""
 
 init_output_tree() {
   local dir
-  for dir in "$TARGET_DIR" "$PARITY_DIR" "$TEST_REPORT_DIR" "$AUDIT_DIR" "$LOG_DIR" \
+  # target/ stays 0755: sbt, coursier and the forked test JVMs all create
+  # their own subdirectories in it, and tightening the directory they share
+  # would be a change to the build rather than to this script's evidence.
+  ensure_output_dir "$TARGET_DIR" 0755 || return 1
+  TARGET_DIR_ID="$ENSURED_DIR_ID"
+  # Everything this run's evidence lives in is private. The only other writer
+  # of target/test-reports and target/parity-report is the forked test JVM,
+  # which this script starts and which runs as the same uid, so 0700 costs the
+  # build nothing and keeps the evidence - JUnit XML that carries the machine's
+  # properties, parity reports, logs - out of every other account's reach
+  # while it is being written (CWE-200).
+  for dir in "$PARITY_DIR" "$TEST_REPORT_DIR" "$AUDIT_DIR" "$LOG_DIR" \
     "$SNAPSHOT_DIR" "$SNAPSHOT_DIR/test-reports" "$SNAPSHOT_DIR/parity-report"; do
-    ensure_output_dir "$dir" || return 1
+    ensure_output_dir "$dir" 0700 || return 1
+    if [[ "$dir" == "$AUDIT_DIR" ]]; then
+      AUDIT_DIR_ID="$ENSURED_DIR_ID"
+    fi
   done
   # sbt owns other subdirectories of target/, so only the three this script
   # writes evidence into are swept.
@@ -384,13 +2003,215 @@ init_output_tree() {
     assert_no_symlinks_below "$dir" || return 1
   done
   ensure_output_file "$REPORT_FILE" || return 1
-  safe_truncate "$APPENDIX_FILE" || return 1
-  # Last, and only now: the record of unchecked failures is opened once its
-  # own path has been validated and emptied. Everything above this line
-  # reports on stderr alone, so no failure during validation can be written
-  # through a path the validation has not yet cleared.
-  safe_truncate "$FRAMEWORK_ERROR_FILE" || return 1
+  # Whatever an earlier run left in the evidence trees is examined and then
+  # cleared, BEFORE this run writes anything of its own into them, so that
+  # every artifact staged for publication later is this run's by construction
+  # rather than by a guess about its timestamp. This is also the last moment
+  # at which clearing them is possible: the two descriptors opened below, and
+  # every row after them, write into these directories.
+  prune_inherited_evidence || return 1
+  for dir in "$LOG_DIR" "$SNAPSHOT_DIR" "$SNAPSHOT_DIR/test-reports" \
+    "$SNAPSHOT_DIR/parity-report"; do
+    ensure_output_dir "$dir" 0700 || return 1
+  done
+  # The appendix and the record of unchecked failures are opened once, on
+  # descriptors, and everything written to them afterwards goes through those
+  # descriptors. Everything above this line reports on stderr alone, so no
+  # failure during validation can be written through a path the validation has
+  # not yet cleared.
+  guarded_open_append "$APPENDIX_FILE" APPENDIX_FD || return 1
+  guarded_open_append "$FRAMEWORK_ERROR_FILE" FRAMEWORK_ERROR_FD || return 1
   FRAMEWORK_ERROR_READY="yes"
+  # What the lock had to say, now that there is a validated path to say it on.
+  # It is kept in the audit tree CI publishes rather than in the ledger above,
+  # for the reason given at OUTPUT_LOCK_NOTE.
+  if [[ -n "$OUTPUT_LOCK_NOTE" ]]; then
+    local lock_record="$AUDIT_DIR/output-lock.txt"
+    if ! printf '%s\n' "$OUTPUT_LOCK_NOTE" | guarded_write "$lock_record"; then
+      printf 'WARNING: the output-lock note could not be recorded in %s: %s\n' \
+        "${lock_record#"$ROOT"/}" "$OUTPUT_LOCK_NOTE" >&2
+    fi
+  fi
+  # The tree is now exactly what was validated, and this is the baseline every
+  # later check compares against: if it does not hold here, nothing recorded
+  # afterwards can be attributed to this tree at all.
+  verify_output_tree_identity || return 1
+  return 0
+}
+
+# verify_output_tree_identity - re-opens target/ and target/audit no-follow and
+# confirms they are still the same directories `init_output_tree` validated.
+#
+# A pathname check can only ever say what a name means now; this says whether
+# it still means what it meant when the tree was created. It is called at the
+# end of `init_output_tree` and is meant to be called again by anything that
+# is about to publish or hand over the evidence, where a parent renamed
+# mid-run would otherwise silently redirect the last step of the run.
+# Returns 1 and reports through `path_fatal`; it never exits.
+verify_output_tree_identity() {
+  if [[ -z "$TARGET_DIR_ID" || -z "$AUDIT_DIR_ID" ]]; then
+    path_fatal "the output tree has not been validated yet, so its identity cannot be re-checked"
+    return 1
+  fi
+  local guard
+  if ! guard="$(fs_guard verify-dir "$ROOT" "$TARGET_DIR" "$TARGET_DIR_ID" 2>&1)"; then
+    path_fatal "$TARGET_DIR (${guard:-fs_guard refused it without a reason, which is itself a defect})"
+    return 1
+  fi
+  if ! guard="$(fs_guard verify-dir "$ROOT" "$AUDIT_DIR" "$AUDIT_DIR_ID" 2>&1)"; then
+    path_fatal "$AUDIT_DIR (${guard:-fs_guard refused it without a reason, which is itself a defect})"
+    return 1
+  fi
+  return 0
+}
+
+#-----------------------------------------------------------------------------
+# The output lock.
+#
+# Two acceptance runs in one checkout write the same evidence files, the same
+# sbt logs and the same report, and neither knows the other exists: each
+# truncates files the other is reading, `sbt clean` in one empties the
+# directories the other has just snapshotted, and the report that survives is
+# a mixture of two runs that describes neither. An acceptance run is not
+# something to interleave, so a second one in the same checkout is refused
+# rather than merged.
+#
+# The lock is a DIRECTORY, created with `mkdir`, because that is one atomic
+# operation that fails if anything is already at the name - an existing
+# directory, a file or a symbolic link - and it therefore needs no new tool
+# on a host where `flock` may not be installed. The pid inside it is what
+# tells a lock still held from one a killed run left behind.
+#-----------------------------------------------------------------------------
+
+# Set to "yes" only by the run that actually created the lock directory, so
+# that a run which refused to start can never remove the lock of the run that
+# is holding it.
+OUTPUT_LOCK_HELD="no"
+
+# What this run had to say about taking the lock, kept until there is a
+# validated path to write it to. An abandoned lock means the previous run in
+# this checkout did not finish, which is worth recording in the published
+# evidence; it is NOT recorded in the framework-error ledger, because every
+# entry there is blocking and this is not: the run that reclaims a lock goes
+# on to do a full `clean` build and rewrite every evidence file, so the
+# unfinished run's leftovers are replaced rather than read.
+OUTPUT_LOCK_NOTE=""
+
+# acquire_output_lock - takes the lock, or explains why this run must not run.
+#
+# Returns 0 with the lock held, or 1 with the reason on stderr (`init_run`
+# turns that into exit 2). A lock whose recorded pid is still alive is a hard
+# stop; one whose pid is gone is reclaimed, because a run killed by a CI
+# timeout leaves its lock behind and the next run must not need a human to
+# delete a directory. `kill -0` only asks whether the process exists - it
+# sends no signal - and a pid we may not signal answers EPERM, which is
+# "alive" and is the answer that stops this run. A pid that cannot be read at
+# all is treated as alive too: the fail-closed side of that choice is a run
+# that stops and says so.
+acquire_output_lock() {
+  # target/ has to exist to hold the lock, and it is validated here rather
+  # than trusted, because this is the first thing that writes into it.
+  ensure_output_dir "$TARGET_DIR" 0755 || return 1
+  TARGET_DIR_ID="$ENSURED_DIR_ID"
+
+  local owner_file="$OUTPUT_LOCK_DIR/owner"
+  local attempt held_pid key value taken
+  for attempt in 1 2; do
+    # `fs_guard lock-dir`, not `mkdir -p` or `command mkdir`: a plain mkdir on
+    # this pathname would create the lock THROUGH a symbolic link left in the
+    # git-ignored target/, which would put the exclusion every other run
+    # depends on outside the checkout (CWE-59). The mkdir inside `fs_guard`
+    # happens relative to a descriptor for target/ opened no-follow, and its
+    # success IS the atomic acquisition. An existing lock is the expected
+    # answer here and not a framework failure to record.
+    taken="$(fs_guard lock-dir "$ROOT" "$OUTPUT_LOCK_DIR" 2>/dev/null || printf 'refused')"
+    if [[ "$taken" == refused ]]; then
+      printf 'FATAL: the output lock %s could not be created; the output tree is\n' \
+        "${OUTPUT_LOCK_DIR#"$ROOT"/}" >&2
+      printf 'not in a state this run can take a lock in.\n' >&2
+      return 1
+    fi
+    if [[ "$taken" != held ]]; then
+      OUTPUT_LOCK_HELD="yes"
+      if ! {
+        printf 'pid\t%s\n' "$$"
+        printf 'acquired\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        printf 'script\t%s\n' "$SCRIPT_NAME"
+      } | guarded_write "$owner_file"; then
+        printf 'FATAL: the output lock %s could not record its owner, so a later\n' \
+          "${OUTPUT_LOCK_DIR#"$ROOT"/}" >&2
+        printf 'run could not tell a held lock from an abandoned one.\n' >&2
+        return 1
+      fi
+      return 0
+    fi
+
+    if [[ "$attempt" -ne 1 ]]; then
+      break
+    fi
+
+    held_pid=""
+    # `! -L` as well as `-f`: the pid read here decides whether another run's
+    # lock may be taken away, so a symbolic link planted at this name is not
+    # followed. Without a pid this run refuses to reclaim, which is the safe
+    # direction - it waits instead of interleaving.
+    if [[ -f "$owner_file" && -r "$owner_file" && ! -L "$owner_file" ]]; then
+      while IFS=$'\t' read -r key value || [[ -n "$key" ]]; do
+        if [[ "$key" == "pid" ]]; then
+          held_pid="$value"
+        fi
+      done <"$owner_file"
+    fi
+
+    if [[ -n "$held_pid" && "$held_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$held_pid" 2>/dev/null; then
+      printf 'NOTICE: the output lock %s was left behind by process %s, which is no\n' \
+        "${OUTPUT_LOCK_DIR#"$ROOT"/}" "$held_pid" >&2
+      printf 'longer running. Reclaiming it and continuing.\n' >&2
+      OUTPUT_LOCK_NOTE="$(printf 'reclaimed the output lock %s from process %s, which is no longer running, so the previous run in this checkout did not finish' \
+        "${OUTPUT_LOCK_DIR#"$ROOT"/}" "$held_pid")"
+      local guard
+      if ! guard="$(fs_guard rmtree "$ROOT" "$OUTPUT_LOCK_DIR" 2>&1)"; then
+        printf 'FATAL: the abandoned output lock %s could not be removed (%s).\n' \
+          "${OUTPUT_LOCK_DIR#"$ROOT"/}" "${guard:-no reason given}" >&2
+        return 1
+      fi
+      continue
+    fi
+
+    printf 'FATAL: another acceptance run holds the output lock %s\n' \
+      "${OUTPUT_LOCK_DIR#"$ROOT"/}" >&2
+    printf '(recorded pid: %s). Two runs in one checkout overwrite each other'"'"'s\n' \
+      "${held_pid:-not recorded}" >&2
+    printf 'evidence, logs and report, so this run stops instead of interleaving\n' >&2
+    printf 'with it. Wait for that run to finish; if you are certain no run is\n' >&2
+    printf 'in progress, remove that directory and re-run.\n' >&2
+    return 1
+  done
+
+  printf 'FATAL: the output lock %s could not be taken.\n' \
+    "${OUTPUT_LOCK_DIR#"$ROOT"/}" >&2
+  return 1
+}
+
+# release_output_lock - gives the lock up, but only if this run took it.
+#
+# Called from the EXIT path AFTER the report has been written, so releasing it
+# can neither replace nor race the one artifact the run exists to produce. A
+# run that dies before this point leaves the directory behind; the next run
+# sees its pid is gone and reclaims it, which is why this needs no signal
+# handler of its own.
+release_output_lock() {
+  if [[ "$OUTPUT_LOCK_HELD" != "yes" ]]; then
+    return 0
+  fi
+  OUTPUT_LOCK_HELD="no"
+  local guard
+  if ! guard="$(fs_guard rmtree "$ROOT" "$OUTPUT_LOCK_DIR" 2>&1)"; then
+    printf 'WARNING: this run could not release its output lock %s (%s).\n' \
+      "${OUTPUT_LOCK_DIR#"$ROOT"/}" "${guard:-no reason given}" >&2
+    printf 'The next run will reclaim it once this process has exited.\n' >&2
+    return 1
+  fi
   return 0
 }
 
@@ -415,6 +2236,214 @@ require_repository_root() {
     printf 'FATAL: the repository root %s cannot be canonicalised.\n' "$ROOT" >&2
     return 1
   fi
+  assert_root_is_safe "$ROOT" || return 1
+  assert_root_is_safe "$ROOT_REAL" || return 1
+  return 0
+}
+
+# assert_root_is_safe <path> - refuses a checkout path this script cannot
+# safely put into the things it generates.
+#
+# ROOT comes from `git rev-parse --show-toplevel`, which is to say from
+# whatever directory the checkout happens to sit in, and it ends up in three
+# kinds of output: shell words (safely quoted), SCALA SOURCE handed to sbt's
+# `set` command, and Markdown table cells. The second and third are the
+# injection surfaces - a `"` in a directory name closes the Scala string
+# literal that surrounds it and the rest of the path becomes an expression
+# sbt evaluates (CWE-94), and a newline or a pipe forges rows in the report
+# (CWE-117). Both of those are also handled where they occur, by
+# `scala_string_literal` and `markdown_cell`; this check is the strongest of
+# the three measures because it is the only one that removes the dangerous
+# input from the run entirely instead of encoding it correctly at each of the
+# dozens of places it is used, and because it fails loudly at the first
+# instruction of the run rather than in whatever generated artifact was
+# reached first.
+#
+# The accepted set is deliberately conservative - letters, digits, and the
+# handful of punctuation characters a real checkout path uses - because this
+# is a build-machine path, not user data: a path outside that set is far more
+# likely to be an attempt at this than a directory somebody meant to create.
+assert_root_is_safe() {
+  local path="$1"
+
+  if [[ "$path" != /* ]]; then
+    printf 'FATAL: the repository root %s is not an absolute path.\n' "$path" >&2
+    return 1
+  fi
+  # `[[:cntrl:]]` covers every control character including the newline and the
+  # tab, which are the two that forge structure in a generated document.
+  if [[ "$path" == *[[:cntrl:]]* ]]; then
+    printf 'FATAL: the repository root contains a control character.\n' >&2
+    printf 'This script generates Scala source and a Markdown report that\n' >&2
+    printf 'contain the checkout path, so such a path is refused rather than\n' >&2
+    printf 'encoded. Move the checkout to a plain path and re-run.\n' >&2
+    return 1
+  fi
+  if [[ "$path" == *[^A-Za-z0-9/._+@%,=:~-]* ]]; then
+    printf 'FATAL: the repository root %s contains a character this script\n' "$path" >&2
+    printf 'will not put into the Scala source it hands to sbt or into the\n' >&2
+    printf 'Markdown report it writes. Quotation marks, backslashes,\n' >&2
+    printf 'backticks, dollar signs and spaces are all refused here rather\n' >&2
+    printf 'than escaped in every one of the places the path is used. Move\n' >&2
+    printf 'the checkout to a path made of letters, digits and . _ + @ %% , =\n' >&2
+    printf ': ~ - and re-run.\n' >&2
+    return 1
+  fi
+  return 0
+}
+
+# scala_string_literal <text> - prints <text> as a Scala string literal,
+# quotation marks included, or refuses.
+#
+# Used where this script has to put a path into Scala SOURCE - the one place
+# where a value crosses from shell into a language sbt compiles and evaluates.
+# Shell quoting does nothing there: `"..."` around the whole `set` command
+# keeps the shell from splitting it, and leaves the Scala parser reading every
+# character of the interpolated path as syntax. So the backslash is escaped
+# first (escaping it after the quotation mark would double-escape the ones
+# this function itself inserts), then the quotation mark, and a control
+# character is REFUSED rather than encoded: Scala's `\n` and friends would be
+# correct, but a path containing one has no business reaching a generated
+# source file at all, and refusing keeps this function's output to the printable
+# subset a human reviewing the sbt command line can read.
+#
+# Returns 1 and prints nothing when it refuses, so a caller that ignores the
+# status produces an empty argument rather than an unescaped one.
+scala_string_literal() {
+  local text="$1"
+
+  if [[ "$text" == *[[:cntrl:]]* ]]; then
+    return 1
+  fi
+  text="${text//\\/\\\\}"
+  text="${text//\"/\\\"}"
+  printf '"%s"' "$text"
+  return 0
+}
+
+# markdown_cell <text> - prints <text> so that it cannot forge the structure
+# of the report it is written into.
+#
+# The report is a Markdown table, and a value interpolated into a cell can
+# leave that cell: `|` starts the next column, a newline starts the next ROW
+# (and a carriage return moves a terminal's cursor over what was already
+# printed), a backtick opens code formatting that swallows everything after
+# it, and a stray control character can make the whole document unreadable in
+# a viewer (CWE-117 log/output injection). Every one of those arrives from
+# somewhere this script does not control: a row's detail quotes file paths,
+# git output, compiler messages and tool version strings.
+#
+# It is written with parameter expansion and `printf` alone - no `sed`, no
+# `tr`, no `python3` - because the report is the one artifact that must still
+# be producible when something about the environment is broken, and reaching
+# for an external tool to escape a cell would make the report depend on the
+# very thing that failed.
+#
+# The order matters: the backslash is escaped first, so the escapes added
+# afterwards are not themselves doubled, and the newline markers inserted last
+# are therefore distinguishable from a literal backslash-n in the input (which
+# has become `\\n` by then). The length is bounded before any escaping, so the
+# bound applies to the text a reader sees and a truncated cell can never end
+# in a half-written escape.
+MARKDOWN_CELL_LIMIT=500
+markdown_cell() {
+  local text="$1"
+
+  # A tab is a control character, but blanking it would run two words
+  # together, so it becomes the space it was standing in for.
+  text="${text//$'\t'/ }"
+  text="${text//$'\r\n'/$'\n'}"
+  # Every remaining control character EXCEPT the newline, which the last
+  # substitution below turns into a visible marker instead. A lone carriage
+  # return is among the ones stripped here: it is not a line break, it is a
+  # cursor movement that hides what was already printed.
+  text="${text//[$'\001'-$'\011'$'\013'-$'\037'$'\177']/}"
+  if [[ "${#text}" -gt "$MARKDOWN_CELL_LIMIT" ]]; then
+    text="${text:0:$MARKDOWN_CELL_LIMIT} [truncated to $MARKDOWN_CELL_LIMIT characters]"
+  fi
+  text="${text//\\/\\\\}"
+  text="${text//|/\\|}"
+  text="${text//\`/\\\`}"
+  text="${text//$'\n'/\\n}"
+  printf '%s' "$text"
+}
+
+#-----------------------------------------------------------------------------
+# Run identity.
+#
+# An acceptance artifact that does not say what it measured cannot be held
+# against anything. A gate report, a parity report and a JUnit XML file are
+# all indistinguishable from the ones a run produced days and several commits
+# earlier - the XML even carries its own timestamp, which is the timestamp of
+# the run that wrote it and says nothing about the code it exercised
+# (CWE-345 insufficient verification of data authenticity). So every run
+# stamps WHICH commit, WHICH run and WHEN into `target/audit/run-identity.txt`,
+# into the report's header and into the published tree, and refuses to publish
+# any artifact written before it started (see `finalize_publication`): those two
+# together are what make the evidence answer for the tree in front of the
+# reader rather than for whatever was last built here.
+#
+# The commit fields come from git and are therefore untrusted text - a commit
+# subject is whatever somebody wrote - so every one of them is passed through
+# `markdown_cell` before it is recorded.
+#-----------------------------------------------------------------------------
+
+RUN_ID=""
+RUN_STARTED_UTC=""
+# Seconds since the epoch, taken as the FIRST thing `init_run` does, so that
+# every file this run writes - including the ones written while the output
+# tree is still being validated - has a modification time at or after it.
+RUN_STARTED_EPOCH=""
+HEAD_COMMIT=""
+HEAD_SUBJECT=""
+HEAD_BRANCH=""
+HEAD_STATE=""
+
+# init_run_identity - resolves the identity of this run and records it.
+#
+# Called by `init_run` once the audit tree exists. Returns 1 only if the
+# record itself cannot be written: git answering "unknown" is a fact about
+# the checkout that is reported rather than a reason to stop, because a
+# detached or grafted checkout still produces evidence - it just cannot claim
+# a commit.
+init_run_identity() {
+  HEAD_COMMIT="$(git rev-parse HEAD 2>/dev/null || printf 'unknown')"
+  HEAD_SUBJECT="$(markdown_cell "$(git log -1 --pretty=%s 2>/dev/null || printf 'unknown')")"
+  HEAD_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unknown')"
+
+  # Whether the tree the gates measured is the commit they name. A dirty tree
+  # is not a failure - a developer runs this before committing - but a report
+  # that did not say so would be attributed to a commit that never contained
+  # what was measured.
+  local dirty dirty_count
+  if dirty="$(git status --porcelain 2>/dev/null)"; then
+    dirty_count="$(printf '%s' "$dirty" | command awk 'NF { n++ } END { print n + 0 }')"
+    if [[ "$dirty_count" -eq 0 ]]; then
+      HEAD_STATE="clean"
+    else
+      HEAD_STATE="$dirty_count uncommitted path(s), so the measured tree is NOT exactly this commit"
+    fi
+  else
+    HEAD_STATE="unknown"
+  fi
+
+  if ! {
+    printf '# the identity of this acceptance run, written before the first row\n'
+    printf 'run-id\t%s\n' "$RUN_ID"
+    printf 'started-utc\t%s\n' "$RUN_STARTED_UTC"
+    printf 'started-epoch\t%s\n' "$RUN_STARTED_EPOCH"
+    printf 'script\t%s\n' "$SCRIPT_NAME"
+    printf 'commit\t%s\n' "$HEAD_COMMIT"
+    printf 'commit-subject\t%s\n' "$HEAD_SUBJECT"
+    printf 'branch\t%s\n' "$HEAD_BRANCH"
+    printf 'working-tree\t%s\n' "$HEAD_STATE"
+  } | guarded_write "$RUN_IDENTITY_FILE"; then
+    printf 'FATAL: the run identity could not be recorded in %s.\n' \
+      "${RUN_IDENTITY_FILE#"$ROOT"/}" >&2
+    return 1
+  fi
+  printf 'run %s at commit %s (%s), working tree: %s\n' \
+    "$RUN_ID" "$HEAD_COMMIT" "$HEAD_BRANCH" "$HEAD_STATE"
   return 0
 }
 
@@ -430,14 +2459,35 @@ init_run() {
   # wins, so CI and developers can size the build themselves.
   export SBT_OPTS="${SBT_OPTS:--Xmx1200m -Xss8m -XX:MaxMetaspaceSize=512m}"
 
+  # The first measurements of the run, taken before anything is created: the
+  # instant it started, and the name everything it produces is filed under.
+  # Both are needed by `init_output_tree` - the sweep of inherited evidence
+  # files what it quarantines under this run's id - so they are taken here and
+  # the identity RECORD, which needs the audit tree, is written later.
+  RUN_STARTED_EPOCH="$(date -u '+%s')"
+  RUN_STARTED_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  RUN_ID="$(printf '%s-%s' "$(date -u '+%Y%m%dT%H%M%SZ')" "$$")"
+
   parse_arguments "$@"
   resolve_locations
   require_repository_root || exit 2
+  # Before anything is created or emptied: this run becomes the only one
+  # writing into this checkout's target/. It has to be taken here rather than
+  # after the tree is built, because building the tree is itself a set of
+  # truncations that a second run would interleave with. The EXIT trap is not
+  # installed yet, so a failure between here and `install_traps` leaves the
+  # lock directory behind - which is exactly the abandoned lock the next run
+  # reclaims from the recorded pid, so it heals without a human.
+  acquire_output_lock || exit 2
   # The output tree is validated and created BEFORE the checked-command
   # wrappers exist, so nothing can be recorded through a path that has not
   # been proved safe yet; `init_output_tree` opens the record itself, as its
   # last step.
   init_output_tree || exit 2
+  # Which commit and which run every artifact below belongs to. It needs the
+  # audit tree, so it comes after it, and it comes before the traps so that a
+  # report written by an early exit already carries the identity.
+  init_run_identity || exit 2
   install_checked_commands
   # `install_traps` is defined with the traps themselves, next to the report.
   install_traps
@@ -447,7 +2497,9 @@ init_run() {
 # Gate bookkeeping. Five ordered, parallel arrays: the row label, its verdict,
 # a one-line detail, the relative path of its evidence, and its kind -
 # `automated` for a measured row, `reported` for the one row that is stated
-# rather than measured, `preflight` for the tool check that precedes them all.
+# rather than measured, `preflight` for the tool check that precedes them all,
+# and `blocking` for a check that is neither a gate nor a tool check but stops
+# the run anyway.
 # The arrays are the single source of truth for every count in the report,
 # which is computed by tallying their entries: no count is ever derived by
 # subtracting one running total from another, because a row recorded under one
@@ -461,13 +2513,16 @@ GATE_EVIDENCE=()
 GATE_KIND=()
 GATE_FAILED=0
 REPORT_WRITTEN="no"
+# Set when the first assembly of the report carried a credential signature
+# and the report had to be reassembled without its appendices. Read by the
+# assembly itself, which says so where the appendices would have been.
+REPORT_SANITIZED="no"
 # The number of automated rows AAP section 0.10.1 defines, so that a report
 # written by the EXIT trap after an interruption can say how much of the run
 # it covers instead of presenting a partial result as an acceptance result.
-GATE_EXPECTED_AUTOMATED=19
+GATE_EXPECTED_AUTOMATED=20
 RUN_COMPLETED="no"
 
-# Set by a gate function through `detail`/`evidence`; read by `run_gate`.
 GATE_DETAIL_OUT=""
 GATE_EVIDENCE_OUT=""
 
@@ -478,6 +2533,11 @@ GATE_COUNT_PASSED=0
 GATE_COUNT_FAILED=0
 GATE_COUNT_REPORTED=0
 GATE_COUNT_PREFLIGHT_FAILED=0
+# Counted separately from the preflight row, because they are different facts
+# and the report states them differently: "the toolchain was incomplete" is
+# not true of a run stopped by a security check, and a report that says so
+# sends whoever reads it to look for a missing tool.
+GATE_COUNT_BLOCKING_FAILED=0
 # Non-empty when the parallel arrays have diverged, which would make every
 # tally above meaningless; reported rather than quietly tolerated.
 GATE_ARRAY_PROBLEM=""
@@ -492,6 +2552,7 @@ gate_counts() {
   GATE_COUNT_FAILED=0
   GATE_COUNT_REPORTED=0
   GATE_COUNT_PREFLIGHT_FAILED=0
+  GATE_COUNT_BLOCKING_FAILED=0
   GATE_ARRAY_PROBLEM=""
 
   local rows="${#GATE_LABEL[@]}"
@@ -514,6 +2575,14 @@ gate_counts() {
         ;;
       reported)
         GATE_COUNT_REPORTED=$((GATE_COUNT_REPORTED + 1))
+        ;;
+      blocking)
+        # A check outside the validation table that stops the run: the
+        # publication-artifact secret scan of what a previous run left behind
+        # is one. Blocking, but not a measured row and not a missing tool.
+        if [[ "${GATE_STATUS[$index]:-}" != "PASS" ]]; then
+          GATE_COUNT_BLOCKING_FAILED=$((GATE_COUNT_BLOCKING_FAILED + 1))
+        fi
         ;;
       *)
         # The preflight row, and anything else recorded outside the table: it
@@ -555,18 +2624,29 @@ FRAMEWORK_ERRORS_ATTRIBUTED=0
 # would be the very write - through a link planted in the git-ignored target/
 # tree - that the validation exists to prevent.
 FRAMEWORK_ERROR_READY="no"
+# The descriptor `init_output_tree` opened on the ledger, and the one it opened
+# on the appendix file. Both are written through and READ BACK through their
+# descriptors: the ledger's line count decides whether the run failed outside
+# a row, so a file substituted at that name could otherwise hide a failure by
+# being empty, and `/proc/self/fd/N` reaches the inode rather than the name.
+FRAMEWORK_ERROR_FD=""
+APPENDIX_FD=""
 
 framework_error() {
-  if [[ "$FRAMEWORK_ERROR_READY" == "yes" && -n "${FRAMEWORK_ERROR_FILE:-}" ]]; then
-    printf '%s\n' "$1" >>"$FRAMEWORK_ERROR_FILE" 2>/dev/null || true
+  if [[ "$FRAMEWORK_ERROR_READY" == "yes" && -n "$FRAMEWORK_ERROR_FD" ]]; then
+    # Through the descriptor's own path rather than `>&"$FD"`: both write to
+    # the inode the descriptor holds, and this form leaves the failure of the
+    # write itself silenceable without two redirections competing for stderr.
+    printf '%s\n' "$1" >>"$(guarded_fd_path "$FRAMEWORK_ERROR_FD")" 2>/dev/null || true
   fi
   printf 'FRAMEWORK ERROR: %s\n' "$1" >&2
 }
 
 # The number of failures recorded so far; 0 when nothing has been recorded.
 framework_error_count() {
-  if [[ "$FRAMEWORK_ERROR_READY" == "yes" && -f "${FRAMEWORK_ERROR_FILE:-}" ]]; then
-    command awk 'END { print NR + 0 }' "$FRAMEWORK_ERROR_FILE" 2>/dev/null || printf '0\n'
+  if [[ "$FRAMEWORK_ERROR_READY" == "yes" && -n "$FRAMEWORK_ERROR_FD" ]]; then
+    command awk 'END { print NR + 0 }' "$(guarded_fd_path "$FRAMEWORK_ERROR_FD")" \
+      2>/dev/null || printf '0\n'
   else
     printf '0\n'
   fi
@@ -576,8 +2656,9 @@ framework_error_count() {
 # row that has just run.
 framework_errors_since() {
   local skip="$1"
-  if [[ "$FRAMEWORK_ERROR_READY" == "yes" && -f "${FRAMEWORK_ERROR_FILE:-}" ]]; then
-    command awk -v skip="$skip" 'NR > skip { print }' "$FRAMEWORK_ERROR_FILE" 2>/dev/null || true
+  if [[ "$FRAMEWORK_ERROR_READY" == "yes" && -n "$FRAMEWORK_ERROR_FD" ]]; then
+    command awk -v skip="$skip" 'NR > skip { print }' \
+      "$(guarded_fd_path "$FRAMEWORK_ERROR_FD")" 2>/dev/null || true
   fi
 }
 
@@ -635,7 +2716,6 @@ install_checked_commands() {
   diff() { checked_command 1 diff "$@"; }
 }
 
-# Appends to the running row detail, so a row can report several findings.
 detail() {
   if [[ -z "$GATE_DETAIL_OUT" ]]; then
     GATE_DETAIL_OUT="$1"
@@ -644,25 +2724,44 @@ detail() {
   fi
 }
 
-# Names the evidence file of the current row, repository-root relative.
 evidence() {
   GATE_EVIDENCE_OUT="${1#"$ROOT"/}"
 }
 
-# Starts a fresh evidence file for the current row and publishes its absolute
-# path in EV. Not a command substitution: that would run in a subshell and the
-# `evidence` assignment would be lost.
+# Starts a fresh evidence file for the current row and publishes it in EV.
+# Not a command substitution: that would run in a subshell and the `evidence`
+# assignment would be lost.
+#
+# EV is what every row redirects into, and it is a DESCRIPTOR path rather than
+# the evidence file's name. The file is created and validated once, one append
+# descriptor is opened on it and proved to be that file, and EV is the
+# `/proc/self/fd` form of that descriptor - so each of the row's `>>"$EV"`
+# writes reaches the inode this framework validated, and replacing the
+# evidence file's NAME with a link to somewhere else afterwards redirects
+# nothing (CWE-59, CWE-367). Rows are unchanged by this: the redirection they
+# already write is what becomes descriptor-bound.
+#
+# EV_PATH is the same file by name, for the things a name is for - the report
+# column, the publication manifest, a reader looking for it on disk.
 EV=""
+EV_PATH=""
+EV_FD=""
 new_evidence() {
-  EV="$AUDIT_DIR/$1"
-  evidence "$EV"
-  # Checked and symlink-safe: a row whose evidence file cannot be started has
+  guarded_close EV_FD
+  EV_PATH="$AUDIT_DIR/$1"
+  evidence "$EV_PATH"
+  # Checked and link-safe: a row whose evidence file cannot be started has
   # nowhere to record what it measured, and the record makes that the row's
-  # verdict even though every call site ignores this status.
-  if ! safe_truncate "$EV"; then
-    framework_error "the evidence file $1 could not be started"
+  # verdict even though every call site ignores this status. EV then names the
+  # null device rather than the refused path: losing a row's evidence and
+  # failing the run is the lesser harm, where writing it through a name this
+  # framework has just refused is the harm the refusal exists to prevent.
+  if ! guarded_open_append "$EV_PATH" EV_FD; then
+    EV="/dev/null"
+    framework_error "the evidence file $1 could not be started, so this row's evidence was discarded rather than written through an unsafe path"
     return 1
   fi
+  EV="$(guarded_fd_path "$EV_FD")"
   return 0
 }
 
@@ -672,12 +2771,33 @@ new_evidence() {
 # would be indistinguishable from a row that had nothing to report.
 add_appendix() {
   local title="$1"
-  if ! {
-    printf '\n### %s\n\n' "$title"
-    printf '```text\n'
-    cat
-    printf '```\n'
-  } >>"$APPENDIX_FILE"; then
+  if [[ -z "$APPENDIX_FD" ]]; then
+    framework_error "the appendix \"$title\" could not be appended: the appendix file is not open"
+    return 1
+  fi
+  # The fence is sized to the content instead of being a fixed three
+  # backticks. Appendix content is evidence - sbt output, a javap dump, a scan
+  # summary - and a fixed fence is ended by the first line of that evidence
+  # which happens to contain three backticks: everything after it is then
+  # document structure rather than quoted text, so a crafted line can add a
+  # table row or a RESULT line to the published report (CWE-117 log injection
+  # leading to CWE-345 insufficient verification). A fence one backtick longer
+  # than the longest run in the content cannot be ended by the content, which
+  # is what CommonMark's fenced-block rule guarantees. The section is written
+  # through the appendix descriptor, as before.
+  if ! python3 /dev/fd/3 "$title" 3<<'PY' >>"$(guarded_fd_path "$APPENDIX_FD")"
+import re
+import sys
+
+title = sys.argv[1]
+content = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+if content and not content.endswith("\n"):
+    content += "\n"
+longest = max((len(run) for run in re.findall("`+", content)), default=0)
+fence = "`" * max(3, longest + 1)
+sys.stdout.write("\n### %s\n\n%stext\n%s%s\n" % (title, fence, content, fence))
+PY
+  then
     framework_error "the appendix \"$title\" could not be appended to ${APPENDIX_FILE#"$ROOT"/}"
     return 1
   fi
@@ -767,6 +2887,33 @@ run_gate() {
   return 0
 }
 
+# record_blocking_row <label> <detail> <evidence> [kind]
+#
+# Records a FAILED check that is not one of the table's rows and stops the
+# run: the preflight tool check, and the pre-run scan of the publication
+# artifacts a previous run left behind. `kind` defaults to `blocking`; the
+# preflight check passes `preflight`, because the report says something
+# different about a missing toolchain.
+#
+# It exists because those two branches used to do this by hand, and one of
+# them did it wrong: it appended four of the five parallel arrays and left
+# GATE_KIND alone, so `gate_counts` would have reported the arrays as
+# diverged - and before it could, the branch incremented a GATE_TOTAL that is
+# assigned nowhere else in this file, which under `set -u` aborts the branch
+# on that line. The result was that the security failure path exited without
+# writing the report it was written to write. One helper, five appends, one
+# failure counter: a branch that records a blocking result cannot now record
+# half of one.
+record_blocking_row() {
+  GATE_LABEL+=("$1")
+  GATE_STATUS+=("FAIL")
+  GATE_DETAIL+=("${2:-no detail recorded}")
+  GATE_EVIDENCE+=("${3:-none}")
+  GATE_KIND+=("${4:-blocking}")
+  GATE_FAILED=$((GATE_FAILED + 1))
+  printf '\n=== %s ===\nFAIL: %s -- %s\n' "$1" "$1" "${2:-no detail recorded}" >&2
+}
+
 # Records a row that is reported rather than measured. Its verdict text is
 # fixed by the specification and is written verbatim into the report.
 record_reported_row() {
@@ -826,7 +2973,6 @@ assert_no_match() {
   esac
 }
 
-# require_file <path> <what it is>; records the failure detail itself.
 require_file() {
   if [[ ! -f "$1" ]]; then
     detail "missing $2: $1"
@@ -899,7 +3045,8 @@ strip_sbt_prefix() {
 
 preflight() {
   # Every external executable this script runs, in one list: the toolchain
-  # (git, sbt, java, javap), the parsers (python3, awk, sed, grep), the text
+  # (git, sbt, java, javap, javac - the last compiling the two attacks of the
+  # JVM-closure row), the parsers (python3, awk, sed, grep), the text
   # utilities the rows transform evidence with (find, sort, comm, tr, cut, wc,
   # diff, cmp, uniq, cat, head, tail, basename, date) and the file operations
   # the snapshots, logs and the report depend on (cp, rm, mkdir, mv, tee). A
@@ -907,7 +3054,7 @@ preflight() {
   # halfway through a row, as a failure of that row rather than of the
   # environment.
   local required=(
-    git sbt java javap python3
+    git sbt java javap javac python3
     awk sed grep find sort comm tr cut wc diff cmp uniq
     cat head tail basename date
     cp rm mkdir mv tee
@@ -926,6 +3073,22 @@ preflight() {
   done
 
   local evidence_file="$AUDIT_DIR/preflight.txt"
+  # Started through the same guard every other evidence file goes through
+  # (`new_evidence` does it for the rows): the audit tree was swept for links
+  # when it was created, but this is the first write into it after that sweep,
+  # and a redirected preflight record is the one piece of evidence that says
+  # what this run's toolchain actually was.
+  if ! safe_truncate "$evidence_file"; then
+    printf 'FATAL: the preflight evidence file %s could not be started, so this\n' \
+      "${evidence_file#"$ROOT"/}" >&2
+    printf 'run cannot record which tools it found. See the reason above.\n' >&2
+    record_blocking_row "Preflight - required tools" \
+      "the preflight evidence file ${evidence_file#"$ROOT"/} could not be started" \
+      none \
+      preflight
+    write_report
+    exit 2
+  fi
   {
     printf '## preflight\n'
     printf '# repository root: %s\n' "$ROOT"
@@ -938,7 +3101,7 @@ preflight() {
     java -version 2>&1 || printf 'java -version failed\n'
     sbt --script-version 2>&1 || printf 'sbt --script-version failed\n'
     python3 --version 2>&1 || printf 'python3 --version failed\n'
-  } >"$evidence_file"
+  } | guarded_write "$evidence_file"
 
   if [[ "${#missing[@]}" -gt 0 ]]; then
     printf 'FATAL: preflight failed - these required tools are not on PATH: %s\n' \
@@ -948,14 +3111,20 @@ preflight() {
     printf 'skipped because a tool is missing.\n' >&2
     # Recorded as a `preflight` row, not an automated one: no gate of the
     # specification's table ran, and counting it among them would make the
-    # report claim a measurement that never happened.
-    GATE_LABEL+=("Preflight - required tools")
-    GATE_STATUS+=("FAIL")
-    GATE_DETAIL+=("missing tools: ${missing[*]}")
-    GATE_EVIDENCE+=("${evidence_file#"$ROOT"/}")
-    GATE_KIND+=("preflight")
-    GATE_FAILED=$((GATE_FAILED + 1))
-    write_report
+    # report claim a measurement that never happened. Through the one helper
+    # that appends all five arrays, so this branch and the pre-run scan's
+    # branch cannot record a result two different ways.
+    record_blocking_row "Preflight - required tools" \
+      "missing tools: ${missing[*]}" \
+      "${evidence_file#"$ROOT"/}" \
+      preflight
+    # Through the transaction, so the report that is published is the one that
+    # states this row; the EXIT trap would reach it anyway and this keeps the
+    # ordering of this path explicit. Exit 2 stands for the preflight failure
+    # regardless of the publication's own verdict, which it states itself.
+    if ! finalize_publication; then
+      printf 'The evidence of this aborted run was not approved for publication.\n' >&2
+    fi
     exit 2
   fi
 
@@ -991,7 +3160,6 @@ preflight() {
 # pass on evidence a silent copy failure left stale.
 #-----------------------------------------------------------------------------
 
-# Why the most recent snapshot or restore failed; empty after a successful one.
 SNAPSHOT_ERROR=""
 
 # snapshot_failure <reason>
@@ -1013,6 +3181,16 @@ snapshot_failure() {
 # whatever the destination already held in place. A source that does not exist
 # is not an error - it means the build wrote nothing there, which the counts
 # then report as zero - and an existing but empty source copies nothing.
+#
+# Both ends are validated first, which `mkdir -p` plus a bare `cp -a` did not
+# do at all. The destination goes through `ensure_output_dir`, so it is below
+# the repository root, has no symlinked component and is not created through
+# one. Both trees are then swept for symbolic links, because `cp` follows a
+# link it finds at the DESTINATION and would write the copied bytes wherever
+# it points, and a link in the SOURCE is content this run never produced.
+# Neither tree is written by anything that creates links - sbt's reporters and
+# this script's own snapshots - so a link in either is a planted one and the
+# copy is refused rather than performed.
 copy_directory_contents() {
   local source_dir="$1"
   local destination="$2"
@@ -1020,12 +3198,27 @@ copy_directory_contents() {
   if [[ ! -d "$source_dir" ]]; then
     return 0
   fi
-  if ! mkdir -p "$destination"; then
+  if ! assert_no_symlinks_below "$source_dir"; then
+    snapshot_failure "$source_dir contains a symbolic link, so it was not copied into $destination"
+    return 1
+  fi
+  if ! ensure_output_dir "$destination"; then
     snapshot_failure "could not create $destination"
     return 1
   fi
-  if ! cp -a "$source_dir"/. "$destination"/; then
-    snapshot_failure "could not copy $source_dir into $destination"
+  if ! assert_no_symlinks_below "$destination"; then
+    snapshot_failure "$destination contains a symbolic link, so $source_dir was not copied into it"
+    return 1
+  fi
+  # `fs_guard copy-tree`, not `cp -a`: `cp` resolves every name itself, so in
+  # a git-ignored tree it follows whatever link or replaced parent it finds,
+  # and the two sweeps above can only say what the trees looked like a moment
+  # earlier (CWE-59, CWE-367). Every file is read from a descriptor proved to
+  # be a regular, singly-linked file of this run's, and every copy is created
+  # O_EXCL inside a descriptor for its destination directory.
+  local copied
+  if ! copied="$(fs_guard copy-tree "$ROOT" "$source_dir" "$destination" 2>&1)"; then
+    snapshot_failure "could not copy $source_dir into $destination (${copied:-no reason given})"
     return 1
   fi
 
@@ -1055,15 +3248,25 @@ copy_directory_contents() {
 # Makes the destination an exact copy of the source: it is emptied first, so a
 # file an earlier run snapshotted can never be mistaken for one this run
 # produced.
+#
+# The emptying is `fs_guard rmtree`, not `rm -rf`. `rm -rf` walks by name: it
+# is given a path in a git-ignored tree and told to recurse and delete, and
+# what it deletes is decided by what the names mean as it goes. The
+# descriptor-relative delete instead opens every directory no-follow from its
+# parent, refuses to descend a symbolic link (it unlinks the link itself and
+# stops there), refuses to cross onto another filesystem, and refuses any path
+# that is not below target/ - target/ itself included. The destination is then
+# recreated private, because every mirror destination is under target/audit.
 mirror_directory() {
   local source_dir="$1"
   local destination="$2"
+  local guard
 
-  if ! rm -rf "$destination"; then
-    snapshot_failure "could not clear $destination"
+  if ! guard="$(fs_guard rmtree "$ROOT" "$destination" 2>&1)"; then
+    snapshot_failure "could not clear $destination (${guard:-fs_guard refused it without a reason, which is itself a defect})"
     return 1
   fi
-  if ! mkdir -p "$destination"; then
+  if ! ensure_output_dir "$destination" 0700; then
     snapshot_failure "could not create $destination"
     return 1
   fi
@@ -1295,7 +3498,7 @@ row_01_build_and_test() {
 #=============================================================================
 # Row 2 - Gate 2 / Rule 1: dependency purity.
 #
-# Three checks, all of which must find nothing, on both Compile and Test:
+# Four checks, all of which must find nothing, on both Compile and Test:
 #   1. the four dependency trees, grepped for guava, joda and the UNSUFFIXED
 #      Maven coordinate `com.opengamma.strata:strata-collect:` - the Java
 #      artefact. The in-build Scala project appears as `strata-collect_2.13`
@@ -1303,7 +3506,10 @@ row_01_build_and_test() {
 #   2. the exported full classpaths, grepped for guava, joda and a VERSIONED
 #      strata-collect jar. The Scala module contributes a `classes` directory,
 #      never a jar, which is exactly what distinguishes the two.
-#   3. the build definition and both module trees, grepped for the Java
+#   3. each exported classpath value on its own, for a class name provided by
+#      more than one entry - two artefacts that publish the same name leave
+#      classpath order deciding which implementation a JVM links against.
+#   4. the build definition and both module trees, grepped for the Java
 #      libraries by package and artifact name.
 # A `scala-library` positive control keeps an empty classpath from passing.
 #=============================================================================
@@ -1376,7 +3582,239 @@ row_02_dependency_purity() {
     failed=1
   fi
 
-  # -- 3. build definition and module sources -----------------------------
+  # -- 3. duplicate classes on each exported classpath --------------------
+  #
+  # The same log, read a second time for a different property: not WHICH
+  # artefacts are present but whether any two of them publish the same class
+  # name. Each exported value is audited separately - the log carries four,
+  # because strata-basics aggregates strata-collect - so the verdict belongs
+  # to one classpath instead of to a pool in which no single JVM's view
+  # exists. Load order is not a declared property of the build, so "the right
+  # one happens to be first" is not an invariant; "no name has two providers"
+  # is, and byte-different providers are reported as such because those are
+  # the ones that change behaviour or fail linkage.
+  local duplicates_report="$AUDIT_DIR/gate02-duplicate-classes.txt"
+  local duplicates_relative="${duplicates_report#"$ROOT"/}"
+  printf '## no class name is provided by two entries of one exported classpath\n' >>"$EV"
+  printf '# report: %s\n' "$duplicates_relative" >>"$EV"
+  if ! safe_truncate "$duplicates_report"; then
+    detail "the duplicate-class report could not be started"
+    failed=1
+  elif ! python3 - "$duplicates_report" "$cp_log" <<'PY' >>"$EV" 2>&1; then
+import collections
+import hashlib
+import os
+import sys
+import zipfile
+
+report_path, log_path = sys.argv[1], sys.argv[2]
+
+# Every classpath is expected to provide this one, from scala-library. It is
+# the per-classpath positive control: an enumeration that produced nothing -
+# because the value was misparsed, or every entry was unreadable - would
+# otherwise report "no duplicates" and read as a clean classpath.
+CONTROL_CLASS = "scala/Option.class"
+
+
+def digest(payload):
+    """The identity of a class file's bytes, for telling a duplicate that is a
+    copy from one that is a different implementation."""
+    return hashlib.sha256(payload).hexdigest()
+
+
+def is_classpath(line):
+    """`export` prints each value unprefixed, preceded by its own unprefixed
+    key header; sbt's own chatter is `[...]`-prefixed and dropped before this.
+    A value is an unprefixed line whose every separated field is an absolute
+    path, which no key header is."""
+    fields = [field for field in line.split(os.pathsep) if field]
+    return bool(fields) and all(field.startswith("/") for field in fields)
+
+
+def classes_in(entry):
+    """Every `*.class` one classpath entry provides, mapped to the digest of
+    its bytes. A jar is read as a zip and a directory is walked; an entry that
+    is neither - an absent output directory, say - provides nothing."""
+    found = {}
+    if os.path.isdir(entry):
+        for directory, _subdirectories, files in os.walk(entry):
+            for name in files:
+                if not name.endswith(".class"):
+                    continue
+                path = os.path.join(directory, name)
+                with open(path, "rb") as handle:
+                    found[os.path.relpath(path, entry).replace(os.sep, "/")] = digest(handle.read())
+        return found
+    if zipfile.is_zipfile(entry):
+        with zipfile.ZipFile(entry) as archive:
+            for info in archive.infolist():
+                if info.filename.endswith(".class"):
+                    found[info.filename] = digest(archive.read(info))
+    return found
+
+
+def provider_index(entry_classes):
+    """class name -> [(entry, digest)], one pair per entry that provides it."""
+    index = collections.defaultdict(list)
+    for entry, classes in entry_classes.items():
+        for name, sha in classes.items():
+            index[name].append((entry, sha))
+    return index
+
+
+def duplicates(index):
+    """The names more than one entry provides, and the subset whose providers
+    disagree on the bytes."""
+    shared = {name: providers for name, providers in index.items() if len(providers) > 1}
+    divergent = {
+        name: providers
+        for name, providers in shared.items()
+        if len({sha for _, sha in providers}) > 1
+    }
+    return shared, divergent
+
+
+def self_check():
+    """The detector, exercised on a fabricated index before any real classpath
+    is judged: one name provided twice with different bytes, one provided
+    twice with identical bytes, one provided once. A detector that does not
+    report exactly the first two, and the byte difference of the first, would
+    report a duplicated classpath as clean - so its own failure fails the row.
+    Returns the discrepancy, or an empty string."""
+    fixture = provider_index({
+        "/fixture/first.jar": {
+            "fixture/Divergent.class": digest(b"fixture-divergent-first"),
+            "fixture/Identical.class": digest(b"fixture-identical"),
+            "fixture/Unique.class": digest(b"fixture-unique"),
+        },
+        "/fixture/second.jar": {
+            "fixture/Divergent.class": digest(b"fixture-divergent-second"),
+            "fixture/Identical.class": digest(b"fixture-identical"),
+        },
+    })
+    shared, divergent = duplicates(fixture)
+    expected_shared = ["fixture/Divergent.class", "fixture/Identical.class"]
+    expected_divergent = ["fixture/Divergent.class"]
+    if sorted(shared) != expected_shared or sorted(divergent) != expected_divergent:
+        return (
+            f"the duplicate-class detector reported duplicated={sorted(shared)} "
+            f"byte-different={sorted(divergent)} on its own fixture, expected "
+            f"duplicated={expected_shared} byte-different={expected_divergent}")
+    return ""
+
+
+problems = []
+report = []
+
+discrepancy = self_check()
+if discrepancy:
+    problems.append(discrepancy)
+report.append(
+    "detector self-check: "
+    + (discrepancy
+       or "the fabricated fixture's byte-different and byte-identical duplicates were both "
+          "reported, and its unique name was not"))
+
+# The values, each attributed to the key header printed above it.
+classpaths = []
+label = ""
+try:
+    with open(log_path, encoding="utf-8", errors="replace") as handle:
+        for raw in handle:
+            text = raw.rstrip("\n").strip()
+            if not text or text.startswith("["):
+                continue
+            if is_classpath(text):
+                classpaths.append((label or f"classpath #{len(classpaths) + 1}", text))
+                label = ""
+            else:
+                label = text
+except OSError as error:
+    problems.append(f"the exported classpath log {log_path} could not be read: {error}")
+
+if not classpaths:
+    problems.append(
+        f"no exported classpath value could be parsed out of {log_path}, so no classpath was "
+        "audited for duplicate classes")
+
+total_class_files = 0
+total_duplicated = 0
+for name, value in classpaths:
+    entries = [entry for entry in value.split(os.pathsep) if entry]
+    entry_classes = {}
+    absent = []
+    for entry in entries:
+        if not os.path.exists(entry):
+            absent.append(entry)
+            continue
+        try:
+            entry_classes[entry] = classes_in(entry)
+        except (OSError, zipfile.BadZipFile) as error:
+            problems.append(f"{name}: classpath entry {entry} could not be read: {error}")
+    index = provider_index(entry_classes)
+    shared, divergent = duplicates(index)
+    class_files = sum(len(classes) for classes in entry_classes.values())
+    total_class_files += class_files
+    total_duplicated += len(shared)
+
+    report.append(
+        f"{name}: {len(entries)} entry(ies), {len(index)} class name(s), {class_files} class "
+        f"file(s), {len(shared)} duplicated name(s), {len(divergent)} of them byte-different")
+    for entry in absent:
+        report.append(f"    entry absent on disk, provides nothing: {entry}")
+    for duplicated in sorted(shared):
+        kind = "BYTE-DIFFERENT" if duplicated in divergent else "byte-identical"
+        report.append(f"    {kind}: {duplicated}")
+        for entry, sha in shared[duplicated]:
+            report.append(f"        {os.path.basename(entry.rstrip('/')) or entry} [{sha[:16]}] {entry}")
+
+    if class_files == 0:
+        problems.append(
+            f"{name}: no class file was enumerated from any of its {len(entries)} entries, so "
+            "this classpath was not audited")
+    elif CONTROL_CLASS not in index:
+        problems.append(
+            f"{name}: positive control failed - {CONTROL_CLASS} is absent from the "
+            f"{class_files} class file(s) enumerated here, so this audit is not reading what "
+            "the classpath carries")
+    if shared:
+        problems.append(
+            f"{name}: {len(shared)} class name(s) provided by more than one entry, "
+            f"{len(divergent)} of them byte-different")
+
+if total_class_files == 0:
+    problems.append(
+        "no class file was enumerated from any classpath, so this check measured nothing")
+
+report.append(
+    f"TOTAL: classpaths={len(classpaths)} class-files={total_class_files} "
+    f"duplicated-names={total_duplicated} problems={len(problems)}")
+
+try:
+    with open(report_path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(report) + "\n")
+        for problem in problems:
+            handle.write(f"PROBLEM: {problem}\n")
+except OSError as error:
+    problems.append(f"the duplicate-class report {report_path} could not be written: {error}")
+
+print("\n".join(report))
+for problem in problems:
+    print(f"PROBLEM: {problem}")
+sys.exit(1 if problems else 0)
+PY
+    local duplicate_detail
+    duplicate_detail="$(awk '/^PROBLEM: / {
+           sub(/^PROBLEM: /, "")
+           printf "%s%s", (reported++ ? "; " : ""), $0
+         }
+         END { if (reported) printf "\n" }' "$duplicates_report")"
+    detail "duplicate-class audit: ${duplicate_detail:-see $duplicates_relative}"
+    failed=1
+  fi
+  printf '\n' >>"$EV"
+
+  # -- 4. build definition and module sources -----------------------------
   if ! assert_no_match "Java libraries named in the build definition or either module tree" \
     "$EV" -rE "org\.joda|com\.google\.common|joda-beans|joda-convert|guava" \
     build.sbt project strata-collect strata-basics; then
@@ -1393,19 +3831,90 @@ row_02_dependency_purity() {
 # Row 3 - Gate 2a / Rule 1a: exactly two Scala-only modules, with the edge.
 #
 #   * `sbt projects` lists exactly `strata-basics` and `strata-collect` (the
-#     root project IS strata-basics). Compared against a literal expectation,
-#     not a count. sbt 1.13 emits a TAB after `[info]`, so the extraction is
-#     whitespace-tolerant rather than space-anchored.
+#     root project IS strata-basics). EVERY id it prints is parsed, whatever
+#     it is called, and the complete set is compared against a literal
+#     expectation rather than a count: an id the parse cannot see is a
+#     project this row cannot reject.
 #   * the Compile internal dependency classpath of strata-basics carries
 #     strata-collect's `classes`, and the Test one carries BOTH that
 #     `classes` directory and, additionally, its `test-classes` - on one and
 #     the same classpath value: that is the proof of the directed edge
 #     `"compile->compile;test->test"`, and neither half of it is optional.
 #   * zero `.java` files under either module or the build definition.
+#   * every project the build actually has, audited where it keeps its files:
+#     its base directory and its Compile and Test source roots must resolve
+#     inside this checkout and must hold no `.java` file. The two `find` roots
+#     of the check above are the two directories the build is SUPPOSED to
+#     consist of, so on their own they say nothing about a project rooted
+#     somewhere else.
 #   * the file-extension histogram, reported.
 #   * each project's unmanaged source directories hold only its own
 #     src/main/scala.
 #=============================================================================
+
+# sbt_show_values <log> - prints every element of the `show` values in a log,
+# one per line. Every key it is used on is `File`- or `Seq[File]`-valued, so a
+# value is an absolute path and anything else in the log is not a value: sbt's
+# own `lintUnused` warning prints bulleted lines of key names in exactly the
+# shape a bulleted element has, and reading one of those as a directory would
+# put a key name where a path belongs.
+#
+# sbt prints a value in one of three shapes, and all three are parsed
+# structurally - by line and by delimiter - never by splitting on whitespace.
+# A checkout path may legitimately contain a space (a developer clone under
+# "My Documents" is enough), and a parser that tokenised on whitespace would
+# find no directory at all and fail a row for a reason that has nothing to do
+# with the build:
+#   [info] <TAB>List(/a/src/main/scala, /b/src/main/scala)   a collection
+#   [info] * /a/src/main/scala                               a bulleted element
+#   [info] <TAB>/a                                           a single File
+# The third shape is recognised by the leading separator of an absolute path,
+# which sbt's own chatter never has: every line it logs around a value begins
+# with a word ("loading settings for project", "set current project to",
+# "Total time"). A `File`-valued key such as `baseDirectory` is printed that
+# way, so a parser that read only the first two shapes would silently return
+# nothing for it.
+# The only sequence a path may therefore not contain is the ", " that
+# separates the elements of a collection, which is noted here because nothing
+# in the parse can distinguish it.
+sbt_show_values() {
+  awk '
+       function trim(s) {
+         gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+         return s
+       }
+       function emit(value) {
+         value = trim(value)
+         # An absolute path, which is what every value of these keys is.
+         if (value ~ /^\//) print value
+       }
+       {
+         text = $0
+         sub(/^\[(info|warn|error|success|debug)\][[:space:]]?/, "", text)
+         text = trim(text)
+
+         # One element per line after a bullet. `emit` is what refuses a
+         # bulleted line that is not a path.
+         if (text ~ /^\*[[:space:]]/) {
+           emit(substr(text, 2))
+           next
+         }
+         # A collection literal holding the elements.
+         if (text ~ /^(List|Vector|Seq|ArrayBuffer|ArraySeq)\(.*\)$/) {
+           inner = text
+           sub(/^[A-Za-z]+\(/, "", inner)
+           sub(/\)$/, "", inner)
+           if (trim(inner) == "") next
+           count = split(inner, elements, ", ")
+           for (i = 1; i <= count; i++) emit(elements[i])
+           next
+         }
+         # A single absolute path, which is how a File-valued key is printed.
+         if (text ~ /^\//) {
+           emit(text)
+         }
+       }' "$1"
+}
 
 row_03_two_scala_modules() {
   new_evidence gate02a-two-scala-modules.txt
@@ -1422,24 +3931,88 @@ row_03_two_scala_modules() {
   local ids="$AUDIT_DIR/gate02a-project-ids.txt"
   local expected_ids="$AUDIT_DIR/gate02a-project-ids-expected.txt"
 
-  # sbt 1.13 emits a TAB after `[info]`, so the anchor is whitespace-tolerant
-  # rather than space-anchored; awk exits 0 when nothing matches, so an empty
-  # result reaches the comparison below instead of failing the pipeline.
-  awk '/^\[info\][[:space:]]+[*]?[[:space:]]*strata-/ {
-         if (match($0, /strata-[a-z]+/)) print substr($0, RSTART, RLENGTH)
-       }' "$projects_log" | sort >"$ids"
+  # EVERY id the build lists, under whatever name. There is no name filter and
+  # no character class: an id the parse declines to see cannot be rejected, so
+  # a `helper`, a `tools_2` or a `zzé` would sit in the build unmeasured while
+  # the comparison below still matched the two expected lines. An entry is
+  # therefore any line of the project block that is a single token, which is a
+  # superset of every id sbt accepts - its own id parser admits Unicode
+  # letters and digits with `_` and `-`, and no whitespace at all - and each
+  # is taken WHOLE, never as a prefix, so `strata-basics-it` is an id of its
+  # own rather than another spelling of `strata-basics`.
+  #
+  # The entries are those of the `In <build uri>:` block `sbt projects`
+  # prints, which is what distinguishes them from the `loading settings for
+  # project strata-basics` and `set current project to strata-basics` lines
+  # that precede it. The current project carries a `*` bullet and the others
+  # none; both shapes are accepted. sbt 1.13 emits a TAB after `[info]`, so
+  # the prefix is stripped rather than matched with a space. A line inside the
+  # block that is NOT a single token cannot be an id - sbt's own timing and
+  # status lines are of that shape - so it closes the block and is recorded as
+  # the line that closed it, which keeps the parse readable in the evidence.
+  # awk exits 0 when nothing matches, so an empty result reaches the
+  # comparison below instead of failing the pipeline, and is reported in its
+  # own right: a parse that saw no id has measured no project set.
+  local block_end="$AUDIT_DIR/gate02a-project-block-end.txt"
+  awk -v block_end="$block_end" '
+       function trim(s) {
+         gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+         return s
+       }
+       {
+         line = $0
+         sub(/^\[(info|warn|error|success|debug)\][[:space:]]?/, "", line)
+         line = trim(line)
+
+         if (line ~ /^In [A-Za-z][A-Za-z0-9+.-]*:/) {
+           inside = 1
+           printf "block opened by: %s\n", line > block_end
+           next
+         }
+         if (!inside) next
+
+         entry = line
+         sub(/^\*[[:space:]]*/, "", entry)
+         if (entry != "" && entry !~ /[[:space:]]/) {
+           print entry
+           next
+         }
+         inside = 0
+         printf "block closed by: %s\n", (line == "" ? "(a blank line)" : line) > block_end
+       }
+       END {
+         # The list is the last thing in the log when nothing follows it, so
+         # the block closes at end of input. Recording that says so, rather
+         # than leaving the evidence with an opening and no close - which a
+         # reader cannot tell apart from a close that went unrecorded.
+         if (inside) {
+           printf "block closed by: (the end of the output)\n" > block_end
+         }
+       }' "$projects_log" | sort -u >"$ids"
   printf 'strata-basics\nstrata-collect\n' >"$expected_ids"
 
   {
     printf '# command: sbt -batch projects (exit %s)\n' "$rc"
-    printf '# project ids found:\n'
+    printf '# project ids found (every single-token entry of the project block):\n'
     cat "$ids"
     printf '# expected:\n'
     cat "$expected_ids"
+    printf '# how the project block was delimited:\n'
+    if [[ -s "$block_end" ]]; then
+      sed 's/^/#   /' "$block_end"
+    else
+      printf '#   (no project block was found in the output)\n'
+    fi
   } >>"$EV"
 
   if [[ "$rc" -ne 0 ]]; then
     detail "sbt projects failed with status $rc"
+    failed=1
+  fi
+  local id_count
+  id_count="$(awk 'NF { n++ } END { print n + 0 }' "$ids")"
+  if [[ "${id_count:-0}" -lt 1 ]]; then
+    detail "no project id could be parsed out of sbt projects, so the build's project set is unmeasured"
     failed=1
   fi
   if ! diff -u "$expected_ids" "$ids" >>"$EV" 2>&1; then
@@ -1619,6 +4192,181 @@ row_03_two_scala_modules() {
     failed=1
   fi
 
+  # -- every discovered project, audited where it keeps its files ----------
+  #
+  # The three roots the `find` above scans are the directories this build is
+  # supposed to consist of; they are not a statement about the projects the
+  # build actually has. A project based elsewhere - or one pointed at a source
+  # root outside its own directory - would be audited by neither that find nor
+  # the two-project source-directory comparison below. So each id parsed from
+  # `sbt projects` is asked where it lives, and every directory it names is
+  # held to two things: it resolves inside this checkout, and it holds no
+  # `.java` file. Paired with the closed id set above, that covers what the
+  # build contains as well as what it is called.
+  #
+  # The base directories and the source roots are asked for SEPARATELY, so
+  # that each answer keeps the kind of key it came from. That distinction is
+  # the whole point of asking twice: the root project legitimately bases at
+  # the checkout root, which holds the Maven tree this build has nothing to do
+  # with, so a base directory equal to the root is exempt from the tree scan
+  # (its own content is covered by its source roots and by the build
+  # directories scanned above) - while a SOURCE ROOT equal to the checkout
+  # root is a project reaching over the Java tree and is scanned like any
+  # other, which is exactly what makes it fail. Merging the two answers into
+  # one list would make those two cases indistinguishable.
+  #
+  # A source root that does not exist is normal (sbt reports the configured
+  # path whether or not it was created) and is recorded as absent; a directory
+  # that exists but points outside the checkout, and any `.java` file under
+  # any of them, fails the row.
+  local -a base_show=() roots_show=()
+  local project_id
+  while IFS= read -r project_id; do
+    [[ -n "$project_id" ]] || continue
+    base_show+=("show $project_id/baseDirectory")
+    roots_show+=("show $project_id/Compile/unmanagedSourceDirectories")
+    roots_show+=("show $project_id/Test/unmanagedSourceDirectories")
+  done <"$ids"
+
+  local base_dirs="$AUDIT_DIR/gate02a-project-base-directories.txt"
+  local source_roots="$AUDIT_DIR/gate02a-project-source-roots.txt"
+  local project_audit="$AUDIT_DIR/gate02a-project-audit.txt"
+  if ! safe_truncate "$base_dirs" || ! safe_truncate "$source_roots" ||
+    ! safe_truncate "$project_audit"; then
+    detail "the Gate 2a per-project audit files could not be started"
+    failed=1
+  fi
+
+  if [[ "${#base_show[@]}" -eq 0 ]]; then
+    printf '\n# no project id was parsed, so no project could be audited\n' >>"$EV"
+    detail "no project could be audited, because no id was parsed"
+    failed=1
+  else
+    local base_rc=0 roots_rc=0
+    run_sbt gate02a-project-base-directories "${base_show[@]}" || base_rc=$?
+    sbt_show_values "$SBT_LOG" | sort -u >"$base_dirs"
+    run_sbt gate02a-project-source-roots "${roots_show[@]}" || roots_rc=$?
+    sbt_show_values "$SBT_LOG" | sort -u >"$source_roots"
+
+    local base_count roots_count
+    base_count="$(awk 'NF { n++ } END { print n + 0 }' "$base_dirs")"
+    roots_count="$(awk 'NF { n++ } END { print n + 0 }' "$source_roots")"
+
+    local audited_dirs=0 absent_dirs=0 outside_dirs=0 java_in_projects=0 root_based=0
+    local kind list project_dir canonical dir_java dir_find_rc dir_java_count
+    for kind in base-directory source-root; do
+      if [[ "$kind" == "base-directory" ]]; then
+        list="$base_dirs"
+      else
+        list="$source_roots"
+      fi
+      while IFS= read -r project_dir; do
+        [[ -n "$project_dir" ]] || continue
+        audited_dirs=$((audited_dirs + 1))
+        if [[ "$project_dir" != "$ROOT" && "$project_dir" != "$ROOT"/* ]]; then
+          printf '%s\t%s\tOUTSIDE the checkout\n' "$kind" "$project_dir" >>"$project_audit"
+          outside_dirs=$((outside_dirs + 1))
+          continue
+        fi
+        if [[ ! -d "$project_dir" ]]; then
+          printf '%s\t%s\tabsent (a configured path that was never created)\n' \
+            "$kind" "$project_dir" >>"$project_audit"
+          absent_dirs=$((absent_dirs + 1))
+          continue
+        fi
+        canonical="$(canonical_dir "$project_dir")"
+        if [[ -z "$canonical" ]] || ! is_inside_root "$canonical"; then
+          printf '%s\t%s\tOUTSIDE the checkout once resolved (%s)\n' \
+            "$kind" "$project_dir" "${canonical:-unresolvable}" >>"$project_audit"
+          outside_dirs=$((outside_dirs + 1))
+          continue
+        fi
+        # The exemption is for a BASE directory only, and only for the
+        # checkout root itself. A source root there is scanned, and the Java
+        # tree it reaches over is what fails the row.
+        if [[ "$kind" == "base-directory" && "$canonical" == "$ROOT_REAL" ]]; then
+          printf '%s\t%s\tthe checkout root, where the root project bases: inside the checkout, its own content covered by its source roots and by the build directories scanned above\n' \
+            "$kind" "$project_dir" >>"$project_audit"
+          root_based=$((root_based + 1))
+          continue
+        fi
+        dir_find_rc=0
+        dir_java="$(command find "$canonical" -name '*.java' -print 2>>"$EV")" || dir_find_rc=$?
+        if [[ "$dir_find_rc" -ne 0 ]]; then
+          printf '%s\t%s\tSCAN FAILED (find exited %s)\n' "$kind" "$project_dir" "$dir_find_rc" \
+            >>"$project_audit"
+          detail "the .java scan of $project_dir exited $dir_find_rc, so its result is not authoritative"
+          failed=1
+          continue
+        fi
+        if [[ -n "$dir_java" ]]; then
+          dir_java_count="$(printf '%s\n' "$dir_java" | awk 'NF { n++ } END { print n + 0 }')"
+          printf '%s\t%s\t%s .java file(s):\n%s\n' \
+            "$kind" "$project_dir" "$dir_java_count" "$dir_java" >>"$project_audit"
+          java_in_projects=$((java_in_projects + dir_java_count))
+          continue
+        fi
+        printf '%s\t%s\tno .java file\n' "$kind" "$project_dir" >>"$project_audit"
+      done <"$list"
+    done
+
+    {
+      printf '\n# command: sbt -batch'
+      printf ' "%s"' "${base_show[@]}"
+      printf ' (exit %s)\n' "$base_rc"
+      printf '# command: sbt -batch'
+      printf ' "%s"' "${roots_show[@]}"
+      printf ' (exit %s)\n' "$roots_rc"
+      printf '# %s discovered project(s); %s base directory(ies) and %s source root(s) parsed\n' \
+        "${id_count:-0}" "$base_count" "$roots_count"
+      printf '# per-directory audit (%s absent, %s the checkout root as a base directory,\n' \
+        "$absent_dirs" "$root_based"
+      printf '# %s outside the checkout, %s .java file(s)):\n' "$outside_dirs" "$java_in_projects"
+      cat "$project_audit"
+    } >>"$EV"
+
+    if [[ "$base_rc" -ne 0 ]]; then
+      detail "show baseDirectory over the discovered projects failed with status $base_rc"
+      failed=1
+    fi
+    if [[ "$roots_rc" -ne 0 ]]; then
+      detail "show Compile/Test unmanagedSourceDirectories over the discovered projects failed with status $roots_rc"
+      failed=1
+    fi
+    # Proof that the two answers were actually parsed: every project has a
+    # base directory, so there is at least one value per project, and the
+    # build root is among them because sbt always bases a project there.
+    if [[ "${base_count:-0}" -lt "${id_count:-1}" ]]; then
+      detail "only ${base_count:-0} base directory(ies) parsed for ${id_count:-0} project(s), so the audit is incomplete"
+      failed=1
+    fi
+    if ! grep -qxF "$ROOT" "$base_dirs"; then
+      detail "the checkout root is not among the parsed base directories, so the base-directory parse is not trustworthy"
+      failed=1
+    fi
+    if [[ "${roots_count:-0}" -lt "${id_count:-1}" ]]; then
+      detail "only ${roots_count:-0} source root(s) parsed for ${id_count:-0} project(s), so the audit is incomplete"
+      failed=1
+    fi
+    if [[ "$audited_dirs" -lt 1 ]]; then
+      detail "no directory could be parsed for the discovered project(s), so none was audited"
+      failed=1
+    fi
+    if [[ "$outside_dirs" -ne 0 ]]; then
+      detail "$outside_dirs project directory(ies) lie outside this checkout"
+      failed=1
+    fi
+    if [[ "$java_in_projects" -ne 0 ]]; then
+      detail "$java_in_projects .java file(s) under the discovered projects' own directories"
+      failed=1
+    fi
+    if ! add_appendix "Gate 2a - every discovered project, audited where it keeps its files" \
+      <"$project_audit"; then
+      detail "the per-project audit could not be appended to the report"
+      failed=1
+    fi
+  fi
+
   # -- file-extension histogram (reported) --------------------------------
   # Reported rather than measured, but a reported figure that silently failed
   # to be produced is worse than none: the write and the appendix are checked.
@@ -1653,51 +4401,11 @@ row_03_two_scala_modules() {
   # Every source directory the two `show` commands printed, one per line, and
   # nothing filtered out: a project pointed at a root it should not have is
   # reported by the comparison below rather than quietly dropped.
-  #
-  # sbt prints a `Seq[File]` in one of two shapes, and both are parsed
-  # structurally - by line and by delimiter - never by splitting on
-  # whitespace. A checkout path may legitimately contain a space (a developer
-  # clone under "My Documents" is enough), and a parser that tokenised on
-  # whitespace would find no directory at all and fail this row for a reason
-  # that has nothing to do with the build:
-  #   [info] <TAB>List(/a/src/main/scala, /b/src/main/scala)   aggregated form
-  #   [info] * /a/src/main/scala                               single-value form
-  # The only sequence a path may therefore not contain is the ", " that
-  # separates the elements of the first shape, which is noted here because
-  # nothing in the parse can distinguish it.
   if ! safe_truncate "$dirs"; then
     detail "the Gate 2a source-directory list could not be started"
     failed=1
   fi
-  awk '
-       function trim(s) {
-         gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
-         return s
-       }
-       function emit(value) {
-         value = trim(value)
-         if (value != "") print value
-       }
-       {
-         text = $0
-         sub(/^\[(info|warn|error|success|debug)\][[:space:]]?/, "", text)
-         text = trim(text)
-
-         # The single-value shape: one element per line after a bullet.
-         if (text ~ /^\*[[:space:]]/) {
-           emit(substr(text, 2))
-           next
-         }
-         # The aggregated shape: a collection literal holding the elements.
-         if (text ~ /^(List|Vector|Seq|ArrayBuffer|ArraySeq)\(.*\)$/) {
-           inner = text
-           sub(/^[A-Za-z]+\(/, "", inner)
-           sub(/\)$/, "", inner)
-           if (trim(inner) == "") next
-           count = split(inner, elements, ", ")
-           for (i = 1; i <= count; i++) emit(elements[i])
-         }
-       }' "$dirs_log" | sort -u >"$dirs"
+  sbt_show_values "$dirs_log" | sort -u >"$dirs"
 
   {
     printf '\n# command: sbt -batch "show strata-basics/Compile/unmanagedSourceDirectories" '
@@ -1718,7 +4426,7 @@ row_03_two_scala_modules() {
   fi
 
   if [[ "$failed" -eq 0 ]]; then
-    detail "exactly two Scala-only projects, 0 .java files, strata-basics -> strata-collect edge proven"
+    detail "exactly two Scala-only projects and no third, 0 .java files here or under any project's own roots, strata-basics -> strata-collect edge proven"
   fi
   return "$failed"
 }
@@ -2295,22 +5003,137 @@ row_05_serialization_round_trip() {
 }
 
 #=============================================================================
-# Row 6 - Gate 5 / Rule 3: no `var` in domain code.
+# Row 6 - Gate 5 / Rule 3: no `var` in domain code, and no aliasing of the
+# numeric backing arrays.
 #
 #   grep -rnw var strata-collect/src/main/scala strata-basics/src/main/scala
 #
 # must be empty. Whole-word match, and there are no file exclusions: every
 # occurrence of the token in either module's main sources fails this row.
+#
+# Rule 3 is immutability, of which the absence of `var` is one half and the
+# unreachability of a value's storage is the other, so both are measured here.
+# The second half is a BYTECODE assertion, because a source-level one cannot
+# state it: `private[collect]` restricts a member in the source and the
+# compiler emits it as a public method regardless, so `DoubleArray` and
+# `DoubleMatrix` enforce immutability by copying in their sole constructor and
+# by publishing no member that hands out what they hold. Two things are
+# therefore asserted over the four class files - the two types and their
+# companion objects:
+#
+#   * no method name contains `Unsafe`, which is what the Java original's two
+#     aliasing members were called and the name any reintroduction would most
+#     likely carry;
+#   * no PUBLIC method returns `[D` or `[[D` except the copying accessors -
+#     `toArray`, `rowArray`, `columnArray` and the matrix's deep copy, which
+#     the compiler emits under the mangled name
+#     `com$opengamma$strata$collect$array$DoubleMatrix$$deepClone` because the
+#     class reaches the companion's private helper. That one is a copier of
+#     the argument it is handed and reads no field of any instance, so it is
+#     no route into a value; it is named in the allowed list rather than
+#     excluded by a pattern, so a differently named method returning an array
+#     fails this row.
+#
+# The return type is read from javap's declaration line, whose Java syntax
+# renders the two descriptors as `double[]` and `double[][]` before the method
+# name. A parameter of either type is not a finding, which is why the match is
+# anchored on the text before the name and not on the line as a whole.
 #=============================================================================
+
+# The copying accessors, which are the only public members of the two numeric
+# types permitted to answer with a primitive array.
+ARRAY_RETURN_ALLOWED='toArray rowArray columnArray com$opengamma$strata$collect$array$DoubleMatrix$$deepClone'
 
 row_06_no_var() {
   new_evidence gate05-no-var.txt
+  local failed=0
+
   printf '## Gate 5 / Rule 3 - no `var` in either module main sources\n\n' >>"$EV"
   if assert_no_match "var in main sources" "$EV" -rnw var "$COLLECT_MAIN" "$BASICS_MAIN"; then
     detail "no occurrence of the token in $COLLECT_MAIN or $BASICS_MAIN"
-    return 0
+  else
+    failed=1
   fi
-  return 1
+
+  # -- the other half of Rule 3: the storage of the numeric types ----------
+  {
+    printf '## Gate 5 / Rule 3 - no bytecode member aliases a numeric backing array\n'
+    printf '# allowed public array returns: %s\n\n' "$ARRAY_RETURN_ALLOWED"
+  } >>"$EV"
+
+  local class_files=(
+    "$COLLECT_CLASSES/com/opengamma/strata/collect/array/DoubleArray.class"
+    "$COLLECT_CLASSES/com/opengamma/strata/collect/array/DoubleArray\$.class"
+    "$COLLECT_CLASSES/com/opengamma/strata/collect/array/DoubleMatrix.class"
+    "$COLLECT_CLASSES/com/opengamma/strata/collect/array/DoubleMatrix\$.class"
+  )
+  local aliasing="$AUDIT_DIR/gate05-array-aliasing.txt"
+  : >"$aliasing"
+
+  local class_file dump stem examined=0
+  for class_file in "${class_files[@]}"; do
+    if ! require_file "$class_file" "numeric class file for the aliasing check"; then
+      printf '# MISSING: %s\n' "$class_file" >>"$EV"
+      failed=1
+      continue
+    fi
+    stem="$(basename "$class_file" .class)"
+    dump="$AUDIT_DIR/gate05-members-${stem//\$/-object}.txt"
+    if ! javap -p "$class_file" >"$dump" 2>>"$EV"; then
+      detail "javap failed on $class_file"
+      failed=1
+      continue
+    fi
+    examined=$((examined + 1))
+    printf '# %-78s -> %s\n' "${class_file#"$ROOT"/}" "${dump#"$ROOT"/}" >>"$EV"
+    # One line per finding: the class, the kind of violation and the whole
+    # declaration javap printed, so a failure names the member to look at.
+    awk -v subject="$stem" -v allowed="$ARRAY_RETURN_ALLOWED" '
+      BEGIN { count = split(allowed, names, " "); for (i = 1; i <= count; i++) { permitted[names[i]] = 1 } }
+      # a member declaration, which javap indents by exactly two spaces
+      /^  [^ ]/ {
+        declaration = $0
+        sub(/^[ \t]+/, "", declaration)
+        if (declaration !~ /\(/) { next }                 # a field, not a method
+        signature = declaration
+        sub(/\(.*$/, "", signature)                       # drop the parameters
+        name = signature
+        sub(/^.*[ .]/, "", name)                          # the simple method name
+        if (name ~ /Unsafe/) {
+          print subject ": method name contains Unsafe: " declaration
+          next
+        }
+        if (declaration !~ /^public/) { next }
+        if (signature ~ /double\[\]\[\][ \t]/ || signature ~ /double\[\][ \t]/) {
+          if (!(name in permitted)) {
+            print subject ": public method returns a primitive array: " declaration
+          }
+        }
+      }
+    ' "$dump" >>"$aliasing"
+  done
+
+  if [[ "$examined" -ne "${#class_files[@]}" ]]; then
+    detail "$examined of ${#class_files[@]} numeric class files could be disassembled"
+    failed=1
+  fi
+
+  local findings
+  findings="$(awk 'NF { n++ } END { print n + 0 }' "$aliasing")"
+  {
+    printf '\n# aliasing findings: %s\n' "$findings"
+    cat "$aliasing"
+  } >>"$EV"
+  add_appendix "Gate 5 - members of the numeric types that answer with an array" <"$aliasing"
+
+  if [[ "$findings" -ne 0 ]]; then
+    detail "$findings bytecode member(s) of DoubleArray/DoubleMatrix alias a backing array"
+    failed=1
+  elif [[ "$failed" -eq 0 ]]; then
+    detail "no member of the four numeric class files is named Unsafe or returns a primitive array outside the copying accessors"
+  fi
+
+  return "$failed"
 }
 
 #=============================================================================
@@ -2717,10 +5540,301 @@ PY
 # Row 8 - Gate 5 / Rule 5: explicit error handling.
 #
 #   * no `null` in either module's main sources;
-#   * no `throw new` outside ArgCheck.scala, which is where the documented
-#     fail-fast invariant throws live;
+#   * no throw EXPRESSION of any spelling outside ArgCheck.scala, which is
+#     where the documented fail-fast invariant throws live. The
+#     specification's `throw new` grep is one spelling of the construct, so
+#     it is reported and a lexical scan decides the row;
 #   * the four specs that prove the failable surface green.
 #=============================================================================
+
+# rule5_throw_scan <allow-list file | -> <source root>...
+#
+# Reports every throw EXPRESSION in the Scala sources below the roots, and
+# fails when one of them is outside the allow-list (`-` allows none).
+#
+#   0  every throw is in an allowed file
+#   1  at least one throw is not
+#   2  the scan could not be carried out: a file it could not read, or no
+#      Scala source below the roots at all
+#
+# Text matching is not enough for this check. `throw new X(...)`,
+# `throw(new X(...))`, a `throw` whose `new` sits on the next line and
+# `throw t` on a caught exception are all the same construct, and a pattern
+# written for one of them passes the others through. So each file is first
+# reduced to its code: comments (line and nested block), string and character
+# literals and backticked identifiers are replaced by spaces, newlines are
+# preserved so every line number still points at the source line, and every
+# remaining `throw` KEYWORD token is a hit. Blanking the comments is
+# load-bearing rather than tidiness - the two module trees use the word
+# "throw" in ten scaladoc sentences, and a scan that read prose would fail
+# this row for documenting the design.
+#
+# The `${...}` block of an INTERPOLATED string is not literal text but
+# executable Scala, so `s"${throw new X}"` is a throw and is kept as code:
+# the interpolator is recognised from the identifier character in front of
+# the quote, the block's closing brace is found by counting braces while
+# skipping the literals and comments inside it, and its content is reduced by
+# this same function. Every replacement is length-preserving, so recursing
+# into a block leaves the line numbering of the rest of the file intact.
+#
+# The walk is fail-closed: a root that is not a directory, a directory the
+# walk cannot read and a file that cannot be decoded are each reported and
+# exit 2, rather than being passed over while another root keeps the file
+# count non-zero.
+rule5_throw_scan() {
+  python3 - "$@" <<'PY'
+import os
+import re
+import sys
+
+allowed_path = sys.argv[1]
+roots = sys.argv[2:]
+
+# `throw` as a token: not part of a longer identifier such as `throwaway`,
+# `rethrow` or `throwIfEmpty`.
+THROW = re.compile(r"(?<![A-Za-z0-9_$])throw(?![A-Za-z0-9_$])")
+# The character in front of a quote when the quote opens an interpolated
+# string: `s"..."`, `f"..."`, `raw"..."` or any custom interpolator.
+INTERPOLATOR_CHAR = re.compile(r"[A-Za-z0-9_$]")
+
+
+def closing_brace(text, open_index):
+    """The index of the `}` that closes the `{` at open_index, or None.
+
+    Braces are counted, and the literals and comments inside the block are
+    skipped, so a brace or a quote written inside a nested string cannot end
+    the block early.
+    """
+    depth = 0
+    index = open_index
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "{":
+            depth += 1
+            index += 1
+            continue
+        if char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+            index += 1
+            continue
+        if text.startswith('"""', index):
+            index += 3
+            while index < length and not text.startswith('"""', index):
+                index += 1
+            index += 3
+            continue
+        if char == '"':
+            index += 1
+            while index < length and text[index] not in ('"', "\n"):
+                index += 2 if text[index] == "\\" else 1
+            index += 1
+            continue
+        if char == "/" and text.startswith("//", index):
+            while index < length and text[index] != "\n":
+                index += 1
+            continue
+        if char == "/" and text.startswith("/*", index):
+            index += 2
+            while index < length and not text.startswith("*/", index):
+                index += 1
+            index += 2
+            continue
+        index += 1
+    return None
+
+
+def blank_string(text, start, delimiter, interpolated, out):
+    """Blanks one string literal, keeping its `${...}` blocks when it is
+    interpolated. Returns the index just past the closing delimiter."""
+    length = len(text)
+    out.append(" " * len(delimiter))
+    index = start + len(delimiter)
+    while index < length:
+        if delimiter == '"""':
+            if text.startswith('"""', index):
+                break
+        else:
+            if text[index] in ('"', "\n"):
+                break
+            if text[index] == "\\" and index + 1 < length:
+                out.append("  ")
+                index += 2
+                continue
+        if interpolated and text[index] == "$" and text.startswith("${", index):
+            end = closing_brace(text, index + 1)
+            if end is not None:
+                # The `$`, `{` and `}` are punctuation; what is between them
+                # is Scala, reduced by the same rules as the file around it.
+                out.append("  ")
+                out.append(blank_non_code(text[index + 2:end]))
+                out.append(" ")
+                index = end + 1
+                continue
+        out.append("\n" if text[index] == "\n" else " ")
+        index += 1
+    if delimiter == '"""':
+        while index < length and text[index] == '"':
+            out.append(" ")
+            index += 1
+    elif index < length and text[index] == '"':
+        out.append(" ")
+        index += 1
+    return index
+
+
+def blank_non_code(text):
+    """Every comment, literal and backticked identifier replaced by spaces.
+
+    Newlines survive and every replacement is the length of what it replaces,
+    so the offset of a match still identifies the line it was written on, and
+    no construct inside a comment or a string can be read as code - except
+    the `${...}` block of an interpolated string, which is code.
+    """
+    out = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        following = text[index + 1] if index + 1 < length else ""
+        if char == "/" and following == "/":
+            while index < length and text[index] != "\n":
+                out.append(" ")
+                index += 1
+            continue
+        if char == "/" and following == "*":
+            # Scala block comments nest, so the depth is tracked rather than
+            # closing at the first `*/`.
+            depth = 0
+            while index < length:
+                if text.startswith("/*", index):
+                    depth += 1
+                    out.append("  ")
+                    index += 2
+                    continue
+                if text.startswith("*/", index):
+                    depth -= 1
+                    out.append("  ")
+                    index += 2
+                    if depth <= 0:
+                        break
+                    continue
+                out.append("\n" if text[index] == "\n" else " ")
+                index += 1
+            continue
+        if char == '"':
+            interpolated = (index > 0
+                            and INTERPOLATOR_CHAR.match(text[index - 1]) is not None)
+            delimiter = '"""' if text.startswith('"""', index) else '"'
+            index = blank_string(text, index, delimiter, interpolated, out)
+            continue
+        if char == "`":
+            out.append(" ")
+            index += 1
+            while index < length and text[index] not in ("`", "\n"):
+                out.append(" ")
+                index += 1
+            if index < length and text[index] == "`":
+                out.append(" ")
+                index += 1
+            continue
+        if char == "'":
+            # A character literal is 'x' or '\x'; anything else beginning with
+            # a quote is an operator or a symbol literal and is left alone.
+            if index + 2 < length and text[index + 1] == "\\":
+                end = index + 2
+                while end < length and text[end] not in ("'", "\n"):
+                    end += 1
+                if end < length and text[end] == "'":
+                    out.append(" " * (end - index + 1))
+                    index = end + 1
+                    continue
+            elif index + 2 < length and text[index + 2] == "'":
+                out.append("   ")
+                index += 3
+                continue
+            out.append(char)
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+allowed = set()
+if allowed_path != "-":
+    try:
+        with open(allowed_path, encoding="utf-8") as handle:
+            allowed = {line.strip() for line in handle if line.strip()}
+    except OSError as error:
+        print(f"# the allow-list could not be read: {error}")
+        sys.exit(2)
+
+hits = []
+violations = []
+unreadable = []
+scanned = 0
+
+
+def record_walk_error(error):
+    """A directory the walk could not read is a gap in the scan, not a
+    directory without Scala files."""
+    unreadable.append(f"{getattr(error, 'filename', 'unknown path')}: {error}")
+
+
+for root in roots:
+    if not os.path.isdir(root):
+        unreadable.append(f"{root}: not a directory, so it was not scanned")
+        continue
+    for directory, subdirectories, filenames in os.walk(root, onerror=record_walk_error):
+        subdirectories.sort()
+        for filename in sorted(filenames):
+            if not filename.endswith(".scala"):
+                continue
+            path = os.path.join(directory, filename)
+            scanned += 1
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    text = handle.read()
+            except (OSError, UnicodeDecodeError) as error:
+                unreadable.append(f"{path}: {error}")
+                continue
+            code = blank_non_code(text)
+            source_lines = text.splitlines()
+            for match in THROW.finditer(code):
+                line_number = code.count("\n", 0, match.start()) + 1
+                line_text = (source_lines[line_number - 1].strip()
+                             if line_number <= len(source_lines) else "")
+                record = f"{path}:{line_number}: {line_text}"
+                hits.append(record)
+                if path not in allowed:
+                    violations.append(record)
+
+print(f"# Scala source files scanned: {scanned}")
+print(f"# allowed locations: {len(allowed)}")
+for path in sorted(allowed):
+    print(f"#   {path}")
+print(f"# throw expressions found: {len(hits)}")
+for record in hits:
+    print(f"#   {record}")
+print(f"# throw expressions outside the allowed locations: {len(violations)}")
+for record in violations:
+    print(f"#   VIOLATION {record}")
+for problem in unreadable:
+    print(f"#   UNREADABLE {problem}")
+
+if unreadable:
+    sys.exit(2)
+if scanned < 1:
+    print("# no Scala source file was scanned, so this scan measured nothing")
+    sys.exit(2)
+if violations:
+    sys.exit(1)
+sys.exit(0)
+PY
+}
 
 row_08_explicit_error_handling() {
   new_evidence gate05-error-handling.txt
@@ -2760,6 +5874,129 @@ row_08_explicit_error_handling() {
     failed=1
   fi
 
+  # -- every throw expression, whatever its spelling -----------------------
+  #
+  # The grep above is the specification's command and covers one spelling.
+  # This scan is the one that decides the row, and ArgCheck.scala is named by
+  # its exact path rather than by its file name, so a second file of that
+  # name anywhere in either tree is a violation like any other.
+  local allowed_throws="$AUDIT_DIR/gate05-throw-allowed.txt"
+  printf '%s\n' "$COLLECT_MAIN/com/opengamma/strata/collect/ArgCheck.scala" >"$allowed_throws"
+  local scan_out=""
+  local scan_rc=0
+  scan_out="$(rule5_throw_scan "$allowed_throws" "$COLLECT_MAIN" "$BASICS_MAIN" 2>&1)" || scan_rc=$?
+  {
+    printf '## every throw expression in either module, found lexically\n'
+    printf '# command: rule5_throw_scan %s %s %s (exit %s)\n' \
+      "${allowed_throws#"$ROOT"/}" "$COLLECT_MAIN" "$BASICS_MAIN" "$scan_rc"
+    printf '%s\n\n' "$scan_out"
+  } >>"$EV"
+  local outside_throws
+  outside_throws="$(printf '%s\n' "$scan_out" |
+    awk '/^# throw expressions outside the allowed locations: / { print $NF }')"
+  case "$scan_rc" in
+    0) ;;
+    1)
+      detail "${outside_throws:-one or more} throw expression(s) outside ArgCheck.scala, found lexically"
+      failed=1
+      ;;
+    *)
+      detail "the lexical throw scan could not be carried out (status $scan_rc)"
+      failed=1
+      ;;
+  esac
+
+  # -- the throw scan's own negative control -------------------------------
+  #
+  # Four spellings of a throw and seven decoys. Every line the scan must report
+  # carries an `@throw-site` marker in a comment, and comments are precisely
+  # what the scan blanks out before it looks for anything, so the marker
+  # cannot help it find a site. The reported line set must equal the marked
+  # line set exactly: a missing line means the scan does not recognise that
+  # spelling and would pass a build that used it, and a surplus line means it
+  # reads comments, strings or identifiers as code and would fail a build
+  # that did not throw at all.
+  #
+  # The control lives under target/audit, never in a source tree: this script
+  # writes nothing a gate scans.
+  local control_dir="$AUDIT_DIR/rule5-throw-control"
+  local control="$control_dir/ThrowFormsControl.scala"
+  if ! ensure_output_dir "$control_dir" || ! safe_truncate "$control"; then
+    detail "the throw-scan negative control could not be written"
+    failed=1
+  else
+    cat >"$control" <<'CONTROL'
+// A control for the Rule 5 throw scan: six spellings of one construct, and
+// nine decoys that are not throws at all.
+object ThrowFormsControl {
+  val message: String = "a message"
+  def plain(): Int = throw new IllegalStateException("the spelling the grep finds") // @throw-site
+  def parenthesised(): Int = throw(new IllegalStateException("parenthesised")) // @throw-site
+  def acrossLines(): Int =
+    throw // @throw-site
+      new IllegalStateException("the new sits on the next line")
+  def rethrown(caught: Throwable): Int = throw caught // @throw-site
+  // Inside an interpolation the braces hold code, not text.
+  def inInterpolation: String = s"${throw new IllegalStateException(message)}" // @throw-site
+  def inTripleInterpolation: String = s"""${throw(new IllegalStateException("nested"))}""" // @throw-site
+  // A commented throw new RuntimeException is not a throw.
+  val inString: String = "throw new RuntimeException"
+  val interpolatedText: String = s"throw new RuntimeException $message"
+  val notInterpolated: String = "${throw new RuntimeException}"
+  val inTripleQuote: String = """throw new RuntimeException"""
+  val inTripleQuoteBraces: String = """${throw new RuntimeException}"""
+  val escapedQuote: String = "a \" then throw new RuntimeException"
+  /* A block comment naming throw new RuntimeException
+     over two lines, with a /* nested */ comment inside. */
+  def throwaway(): Int = 0
+  def rethrow(): Int = 0
+}
+CONTROL
+    local expected_sites="$AUDIT_DIR/rule5-throw-control-expected.txt"
+    local reported_sites="$AUDIT_DIR/rule5-throw-control-reported.txt"
+    local control_out=""
+    local control_rc=0
+    grep -n '@throw-site' "$control" | cut -d: -f1 | sort -n >"$expected_sites"
+    control_out="$(rule5_throw_scan - "$control_dir" 2>&1)" || control_rc=$?
+    printf '%s\n' "$control_out" |
+      awk '/^#   VIOLATION / { if (match($0, /:[0-9]+:/)) print substr($0, RSTART + 1, RLENGTH - 2) }' |
+      sort -n >"$reported_sites"
+    {
+      printf '## the throw scan against its own control (exit %s, 1 is expected: nothing is allowed there)\n' \
+        "$control_rc"
+      printf '# control: %s\n' "${control#"$ROOT"/}"
+      printf '%s\n' "$control_out"
+      printf '# marked sites: %s\n' "$(tr '\n' ' ' <"$expected_sites")"
+      printf '# reported sites: %s\n\n' "$(tr '\n' ' ' <"$reported_sites")"
+    } >>"$EV"
+    if [[ ! -s "$expected_sites" ]]; then
+      detail "the throw-scan control carries no marked site, so it proves nothing"
+      failed=1
+    elif ! diff -u "$expected_sites" "$reported_sites" >>"$EV" 2>&1; then
+      detail "the lexical throw scan does not report exactly the marked sites of its own control"
+      failed=1
+    fi
+
+    # And the walk's own fail-closed control: a root that is not there must
+    # be reported as a gap (status 2), never as a tree with no throw in it.
+    local missing_root="$control_dir/absent-root"
+    local missing_out=""
+    local missing_rc=0
+    missing_out="$(rule5_throw_scan - "$missing_root" 2>&1)" || missing_rc=$?
+    {
+      printf '## the throw scan against an absent root (2 is the pass: a gap, not an absence of throws)\n'
+      printf '# root: %s\n' "${missing_root#"$ROOT"/}"
+      printf '%s\n# exit: %s\n\n' "$missing_out" "$missing_rc"
+    } >>"$EV"
+    if [[ -e "$missing_root" ]]; then
+      detail "the throw-scan walk control needs a path that does not exist, and $missing_root does"
+      failed=1
+    elif [[ "$missing_rc" -ne 2 ]]; then
+      detail "the lexical throw scan read an unreachable root as an absence of throws (exit $missing_rc, expected 2)"
+      failed=1
+    fi
+  fi
+
   run_sbt gate05-failable "testOnly *SmartConstructorSpec *FailableSurfaceSpec *ApiSurfaceSpec *FailureSpec" || rc=$?
   {
     printf '# command: sbt -batch "testOnly *SmartConstructorSpec *FailableSurfaceSpec '
@@ -2773,7 +6010,7 @@ row_08_explicit_error_handling() {
   fi
 
   if [[ "$failed" -eq 0 ]]; then
-    detail "no null, no throw outside ArgCheck.scala, failable-surface specs green"
+    detail "no null, no throw expression of any spelling outside ArgCheck.scala (scan verified against its own control), failable-surface specs green"
   fi
   return "$failed"
 }
@@ -3154,6 +6391,1598 @@ PY
 }
 
 #=============================================================================
+# Row 11a - Gate 5 / Rule 4 and the construction policy of AAP section 0.3.3:
+# construction and Java serialization are closed on the JVM, and not only in
+# the Scala source that seals them.
+#
+#   Rule 4's closed families, and the representation every validated and
+#   normalising type uses - `sealed abstract case class X private (...)`,
+#   which generates neither `apply` nor `copy` - are enforced by scalac and by
+#   nothing else. In the class file:
+#
+#     * `sealed` leaves no trace: this language version emits no
+#       `PermittedSubclasses` attribute, so a family's base class and a
+#       validated type are ordinary extensible public abstract classes;
+#     * a `private` or `private[pkg]` constructor is emitted PUBLIC, the JVM
+#       having no matching access level;
+#     * the compiler gives every case class and case object a
+#       `java.io.Serializable` supertype, so `java.io.ObjectInputStream` has a
+#       second construction path into each of them, which fills fields no
+#       factory validated.
+#
+#   A caller compiled against these class files by another language could
+#   therefore mint the dynamic currencies, indices and conventions this port
+#   deliberately removed, and forge validated values holding exactly the
+#   inputs their factories reject. Both routes are closed in the sources: the
+#   base class of every closed type runs a construction guard in its own
+#   constructor - `JvmClosure.requireSoleImplementation` for a validated or
+#   normalising type, `JvmClosure.requireDeclaredMember` for a named family -
+#   which admits only the implementations the type itself declares, and every
+#   product of both modules mixes in `NoJavaSerialization`, whose
+#   `writeReplace` and `readResolve` refuse the write and the read path.
+#
+#   Two facts decide the shape of this row, and both were measured rather than
+#   assumed. First, `private final class Impl` is emitted as an ACC_PUBLIC
+#   class with an ACC_PUBLIC constructor: only the `InnerClasses` attribute
+#   records the `private`, which `javac` honours and a class file emitted
+#   without a compiler does not, so IDENTITY OF THE CLASS BEING CONSTRUCTED IS
+#   NOT CLOSURE ON ITS OWN - what closes it is each type restating, over the
+#   fields it holds, the invariant its factory establishes. Second, a `sealed
+#   trait` compiles to a plain JVM interface with no closure at all, so the
+#   roots of the closed hierarchies - `Index`, `FloatingRateIndex` and
+#   `RateIndex` - are abstract classes whose constructors refuse a
+#   subtype outside the families they admit. `IndexObservation` is not among
+#   them: it is an open contract by design (divergence row 46 of
+#   SCALA_MIGRATION.md), so no closure is claimed for it.
+#
+#   This row measures the closure in eight parts, five of which are attacks:
+#
+#     1. a reflective sweep over every compiled class of both modules: every
+#        `scala.Product` refuses Java serialization; every concrete subclass
+#        of an abstract class of these modules is declared inside that class
+#        or one of its ancestors and is final, abstract or a singleton; and
+#        nothing else taking part in Java serialization holds data of the
+#        library (the residue is the compiler's own encoding - singleton
+#        modules, derivation classes, lambdas - counted and reported);
+#     2. the same program DERIVES the closed types, a closed type being an
+#        abstract class with an implementation declared inside it, and
+#        generates the attack sources of parts 4 and 5 from them;
+#     3. a bytecode sweep derived from the SOURCES instead: every
+#        `sealed abstract case class _ private` and every
+#        `sealed abstract class _ private[pkg]` calls its guard in its own
+#        constructor, and the total agrees with the count part 2 derived -
+#        so a type that lost its guard, or an implementation that moved out
+#        of its family, fails here whichever side it is seen from;
+#     4. attack one, compiled by javac: naming a hidden implementation class
+#        must FAIL to compile, for every hidden implementation both modules
+#        hold;
+#     5. attack two, compiled by javac and then run: an external subclass of
+#        every closed type must compile - the JVM does permit it - and must
+#        not construct. Each attempt is classified as refused by the guard,
+#        refused before the guard was reached (a base class deriving a field
+#        from a constructor argument raises on the synthetic argument while
+#        evaluating the `super` call), or constructed, the last being the
+#        finding this row exists to report;
+#     6. attack three, compiled by javac and then run: a foreign subtype of
+#        every level of every closed hierarchy, derived in part 2 as an
+#        abstract class of these modules that another abstract class of theirs
+#        extends. Each must compile and none may construct, which is what
+#        makes a match the Scala compiler proved exhaustive exhaustive at run
+#        time as well;
+#     7. attack four, the emitted-bytecode route part 4 does not cover: a stub
+#        tree declares each hidden implementation as a top-level class under
+#        its BINARY name (`$` being a legal Java identifier character), an
+#        attacker is compiled against that stub so that its bytecode carries a
+#        plain `new` and `invokespecial` on the real binary constructor, and it
+#        is then run against the real classes. The instructions are shown in
+#        the evidence, and every forged state must be refused BY THE
+#        INVARIANT, identified in the refusal message, rather than by chance;
+#     8. attack five, a real forged object stream: a stub declares the type
+#        with OVERRIDABLE serialization hooks, a subclass overriding both to
+#        return itself is compiled against it, a stream carrying that subclass
+#        is written with the stub on the classpath, and the stream is read
+#        against the real classes - where `ObjectInputStream.readObject` must
+#        itself fail, the hooks being `final` and the JVM rejecting a class
+#        that overrides a final method when it is loaded.
+#
+#   Everything this row generates lands under `target/audit/jvm-closure/`,
+#   which is git-ignored and outside every tree the other rows scan, so
+#   Gate 2a's "no `.java` under either module or the build definition" scan
+#   and the repository-boundary row are untouched by it.
+#=============================================================================
+
+# closure_metric <line prefix> <file> - the number a line of the audit's
+# output ends with, or the empty string when the line is absent. The prefix is
+# matched at the start of the line so that two metrics sharing a word cannot
+# be confused.
+closure_metric() {
+  awk -v key="$1" 'index($0, key) == 1 {
+    value = $0
+    sub(/^[^=]*=[[:space:]]*/, "", value)
+    print value
+    exit
+  }' "$2"
+}
+
+row_11a_jvm_closure() {
+  new_evidence "jvm-closure.txt" || return 1
+  local failed=0
+  local rc=0
+  local work="$AUDIT_DIR/jvm-closure"
+
+  # A fresh tree per run: a probe or a forged subclass left by an earlier run
+  # would be compiled and counted by this one.
+  if ! rm -rf "$work"; then
+    detail "the working directory ${work#"$ROOT"/} could not be cleared"
+    return 1
+  fi
+  if ! mkdir -p "$work/src" "$work/emit"; then
+    detail "the working directory ${work#"$ROOT"/} could not be created"
+    return 1
+  fi
+
+  # -- 1. the compiled output and a runtime classpath ----------------------
+  local directory
+  for directory in "$COLLECT_CLASSES" "$BASICS_CLASSES"; do
+    if [[ ! -d "$ROOT/$directory" ]]; then
+      detail "$directory is missing: the modules must be compiled before this row"
+      return 1
+    fi
+  done
+
+  rc=0
+  run_sbt gate11a-classpath "export strata-basics/Compile/fullClasspath" || rc=$?
+  local classpath_log="$SBT_LOG"
+  # `export` prints the value unprefixed; sbt's own chatter is `[...]`-prefixed.
+  # The root project aggregates the other, so `export` prints BOTH projects'
+  # values - and strata-collect's classpath does not carry the basics classes.
+  # The line is therefore selected by carrying both modules' output AND
+  # `scala-library`: a line missing any of the three is not the classpath this
+  # row needs, and compiling the attacks against it would fail for the wrong
+  # reason - which is how a javac that refused every probe because a package
+  # was absent could be read as a javac that refused it for its access.
+  local classpath
+  classpath="$(awk -v collect="$COLLECT_CLASSES" -v basics="$BASICS_CLASSES" \
+    '!/^\[/ && /scala-library/ && index($0, collect) && index($0, basics) { print; exit }' \
+    "$classpath_log")"
+  {
+    printf '## Gate 5 / Rule 4 - JVM construction and serialization closure\n'
+    printf '# classpath log: %s (sbt exit %s)\n' "${classpath_log#"$ROOT"/}" "$rc"
+    printf '# classpath entries: %s\n' "$(printf '%s' "$classpath" | tr ':' '\n' | awk 'NF { n++ } END { print n + 0 }')"
+    printf '# generated attack sources: %s\n\n' "${work#"$ROOT"/}"
+  } >>"$EV"
+  if [[ "$rc" -ne 0 || -z "$classpath" ]]; then
+    detail "the Compile classpath of strata-basics could not be exported (sbt exit $rc)"
+    return 1
+  fi
+
+  # -- 2. the reflective sweep, which also generates the attacks -----------
+  local audit_source="$work/src/JvmClosureAudit.java"
+  if ! cat >"$audit_source" <<'JAVA'
+package audit;
+
+import java.io.File;
+import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeSet;
+import java.util.stream.Stream;
+
+/**
+ * Audits the JVM-level construction and serialization closure of the two Scala modules, and
+ * generates the Java sources that attack it.
+ *
+ * Usage: JvmClosureAudit <emit-dir> <classes-dir>...
+ *
+ * The reflective half asserts three properties over every class the modules emit:
+ *   1. every class carrying the compiler's product encoding refuses Java serialization, by being
+ *      a subtype of com.opengamma.strata.collect.NoJavaSerialization;
+ *   2. every concrete subclass of an abstract class of these modules is declared inside that
+ *      class or one of its ancestors, and is final, abstract or a singleton module - so no
+ *      anonymous or foreign implementation is published;
+ *   3. nothing else that takes part in Java serialization holds data of the library: the residue
+ *      is the compiler's own encoding (singleton modules, derivation classes, lambdas).
+ *
+ * The generating half writes, into the directory named first:
+ *   probe/   one Java source per hidden implementation class, naming it. Every one of them MUST
+ *            fail to compile: that is the gate's proof that the implementations are unreachable.
+ *   forge/   one Java source per closed type that Java could extend, declaring a subclass of it
+ *            with a no-argument constructor, plus a runner. Every one of them MUST compile - the
+ *            JVM does permit the subclass - and MUST raise at construction, which is the gate's
+ *            proof that the guard closes what the class file leaves open.
+ */
+public final class JvmClosureAudit {
+
+  /** The package prefix of the two modules being audited. */
+  private static final String MODULE_PACKAGE = "com.opengamma.strata.";
+
+  public static void main(String[] args) throws Exception {
+    if (args.length < 2) {
+      System.err.println("usage: JvmClosureAudit <emit-dir> <classes-dir>...");
+      System.exit(2);
+    }
+    Path emitDirectory = Path.of(args[0]);
+    List<Path> roots = new ArrayList<>();
+    List<URL> urls = new ArrayList<>();
+    for (int index = 1; index < args.length; index++) {
+      Path root = Path.of(args[index]);
+      roots.add(root);
+      urls.add(root.toUri().toURL());
+    }
+    for (String entry : System.getProperty("java.class.path").split(File.pathSeparator)) {
+      urls.add(Path.of(entry).toUri().toURL());
+    }
+    ClassLoader loader = new URLClassLoader(urls.toArray(new URL[0]), JvmClosureAudit.class.getClassLoader());
+    Class<?> product = loader.loadClass("scala.Product");
+    Class<?> refusal = loader.loadClass("com.opengamma.strata.collect.NoJavaSerialization");
+
+    List<Class<?>> classes = load(roots, loader);
+    boolean passed = true;
+    passed &= reportSerializationClosure(classes, product, refusal);
+    java.util.Set<Class<?>> closedTypes = new java.util.LinkedHashSet<>();
+    passed &= reportImplementationClosure(classes, closedTypes);
+    passed &= reportBinaryEntryPoints(classes);
+    passed &= reportForgeableTypes(classes, closedTypes);
+    passed &= emitProbes(classes, emitDirectory);
+    passed &= emitForges(closedTypes, emitDirectory);
+    passed &= emitRootForges(deriveRoots(classes, closedTypes), emitDirectory);
+    System.out.println("verdict = " + (passed ? "PASS" : "FAIL"));
+    System.exit(passed ? 0 : 1);
+  }
+
+  /** Loads every class file under the given roots, without initialising any of them. */
+  private static List<Class<?>> load(List<Path> roots, ClassLoader loader) throws IOException {
+    List<Class<?>> classes = new ArrayList<>();
+    for (Path root : roots) {
+      try (Stream<Path> files = Files.walk(root)) {
+        for (Path file : files.filter(path -> path.toString().endsWith(".class")).toList()) {
+          String name = root.relativize(file).toString().replace(File.separatorChar, '.');
+          name = name.substring(0, name.length() - ".class".length());
+          try {
+            classes.add(Class.forName(name, false, loader));
+          } catch (Throwable failure) {
+            System.out.println("UNLOADABLE " + name + ": " + failure);
+          }
+        }
+      }
+    }
+    classes.sort(Comparator.comparing(Class::getName));
+    System.out.println("classes audited                       = " + classes.size());
+    return classes;
+  }
+
+  /** Property 1 and property 3: the two halves of the serialization closure. */
+  private static boolean reportSerializationClosure(
+      List<Class<?>> classes, Class<?> product, Class<?> refusal) throws ClassNotFoundException {
+    Class<?> serializable = Class.forName("java.io.Serializable");
+    List<String> unrefused = new ArrayList<>();
+    List<String> residue = new ArrayList<>();
+    int products = 0;
+    int modules = 0;
+    int generated = 0;
+    for (Class<?> candidate : classes) {
+      boolean refuses = refusal.isAssignableFrom(candidate);
+      if (product.isAssignableFrom(candidate)) {
+        products++;
+        if (!refuses) { unrefused.add(candidate.getName()); }
+        continue;
+      }
+      if (!serializable.isAssignableFrom(candidate) || refuses) { continue; }
+      String name = candidate.getName();
+      if (name.endsWith("$")) { modules++; }
+      else if (name.contains("$anon") || name.contains("$$Lambda")) { generated++; }
+      else { residue.add(name); }
+    }
+    System.out.println("product classes                       = " + products);
+    System.out.println("products not refusing serialization    = " + unrefused.size());
+    unrefused.forEach(name -> System.out.println("   UNREFUSED " + name));
+    System.out.println("serializable residue: modules = " + modules
+        + ", derivation/lambda = " + generated + ", other = " + residue.size());
+    residue.forEach(name -> System.out.println("   OTHER-SERIALIZABLE " + name));
+    return unrefused.isEmpty() && residue.isEmpty() && products > 150;
+  }
+
+  /** Property 2: no implementation of an abstract type of these modules is published. */
+  private static boolean reportImplementationClosure(
+      List<Class<?>> classes, java.util.Set<Class<?>> closedTypes) {
+    Map<String, TreeSet<String>> open = new LinkedHashMap<>();
+    int checked = 0;
+    for (Class<?> candidate : classes) {
+      Class<?> parent = candidate.getSuperclass();
+      if (parent == null || !parent.getName().startsWith(MODULE_PACKAGE)) { continue; }
+      if (!Modifier.isAbstract(parent.getModifiers())) { continue; }
+      checked++;
+      // A type with an implementation declared inside it is a closed type of this port: a
+      // validated or normalising type, or the head of a named family. That is derived here
+      // rather than listed, so the forge below attacks the closed types the modules actually
+      // publish - and an extension point, which has no implementation of its own inside it,
+      // is not mistaken for one.
+      for (Class<?> ancestor = parent; ancestor != null; ancestor = ancestor.getSuperclass()) {
+        if (ancestor.getName().startsWith(MODULE_PACKAGE) && Modifier.isAbstract(ancestor.getModifiers())
+            && candidate.getDeclaringClass() == ancestor) {
+          closedTypes.add(parent);
+        }
+      }
+      // A subclass is closed in one of three ways the class file can express, and this reports
+      // the ones that are closed in none of them - a class something outside these modules could
+      // extend, and the anonymous `new X(...) {}` form the validated types were first written
+      // with, which the compiler publishes with a public constructor and which no declaration
+      // names. An abstract candidate passes without being nested inside its parent, because no
+      // instance of it exists and the concrete classes extending it are checked by this same
+      // loop; that is also the only shape a multi-level closed hierarchy can take, and those
+      // levels are attacked in their own right by the root forge below. A named final class
+      // passes likewise: a total type is published as itself.
+      boolean named = !candidate.isAnonymousClass() && !candidate.isSynthetic()
+          && !candidate.getName().contains("$anon$");
+      boolean abstractLevel = Modifier.isAbstract(candidate.getModifiers());
+      boolean closedShape = abstractLevel
+          || candidate.getName().endsWith("$")
+          || (named && Modifier.isFinal(candidate.getModifiers()));
+      if (!closedShape) {
+        open.computeIfAbsent(parent.getName(), key -> new TreeSet<>())
+            .add(candidate.getName()
+                + (named ? "" : " [no declaration names this class]")
+                + (Modifier.isFinal(candidate.getModifiers()) ? "" : " [neither final nor a singleton]"));
+      }
+    }
+    System.out.println("concrete subclasses of abstract types  = " + checked);
+    System.out.println("closed types (implementation inside)   = " + closedTypes.size());
+    System.out.println("implementations not declared in family = " + open.size());
+    open.forEach((parent, kids) -> kids.forEach(kid -> System.out.println("   OPEN " + parent + " <- " + kid)));
+    return open.isEmpty() && checked > 100;
+  }
+
+  /**
+   * Reports which closed types have an implementation whose constructor CARRIES STATE.
+   *
+   * The distinction decides what a closed type has to check. An implementation whose constructor
+   * takes no argument - the `case object` members of a convention family are the case - holds no
+   * field a forged construction could set, so identity is the whole of its closure and there is
+   * no invariant to state. An implementation that takes arguments can be handed any values that
+   * type-check, through the public constructor part 7 attacks, so its type must restate the
+   * invariant its factory establishes. The two sets are derived here and the source-derived sweep
+   * of part 3 requires an invariant of every member of the first, so a type that gains a
+   * stateful implementation later gains the obligation with it.
+   */
+  private static boolean reportForgeableTypes(
+      List<Class<?>> classes, java.util.Set<Class<?>> closedTypes) {
+    java.util.Set<String> stateful = new TreeSet<>();
+    java.util.Set<String> stateless = new TreeSet<>();
+    for (Class<?> closed : closedTypes) {
+      boolean carriesState = false;
+      for (Class<?> candidate : classes) {
+        if (candidate == closed) { continue; }
+        if (!closed.isAssignableFrom(candidate)) { continue; }
+        if (Modifier.isAbstract(candidate.getModifiers())) { continue; }
+        for (Constructor<?> constructor : candidate.getDeclaredConstructors()) {
+          if (constructor.getParameterCount() > 0) { carriesState = true; }
+        }
+      }
+      if (carriesState) { stateful.add(closed.getName() + " " + chainOf(classes, closed)); }
+      else { stateless.add(closed.getName()); }
+    }
+    System.out.println("closed types with stateful implementations = " + stateful.size());
+    System.out.println("closed types with stateless implementations = " + stateless.size());
+    stateful.forEach(name -> System.out.println("   FORGEABLE " + name));
+    stateless.forEach(name -> System.out.println("   STATELESS " + name));
+    return stateful.size() + stateless.size() == closedTypes.size() && !stateful.isEmpty();
+  }
+
+  /**
+   * The classes on the construction path of every stateful implementation of a closed type.
+   *
+   * The invariant of a value belongs where its fields are declared, which is not always the head
+   * of the family: `DayCount` publishes twenty-one `case object` members holding nothing and one
+   * `Bus252` holding a calendar, so the condition that its name matches that calendar is stated
+   * by `Bus252` and not by `DayCount`; `RollConvention` is the same, with the day-of-month and
+   * day-of-week members holding the only fields. The chain named here is therefore every class
+   * from each stateful implementation up to and including the closed type, and the source-derived
+   * half requires the invariant to appear in the constructor of one of them.
+   */
+  private static String chainOf(List<Class<?>> classes, Class<?> closed) {
+    java.util.Set<String> chain = new java.util.LinkedHashSet<>();
+    for (Class<?> candidate : classes) {
+      if (Modifier.isAbstract(candidate.getModifiers()) || !closed.isAssignableFrom(candidate)) { continue; }
+      boolean carriesState = false;
+      for (Constructor<?> constructor : candidate.getDeclaredConstructors()) {
+        if (constructor.getParameterCount() > 0) { carriesState = true; }
+      }
+      if (!carriesState) { continue; }
+      for (Class<?> step = candidate; step != null; step = step.getSuperclass()) {
+        chain.add(step.getName());
+        if (step == closed) { break; }
+      }
+    }
+    return String.join(";", chain);
+  }
+
+  /**
+   * Reports how many hidden implementation classes expose a PUBLIC constructor in the class file.
+   *
+   * This is the hole the invariants exist to close, measured rather than assumed. A hidden
+   * implementation is `private final class Impl` in the Scala source, and `javac` honours that
+   * through the `InnerClasses` attribute - which is what the probes of part 4 prove. The class
+   * and its constructor are nevertheless both `ACC_PUBLIC` in the class file, because this
+   * language version emits no nest members and the JVM has no matching access level, so a class
+   * file produced without a Java or Scala compiler reaches the constructor directly. The count
+   * is reported so that a reader can see the size of the surface the invariant checks cover, and
+   * it must be non-trivial or the attacks of part 7 would be testing an empty set.
+   */
+  private static boolean reportBinaryEntryPoints(List<Class<?>> classes) {
+    int reachable = 0;
+    int restricted = 0;
+    for (Class<?> candidate : classes) {
+      if (!candidate.getName().startsWith(MODULE_PACKAGE)) { continue; }
+      if (!Modifier.isPrivate(candidate.getModifiers())) { continue; }
+      if (candidate.getDeclaringClass() == null) { continue; }
+      boolean open = false;
+      for (Constructor<?> constructor : candidate.getDeclaredConstructors()) {
+        if (Modifier.isPublic(constructor.getModifiers())) { open = true; }
+      }
+      if (open) { reachable++; } else { restricted++; }
+    }
+    System.out.println("binary entry points reachable         = " + reachable);
+    System.out.println("binary entry points restricted        = " + restricted);
+    return reachable >= 30;
+  }
+
+  /**
+   * Derives the roots and intermediates of the closed hierarchies of these modules.
+   *
+   * A root carries no data and declares no implementation of its own, so the derivation of part 2
+   * - an abstract class with an implementation declared inside it - cannot see it, and it is
+   * exactly the shape a foreign class file can claim most cheaply. The rule here is the
+   * complementary one: an abstract class of these modules that another ABSTRACT class of theirs
+   * extends is a level of a hierarchy rather than a leaf, and every level must refuse a subtype
+   * that belongs to none of the families it admits. `Index`, `FloatingRateIndex` and `RateIndex`
+   * are the cases, and they are found rather than named, so a hierarchy added
+   * later is attacked by this row without it being edited.
+   */
+  private static java.util.Set<Class<?>> deriveRoots(
+      List<Class<?>> classes, java.util.Set<Class<?>> closedTypes) {
+    java.util.Set<Class<?>> roots = new java.util.LinkedHashSet<>();
+    for (Class<?> candidate : classes) {
+      if (!candidate.getName().startsWith(MODULE_PACKAGE)) { continue; }
+      if (!Modifier.isAbstract(candidate.getModifiers()) || candidate.isInterface()) { continue; }
+      Class<?> parent = candidate.getSuperclass();
+      if (parent == null || !parent.getName().startsWith(MODULE_PACKAGE)) { continue; }
+      if (!Modifier.isAbstract(parent.getModifiers()) || parent.isInterface()) { continue; }
+      if (closedTypes.contains(parent)) { continue; }
+      roots.add(parent);
+    }
+    System.out.println("closed hierarchy levels derived       = " + roots.size());
+    // Each level is printed with the levels above it, because the subtype guard is run by the
+    // ROOT of a hierarchy and inherited by every level beneath it: `RateIndex` declares no guard
+    // of its own, and does not need one, since its constructor calls `FloatingRateIndex`'s which
+    // calls `Index`'s, which is where the guard is.
+    roots.forEach(root -> {
+      StringBuilder chain = new StringBuilder();
+      for (Class<?> step = root; step != null && step.getName().startsWith(MODULE_PACKAGE);
+          step = step.getSuperclass()) {
+        if (chain.length() > 0) { chain.append(';'); }
+        chain.append(step.getName());
+      }
+      System.out.println("   ROOT " + root.getName() + " " + chain);
+    });
+    return roots;
+  }
+
+  /**
+   * Writes one Java subclass per derived hierarchy level, plus a runner that constructs each.
+   *
+   * Each must COMPILE - the level is a public abstract class whose constructor the class file
+   * publishes, so the JVM permits the subclass - and none may construct. What refuses them is
+   * `JvmClosure.requirePermittedSubtype` in the level's own constructor, which is the check that
+   * makes a match the Scala compiler proved exhaustive exhaustive at run time as well.
+   */
+  private static boolean emitRootForges(java.util.Set<Class<?>> roots, Path emitDirectory)
+      throws IOException {
+    Path directory = emitDirectory.resolve("rootforge");
+    Files.createDirectories(directory);
+    List<String> forged = new ArrayList<>();
+    List<String> skipped = new ArrayList<>();
+    for (Class<?> candidate : roots) {
+      if (!Modifier.isPublic(candidate.getModifiers()) || candidate.getCanonicalName() == null) {
+        skipped.add(candidate.getName() + " [not nameable from Java]");
+        continue;
+      }
+      Constructor<?> constructor = narrowest(candidate);
+      if (constructor == null) { skipped.add(candidate.getName() + " [no reachable constructor]"); continue; }
+      String arguments = argumentsFor(constructor);
+      if (arguments == null) { skipped.add(candidate.getName() + " [constructor names a hidden type]"); continue; }
+      String stubs = stubsFor(candidate);
+      if (stubs == null) { skipped.add(candidate.getName() + " [abstract member names a hidden type]"); continue; }
+      String name = "RootForge_" + (forged.size() + 1);
+      Files.writeString(directory.resolve(name + ".java"),
+          "package audit.rootforge;\n\n"
+              + "/** A foreign subtype of " + candidate.getName() + ", which must not be constructible. */\n"
+              + "public final class " + name + " extends " + candidate.getCanonicalName() + " {\n"
+              + "  public " + name + "() {\n"
+              + "    super(" + arguments + ");\n"
+              + "  }\n"
+              + stubs
+              + "}\n");
+      forged.add(name + " extends " + candidate.getName());
+    }
+    StringBuilder runner = new StringBuilder();
+    runner.append("package audit.rootforge;\n\n")
+        .append("/** Constructs a foreign subtype of every closed hierarchy level. */\n")
+        .append("public final class RootForgeRunner {\n")
+        .append("  public static void main(String[] args) {\n")
+        .append("    int guarded = 0;\n")
+        .append("    int otherwise = 0;\n")
+        .append("    int admitted = 0;\n");
+    for (int index = 0; index < forged.size(); index++) {
+      String name = "RootForge_" + (index + 1);
+      String label = forged.get(index).replace("\"", "");
+      runner.append("    try { new ").append(name).append("(); admitted++; System.out.println(\"ADMITTED ")
+          .append(label).append("\"); }\n")
+          .append("    catch (IllegalArgumentException refusal) { guarded++; System.out.println(\"REFUSED-BY-GUARD ")
+          .append(label).append(" -> \" + refusal.getMessage()); }\n")
+          .append("    catch (Throwable other) { otherwise++; System.out.println(\"REFUSED-OTHERWISE ")
+          .append(label).append(" -> \" + other); }\n");
+    }
+    runner.append("    System.out.println(\"foreign subtypes of a hierarchy level = \" + (guarded + otherwise + admitted));\n")
+        .append("    System.out.println(\"hierarchy levels refusing a foreign subtype = \" + guarded);\n")
+        .append("    System.out.println(\"hierarchy levels refusing before the guard = \" + otherwise);\n")
+        .append("    System.out.println(\"hierarchy levels admitting a foreign subtype = \" + admitted);\n")
+        .append("    System.exit(admitted == 0 && guarded >= 3 ? 0 : 1);\n")
+        .append("  }\n}\n");
+    Files.writeString(directory.resolve("RootForgeRunner.java"), runner.toString());
+    System.out.println("foreign hierarchy subtypes generated  = " + forged.size());
+    System.out.println("hierarchy levels not forgeable        = " + skipped.size());
+    skipped.forEach(entry -> System.out.println("   NOT-FORGED-ROOT " + entry));
+    return forged.size() >= 3;
+  }
+
+  /** Whether a class is declared inside its parent or inside one of the parent's ancestors. */
+  private static boolean declaredInFamily(Class<?> candidate, Class<?> parent) {
+    Class<?> declaring = candidate.getDeclaringClass();
+    if (declaring == null) { return false; }
+    for (Class<?> ancestor = parent; ancestor != null; ancestor = ancestor.getSuperclass()) {
+      if (declaring == ancestor) { return true; }
+    }
+    return false;
+  }
+
+  /**
+   * Writes one Java source per hidden implementation class, naming that class and nothing else.
+   * Every one must fail to compile.
+   */
+  private static boolean emitProbes(List<Class<?>> classes, Path emitDirectory) throws IOException {
+    Path directory = emitDirectory.resolve("probe");
+    Files.createDirectories(directory);
+    int written = 0;
+    for (Class<?> candidate : classes) {
+      if (!candidate.getName().startsWith(MODULE_PACKAGE)) { continue; }
+      if (!Modifier.isPrivate(candidate.getModifiers())) { continue; }
+      if (candidate.getDeclaringClass() == null || candidate.getCanonicalName() == null) { continue; }
+      written++;
+      String name = "Probe_" + written;
+      Files.writeString(directory.resolve(name + ".java"),
+          "package audit.probe;\n\n"
+              + "/** Names " + candidate.getName() + ", which must not be nameable. */\n"
+              + "final class " + name + " {\n"
+              + "  static final Class<?> HIDDEN = " + candidate.getCanonicalName() + ".class;\n"
+              + "}\n");
+    }
+    System.out.println("hidden implementation probes written   = " + written);
+    return written >= 30;
+  }
+
+  /**
+   * Writes one Java subclass per closed type Java is able to extend, plus a runner that tries to
+   * construct each of them. Every one must compile and every one must raise.
+   */
+  private static boolean emitForges(java.util.Set<Class<?>> closedTypes, Path emitDirectory)
+      throws IOException {
+    Path directory = emitDirectory.resolve("forge");
+    Files.createDirectories(directory);
+    List<String> forged = new ArrayList<>();
+    List<String> skipped = new ArrayList<>();
+    for (Class<?> candidate : closedTypes) {
+      if (!Modifier.isPublic(candidate.getModifiers()) || candidate.getCanonicalName() == null) {
+        skipped.add(candidate.getName() + " [not nameable from Java]");
+        continue;
+      }
+      Constructor<?> constructor = narrowest(candidate);
+      if (constructor == null) { skipped.add(candidate.getName() + " [no reachable constructor]"); continue; }
+      String arguments = argumentsFor(constructor);
+      if (arguments == null) { skipped.add(candidate.getName() + " [constructor names a hidden type]"); continue; }
+      String stubs = stubsFor(candidate);
+      if (stubs == null) { skipped.add(candidate.getName() + " [abstract member names a hidden type]"); continue; }
+      String name = "Forge_" + (forged.size() + 1);
+      Files.writeString(directory.resolve(name + ".java"),
+          "package audit.forge;\n\n"
+              + "/** An external subclass of " + candidate.getName() + ", which must not be constructible. */\n"
+              + "public final class " + name + " extends " + candidate.getCanonicalName() + " {\n"
+              + "  public " + name + "() {\n"
+              + "    super(" + arguments + ");\n"
+              + "  }\n"
+              + stubs
+              + "}\n");
+      forged.add(name + " extends " + candidate.getName());
+    }
+    // The runner classifies each attempt three ways, because the two failures are not the same
+    // claim. A refusal by the guard is the property this gate exists to assert. A refusal by
+    // anything else still means no instance was created - a closed type whose base class derives
+    // a field from a constructor argument raises on the synthetic argument while evaluating the
+    // `super` call, before the guard is reached - and is reported separately rather than counted
+    // as a guard refusal it is not. A construction that completes is the finding.
+    StringBuilder runner = new StringBuilder();
+    runner.append("package audit.forge;\n\n")
+        .append("/** Constructs every forged subclass, and reports one line per attempt. */\n")
+        .append("public final class ForgeRunner {\n")
+        .append("  public static void main(String[] args) {\n")
+        .append("    int guarded = 0;\n")
+        .append("    int otherwise = 0;\n")
+        .append("    int admitted = 0;\n");
+    for (int index = 0; index < forged.size(); index++) {
+      String name = "Forge_" + (index + 1);
+      String label = forged.get(index).replace("\"", "");
+      runner.append("    try { new ").append(name).append("(); admitted++; System.out.println(\"ADMITTED ")
+          .append(label).append("\"); }\n")
+          .append("    catch (IllegalArgumentException refusal) { guarded++; System.out.println(\"REFUSED-BY-GUARD ")
+          .append(label).append("\"); }\n")
+          .append("    catch (Throwable other) { otherwise++; System.out.println(\"REFUSED-OTHERWISE ")
+          .append(label).append(" -> \" + other); }\n");
+    }
+    runner.append("    System.out.println(\"forged subclasses = \" + (guarded + otherwise + admitted));\n")
+        .append("    System.out.println(\"refused by the construction guard = \" + guarded);\n")
+        .append("    System.out.println(\"refused before the guard was reached = \" + otherwise);\n")
+        .append("    System.out.println(\"constructed successfully = \" + admitted);\n")
+        .append("    System.exit(admitted == 0 && guarded >= 40 ? 0 : 1);\n")
+        .append("  }\n}\n");
+    Files.writeString(directory.resolve("ForgeRunner.java"), runner.toString());
+    System.out.println("external subclasses generated          = " + forged.size());
+    System.out.println("closed types not forgeable from Java   = " + skipped.size());
+    skipped.forEach(entry -> System.out.println("   NOT-FORGED " + entry));
+    return forged.size() >= 40;
+  }
+
+  /**
+   * The member implementations a Java subclass of this class has to supply, as source.
+   *
+   * A closed type may leave members abstract - a name a data table supplies, a calculation each
+   * member defines - and Java will not compile a subclass that does not implement them. They are
+   * stubbed here so that the attack the forge represents is compiled and run rather than declared
+   * impossible: the stubs are never called, because construction raises before the object exists.
+   *
+   * @param candidate  the class being subclassed
+   * @return the stub declarations, or null when a member's signature names a type Java cannot see
+   */
+  private static String stubsFor(Class<?> candidate) {
+    StringBuilder stubs = new StringBuilder();
+    // Every method reachable on the candidate, grouped by the signature a Java override has to
+    // match - the name and the parameter types, the return type being free to narrow. Grouping is
+    // what keeps a multi-level hierarchy stubbable: a level may declare a member abstract and
+    // return a general type where the level below narrows it, and a level may declare it abstract
+    // where a leaf implements it FINAL. Emitting the declaration as each level words it produces
+    // a class that does not compile - "return type Index is not compatible with FxIndex", or
+    // "overridden method is final" - so the group decides once, for all of them.
+    Map<String, List<Method>> bySignature = new LinkedHashMap<>();
+    List<Method> reachable = new ArrayList<>();
+    for (Method method : candidate.getMethods()) { reachable.add(method); }
+    for (Class<?> current = candidate; current != null; current = current.getSuperclass()) {
+      for (Method method : current.getDeclaredMethods()) {
+        if (!Modifier.isPrivate(method.getModifiers())) { reachable.add(method); }
+      }
+    }
+    for (Method method : reachable) {
+      StringBuilder key = new StringBuilder(method.getName()).append('(');
+      for (Class<?> parameter : method.getParameterTypes()) { key.append(parameter.getName()).append(','); }
+      bySignature.computeIfAbsent(key.append(')').toString(), signature -> new ArrayList<>()).add(method);
+    }
+    List<Method> abstractMethods = new ArrayList<>();
+    for (List<Method> group : bySignature.values()) {
+      // A signature something on the chain implements needs no stub, and must not have one: the
+      // implementation may be final, and even where it is not, overriding it is not the attack.
+      boolean implemented = false;
+      for (Method method : group) {
+        if (!Modifier.isAbstract(method.getModifiers())) { implemented = true; }
+      }
+      if (implemented) { continue; }
+      // Otherwise the most specific return type among the declarations, which is the only one a
+      // single override can satisfy.
+      Method narrowest = group.get(0);
+      for (Method method : group) {
+        if (narrowest.getReturnType().isAssignableFrom(method.getReturnType())) { narrowest = method; }
+      }
+      abstractMethods.add(narrowest);
+    }
+    for (Method method : abstractMethods) {
+      StringBuilder parameters = new StringBuilder();
+      boolean nameable = method.getReturnType().getCanonicalName() != null
+          && !Modifier.isPrivate(method.getReturnType().getModifiers());
+      int index = 0;
+      for (Class<?> parameter : method.getParameterTypes()) {
+        String type = parameter.getCanonicalName();
+        if (type == null || Modifier.isPrivate(parameter.getModifiers())) { nameable = false; break; }
+        if (index > 0) { parameters.append(", "); }
+        parameters.append(type).append(" argument").append(index);
+        index++;
+      }
+      if (!nameable) { return null; }
+      String returnType = method.getReturnType().getCanonicalName();
+      String body = method.getReturnType() == void.class
+          ? ""
+          : "return " + defaultValue(method.getReturnType()) + "; ";
+      stubs.append("\n  @Override\n  public ").append(returnType).append(' ').append(method.getName())
+          .append('(').append(parameters).append(") { ").append(body).append("}\n");
+    }
+    return stubs.toString();
+  }
+
+  /** The constructor with the fewest parameters that Java could call. */
+  private static Constructor<?> narrowest(Class<?> candidate) {
+    Constructor<?> chosen = null;
+    for (Constructor<?> constructor : candidate.getDeclaredConstructors()) {
+      if (!Modifier.isPublic(constructor.getModifiers()) && !Modifier.isProtected(constructor.getModifiers())) { continue; }
+      if (chosen == null || constructor.getParameterCount() < chosen.getParameterCount()) { chosen = constructor; }
+    }
+    return chosen;
+  }
+
+  /** The argument list of a `super(...)` call that satisfies a constructor's signature. */
+  private static String argumentsFor(Constructor<?> constructor) {
+    StringBuilder arguments = new StringBuilder();
+    for (Class<?> parameter : constructor.getParameterTypes()) {
+      if (arguments.length() > 0) { arguments.append(", "); }
+      String value = defaultValue(parameter);
+      if (value == null) { return null; }
+      arguments.append(value);
+    }
+    return arguments.toString();
+  }
+
+  /** A Java expression of the given type, typed so that no overload is ambiguous. */
+  private static String defaultValue(Class<?> parameter) {
+    if (parameter == boolean.class) { return "false"; }
+    if (parameter == char.class) { return "(char) 0"; }
+    if (parameter == byte.class) { return "(byte) 0"; }
+    if (parameter == short.class) { return "(short) 0"; }
+    if (parameter == int.class) { return "0"; }
+    if (parameter == long.class) { return "0L"; }
+    if (parameter == float.class) { return "0.0f"; }
+    if (parameter == double.class) { return "0.0"; }
+    String name = parameter.getCanonicalName();
+    if (name == null || Modifier.isPrivate(parameter.getModifiers())) { return null; }
+    return "(" + name + ") null";
+  }
+}
+JAVA
+  then
+    detail "the audit program could not be written to ${audit_source#"$ROOT"/}"
+    return 1
+  fi
+
+  rc=0
+  javac -d "$work/classes" "$audit_source" >"$work/audit-compile.log" 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    detail "the audit program did not compile (javac exit $rc)"
+    cat "$work/audit-compile.log" >>"$EV"
+    return 1
+  fi
+
+  local audit_output="$work/audit.txt"
+  rc=0
+  java -cp "$classpath:$work/classes" audit.JvmClosureAudit \
+    "$work/emit" "$ROOT/$COLLECT_CLASSES" "$ROOT/$BASICS_CLASSES" >"$audit_output" 2>&1 || rc=$?
+  cat "$audit_output" >>"$EV"
+  if [[ "$rc" -ne 0 ]]; then
+    detail "the reflective closure sweep failed (exit $rc; see ${audit_output#"$ROOT"/})"
+    failed=1
+  fi
+
+  local products unrefused open_implementations residue closed_types probes forges
+  products="$(closure_metric 'product classes' "$audit_output")"
+  unrefused="$(closure_metric 'products not refusing serialization' "$audit_output")"
+  open_implementations="$(closure_metric 'implementations not declared in family' "$audit_output")"
+  residue="$(closure_metric 'serializable residue' "$audit_output")"
+  closed_types="$(closure_metric 'closed types (implementation inside)' "$audit_output")"
+  probes="$(closure_metric 'hidden implementation probes written' "$audit_output")"
+  forges="$(closure_metric 'external subclasses generated' "$audit_output")"
+  local entry_points root_forges
+  entry_points="$(closure_metric 'binary entry points reachable' "$audit_output")"
+  root_forges="$(closure_metric 'foreign hierarchy subtypes generated' "$audit_output")"
+
+  # Vacuity first: a sweep that found no products, no closed types and no
+  # implementations to audit would report zero violations of everything.
+  if [[ -z "$products" || "$products" -lt 150 ]]; then
+    detail "the product sweep found ${products:-no} product classes, which is not the compiled output"
+    failed=1
+  fi
+  if [[ -z "$closed_types" || "$closed_types" -lt 40 ]]; then
+    detail "the sweep derived ${closed_types:-no} closed types, which is not this port's inventory"
+    failed=1
+  fi
+  if [[ -z "$entry_points" || "$entry_points" -lt 30 ]]; then
+    detail "the sweep found ${entry_points:-no} reachable binary entry points, so parts 3 and 7 would assert nothing"
+    failed=1
+  fi
+  if [[ -z "$root_forges" || "$root_forges" -lt 3 ]]; then
+    detail "the sweep derived ${root_forges:-no} closed hierarchy levels, which is not this port's inventory"
+    failed=1
+  fi
+  if [[ "$unrefused" != "0" ]]; then
+    detail "$unrefused compiled product(s) do not refuse Java serialization"
+    failed=1
+  fi
+  if [[ "$open_implementations" != "0" ]]; then
+    detail "$open_implementations abstract type(s) have an implementation declared outside them"
+    failed=1
+  fi
+  if [[ "$residue" != *", other = 0"* ]]; then
+    detail "a type of these modules takes part in Java serialization without refusing it: $residue"
+    failed=1
+  fi
+
+  # -- 3. the same closure, derived from the sources and read in bytecode --
+  local sweep="$work/guard-sweep.txt"
+  rc=0
+  python3 - "$COLLECT_MAIN" "$BASICS_MAIN" "$ROOT/$COLLECT_CLASSES" "$ROOT/$BASICS_CLASSES" \
+    "${closed_types:-0}" "$audit_output" <<'PY' >"$sweep" 2>&1 || rc=$?
+# The source-derived half of this row: the closed declarations are read out of
+# the two module trees, and the guard of each is then read out of its own
+# constructor in the compiled class. Deriving the inventory from the sources
+# rather than from the reflective sweep is the point - the two are independent,
+# and a type that lost its guard, or an implementation that moved out of its
+# family, disagrees with the other side rather than silently shrinking both.
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+collect_main, basics_main, collect_classes, basics_classes, expected_closed, audit_output = sys.argv[1:7]
+classpath = collect_classes + ":" + basics_classes
+
+# The closed types whose implementations carry state, as the reflective half derived them. Each
+# of these is reachable through a PUBLIC constructor in the class file - `private final class
+# Impl` is honoured by javac through the `InnerClasses` attribute and by nothing in the JVM - so
+# for these the identity of the class being constructed is not enough on its own: a class file
+# emitted without a compiler can name the implementation and hand it any arguments that
+# type-check. What closes that is the type restating, over the fields it holds, the invariant its
+# factory establishes, and this requires one of every member of the set.
+#
+# No closed type carrying state is exempt from that, and the set below is kept - empty - rather
+# than removed, so that exempting one is a deliberate act recorded here.
+#
+# `CurrencyAmountArray` was the single exemption while its `of` admitted every array of numbers.
+# It now refuses an element no amount holds, which is a condition on the field it carries and one
+# a direct construction could break, so it states that condition over its field like every other
+# stateful closed type and the exemption is gone. The empty run it still admits satisfies the
+# statement vacuously, which is why removing the exemption costs that value nothing.
+TOTAL_BY_CONSTRUCTION = set()
+stateful = {}
+roots = {}
+for line in Path(audit_output).read_text(encoding="utf-8").splitlines():
+    entry = line.strip()
+    if entry.startswith("FORGEABLE "):
+        # `FORGEABLE <closed type> <chain>` - the chain being every class from a stateful
+        # implementation up to the closed type, since the invariant belongs where the fields are.
+        parts = entry[len("FORGEABLE "):].split(" ", 1)
+        stateful[parts[0]] = parts[1].split(";") if len(parts) > 1 and parts[1] else [parts[0]]
+    elif entry.startswith("ROOT "):
+        # A level of a closed hierarchy: it declares no implementation and holds no data, so what
+        # it runs is the subtype guard rather than the member guard of a named family - and it may
+        # run it by inheritance, the guard belonging to the root of the hierarchy.
+        parts = entry[len("ROOT "):].split(" ", 1)
+        roots[parts[0]] = parts[1].split(";") if len(parts) > 1 and parts[1] else [parts[0]]
+
+# The declaration headers, anchored at the start of a line so that a
+# documentation line quoting the shape of a declaration is not read as one.
+VALIDATED = re.compile(r"(?m)^\s*sealed abstract case class (\w+) private\b")
+FAMILY = re.compile(r"(?m)^\s*sealed abstract class (\w+) private\[")
+
+declarations = []
+for source_root, classes_directory in ((collect_main, collect_classes), (basics_main, basics_classes)):
+    for path in sorted(Path(source_root).rglob("*.scala")):
+        text = path.read_text(encoding="utf-8")
+        for kind, pattern, guard in (
+            ("validated/normalising", VALIDATED, "requireSoleImplementation"),
+            ("named family", FAMILY, "requireDeclaredMember"),
+        ):
+            for match in pattern.finditer(text):
+                line = text[: match.start()].count("\n") + 1
+                declarations.append((kind, match.group(1), guard, f"{path}:{line}", classes_directory))
+
+# One index of the compiled classes per module, so the lookup below is a map
+# read rather than a walk per declaration.
+index = {}
+for classes_directory in (collect_classes, basics_classes):
+    names = {}
+    root = Path(classes_directory)
+    for path in root.rglob("*.class"):
+        stem = path.name[: -len(".class")]
+        binary = str(path.relative_to(root)).replace("/", ".")[: -len(".class")]
+        # Keyed by the innermost name, so that a type declared inside another -
+        # `DayCount.Bus252`, compiled to `DayCount$Bus252` - is found by the name
+        # its declaration uses. A trailing `$` is the singleton class of an object.
+        names.setdefault(stem.rstrip("$").split("$")[-1], []).append(binary)
+    index[classes_directory] = names
+
+
+def guards_in_constructor(binary_name):
+    """The JvmClosure guards a class calls in its own constructor."""
+    result = subprocess.run(
+        ["javap", "-c", "-p", "-cp", classpath, binary_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    start = re.compile(r"^\s+(?:public |protected |private )?" + re.escape(binary_name) + r"\(")
+    inside = False
+    body = []
+    for line in result.stdout.splitlines():
+        if start.match(line):
+            inside = True
+        elif inside and not line.strip():
+            inside = False
+        if inside:
+            body.append(line)
+    return set(re.findall(r"JvmClosure\$\.(require\w+)", "\n".join(body)))
+
+
+print("## the closed declarations of both modules, and the guard each calls")
+missing = []
+unstated = []
+guarded = 0
+invariant = 0
+for kind, simple, guard, origin, classes_directory in declarations:
+    candidates = [
+        name
+        for name in index[classes_directory].get(simple, [])
+        if name.split(".")[-1].rstrip("$").split("$")[-1] == simple
+    ]
+    found = None
+    found_calls = set()
+    for binary_name in sorted(candidates, key=len):
+        calls = guards_in_constructor(binary_name)
+        if calls is None:
+            # javap could not read the class: not the declaration this name refers to
+            continue
+        # A hierarchy level runs the subtype guard instead of the member guard, and is identified
+        # by the reflective half rather than by its declaration, which is identical in shape.
+        wanted = "requirePermittedSubtype" if binary_name in roots else guard
+        if wanted not in calls and binary_name in roots:
+            # inherited from the root of this hierarchy, which is the level that declares it
+            if any(
+                wanted in (guards_in_constructor(level) or set())
+                for level in roots[binary_name]
+                if level != binary_name
+            ):
+                calls = set(calls) | {wanted}
+        if wanted in calls:
+            found = binary_name
+            found_calls = calls
+            guard = wanted
+            kind = "closed hierarchy level" if binary_name in roots else kind
+            break
+    if found is None:
+        missing.append(f"{kind} {simple} ({origin}) does not call {guard} in its constructor")
+        print(f"MISSING  {kind:22s} {simple:28s} {guard}  {origin}")
+    else:
+        guarded += 1
+        # The invariant may be stated by the closed type itself or by any class between it and a
+        # stateful implementation of it, because that is where the fields being checked live.
+        states_invariant = "requireInvariant" in found_calls
+        stated_on_chain = next(
+            (
+                step
+                for step in stateful.get(found, [])
+                if step != found and "requireInvariant" in (guards_in_constructor(step) or set())
+            ),
+            None,
+        )
+        if stated_on_chain is not None:
+            states_invariant = True
+        needs_invariant = found in stateful and found not in TOTAL_BY_CONSTRUCTION
+        if needs_invariant and not states_invariant:
+            unstated.append(
+                f"{kind} {simple} ({origin}) carries state and states no invariant, so the "
+                f"public constructor of its implementation can be handed any arguments"
+            )
+            print(f"NO-INVARIANT {kind:18s} {simple:28s} {guard}  {found}")
+        else:
+            if states_invariant:
+                invariant += 1
+            where = ""
+            if states_invariant:
+                where = "+requireInvariant"
+                if stated_on_chain is not None:
+                    where += "(" + stated_on_chain.split(".")[-1] + ")"
+            print(f"guarded  {kind:22s} {simple:28s} {guard}{where}  {found}")
+
+validated_count = sum(1 for entry in declarations if entry[0] == "validated/normalising")
+family_count = len(declarations) - validated_count
+print()
+print(f"validated and normalising declarations = {validated_count}")
+print(f"named family declarations             = {family_count}")
+print(f"closed declarations                   = {len(declarations)}")
+print(f"closed hierarchy levels among them     = {sum(1 for entry in declarations if entry[1] in {name.split('.')[-1] for name in roots})}")
+print(f"guarded in constructor bytecode       = {guarded}")
+print(f"stating an invariant over their fields = {invariant}")
+print(f"stateful closed types requiring one    = {len(set(stateful) - TOTAL_BY_CONSTRUCTION)}")
+print(f"closed types derived by the sweep     = {expected_closed}")
+for entry in missing + unstated:
+    print("   " + entry)
+
+problems = list(missing) + list(unstated)
+if len(stateful) < 30:
+    problems.append(
+        f"the reflective half reported only {len(stateful)} stateful closed types, so this half "
+        f"would require an invariant of almost nothing"
+    )
+if invariant < len(set(stateful) - TOTAL_BY_CONSTRUCTION):
+    problems.append(
+        f"{invariant} of {len(set(stateful) - TOTAL_BY_CONSTRUCTION)} stateful closed types state an invariant"
+    )
+if validated_count < 30:
+    problems.append(f"only {validated_count} validated or normalising declarations were found")
+if family_count < 10:
+    problems.append(f"only {family_count} named family declarations were found")
+levels = sum(1 for entry in declarations if entry[1] in {name.split(".")[-1] for name in roots})
+if str(len(declarations) - levels) != str(expected_closed):
+    problems.append(
+        f"the sources declare {len(declarations) - levels} closed types besides {levels} hierarchy "
+        f"levels and the reflective sweep derived {expected_closed}: an implementation has moved "
+        f"out of its family, or a type has lost its guard"
+    )
+if levels < 3:
+    problems.append(f"only {levels} closed hierarchy levels were matched against the {len(roots)} derived")
+if problems:
+    print()
+    print("FAIL: " + "; ".join(problems))
+    sys.exit(1)
+print()
+print(
+    "PASS: every closed declaration of both modules guards its own construction, and every one "
+    "whose implementation carries state also states the invariant of its own fields"
+)
+PY
+  cat "$sweep" >>"$EV"
+  if [[ "$rc" -ne 0 ]]; then
+    detail "the source-derived guard sweep failed (exit $rc; see ${sweep#"$ROOT"/})"
+    failed=1
+  fi
+
+  # -- 4. attack one: the hidden implementations cannot be named ----------
+  local probe_log="$work/probe-javac.log"
+  rc=0
+  javac -cp "$classpath" -d "$work/probe-classes" "$work"/emit/probe/*.java \
+    >"$probe_log" 2>&1 || rc=$?
+  local probe_sources refused_names access_errors other_errors
+  probe_sources="$(find "$work/emit/probe" -name '*.java' | awk 'NF { n++ } END { print n + 0 }')"
+  refused_names="$(grep -o 'Probe_[0-9]*\.java' "$probe_log" |
+    sort -u | awk 'NF { n++ } END { print n + 0 }')"
+  access_errors="$(grep -c 'has private access' "$probe_log" || true)"
+  # Every other diagnostic is a probe that failed for a reason this row does
+  # not claim - a missing package, a syntax error - and is not evidence that
+  # the implementation was unreachable.
+  other_errors="$(grep -c 'error:' "$probe_log" || true)"
+  other_errors=$((other_errors - access_errors))
+  {
+    printf '\n## attack one: naming a hidden implementation class from Java\n'
+    printf '# javac exit status: %s (non-zero is the pass)\n' "$rc"
+    printf '# probe sources: %s\n' "$probe_sources"
+    printf '# probes javac refused: %s\n' "$refused_names"
+    printf '# access errors: %s\n' "$access_errors"
+    printf '# diagnostics of any other kind: %s (must be zero)\n' "$other_errors"
+    command head -n 6 "$probe_log"
+    printf '\n'
+  } >>"$EV"
+  if [[ "$rc" -eq 0 ]]; then
+    detail "javac compiled a reference to a hidden implementation class"
+    failed=1
+  fi
+  if [[ "$probe_sources" != "$probes" || "$probe_sources" -lt 30 ]]; then
+    detail "the hidden-implementation probes are $probe_sources of $probes expected"
+    failed=1
+  fi
+  if [[ "$refused_names" != "$probe_sources" ]]; then
+    detail "javac refused $refused_names of $probe_sources hidden-implementation probes"
+    failed=1
+  fi
+  if [[ "$access_errors" != "$probe_sources" ]]; then
+    detail "$access_errors of $probe_sources probes were refused for the access of the implementation"
+    failed=1
+  fi
+  if [[ "$other_errors" -ne 0 ]]; then
+    detail "$other_errors probe diagnostic(s) were not about access: the probes did not compile as intended"
+    failed=1
+  fi
+
+  # -- 5. attack two: an external subclass cannot be constructed ----------
+  local forge_compile="$work/forge-javac.log"
+  local forge_compile_rc=0
+  javac -cp "$classpath" -d "$work/forge-classes" "$work"/emit/forge/*.java \
+    >"$forge_compile" 2>&1 || forge_compile_rc=$?
+  if [[ "$forge_compile_rc" -ne 0 ]]; then
+    # The attack must COMPILE: a subclass javac refuses is an attack that was
+    # never mounted, and the guard would then be untested rather than proven.
+    detail "the generated external subclasses did not compile (javac exit $forge_compile_rc)"
+    command head -n 10 "$forge_compile" >>"$EV"
+    failed=1
+  fi
+
+  local forge_run="$work/forge-run.log"
+  rc=0
+  java -cp "$classpath:$work/forge-classes" audit.forge.ForgeRunner >"$forge_run" 2>&1 || rc=$?
+  local guarded constructed attempted
+  guarded="$(closure_metric 'refused by the construction guard' "$forge_run")"
+  constructed="$(closure_metric 'constructed successfully' "$forge_run")"
+  attempted="$(closure_metric 'forged subclasses' "$forge_run")"
+  {
+    printf '\n## attack two: constructing an external subclass of every closed type\n'
+    printf '# javac exit status: %s (zero is expected - the JVM does permit the subclass)\n' \
+      "$forge_compile_rc"
+    printf '# runner exit status: %s\n' "$rc"
+    cat "$forge_run"
+    printf '\n'
+  } >>"$EV"
+  if [[ -z "$attempted" || "$attempted" != "$forges" || "$attempted" -lt 40 ]]; then
+    detail "the forge attempted ${attempted:-no} subclasses of $forges generated"
+    failed=1
+  fi
+  if [[ "$constructed" != "0" ]]; then
+    detail "$constructed external subclass(es) of a closed type were constructed"
+    failed=1
+  fi
+  if [[ -z "$guarded" || "$guarded" -lt 40 ]]; then
+    detail "only ${guarded:-no} external subclasses were refused by the construction guard"
+    failed=1
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    detail "the forge runner reported a failure (exit $rc; see ${forge_run#"$ROOT"/})"
+    failed=1
+  fi
+
+
+  # -- 6. attack three: a foreign subtype of a closed hierarchy level -----
+  # The levels carry no data and declare no implementation, so parts 4 and 5
+  # cannot see them - and they are the cheapest thing for a foreign class file
+  # to claim, because until this port closed them they were traits, which
+  # compile to plain JVM interfaces that anything may implement without running
+  # a constructor. Each level is now an abstract class whose constructor refuses
+  # a subtype outside the families it admits, so the subclass must compile and
+  # must not construct.
+  local root_compile="$work/rootforge-javac.log"
+  local root_compile_rc=0
+  javac -cp "$classpath" -d "$work/rootforge-classes" "$work"/emit/rootforge/*.java \
+    >"$root_compile" 2>&1 || root_compile_rc=$?
+  if [[ "$root_compile_rc" -ne 0 ]]; then
+    detail "the generated foreign hierarchy subtypes did not compile (javac exit $root_compile_rc)"
+    command head -n 10 "$root_compile" >>"$EV"
+    failed=1
+  fi
+
+  local root_run="$work/rootforge-run.log"
+  rc=0
+  java -cp "$classpath:$work/rootforge-classes" audit.rootforge.RootForgeRunner \
+    >"$root_run" 2>&1 || rc=$?
+  local root_attempted root_guarded root_admitted
+  root_attempted="$(closure_metric 'foreign subtypes of a hierarchy level' "$root_run")"
+  root_guarded="$(closure_metric 'hierarchy levels refusing a foreign subtype' "$root_run")"
+  root_admitted="$(closure_metric 'hierarchy levels admitting a foreign subtype' "$root_run")"
+  {
+    printf '\n## attack three: claiming a closed hierarchy level from outside\n'
+    printf '# javac exit status: %s (zero is expected - the JVM does permit the subclass)\n' \
+      "$root_compile_rc"
+    printf '# runner exit status: %s\n' "$rc"
+    cat "$root_run"
+    printf '\n'
+  } >>"$EV"
+  if [[ -z "$root_attempted" || "$root_attempted" != "$root_forges" || "$root_attempted" -lt 3 ]]; then
+    detail "the root forge attempted ${root_attempted:-no} subtypes of $root_forges generated"
+    failed=1
+  fi
+  if [[ "$root_admitted" != "0" ]]; then
+    detail "$root_admitted closed hierarchy level(s) admitted a foreign subtype"
+    failed=1
+  fi
+  if [[ -z "$root_guarded" || "$root_guarded" -lt 3 ]]; then
+    detail "only ${root_guarded:-no} hierarchy levels refused a foreign subtype through their guard"
+    failed=1
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    detail "the root forge runner reported a failure (exit $rc; see ${root_run#"$ROOT"/})"
+    failed=1
+  fi
+
+  # -- 7. attack four: calling the binary constructors directly -----------
+  # Part 4 proves that `javac` will not NAME a hidden implementation, which is
+  # the `InnerClasses` attribute being honoured and nothing more. This part
+  # mounts the attack that attribute does not stop. A stub tree declares each
+  # implementation as an ordinary top-level class under its BINARY name - `$` is
+  # a legal Java identifier character, so `CurrencyAmount$Impl` is nameable as a
+  # top-level type - with the constructor signature the real class file
+  # publishes. The attacker is compiled against that stub, which makes its
+  # bytecode a plain `new` and `invokespecial` on the real binary constructor,
+  # and is then RUN against the real classes, where those instructions resolve
+  # to the implementation itself. It is the emitted-bytecode route, not a
+  # source-level probe, and every forged state must be refused by the invariant
+  # the type states over its own fields.
+  local binary_stub="$work/binary-stub"
+  local binary_attack="$work/binary-attack"
+  mkdir -p "$binary_stub/com/opengamma/strata/collect" \
+    "$binary_stub/com/opengamma/strata/basics" \
+    "$binary_stub/com/opengamma/strata/basics/currency" \
+    "$binary_stub/com/opengamma/strata/basics/date" \
+    "$binary_stub/com/opengamma/strata/basics/location" \
+    "$binary_stub/com/opengamma/strata/basics/schedule" \
+    "$binary_stub/com/opengamma/strata/basics/value" \
+    "$binary_attack/atk" || failed=1
+  printf 'package com.opengamma.strata.collect;\npublic final class Decimal$Impl { public Decimal$Impl(long unscaled, int scale) {} }\n' \
+    >"$binary_stub/com/opengamma/strata/collect/Decimal\$Impl.java"
+  printf 'package com.opengamma.strata.basics;\npublic final class StandardId$Impl { public StandardId$Impl(String scheme, String value) {} }\n' \
+    >"$binary_stub/com/opengamma/strata/basics/StandardId\$Impl.java"
+  printf 'package com.opengamma.strata.basics.currency;\npublic final class Currency$Impl { public Currency$Impl(String code, int minorUnitDigits, String triangulationCode) {} }\n' \
+    >"$binary_stub/com/opengamma/strata/basics/currency/Currency\$Impl.java"
+  printf 'package com.opengamma.strata.basics.date;\nimport java.time.Period;\npublic final class Tenor$Impl { public Tenor$Impl(Period period, String name) {} }\n' \
+    >"$binary_stub/com/opengamma/strata/basics/date/Tenor\$Impl.java"
+  printf 'package com.opengamma.strata.basics.location;\npublic final class Country$Impl { public Country$Impl(String code) {} }\n' \
+    >"$binary_stub/com/opengamma/strata/basics/location/Country\$Impl.java"
+  printf 'package com.opengamma.strata.basics.schedule;\nimport java.time.LocalDate;\npublic final class SchedulePeriod$Impl { public SchedulePeriod$Impl(LocalDate unadjustedStart, LocalDate unadjustedEnd, LocalDate start, LocalDate end) {} }\n' \
+    >"$binary_stub/com/opengamma/strata/basics/schedule/SchedulePeriod\$Impl.java"
+  printf 'package com.opengamma.strata.basics.value;\npublic final class HalfUp$Impl { public HalfUp$Impl(int decimalPlaces, int fraction) {} }\n' \
+    >"$binary_stub/com/opengamma/strata/basics/value/HalfUp\$Impl.java"
+
+  if ! cat >"$binary_attack/atk/BinaryConstructors.java" <<'JAVA'
+package atk;
+
+import com.opengamma.strata.basics.StandardId$Impl;
+import com.opengamma.strata.basics.currency.Currency$Impl;
+import com.opengamma.strata.basics.date.Tenor$Impl;
+import com.opengamma.strata.basics.location.Country$Impl;
+import com.opengamma.strata.basics.schedule.SchedulePeriod$Impl;
+import com.opengamma.strata.basics.value.HalfUp$Impl;
+import com.opengamma.strata.collect.Decimal$Impl;
+import java.time.LocalDate;
+import java.time.Period;
+
+/**
+ * Calls the binary constructor of a hidden implementation directly, with state no factory of the
+ * library would produce.
+ *
+ * Compiled against a stub tree that declares each implementation under its binary name, and run
+ * against the real classes - so each `new` below is an `invokespecial` on the implementation's own
+ * `ACC_PUBLIC` constructor, reached without a Scala compiler and without the `InnerClasses`
+ * attribute being consulted. Every one must be refused, and refused by the type's invariant
+ * rather than by chance: the states chosen are the ones the factories reject.
+ */
+public final class BinaryConstructors {
+
+  private static int refused = 0;
+  private static int otherwise = 0;
+  private static int constructed = 0;
+
+  private interface Forgery {
+    Object construct();
+  }
+
+  private static void attempt(String label, Forgery forgery) {
+    try {
+      Object value = forgery.construct();
+      constructed++;
+      System.out.println("CONSTRUCTED " + label + " -> " + value);
+    } catch (IllegalArgumentException refusal) {
+      String message = refusal.getMessage();
+      if (message != null && message.contains("a value of this type requires that")) {
+        refused++;
+        System.out.println("REFUSED-BY-INVARIANT " + label + " -> " + message);
+      } else {
+        otherwise++;
+        System.out.println("REFUSED-OTHERWISE " + label + " -> " + message);
+      }
+    } catch (Throwable other) {
+      otherwise++;
+      System.out.println("REFUSED-OTHERWISE " + label + " -> " + other);
+    }
+  }
+
+  public static void main(String[] args) {
+    attempt("Decimal holding a scale beyond the representation",
+        () -> new Decimal$Impl(1L, 99));
+    attempt("Currency naming a code the reference data does not publish",
+        () -> new Currency$Impl("ZZZ", 9, "USD"));
+    attempt("Currency naming a published code with the wrong minor units",
+        () -> new Currency$Impl("GBP", 9, "USD"));
+    attempt("StandardId holding an empty scheme",
+        () -> new StandardId$Impl("", "AAPL"));
+    attempt("Country holding a lower-case code",
+        () -> new Country$Impl("gb"));
+    attempt("Country holding a code of the wrong length",
+        () -> new Country$Impl("GBR"));
+    attempt("SchedulePeriod holding dates that run backwards",
+        () -> new SchedulePeriod$Impl(
+            LocalDate.of(2014, 4, 1), LocalDate.of(2014, 1, 1),
+            LocalDate.of(2014, 4, 1), LocalDate.of(2014, 1, 1)));
+    attempt("Rounding holding a fraction no rounding represents",
+        () -> new HalfUp$Impl(4, 1));
+    attempt("Tenor holding a name its own period does not imply",
+        () -> new Tenor$Impl(Period.ofMonths(3), "1D"));
+    attempt("Tenor holding a period no tenor covers",
+        () -> new Tenor$Impl(Period.ZERO, "0D"));
+    System.out.println("binary constructions attempted = " + (refused + otherwise + constructed));
+    System.out.println("refused by the invariant of the type = " + refused);
+    System.out.println("refused for another reason = " + otherwise);
+    System.out.println("constructed successfully = " + constructed);
+    System.exit(constructed == 0 && refused >= 10 ? 0 : 1);
+  }
+}
+JAVA
+  then
+    detail "the binary-constructor attack source could not be written"
+    failed=1
+  fi
+
+  local binary_log="$work/binary-javac.log"
+  local binary_rc=0
+  # The stub is compiled WITHOUT the real classes on the classpath: the point is
+  # a compilation unit that declares the binary names itself, so that the
+  # attacker's bytecode carries them and the real class files answer for them at
+  # run time.
+  javac -d "$work/binary-stub-classes" $(find "$binary_stub" -name '*.java') \
+    >"$binary_log" 2>&1 || binary_rc=$?
+  if [[ "$binary_rc" -eq 0 ]]; then
+    javac -cp "$work/binary-stub-classes" -d "$work/binary-attack-classes" \
+      "$binary_attack/atk/BinaryConstructors.java" >>"$binary_log" 2>&1 || binary_rc=$?
+  fi
+  if [[ "$binary_rc" -ne 0 ]]; then
+    detail "the binary-constructor attack did not compile (javac exit $binary_rc)"
+    command head -n 10 "$binary_log" >>"$EV"
+    failed=1
+  fi
+
+  # The bytecode is shown in the evidence, because the claim of this part is
+  # about the instructions and not about the source they came from.
+  local binary_bytecode="$work/binary-bytecode.txt"
+  javap -c -p -cp "$work/binary-attack-classes" atk.BinaryConstructors 2>/dev/null \
+    | command grep -E '^[[:space:]]+[0-9]+: (new|invokespecial)' \
+    | command grep 'Impl' >"$binary_bytecode" || true
+  local binary_instructions
+  binary_instructions="$(command wc -l <"$binary_bytecode" | tr -d ' ')"
+
+  local binary_run="$work/binary-run.log"
+  rc=0
+  java -cp "$work/binary-attack-classes:$classpath" atk.BinaryConstructors >"$binary_run" 2>&1 || rc=$?
+  local binary_attempted binary_refused binary_built
+  binary_attempted="$(closure_metric 'binary constructions attempted' "$binary_run")"
+  binary_refused="$(closure_metric 'refused by the invariant of the type' "$binary_run")"
+  binary_built="$(closure_metric 'constructed successfully' "$binary_run")"
+  {
+    printf '\n## attack four: invoking the binary constructor of a hidden implementation\n'
+    printf '# javac exit status: %s (zero is expected - the attacker names the binary class itself)\n' \
+      "$binary_rc"
+    printf '# new/invokespecial instructions on an implementation class: %s\n' "$binary_instructions"
+    command sed -n '1,8p' "$binary_bytecode"
+    printf '# runner exit status: %s\n' "$rc"
+    cat "$binary_run"
+    printf '\n'
+  } >>"$EV"
+  if [[ -z "$binary_instructions" || "$binary_instructions" -lt 14 ]]; then
+    detail "the binary-constructor attack emitted ${binary_instructions:-no} instructions naming an implementation"
+    failed=1
+  fi
+  if [[ -z "$binary_attempted" || "$binary_attempted" -lt 10 ]]; then
+    detail "the binary-constructor attack attempted ${binary_attempted:-no} constructions"
+    failed=1
+  fi
+  if [[ "$binary_built" != "0" ]]; then
+    detail "$binary_built forged value(s) were constructed through a binary constructor"
+    failed=1
+  fi
+  if [[ -z "$binary_refused" || "$binary_refused" != "$binary_attempted" ]]; then
+    detail "${binary_refused:-no} of $binary_attempted binary constructions were refused by the type's invariant"
+    failed=1
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    detail "the binary-constructor attack reported a failure (exit $rc; see ${binary_run#"$ROOT"/})"
+    failed=1
+  fi
+
+  # -- 8. attack five: a forged object stream -----------------------------
+  # The refusal of Java serialization is two inherited hooks, and a subclass
+  # that overrode them - returning itself instead of refusing - would be read
+  # back from a stream with its fields populated and no constructor run. Both
+  # are declared `final`, so the compiler emits them `ACC_FINAL` and the JVM
+  # rejects such a class when it is LOADED. That is mounted here rather than
+  # asserted: a stub declares the type with non-final hooks, a subclass
+  # overriding both is compiled against it, a real object stream carrying that
+  # subclass is written while the stub is on the classpath, and the stream is
+  # then read against the real classes, where `readObject` itself must fail.
+  local stream_stub="$work/stream-stub"
+  local stream_attack="$work/stream-attack"
+  mkdir -p "$stream_stub/com/opengamma/strata/collect" "$stream_attack/attack" || failed=1
+  if ! cat >"$stream_stub/com/opengamma/strata/collect/Decimal.java" <<'JAVA'
+package com.opengamma.strata.collect;
+
+/**
+ * A deliberately lying stub of the real type: it declares the two serialization hooks
+ * OVERRIDABLE, which the real class does not, so that a subclass overriding them compiles.
+ */
+public abstract class Decimal implements java.io.Serializable {
+
+  private static final long serialVersionUID = 1L;
+
+  protected Decimal() {
+  }
+
+  protected Object writeReplace() {
+    return this;
+  }
+
+  protected Object readResolve() {
+    return this;
+  }
+}
+JAVA
+  then
+    detail "the forged-stream stub could not be written"
+    failed=1
+  fi
+  if ! cat >"$stream_attack/attack/ForgedDecimal.java" <<'JAVA'
+package attack;
+
+import com.opengamma.strata.collect.Decimal;
+
+/** A subclass that overrides both refusal hooks, so that a stream can carry it. */
+public final class ForgedDecimal extends Decimal {
+
+  private static final long serialVersionUID = 1L;
+
+  private final int forgedScale = 99;
+
+  @Override
+  protected Object writeReplace() {
+    return this;
+  }
+
+  @Override
+  protected Object readResolve() {
+    return this;
+  }
+
+  @Override
+  public String toString() {
+    return "ForgedDecimal(scale=" + forgedScale + ")";
+  }
+}
+JAVA
+  then
+    detail "the forged-stream subclass could not be written"
+    failed=1
+  fi
+  if ! cat >"$stream_attack/attack/WriteForgedStream.java" <<'JAVA'
+package attack;
+
+import java.io.ByteArrayOutputStream;
+import java.io.FileOutputStream;
+import java.io.ObjectOutputStream;
+
+/** Writes a real object stream carrying the forged subclass, with the stub on the classpath. */
+public final class WriteForgedStream {
+
+  public static void main(String[] args) throws Exception {
+    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+    try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+      out.writeObject(new ForgedDecimal());
+    }
+    try (FileOutputStream file = new FileOutputStream(args[0])) {
+      file.write(bytes.toByteArray());
+    }
+    System.out.println("forged stream bytes written = " + bytes.size());
+  }
+}
+JAVA
+  then
+    detail "the forged-stream writer could not be written"
+    failed=1
+  fi
+  if ! cat >"$stream_attack/attack/ReadForgedStream.java" <<'JAVA'
+package attack;
+
+import java.io.ByteArrayInputStream;
+import java.io.FileInputStream;
+import java.io.ObjectInputStream;
+
+/**
+ * Reads the forged stream against the REAL classes.
+ *
+ * `ObjectInputStream.readObject` must fail before it returns a value: resolving the stream's class
+ * loads the forged subclass, and the JVM rejects a class that overrides a final method.
+ */
+public final class ReadForgedStream {
+
+  public static void main(String[] args) throws Exception {
+    byte[] bytes;
+    try (FileInputStream file = new FileInputStream(args[0])) {
+      bytes = file.readAllBytes();
+    }
+    System.out.println("forged stream bytes read = " + bytes.length);
+    try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes))) {
+      Object restored = in.readObject();
+      System.out.println("CONSTRUCTED " + restored.getClass().getName() + " -> " + restored);
+      System.out.println("forged streams refused = 0");
+      System.exit(1);
+    } catch (Throwable refusal) {
+      System.out.println("REFUSED " + refusal.getClass().getName() + ": " + refusal.getMessage());
+      System.out.println("forged streams refused = 1");
+      System.exit(0);
+    }
+  }
+}
+JAVA
+  then
+    detail "the forged-stream reader could not be written"
+    failed=1
+  fi
+
+  local stream_log="$work/stream-javac.log"
+  local stream_rc=0
+  javac -d "$work/stream-stub-classes" "$stream_stub/com/opengamma/strata/collect/Decimal.java" \
+    >"$stream_log" 2>&1 || stream_rc=$?
+  if [[ "$stream_rc" -eq 0 ]]; then
+    javac -cp "$work/stream-stub-classes" -d "$work/stream-attack-classes" \
+      "$stream_attack"/attack/*.java >>"$stream_log" 2>&1 || stream_rc=$?
+  fi
+  if [[ "$stream_rc" -ne 0 ]]; then
+    detail "the forged-stream attack did not compile (javac exit $stream_rc)"
+    command head -n 10 "$stream_log" >>"$EV"
+    failed=1
+  fi
+
+  local stream_write="$work/stream-write.log"
+  local stream_read="$work/stream-read.log"
+  local write_rc=0
+  local read_rc=0
+  java -cp "$work/stream-attack-classes:$work/stream-stub-classes" \
+    attack.WriteForgedStream "$work/forged.ser" >"$stream_write" 2>&1 || write_rc=$?
+  java -cp "$work/stream-attack-classes:$classpath" \
+    attack.ReadForgedStream "$work/forged.ser" >"$stream_read" 2>&1 || read_rc=$?
+  local stream_bytes streams_refused
+  stream_bytes="$(closure_metric 'forged stream bytes written' "$stream_write")"
+  streams_refused="$(closure_metric 'forged streams refused' "$stream_read")"
+  {
+    printf '\n## attack five: reading a forged object stream against the real classes\n'
+    printf '# javac exit status: %s (zero is expected - the subclass compiles against the stub)\n' \
+      "$stream_rc"
+    printf '# writer exit status: %s (the stream is written with the stub on the classpath)\n' "$write_rc"
+    cat "$stream_write"
+    printf '# reader exit status: %s (the stream is read with the real classes)\n' "$read_rc"
+    cat "$stream_read"
+    printf '\n'
+  } >>"$EV"
+  if [[ "$write_rc" -ne 0 || -z "$stream_bytes" || "$stream_bytes" -lt 50 ]]; then
+    detail "the forged stream was not written (writer exit $write_rc, ${stream_bytes:-no} bytes): the attack was never mounted"
+    failed=1
+  fi
+  if [[ "$streams_refused" != "1" || "$read_rc" -ne 0 ]]; then
+    detail "the forged object stream was not refused on the read path (reader exit $read_rc)"
+    failed=1
+  fi
+
+  add_appendix "JVM construction and serialization closure" <"$audit_output" || failed=1
+
+  if [[ "$failed" -eq 0 ]]; then
+    detail "$products products all refuse Java serialization, on hooks no subclass can override; $closed_types closed types all guard their construction and every stateful one states its own invariant; $probes hidden implementations unnameable from Java and $entry_points reachable in bytecode, of which $binary_attempted forged constructions were all refused; $attempted external subclasses and $root_attempted foreign subtypes of a hierarchy level compiled and none constructed; the forged object stream was refused on the read path"
+  fi
+  return "$failed"
+}
+
+#=============================================================================
 # Row 12 - Rule 6: no reflection on the codec path.
 #
 # Three parts, all required.
@@ -3218,8 +8047,8 @@ PY
 #     would no longer be attributable to encoding.
 #
 # (c) Every entry of the difference is inspected through a class javap can
-#     actually read, and the ones for which no such class exists are
-#     documented rather than skipped.
+#     actually read, and an entry for which no such class can be found FAILS
+#     this row.
 #
 #     A hidden class cannot be disassembled under its own name, and neither
 #     can the marker the JVM records in place of a source: `source:
@@ -3227,11 +8056,17 @@ PY
 #     would fail the row on a class that was never there. The host is
 #     therefore derived in a fixed order - the `source:` field when it names a
 #     real class (a lambda records its host there), else the identity up to
-#     `$$Lambda`, else the enclosing class of the identity - and an entry for
-#     which none of those resolves is recorded as "not inspectable
-#     (JVM-generated)" with its reason. Those entries remain in the decision
-#     set: their identities went through the reflection-package check above,
-#     which is what the audit needs from them.
+#     `$$Lambda`, else the enclosing class of the identity - and the
+#     disassembly of that host is then attempted from its recorded source,
+#     from the runtime image, and from this build's own output directories in
+#     turn.
+#
+#     What is NOT allowed is an entry nobody read. An entry with no derivable
+#     host, and an entry whose host none of those attempts can disassemble,
+#     are each a failure of this row with their count in its detail and each
+#     entry named in the evidence: the reflection-package check above is made
+#     on names, and a name is not bytecode, so accepting such an entry would
+#     leave the code that actually ran unexamined.
 #=============================================================================
 
 RULE6_REFLECTION_PATTERN='java/lang/reflect/|java/lang/Class.forName|getDeclaredMethod|getDeclaredField'
@@ -3273,6 +8108,55 @@ javap_from_source() {
       javap -c -p -cp "$source" "$class_name"
       ;;
   esac
+}
+
+# Disassembles one class, trying in turn every place it can legitimately be
+# read from. $1 class name, $2 recorded source; prints the disassembly and
+# returns 0, or returns 1 having read nothing.
+#
+# One attempt is not a conclusion. A host derived from a hidden class's name
+# is not the class whose source the log recorded, a class of the JDK's own
+# image has no source to name, and a class of this build may have been loaded
+# from a directory the log wrote in another form. So the recorded source is
+# tried first, then the ordinary lookup with no classpath (the runtime image
+# and the CDS archive), then this build's four output directories. Each
+# attempt is recorded in rule6-javap-attempts.txt, so the evidence says which
+# one produced the bytes that were grepped.
+javap_best_effort() {
+  local class_name="$1"
+  local source="$2"
+  local attempts="$AUDIT_DIR/rule6-javap-attempts.txt"
+  local out=""
+  local rc=0
+
+  out="$(javap_from_source "$class_name" "$source" 2>&1)" || rc=$?
+  if [[ "$rc" -eq 0 && -n "$out" ]]; then
+    printf '%s\tread from its recorded source (%s)\n' "$class_name" "$source" >>"$attempts"
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  rc=0
+  out="$(javap -c -p "$class_name" 2>&1)" || rc=$?
+  if [[ "$rc" -eq 0 && -n "$out" ]]; then
+    printf '%s\tread from the runtime image, no classpath\n' "$class_name" >>"$attempts"
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  rc=0
+  out="$(javap -c -p -cp \
+    "$COLLECT_CLASSES:$BASICS_CLASSES:$COLLECT_TEST_CLASSES:$BASICS_TEST_CLASSES" \
+    "$class_name" 2>&1)" || rc=$?
+  if [[ "$rc" -eq 0 && -n "$out" ]]; then
+    printf '%s\tread from the output directories of this build\n' "$class_name" >>"$attempts"
+    printf '%s\n' "$out"
+    return 0
+  fi
+
+  printf '%s\tUNREADABLE by every attempt (recorded source: %s)\n' "$class_name" "$source" \
+    >>"$attempts"
+  return 1
 }
 
 row_12_no_reflection() {
@@ -3322,11 +8206,21 @@ row_12_no_reflection() {
   local codec_log="$AUDIT_DIR/codec-classload.log"
   rm -f "$baseline_log" "$codec_log"
 
-  local mode rc
+  local mode rc log_option
   for mode in baseline codec; do
     rc=0
+    # The log path crosses from shell into SCALA SOURCE here - sbt compiles
+    # and evaluates the `set` command - so it is encoded as a Scala string
+    # literal instead of being interpolated raw into one. AAP section 0.10.1
+    # requires the log under target/audit, so the path itself is unchanged.
+    if ! log_option="$(scala_string_literal "-Xlog:class+load:file=$AUDIT_DIR/$mode-classload.log")"; then
+      detail "(b) the $mode class-load log path cannot be encoded as a Scala string literal, so that audit run was not started"
+      printf '# (b) %s run: NOT STARTED - its class-load log path could not be encoded\n' "$mode" >>"$EV"
+      failed=1
+      continue
+    fi
     run_sbt "rule6-audit-$mode" \
-      "set \`strata-basics\` / Test / javaOptions ++= Seq(\"-Dcodec.audit=$mode\", \"-Xlog:class+load:file=$AUDIT_DIR/$mode-classload.log\")" \
+      "set \`strata-basics\` / Test / javaOptions ++= Seq(\"-Dcodec.audit=$mode\", $log_option)" \
       "strata-basics/testOnly com.opengamma.strata.basics.json.JsonRoundTripSpec" || rc=$?
     local digest
     digest="$(strip_sbt_prefix <"$SBT_LOG" | awk '/^CODEC-AUDIT-DIGEST / { print; exit }')"
@@ -3398,11 +8292,12 @@ row_12_no_reflection() {
   # One line of `rule6-delta-adjudication.txt` per raw entry, and three
   # derived files: the identities that must be free of reflection packages,
   # the de-duplicated list of classes to disassemble, and the entries for
-  # which no disassemblable class exists.
+  # which no class can be named to disassemble - which the row fails on,
+  # rather than accepting them as documented.
   local adjudication="$AUDIT_DIR/rule6-delta-adjudication.txt"
   local identities="$AUDIT_DIR/rule6-delta-identities.txt"
   local inspection="$AUDIT_DIR/rule6-delta-inspection-list.txt"
-  local noninspectable="$AUDIT_DIR/rule6-noninspectable-classes.txt"
+  local noninspectable="$AUDIT_DIR/rule6-unaudited-entries.txt"
   local classification_rc=0
   python3 - "$delta" "$baseline_names" "$codec_names" "$combined_map" \
     "$adjudication" "$identities" "$inspection" "$noninspectable" <<'PY' >>"$EV" 2>&1 || classification_rc=$?
@@ -3414,7 +8309,6 @@ from collections import Counter
  inspection_path, noninspectable_path) = sys.argv[1:9]
 
 HIDDEN = re.compile(r"/0x[0-9a-fA-F]+$")
-# A class name, as opposed to a location or one of the JVM's own markers.
 CLASS_NAME = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z0-9_$]+)*$")
 NOT_A_CLASS = ("shared objects file", "-", "")
 
@@ -3472,6 +8366,10 @@ for identity, count in baseline_hidden.items():
 def host_of(name, identity, source):
     """The class to disassemble in place of a hidden class, why, and its kind.
 
+    Returning nothing is a failure of the row, not an exemption, so every step
+    that can legitimately name a host is taken - including the outer class of
+    an identity that has no package at all.
+
     The order is fixed and every step is checked, because the alternative -
     handing javap whatever the log recorded - fails the row on names that were
     never classes: `__JVM_LookupDefineClass__` is a marker, not a host.
@@ -3493,10 +8391,11 @@ def host_of(name, identity, source):
         return lambda_host, "the host of a lambda proxy, from its own name", "host"
     package, _, simple = identity.rpartition(".")
     outer = simple.split("$", 1)[0]
-    if package and outer and outer != simple:
-        return f"{package}.{outer}", "the enclosing class of a JVM-defined hidden class", "jvm"
+    if outer and outer != simple:
+        enclosing = f"{package}.{outer}" if package else outer
+        return enclosing, "the enclosing class of a JVM-defined hidden class", "jvm"
     return (None,
-            f"JVM-generated, with no host class to disassemble (source: {source or 'unknown'})",
+            f"no host class can be derived to disassemble (source: {source or 'unknown'})",
             "none")
 
 
@@ -3543,20 +8442,22 @@ for name in delta:
     # and recorded with its reason, because the disassembly of a HOST is the
     # whole class and not just the lambda that was defined in it.
     #
-    #   charged   an ordinary class of the difference that the port ships or
-    #             depends on; or a lambda whose host class is itself absent
-    #             from the baseline run, so the body being read exists only
-    #             because encode/decode ran. A reflection reference in it is
-    #             a reflection reference on the audited path.
+    #   charged   an ordinary class of the difference belonging to an
+    #             application module or one of its libraries; or a lambda
+    #             whose host class is itself absent from the baseline run, so
+    #             the body being read exists only because encode/decode ran.
+    #             A reflection reference in it is a reflection reference on
+    #             the codec path.
     #   reported  a PLATFORM class of the JDK. Its body is the runtime's own
-    #             implementation, not the port's: `java.util.Random` reads a
-    #             field offset through `Class.getDeclaredField` to seed
-    #             itself, and decoding a date pulls in a dozen
-    #             `java.time.format` classes, so charging those bodies would
-    #             fail this row for using `LocalDate.parse`. What it cannot
-    #             hide is the port itself reflecting: that loads classes of
-    #             `java.lang.reflect` and friends, and (b) above fails on any
-    #             of those appearing in the difference, platform or not.
+    #             implementation rather than application code:
+    #             `java.util.Random` reads a field offset through
+    #             `Class.getDeclaredField` to seed itself, and decoding a date
+    #             pulls in a dozen `java.time.format` classes, so charging
+    #             those bodies would fail this row for using
+    #             `LocalDate.parse`. What it cannot hide is application code
+    #             reflecting: that loads classes of `java.lang.reflect` and
+    #             friends, and (b) above fails on any of those appearing in
+    #             the difference, platform or not.
     #   reported  a lambda whose host the baseline run loaded too - the body
     #             being read is byte-identical in both runs, so a reference in
     #             it says nothing about encoding, while what IS new about the
@@ -3598,7 +8499,7 @@ for name in delta:
         [bucket, charge, name, identity, target or "-", source_for_javap or "-", why]))
     identity_lines.append(f"{bucket}\t{identity}")
     if target is None:
-        noninspectable.append(f"{name}\tnot inspectable ({why})")
+        noninspectable.append(f"{name}\tUNAUDITED ({why})")
     else:
         entry = to_inspect.setdefault(target, [charge, bucket, source_for_javap or "-", 0])
         entry[3] += 1
@@ -3638,7 +8539,7 @@ for (target, reason), count in sorted(reported_new.items()):
     print(f"#           {count:4d} x {target}: {reason}")
 print(f"#       classes to disassemble: {len(to_inspect)} "
       f"({charged_classes} charged, covering {covered - len(noninspectable)} entries)")
-print(f"#       not inspectable, documented: {len(noninspectable)}")
+print(f"#       entries with no host to disassemble, each a failure: {len(noninspectable)}")
 print(f"#     adjudication: {adjudication_path}")
 
 if accounted != len(delta) or covered != len(delta):
@@ -3688,8 +8589,22 @@ PY
   # Entries the classifier could not give a host to at all, counted before
   # the loop appends to the same file. Every count below is in ENTRIES of the
   # raw difference, never in classes, so that they reconcile with its size.
+  # An entry counted here is an entry whose bytes nobody read, which is a
+  # failure of this row: a name that passed the reflection-package check is
+  # not a body that was grepped.
   local hostless
   hostless="$(awk 'NF { n++ } END { print n + 0 }' "$noninspectable")"
+  if [[ "${hostless:-0}" -ne 0 ]]; then
+    detail "(c) $hostless entry(ies) of the difference have no class to disassemble, so their bytecode is unaudited"
+    failed=1
+  fi
+
+  # The record of where each class was read from, started empty so a previous
+  # run's attempts cannot be read as this one's.
+  if ! safe_truncate "$AUDIT_DIR/rule6-javap-attempts.txt"; then
+    detail "(c) the javap attempt log could not be started"
+    failed=1
+  fi
 
   local charge bucket target source entries out class_hits inspect_rc
   local inspected=0
@@ -3701,24 +8616,25 @@ PY
   while IFS=$'\t' read -r charge bucket target source entries; do
     [[ -n "$target" ]] || continue
     inspect_rc=0
-    out="$(javap_from_source "$target" "$source" 2>&1)" || inspect_rc=$?
+    out="$(javap_best_effort "$target" "$source" 2>&1)" || inspect_rc=$?
     if [[ "$inspect_rc" -ne 0 || -z "$out" ]]; then
-      printf '%s\t%s\t%s\tjavap FAILED (status %s, source %s)\t%s entry(ies)\n' \
+      # Nothing was read, from the recorded source or from anywhere else, so
+      # these entries of the difference are unaudited. Both kinds fail the
+      # row - an ordinary class of the difference and a host derived for a
+      # hidden one alike - because the bytes that ran are what this row is
+      # about, and the identity check above was made on a name.
+      printf '%s\t%s\t%s\tUNREADABLE by every attempt (status %s, recorded source %s)\t%s entry(ies)\n' \
         "$charge" "$bucket" "$target" "$inspect_rc" "$source" "$entries" >>"$per_class"
       if [[ "$bucket" == "plain" ]]; then
-        # An ordinary class of the difference must be readable: if it is not,
-        # the audit has not seen it and the row does not pass.
-        detail "(c) javap could not disassemble $target"
+        detail "(c) no readable bytecode for the ordinary class $target, covering $entries entry(ies)"
         unreadable=$((unreadable + entries))
-        failed=1
       else
-        # A derived host that cannot be read is recorded as what it is: a
-        # JVM-generated class with no disassemblable body. Its identity has
-        # already been through the reflection-package check above.
-        printf '%s\tnot inspectable (the derived host could not be disassembled, status %s) - %s entry(ies)\n' \
+        printf '%s\tUNAUDITED (the derived host could not be disassembled by any attempt, status %s) - %s entry(ies)\n' \
           "$target" "$inspect_rc" "$entries" >>"$noninspectable"
+        detail "(c) no readable bytecode for the derived host $target, covering $entries entry(ies)"
         undisassemblable=$((undisassemblable + entries))
       fi
+      failed=1
       continue
     fi
     inspected=$((inspected + 1))
@@ -3745,21 +8661,24 @@ PY
   {
     printf '\n# (c) classes disassembled: %s, covering %s of the %s entries of the difference\n' \
       "$inspected" "$covered" "$RULE6_DELTA_SIZE"
-    printf '#     entries whose class is JVM-generated with no host to read: %s\n' "$hostless"
-    printf '#     entries whose derived host could not be disassembled: %s\n' "$undisassemblable"
+    printf '#     entries with no host to read, unaudited (a failure): %s\n' "$hostless"
+    printf '#     entries whose derived host no attempt could disassemble (a failure): %s\n' \
+      "$undisassemblable"
     printf '#     entries of an ordinary class javap could not read (a failure): %s\n' "$unreadable"
     printf '#     entries accounted for: %s of %s\n' "$accounted" "$RULE6_DELTA_SIZE"
     printf '#     reflection references charged to encode/decode: %s\n' "$total_hits"
     printf '#     reflection references reported but not charged (pre-existing identities and\n'
     printf '#       the JVM'"'"'s own method-handle machinery): %s\n' "$reported_hits"
     printf '#     per-class detail: %s\n' "${per_class#"$ROOT"/}"
-    printf '#     not-inspectable list: %s\n' "${noninspectable#"$ROOT"/}"
+    printf '#     unaudited entries: %s\n' "${noninspectable#"$ROOT"/}"
+    printf '#     where each class was read from: %s\n' \
+      "${AUDIT_DIR#"$ROOT"/}/rule6-javap-attempts.txt"
   } >>"$EV"
 
-  # Reconciliation: every entry of the raw difference was either inspected
-  # through a class, or documented as having none to inspect. An entry that is
-  # neither would have left the audit silently, which is the whole failure
-  # mode this row is built to prevent.
+  # Reconciliation: every entry of the raw difference was inspected through a
+  # class, or is one of the unaudited entries already failed above. An entry
+  # that is neither would have left the audit silently, which is the whole
+  # failure mode this row is built to prevent.
   if [[ "$accounted" -ne "$RULE6_DELTA_SIZE" ]]; then
     detail "(c) $accounted of the $RULE6_DELTA_SIZE entries of the difference were accounted for"
     failed=1
@@ -3781,18 +8700,25 @@ PY
                         "surplus of a shared identity", surplus + 0,
                         "identity absent from baseline", absent + 0 }' "$adjudication"
     printf 'classes disassembled     : %s, covering %s entries\n' "$inspected" "$covered"
-    printf 'documented not inspectable: %s entries (%s with no host, %s whose host could not be read)\n' \
+    printf 'unaudited (each a failure): %s entries (%s with no host, %s whose host no attempt\n' \
       "$((hostless + undisassemblable))" "$hostless" "$undisassemblable"
+    printf '                           could disassemble)\n'
     printf 'entries accounted for    : %s of %s\n' "$accounted" "$RULE6_DELTA_SIZE"
     printf 'reflection references    : %s charged, %s reported (a paired occurrence, a host the\n' \
       "$total_hits" "$reported_hits"
     printf '                           baseline run loaded too, or the JVM'"'"'s own machinery)\n'
-    printf '\nnot inspectable, with the reason each was recorded under:\n'
+    printf '\nunaudited entries, with the reason each was recorded under (empty is the pass):\n'
     cat "$noninspectable"
+    printf '\nwhere each disassembled class was read from:\n'
+    if [[ -f "$AUDIT_DIR/rule6-javap-attempts.txt" ]]; then
+      cat "$AUDIT_DIR/rule6-javap-attempts.txt"
+    else
+      printf '(the attempt log was never started)\n'
+    fi
   } | add_appendix "Rule 6 - class-load audit of the codec path"
 
   if [[ "$failed" -eq 0 ]]; then
-    detail "no reflection in either module; the $RULE6_DELTA_SIZE-entry encode/decode difference holds none either"
+    detail "no reflection in either module; every one of the $RULE6_DELTA_SIZE entries of the encode/decode difference was read through a disassembled class and holds none either"
   fi
   return "$failed"
 }
@@ -3859,9 +8785,8 @@ row_13_jvm21_bytecode() {
 # fails - whatever file it is in, whether it is code or a comment, and however
 # harmless it looks. Nothing is dropped, no path is excluded, no line number is
 # allow-listed and there is no exempt class. A comment that merely names the
-# flag is a hit like any other, so the sources carry no such comment: the three
-# scaladoc sentences that used to name it were reworded to say "warnings as
-# errors" instead.
+# flag is a hit like any other, which is why no source in either module names
+# it: a scaladoc sentence about the option is a failure of this row.
 #
 # Each hit is still LABELLED, because a label tells whoever has to fix a
 # failure which clause of the pass condition it broke. The labels are all
@@ -3886,10 +8811,10 @@ row_13_jvm21_bytecode() {
 # naming a suppression construct: an explicit scan for a removal
 # (`scalacOptions -=` / `--=`), for a `filterNot` over the option list, for any
 # `-Wconf` addition and for ANY `excludeLintKeys` occurrence (sbt's own lint
-# suppression, which this build carried once and must never carry again); and a
-# positive control that the raw scan really did find build.sbt's option line,
-# so the row cannot pass because its scope or its pattern silently stopped
-# matching anything.
+# suppression, which silences a lint key for a whole scope); and a positive
+# control that the raw scan really did find build.sbt's option line, so the row
+# cannot pass because its scope or its pattern silently stopped matching
+# anything.
 #
 # This row RUNS `clean`, which empties target/test-reports and
 # target/parity-report (build.sbt registers both with `cleanFiles`). Every file
@@ -4328,7 +9253,6 @@ row_17_migration_note() {
   local member_count
   member_count="$(grep -rhoE "\b(ArgChecker|Guavate|MapStream|Messages|Decimal|FixedScaleDecimal|DoubleArray|DoubleMatrix|DoubleArrayMath|ExtendedEnum|EnumNames|NamedLookup|TypedString|ResourceLocator|ResourceConfig|IniFile|CsvFile|CsvRow|PropertySet|PropertiesFile|Result|FailureItem|FailureReason|ValueWithFailures|TestHelper|CollectProjectAssertions|Unchecked)\.[a-zA-Z]+" \
     modules/basics/src | sort -u | wc -l | tr -d ' ')"
-  GATE7_MEMBER_COUNT="$member_count"
 
   # -- the section (a) table row count -------------------------------------
   local table="$AUDIT_DIR/gate07-section-a-table.txt"
@@ -4341,7 +9265,6 @@ row_17_migration_note() {
   if [[ "$rows" -lt 0 ]]; then
     rows=0
   fi
-  GATE7_TABLE_ROWS="$rows"
 
   {
     printf '# distinct collect members referenced from modules/basics/src: %s\n' "$member_count"
@@ -4470,10 +9393,10 @@ DROPPED_COLLECT_METHODS = 10
 MANIFEST_ROWS = 1876
 HEADER = ["java_test_class", "java_test_method", "scala_spec", "scala_test_name", "status"]
 
-# The twenty collect test classes AAP section 0.4.1 maps into the Scala port,
-# named here so the authoritative inventory is this reviewed script and never
-# the manifest under audit: deriving the expected set from the audited file
-# would let an omitted class hide every one of its methods.
+# The twenty Java collect test classes that map to Scala specs, named here so
+# the authoritative inventory is this reviewed script and never the manifest
+# under audit: deriving the expected set from the audited file would let an
+# omitted class hide every one of its methods.
 MAPPED_COLLECT_CLASSES = frozenset({
     "com.opengamma.strata.collect.ArgCheckerTest",
     "com.opengamma.strata.collect.DecimalTest",
@@ -4518,16 +9441,15 @@ DROPPED_CLASSES = DROPPED_COLLECT_CLASSES | frozenset({
 })
 # `partial:` is permitted per (class, method) pair, never per class. Both
 # classes keep real coverage - the thirty-four Guavate/MapStream methods whose
-# subjects are ported into collect `Collections.scala` map into
-# `CollectionsSpec` - so a class-wide exception would let any of those thirty-
-# four be retired to `partial` and its lost coverage pass unnoticed. Pinning
-# the exact pairs whose subjects are NOT ported (AAP sections 0.2.2 and 0.4.1:
-# the Guavate and MapStream members `strata-basics` does not use) closes it in
-# both directions: a pair outside this list cannot be excused, and each of the
-# thirty-four in the complement has no status left but `ported` or
-# `consolidated:<spec>`, both of which must join to a JUnit test case below.
-# Every pin is checked against the Java sources further down, so a stale entry
-# cannot widen the permission either.
+# subjects are members of collect `Collections.scala` map to `CollectionsSpec`
+# - so a class-wide exception would let any of those thirty-four be retired to
+# `partial` and its lost coverage pass unnoticed. Pinning the exact pairs whose
+# subjects are outside the module's scope (the Guavate and MapStream members
+# `strata-basics` does not use) closes it in both directions: a pair outside
+# this list cannot be excused, and each of the thirty-four in the complement
+# has no status left but `ported` or `consolidated:<spec>`, both of which must
+# join to a JUnit test case below. Every pin is checked against the Java
+# sources further down, so a stale entry cannot widen the permission either.
 PARTIAL_ALLOWED = {
     # GuavateTest: 71 method(s) whose subject member has no Scala counterpart
     "com.opengamma.strata.collect.GuavateTest": frozenset({
@@ -5092,30 +10014,65 @@ PY
 # unchanged. Running it last also catches any accidental write by this script,
 # which is why every artifact it produces lives under target/.
 #
-# THE SECRET SCAN, AND WHY IT IS HERE
-#   CI publishes four trees from this run - `target/gate-report.md`,
-#   `target/parity-report`, `target/test-reports` and `target/audit` - with
-#   `when: always`, and the audit tree holds every sbt log, every class-load
-#   log and every row's evidence. Publishing an artifact is a disclosure, so
-#   the run checks its own output for credential signatures BEFORE it leaves
-#   the machine. This is the last row, so by the time it executes every other
-#   row has finished writing.
+# THE COMMITTED STATE, WHICH THE STATUS ALONE DOES NOT COVER
+#   `git status` describes the working tree against HEAD, so a change to the
+#   Maven tree that has been COMMITTED is invisible to it: the tree is dirty
+#   for exactly as long as it takes to commit, and a clean status afterwards
+#   says nothing about what HEAD contains. The Java modules are the baseline
+#   authority of this delivery - the parity fixtures and the reference-data
+#   manifest are captured from them - so a committed edit there is the one
+#   change that could make every parity row agree with a moved baseline.
 #
-#   It is not the only time the scan runs, because a run that ends early
-#   publishes just as much:
+#   Two checks close that, and both run:
+#
+#     pinned content  the git object id of each protected path at HEAD,
+#                     compared against the id recorded in PROTECTED_PATH_IDS
+#                     below. A tree or blob id IS the content of that path, so
+#                     equality is proof that nothing under it changed, in any
+#                     commit, on any branch, with no ref or network needed.
+#                     The pin lives in this reviewed script, which is what
+#                     makes it a baseline rather than a reading of the state
+#                     it is supposed to be measuring. Changing the Java tree
+#                     deliberately means changing the pin deliberately, in a
+#                     reviewed diff.
+#     ancestry        when a baseline ref can be resolved (origin/main,
+#                     origin/master, main, master, in that order), it must be
+#                     an ancestor of HEAD - a rewritten or unrelated history
+#                     is a failure, not a pass - and the diff from the merge
+#                     base to HEAD over the protected paths must be empty.
+#                     A ref that resolves and disagrees fails the row; a
+#                     checkout with none of those refs is reported, and the
+#                     pinned ids above still decide the row.
+#
+# THE SECRET SCAN, AND WHY IT IS HERE
+#   This run produces four evidence paths - `target/gate-report.md`,
+#   `target/parity-report`, `target/test-reports` and `target/audit` - and the
+#   audit tree holds every sbt log, every class-load log and every row's
+#   evidence. Publishing an artifact is a disclosure, so the run checks its
+#   own output for credential signatures BEFORE anything derived from it
+#   leaves the machine. This is the last row, so by the time it executes every
+#   other row has finished writing, which is what makes it the right place for
+#   the scan of the ORIGINALS.
+#
+#   It is not the only time the scan runs. The upload is a separate tree -
+#   `target/publish`, built by `finalize_publication` from sanitized copies - and
+#   every phase below scans something different:
 #
 #     pre-run          before the first row, over whatever an earlier run
-#                      left behind. A finding there stops the run before it
-#                      adds to those trees, and a clean tree with nothing in
-#                      it is not a failure.
-#     publication      this row: all four paths, with the three trees the
-#                      run produces required to exist.
-#     composed-report  after the report is written, over the actual bytes of
-#                      `target/gate-report.md` - header, rows and result line
-#                      included. A finding cannot be written into a report
-#                      that already exists, so it is stated on stderr, kept
-#                      in its own summary under the audit tree (which CI also
-#                      publishes) and counted, so the run exits non-zero.
+#                      left behind. A finding there stops the run and moves
+#                      the offending artifact into the quarantine, and a
+#                      clean tree with nothing in it is not a failure.
+#     publication      this row: the four evidence paths as they stand, with
+#                      the three trees the run produces required to exist.
+#     staged           the copies that will actually be uploaded, scanned
+#                      after they are sanitized; a match is withdrawn from
+#                      the publication tree and its original quarantined.
+#     assembly         the composed report, scanned BEFORE it is renamed into
+#                      place, so a finding is recorded as a blocking row and
+#                      the report is reassembled without its appendices
+#                      rather than published as it stood.
+#     composed-report  the report file that is on disk, before a sanitized
+#                      copy of it is staged.
 #
 #   The report's content is therefore covered twice: as material, before it
 #   is composed - the header fields, the rows and the counts its result line
@@ -5145,8 +10102,12 @@ PY
 #   listed.
 #=============================================================================
 
-# The four trees CI publishes from a run, in the order .circleci/config.yml
-# stores them.
+# The four evidence paths a run produces, in the order they are staged for
+# publication. They are what the scans below examine; they are NOT what CI
+# uploads. CI uploads `target/publish`, the scan-approved tree
+# `finalize_publication` builds from these four - because detecting a credential
+# in a path that has already been handed to `store_artifacts` changes nothing
+# about the upload.
 PUBLICATION_PATHS=(
   "target/gate-report.md"
   "target/parity-report"
@@ -5187,6 +10148,7 @@ scan_publication_artifacts() {
   python3 - "$phase" "$paths_mode" "$files_mode" "$summary" "$published_checksum" "$@" <<'PY'
 import os
 import re
+import stat
 import sys
 
 phase, paths_mode, files_mode, summary_path = sys.argv[1:5]
@@ -5224,12 +10186,70 @@ RULES = [
 ]
 
 # The two allowlists, both explicit and both EXACT: the value must BE the
-# published checksum, or BE a hexadecimal digest on a line that says it is
+# published checksum, or BE a hexadecimal digest that an ADJACENT key names as
 # one. A value that merely contains one - `password=<checksum>-suffix` - is
 # not the checksum and is not excused.
 HEX = re.compile(r"[0-9a-fA-F]{32,}")
-DIGEST_CONTEXT = re.compile(
-    r"(?i)(?:digest|sha1|sha256|sha512|md5|checksum|commit|hash)")
+
+# The rules a digest keyword may never excuse, as DATA rather than as a
+# comment somebody has to remember. `credential-assignment` and
+# `url-embedded-credentials` matched a value that the document itself calls a
+# password, a token or a URL's userinfo; a 32-character hexadecimal password
+# is still a password, and a digest word elsewhere on the line says nothing
+# about it. This is the hole the previous version had:
+# `commit password=<32 hex>` satisfied both halves of the old test and passed.
+CREDENTIAL_RULES = frozenset({"credential-assignment", "url-embedded-credentials"})
+
+# The keys that may name a digest. `commit` and `hash` are deliberately NOT
+# here: neither ever governs a value as a key in these artifacts, and both
+# appear in prose - "the commit", "hash of" - which is exactly how a word
+# anywhere on the line came to excuse a credential. `CODEC-AUDIT-DIGEST` is
+# the label the Rule 6 audit prints before its own digest, and it ends in
+# `digest`, so the same test covers it.
+DIGEST_KEY_WORDS = ("sha1", "sha256", "sha512", "md5", "digest", "checksum")
+DIGEST_KEY = re.compile(r"(?i)(?:" + r"|".join(DIGEST_KEY_WORDS) + r")$")
+
+# What may sit between that key and the value it governs: the separators of
+# the documents this scans (JSON, YAML, the evidence files' `key: value` and
+# `key=value` lines), and no more than a few of them. A longer run means the
+# key is not governing this value, it is merely earlier on the line.
+DIGEST_SEPARATORS = ":= \t\"'-"
+DIGEST_SEPARATOR_LIMIT = 8
+
+
+def digest_key_governs(line, start):
+    """Whether a digest key is the key IMMEDIATELY before the matched value.
+
+    `start` is the offset of the value inside the line. Walking left over the
+    separator characters must reach the end of a digest key within
+    DIGEST_SEPARATOR_LIMIT characters: `sha256=<hex>`, `"checksum": "<hex>"`
+    and `CODEC-AUDIT-DIGEST <hex>` all qualify, while `commit <hex>` does not
+    (not a key), and neither does a line that happens to mention a digest
+    somewhere else before naming something entirely different.
+    """
+    prefix = line[:start]
+    index = len(prefix)
+    while index > 0 and prefix[index - 1] in DIGEST_SEPARATORS:
+        index -= 1
+    if len(prefix) - index > DIGEST_SEPARATOR_LIMIT:
+        return False
+    return DIGEST_KEY.search(prefix[:index]) is not None
+
+
+def digest_allowlist_reason(name, line, match, value):
+    """Why this match is a published digest rather than a credential, or None.
+
+    One place decides it, so the rule exclusion and the adjacency requirement
+    cannot drift apart from each other or from what the summary reports.
+    """
+    if name in CREDENTIAL_RULES:
+        return None
+    if not HEX.fullmatch(value):
+        return None
+    if not digest_key_governs(line, match.start()):
+        return None
+    return ("a hexadecimal digest that the key immediately before it names as "
+            "one")
 
 files = 0
 lines_scanned = 0
@@ -5255,9 +10275,23 @@ def describe(match):
 
 def scan_file(path):
     global files, lines_scanned, bytes_scanned
+    # O_NOFOLLOW, then the properties read from the DESCRIPTOR: this decides
+    # whether bytes are publishable, so what is examined must be the file the
+    # walk found and not whatever its name points at by the time it is opened
+    # (CWE-59, CWE-367). A link is refused by the open rather than followed,
+    # and a directory, FIFO or device at that name cannot be read as a file.
     try:
-        with open(path, "rb") as handle:
-            payload = handle.read()
+        handle = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as error:
+        errors.append(f"{path}: {error}")
+        return
+    try:
+        if not stat.S_ISREG(os.fstat(handle).st_mode):
+            os.close(handle)
+            errors.append(f"{path}: not a regular file, so it was not scanned")
+            return
+        with os.fdopen(handle, "rb") as reader:
+            payload = reader.read()
     except OSError as error:
         errors.append(f"{path}: {error}")
         return
@@ -5280,12 +10314,11 @@ def scan_file(path):
                         f"{path}:{number} rule={name} reason=the sbt distribution checksum "
                         "that .circleci/config.yml publishes")
                     continue
-                if HEX.fullmatch(value) and DIGEST_CONTEXT.search(line):
-                    allowed.append(
-                        f"{path}:{number} rule={name} reason=a hexadecimal digest on a line "
-                        "that names it as one")
+                reason = digest_allowlist_reason(name, line, match, value)
+                if reason is not None:
+                    allowed.append(f"{path}:{number} rule={name} reason={reason}")
                     continue
-                findings.append(f"{path}:{number} rule={name} {describe(match)}")
+                findings.append((path, f"{path}:{number} rule={name} {describe(match)}"))
 
 
 def walk(root):
@@ -5331,6 +10364,13 @@ report = [
     f"  lines                  : {lines_scanned}",
     f"  bytes                  : {bytes_scanned}",
     f"rules applied            : {', '.join(name for name, _ in RULES)}",
+    # Stated in the evidence rather than left to be read out of this script,
+    # because the scope of an allowlist is the only thing that decides what a
+    # clean scan actually proves.
+    f"digest allowlist scope   : never applied to these rules - "
+    f"{', '.join(sorted(CREDENTIAL_RULES))}; elsewhere it requires one of the "
+    f"keys {', '.join(DIGEST_KEY_WORDS)} to end within {DIGEST_SEPARATOR_LIMIT} "
+    f"separator characters of the matched value",
     f"allowlisted matches      : {len(allowed)}",
     f"findings                 : {len(findings)}",
     f"read errors              : {len(errors)}",
@@ -5342,11 +10382,41 @@ for entry in errors:
     report.append(f"  ERROR {entry}")
 for entry in symlinks:
     report.append(f"  SYMLINK {entry}")
-for entry in findings:
+for _, entry in findings:
     report.append(f"  FINDING {entry}")
 
-with open(summary_path, "w", encoding="utf-8") as handle:
-    handle.write("\n".join(report) + "\n")
+def write_record(path, payload):
+    """Writes one record of the scan no-follow, refusing a link at its name."""
+    try:
+        handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                         0o600)
+    except OSError as error:
+        print(f"the scan record {path} could not be written: {error}")
+        sys.exit(1)
+    with os.fdopen(handle, "wb") as sink:
+        sink.write(payload)
+
+
+write_record(summary_path, ("\n".join(report) + "\n").encode("utf-8", "surrogateescape"))
+
+# The same findings as a machine-readable list of PATHS beside the summary.
+# The publication step acts on a finding - it withdraws that file from the
+# published tree and quarantines the original - so the path it acts on has to
+# be the path that was scanned, exactly.
+#
+# Two things are therefore deliberate. The paths are the ones RECORDED with
+# each finding rather than re-derived by splitting the formatted line on its
+# first colon: a colon is legal in a filename on every filesystem this runs
+# on, and that split would truncate such a name at it and leave the file that
+# actually carries the credential in the published tree (CWE-116 improper
+# encoding leading to CWE-200). And the list is NUL-delimited, because a
+# newline or a tab is legal in a filename too and a line-oriented list cannot
+# represent one without corrupting it. The values stay withheld here as well:
+# a path and a rule name are what the next step needs.
+offenders = sorted({path for path, _ in findings})
+write_record(summary_path + ".paths",
+             "".join(path + "\0" for path in offenders).encode("utf-8", "surrogateescape"))
+
 print("\n".join(report))
 
 # Fail-closed: an unreadable artifact, or a symlink that was refused rather
@@ -5372,16 +10442,1329 @@ if files < 1 and files_mode == "require-files":
 PY
 }
 
+# The paths no part of this delivery may change, and the git object id each
+# one had when this baseline was taken. A tree id is the content of the whole
+# subtree beneath it and a blob id the content of the file, so an id that
+# still matches is proof that the path is byte-for-byte what it was -
+# independently of any ref, remote or working-tree state.
+PROTECTED_PATHS=(modules examples eclipse pom.xml src .github)
+PROTECTED_PATH_IDS=(
+  "modules:47c4d8d56e2f0a488a9ca8831a39b2e1251378b9"
+  "examples:1acf8f793ed77c8688cd9b633479d49b2b096e22"
+  "eclipse:337e2905f43bf42f5c319e5770d1f78b90f3d27e"
+  "pom.xml:aabf6fe7b889cb6f7a7d850185841b13dae54a96"
+  "src:38d4031ff7b35781988766cf44ff03bfdeb88657"
+  ".github:e168f4c1e3862b1bd66a90e92060e336ddea9362"
+)
+# Tried in order; the first that resolves is the baseline whose ancestry and
+# diff are checked.
+PROTECTED_BASELINE_REFS=(origin/main origin/master main master)
+
+#=============================================================================
+# Publication.
+#
+# Uploading an artifact is a disclosure, and it is the LAST thing this run
+# does, so it is the one step where a mistake cannot be corrected afterwards.
+# Three separate problems meet here, and one mechanism answers all three:
+#
+#   1. A credential signature detected in an artifact used to change nothing
+#      but this process's exit status. The file stayed exactly where it was,
+#      and `.circleci/config.yml` uploaded that path with `when: always` -
+#      which runs precisely when something has failed. Detection has to ACT
+#      on the artifact (CWE-200, CWE-532, CWE-693).
+#   2. The raw artifacts carry the build machine's internals: every JUnit XML
+#      file names the runner's hostname and, in its `<properties>` block,
+#      `user.dir`, `user.home`, `java.io.tmpdir` and the JDK's library path;
+#      the sbt and class-load logs carry absolute checkout, cache and
+#      toolchain paths and the commands that produced them (CWE-200).
+#   3. An artifact an earlier run left behind is indistinguishable from one
+#      this run produced, so stale evidence can be published as current
+#      (CWE-345).
+#
+# The mechanism: nothing is uploaded from where it was written. Every
+# artifact is copied into `target/publish` - a tree this run creates fresh
+# and owns, 0700 - and on the way it is proved to be a regular, singly-linked
+# file this run wrote, proved to be newer than the run's own start, and
+# sanitized. The copies are then SCANNED, and the tree is published only if
+# that scan is clean: an artifact that matches is withdrawn from the tree,
+# a marker is left in its place, and the ORIGINAL is moved into
+# `target/quarantine/<run-id>/`, which nothing uploads.
+#
+# `target/publish/PUBLICATION-STATUS.txt` is the marker CI and a reader go
+# by. It says APPROVED or NOT APPROVED, with the counts and the run identity,
+# and it is written on every exit path - a normal finish, a failed row, a
+# preflight or pre-run abort, and an interruption - because a run that ends
+# early has produced just as much to upload.
+#=============================================================================
+
+# The publication is attempted exactly once, and both `main` and the EXIT
+# trap may be the one that attempts it.
+PUBLICATION_DONE="no"
+# Whether the first pass has run, and whether it succeeded. Two variables and
+# not one, because "has not run yet" and "ran and failed" lead to different
+# things: the first is staged now, the second is already a recorded row.
+PUBLICATION_TREES_STAGED="no"
+PUBLICATION_TREES_OK="no"
+# The list of quarantined originals, for the status file.
+PUBLICATION_QUARANTINE_LIST=""
+# "yes" only when the tree was staged whole, nothing was withheld and the
+# scan of the staged copies came back clean. Read by `on_exit`, which turns a
+# publication that was not approved into a non-zero exit status even if every
+# gate row passed: the artifacts are the deliverable, and a run that cannot
+# publish them safely has not delivered them.
+PUBLICATION_APPROVED="no"
+# What to say about it, in the status file and in the row detail.
+PUBLICATION_DETAIL=""
+PUBLICATION_STAGED_COUNT=0
+PUBLICATION_WITHHELD_COUNT=0
+PUBLICATION_FINDING_COUNT=0
+PUBLICATION_QUARANTINED_COUNT=0
+PUBLICATION_REDACTION_FILE=""
+
+# publication_redactions - writes the table of paths the published copies
+# must not carry, and returns its path in PUBLICATION_REDACTION_FILE.
+#
+# The table is DATA in the audit tree rather than a list inside this
+# function, so that what was redacted from a published artifact can be read
+# afterwards from the evidence of the run that redacted it.
+#
+# Only values that are certainly paths or machine names are listed. The
+# account name on its own is deliberately NOT: it is a short word - `root`,
+# `circleci` - that occurs inside ordinary English and inside identifiers,
+# and replacing it everywhere would corrupt the evidence while the places it
+# actually leaks from (the home directory prefix, and the JUnit `<properties>`
+# block) are already covered.
+publication_redactions() {
+  PUBLICATION_REDACTION_FILE="$AUDIT_DIR/publication-redactions.txt"
+  safe_truncate "$PUBLICATION_REDACTION_FILE" || return 1
+
+  local -a needles=()
+  # Longest first is enforced by the reader, so the order here is only for a
+  # human: most specific concern first.
+  needles+=("$ROOT	[redacted:checkout]")
+  if [[ -n "$ROOT_REAL" && "$ROOT_REAL" != "$ROOT" ]]; then
+    needles+=("$ROOT_REAL	[redacted:checkout]")
+  fi
+  if [[ -n "${HOME:-}" && "$HOME" != "/" ]]; then
+    # Covers the coursier, ivy, sbt and maven caches and the account name
+    # that the home directory of a named user contains.
+    needles+=("$HOME	[redacted:home]")
+  fi
+  if [[ -n "${JAVA_HOME:-}" && "$JAVA_HOME" != "/" ]]; then
+    needles+=("$JAVA_HOME	[redacted:jdk]")
+  fi
+  # The directories the tools of this run actually came from, resolved rather
+  # than guessed: an evidence file names them wherever it records a command,
+  # a version or the class it disassembled, and where a toolchain lives is a
+  # fact about the build machine and not about the delivery. `type -P` is a
+  # builtin lookup, so this needs nothing external, and it deliberately
+  # ignores the checked-command FUNCTIONS of the same names.
+  local tool resolved directory
+  local -a tool_dirs=()
+  for tool in git sbt java javap python3 awk sed grep find date; do
+    resolved="$(type -P "$tool" 2>/dev/null || printf '')"
+    [[ -n "$resolved" ]] || continue
+    directory="${resolved%/*}"
+    [[ -n "$directory" && "$directory" != "/" ]] || continue
+    case " ${tool_dirs[*]-} " in
+      *" $directory "*) continue ;;
+    esac
+    tool_dirs+=("$directory")
+  done
+  # The conventional toolchain roots as well, because a JDK or an sbt
+  # distribution is named in a log by its own layout and not only through the
+  # executable that was invoked.
+  for tool in /opt/toolchain /usr/lib/jvm /usr/local/sbt /opt/java; do
+    case " ${tool_dirs[*]-} " in
+      *" $tool "*) continue ;;
+    esac
+    tool_dirs+=("$tool")
+  done
+  for tool in "${tool_dirs[@]}"; do
+    needles+=("$tool	[redacted:tool]")
+  done
+  if [[ -n "${HOSTNAME:-}" && "${#HOSTNAME}" -ge 4 ]]; then
+    needles+=("$HOSTNAME	[redacted:host]")
+  fi
+  local temp="${TMPDIR:-/tmp}"
+  temp="${temp%/}"
+  if [[ -n "$temp" && "$temp" != "/" ]]; then
+    needles+=("$temp/	[redacted:tmp]/")
+  fi
+
+  if ! {
+    printf '# needle<TAB>replacement; applied longest-needle-first to every published copy.\n'
+    printf '%s\n' "${needles[@]}"
+  } | guarded_write "$PUBLICATION_REDACTION_FILE"; then
+    framework_error "the publication redaction table could not be written"
+    return 1
+  fi
+  return 0
+}
+
+# publication_status_line <verdict> - the one-line verdict CI greps for.
+publication_status_line() {
+  printf 'PUBLICATION: %s\n' "$1"
+}
+
+# write_publication_status - the marker inside the published tree.
+#
+# It carries no absolute path and no host detail of its own: repository-
+# relative paths, the run identity, and counts. It is the last thing written
+# into the tree, and it is rewritten if the final verification scan changes
+# the verdict.
+write_publication_status() {
+  local verdict="$1"
+  local quarantine_list="$2"
+
+  safe_truncate "$PUBLICATION_STATUS_FILE" || return 1
+  if ! {
+    printf '# Publication status of one acceptance-gate run.\n'
+    printf '#\n'
+    printf '# Everything in this directory is a SANITIZED copy of an artifact under\n'
+    printf '# target/, checked to belong to this run and scanned for credential\n'
+    printf '# signatures before it was kept. The raw artifacts are not published.\n'
+    printf '#\n'
+    publication_status_line "$verdict"
+    printf 'run-id\t%s\n' "${RUN_ID:-unknown}"
+    printf 'started-utc\t%s\n' "${RUN_STARTED_UTC:-unknown}"
+    printf 'commit\t%s\n' "${HEAD_COMMIT:-unknown}"
+    printf 'branch\t%s\n' "${HEAD_BRANCH:-unknown}"
+    printf 'working-tree\t%s\n' "$(markdown_cell "${HEAD_STATE:-unknown}")"
+    printf 'gates-failed\t%s\n' "${GATE_FAILED:-unknown}"
+    printf 'run-completed\t%s\n' "${RUN_COMPLETED:-no}"
+    printf 'staged-artifacts\t%s\n' "$PUBLICATION_STAGED_COUNT"
+    printf 'withheld-artifacts\t%s\n' "$PUBLICATION_WITHHELD_COUNT"
+    printf 'credential-findings\t%s\n' "$PUBLICATION_FINDING_COUNT"
+    printf 'quarantined-originals\t%s\n' "$PUBLICATION_QUARANTINED_COUNT"
+    # What the transaction had to do to get here, so a reader can tell a
+    # first-pass publication from one that needed the report recomposed after
+    # a finding was acted on.
+    printf 'passes\t%s\n' "$PUBLICATION_ATTEMPTS"
+    printf 'evidence-trees-scanned-clean\t%s\n' "$PUBLICATION_TREES_OK"
+    printf 'report-published\t%s\n' "$REPORT_PUBLISHED"
+    printf 'incident\t%s\n' "$PUBLICATION_INCIDENT"
+    printf 'detail\t%s\n' "$(markdown_cell "${PUBLICATION_DETAIL:-none}")"
+    if [[ -n "$quarantine_list" ]]; then
+      printf '# originals moved out of every published path (values withheld):\n'
+      printf '%s\n' "$quarantine_list"
+    fi
+    printf '# manifest: MANIFEST.txt lists every staged copy, its source, the sha256\n'
+    printf '# of the bytes that were published and what was removed from them; a line\n'
+    printf '# whose first field is "-" was NOT published. The uploader re-checks this\n'
+    printf '# tree against those digests - `scripts/verify-gates.sh --verify-publication`\n'
+    printf '# - so a file changed or added between the scan and the upload is caught.\n'
+  } | guarded_write "$PUBLICATION_STATUS_FILE"; then
+    framework_error "the publication status file could not be written"
+    return 1
+  fi
+  return 0
+}
+
+# read_scan_offenders <scan summary> - the paths the scan recorded, verbatim.
+#
+# Fills SCAN_OFFENDERS with the NUL-delimited list the scanner writes beside
+# its summary. NUL is the one delimiter a filename cannot contain, so a name
+# holding a space, a tab, a newline or a colon arrives here exactly as it was
+# scanned - and the path that is acted on is therefore the path that carried
+# the finding. `read -d ''` is what reads such a list; a `while read` over
+# lines would split one name into two and act on neither (CWE-116).
+SCAN_OFFENDERS=()
+read_scan_offenders() {
+  local summary="$1"
+  local paths_file="$summary.paths"
+  local offender
+
+  SCAN_OFFENDERS=()
+  if [[ ! -f "$paths_file" ]]; then
+    return 1
+  fi
+  while IFS= read -r -d '' offender || [[ -n "$offender" ]]; do
+    [[ -n "$offender" ]] || continue
+    SCAN_OFFENDERS+=("$offender")
+  done <"$paths_file"
+  return 0
+}
+
+# quarantine_scan_offenders <scan summary> <what the artifacts are>
+#
+# Moves every artifact the scan named out of every path this run or CI can
+# publish, into this run's quarantine directory. Detection has to ACT on the
+# artifact rather than merely on this process's status: a credential left
+# where it was found is still there for the next run, the next step or an
+# operator to upload (CWE-200). The count lands in QUARANTINED_COUNT - by
+# assignment in the caller's shell, never through a command substitution,
+# which would discard it with the subshell.
+QUARANTINED_COUNT=0
+quarantine_scan_offenders() {
+  local summary="$1"
+  local what="$2"
+  local moved
+
+  QUARANTINED_COUNT=0
+  if ! read_scan_offenders "$summary"; then
+    framework_error "the scan of $what reported findings but wrote no path list, so nothing could be quarantined"
+    return 1
+  fi
+  if [[ "${#SCAN_OFFENDERS[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  if ! moved="$(fs_guard quarantine "$ROOT" "$QUARANTINE_DIR/${RUN_ID:-unknown-run}" \
+    "${SCAN_OFFENDERS[@]}" 2>&1)"; then
+    framework_error "$what could not be quarantined: ${moved:-no reason given}"
+    return 1
+  fi
+  QUARANTINED_COUNT="${#SCAN_OFFENDERS[@]}"
+  printf 'quarantined %s artifact(s) of %s into %s (%s)\n' \
+    "$QUARANTINED_COUNT" "$what" "${QUARANTINE_DIR#"$ROOT"/}/${RUN_ID:-unknown-run}" \
+    "$moved" >&2
+  return 0
+}
+
+# quarantine_publication_findings <scan summary> - acts on what the scan found.
+#
+# For every staged copy the scan reported: the copy is withdrawn and replaced
+# by a marker, and the ORIGINAL it was made from - looked up in the manifest,
+# not re-derived from the path - is moved into this run's quarantine
+# directory. The list of quarantined originals goes into
+# PUBLICATION_QUARANTINE_LIST and the count into
+# PUBLICATION_QUARANTINED_COUNT, and it does NOT print them for a caller to
+# capture: a command substitution runs in a subshell, where those two
+# assignments would be discarded the moment it ended - which is exactly how
+# the status file came to report "quarantined-originals 0" beside a
+# quarantine directory holding the file.
+quarantine_publication_findings() {
+  local summary="$1"
+  local staged original
+  local -a originals=()
+  local -a listed=()
+
+  if ! read_scan_offenders "$summary"; then
+    framework_error "the publication scan reported findings but wrote no path list"
+    return 1
+  fi
+  for staged in "${SCAN_OFFENDERS[@]}"; do
+    [[ -n "$staged" ]] || continue
+    # The source is looked up by an exact field match on the staged path, so a
+    # name containing a colon, a space or a tab resolves to its own row and to
+    # no other. The manifest is read through the same descriptor-checked tree
+    # it was written into.
+    original="$(command awk -F'\t' -v staged="${staged#target/publish/}" \
+      '$1 == staged { print $2; exit }' "$PUBLICATION_MANIFEST_FILE")"
+    # The staged copy goes whatever happens: an artifact the scan matched is
+    # not published even if its source cannot be identified.
+    if ! fs_guard withdraw "$ROOT" "$ROOT/$staged" \
+      "a credential signature was found in this artifact" >/dev/null 2>&1; then
+      framework_error "the staged copy $staged could not be withdrawn from the publication tree"
+      return 1
+    fi
+    if [[ -n "$original" ]]; then
+      originals+=("$original")
+      listed+=("$(printf 'quarantined\t%s\t(was staged as %s)' "$original" "$staged")")
+    else
+      listed+=("$(printf 'withdrawn\t%s\t(no source recorded in the manifest)' "$staged")")
+    fi
+  done
+
+  if [[ "${#originals[@]}" -gt 0 ]]; then
+    local moved
+    if ! moved="$(fs_guard quarantine "$ROOT" "$QUARANTINE_DIR/${RUN_ID:-unknown-run}" \
+      "${originals[@]}" 2>&1)"; then
+      framework_error "an artifact carrying a credential signature could not be quarantined: $moved"
+      return 1
+    fi
+    PUBLICATION_QUARANTINED_COUNT="$(printf '%s\n' "$moved" |
+      command sed -n 's/^quarantined=\([0-9]*\)$/\1/p')"
+    PUBLICATION_QUARANTINED_COUNT="${PUBLICATION_QUARANTINED_COUNT:-0}"
+  fi
+  if [[ "${#listed[@]}" -gt 0 ]]; then
+    PUBLICATION_QUARANTINE_LIST="$(printf '%s\n' "${listed[@]}")"
+  fi
+  return 0
+}
+
+# stage_publication_trees - the first publication pass: the three directories.
+#
+# Run BEFORE the report is composed, so that its verdict is a row of the
+# report rather than a fact discovered after the report said everything
+# passed. The report itself is staged by `publish_gate_report_copy`, which
+# cannot run any earlier because the file does not exist yet.
+stage_publication_trees() {
+  PUBLICATION_TREES_STAGED="yes"
+  PUBLICATION_DETAIL=""
+
+  # The tree being published has to be the tree that was validated: a parent
+  # renamed mid-run would otherwise redirect the last step of the run.
+  verify_output_tree_identity || {
+    PUBLICATION_DETAIL="the output tree is no longer the one this run validated"
+    return 1
+  }
+
+  # Fresh, and owned by this run: whatever is in target/publish arrived from
+  # a previous run or from outside, and none of it has been scanned by this
+  # one.
+  if [[ -e "$PUBLISH_DIR" ]]; then
+    local swept
+    if ! swept="$(fs_guard rmtree "$ROOT" "$PUBLISH_DIR" 2>&1)"; then
+      PUBLICATION_DETAIL="the previous publication tree could not be removed (${swept:-no reason given})"
+      framework_error "$PUBLICATION_DETAIL"
+      return 1
+    fi
+  fi
+  ensure_output_dir "$PUBLISH_DIR" 0700 || {
+    PUBLICATION_DETAIL="the publication tree could not be created"
+    return 1
+  }
+  publication_redactions || {
+    PUBLICATION_DETAIL="the redaction table could not be written, so nothing was staged"
+    return 1
+  }
+  safe_truncate "$PUBLICATION_MANIFEST_FILE" || {
+    PUBLICATION_DETAIL="the publication manifest could not be started"
+    return 1
+  }
+
+  local staged_counts staged_rc=0
+  staged_counts="$(fs_guard stage "$ROOT" "$PUBLISH_DIR" "$RUN_STARTED_EPOCH" \
+    "$PUBLICATION_REDACTION_FILE" "$PUBLICATION_MANIFEST_FILE" truncate \
+    "target/parity-report=parity-report" \
+    "target/test-reports=test-reports" \
+    "target/audit=audit" \
+    "target/audit/run-identity.txt=run-identity.txt" 2>&1)" || staged_rc=$?
+
+  PUBLICATION_STAGED_COUNT="$(printf '%s\n' "$staged_counts" |
+    command sed -n 's/.*staged=\([0-9]*\) .*/\1/p' | command head -n 1)"
+  PUBLICATION_STAGED_COUNT="${PUBLICATION_STAGED_COUNT:-0}"
+  local withheld
+  withheld="$(printf '%s\n' "$staged_counts" | command awk '
+    { for (i = 1; i <= NF; i++) { split($i, kv, "=");
+        if (kv[1] == "stale" || kv[1] == "unsafe" || kv[1] == "missing") n += kv[2] } }
+    END { print n + 0 }')"
+  PUBLICATION_WITHHELD_COUNT="${withheld:-0}"
+
+  # The counts go into the report as an appendix, through the one helper that
+  # records its own failure if the appendix cannot be written.
+  printf '%s\n' "$staged_counts" |
+    add_appendix "Publication - staging of the evidence trees (sanitized copies)"
+
+  # A withheld artifact is a failure of the publication, but it is NOT a
+  # reason to skip what follows: the scan runs over whatever WAS staged,
+  # always. Returning here - as an earlier version of this function did -
+  # meant that one stale file left the copies of every other artifact
+  # unscanned, which is the opposite of fail-closed.
+  local withheld_detail=""
+  if [[ "$staged_rc" -ne 0 ]]; then
+    withheld_detail="$PUBLICATION_WITHHELD_COUNT artifact(s) withheld from publication as stale, unsafe or missing (see MANIFEST.txt); $staged_counts"
+  fi
+
+  # The scan of the copies: the exact bytes that will be uploaded.
+  local summary="$AUDIT_DIR/publication-secret-scan-staged.txt"
+  local scan_rc=0
+  scan_publication_artifacts staged-publication require-paths require-files "$summary" \
+    "${PUBLISH_DIR#"$ROOT"/}" >/dev/null 2>&1 || scan_rc=$?
+  if [[ -f "$summary" ]]; then
+    PUBLICATION_FINDING_COUNT="$(command awk -F': *' '/^findings /{ print $2; exit }' "$summary")"
+    PUBLICATION_FINDING_COUNT="${PUBLICATION_FINDING_COUNT:-0}"
+    # A bare call: `add_appendix` records its own failure in the ledger, which
+    # is blocking for the run, and `errexit` is suppressed in every context
+    # this function is called from.
+    add_appendix "Publication - secret scan of the staged copies" <"$summary"
+  else
+    PUBLICATION_DETAIL="${withheld_detail:+$withheld_detail; }the scan of the staged copies wrote no summary"
+    return 1
+  fi
+  if [[ "$scan_rc" -eq 0 ]]; then
+    PUBLICATION_TREES_OK="yes"
+    if [[ -n "$withheld_detail" ]]; then
+      PUBLICATION_INCIDENT="yes"
+      PUBLICATION_DETAIL="$withheld_detail; the $PUBLICATION_STAGED_COUNT artifact(s) that WERE staged scanned clean"
+      return 0
+    fi
+    PUBLICATION_DETAIL="$PUBLICATION_STAGED_COUNT sanitized artifact(s) staged and scanned clean"
+    return 0
+  fi
+
+  # A finding, or an unreadable file, or a symlink inside the staged tree:
+  # the artifact is withdrawn and quarantined, and the tree that remains is
+  # re-scanned so that what is published is proved clean rather than assumed
+  # to be.
+  if [[ "$PUBLICATION_FINDING_COUNT" -gt 0 ]]; then
+    quarantine_publication_findings "$summary" || return 1
+    local recheck_rc=0
+    scan_publication_artifacts staged-publication-recheck require-paths require-files \
+      "$AUDIT_DIR/publication-secret-scan-staged-recheck.txt" "${PUBLISH_DIR#"$ROOT"/}" \
+      >/dev/null 2>&1 || recheck_rc=$?
+    if [[ "$recheck_rc" -ne 0 ]]; then
+      PUBLICATION_DETAIL="${withheld_detail:+$withheld_detail; }$PUBLICATION_FINDING_COUNT credential signature(s) found in the staged copies; the offending artifacts were withdrawn and quarantined, but the remaining tree STILL does not scan clean"
+      return 1
+    fi
+    # Acted on, and the tree that remains is PROVED clean: it may be
+    # published, and the finding is carried by a blocking row of the report
+    # and by the incident lines of the status marker.
+    PUBLICATION_TREES_OK="yes"
+    PUBLICATION_INCIDENT="yes"
+    PUBLICATION_DETAIL="${withheld_detail:+$withheld_detail; }$PUBLICATION_FINDING_COUNT credential signature(s) found in the staged copies; those artifacts were withdrawn from the publication tree and their $PUBLICATION_QUARANTINED_COUNT original(s) quarantined under ${QUARANTINE_DIR#"$ROOT"/}/${RUN_ID:-unknown-run}"
+    return 0
+  fi
+  PUBLICATION_DETAIL="${withheld_detail:+$withheld_detail; }the scan of the staged copies did not pass (see ${summary#"$ROOT"/})"
+  return 1
+}
+
+# publish_gate_report_copy - the second pass: the report itself.
+#
+# The report is the one publication artifact that does not exist while the
+# rows are running, so it is staged last. Its bytes have already been scanned
+# once, before they were renamed into place (see `write_report`); this scans
+# the file that is actually on disk and then the sanitized copy of it, so the
+# thing uploaded is the thing scanned.
+publish_gate_report_copy() {
+  if [[ ! -f "$REPORT_FILE" ]]; then
+    PUBLICATION_DETAIL="${PUBLICATION_DETAIL:+$PUBLICATION_DETAIL; }no gate report was written, so none is published"
+    return 1
+  fi
+  local summary="$AUDIT_DIR/publication-secret-scan-report.txt"
+  local scan_rc=0
+  scan_publication_artifacts composed-report require-paths require-files "$summary" \
+    "${REPORT_FILE#"$ROOT"/}" >/dev/null 2>&1 || scan_rc=$?
+  if [[ "$scan_rc" -ne 0 ]]; then
+    PUBLICATION_DETAIL="${PUBLICATION_DETAIL:+$PUBLICATION_DETAIL; }the composed gate report did not pass the secret scan, so it is NOT published (see ${summary#"$ROOT"/})"
+    return 1
+  fi
+  local staged_counts staged_rc=0
+  staged_counts="$(fs_guard stage "$ROOT" "$PUBLISH_DIR" "$RUN_STARTED_EPOCH" \
+    "$PUBLICATION_REDACTION_FILE" "$PUBLICATION_MANIFEST_FILE" append \
+    "target/gate-report.md=gate-report.md" 2>&1)" || staged_rc=$?
+  if [[ "$staged_rc" -ne 0 ]]; then
+    PUBLICATION_DETAIL="${PUBLICATION_DETAIL:+$PUBLICATION_DETAIL; }the gate report could not be staged for publication ($staged_counts)"
+    return 1
+  fi
+  PUBLICATION_STAGED_COUNT=$((PUBLICATION_STAGED_COUNT + 1))
+  return 0
+}
+
+# publish_report_and_verify - stages the report copy and verifies the tree.
+#
+# Returns 0 when everything that would be uploaded has been scanned clean, 1
+# when a credential signature was FOUND (which is actionable: the offending
+# copy can be withdrawn and its original quarantined), and 2 when the tree
+# cannot be proved clean at all - an unreadable file, a symlink, a scanner
+# that did not run, or a report that is not there. The distinction is what
+# decides between cleaning the tree and replacing it: a finding names the
+# artifact to act on, while a gap in the scan names nothing and leaves no
+# basis for publishing any of it.
+publish_report_and_verify() {
+  publish_gate_report_copy || return 2
+
+  local summary="$AUDIT_DIR/publication-secret-scan-final.txt"
+  local rc=0
+  scan_publication_artifacts publication-final require-paths require-files \
+    "$summary" "${PUBLISH_DIR#"$ROOT"/}" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    return 0
+  fi
+  local found
+  found="$(scan_findings_count "$summary")"
+  if [[ "$found" -gt 0 ]]; then
+    PUBLICATION_FINDING_COUNT=$((PUBLICATION_FINDING_COUNT + found))
+    PUBLICATION_DETAIL="${PUBLICATION_DETAIL:+$PUBLICATION_DETAIL; }$found credential signature(s) found in the final scan of the publication tree"
+    return 1
+  fi
+  PUBLICATION_DETAIL="${PUBLICATION_DETAIL:+$PUBLICATION_DETAIL; }the final scan of the publication tree could not be completed (see ${summary#"$ROOT"/})"
+  return 2
+}
+
+# scan_findings_count <summary> - how many findings that scan recorded.
+scan_findings_count() {
+  local summary="$1"
+  local count=""
+  if [[ -f "$summary" ]]; then
+    count="$(command awk -F': *' '/^findings /{ print $2; exit }' "$summary")"
+  fi
+  printf '%s\n' "${count:-0}"
+}
+
+# build_incident_tree <reason> - the upload root, replaced by a notice.
+#
+# Reached when the publication tree cannot be proved clean. The tree is
+# REMOVED and a new one created in its place, holding nothing but text this
+# script generated: an unverifiable tree must not be uploaded, and leaving it
+# where CI collects from - which is what merely returning a non-zero status
+# did - uploads it anyway (CWE-200). The evidence itself stays on the machine,
+# under target/audit and target/quarantine, for an operator with access to it.
+build_incident_tree() {
+  local reason="$1"
+  local swept
+
+  if [[ -e "$PUBLISH_DIR" ]]; then
+    if ! swept="$(fs_guard rmtree "$ROOT" "$PUBLISH_DIR" 2>&1)"; then
+      printf 'FATAL: the publication tree could not be replaced (%s), and it has NOT\n' \
+        "${swept:-no reason given}" >&2
+      printf 'been proved safe to upload. Remove %s by hand before publishing.\n' \
+        "${PUBLISH_DIR#"$ROOT"/}" >&2
+      return 1
+    fi
+  fi
+  ensure_output_dir "$PUBLISH_DIR" 0700 || return 1
+  # `store_test_results` in CI points at this directory, so it exists even
+  # here; empty is a result CI can collect, a missing path is an error.
+  ensure_output_dir "$PUBLISH_DIR/test-reports" 0700 || return 1
+
+  if ! {
+    printf 'This directory deliberately holds no evidence.\n\n'
+    printf 'The acceptance run could not prove that the artifacts it produced were\n'
+    printf 'safe to publish, so the publication tree was replaced by this notice\n'
+    printf 'rather than uploaded. Nothing here was withheld to hide a result: the\n'
+    printf 'evidence exists on the machine that ran the gates, under target/audit,\n'
+    printf 'target/parity-report and target/test-reports, and anything that matched\n'
+    printf 'a credential signature is under target/quarantine.\n\n'
+    printf 'reason: %s\n' "$(markdown_cell "$reason")"
+    printf 'run-id: %s\n' "$(markdown_cell "${RUN_ID:-unknown}")"
+    printf 'commit: %s\n' "$(markdown_cell "${HEAD_COMMIT:-unknown}")"
+    printf 'started-utc: %s\n' "$(markdown_cell "${RUN_STARTED_UTC:-unknown}")"
+  } | guarded_write "$PUBLISH_DIR/NOTICE.txt"; then
+    framework_error "the publication incident notice could not be written"
+    return 1
+  fi
+  if ! {
+    printf '# staged-path\tsource-path\tpublished-bytes\tsha256\tnotes\n'
+    printf -- '-\t(nothing)\t0\t-\tNOT PUBLISHED: the publication tree could not be proved clean\n'
+  } | guarded_write "$PUBLICATION_MANIFEST_FILE"; then
+    framework_error "the incident manifest could not be written"
+    return 1
+  fi
+  PUBLICATION_STAGED_COUNT=0
+  write_publication_status "NOT APPROVED - $reason" "$PUBLICATION_QUARANTINE_LIST" || return 1
+
+  # Even a notice is scanned before it is left where CI collects from. If it
+  # cannot be scanned clean, there is nothing left to publish at all.
+  local rc=0
+  scan_publication_artifacts publication-incident require-paths require-files \
+    "$AUDIT_DIR/publication-secret-scan-incident.txt" "${PUBLISH_DIR#"$ROOT"/}" \
+    >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    printf 'FATAL: even the publication notice did not scan clean; the upload root is\n' >&2
+    printf 'being removed entirely.\n' >&2
+    if ! fs_guard rmtree "$ROOT" "$PUBLISH_DIR" >/dev/null 2>&1; then
+      printf 'WARNING: %s could not be removed either; do not upload it.\n' \
+        "${PUBLISH_DIR#"$ROOT"/}" >&2
+    fi
+    return 1
+  fi
+  return 0
+}
+
+# finalize_publication - composing, staging and verifying as ONE transaction.
+#
+# The ordering this replaces was the defect: the report was composed, renamed
+# into place and marked written, and only AFTERWARDS was the tree that
+# contains it scanned - so a failure at that point left an already-staged
+# report saying "every automated gate passed", with the failure recorded
+# nowhere a reader of the published tree would see it (CWE-345). Composition,
+# staging and the final scan are therefore one unit with a single terminal
+# state, and nothing is marked published until the scan that governs the
+# uploaded bytes has passed.
+#
+# The transaction runs at most twice. The first pass stages the trees, composes
+# the report and verifies. A finding is ACTED on - the offending copy
+# withdrawn, its original quarantined, a blocking row recorded - and the
+# second pass recomposes the report so that the published report states the
+# finding, then verifies again. A gap that cannot be closed, or a second pass
+# that still does not verify, replaces the upload root with an incident-only
+# tree.
+#
+# Called by `main` and by the EXIT trap, and idempotent: whichever reaches it
+# first finalizes, and the other reads the verdict.
+finalize_publication() {
+  if [[ "$PUBLICATION_DONE" == "yes" ]]; then
+    [[ "$PUBLICATION_APPROVED" == "yes" ]]
+    return
+  fi
+
+  local attempt outcome report_rc
+  for attempt in 1 2; do
+    PUBLICATION_ATTEMPTS="$attempt"
+
+    if [[ "$attempt" -eq 1 && "$PUBLICATION_TREES_STAGED" != "yes" ]]; then
+      if ! stage_publication_trees; then
+        record_blocking_row "Publication - scan-approved staging of the evidence trees" \
+          "${PUBLICATION_DETAIL:-the publication staging did not complete}" \
+          "target/publish/MANIFEST.txt" \
+          blocking
+      elif [[ "$PUBLICATION_INCIDENT" == "yes" ]]; then
+        record_blocking_row "Publication - an artifact was withheld or quarantined" \
+          "${PUBLICATION_DETAIL:-an artifact did not reach the publication tree}" \
+          "target/publish/MANIFEST.txt" \
+          blocking
+      fi
+    fi
+
+    report_rc=0
+    if [[ "$attempt" -eq 1 ]]; then
+      write_report || report_rc=$?
+    else
+      write_report recompose || report_rc=$?
+    fi
+    if [[ "$report_rc" -ne 0 ]]; then
+      # `write_report` records its own blocking row for the reason it failed,
+      # and says it on stderr. Without a report there is nothing to publish.
+      PUBLICATION_DETAIL="${PUBLICATION_DETAIL:+$PUBLICATION_DETAIL; }the gate report could not be published"
+      break
+    fi
+
+    outcome=0
+    publish_report_and_verify || outcome=$?
+    if [[ "$outcome" -eq 0 ]]; then
+      PUBLICATION_DONE="yes"
+      PUBLICATION_APPROVED="yes"
+      REPORT_PUBLISHED="yes"
+      local verdict
+      if [[ "$PUBLICATION_INCIDENT" == "yes" ]]; then
+        verdict="APPROVED WITH INCIDENT - every published copy was sanitized and scanned clean, and ${PUBLICATION_DETAIL:-an artifact was withheld or quarantined}"
+      else
+        verdict="APPROVED - every published copy was sanitized and scanned clean"
+      fi
+      if ! write_publication_status "$verdict" "$PUBLICATION_QUARANTINE_LIST"; then
+        PUBLICATION_APPROVED="no"
+        if ! build_incident_tree "the publication status marker could not be written"; then
+          printf 'WARNING: the upload root could not be replaced by a notice.\n' >&2
+        fi
+        printf '\nFATAL: publication NOT APPROVED - the status marker could not be written\n' >&2
+        return 1
+      fi
+      printf '\npublication: %s - %s staged artifact(s) in %s\n' \
+        "${verdict%% - *}" "$PUBLICATION_STAGED_COUNT" "${PUBLISH_DIR#"$ROOT"/}"
+      return 0
+    fi
+
+    if [[ "$outcome" -eq 1 && "$attempt" -eq 1 ]]; then
+      # Actionable: the scan named the artifacts. They are withdrawn from the
+      # tree and their originals quarantined, the finding is recorded as a
+      # blocking row, and the second pass recomposes the report so that the
+      # report which is published states it.
+      quarantine_publication_findings "$AUDIT_DIR/publication-secret-scan-final.txt" ||
+        framework_error "the artifacts the final scan named could not all be acted on"
+      PUBLICATION_INCIDENT="yes"
+      record_blocking_row "Publication - credential signature in the staged evidence" \
+        "${PUBLICATION_DETAIL:-a credential signature was found in the publication tree}" \
+        "target/audit/publication-secret-scan-final.txt" \
+        blocking
+      continue
+    fi
+    break
+  done
+
+  # Neither pass produced a tree that could be proved clean.
+  PUBLICATION_DONE="yes"
+  PUBLICATION_APPROVED="no"
+  record_blocking_row "Publication - the evidence could not be published safely" \
+    "${PUBLICATION_DETAIL:-the publication tree could not be proved clean}" \
+    "target/audit/publication-secret-scan-final.txt" \
+    blocking
+  # The report on disk should state that row too, which is the last thing this
+  # writes. It is not published - that is what this branch has established -
+  # but it is the local record an operator reads.
+  if ! write_report recompose; then
+    printf 'WARNING: the local report could not be recomposed with that row.\n' >&2
+  fi
+  if ! build_incident_tree "${PUBLICATION_DETAIL:-the publication tree could not be proved clean}"; then
+    printf 'WARNING: the upload root could not be replaced by a notice.\n' >&2
+  fi
+  printf '\nFATAL: publication NOT APPROVED - %s\n' \
+    "${PUBLICATION_DETAIL:-the publication step did not complete}" >&2
+  printf 'The upload root %s has been replaced by a notice, so nothing unverified\n' \
+    "${PUBLISH_DIR#"$ROOT"/}" >&2
+  printf 'leaves this machine. The evidence itself is under %s and %s.\n' \
+    "${AUDIT_DIR#"$ROOT"/}" "${QUARANTINE_DIR#"$ROOT"/}" >&2
+  return 1
+}
+
+#-----------------------------------------------------------------------------
+# Framework self-checks.
+#
+# Every control below exists because a specific defect was found in this
+# framework, and a fix with no control over it is a fix that silently comes
+# undone: the next person to touch the scanner's allowlist, the report
+# encoders, the ledger helper, the write path or the sanitizer has no way to
+# know which behaviour was deliberate. These run on EVERY acceptance run,
+# before the first gate row, and they invoke the real mechanisms rather than
+# re-implementing them - a control that tests a copy of the logic proves
+# nothing about the logic that runs.
+#
+# They are hermetic: their fixtures live in a private directory under target/
+# that is not one of the publication paths, and it is removed as soon as they
+# finish, so the credential-shaped strings they need are never staged, never
+# scanned as evidence and never in the report. What reaches the evidence is
+# the verdict of each control and nothing of its fixture.
+#
+# A failed control is BLOCKING and stops the run with exit 2: if the framework
+# that produces the evidence cannot be shown to behave as specified, the
+# evidence it would produce is not worth measuring anything against.
+#-----------------------------------------------------------------------------
+
+SELF_CHECK_FAILURES=()
+SELF_CHECK_RESULTS=()
+
+# self_check <description> <expected> <actual>
+self_check() {
+  if [[ "$2" == "$3" ]]; then
+    SELF_CHECK_RESULTS+=("$(printf 'ok      %s (%s)' "$1" "$2")")
+    return 0
+  fi
+  SELF_CHECK_RESULTS+=("$(printf 'FAILED  %s: expected [%s], got [%s]' "$1" "$2" "$3")")
+  SELF_CHECK_FAILURES+=("$1")
+  return 1
+}
+
+# The scanner's credential-context rule (the bypass that allowlisted any long
+# hex value whenever a digest word appeared anywhere on the line).
+self_check_scanner() {
+  local work="$1"
+  local fixture="$work/scanner-fixture.txt"
+  local relative="${fixture#"$ROOT"/}"
+  local summary="$work/scanner-scan.txt"
+  local hex32="0123456789abcdef0123456789abcdef"
+  local hex64="$hex32$hex32"
+  local published
+
+  # Three lines that a digest-word allowlist waves through and a credential
+  # rule must not: the key is the credential, the digest word is only nearby.
+  if ! {
+    printf 'commit password=%s\n' "$hex32"
+    printf 'sha256 token=%s\n' "$hex64"
+    printf 'token: %s  # sha256 of the jar\n' "$hex32"
+  } | guarded_write "$fixture"; then
+    self_check "the scanner fixture could be written" "yes" "no"
+    return 1
+  fi
+  local rc=0
+  scan_publication_artifacts self-check require-paths require-files "$summary" \
+    "$relative" >/dev/null 2>&1 || rc=$?
+  self_check "the scanner refuses a credential beside a digest word" "1" "$rc"
+  self_check "  all three forms are findings" "3" \
+    "$(command awk -F': *' '/^findings /{ print $2; exit }' "$summary" 2>/dev/null || printf 'none')"
+  self_check "  and none is allowlisted" "0" \
+    "$(command awk -F': *' '/^allowlisted matches /{ print $2; exit }' "$summary" 2>/dev/null || printf 'none')"
+
+  # The one allowlist that must still work: the sbt distribution checksum this
+  # repository publishes in .circleci/config.yml.
+  published="$(command grep -oE '[0-9a-f]{64}' .circleci/config.yml 2>/dev/null |
+    command sort -u | command head -n 1 || printf '')"
+  if [[ -n "$published" ]]; then
+    # In credential-assignment shape, so the rule fires and the ONLY thing
+    # that can stop it being a finding is the published-checksum allowlist:
+    # the digest-key path is closed to credential rules by design.
+    if ! printf 'token=%s\n' "$published" |
+      guarded_write "$fixture"; then
+      self_check "the checksum fixture could be written" "yes" "no"
+      return 1
+    fi
+    rc=0
+    scan_publication_artifacts self-check-allowlist require-paths require-files \
+      "$summary" "$relative" >/dev/null 2>&1 || rc=$?
+    self_check "the published sbt checksum is still allowlisted" "0" "$rc"
+    self_check "  recorded as an allowlisted match" "1" \
+      "$(command awk -F': *' '/^allowlisted matches /{ print $2; exit }' "$summary" 2>/dev/null || printf 'none')"
+  fi
+  return 0
+}
+
+# The encoders that stand between a value this script did not choose and a
+# document or a command that parses it.
+self_check_encoders() {
+  self_check "markdown_cell escapes a table pipe" 'a\|b' "$(markdown_cell 'a|b')"
+  self_check "markdown_cell neutralises a newline" 'a\nb' "$(markdown_cell "$(printf 'a\nb')")"
+  self_check "markdown_cell escapes a backslash" 'a\\b' "$(markdown_cell 'a\b')"
+  self_check "scala_string_literal quotes a quote" '"a\"b"' "$(scala_string_literal 'a"b')"
+  local rc=0
+  scala_string_literal "$(printf 'a\tb')" >/dev/null 2>&1 || rc=$?
+  self_check "scala_string_literal refuses a control character" "1" "$rc"
+  rc=0
+  ( assert_root_is_safe 'name"with-a-quote' >/dev/null 2>&1 ) || rc=$?
+  self_check "assert_root_is_safe refuses a quote in the checkout path" "1" "$rc"
+  rc=0
+  ( assert_root_is_safe "$ROOT" >/dev/null 2>&1 ) || rc=$?
+  self_check "  and accepts this checkout" "0" "$rc"
+  return 0
+}
+
+# The appendix fence, which is what keeps evidence inside the block that
+# quotes it. The section it writes is legitimate evidence and stays in the
+# report; its content is three harmless lines.
+self_check_appendix_fence() {
+  local before after
+  before="$(command wc -c <"$(guarded_fd_path "$APPENDIX_FD")" 2>/dev/null || printf 0)"
+  {
+    printf 'a line of evidence\n'
+    printf '```\n'
+    printf 'SELF-CHECK-PROBE this line follows a three-backtick sequence\n'
+  } | add_appendix "Framework self-check - appendix fencing"
+  after="$(command sed -n '/^### Framework self-check - appendix fencing$/,$p' \
+    "$(guarded_fd_path "$APPENDIX_FD")" 2>/dev/null || printf '')"
+  self_check "the appendix fence outgrows its content" "yes" \
+    "$(printf '%s' "$after" | command grep -q '^````text$' && printf 'yes' || printf 'no')"
+  self_check "  so what follows the backticks stays inside it" "yes" \
+    "$(printf '%s' "$after" | command awk '/^````text$/{inside=1;next} /^````$/{inside=0} inside && /^SELF-CHECK-PROBE/{found=1} END{print (found ? "yes" : "no")}')"
+  self_check "  and the appendix grew" "yes" \
+    "$([[ "$before" -lt "$(command wc -c <"$(guarded_fd_path "$APPENDIX_FD")" 2>/dev/null || printf 0)" ]] && printf 'yes' || printf 'no')"
+  return 0
+}
+
+# The ledger helper: all five arrays move together, or the report's table and
+# its counts describe different runs. Run in a subshell so the rows it records
+# are discarded rather than added to this run's table.
+self_check_ledger() {
+  local measured
+  # The counts before the row. A divergence already present is not this
+  # control's subject - it is measured as a delta - so the status of this call
+  # is reported rather than tolerated.
+  if ! gate_counts; then
+    self_check "the ledger was consistent before this control ran" "yes" "no"
+  fi
+  local was_labels="${#GATE_LABEL[@]}"
+  local was_statuses="${#GATE_STATUS[@]}"
+  local was_details="${#GATE_DETAIL[@]}"
+  local was_evidence="${#GATE_EVIDENCE[@]}"
+  local was_kinds="${#GATE_KIND[@]}"
+  local was_blocking="$GATE_COUNT_BLOCKING_FAILED"
+  local was_failed="$GATE_FAILED"
+  local was_automated="$GATE_COUNT_AUTOMATED"
+  measured="$(
+    # The probe row's own console output is discarded. `record_blocking_row`
+    # announces the row it records on stderr, which is right for a real row
+    # and wrong for a probe: a reader of the run's output would see
+    # "FAIL: self-check row" and take it for a gate that failed. The row
+    # itself is discarded with the subshell; only the deltas are measured.
+    record_blocking_row "self-check row" "detail" "target/audit/self-check.txt" blocking \
+      >/dev/null 2>&1
+    gate_counts || printf 'diverged '
+    printf '%s/%s/%s/%s/%s blocking=%s failed=%s automated=%s' \
+      "$((${#GATE_LABEL[@]} - was_labels))" "$((${#GATE_STATUS[@]} - was_statuses))" \
+      "$((${#GATE_DETAIL[@]} - was_details))" "$((${#GATE_EVIDENCE[@]} - was_evidence))" \
+      "$((${#GATE_KIND[@]} - was_kinds))" \
+      "$((GATE_COUNT_BLOCKING_FAILED - was_blocking))" \
+      "$((GATE_FAILED - was_failed))" \
+      "$((GATE_COUNT_AUTOMATED - was_automated))"
+  )"
+  self_check "record_blocking_row moves all five arrays and tallies as blocking" \
+    "1/1/1/1/1 blocking=1 failed=1 automated=0" "$measured"
+  return 0
+}
+
+# Provenance at staging time, and the write path that cannot be redirected.
+self_check_publication_safety() {
+  local work="$1"
+  local tree="$work/evidence"
+  local publish="$work/publish"
+  local table=""
+  local manifest="$work/manifest.txt"
+
+  ensure_output_dir "$tree" 0700 || return 1
+  ensure_output_dir "$publish" 0700 || return 1
+  # The real table, written by the real function: a control that wrote its own
+  # would pass however the placeholders were spelled.
+  publication_redactions || return 1
+  table="$PUBLICATION_REDACTION_FILE"
+  printf 'this run\n' | guarded_write "$tree/fresh.txt" || return 1
+  printf 'an earlier run\n' | guarded_write "$tree/previous.txt" || return 1
+  command touch -d '2001-01-01 00:00:00' "$tree/previous.txt"
+  printf 'tomorrow\n' | guarded_write "$tree/ahead.txt" || return 1
+  command touch -d '+1 hour' "$tree/ahead.txt"
+  printf '<?xml version="1.0"?>\n<testsuite hostname="h" name="S" tests="1"><properties><property name="user.dir" value="%s"/></properties><testcase name="a"><failure message="at %s/x.scala">%s/x.scala:1</failure></testcase></testsuite>\n' \
+    "$ROOT" "$ROOT" "$ROOT" | guarded_write "$tree/TEST-selfcheck.xml" || return 1
+
+  local counts rc=0
+  counts="$(fs_guard stage "$ROOT" "$publish" "$RUN_STARTED_EPOCH" "$table" "$manifest" \
+    truncate "${tree#"$ROOT"/}=staged" 2>&1)" || rc=$?
+  self_check "staging withholds artifacts that are not this run's" "1" "$rc"
+  self_check "  two of them, by date" "stale=2" \
+    "$(printf '%s' "$counts" | command grep -o 'stale=[0-9]*' || printf 'none')"
+  self_check "  and stages the two that are" "staged=2" \
+    "$(printf '%s' "$counts" | command grep -o 'staged=[0-9]*' || printf 'none')"
+  self_check "  the sanitized XML still parses" "parses" \
+    "$(python3 -c 'import sys,xml.etree.ElementTree as E
+E.parse(sys.argv[1]); print("parses")' "$publish/staged/TEST-selfcheck.xml" 2>/dev/null || printf 'no')"
+  # `grep -c` exits 1 when it counted zero, which is the PASS here, so its
+  # status is discarded and the count itself is the answer; an unreadable file
+  # yields no count at all and fails the control.
+  self_check "  and carries no checkout path" "0" \
+    "$(command grep -c -- "$ROOT" "$publish/staged/TEST-selfcheck.xml" 2>/dev/null; true)"
+
+  # The write path: a name planted with a link is replaced, never written
+  # through, and an append to a hard-linked file is refused outright.
+  printf 'VICTIM\n' | guarded_write "$work/victim.txt" || return 1
+  command ln -s "$work/victim.txt" "$tree/via-link.txt"
+  printf 'this run\n' | guarded_write "$tree/via-link.txt" >/dev/null 2>&1
+  self_check "a planted link is replaced, not written through" "VICTIM" \
+    "$(command cat "$work/victim.txt" 2>/dev/null || printf 'gone')"
+  command ln "$work/victim.txt" "$tree/hard.txt"
+  rc=0
+  printf 'x\n' | guarded_append "$tree/hard.txt" >/dev/null 2>&1 || rc=$?
+  self_check "an append to a hard-linked file is refused" "1" "$rc"
+  self_check "  and its other name is untouched" "VICTIM" \
+    "$(command cat "$work/victim.txt" 2>/dev/null || printf 'gone')"
+
+  # The report's publication step. `mv -f` was used for it once, and `mv -f
+  # file directory` moves the file INSIDE the directory and exits 0 - so a
+  # directory at the report's name left the run printing "report written" for
+  # a report that was not at that name at all. A link there is a milder case:
+  # `mv` replaces the link rather than writing through it, so nothing outside
+  # the tree is harmed, but the run should not quietly consume an operator's
+  # link either. The guarded rename refuses both, and replaces an ordinary
+  # file, which is the only case that may proceed.
+  printf 'assembly\n' | guarded_write "$tree/report.partial" || return 1
+  rc=0
+  command mkdir -p "$tree/report.md"
+  printf 'occupied\n' | guarded_write "$tree/report.md/occupant" || return 1
+  fs_guard rename "$ROOT" "$tree/report.partial" "$tree/report.md" \
+    >/dev/null 2>&1 || rc=$?
+  self_check "a directory at the report's name refuses the rename" "1" "$rc"
+  self_check "  and the assembly is still there to keep" "assembly" \
+    "$(command cat "$tree/report.partial" 2>/dev/null || printf 'gone')"
+  command rm -rf "$tree/report.md"
+  command ln -s "$work/victim.txt" "$tree/report.md"
+  rc=0
+  fs_guard rename "$ROOT" "$tree/report.partial" "$tree/report.md" \
+    >/dev/null 2>&1 || rc=$?
+  self_check "a link at the report's name refuses the rename" "1" "$rc"
+  self_check "  and the file it pointed at is untouched" "VICTIM" \
+    "$(command cat "$work/victim.txt" 2>/dev/null || printf 'gone')"
+  command rm -f "$tree/report.md"
+  rc=0
+  fs_guard rename "$ROOT" "$tree/report.partial" "$tree/report.md" \
+    >/dev/null 2>&1 || rc=$?
+  self_check "an ordinary destination is published" "0" "$rc"
+  self_check "  and it carries the assembled bytes" "assembly" \
+    "$(command cat "$tree/report.md" 2>/dev/null || printf 'gone')"
+  return 0
+}
+
+run_framework_self_checks() {
+  local work="$TARGET_DIR/.gate-selftest"
+  local evidence_file="$AUDIT_DIR/framework-self-checks.txt"
+  local guard
+
+  SELF_CHECK_FAILURES=()
+  SELF_CHECK_RESULTS=()
+
+  ensure_output_dir "$work" 0700 || return 1
+  if ! guard="$(fs_guard prune "$ROOT" "$work" 2>&1)"; then
+    path_fatal "the self-check directory could not be emptied (${guard:-no reason given})"
+    return 1
+  fi
+
+  # Each of these records its own verdicts through `self_check` and returns
+  # non-zero only when a FIXTURE could not be created - which is itself
+  # recorded as a failed control, so there is nothing here to tolerate and
+  # nothing to hide: the failure list below is the verdict.
+  if ! self_check_scanner "$work"; then
+    self_check "the scanner controls could run" "yes" "no"
+  fi
+  if ! self_check_encoders; then
+    self_check "the encoder controls could run" "yes" "no"
+  fi
+  if ! self_check_appendix_fence; then
+    self_check "the appendix-fence control could run" "yes" "no"
+  fi
+  if ! self_check_ledger; then
+    self_check "the ledger control could run" "yes" "no"
+  fi
+  if ! self_check_publication_safety "$work"; then
+    self_check "the publication-safety controls could run" "yes" "no"
+  fi
+
+  # The fixtures go before anything else can read them; only verdicts remain.
+  if ! guard="$(fs_guard rmtree "$ROOT" "$work" 2>&1)"; then
+    printf 'WARNING: the self-check fixtures under %s could not be removed (%s).\n' \
+      "${work#"$ROOT"/}" "${guard:-no reason given}" >&2
+  fi
+
+  if ! {
+    printf '## framework self-checks\n'
+    printf '# Controls over the behaviour of this framework itself, run before the\n'
+    printf '# first gate row. Each one invokes the real mechanism; the fixtures they\n'
+    printf '# needed have been removed and no fixture content is recorded here.\n'
+    printf '#\n'
+    printf '%s\n' "${SELF_CHECK_RESULTS[@]}"
+    printf '#\n'
+    printf 'controls\t%s\n' "${#SELF_CHECK_RESULTS[@]}"
+    printf 'failed\t%s\n' "${#SELF_CHECK_FAILURES[@]}"
+  } | guarded_write "$evidence_file"; then
+    framework_error "the self-check record could not be written"
+    return 1
+  fi
+
+  if [[ "${#SELF_CHECK_FAILURES[@]}" -gt 0 ]]; then
+    printf 'FATAL: %s framework self-check(s) failed:\n' "${#SELF_CHECK_FAILURES[@]}" >&2
+    printf '  %s\n' "${SELF_CHECK_FAILURES[@]}" >&2
+    printf 'These are controls over the framework that produces the evidence - the\n' >&2
+    printf 'secret scanner, the report encoders, the row ledger, the write path and\n' >&2
+    printf 'the publication sanitizer. Until they behave as specified, nothing this\n' >&2
+    printf 'run measured can be relied on. See %s\n' "${evidence_file#"$ROOT"/}" >&2
+    record_blocking_row "Framework self-checks" \
+      "${#SELF_CHECK_FAILURES[@]} of ${#SELF_CHECK_RESULTS[@]} control(s) over this framework failed: ${SELF_CHECK_FAILURES[*]}" \
+      "${evidence_file#"$ROOT"/}" \
+      blocking
+    return 1
+  fi
+  printf 'framework self-checks: %s control(s) passed\n' "${#SELF_CHECK_RESULTS[@]}"
+  return 0
+}
+
+# verify_publication_tree - the uploader's check, run by whoever uploads.
+#
+# The scan approves BYTES, and between that approval and the upload the tree
+# sits on disk in a directory another process of the same account can still
+# write to: the run has released its lock by then, and CI collects the tree by
+# pathname afterwards (CWE-345 insufficient verification). So the approval is
+# carried across that gap by the manifest - every published copy with the
+# sha256 of the bytes that were approved - and this re-checks it.
+#
+# Three things have to hold, and all three are refusals rather than warnings:
+# the status marker says APPROVED, every file the manifest names is present
+# and still digests to what was approved, and every file in the tree is named
+# by the manifest, so nothing can be ADDED after the scan. Read-only: it takes
+# no lock, creates nothing and deletes nothing, which is what makes it safe to
+# run from the uploader. Paths are printed repository-relative, so its own
+# output can be shown in a published status file.
+verify_publication_tree() {
+  local rc=0
+  python3 /dev/fd/3 "$ROOT" "${PUBLISH_DIR#"$ROOT"/}" 3<<'PYVERIFY' || rc=$?
+import hashlib
+import os
+import stat
+import sys
+
+root, publish_rel = sys.argv[1], sys.argv[2]
+publish = os.path.join(root, publish_rel)
+problems = []
+CONTROL = {"PUBLICATION-STATUS.txt", "MANIFEST.txt", "NOTICE.txt"}
+
+
+def relative(path):
+    return os.path.relpath(path, root)
+
+
+def read_bytes(path):
+    """The file's bytes, read no-follow through its own descriptor."""
+    handle = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(handle).st_mode):
+            raise OSError("not a regular file")
+        with os.fdopen(handle, "rb") as reader:
+            return reader.read()
+    except BaseException:
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+        raise
+
+
+if os.path.islink(publish) or not os.path.isdir(publish):
+    print("VERIFY-PUBLICATION: REJECTED - %s is not a directory" % publish_rel)
+    sys.exit(1)
+
+status_path = os.path.join(publish, "PUBLICATION-STATUS.txt")
+verdict = None
+try:
+    for line in read_bytes(status_path).decode("utf-8", "replace").splitlines():
+        if line.startswith("PUBLICATION: "):
+            verdict = line[len("PUBLICATION: "):]
+            break
+except OSError as error:
+    problems.append("the status marker could not be read (%s)" % error)
+if verdict is None:
+    problems.append("the status marker states no verdict")
+elif not verdict.startswith("APPROVED"):
+    problems.append("the status marker says: %s" % verdict[:200])
+
+# The manifest, last row per staged path: the report is staged again when the
+# transaction needs a second pass, and the row that describes what is on disk
+# is the last one written for it.
+manifest_path = os.path.join(publish, "MANIFEST.txt")
+expected = {}
+withheld = 0
+try:
+    for line in read_bytes(manifest_path).decode("utf-8", "surrogateescape").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) < 5:
+            problems.append("a manifest row has %d fields, not 5" % len(fields))
+            continue
+        staged, _, size, digest, _ = fields[0], fields[1], fields[2], fields[3], fields[4]
+        if staged == "-":
+            withheld += 1
+            continue
+        expected[staged] = (size, digest)
+except OSError as error:
+    problems.append("the manifest could not be read (%s)" % error)
+
+found = set()
+for directory, names, files_here in os.walk(publish, followlinks=False):
+    for name in sorted(names):
+        if os.path.islink(os.path.join(directory, name)):
+            problems.append("%s is a directory symlink" % relative(os.path.join(directory, name)))
+    for name in sorted(files_here):
+        absolute = os.path.join(directory, name)
+        relative_to_publish = os.path.relpath(absolute, publish)
+        if os.path.islink(absolute):
+            problems.append("%s is a symlink" % relative(absolute))
+            continue
+        if relative_to_publish in CONTROL or name.endswith(".WITHHELD.txt"):
+            continue
+        found.add(relative_to_publish)
+        if relative_to_publish not in expected:
+            problems.append("%s is in the tree but not in the manifest, so it was "
+                            "added after the scan" % relative_to_publish)
+            continue
+        size, digest = expected[relative_to_publish]
+        try:
+            payload = read_bytes(absolute)
+        except OSError as error:
+            problems.append("%s could not be read (%s)" % (relative_to_publish, error))
+            continue
+        actual = hashlib.sha256(payload).hexdigest()
+        if actual != digest:
+            problems.append("%s does not match the digest that was approved"
+                            % relative_to_publish)
+        elif str(len(payload)) != size:
+            problems.append("%s is %d bytes, not the %s that were approved"
+                            % (relative_to_publish, len(payload), size))
+
+for missing in sorted(set(expected) - found):
+    problems.append("%s is named by the manifest but is not in the tree" % missing)
+
+print("tree            : %s" % publish_rel)
+print("verdict         : %s" % (verdict or "none"))
+print("manifest rows   : %d published, %d withheld" % (len(expected), withheld))
+print("files verified  : %d" % len(found))
+print("problems        : %d" % len(problems))
+for problem in problems:
+    print("  PROBLEM %s" % problem)
+if problems:
+    print("VERIFY-PUBLICATION: REJECTED - the tree is not the one that was approved")
+    sys.exit(1)
+print("VERIFY-PUBLICATION: OK - every published copy is the one that was scanned")
+PYVERIFY
+  return "$rc"
+}
+
+# prune_inherited_evidence - examines what an earlier run left in this
+# checkout's evidence trees, takes any credential-bearing artifact out of
+# every publishable path, and then EMPTIES those trees.
+#
+# It is called from `init_output_tree`, before this run has written a single
+# artifact of its own, and that ordering is the whole point. Deciding file by
+# file whether something is recent enough to be this run's cannot be made
+# sound - a modification time is metadata that any process with write access
+# sets to any value it likes, so "newer than the run started" is a guess
+# about provenance rather than a fact about it (CWE-345). Starting from an
+# empty tree needs no guess: everything found in it afterwards was produced
+# during this run. The staleness and future-date checks at staging time
+# remain, as the second, independent statement of the same fact.
+#
+# What the sweep found, for `main` to act on: a non-zero
+# status means an earlier run left an artifact carrying a credential
+# signature, a link or an unreadable file in this checkout's evidence trees.
+# How many passes the finalization transaction needed, whether anything was
+# withheld or quarantined on the way, and whether the report reached the
+# published tree. REPORT_WRITTEN says a report exists locally; this says one
+# was published, which is a different fact and the terminal state of the
+# transaction.
+PUBLICATION_ATTEMPTS=0
+PUBLICATION_INCIDENT="no"
+REPORT_PUBLISHED="no"
+
+PRE_RUN_SCAN_RC=0
+PRE_RUN_QUARANTINED=0
+PRE_RUN_SCAN_SUMMARY=""
+PRE_RUN_SCAN_STATE="not run"
+
+prune_inherited_evidence() {
+  # A private holding directory OUTSIDE the three evidence roots, because the
+  # roots are about to be emptied and the record of what was found in them has
+  # to outlive that.
+  local holding="$TARGET_DIR/.gate-inherited"
+  local summary="$holding/publication-secret-scan-pre-run.txt"
+  local guard
+
+  ensure_output_dir "$holding" 0700 || return 1
+  if ! guard="$(fs_guard prune "$ROOT" "$holding" 2>&1)"; then
+    path_fatal "the holding directory for the inherited-evidence sweep could not be emptied (${guard:-no reason given})"
+    return 1
+  fi
+
+  # The scan runs before the prune, so that a credential an earlier run left
+  # behind is REPORTED and quarantined rather than quietly deleted. It needs
+  # python3, which preflight has not yet verified; when python3 is absent the
+  # scan is skipped and the prune below still removes everything, so nothing
+  # inherited can reach the publication tree either way, and preflight stops
+  # the run immediately afterwards with the reason.
+  if command -v python3 >/dev/null 2>&1; then
+    PRE_RUN_SCAN_STATE="ran"
+    PRE_RUN_SCAN_RC=0
+    scan_publication_artifacts pre-run allow-missing allow-empty \
+      "$summary" "${PUBLICATION_PATHS[@]}" || PRE_RUN_SCAN_RC=$?
+    if [[ "$PRE_RUN_SCAN_RC" -ne 0 ]]; then
+      quarantine_scan_offenders "$summary" "the evidence an earlier run left behind"
+      PRE_RUN_QUARANTINED="$QUARANTINED_COUNT"
+    fi
+  else
+    PRE_RUN_SCAN_STATE="skipped: python3 is not on PATH"
+  fi
+
+  # The evidence roots are emptied, keeping the directories themselves so the
+  # identities validated above stay valid. This is what makes provenance a
+  # fact rather than an inference: every artifact found in these trees
+  # afterwards was produced during this run, so publication does not have to
+  # ask whether a timestamp looks recent enough to be trusted (CWE-345).
+  if ! guard="$(fs_guard prune "$ROOT" "$PARITY_DIR" "$TEST_REPORT_DIR" "$AUDIT_DIR" 2>&1)"; then
+    path_fatal "the evidence trees of earlier runs could not be cleared (${guard:-no reason given}), so this run cannot establish that the evidence it publishes is its own"
+    return 1
+  fi
+  printf 'inherited evidence: cleared (%s); pre-run scan %s\n' \
+    "$guard" "$PRE_RUN_SCAN_STATE"
+
+  # The record of the sweep is this run's own evidence, so it moves into the
+  # audit tree now that the tree is empty.
+  if [[ -f "$summary" ]]; then
+    if guard="$(fs_guard copy-tree "$ROOT" "$holding" "$AUDIT_DIR" 2>&1)"; then
+      PRE_RUN_SCAN_SUMMARY="${AUDIT_DIR#"$ROOT"/}/publication-secret-scan-pre-run.txt"
+    else
+      printf 'WARNING: the record of the inherited-evidence sweep could not be kept (%s).\n' \
+        "${guard:-no reason given}" >&2
+      PRE_RUN_SCAN_SUMMARY=""
+    fi
+  fi
+  if ! guard="$(fs_guard rmtree "$ROOT" "$holding" 2>&1)"; then
+    printf 'WARNING: the holding directory %s could not be removed (%s).\n' \
+      "${holding#"$ROOT"/}" "${guard:-no reason given}" >&2
+  fi
+
+  # Recorded here rather than in `main`: this is where the finding was made,
+  # and a row recorded now survives every later abort - including a preflight
+  # failure, which would otherwise publish a report that never mentioned it.
+  if [[ "$PRE_RUN_SCAN_RC" -ne 0 ]]; then
+    record_blocking_row "Blocking - evidence left by the previous run" \
+      "an earlier run's artifacts did not pass the secret scan; $PRE_RUN_QUARANTINED of them were quarantined out of every publishable path" \
+      "${PRE_RUN_SCAN_SUMMARY:-none}" \
+      blocking
+  fi
+  return 0
+}
+
+
 row_20_repository_boundary() {
   new_evidence repository-boundary.txt
   local failed=0
   local status
   local rc=0
 
-  status="$(git status --porcelain -- modules examples eclipse pom.xml src .github 2>&1)" || rc=$?
+  status="$(git status --porcelain -- "${PROTECTED_PATHS[@]}" 2>&1)" || rc=$?
   {
     printf '## Repository boundary - the Maven tree and governance files are untouched\n'
-    printf '# command: git status --porcelain -- modules examples eclipse pom.xml src .github\n'
+    printf '# command: git status --porcelain -- %s\n' "${PROTECTED_PATHS[*]}"
     printf '# git exit status: %s\n' "$rc"
     printf '# output (empty is the pass):\n%s\n' "$status"
   } >>"$EV"
@@ -5392,6 +11775,111 @@ row_20_repository_boundary() {
   elif [[ -n "$status" ]]; then
     detail "$(printf '%s\n' "$status" | wc -l | tr -d ' ') path(s) changed outside the sbt build"
     failed=1
+  fi
+
+  # -- the committed state, against the pinned baseline --------------------
+  #
+  # What HEAD contains, which the status above cannot see. Each protected
+  # path's object id at HEAD must equal the id pinned in this script: a
+  # committed change anywhere beneath it produces a different id, and a path
+  # that has been deleted or replaced by a file of another kind produces none
+  # at all, which fails here rather than passing as "nothing modified".
+  local pinned path expected actual
+  local mismatched=0
+  printf '\n## The committed state of the protected paths, against the pinned baseline\n' >>"$EV"
+  for pinned in "${PROTECTED_PATH_IDS[@]}"; do
+    path="${pinned%%:*}"
+    expected="${pinned#*:}"
+    rc=0
+    actual="$(git rev-parse --verify "HEAD:$path" 2>&1)" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      printf '# %s: NOT PRESENT at HEAD (git rev-parse exited %s: %s)\n' "$path" "$rc" "$actual" \
+        >>"$EV"
+      detail "the protected path $path is not present at HEAD"
+      mismatched=$((mismatched + 1))
+      continue
+    fi
+    if [[ "$actual" != "$expected" ]]; then
+      printf '# %s: CHANGED -- pinned %s, at HEAD %s\n' "$path" "$expected" "$actual" >>"$EV"
+      detail "the protected path $path has been changed in a commit (object $actual, pinned $expected)"
+      mismatched=$((mismatched + 1))
+      continue
+    fi
+    printf '# %s: unchanged (%s)\n' "$path" "$actual" >>"$EV"
+  done
+  if [[ "$mismatched" -ne 0 ]]; then
+    failed=1
+  fi
+
+  # -- the committed state, against a baseline ref -------------------------
+  #
+  # The same property read a second way, from history rather than from a pin.
+  # The BASELINE COMMIT ITSELF must be an ancestor of HEAD - not its merge
+  # base with HEAD, which is an ancestor of HEAD by definition and would make
+  # the test say nothing - because a baseline HEAD does not descend from
+  # cannot bound what HEAD changed. The diff is then taken from that ancestor
+  # commit to HEAD over the protected paths and must be empty.
+  #
+  # Every candidate is tried in order: the first that resolves AND is an
+  # ancestor becomes the baseline. A candidate that resolves and is not an
+  # ancestor is recorded, and if no candidate qualifies while at least one
+  # resolved, the row FAILS - a diverged, rewritten or ahead-of-HEAD ref is a
+  # baseline this history cannot be measured against, which is a result and
+  # not a reason to pass. A checkout where no candidate resolves at all is
+  # reported, and the pinned ids above decide the row.
+  local baseline_ref="" baseline_commit="" candidate="" ref
+  local rejected=""
+  for ref in "${PROTECTED_BASELINE_REFS[@]}"; do
+    rc=0
+    candidate="$(git rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null)" || rc=$?
+    if [[ "$rc" -ne 0 || -z "$candidate" ]]; then
+      continue
+    fi
+    if git merge-base --is-ancestor "$candidate" HEAD; then
+      baseline_ref="$ref"
+      baseline_commit="$candidate"
+      break
+    fi
+    rejected="${rejected:+$rejected; }$ref ($candidate) is not an ancestor of HEAD"
+  done
+
+  printf '\n## The committed state of the protected paths, against a baseline ref\n' >>"$EV"
+  if [[ -n "$rejected" ]]; then
+    printf '# refs that resolved but do not bound this history: %s\n' "$rejected" >>"$EV"
+  fi
+  if [[ -z "$baseline_ref" && -n "$rejected" ]]; then
+    {
+      printf '# no candidate of %s both resolves and is an ancestor of HEAD, so no\n' \
+        "${PROTECTED_BASELINE_REFS[*]}"
+      printf '# ref-based bound on the committed state could be established\n'
+    } >>"$EV"
+    detail "no baseline ref is an ancestor of HEAD ($rejected), so the committed boundary cannot be bounded by history"
+    failed=1
+  elif [[ -z "$baseline_ref" ]]; then
+    {
+      printf '# none of %s resolves in this checkout, so the pinned object ids above\n' \
+        "${PROTECTED_BASELINE_REFS[*]}"
+      printf '# are the whole of the committed-state check\n'
+    } >>"$EV"
+  else
+    local boundary_diff
+    rc=0
+    boundary_diff="$(git diff --name-status "$baseline_commit" HEAD -- "${PROTECTED_PATHS[@]}" 2>&1)" ||
+      rc=$?
+    {
+      printf '# baseline ref: %s (%s), verified an ancestor of HEAD\n' \
+        "$baseline_ref" "$baseline_commit"
+      printf '# command: git diff --name-status %s HEAD -- %s (exit %s)\n' \
+        "$baseline_commit" "${PROTECTED_PATHS[*]}" "$rc"
+      printf '# output (empty is the pass):\n%s\n' "$boundary_diff"
+    } >>"$EV"
+    if [[ "$rc" -ne 0 ]]; then
+      detail "the baseline-to-HEAD diff of the protected paths failed with status $rc"
+      failed=1
+    elif [[ -n "$boundary_diff" ]]; then
+      detail "$(printf '%s\n' "$boundary_diff" | wc -l | tr -d ' ') protected path(s) changed between $baseline_ref and HEAD"
+      failed=1
+    fi
   fi
 
   # -- the publication-artifact secret scan --------------------------------
@@ -5410,19 +11898,29 @@ row_20_repository_boundary() {
     printf '# the header fields, the rows, and the counts its result line is derived from.\n'
     printf '# (Its appendices are %s, inside the audit tree this scan walks.)\n' \
       "${APPENDIX_FILE#"$ROOT"/}"
-    printf 'script\t%s\n' "$SCRIPT_NAME"
-    printf 'root\t%s\n' "$ROOT"
-    printf 'jdk\t%s\n' "${JDK_VERSION:-unknown}"
-    printf 'sbt\t%s\n' "${SBT_VERSION:-unknown}"
+    # The same encoding the report itself uses, for the same reason and one
+    # more: this file is tab-separated, and a value carrying a tab or a
+    # newline would silently become two fields or two records - so what the
+    # scan reads would not be what the report is composed from, which is the
+    # only property this file exists to have. `markdown_cell` turns a tab into
+    # a space and a newline into a visible marker, so every record here stays
+    # one record.
+    printf 'script\t%s\n' "$(markdown_cell "$SCRIPT_NAME")"
+    printf 'root\t%s\n' "$(markdown_cell "$ROOT")"
+    printf 'jdk\t%s\n' "$(markdown_cell "${JDK_VERSION:-unknown}")"
+    printf 'sbt\t%s\n' "$(markdown_cell "${SBT_VERSION:-unknown}")"
     printf 'automated\t%s of %s expected\n' "$GATE_COUNT_AUTOMATED" "$GATE_EXPECTED_AUTOMATED"
     printf 'failed\t%s\n' "$GATE_COUNT_FAILED"
     printf 'reported\t%s\n' "$GATE_COUNT_REPORTED"
     printf 'run completed\t%s\n' "$RUN_COMPLETED"
     for index in "${!GATE_LABEL[@]}"; do
-      printf '%s\t%s\t%s\t%s\n' "${GATE_LABEL[$index]}" "${GATE_STATUS[$index]}" \
-        "${GATE_DETAIL[$index]}" "${GATE_EVIDENCE[$index]}"
+      printf '%s\t%s\t%s\t%s\n' \
+        "$(markdown_cell "${GATE_LABEL[$index]}")" \
+        "$(markdown_cell "${GATE_STATUS[$index]}")" \
+        "$(markdown_cell "${GATE_DETAIL[$index]}")" \
+        "$(markdown_cell "${GATE_EVIDENCE[$index]}")"
     done
-  } >"$material"
+  } | guarded_write "$material"
 
   # The three trees this run produces must be there to be scanned. The fourth
   # publication path, the gate report, is composed after the last row, so its
@@ -5456,7 +11954,7 @@ row_20_repository_boundary() {
   fi
 
   if [[ "$failed" -eq 0 ]]; then
-    detail "modules, examples, eclipse, pom.xml, src and .github are unchanged; $(awk -F': *' '/^  files /{ print $2 }' "$scan_summary") published artifact(s) carry no credential signature"
+    detail "modules, examples, eclipse, pom.xml, src and .github are unchanged in the working tree and at HEAD (pinned object ids${baseline_ref:+, and no change since $baseline_ref}); $(awk -F': *' '/^  files /{ print $2 }' "$scan_summary") published artifact(s) carry no credential signature"
   fi
   return "$failed"
 }
@@ -5464,31 +11962,53 @@ row_20_repository_boundary() {
 #-----------------------------------------------------------------------------
 # The report.
 #
-# Written on every exit path through the EXIT trap, because CI publishes it
-# with `when: always` and it is the deliverable evidence. Deterministic except
-# for the one timestamp in its header, which no gate compares.
+# Written on every exit path through the EXIT trap, because it is the
+# deliverable evidence and a run that ended early still has to say how far it
+# got. Deterministic except for the one timestamp in its header and the run
+# identity beside it, neither of which any gate compares.
 #
-# It is built in a temporary file beside the final one, verified, and then
-# renamed - a rename within one directory is atomic, so a reader either sees
-# the previous report or a complete new one, never half of either. `REPORT_
-# WRITTEN` is set only after that rename succeeds: marking the report written
-# before the write completes is what would let an interruption leave a partial
-# file that the EXIT trap then declines to replace.
+# It is built in a temporary file beside the final one, verified, SCANNED and
+# only then renamed - a rename within one directory is atomic, so a reader
+# either sees the previous report or a complete new one, never half of either.
+# `REPORT_WRITTEN` is set only after that rename succeeds: marking the report
+# written before the write completes is what would let an interruption leave a
+# partial file that the EXIT trap then declines to replace.
 #
-# Every count in it is tallied from the recorded verdicts by `gate_counts`.
-# Nothing is derived by subtraction, which is how a preflight failure - a row
-# that is blocking but is not one of the nineteen measured rows - used to
-# produce "0 total, -1 passed, 1 failed".
+# THE SCAN COMES BEFORE THE RENAME, and that order is the point. The report
+# quotes row details, tool output and file paths, so it can carry a credential
+# signature that none of its sources carried on its own; it used to be renamed
+# into place and marked written first, with the scan of its bytes happening
+# afterwards - so a finding could only increment a counter while the published
+# report still said every gate had passed (CWE-345). Now the assembly is
+# scanned while it is still a temporary file: a finding is recorded as a
+# blocking row, the report is reassembled WITHOUT the appendices - the part
+# that quotes everything else, and therefore the part a signature almost
+# certainly came from - and the reassembly is scanned in turn. Only an
+# assembly that scans clean is renamed onto target/gate-report.md, and only a
+# rename that succeeded marks the report written. A report that cannot be made
+# clean is not published at all.
+#
+# Every count in it is tallied from the recorded verdicts by `gate_counts`,
+# and none is derived by subtracting one running total from another. Counting
+# the entries of the verdict arrays is what keeps the figures consistent with
+# each other: a blocking row that is not one of the nineteen measured ones -
+# a preflight failure - is recorded with its own kind and counted under that
+# kind, rather than shifting a total it was never part of.
 #-----------------------------------------------------------------------------
 
-write_report() {
-  if [[ "$REPORT_WRITTEN" == "yes" ]]; then
-    return 0
-  fi
+# assemble_report <temporary file> - writes the whole report into <file>.
+#
+# Separate from `write_report` because it is called TWICE on the path that
+# matters: once to produce the report, and again after a credential signature
+# in that first assembly has been recorded as a blocking row, so that the
+# reassembly carries the row and drops the appendices. Every count it prints
+# is re-tallied on each call, which is what makes the second assembly
+# describe the run including its own publication failure.
+assemble_report() {
+  local temp_file="$1"
 
   gate_counts || true
   local index
-  local temp_file="$REPORT_FILE.partial"
   local rc=0
 
   if ! safe_truncate "$temp_file"; then
@@ -5499,11 +12019,35 @@ write_report() {
 
   {
     printf '# Acceptance gate report\n\n'
-    printf -- '- script: `%s`\n' "$SCRIPT_NAME"
-    printf -- '- repository root: `%s`\n' "$ROOT"
-    printf -- '- JDK: `%s`\n' "${JDK_VERSION:-unknown}"
-    printf -- '- sbt: `%s`\n' "${SBT_VERSION:-unknown}"
-    printf -- '- run finished (UTC): `%s`\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    # Every interpolated value goes through `markdown_cell`, and NONE of them
+    # is wrapped in backticks. Both halves are necessary, and the second one
+    # is the part that is easy to get wrong: `markdown_cell` escapes a
+    # backtick as \` and a pipe as \|, which is correct in prose and in a
+    # table cell - but CommonMark does not process backslash escapes INSIDE a
+    # code span, so an escaped value written as `%s` between backticks can
+    # still be ended by a backtick of its own and go on rendering as
+    # structure. These values are the output of external tools, a path this
+    # script did not choose and a git branch and subject that accept
+    # backticks, so they are written as plain text and the inline-code
+    # delimiters are kept for the fixed literals of this script alone.
+    printf -- '- script: %s\n' "$(markdown_cell "$SCRIPT_NAME")"
+    printf -- '- repository root: %s\n' "$(markdown_cell "$ROOT")"
+    printf -- '- JDK: %s\n' "$(markdown_cell "${JDK_VERSION:-unknown}")"
+    printf -- '- sbt: %s\n' "$(markdown_cell "${SBT_VERSION:-unknown}")"
+    printf -- '- run finished (UTC): %s\n' \
+      "$(markdown_cell "$(date -u '+%Y-%m-%dT%H:%M:%SZ')")"
+    # The identity of what was measured. Without it this report is
+    # indistinguishable from one written days and several commits ago - which
+    # is exactly how a stale report comes to be read as current evidence.
+    printf -- '- run id: %s, started (UTC) %s\n' \
+      "$(markdown_cell "${RUN_ID:-unknown}")" \
+      "$(markdown_cell "${RUN_STARTED_UTC:-unknown}")"
+    printf -- '- commit: %s on %s - %s\n' \
+      "$(markdown_cell "${HEAD_COMMIT:-unknown}")" \
+      "$(markdown_cell "${HEAD_BRANCH:-unknown}")" \
+      "$(markdown_cell "${HEAD_SUBJECT:-unknown}")"
+    printf -- '- working tree at the time of the run: %s\n' \
+      "$(markdown_cell "${HEAD_STATE:-unknown}")"
     printf -- '- provenance: every row below is a row of the validation table of the\n'
     printf '  technical specification (AAP section 0.10.1), executed in that order.\n\n'
 
@@ -5513,17 +12057,21 @@ write_report() {
     if [[ "${#GATE_LABEL[@]}" -eq 0 ]]; then
       printf '| - | (no row completed) | - | the run ended before any row finished | `none` |\n'
     fi
-    # The cell separator is escaped with a parameter expansion rather than a
-    # pipe through `sed`: the report is the one thing that must still be
-    # producible when something about the environment is broken, so its own
-    # assembly depends on no external tool.
+    # Every cell is encoded by `markdown_cell`, which depends on no external
+    # tool for the reason given at its definition - and on all four values,
+    # not just the two that used to have their cell separator escaped: a
+    # row's status is fixed text but its evidence path is not, and a newline
+    # or a backtick in a detail forges a row just as effectively as a pipe
+    # forges a column.
     for index in "${!GATE_LABEL[@]}"; do
-      printf '| %s | %s | %s | %s | `%s` |\n' \
+      # The evidence path is a value a row supplied, so it is not wrapped in
+      # backticks either, for the reason given at the header above.
+      printf '| %s | %s | %s | %s | %s |\n' \
         "$((index + 1))" \
-        "${GATE_LABEL[$index]//|/\\|}" \
-        "${GATE_STATUS[$index]}" \
-        "${GATE_DETAIL[$index]//|/\\|}" \
-        "${GATE_EVIDENCE[$index]}"
+        "$(markdown_cell "${GATE_LABEL[$index]}")" \
+        "$(markdown_cell "${GATE_STATUS[$index]}")" \
+        "$(markdown_cell "${GATE_DETAIL[$index]}")" \
+        "$(markdown_cell "${GATE_EVIDENCE[$index]}")"
     done
 
     printf '\nGATES: %s total, %s passed, %s failed (automated rows; plus %s reported row)\n' \
@@ -5533,18 +12081,30 @@ write_report() {
       printf '%s automated rows ran. The row above says which tools were missing.\n' \
         "$GATE_EXPECTED_AUTOMATED"
     fi
+    if [[ "$GATE_COUNT_BLOCKING_FAILED" -gt 0 ]]; then
+      printf 'BLOCKING: %s check(s) outside the validation table failed and stopped the\n' \
+        "$GATE_COUNT_BLOCKING_FAILED"
+      printf 'run. The toolchain is not what failed: the row(s) above name the check and\n'
+      printf 'point at its evidence.\n'
+    fi
     if [[ -n "$GATE_ARRAY_PROBLEM" ]]; then
-      printf 'BOOKKEEPING: %s - the counts above cannot be trusted.\n' "$GATE_ARRAY_PROBLEM"
+      printf 'BOOKKEEPING: %s - the counts above cannot be trusted.\n' \
+        "$(markdown_cell "$GATE_ARRAY_PROBLEM")"
     fi
     local unattributed=$(($(framework_error_count) - FRAMEWORK_ERRORS_ATTRIBUTED))
     if [[ "$unattributed" -gt 0 ]]; then
       printf 'FRAMEWORK: %s unchecked command failure(s) outside any row (see `%s`).\n' \
-        "$unattributed" "${FRAMEWORK_ERROR_FILE#"$ROOT"/}"
+        "$unattributed" "$(markdown_cell "${FRAMEWORK_ERROR_FILE#"$ROOT"/}")"
     fi
 
     if [[ "$GATE_COUNT_PREFLIGHT_FAILED" -gt 0 ]]; then
       printf '\nRESULT: INCOMPLETE - preflight failed before any automated row could run,\n'
       printf 'so nothing was measured. This is not an acceptance result.\n'
+    elif [[ "$GATE_COUNT_BLOCKING_FAILED" -gt 0 ]]; then
+      printf '\nRESULT: INCOMPLETE - a blocking check outside the validation table failed,\n'
+      printf 'so this is not an acceptance result. %s of the %s automated rows were\n' \
+        "$GATE_COUNT_AUTOMATED" "$GATE_EXPECTED_AUTOMATED"
+      printf 'measured, %s of them failed.\n' "$GATE_COUNT_FAILED"
     elif [[ "$RUN_COMPLETED" != "yes" ]]; then
       printf '\nRESULT: INCOMPLETE - the run ended after %s of the %s automated rows, so this\n' \
         "$GATE_COUNT_AUTOMATED" "$GATE_EXPECTED_AUTOMATED"
@@ -5563,8 +12123,19 @@ write_report() {
     fi
 
     printf '\n## Appendices\n'
-    if [[ -s "$APPENDIX_FILE" ]]; then
-      cat "$APPENDIX_FILE"
+    if [[ "$REPORT_SANITIZED" == "yes" ]]; then
+      printf '\n(WITHHELD: the first assembly of this report carried a credential\n'
+      printf 'signature, so it was reassembled without its appendices. The appendices\n'
+      printf 'are the part that quotes row evidence, tool output and file paths, and\n'
+      printf 'they are therefore where such a signature comes from. See the blocking\n'
+      printf "row above and \`target/audit/publication-secret-scan-assembly.txt\`, which\n"
+      printf 'names the rule and the line and withholds the value.)\n'
+    elif [[ -s "$(guarded_fd_path "$APPENDIX_FD")" ]]; then
+      # Read through the descriptor the appendices were written through, not
+      # by name: the report is composed from these bytes, so a file
+      # substituted at that name would put content this run never produced
+      # into the published report (CWE-59 leading to CWE-345).
+      cat "$(guarded_fd_path "$APPENDIX_FD")"
     else
       printf '\n(no appendix was produced: the run stopped before any row could report.)\n'
     fi
@@ -5576,7 +12147,13 @@ write_report() {
     printf '  by the single ScalaTest `-u` reporter the build configures\n'
     printf -- '- `target/audit/` - per-row evidence, sbt logs, class-load logs and the\n'
     printf '  snapshots the late rows read\n'
-  } >"$temp_file" || rc=$?
+    printf -- "- \`target/publish/\` - the ONLY tree CI uploads: a sanitized, scanned\n"
+    printf "  copy of each of the four above, with \`PUBLICATION-STATUS.txt\` stating\n"
+    printf "  whether it was approved and \`MANIFEST.txt\` listing what was staged,\n"
+    printf '  what was redacted from it and what was withheld\n'
+    printf -- "- \`target/quarantine/\` - artifacts withheld from publication because\n"
+    printf '  they matched a credential signature; never uploaded\n'
+  } | guarded_write "$temp_file" || rc=$?
 
   if [[ "$rc" -ne 0 || ! -s "$temp_file" ]]; then
     printf 'WARNING: the gate report could not be assembled (status %s); %s is\n' \
@@ -5587,11 +12164,114 @@ write_report() {
     command rm -f -- "$temp_file" 2>/dev/null || true
     return 1
   fi
+  return 0
+}
 
-  # The publication step: a rename inside one directory is atomic, so no
-  # reader ever sees a half-written report, and an interrupted attempt leaves
-  # only the temporary file behind.
-  if ! mv -f -- "$temp_file" "$REPORT_FILE"; then
+# scan_report_assembly <file> <phase> - scans an assembled report before it is
+# published, and distinguishes the two ways that can go wrong.
+#
+#   0  the assembly carries no credential signature
+#   1  it does - or the scan could not complete over it (an unreadable file,
+#      a refused symlink), which is the same verdict: not publishable
+#   2  the scan itself could not RUN, so nothing is known about the bytes
+#
+# Status 2 exists because `python3` is one of the tools `preflight` checks
+# for, and the report that says so must still be written: a run that cannot
+# scan is one whose report is kept locally and NOT published, which is a
+# different outcome from one whose report is known to carry a secret.
+scan_report_assembly() {
+  local file="$1"
+  local phase="$2"
+  local summary="$AUDIT_DIR/publication-secret-scan-$phase.txt"
+  local rc=0
+
+  scan_publication_artifacts "$phase" require-paths require-files "$summary" \
+    "${file#"$ROOT"/}" >/dev/null 2>&1 || rc=$?
+  if [[ ! -f "$summary" ]]; then
+    REPORT_SCAN_DETAIL="the report assembly could not be scanned at all (the scanner wrote no summary)"
+    return 2
+  fi
+  local findings
+  findings="$(command awk -F': *' '/^findings /{ print $2; exit }' "$summary")"
+  if [[ "$rc" -eq 0 ]]; then
+    REPORT_SCAN_DETAIL=""
+    return 0
+  fi
+  REPORT_SCAN_DETAIL="${findings:-an unreadable file or a refused symlink} credential signature(s) in the assembled report (rule and line in ${summary#"$ROOT"/}, value withheld)"
+  return 1
+}
+
+# What the most recent report scan had to say; set by `scan_report_assembly`.
+REPORT_SCAN_DETAIL=""
+
+write_report() {
+  # `write_report recompose` rebuilds a report that has already been written,
+  # which is what the finalization transaction needs: a row recorded while
+  # publishing has to appear in the report that gets published, and the first
+  # composition happened before that row existed.
+  if [[ "${1:-}" != "recompose" && "$REPORT_WRITTEN" == "yes" ]]; then
+    return 0
+  fi
+
+  local temp_file="$REPORT_FILE.partial"
+  assemble_report "$temp_file" || return 1
+
+  # The scan, BEFORE the rename. See the section comment above for why this
+  # order is the whole point of it.
+  local scan_status=0
+  scan_report_assembly "$temp_file" assembly || scan_status=$?
+  case "$scan_status" in
+    0) ;;
+    1)
+      record_blocking_row "Publication - the assembled gate report carries a credential signature" \
+        "$REPORT_SCAN_DETAIL; the report was reassembled without its appendices" \
+        "target/audit/publication-secret-scan-assembly.txt"
+      REPORT_SANITIZED="yes"
+      assemble_report "$temp_file" || return 1
+      local recheck=0
+      scan_report_assembly "$temp_file" assembly-recheck || recheck=$?
+      if [[ "$recheck" -ne 0 ]]; then
+        printf 'FATAL: the gate report cannot be made publishable: %s\n' \
+          "${REPORT_SCAN_DETAIL:-the reassembly was not scanned}" >&2
+        printf 'It is NOT written to %s, and the scan summaries under %s name the\n' \
+          "${REPORT_FILE#"$ROOT"/}" "${AUDIT_DIR#"$ROOT"/}" >&2
+        printf 'rule and the line without the value.\n' >&2
+        # The assembly itself now carries the signature, so it is moved out of
+        # target/ into the quarantine rather than left beside the deliverable
+        # for something else to pick up. Detection acts on the artifact here
+        # exactly as it does in the publication step.
+        local quarantined
+        if quarantined="$(fs_guard quarantine "$ROOT" \
+          "$QUARANTINE_DIR/${RUN_ID:-unknown-run}" "${temp_file#"$ROOT"/}" 2>&1)"; then
+          printf 'The assembly has been quarantined under %s (%s).\n' \
+            "${QUARANTINE_DIR#"$ROOT"/}/${RUN_ID:-unknown-run}" "$quarantined" >&2
+        else
+          printf 'WARNING: the assembly at %s could NOT be quarantined (%s); remove it\n' \
+            "${temp_file#"$ROOT"/}" "${quarantined:-no reason given}" >&2
+          printf 'by hand.\n' >&2
+        fi
+        return 1
+      fi
+      ;;
+    *)
+      record_blocking_row "Publication - the gate report could not be scanned" \
+        "${REPORT_SCAN_DETAIL:-the scanner did not run}; the report is written locally but will NOT be published" \
+        "target/audit/preflight.txt"
+      # Reassembled so that the report on disk states the row that has just
+      # been recorded. It is deliberately not re-scanned: the scanner is what
+      # could not run.
+      assemble_report "$temp_file" || return 1
+      ;;
+  esac
+
+  # The rename: atomic inside one directory, so no reader ever sees a
+  # half-written report, and an interrupted attempt leaves only the temporary
+  # file behind.
+  # Not `mv`: `mv -f file directory` moves the file into the directory and
+  # exits 0, so a directory at the report's name would leave this announcing
+  # a report it had not published. The guarded rename refuses that, and it
+  # publishes the inode that was just scanned rather than a re-read of it.
+  if ! fs_guard rename "$ROOT" "$temp_file" "$REPORT_FILE" >/dev/null 2>&1; then
     # The rename is the only publication step there is. Copying the assembly
     # over the deliverable instead would leave exactly the half-written
     # target/gate-report.md that renaming exists to rule out, so the previous
@@ -5627,7 +12307,42 @@ on_exit() {
   # what went wrong on stderr.
   set +e
   set +u
-  write_report || true
+  # The report and the publication, from whatever exit path this is, as the
+  # one transaction: a normal finish has already run it (and this is then a
+  # no-op reading its verdict), while an aborted, failing or interrupted run
+  # reaches it only here - and it has produced just as much for CI to upload.
+  # Nothing leaves this machine that has not been sanitized and scanned,
+  # whichever way the run ended, and nothing is marked published before the
+  # scan that governs the uploaded bytes has passed.
+  finalize_publication
+  # A publication that was not approved is a failure of the run even when
+  # every gate row passed: the artifacts are the deliverable and they could
+  # not be handed over safely. Only a success status is overridden - a run
+  # that was already failing keeps the status it had, and an interrupted one
+  # keeps its 130/143. The override is APPLIED below, after the lock is
+  # released, because it can only be applied by an explicit `exit`.
+  local override="no"
+  if [[ "$status" -eq 0 && "$PUBLICATION_APPROVED" != "yes" ]]; then
+    printf 'FATAL: every gate passed but the evidence could not be published safely;\n' >&2
+    printf 'exiting non-zero. See %s\n' "${PUBLICATION_STATUS_FILE#"$ROOT"/}" >&2
+    override="yes"
+  fi
+  # Last, and only after the report exists: the lock. Releasing it before the
+  # report was written would let a run waiting on it start writing into the
+  # same evidence tree while this one was still publishing from it. This is a
+  # no-op unless THIS run acquired the lock, so a run that stopped because
+  # another holds it cannot remove that one's lock on its way out. Its status
+  # is not propagated for the same reason `write_report`'s is not: `errexit`
+  # is off here and it has already reported on stderr.
+  release_output_lock
+  # The override, last: `return` from an EXIT trap does NOT change the
+  # process's exit status - the status the shell was already exiting with
+  # wins - so an explicit `exit` is the only thing that can apply it, and it
+  # must come after the lock has been released and the report and publication
+  # are on disk. Bash does not re-enter the EXIT trap, so this cannot recurse.
+  if [[ "$override" == "yes" ]]; then
+    exit 1
+  fi
   return "$status"
 }
 
@@ -5649,6 +12364,18 @@ install_traps() {
 #-----------------------------------------------------------------------------
 
 main() {
+  # One mode runs no gate: the uploader's integrity check. It is intercepted
+  # before `init_run` deliberately - it must take no lock, create nothing and
+  # empty nothing, because it runs while and after another step owns the tree.
+  if [[ "${1:-}" == "--verify-publication" ]]; then
+    set -uo pipefail
+    export LC_ALL=C
+    resolve_locations
+    require_repository_root || exit 2
+    verify_publication_tree
+    exit $?
+  fi
+
   # Every side effect of a real run - the shell options, the exports, the
   # argument contract, the working directory, the output tree and the traps -
   # happens here and nowhere else.
@@ -5661,40 +12388,52 @@ main() {
 
   preflight
 
-  # Before the first row: whatever a previous run left in the publication
-  # trees is already publishable, because CI stores all four with
-  # `when: always` - including from a run that ends early. Scanning them here
-  # means an abort at any later point has had its inputs checked once, and a
-  # finding is raised before any row has had the chance to add to them. On a
-  # clean tree there is nothing to find and nothing to fail: this phase
-  # allows both a missing tree and an empty one.
-  #
-  # What this does not cover, stated rather than left implicit: a run that
-  # ABORTS between here and the boundary row leaves behind the evidence the
-  # rows that did run had written, and that evidence is published without
-  # having been scanned in this run. It is scanned by the pre-run scan of the
-  # next run, before anything is added to it. Closing the window itself means
-  # scanning from the two exit paths that write the report - the preflight
-  # failure and the EXIT trap - which is a change to the runner's own exit
-  # handling rather than to a gate row.
-  local pre_scan_rc=0
-  scan_publication_artifacts pre-run allow-missing allow-empty \
-    "$AUDIT_DIR/publication-secret-scan-pre-run.txt" "${PUBLICATION_PATHS[@]}" ||
-    pre_scan_rc=$?
-  if [[ "$pre_scan_rc" -ne 0 ]]; then
-    printf 'FATAL: the publication trees left by an earlier run carry a credential\n' >&2
-    printf 'signature, a symlink or an unreadable file. CI publishes them with\n' >&2
-    printf '`when: always`, so this run stops before adding to them. See\n' >&2
-    printf '%s\n' "${AUDIT_DIR#"$ROOT"/}/publication-secret-scan-pre-run.txt" >&2
-    GATE_LABEL+=("Preflight - publication trees of the previous run")
-    GATE_STATUS+=("FAIL")
-    GATE_DETAIL+=("an earlier run's publication artifacts did not pass the secret scan")
-    GATE_EVIDENCE+=("${AUDIT_DIR#"$ROOT"/}/publication-secret-scan-pre-run.txt")
-    GATE_TOTAL=$((GATE_TOTAL + 1))
-    GATE_FAILED=$((GATE_FAILED + 1))
-    write_report
+  # The controls over this framework's own behaviour, before the first row.
+  # They need python3, which preflight has just confirmed, and they fail the
+  # run closed: evidence produced by a framework that cannot be shown to
+  # encode, scan, record and publish as specified is not evidence.
+  if ! run_framework_self_checks; then
+    # The status is not propagated: this path exits 2 for the self-check
+    # failure whatever the publication does, and `finalize_publication`
+    # records and prints its own verdict either way.
+    if ! finalize_publication; then
+      printf 'The evidence of this aborted run was not approved for publication.\n' >&2
+    fi
     exit 2
   fi
+
+  # Whatever a previous run left in the evidence trees was examined and then
+  # cleared by `prune_inherited_evidence`, inside `init_output_tree` and
+  # before this run wrote anything of its own into them. Two properties come
+  # out of that, and both are load-bearing here:
+  #
+  #   * provenance is a fact rather than an inference - every artifact in
+  #     those trees was produced during this run, so publication never has to
+  #     ask whether a timestamp looks recent enough (CWE-345); and
+  #   * a credential-bearing leftover was quarantined out of every publishable
+  #     path at that point, and recorded as a blocking row THERE, so it
+  #     survives even an abort that happens before this line.
+  #
+  # What is left for this branch is the decision: a finding in inherited
+  # evidence stops the run, because the operator has to know that this
+  # checkout was holding one.
+  if [[ "$PRE_RUN_SCAN_RC" -ne 0 ]]; then
+    printf 'FATAL: the evidence an earlier run left behind carried a credential\n' >&2
+    printf 'signature, a symlink or an unreadable file. It has been taken out of\n' >&2
+    printf 'every path this run or CI publishes (%s artifact(s) quarantined) and\n' \
+      "$PRE_RUN_QUARANTINED" >&2
+    printf 'this run stops rather than continuing in a checkout that was holding\n' >&2
+    printf 'one. See %s\n' "${PRE_RUN_SCAN_SUMMARY:-the pre-run scan record}" >&2
+    # The report and the publication of whatever is safe to publish, as one
+    # transaction - the EXIT trap would reach it in any case, and doing it
+    # here keeps this path's ordering explicit. Exit 2 stands for the
+    # inherited-evidence finding regardless of the publication's verdict.
+    if ! finalize_publication; then
+      printf 'The evidence of this aborted run was not approved for publication.\n' >&2
+    fi
+    exit 2
+  fi
+
 
   run_gate "Gate 1 - builds and runs" row_01_build_and_test
   run_gate "Gate 2 / Rule 1 - dependency purity" row_02_dependency_purity
@@ -5707,6 +12446,7 @@ main() {
   run_gate "Gate 5 / Rule 7 - IO at the edges" row_09_io_at_the_edges
   run_gate "Gate 5 - typeclass instances" row_10_typeclass_instances
   run_gate "Gate 5 / Rule 4 - closed enums and data fidelity" row_11_closed_enums
+  run_gate "Gate 5 / Rule 4 - JVM construction and serialization closure" row_11a_jvm_closure
   run_gate "Rule 6 - no reflection on the codec path" row_12_no_reflection
   run_gate "Rule 8 - JVM 21 bytecode" row_13_jvm21_bytecode
   run_gate "Rule 9 - warning-clean" row_14_warning_clean
@@ -5768,41 +12508,34 @@ main() {
     RUN_COMPLETED="no"
   fi
 
-  # Publishing the report is itself a step that can fail, and its failure is
-  # recorded after the tally above - so the tally is taken again afterwards.
-  # Without this, a report that could not be published, or a write that failed
-  # while publishing it, would leave the run exiting 0.
-  if ! write_report; then
-    printf 'FATAL: the gate report could not be published; see the warnings above.\n' >&2
+  # Composing the report, staging it, and verifying everything that would be
+  # uploaded are ONE transaction (`finalize_publication`). Its failures are
+  # recorded as blocking rows BEFORE the report it publishes is composed, so
+  # the published report states them and the tally below counts them - which
+  # is what the older arrangement could not do: it discovered a publication
+  # failure after the report had already said everything passed, and then
+  # incremented a counter the report knew nothing about.
+  # Its failure is already a blocking row of the table and a line on stderr,
+  # and the tally below counts it, so the status is not re-tested here.
+  if ! finalize_publication; then
+    printf 'The evidence was not approved for publication; the report says so.\n' >&2
+  fi
+
+  # The tally, taken again now that the transaction has recorded whatever it
+  # had to record. Every count printed below and every count in the report
+  # comes from the same five arrays, so the two cannot disagree.
+  if ! gate_counts; then
+    printf 'FATAL: %s\n' "$GATE_ARRAY_PROBLEM" >&2
     GATE_FAILED=$((GATE_FAILED + 1))
   fi
   recorded_errors="$(framework_error_count)"
   unattributed_errors=$((recorded_errors - FRAMEWORK_ERRORS_ATTRIBUTED))
   if [[ "$unattributed_errors" -gt 0 && "$RUN_COMPLETED" == "yes" ]]; then
-    printf 'FATAL: %s unchecked command failure(s) recorded while publishing the\n' \
+    printf 'FATAL: %s unchecked command failure(s) recorded while publishing;\n' \
       "$unattributed_errors" >&2
-    printf 'report; see %s\n' "${FRAMEWORK_ERROR_FILE#"$ROOT"/}" >&2
+    printf 'see %s\n' "${FRAMEWORK_ERROR_FILE#"$ROOT"/}" >&2
     GATE_FAILED=$((GATE_FAILED + 1))
     RUN_COMPLETED="no"
-  fi
-
-  # The composed report is the one publication artifact that did not exist
-  # while the rows were running, so it is scanned now that it does. Its
-  # content came from material the boundary row already scanned; this reads
-  # the actual bytes CI will publish, header and result line included.
-  #
-  # It runs after the report is written, so a finding here cannot be written
-  # INTO the report: it is stated on stderr, recorded in its own summary
-  # under the audit tree - which CI publishes too - and counted, so the run
-  # exits non-zero and nobody reads the report as an acceptance.
-  local report_scan_rc=0
-  scan_publication_artifacts composed-report require-paths require-files \
-    "$AUDIT_DIR/publication-secret-scan-report.txt" "${PUBLICATION_PATHS[0]}" ||
-    report_scan_rc=$?
-  if [[ "$report_scan_rc" -ne 0 ]]; then
-    printf 'FATAL: the composed gate report did not pass the publication secret scan.\n' >&2
-    printf 'See %s\n' "${AUDIT_DIR#"$ROOT"/}/publication-secret-scan-report.txt" >&2
-    GATE_FAILED=$((GATE_FAILED + 1))
   fi
 
   printf '\n%s\n' '------------------------------------------------------------'

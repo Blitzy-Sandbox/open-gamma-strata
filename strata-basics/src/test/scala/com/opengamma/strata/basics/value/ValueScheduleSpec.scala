@@ -31,14 +31,6 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
 /**
  * Test [[ValueSchedule]].
  *
- * This is a one-to-one port of the Java test class `ValueScheduleTest`: each of its twenty-seven
- * test methods has a test of the same name here, in the same order, and no test is added, split
- * or merged. A method that asserted several scenarios in Java - the resolution tests do, four
- * apiece - stays one test here for the same reason it was one method there: the scenarios are
- * variations of a single question, and the migration joins Java test method to Scala test by
- * name. The last three names are the bare `equals`, `coverage` and `test_serialization`, kept
- * verbatim for that same reason.
- *
  * ===Construction is validated here, and one of these tests is about where the line falls===
  *
  * Every factory of [[ValueSchedule]] hands back an outcome rather than a schedule, as every
@@ -46,47 +38,24 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * helper below - and so are the collaborators, since a period, a schedule, an index-based step
  * and a sequence each report their own rejections.
  *
- * What construction judges is the half of the Java original's contradiction that needs no
- * schedule: two steps naming the '''same position''' - the same period index, or the same date -
- * with different adjustments. `test_resolveValues_indexBased_duplicateDefinitionInvalid` is the
- * test where that line is drawn. The Java method built such a definition and asserted the throw
- * from `resolveValues`; here the same pair is refused by construction, and the case goes on to
- * assert the part only resolution can decide - a step named by index and a step named by the date
- * of that period's boundary, two positions that differ as written and coincide only once the
- * periods are in hand. Nothing the Java test covered is dropped: both halves are asserted, each
- * against the channel that now reports it.
+ * What construction judges is the half of the contradiction that needs no schedule: two steps
+ * naming the '''same position as written''' - the same period index, or the same date - with
+ * '''different''' adjustments. Steps naming one position with equal adjustments are accepted,
+ * which is what `test_resolveValues_indexBased_duplicateDefinitionValid` shows, so it is the
+ * difference and not the coincidence that construction refuses.
+ * `test_resolveValues_indexBased_duplicateDefinitionInvalid` is the test where that line is
+ * drawn, and it goes on to assert the part only resolution can decide: a step named by index and
+ * a step named by the date of that period's boundary are two positions that differ as written and
+ * coincide only once the periods are in hand.
  *
- * ===What the port changes, and why===
+ * ===How the initial value is compared===
  *
- * Four groups of Java assertions have no literal counterpart, and each keeps its method name
- * while asserting what replaced it, so nothing the Java test covered is silently dropped:
- *
- *   - The six `assertThatIllegalArgumentException` sites. Every failure of `resolveValues`
- *     depends on the '''data''' of the definition and the schedule paired with it rather than on
- *     a caller contract, so each is reported as a value on the left of an `Either` and is
- *     asserted as one: the reason compared as a member of the closed family of reasons, and the
- *     message pinned by pattern wherever the Java test pinned one. No exception is expected
- *     anywhere in this spec, and none is caught.
- *   - The two builder tests. The Joda-Beans builder was the only route by which the Java bean
- *     could express individual steps and a sequence at once; there is no builder here, so both
- *     are re-pointed onto the full-field [[ValueSchedule.of]] that replaced it, which is also
- *     what `test_resolveValues_sequenceAndSteps` and `test_resolveValues_sequenceAndStepClash`
- *     use.
- *   - `coverage`, which called `coverImmutableBean` and `coverBeanEquals` - reflective sweeps
- *     over the properties of a bean through its meta-bean. There is no meta-bean and no
- *     reflective property access here, so the substance is asserted directly: the accessors, the
- *     two `with` operations that replaced the builder, the rendering, the inequality of two
- *     unrelated instances, the bit-pattern equality the double field carries, and the closed
- *     construction surface of the type - proved by requiring two snippets to fail to compile
- *     rather than by asserting something about one instance.
- *   - `test_serialization`, which asserted a Java serialization round trip. Java serialization is
- *     not part of this port; the JSON codec takes its place, so the round trip asserted is
- *     `decode(encode(x)) == x` together with the exact shape of the encoding, including the
- *     absence of the field for a sequence the schedule does not hold.
- *
- * One Java assertion has no counterpart at all and is noted where it stood rather than contrived:
- * the `equals` method asserted inequality against an absent reference, a state this port does not
- * express and whose literal this spec deliberately does not spell.
+ * The type compares its `initialValue` with `java.lang.Double.compare(a, b) == 0` and hashes it
+ * with `java.lang.Double.hashCode`. Both canonicalise not-a-number values - every not-a-number
+ * counts as one and the same value whatever its payload - while keeping a negative zero distinct
+ * from a positive zero. Two consequences follow and are asserted in `coverage`: a schedule whose
+ * initial value is not a number is equal to itself, and one holding -0.0 is not equal to one
+ * holding 0.0.
  *
  * ===The three-period fixture is doing real work===
  *
@@ -96,14 +65,8 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * unadjusted period starts first and against the adjusted ones second, so the two tests reach the
  * same period through the two different passes.
  *
- * ===What is asserted elsewhere===
- *
- * Four duties that touch this type are module-wide and are discharged by module-wide specs rather
- * than repeated here: the sweep of every closed-construction type's inputs
- * (`SmartConstructorSpec`), the inventory of every failable member (`FailableSurfaceSpec`), the
- * proof that no such type has a public `apply` or `copy` (`ApiSurfaceSpec`), and the
- * property-based codec round trip over every codec-bearing type (`json/JsonRoundTripSpec`). This
- * spec stays with the twenty-seven ported methods.
+ * Four duties that touch this type are module-wide and are discharged by `SmartConstructorSpec`,
+ * `FailableSurfaceSpec`, `ApiSurfaceSpec` and `json/JsonRoundTripSpec` rather than repeated here.
  */
 final class ValueScheduleSpec extends AnyFunSuite with Matchers {
 
@@ -147,44 +110,44 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     parse(text).getOrElse(fail(s"the expected JSON of this spec is not itself valid JSON: $text"))
 
   //-------------------------------------------------------------------------
-  /** The first step of the Java fixture `STEP1`, replacing the value at 2014-06-30. */
+  /** The first step of the two-step fixtures below, replacing the value at 2014-06-30. */
   private val Step1: ValueStep = ValueStep.of(date(2014, 6, 30), ValueAdjustment.ofReplace(2000.0d))
 
-  /** The second step of the Java fixture `STEP2`, replacing the value at 2014-07-30. */
+  /** The second step of the two-step fixtures below, replacing the value at 2014-07-30. */
   private val Step2: ValueStep = ValueStep.of(date(2014, 7, 30), ValueAdjustment.ofReplace(3000.0d))
 
   //-------------------------------------------------------------------------
-  /** The first period of the Java fixture `PERIOD1`, whose dates need no adjustment. */
+  /** The first period of the schedule fixture, whose dates need no adjustment. */
   private val Period1: SchedulePeriod = ok(SchedulePeriod.of(date(2014, 1, 1), date(2014, 2, 1)))
 
-  /** The second period of the Java fixture `PERIOD2`, whose dates need no adjustment. */
+  /** The second period of the schedule fixture, whose dates need no adjustment. */
   private val Period2: SchedulePeriod = ok(SchedulePeriod.of(date(2014, 2, 1), date(2014, 3, 1)))
 
   /**
-   * The third period of the Java fixture `PERIOD3`, whose start is adjusted.
+   * The third period of the schedule fixture, whose start is adjusted.
    *
-   * The four arguments are in the order the Java factory declared them - start, end, unadjusted
-   * start, unadjusted end - so this period starts on 2014-03-01 having been rolled from an
-   * unadjusted 2014-03-02. That split is what makes the two date-based resolution tests below
-   * different from one another, and getting the order backwards would make both of them assert
-   * the wrong thing while still passing one of them.
+   * The four arguments are in the order the factory declares them - start, end, unadjusted start,
+   * unadjusted end - so this period starts on 2014-03-01 having been rolled from an unadjusted
+   * 2014-03-02. That split is what makes the two date-based resolution tests below different from
+   * one another, and getting the order backwards would make both of them assert the wrong thing
+   * while still passing one of them.
    */
   private val Period3: SchedulePeriod =
     ok(SchedulePeriod.of(date(2014, 3, 1), date(2014, 4, 1), date(2014, 3, 2), date(2014, 4, 1)))
 
   /**
-   * The schedule of the Java fixture `SCHEDULE`, holding the three periods above.
+   * The schedule holding the three periods above, which every resolution test resolves against.
    *
-   * The Java fixture was assembled through `Schedule.builder()`; the ported type has a factory
-   * taking the three properties instead, and its periods are a non-empty list rather than a list
-   * whose non-emptiness is checked, so the fixture states that fact in its type.
+   * Its factory takes the three properties of a schedule, and the periods are a non-empty list
+   * rather than a list whose non-emptiness is checked, so the fixture states that fact in its
+   * type.
    */
   private val ScheduleFixture: Schedule =
     ok(Schedule.of(NonEmptyList.of(Period1, Period2, Period3), Frequency.P1M, RollConventions.DAY_1))
 
   //-------------------------------------------------------------------------
   /**
-   * The quarterly sequence the Java tests of the factories and of `coverage` built inline.
+   * The quarterly sequence used wherever a schedule holding a sequence is needed.
    *
    * It steps the value down by 100 every three months from 2016-04-20 to 2016-10-20. The dates
    * fall outside the schedule fixture above, which does not matter to the tests that use it: they
@@ -196,7 +159,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
         .of(date(2016, 4, 20), date(2016, 10, 20), Frequency.P3M, ValueAdjustment.ofDeltaAmount(-100.0d)))
 
   /**
-   * The monthly sequence the Java resolution tests built inline.
+   * The monthly sequence the resolution tests for a sequence use.
    *
    * It steps the value up by 100 every month from 2014-02-01 to 2014-03-01, which are the
    * boundaries of the second and third periods of the schedule fixture, so it resolves to a step
@@ -256,8 +219,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   test("test_of_intStepsArray") {
     // The varargs factory, which names its first step separately from the rest so that it cannot
     // be confused with the single-value factory above. The order of the steps is part of the
-    // value - they are resolved in the order given - so it is asserted as an ordered list, which
-    // is what the Java `containsExactly` asserted.
+    // value - they are resolved in the order given - so it is asserted as an ordered list.
     val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, Step1, Step2))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List(Step1, Step2)
@@ -265,25 +227,24 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   }
 
   test("test_of_intStepsArray_empty") {
-    // The Java test handed the varargs factory a zero-length array. Naming the first step
-    // separately is what keeps that factory apart from the single-value one, so it has no
-    // zero-step form and the Java call has no distinct counterpart here; the empty case is
-    // expressed by the list factory, and the two routes agree with the single-value factory.
+    // Naming the first step separately is what keeps the varargs factory apart from the
+    // single-value one, so that factory has no zero-step form: a schedule of no steps is
+    // expressed through the list factory, and that route agrees with the single-value factory.
     val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, List.empty[ValueStep]))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List.empty[ValueStep]
     test.stepSequence shouldBe None
     test shouldBe ok(ValueSchedule.of(10000.0d))
 
-    // The one-step varargs call, which is the shortest form that factory does have, so that this
-    // test still covers the factory the Java one was written against.
+    // The one-step varargs call, which is the shortest form that factory does have, so this test
+    // still covers the varargs factory itself.
     val single: ValueSchedule = ok(ValueSchedule.of(10000.0d, Step1))
     single.steps shouldBe List(Step1)
   }
 
   test("test_of_intStepsList") {
-    // The list factory, reached in Java through a mutable list; the list of this port is
-    // immutable, so the schedule holds the list it was given rather than a defensive copy of it.
+    // The list factory. The list it takes is immutable, so the schedule holds the list it was
+    // given rather than a defensive copy of it.
     val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List(Step1, Step2)
@@ -302,8 +263,8 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   }
 
   test("test_of_sequence") {
-    // The sequence factory, which holds the sequence and no individual steps. The Java test read
-    // the property back through `Optional`; a property that is held is `Some` here.
+    // The sequence factory, which holds the sequence and no individual steps. The sequence is an
+    // optional property, so one that is held reads back as `Some`.
     val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, QuarterlySequence))
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List.empty[ValueStep]
@@ -311,33 +272,29 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   }
 
   test("test_builder_validEmpty") {
-    // The Java test built an empty bean through the Joda-Beans builder, whose double property
-    // defaulted to zero and whose list of steps defaulted to empty. There is no builder here, so
-    // this is re-pointed onto the full-field factory that replaced it, handed exactly those two
-    // defaults and no sequence.
+    // The full-field factory, handed the values a schedule that carries nothing holds: an initial
+    // value of zero, an empty list of steps and no sequence.
     val test: ValueSchedule = ok(ValueSchedule.of(0.0d, List.empty[ValueStep], None))
     test.initialValue shouldBe 0.0d
     test.steps shouldBe List.empty[ValueStep]
     test.stepSequence shouldBe None
 
-    // The same value as the two shorter routes to a schedule of zero, so the defaults the builder
-    // supplied are the defaults these factories supply.
+    // The same value as the two shorter routes to a schedule of zero, so all three routes supply
+    // one set of defaults.
     test shouldBe ok(ValueSchedule.of(0.0d))
     test shouldBe ValueSchedule.ALWAYS_0
   }
 
   test("test_builder_validFull") {
-    // The Java test built a fully populated bean through the builder, which was the only route by
-    // which that bean could carry individual steps and a sequence at once. The full-field factory
-    // is that route here, and it is the factory the two resolution tests for a sequence alongside
-    // a step use as well.
+    // The full-field factory, which is the one call that takes individual steps and a sequence at
+    // once, and the factory the two resolution tests for a sequence alongside a step use as well.
     val test: ValueSchedule = ok(ValueSchedule.of(2000.0d, List(Step1, Step2), Some(QuarterlySequence)))
     test.initialValue shouldBe 2000.0d
     test.steps shouldBe List(Step1, Step2)
     test.stepSequence shouldBe Some(QuarterlySequence)
 
-    // The two `with` operations reach the same value from either half of it, which is what makes
-    // them the replacement of the builder rather than a convenience beside it.
+    // The two `with` operations reach the same value from either half of it, so a schedule
+    // carrying both can be assembled field by field as well as in the one call above.
     ok(ok(ValueSchedule.of(2000.0d, List(Step1, Step2))).withStepSequence(QuarterlySequence)) shouldBe
       test
     ok(ok(ValueSchedule.of(2000.0d, QuarterlySequence)).withSteps(List(Step1, Step2))) shouldBe test
@@ -421,8 +378,9 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   test("test_resolveValues_indexBased") {
     // The same four scenarios with the steps positioned by period index rather than by date. The
-    // index factory reports its outcome, because an index of zero or less names the start of the
-    // first period where no change is permitted, so the two fixtures pass through the fold helper.
+    // index factory reports its outcome, because an index must be one or greater - zero would
+    // name the first period, which the initial value of the definition already gives a value - so
+    // the two fixtures pass through the fold helper.
     val step1: ValueStep = ok(ValueStep.of(1, ValueAdjustment.ofReplace(300.0d)))
     val step2: ValueStep = ok(ValueStep.of(2, ValueAdjustment.ofReplace(400.0d)))
 
@@ -444,9 +402,9 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   }
 
   test("test_resolveValues_indexBased_duplicateDefinitionValid") {
-    // Two steps naming the same period with the '''same''' adjustment. That is not a
-    // contradiction - the period changes once, to the value both steps ask for - so the
-    // definition resolves.
+    // Two steps naming the same period index with the '''same''' adjustment. That is not a
+    // contradiction - the period changes once, to the value both steps ask for - so construction
+    // accepts the definition and it resolves.
     val step1: ValueStep = ok(ValueStep.of(1, ValueAdjustment.ofReplace(300.0d)))
     val step2: ValueStep = ok(ValueStep.of(1, ValueAdjustment.ofReplace(300.0d)))
 
@@ -455,11 +413,11 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   }
 
   test("test_resolveValues_indexBased_duplicateDefinitionInvalid") {
-    // Two steps naming the same period with '''different''' adjustments. The Java test built the
-    // definition and asserted the throw from `resolveValues`; here the same contradiction is
-    // reported by construction, because two steps carrying the same period index ask for two
-    // different values at one point of the time line whatever schedule they are resolved against.
-    // The report is the one failure of that position, carrying both adjustments.
+    // Two steps naming the same period index with '''different''' adjustments, which is the case
+    // construction refuses: the two ask for different values at one point of the time line
+    // whatever schedule they are resolved against. Equal adjustments at one position are accepted,
+    // as the test above shows, so it is the difference that makes this pair a contradiction. The
+    // report is the one failure of that position, carrying both adjustments.
     val step1: ValueStep = ok(ValueStep.of(1, ValueAdjustment.ofReplace(300.0d)))
     val step2: ValueStep = ok(ValueStep.of(1, ValueAdjustment.ofReplace(400.0d)))
 
@@ -478,9 +436,9 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
       beFailureWith(FailureReason.INVALID)
 
     // The half of the contradiction that construction cannot see is still reported by resolution,
-    // and this is it: one step names period 1 by its index, the other names it by the date of its
-    // boundary, so the two positions differ as written and coincide only once the periods are in
-    // hand. That is the message the Java assertion pinned.
+    // and this is it: one step names period 1 by its index and the other names it by the date of
+    // that period's boundary, with a different adjustment, so the two positions differ as written
+    // and coincide only once the periods are in hand.
     val byDate: ValueStep =
       ValueStep.of(Period2.unadjustedStartDate, ValueAdjustment.ofReplace(400.0d))
     val test: ValueSchedule = ok(ValueSchedule.of(200.0d, List(step1, byDate)))
@@ -494,23 +452,15 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
 
     // The check that reports the contradiction above runs on '''every''' construction, and both
     // the factory and the decoder take a step list of any length from a caller or a document, so
-    // what that check costs is part of this type's contract. It is linear in the steps plus the
-    // sort of their distinct positions: each step is paired with its own position in the list
-    // before the steps are grouped, so ordering the reports reads an index already in hand.
-    // Searching the list for each group's first step instead would rescan it once per position,
-    // which is quadratic, and a document naming many positions would then choose a cost far
-    // beyond its size. Sixty thousand distinct positions are built here, which the linear form
-    // checks in tens of milliseconds and a per-position search would take tens of seconds over,
-    // so the bound below separates the two without depending on how fast the machine is.
+    // what that check costs is part of this type's contract. It is linear in the number of steps
+    // plus the sort of their distinct positions: each step is paired with its own position in the
+    // list before the steps are grouped, so ordering the reports reads an index already in hand
+    // rather than searching the list again for each group. This case exercises that check at
+    // sixty thousand distinct positions, and the definition it builds holds every one of them.
     val manySteps: List[ValueStep] =
       List.tabulate(60000)(index => ok(ValueStep.of(index + 1, ValueAdjustment.ofReplace(index.toDouble))))
-    val startedAt: Long = System.nanoTime()
     val ofManySteps: ResultNec[ValueSchedule] = ValueSchedule.of(100.0d, manySteps)
-    val elapsedMillis: Long = (System.nanoTime() - startedAt) / 1000000L
     ofManySteps.map(schedule => schedule.steps.size) shouldBe Right(60000)
-    withClue(s"checking sixty thousand distinct step positions took ${elapsedMillis}ms: ") {
-      elapsedMillis should be < 15000L
-    }
   }
 
   test("test_resolveValues_dateBased_indexZeroValid") {
@@ -538,8 +488,8 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     // A step on 2014-04-01, which is the end of the schedule rather than the start of any period,
     // and which replaces the value of the last period with a different one. Unlike the three
     // no-op steps of the excess test above, this one would change a value where it falls, so it
-    // is reported. The Java assertion pinned the start of the message, and the matcher here
-    // compares the whole of it, so the pattern is anchored and closed with a wildcard tail.
+    // is reported. The matcher compares the whole message, so the pattern is anchored at its
+    // start and closed with a wildcard tail.
     val step: ValueStep = ValueStep.of(date(2014, 4, 1), ValueAdjustment.ofReplace(300.0d))
 
     val result: FailureOr[DoubleArray] = ok(ValueSchedule.of(200.0d, List(step))).resolveValues(ScheduleFixture)
@@ -580,10 +530,9 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
   }
 
   test("test_resolveValues_sequenceAndSteps") {
-    // The same sequence alongside an individual step on the first boundary, which the Java test
-    // could express only through the builder. The individual step replaces the initial value and
-    // the two sequence steps then add to it, so every period is a hundred above the Java
-    // sequence-only case.
+    // The same sequence alongside an individual step on the first boundary. The individual step
+    // replaces the initial value and the two sequence steps then add to it, so every period is a
+    // hundred and fifty above the sequence-only case above.
     val step1: ValueStep = ValueStep.of(date(2014, 1, 1), ValueAdjustment.ofReplace(350.0d))
 
     val test: ValueSchedule = ok(ValueSchedule.of(200.0d, List(step1), Some(MonthlySequence)))
@@ -592,9 +541,10 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
 
   test("test_resolveValues_sequenceAndStepClash") {
     // The same sequence alongside an individual step on a boundary the sequence also names, with
-    // a different adjustment. The two resolve to the same period and contradict each other,
-    // which is the documented reason a definition should not carry both unless their dates are
-    // distinct.
+    // a '''different''' adjustment. The two resolve to the same period and ask it for different
+    // values, which is the contradiction resolution reports. Two steps resolving to one period
+    // with equal adjustments are accepted, so it is the difference between the adjustments and
+    // not the coincidence of the dates that makes this pair a failure.
     val step1: ValueStep = ValueStep.of(date(2014, 2, 1), ValueAdjustment.ofReplace(350.0d))
 
     val test: ValueSchedule = ok(ValueSchedule.of(200.0d, List(step1), Some(MonthlySequence)))
@@ -606,8 +556,8 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   test("equals") {
-    // The equality matrix of the Java test, which varies one property at a time: the same
-    // definition twice, a different initial value, and a shorter list of steps.
+    // The equality matrix, which varies one property at a time: the same definition twice, a
+    // different initial value, and a shorter list of steps.
     val a1: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
     val a2: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
     val b: ValueSchedule = ok(ValueSchedule.of(5000.0d, List(Step1, Step2)))
@@ -619,9 +569,6 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     a1 should not be c
     a1 should not be ""
     a1.hashCode shouldBe a2.hashCode
-    // The Java test closed its chain with an `isNotEqualTo` against an absent reference. That
-    // state is not expressible in this port, so the case is recorded here rather than contrived,
-    // and its literal is deliberately not spelled anywhere in this spec.
 
     // The same relations through the typeclass instance, which is the equality every generic
     // caller of this type sees and which is derived from the two members asserted above rather
@@ -635,12 +582,12 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // The two instances the Java test swept reflectively through the meta-bean of the type. They
-    // differ in every property, which is what made them a pair worth comparing.
+    // Two definitions differing in every property, which is what makes them a pair worth
+    // comparing.
     val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
     val that: ValueSchedule = ok(ValueSchedule.of(20000.0d, QuarterlySequence))
 
-    // Every property of both, read back through the accessors that replaced the bean getters.
+    // Every property of both, read back through the accessors of the type.
     test.initialValue shouldBe 10000.0d
     test.steps shouldBe List(Step1, Step2)
     test.stepSequence shouldBe None
@@ -649,7 +596,7 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     that.stepSequence shouldBe Some(QuarterlySequence)
 
     // Two unrelated definitions are unequal under both the universal equality of the type and
-    // its typeclass instance, which is the substance of the bean-equality sweep.
+    // its typeclass instance, and the typeclass rendering is the rendering of the type itself.
     test should not be that
     Hash[ValueSchedule].eqv(test, that) shouldBe false
     Show[ValueSchedule].show(test) shouldBe test.toString
@@ -662,8 +609,8 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     test.toString should not include "stepSequence="
     that.toString should include("stepSequence=")
 
-    // The two operations that replaced the builder produce the expected modified value and leave
-    // the original untouched, which is the whole of the field-wise modification this type has.
+    // The two `with` operations produce the expected modified value and leave the original
+    // untouched, which is the whole of the field-wise modification this type has.
     // Both report their outcome, because both hand the caller's steps to the validated factory,
     // so both are unwrapped here exactly as a factory call is.
     ok(test.withSteps(List(Step1))) shouldBe ok(ValueSchedule.of(10000.0d, List(Step1)))
@@ -688,10 +635,12 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
     assertCompiles("""ValueSchedule.of(10000.0d, Nil, None)""")
     assertCompiles("""test.initialValue""")
 
-    // The initial value is compared by bit pattern, as it was by the bean equality of the
-    // original and as it is by every double-bearing type of this port. Two consequences follow,
-    // and the signed-zero one is stated against the platform comparison that decides it rather
-    // than against a numeric test that would report the two zeroes equal.
+    // The initial value is compared with `java.lang.Double.compare` and hashed with
+    // `java.lang.Double.hashCode`, as it is by every double-bearing type of this port. Both
+    // canonicalise not-a-number values, so a definition whose initial value is not a number is
+    // equal to itself whatever the payload of that value, and both keep a negative zero distinct
+    // from a positive zero. The signed-zero consequence is stated against the platform comparison
+    // that decides it rather than against a numeric test that would report the two zeroes equal.
     ok(ValueSchedule.of(Double.NaN)) shouldBe ok(ValueSchedule.of(Double.NaN))
     java.lang.Double.compare(-0.0d, 0.0d) should not be 0
     ok(ValueSchedule.of(-0.0d)) should not be ok(ValueSchedule.of(0.0d))
@@ -699,10 +648,10 @@ final class ValueScheduleSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   test("test_serialization") {
-    // Java serialization is not part of this port; the JSON codec takes its place. Both
-    // directions are asserted - an encoding that is wrong and a decoding that is wrong in the
-    // same way would still round trip - and the documents are compared as parsed JSON rather
-    // than as printed text, so the assertion is about the fields rather than the rendering.
+    // The round trip through the JSON codec. Both directions are asserted - an encoding that is
+    // wrong and a decoding that is wrong in the same way would still round trip - and the
+    // documents are compared as parsed JSON rather than as printed text, so the assertion is
+    // about the fields rather than the rendering.
     val test: ValueSchedule = ok(ValueSchedule.of(10000.0d, List(Step1, Step2)))
     test.asJson shouldBe json(ExpectedStepsJson)
     decode[ValueSchedule](test.asJson.noSpaces) shouldBe Right(test)

@@ -23,7 +23,9 @@ import com.opengamma.strata.basics.ReferenceDataType
 import com.opengamma.strata.basics.Resolvable
 import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.basics.currency.CurrencyPair
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -56,13 +58,12 @@ import com.opengamma.strata.collect.result.Failure
  * The two compose, with `'+'` binding more tightly than `'~'`, so `GB~EU+Fri/Sat` links `GB`
  * with the combination of `EU` and `Fri/Sat`.
  *
- * A composite name is '''normalised''' when it is built, exactly as the identifier being
- * ported normalised it: the parts are deduplicated and sorted by name, so `USNY+GBLO` and
- * `GBLO+USNY` are one identifier, with one name, that encodes to one JSON string. The
- * no-holidays calendar is absorbed rather than carried, and the two separators differ in how,
- * because their meanings differ: combining with a calendar that has no holidays removes
- * nothing, so it drops out of a `'+'` composite, while linking with it makes every day a
- * business day, so it swallows a `'~'` composite whole.
+ * A composite name is '''normalised''' when it is built: the parts are deduplicated and
+ * sorted by name, so `USNY+GBLO` and `GBLO+USNY` are one identifier, with one name, that
+ * encodes to one JSON string. The no-holidays calendar is absorbed rather than carried, and
+ * the two separators differ in how, because their meanings differ: combining with a calendar
+ * that has no holidays removes nothing, so it drops out of a `'+'` composite, while linking
+ * with it makes every day a business day, so it swallows a `'~'` composite whole.
  *
  * Normalising a composite down to a single part yields that part itself, so
  * `of("GBLO+NoHolidays")` ''is'' the simple `GBLO` identifier - the same value
@@ -73,30 +74,16 @@ import com.opengamma.strata.collect.result.Failure
  * Resolution of a composite identifier asks for the whole name first. A host that holds a
  * pre-combined `GBLO+USNY` calendar - one merged from a vendor feed, say - therefore has it
  * used as it stands, and only where the whole name is unknown is each part resolved and the
- * parts combined. This is the behaviour of the original and the reason this type overrides
- * [[resolve]] rather than inheriting it. See [[resolve]] for the failure cases.
+ * parts combined. That two-step lookup is why this type defines its own [[resolve]] rather
+ * than taking the single lookup [[ReferenceDataId]] performs. See [[resolve]] for the failure
+ * cases.
  *
- * ===Divergences from the type being ported===
- *
- * Resolution reports a missing calendar as `Left(Failure.MissingData(...))` where the
- * original threw `ReferenceDataNotFoundException`; that exception type is not ported, because
- * a calendar that reference data does not hold is a fact about the request rather than a
- * defect in the program, and the caller is the one with the context to decide what to do
- * about it.
- *
- * The accessor reporting the runtime type of the data the identifier refers to -
- * `getReferenceDataType`, which returned `HolidayCalendar.class` - is replaced by [[valueType]],
- * a witness that recognises a calendar by pattern instead of by class token. The low-level
- * query primitive that signalled an absent value by returning a reference to nothing is
- * absent altogether. Both are discussed on [[ReferenceDataId]]: filing is checked at compile
- * time by `ReferenceData.Entry`, retrieval by the witness, and this port performs no
- * reflection at all.
- *
- * The instance cache of the original is not ported either. It existed so that two identifiers
- * of the same name were the same object, which the original's resolution relied on because it
- * compared identifiers by reference in places; equality here is by name, so nothing needs
- * interning, and dropping the cache removes a process-wide mutable map from a value type.
- * Java serialization support goes with it.
+ * A calendar the reference data does not hold is reported as a failure value rather than
+ * raised: it is a fact about the request rather than a defect in the program, and the caller
+ * is the one with the context to decide what to do about it. Which type of value an
+ * identifier may be answered with is settled by [[valueType]], a witness that recognises a
+ * calendar by pattern rather than by a class token, so resolution inspects no type while the
+ * program runs.
  *
  * @param name  the identifier, expressed as a normalised unique name, such as `GBLO` or
  *   `GBLO+USNY`
@@ -106,15 +93,63 @@ import com.opengamma.strata.collect.result.Failure
 sealed abstract case class HolidayCalendarId private (name: String)
     extends ReferenceDataId[HolidayCalendar]
     with Resolvable[HolidayCalendar]
-    with Named {
+    with Named
+    with NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // would carry a name `of` had not normalised, or a structure that disagrees with its name - can
+  // be stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[HolidayCalendarId.Impl])
+
+  // The invariant of this type, stated over the two fields the instance actually holds rather
+  // than over the text a factory was given, because the class file of the implementation carries
+  // a public constructor whatever the source asked for: a class compiled outside this library can
+  // reach it directly, and the check above would admit what it built, its runtime class being the
+  // one class that check admits. What is left to state is what [[HolidayCalendarId.of]]
+  // establishes. `of` accepts any text - which name an application files a calendar under is not
+  // this library's to judge - so what it establishes is not a property of the text but the
+  // normalisation it performs on it: a name carrying a separator is the names of its parts,
+  // deduplicated, sorted and joined, and the structure carried beside it is those same parts.
+  // Without these, a value could hold `USNY+GBLO` - the name the normalisation exists to remove,
+  // which would be a second identifier for the calendar `GBLO+USNY` already names, unequal to it
+  // and encoding to different bytes - or hold parts that resolve a different set of calendars
+  // from the ones its name reads as.
+  //
+  // The first of them admits one further shape, because `of` produces it: a name past the
+  // ceilings that factory documents is decomposed not at all and is kept whole as a simple
+  // identifier, separators and all. That is the one simple identifier whose name carries a
+  // separator, and stating the invariant without it would refuse a value the factory hands out.
+  // The ceiling test runs only for a simple identifier whose name carries a separator, which is
+  // exactly that case, so an ordinary identifier pays nothing for it.
+  JvmClosure.requireInvariant(
+    "the name of a simple identifier carries neither separator, unless it is a name too large " +
+      "to decompose",
+    composite.isDefined || !HolidayCalendarId.carriesSeparator(name) ||
+      HolidayCalendarId.exceedsCompositeCeilings(name))
+  JvmClosure.requireInvariant(
+    "a composite identifier names two or more parts, distinct and sorted by name",
+    composite.forall(parts =>
+      parts.components.size >= 2 && HolidayCalendarId.ascendingByName(parts.components.toList)))
+  JvmClosure.requireInvariant(
+    "the name of a composite identifier is the names of its parts joined by its separator",
+    composite.forall(parts =>
+      name == parts.components.iterator
+        .map(part => part.name)
+        .mkString(HolidayCalendarId.separatorOf(name))))
+  JvmClosure.requireInvariant(
+    "no part of a composite identifier is the calendar that declares no holidays",
+    composite.forall(parts =>
+      parts.components.forall(part => part.name != HolidayCalendarId.NoHolidaysName)))
 
   /**
    * The parts of this identifier and how they are read together, or empty where it is simple.
    *
    * The structure is worked out once, when the identifier is built, and carried on the
-   * instance rather than recovered from the name at each resolution - which is what the
-   * identifier being ported did, for the same reason: a composite identifier is resolved once
-   * per date adjustment, and re-splitting its name each time would allocate on that path.
+   * instance rather than recovered from the name at each resolution: a composite identifier is
+   * resolved once per date adjustment, and re-splitting its name each time would allocate on
+   * that path.
    *
    * It is deliberately not part of the value. Equality, hashing and the JSON form of an
    * identifier are its name alone, and the structure is a function of that name, so carrying
@@ -132,12 +167,12 @@ sealed abstract case class HolidayCalendarId private (name: String)
    *
    * Answered by asking whether this identifier carries the parts of a composite, which is the
    * question in the form that costs nothing: the parts are worked out once, when the identifier
-   * is built. It is the test the original applied - the name contains a separator - in the other
-   * direction, and the two agree by construction, since a composite name is built by joining two
-   * or more parts and a name that survives normalisation with one part is that part's own. Asking
-   * it this way round matters because the question is asked of every part of a composite
-   * identifier on every resolution, and every date adjustment against such an identifier resolves
-   * it, where searching the name for two separators walks the whole of it twice.
+   * is built. It agrees with what the name shows by construction, since a composite name is
+   * built by joining two or more parts and a name that normalises to one part is that part's own
+   * identifier, which carries no parts. Asking it of the structure rather than of the name
+   * matters because the question is asked of every part of a composite identifier on every
+   * resolution, and every date adjustment against such an identifier resolves it, where
+   * searching the name for either separator walks the whole of it.
    *
    * @return true if this identifier combines or links two or more calendars
    */
@@ -153,17 +188,32 @@ sealed abstract case class HolidayCalendarId private (name: String)
    * normalised name gives, which is what makes `GBLO+USNY` resolvable from nothing but the
    * `GBLO` and `USNY` entries.
    *
-   * Two failures are possible, and both are `Failure.MissingData`:
+   * Two conditions end resolution without a calendar, and each is reported as reference data
+   * the caller did not supply:
    *
    *   - a simple identifier the reference data does not hold, reported as `ReferenceData`
-   *     itself reports it;
-   *   - a part of a composite identifier that cannot be resolved, reported with a message
-   *     naming both that part and this identifier, so a caller is told which of several
-   *     calendars was missing and what was being built from it.
+   *     itself reports an identifier it cannot answer for;
+   *   - a part of a composite identifier that cannot be resolved, reported naming both that
+   *     part and this identifier, so a caller is told which of several calendars was missing
+   *     and what was being built from it.
    *
-   * The first unresolvable part ends the resolution, as it did in the original; a composite
-   * identifier is all-or-nothing, since a calendar assembled from some of its parts would
-   * silently declare business days that are holidays.
+   * A third is possible for a composite identifier alone, and is `Failure.Invalid`: parts that
+   * cannot be read together, because doing so would build a calendar deeper than a calendar may
+   * be. The family limits how deep a composite may read, at
+   * [[com.opengamma.strata.basics.date.HolidayCalendar.MaxCompositeDepth]], and two things can
+   * carry a resolution past it. One is the name: [[of]] accepts any name, so the number of
+   * parts is decided by whatever text reached it, and a name of ten thousand parts would
+   * describe a calendar ten thousand calendars deep. The other is the data: a name joining two
+   * parts describes a calendar one deeper than its deeper part, so reference data mapping a
+   * part to an already-deep composite can carry a two-part name over the limit. The width of
+   * the name is checked before any part is looked up, and the depth the resolved calendars
+   * reach is checked before each is read together with the ones before it. Both are reported in
+   * this method's own failure channel, so that resolving an identifier answers rather than
+   * raising, however the identifier was named and whatever the data holds for its parts.
+   *
+   * The first unresolvable part ends the resolution: a composite identifier is all-or-nothing,
+   * since a calendar assembled from some of its parts would silently declare business days
+   * that are holidays.
    *
    * The resolved calendar is bound to the data it was resolved against and does not follow
    * later changes to that data, so care is needed when placing it in a cache or a persistence
@@ -178,10 +228,12 @@ sealed abstract case class HolidayCalendarId private (name: String)
       case Some(calendar) => Right(calendar)
       case None =>
         composite match {
-          // A simple identifier that is absent is exactly the failure `getValue` reports, so
-          // the message and its attribute are taken from there rather than written again
-          // here. The repeated lookup this costs happens only on the failing path.
+          // a simple identifier the data does not hold is the absence `getValue` already
+          // reports, so the report is delegated to it rather than written again here; the
+          // second lookup this costs is taken on the failing path only
           case None => refData.getValue(this)
+          case Some(parts) if parts.componentCount > HolidayCalendar.MaxCompositeDepth =>
+            Left(tooManyParts(parts.componentCount))
           case Some(parts) => resolveParts(parts, refData)
         }
     }
@@ -207,8 +259,7 @@ sealed abstract case class HolidayCalendarId private (name: String)
    * included, a composite resolving to a calendar exactly as a simple identifier does - so
    * the witness is the shared [[com.opengamma.strata.basics.ReferenceDataType.holidayCalendar]]
    * rather than one per identifier. It is what `ImmutableReferenceData.findValue` narrows the
-   * value it finds with, and it is the non-reflective counterpart of the Java
-   * `getReferenceDataType()` this family overrode to return `HolidayCalendar.class`.
+   * value it finds with, and it recognises a calendar by pattern rather than by a class token.
    *
    * @return the witness for a holiday calendar
    */
@@ -260,26 +311,44 @@ sealed abstract case class HolidayCalendarId private (name: String)
     }
 
   /**
-   * Returns the name that uniquely identifies this calendar.
+   * Returns the text form of this identifier, which is its name written for a reader.
    *
-   * This is [[name]] - the text the identifier is known by, which
-   * [[HolidayCalendarId.of]] reads back - rather than the structural rendering a case class
-   * would otherwise produce. It is also the text that appears in a failure message and in
-   * the JSON form.
+   * [[name]] is the identity of an identifier, the text a composite is composed from and the
+   * text it travels as: equality, hashing, composition and the JSON form all read the name and
+   * answer with it unchanged, whatever it holds. This method is the other side of that
+   * arrangement. What it returns is read - it reaches a log, a report or a line of a console,
+   * either directly or through one of the composite renderings that name a calendar - and a
+   * reader of that kind is line-oriented and of finite size, while
+   * [[HolidayCalendarId.of]] is total and accepts any text, so a name that reached this
+   * library from outside may hold a line break, another control character or any length of
+   * text at all. The text form is therefore rendered through
+   * [[com.opengamma.strata.collect.result.Failure.renderDiagnostic]], the one renderer these
+   * two modules apply to text on its way to such a reader: it is bounded in length and it is a
+   * single line, so an identifier can neither forge a line of a log that renders one (CWE-117)
+   * nor make that line as large as itself (CWE-400).
    *
-   * @return the unique name
+   * For every identifier of a realistic shape the two are the same text, character for
+   * character - every constant of [[HolidayCalendarIds]], every composite this library builds
+   * from them, and any name of ordinary length carrying no control character - so this is the
+   * rendering the identifier being ported produced, and the structural rendering a case class
+   * would otherwise give is replaced by it as it was there. A name that is not of that shape
+   * renders with the escapes and the bound described on the renderer, and [[name]] still
+   * answers with the whole of it, which is what code acting on an identifier rather than
+   * displaying it reads: the text [[HolidayCalendarId.of]] reads back into the same identifier
+   * is the name, and so is the text the JSON form and the failure messages of this file carry.
+   *
+   * @return the name of this identifier, bounded and on a single line
    */
-  override def toString: String = name
+  override def toString: String = Failure.renderDiagnostic(name)
 
   /**
    * Returns a suitable hash code for the identifier, which is the hash of its name.
    *
-   * It is computed once, when the identifier is built, and held in a field on the instance,
-   * which is where the identifier being ported held it. The hash a case class generates would
-   * instead walk the value and mix it afresh on every call, and that cost is worth removing
-   * here because an identifier is the key of every reference-data lookup: it is hashed at
-   * least once per resolution - once more for each part of a composite - and every date
-   * adjustment resolves a calendar.
+   * It is computed once, when the identifier is built, and held in a field on the instance.
+   * The hash a case class generates would instead walk the value and mix it afresh on every
+   * call, and that cost is worth removing here because an identifier is the key of every
+   * reference-data lookup: it is hashed at least once per resolution - once more for each part
+   * of a composite - and every date adjustment resolves a calendar.
    *
    * It agrees with equality, as it must for the identifier to work as a key: the hash is the
    * name's and equality is the name's, since the name is the only element the value carries.
@@ -321,6 +390,16 @@ sealed abstract case class HolidayCalendarId private (name: String)
         case Nil => Right(resolved)
         case component :: rest =>
           resolvePart(component, refData) match {
+            // the depth a combination would reach is decided by the calendars the data
+            // supplied, not by the name that asked for them: a two-part name resolves to a
+            // composite as deep as its deeper part plus one, and a part the caller's data maps
+            // to an already-deep composite can carry the result past the limit even though the
+            // name joins two calendars. The check on the name, applied by `resolve` before any
+            // lookup, bounds the parts; this one bounds what they turned out to be, and it
+            // answers in this method's failure channel rather than letting the constructor of
+            // the composite raise out of an `Either`
+            case Right(calendar) if HolidayCalendar.exceedsCompositeDepth(resolved, calendar) =>
+              Left(tooDeepToCombine(component, HolidayCalendar.compositeDepthOf(resolved, calendar)))
             case Right(calendar) => loop(rest, parts.combine(resolved, calendar))
             // the failure of a part is the failure of the whole, so it is answered with as it
             // stands rather than rebuilt
@@ -360,24 +439,21 @@ sealed abstract case class HolidayCalendarId private (name: String)
   /**
    * Returns the failure reported when a part of this composite identifier is not available.
    *
-   * The message is the one the original produced, naming the part that was missing and the
-   * identifier being resolved, and both are carried as attributes so that a caller can act on
-   * them without reading the message. Both names appear in the message and in the attributes
-   * exactly as the identifiers hold them, because the wording is verbatim the text the type
-   * being ported raised for the same condition and reproducing it is the parity this port is
-   * held to, and because the caller supplying the reference data needs to see the identifier it
-   * failed to provide for as that identifier is written rather than an approximation of it.
+   * It names the part that was missing and the identifier being resolved, and carries both as
+   * attributes so that a caller can act on them without reading the message. Both names appear
+   * in the message and in the attributes exactly as the identifiers hold them, because the
+   * caller supplying the reference data needs to see the identifier it failed to provide for as
+   * that identifier is written rather than an approximation of it.
    *
    * Neither name is constrained. Both come from [[HolidayCalendarId.of]], which is total and
    * accepts any text, since which names an application files its calendars under is not this
    * library's to judge, so a name may hold a line break, a control character or any length of
    * text. That is exactly why the neutralising is not done here: bounding a value and escaping
-   * what it may hold belong to the act of writing a failure out, and
-   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure apply
-   * one bounded, single-line rendering to the message and to the key and value of every
-   * attribute. An identifier cannot therefore forge or inflate a line of a log holding this
-   * failure (CWE-117), while code that reads the failure to act on it rather than to display it
-   * still receives both names whole.
+   * what it may hold belong to the act of writing a failure out, where one bounded, single-line
+   * rendering is applied to the message and to the key and value of every attribute. An
+   * identifier cannot therefore forge or inflate a line of a log holding this failure
+   * (CWE-117), while code that reads the failure to act on it rather than to display it still
+   * receives both names whole.
    *
    * @param component  the part that could not be resolved
    * @return the failure describing the missing part, naming both identifiers as they stand
@@ -389,6 +465,51 @@ sealed abstract case class HolidayCalendarId private (name: String)
           s"when finding '$name'")
       .withAttribute("id", component.name)
       .withAttribute("compositeId", name)
+
+  /**
+   * Returns the failure reported when this identifier joins more parts than a calendar may read.
+   *
+   * The count is carried as an attribute beside the identifier, so a caller aggregating failures
+   * can act on the number without reading the message. The identifier itself reaches both the
+   * message and the attribute as it stands, for the reason [[partNotFound]] gives: the name
+   * arrived from outside this library and the caller correcting it needs the whole of it, while
+   * bounding and neutralising what it may hold belongs to the writing of a failure, which
+   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure perform
+   * for the message and for every attribute.
+   *
+   * @param count  the number of parts this identifier names
+   * @return the failure describing the identifier that cannot name a calendar
+   */
+  private def tooManyParts(count: Int): Failure =
+    Failure
+      .Invalid(
+        s"Holiday calendar '$name' joins $count calendars, but a calendar cannot read through " +
+          s"more than ${HolidayCalendar.MaxCompositeDepth}")
+      .withAttribute("id", name)
+      .withAttribute("components", count.toString)
+
+  /**
+   * The failure reported where the calendars the data supplied cannot be read together.
+   *
+   * The counterpart of [[tooManyParts]] for the depth of the resolved calendars rather than the
+   * width of the name: the name may join two parts and still describe something too deep, if
+   * the data maps a part to a composite that is already as deep as a calendar may be. The part
+   * whose calendar carried the combination over the limit is named, since that is the entry of
+   * the caller's reference data to look at.
+   *
+   * @param component  the part whose calendar cannot be read together with the ones before it
+   * @param depth  the number of calendars the combination would read through
+   * @return the failure describing the refusal
+   */
+  private def tooDeepToCombine(component: HolidayCalendarId, depth: Int): Failure =
+    Failure
+      .Invalid(
+        s"Holiday calendar '$name' resolves to calendars that read through $depth calendars " +
+          s"together, but a calendar cannot read through more than " +
+          s"${HolidayCalendar.MaxCompositeDepth}")
+      .withAttribute("id", name)
+      .withAttribute("component", component.name)
+      .withAttribute("depth", depth.toString)
 }
 
 /**
@@ -400,11 +521,13 @@ sealed abstract case class HolidayCalendarId private (name: String)
  * [[of]] is the only way to obtain an identifier, and it is '''total''': every string names an
  * identifier, because the name of a calendar is not this library's to judge - an application
  * is free to hold its calendars under names of its own, and a name this library has never seen
- * is not an error until it fails to resolve. That is the behaviour of the type being ported,
- * and it is why this factory returns an identifier rather than a result. What `of` does do is
- * '''normalise''': the parts of a composite name are deduplicated and sorted, and the
- * no-holidays calendar is absorbed, so that a name and its rearrangements are one value. The
- * rules are described on [[HolidayCalendarId]].
+ * is not an error until it fails to resolve. That is why this factory answers with an
+ * identifier rather than with a result. What `of` does do is '''normalise''': the parts of a
+ * composite name are deduplicated and sorted, and the no-holidays calendar is absorbed, so
+ * that a name and its rearrangements are one value. The rules are described on
+ * [[HolidayCalendarId]]. Normalisation is where the work of reading a name lives, so it carries
+ * the two ceilings `of` documents: a name beyond them is kept whole as one opaque identifier
+ * instead of being decomposed, which bounds the work without making the factory able to fail.
  *
  * Neither `apply` nor `copy` exists, which is what keeps that normalisation inescapable: the
  * constructor of a `sealed abstract case class` is reachable only from inside this file, and
@@ -414,40 +537,80 @@ sealed abstract case class HolidayCalendarId private (name: String)
  * ===The default calendar of a currency===
  *
  * [[defaultByCurrency]] answers the calendar conventionally used for a currency, from the
- * table transcribed below. The original held that table in a configuration resource loaded
- * from the class path and offered the lookup twice - once throwing, once returning an optional
- * value; this port holds the table as code and offers the lookup once, returning an `Option`,
- * because a currency that has no conventional calendar is an ordinary answer rather than a
- * failure of the program.
+ * thirty-one-row table held as code below. It is one lookup, answering with an `Option`,
+ * because a currency for which no conventional calendar is recorded is an ordinary answer
+ * rather than a failure of the program.
  *
  * ===Instances===
  *
  * The companion declares one equality-bearing instance, one rendering, one codec and the two
- * halves of a key codec, which is the convention of this port: `Order` and `Hash` both extend
- * `Eq`, so declaring them as a single value makes it impossible for equality and ordering to
- * disagree, and there is deliberately no separate `Eq`.
+ * halves of a key codec. `Order` and `Hash` both extend `Eq`, so declaring them as a single
+ * value makes it impossible for equality and ordering to disagree, and there is deliberately
+ * no separate `Eq`.
  */
 object HolidayCalendarId {
 
   /**
    * The separator of a combined identifier, whose parts are all observed.
    *
-   * Declared as a one-character string rather than a character so that every use - the
-   * membership tests, the splitting and the joining - goes through the string methods of the
-   * standard library. A character would have to widen to an integer to reach
-   * `String.indexOf`, and this build rejects an implicit numeric widening.
+   * Held as a one-character string rather than as a character so that every use - the
+   * membership check, the splitting and the joining - goes through the string-taking methods of
+   * the standard library, which is what lets one value serve all three.
    */
   private[date] val CombineSeparator: String = "+"
 
   /**
    * The separator of a linked identifier, whose parts are observed in the alternative.
    *
-   * Declared as a one-character string for the reason given on [[CombineSeparator]].
+   * Held as a one-character string for the reason given on [[CombineSeparator]].
    */
   private[date] val LinkSeparator: String = "~"
 
-  /** The name of the identifier of the calendar that declares no holidays at all. */
+  /**
+   * The name of the calendar that declares no holidays at all, which normalisation recognises
+   * by name so that a part naming it is absorbed before it becomes an identifier.
+   */
   private val NoHolidaysName: String = "NoHolidays"
+
+  /**
+   * The combine separator as a character, for the one scan that reads characters directly.
+   *
+   * Taken from [[CombineSeparator]] rather than written again, so the two spellings of the
+   * separator cannot drift apart. Comparing two `Char`s involves no widening, which is why the
+   * reason [[CombineSeparator]] gives for being a string does not apply here.
+   */
+  private val CombineSeparatorChar: Char = CombineSeparator.charAt(0)
+
+  /** The link separator as a character, for the same scan and for the same reason. */
+  private val LinkSeparatorChar: Char = LinkSeparator.charAt(0)
+
+  /**
+   * The longest name [[of]] decomposes into the calendars it combines or links.
+   *
+   * A name is not this library's to judge - `of` is total and accepts anything - but the work it
+   * does on one is this library's to bound. Decomposing a name allocates an identifier per part,
+   * sorts them and joins them back into a normalised name, so the cost of a name is its length
+   * plus its parts times their logarithm. Both are unbounded in the text a caller supplies, and
+   * a name written to be hostile is a name written to maximise them (CWE-400/CWE-770).
+   *
+   * Sixty-five thousand five hundred and thirty-six characters is far above every composite this
+   * library or its test suite builds - the largest is a ten-thousand-character name of two
+   * thousand and one calendars, which decomposes as it always did - and above any name an
+   * application would write, a composite of every calendar this library knows being under two
+   * hundred characters.
+   */
+  private val MaxCompositeNameLength: Int = 65536
+
+  /**
+   * The most parts [[of]] decomposes a name into.
+   *
+   * The second half of the same bound: a name within the length ceiling can still be thousands
+   * of separators, and it is the number of parts that drives the allocation and the sort. Four
+   * thousand and ninety-six is above every composite in use - two thousand and one parts is the
+   * largest the test suite of this port builds, and a composite of every calendar this library
+   * knows has twenty-nine - and it is counted rather than estimated, by the scan below.
+   */
+  private val MaxCompositeParts: Int = 4096
 
   /**
    * The ordering of the parts of a composite name, from the last name to the first.
@@ -495,9 +658,24 @@ object HolidayCalendarId {
    */
   private[date] final class Composite(
       val components: NonEmptyList[HolidayCalendarId],
-      val combine: (HolidayCalendar, HolidayCalendar) => HolidayCalendar)
+      val combine: (HolidayCalendar, HolidayCalendar) => HolidayCalendar) {
 
-  //-------------------------------------------------------------------------
+    /**
+     * How many parts this identifier names.
+     *
+     * Counted once, here, because resolution reads it on every date adjustment against a
+     * composite identifier and counting a list is a walk of it. It is what
+     * [[HolidayCalendarId.resolve]] judges against
+     * [[com.opengamma.strata.basics.date.HolidayCalendar.MaxCompositeDepth]]: resolving a
+     * composite reads its parts together one after another, so the calendar it assembles reads
+     * through as many calendars as there are parts, and a name with more parts than a calendar
+     * may read through names no calendar at all.
+     *
+     * @return the number of parts of this identifier, at least two
+     */
+    val componentCount: Int = components.length
+  }
+
   /**
    * Obtains an identifier from the specified unique name.
    *
@@ -519,13 +697,38 @@ object HolidayCalendarId {
    * HolidayCalendarId.of("GBLO~NoHolidays")     // the no-holidays identifier
    * }}}
    *
+   * ===The work of decomposing a name is bounded===
+   *
+   * This factory is total and stays total: it is reached from inside `Either` and Circe
+   * decoding - a day count name is read through it, and so is the calendar of a document - so a
+   * name it could refuse would have to be refused by raising, which would put a failure outside
+   * the channel those callers read. What is bounded is therefore the '''work''', not the input:
+   * a name longer than [[MaxCompositeNameLength]] characters, or holding more than
+   * [[MaxCompositeParts]] separator-delimited parts, is kept as a simple non-composite
+   * identifier of exactly the name that was given, rather than being decomposed, sorted and
+   * rejoined. The part count is taken by one scan over the characters that allocates nothing and
+   * stops as soon as the ceiling is passed, so reading a name never costs more than reading it.
+   *
+   * The consequence is worth stating plainly, because it is a behaviour and not only a cost: an
+   * adversarially long composite name is one opaque identifier. It is not normalised, so it is
+   * equal only to itself and to an identically spelled name; it reports itself as not composite;
+   * and it resolves against reference data only if a host supplied that exact name, which for
+   * such a name means against nothing. Every composite any application writes is orders of
+   * magnitude inside both ceilings and normalises exactly as before - including the
+   * ten-thousand-character name of two thousand and one calendars that the day count grammar of
+   * this library admits, which still resolves to `GBLO+USNY` (CWE-400/CWE-770).
+   *
    * @param uniqueName  the unique name
    * @return the identifier
    */
   def of(uniqueName: String): HolidayCalendarId =
-    // The separators are tested in this order because `'+'` binds more tightly than `'~'`, so
-    // a name carrying both is a link of combinations. This is the order of the original.
-    if (uniqueName.contains(LinkSeparator)) {
+    // The separators are tested in this order because `'+'` binds more tightly than `'~'`, so a
+    // name carrying both is a link of combinations. The ceilings are tested ahead of both, since
+    // a name past either of them is not decomposed at all and the test that decides that is
+    // cheaper than the membership tests it precedes.
+    if (exceedsCompositeCeilings(uniqueName)) {
+      simple(uniqueName)
+    } else if (uniqueName.contains(LinkSeparator)) {
       val parts = normalisedParts(uniqueName, LinkSeparator, dropNoHolidays = false)
       // linking a calendar that has no holidays makes every day a business day
       if (parts.contains(NoHolidaysId)) {
@@ -543,29 +746,26 @@ object HolidayCalendarId {
   /**
    * Checks whether an identifier names more than one calendar.
    *
-   * This is the name the original gave the test, kept so that call sites read unchanged; it is
-   * [[HolidayCalendarId.isComposite]] on the identifier itself.
+   * The same question as [[HolidayCalendarId.isComposite]], asked of an identifier held as an
+   * argument, and answered by it.
    *
    * @param id  the holiday calendar identifier
    * @return true if the identifier combines or links two or more calendars
    */
   def isCompositeCalendar(id: HolidayCalendarId): Boolean = id.isComposite
 
-  //-------------------------------------------------------------------------
   /**
    * Finds the calendar conventionally used for a currency.
    *
    * The answer is the market convention - the calendar of the centre a payment in that
    * currency settles in - and it is a convention rather than a rule, which is why an
    * application is free to disregard it. Thirteen of the identifiers this table can produce
-   * name calendars whose holidays this library does not ship; those identifiers are returned
-   * all the same, exactly as the original returned them, and they fail to resolve against
-   * `ReferenceData.standard` just as they did there.
+   * name calendars whose holidays this library does not ship; the lookup answers with them all
+   * the same, and they do not resolve against `ReferenceData.standard`, so a caller that wants
+   * those holidays supplies reference data holding them.
    *
-   * The original offered this lookup twice, throwing where no convention was recorded and
-   * returning an optional value from a second method of a different name. The two are merged
-   * here into one total lookup: a currency without a conventional calendar is an ordinary
-   * answer of `None`.
+   * The lookup is total: a currency for which no conventional calendar is recorded is an
+   * ordinary answer of `None`.
    *
    * {{{
    * HolidayCalendarId.defaultByCurrency(Currency.GBP)   // Some(GBLO)
@@ -584,9 +784,8 @@ object HolidayCalendarId {
    * The conventional calendars of the two currencies are combined, so that a day is a business
    * day for the pair only where it is a business day for both. A currency for which no
    * convention is recorded contributes nothing, and where neither currency has one the result
-   * is the no-holidays identifier - the identity of combination - so this lookup, unlike
-   * [[defaultByCurrency]], always answers with an identifier. Both behaviours are those of the
-   * original, which folded the same combination over the same starting value.
+   * is the no-holidays identifier - the identity of combination - so this lookup always answers
+   * with an identifier, where [[defaultByCurrency]] may answer with nothing.
    *
    * @param currencyPair  the currency pair to find the defaults for
    * @return the identifier of the calendar conventionally used for the pair
@@ -597,14 +796,11 @@ object HolidayCalendarId {
       .foldLeft(NoHolidaysId)((combined, calendarId) => combined.combinedWith(calendarId))
 
   /**
-   * The calendar conventionally used for each currency, as code rather than as configuration.
+   * The calendar conventionally used for each currency, held as code.
    *
-   * These are the thirty-one rows the original loaded from its holiday-calendar default data,
-   * in the order that source lists them, and the reference data manifest of this port checks
-   * them row for row against the values captured from it. Reading them from the class path is
-   * not ported: the table is part of the behaviour of this library rather than something an
-   * application is invited to replace, and holding it here means a lookup cannot depend on
-   * what happens to be on the class path.
+   * These are thirty-one rows, and they are part of the behaviour of this library rather than
+   * something an application is invited to replace: holding them here means a lookup depends on
+   * nothing outside this file.
    *
    * The eighteen identifiers that also exist as constants of [[HolidayCalendarIds]] are
    * written as those constants, so that a mistyped code is a compile error rather than a row
@@ -633,8 +829,8 @@ object HolidayCalendarId {
       Currency.PLN -> HolidayCalendarIds.PLWA,
       Currency.SEK -> HolidayCalendarIds.SEST,
       Currency.ZAR -> HolidayCalendarIds.ZAJO,
-      // the calendars named below are not shipped with this library, in the port as in the
-      // original; these identifiers resolve only against reference data that supplies them
+      // the calendars named below are not shipped with this library; these identifiers resolve
+      // only against reference data that supplies them
       Currency.CLP -> of("CLSA"),
       Currency.CNY -> of("CNBE"),
       Currency.COP -> of("COBO"),
@@ -650,7 +846,6 @@ object HolidayCalendarId {
       Currency.TRY -> of("TRIS"),
       Currency.TWD -> of("TWTA"))
 
-  //-------------------------------------------------------------------------
   /**
    * Builds an identifier that names a single calendar.
    *
@@ -661,16 +856,12 @@ object HolidayCalendarId {
    * @param uniqueName  the name of the calendar
    * @return the simple identifier of that name
    */
-  private def simple(uniqueName: String): HolidayCalendarId =
-    new HolidayCalendarId(uniqueName) {
-      private[date] val composite: Option[Composite] = None
-    }
+  private def simple(uniqueName: String): HolidayCalendarId = new Impl(uniqueName, None)
 
   /**
    * Builds an identifier from the normalised parts of a composite name.
    *
-   * The three cases are the three outcomes normalisation can have, and each is the value the
-   * original produced for it:
+   * The three cases are the three outcomes normalisation can have:
    *
    *   - '''no parts''' - every part named the no-holidays calendar - is that calendar's
    *     identifier, which is what combining or linking it with itself yields;
@@ -697,10 +888,75 @@ object HolidayCalendarId {
         // answered, is never empty, so it becomes the tail of the component list as it stands
         val components = NonEmptyList(first, rest)
         val structure = new Composite(components, combine)
-        new HolidayCalendarId(parts.iterator.map(part => part.name).mkString(separator)) {
-          private[date] val composite: Option[Composite] = Some(structure)
-        }
+        new Impl(parts.iterator.map(part => part.name).mkString(separator), Some(structure))
     }
+
+  /**
+   * Whether a name is too large for [[of]] to decompose it.
+   *
+   * Two ceilings, tested in the order that costs least: the length, which is a field read, and
+   * then the number of parts, which is one walk over the characters. A name past either is kept
+   * whole, for the reasons and with the consequences set out on `of`.
+   *
+   * The part count is the number of separators of either kind plus one, and either kind counts
+   * because a linked name is decomposed into its links and each of those into its combinations,
+   * so the total work of a name is driven by all of its separators together. The walk carries
+   * its position and its running count as parameters - no mutable state, and nothing allocated -
+   * compiles to a jump, and stops the moment the count reaches the ceiling, so a name written to
+   * hold a million separators is abandoned after the first few thousand.
+   *
+   * @param uniqueName  the name to measure
+   * @return true if the name is to be kept whole rather than decomposed
+   */
+  private def exceedsCompositeCeilings(uniqueName: String): Boolean =
+    uniqueName.length > MaxCompositeNameLength || exceedsPartCeiling(uniqueName, 0, 0)
+
+  /**
+   * Whether the name holds more separators than a decomposable name may.
+   *
+   * A name of `n` separators has `n + 1` parts, so more than [[MaxCompositeParts]] parts is
+   * [[MaxCompositeParts]] separators or more, which is the comparison made here.
+   *
+   * @param uniqueName  the name being measured
+   * @param index  the index to continue at
+   * @param separators  the separators counted so far
+   * @return true if the name holds at least [[MaxCompositeParts]] separators
+   */
+  @tailrec
+  private def exceedsPartCeiling(uniqueName: String, index: Int, separators: Int): Boolean =
+    if (separators >= MaxCompositeParts) {
+      true
+    } else if (index >= uniqueName.length) {
+      false
+    } else {
+      val character = uniqueName.charAt(index)
+      val counted =
+        if (character == CombineSeparatorChar || character == LinkSeparatorChar) separators + 1
+        else separators
+      exceedsPartCeiling(uniqueName, index + 1, counted)
+    }
+
+  /**
+   * The one implementation of an identifier.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at each instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[HolidayCalendarId]] refuse in its own constructor to be any other implementation.
+   *
+   * One class serves both the simple and the composite identifier, the structure being a
+   * constructor `val` that is empty for the former - which is what lets that refusal name a
+   * single class rather than admit a set of them. The structure stays off the single case element
+   * of the type and therefore out of its equality, exactly as it did when each site supplied it
+   * in an anonymous body.
+   *
+   * @param name  the normalised unique name of the identifier
+   * @param composite  the parts of a composite identifier, or empty where it is simple
+   */
+  private final class Impl(name: String, private[date] val composite: Option[Composite])
+      extends HolidayCalendarId(name)
 
   /**
    * Splits a composite name around a separator and normalises the parts it names.
@@ -708,23 +964,21 @@ object HolidayCalendarId {
    * Each part becomes an identifier in its own right - which is what makes a part of a linked
    * name able to be a combination - and the parts are deduplicated and ordered by name. Sorting
    * is what makes the name of a composite independent of the order it was written in, and
-   * deduplicating is what makes `GBLO+GBLO` the simple `GBLO`. Both steps are those of the
-   * original, and so is the splitting: a library split would be driven by a regular expression,
-   * in which both separators of this type are metacharacters, and would discard a trailing empty
-   * part, which the splitter used by the original kept.
+   * deduplicating is what makes `GBLO+GBLO` the simple `GBLO`. The splitting is written here
+   * rather than taken from the standard library: a library split is driven by a regular
+   * expression, in which both separators of this type are metacharacters, and it discards a
+   * trailing empty part, where this walk keeps it, so `GBLO+` names two parts of which one has
+   * an empty name.
    *
    * The name is walked once, each part being read and turned into an identifier as it is
-   * reached; the walk carries its position and its result as parameters, so it needs no mutable
-   * state and compiles to a jump. The parts are then sorted with the one shared comparison of
-   * [[byNameDescending]] and walked once more to drop the duplicates, which a sorted list puts
-   * next to each other. What this replaced built a list of part names, a second list of
-   * identifiers, a hash set to deduplicate them, a comparison function, an array to sort and a
-   * third list for the sorted result. Three of those have no counterpart here: a part becomes
-   * an identifier as it is read rather than through an intermediate list of names, duplicates
-   * are dropped by adjacency in the sorted list rather than through a set, and the comparison
-   * is the shared one named above rather than one built for the call. Sorting keeps the work of
-   * a name of any length proportional to its parts times their logarithm, never their square,
-   * so a name written to be hostile is no more than long.
+   * reached; the walk carries its position and its result as parameters, so it holds no mutable
+   * state and recurses in constant stack space. The parts are then sorted with the one shared
+   * comparison of [[byNameDescending]] and walked once more to drop the duplicates, which a
+   * sorted list puts next to each other. A part therefore becomes an identifier as it is read
+   * rather than through an intermediate list of names, duplicates are dropped by adjacency
+   * rather than through a set, and no comparison function is built for the call. Sorting keeps
+   * the work of a name of any length proportional to its parts times their logarithm, never
+   * their square, so a name written to be hostile is no more than long.
    *
    * @param uniqueName  the composite name, as it was written
    * @param separator  the separator to split around
@@ -743,7 +997,7 @@ object HolidayCalendarId {
       val end = if (index < 0) uniqueName.length else index
       val partName = uniqueName.substring(from, end)
       // in a combination the no-holidays calendar removes nothing and so is dropped by name,
-      // before the parts become identifiers, exactly as the original dropped it
+      // before the parts become identifiers
       val next = if (dropNoHolidays && partName == NoHolidaysName) found else of(partName) :: found
       if (index < 0) next else parts(end + separator.length, next)
     }
@@ -759,7 +1013,7 @@ object HolidayCalendarId {
    * an ascending result, which is the order a composite name is written in.
    *
    * @param remaining  the parts still to consider, sorted from the last name to the first
-   * @param kept  the distinct parts found so far, in ascending order
+   * @param kept  the distinct parts already kept, in ascending order
    * @return the distinct parts, in ascending order
    */
   @tailrec
@@ -777,7 +1031,56 @@ object HolidayCalendarId {
         distinctAscending(rest, next)
     }
 
-  //-------------------------------------------------------------------------
+  /**
+   * Whether a name is the name of a composite, which is to say that it carries a separator.
+   *
+   * Used by the invariant an identifier states in its own constructor to tell the two shapes of
+   * name apart, in the direction [[of]] tells them apart in: a name holding either separator is
+   * split and normalised, and a name holding neither is a simple identifier's own.
+   *
+   * @param uniqueName  the name to test
+   * @return true where the name names more than one calendar
+   */
+  private def carriesSeparator(uniqueName: String): Boolean =
+    uniqueName.contains(LinkSeparator) || uniqueName.contains(CombineSeparator)
+
+  /**
+   * The separator that joins the parts of a composite name.
+   *
+   * The order of the two tests is the order [[of]] applies them in, and for the same reason:
+   * `'+'` binds more tightly than `'~'`, so a name carrying both is a link of combinations and
+   * its own separator is the link. The parts of a link are therefore allowed to carry `'+'`,
+   * while no part of either carries `'~'`, which is what makes this reading of a name unambiguous.
+   *
+   * @param uniqueName  the composite name
+   * @return the separator its parts are joined by
+   */
+  private def separatorOf(uniqueName: String): String =
+    if (uniqueName.contains(LinkSeparator)) LinkSeparator else CombineSeparator
+
+  /**
+   * Whether parts are in the strictly ascending order of names that normalisation leaves them in.
+   *
+   * Strictly, because [[distinctAscending]] both sorts and deduplicates: a part equal to the one
+   * before it is one normalisation would have dropped. The comparison is the name's, which is the
+   * comparison [[byNameDescending]] sorts by and the one [[order]] publishes, so the three cannot
+   * disagree about a pair of parts.
+   *
+   * Written as a walk of adjacent pairs rather than by sorting a copy, because it is checked by
+   * the invariant of every composite identifier as it is constructed and a composite is built on
+   * the path of a date adjustment.
+   *
+   * @param parts  the parts of a composite identifier, in the order it holds them
+   * @return true where each part's name precedes the next part's name
+   */
+  @tailrec
+  private def ascendingByName(parts: List[HolidayCalendarId]): Boolean =
+    parts match {
+      case first :: (rest @ next :: _) =>
+        first.name.compareTo(next.name) < 0 && ascendingByName(rest)
+      case _ => true
+    }
+
   /**
    * The ordering of holiday calendar identifiers, which is also their hashing and equality.
    *
@@ -787,12 +1090,11 @@ object HolidayCalendarId {
    *
    * All three are the name. Equality and hashing are those of the value itself: its equality
    * is the name alone, since that is the only element the case class carries, and its hash is
-   * the one [[HolidayCalendarId.hashCode]] holds, which is the name's - the equality of the
-   * original, which compared names and hashed the name. Ordering is the ordering of the names,
-   * which agrees with that equality exactly: two identifiers compare equal precisely when
-   * their names are equal, and that is precisely when they are equal. The effect is that a
-   * sorted collection of identifiers reads alphabetically, and that the parts of a composite
-   * name are in the order this instance would put them in.
+   * the one [[HolidayCalendarId.hashCode]] holds, which is the name's. Ordering is the ordering
+   * of the names, which agrees with that equality exactly: two identifiers compare equal
+   * precisely when their names are equal, and that is precisely when they are equal. The effect
+   * is that a sorted collection of identifiers reads alphabetically, and that the parts of a
+   * composite name are in the order this instance would put them in.
    *
    * @return the ordering, hashing and equality of holiday calendar identifiers
    */
@@ -810,28 +1112,33 @@ object HolidayCalendarId {
     }
 
   /**
-   * The text rendering of a holiday calendar identifier, which is its name.
+   * The text rendering of a holiday calendar identifier, which is its text form.
    *
-   * This is the text the original produced through its own string conversion, so a rendered
-   * identifier is the text [[of]] reads back.
+   * Taken from [[HolidayCalendarId.toString]] rather than written again here, so that the two
+   * cannot drift apart: an identifier reaches a reader the same way whether it is rendered
+   * through this instance or interpolated into a string, and the bound and the escaping
+   * described on that method therefore hold of both. For every identifier of a realistic shape
+   * the rendering is the identifier's name, character for character, and it is the text [[of]]
+   * reads back.
    *
    * @return the rendering of holiday calendar identifiers
    */
-  implicit val show: Show[HolidayCalendarId] = Show.show(calendarId => calendarId.name)
+  implicit val show: Show[HolidayCalendarId] = Show.fromToString[HolidayCalendarId]
 
   /**
    * The JSON codec for holiday calendar identifiers.
    *
    * An identifier is written as the bare string of its name, so a document holds
-   * `"GBLO+USNY"` rather than an object, and the text is identical to the one the library
-   * being ported wrote. Reading goes through [[of]], which accepts any name, so a document
-   * naming a calendar this library does not know about is read - and fails, if at all, when it
-   * is resolved, which is where a missing calendar belongs.
+   * `"GBLO+USNY"` rather than an object. Reading goes through [[of]], which accepts any name,
+   * so a document naming a calendar this library does not know about is read - and fails, if at
+   * all, when it is resolved, which is where a missing calendar belongs.
    *
    * Because a name is normalised when it is read and the encoded form is the name, two
    * identifiers built from differently ordered composites - `USNY+GBLO` and `GBLO+USNY` -
-   * encode to identical bytes, which is the stability the round-trip tests of this port
-   * require.
+   * encode to identical bytes: the JSON form follows the identifier and not the way its name was
+   * written. A name past the ceilings `of` describes is read as the one opaque identifier of that
+   * name, so it still decodes, still encodes to the bytes it arrived as and still refuses nothing
+   * on this path - the decoder needs no check of its own because `of` has no failure to report.
    *
    * @return the codec for holiday calendar identifiers
    */
@@ -878,17 +1185,14 @@ object HolidayCalendarId {
  * rather than from a vendor of calendar data, so it may or may not be sufficient for
  * production use; an application that needs its own holidays supplies its own `ReferenceData`,
  * mapping these same identifiers - or identifiers of its own - to whatever calendars it
- * trusts. The second route the original offered, amending the standard data by editing a
- * configuration resource on the class path, is not ported: the built-in calendars are code
- * here, so there is no resource to amend.
+ * trusts.
  *
- * The names carried by these constants are those of the library being ported -
- * `HolidayCalendarIds.GBLO`, `HolidayCalendarIds.SAT_SUN` - so that call sites, stored data
- * and documentation read the same way after the migration. So is the membership of the set:
- * these are the twenty-nine identifiers the original published, and no identifier has been
- * added. In particular there is deliberately no constant for the Wellington anniversary
- * calendar `NZBD`, which the original generated but never named here; `HolidayCalendarId.of`
- * builds that identifier, and any other, for a caller that wants it.
+ * Twenty-nine identifiers are published here, being those of the calendars in common use
+ * rather than the whole space of identifiers: `HolidayCalendarId.of` builds any other name a
+ * caller needs. The built-in calendars are not limited to these twenty-nine either - the New
+ * Zealand bank calendar `NZBD` is one of them and deliberately carries no constant here - so
+ * `HolidayCalendarId.of("NZBD")` names a calendar `ReferenceData.standard` supplies all the
+ * same.
  *
  * @see [[HolidayCalendarId]] for what an identifier is and how composites of them are named
  */
@@ -898,8 +1202,8 @@ object HolidayCalendarIds {
    * An identifier for a calendar declaring no holidays and no weekends, with code
    * 'NoHolidays'.
    *
-   * This calendar has the effect of making every day a business day. It is often used to
-   * indicate that a holiday calendar does not apply, and it is the identity of
+   * This calendar has the effect of making every day a business day. It is the usual way of
+   * indicating that a holiday calendar does not apply, and it is the identity of
    * `HolidayCalendarId.combinedWith`.
    */
   val NO_HOLIDAYS: HolidayCalendarId = HolidayCalendarId.NoHolidaysId

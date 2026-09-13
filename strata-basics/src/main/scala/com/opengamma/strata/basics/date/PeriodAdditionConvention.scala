@@ -16,7 +16,9 @@ import cats.data.NonEmptyList
 
 import _root_.io.circe.Codec
 
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
@@ -57,8 +59,8 @@ import com.opengamma.strata.collect.result.Failure
  *
  * A holiday calendar is passed to every convention even though only the last of the three
  * consults it, because a caller chooses the convention from data and cannot know in advance
- * which one it will hold. The unused argument is deliberate and matches the original
- * interface.
+ * which one it will hold. The argument the first two conventions leave unread is therefore
+ * deliberate.
  *
  * ===Month-based periods===
  *
@@ -74,33 +76,27 @@ import com.opengamma.strata.collect.result.Failure
  * The three conventions declared in the companion of this class are the whole family. The
  * class is `sealed`, its constructor is visible only inside this package, and each convention
  * exists exactly once as a value in the companion, so no further convention can come into
- * being - not by subclassing from another file, and not by registering one while the program
- * runs. That replaces the run-time registry of the type being ported, which assembled the
- * family by reading a configuration resource from the class path and invited callers to add
- * their own implementations: the members are now fixed when this file is compiled, a match
- * over them is checked for exhaustiveness by the compiler, and text that names no member is
- * rejected by `parse` as a value rather than discovered as a missing resource.
+ * being - not by subclassing from another file, and not by introducing one while the program
+ * runs. The members are fixed in this file, so a match over the family is exhaustive once it
+ * covers the three, and text that names no member is rejected by `parse` as a value.
  *
  * ===Names, and the identifiers that carry them===
  *
  * The name of a convention - `None`, `LastDay`, `LastBusinessDay` - is its identity in text
- * and in JSON, and it is unchanged from the original, so a stored document or a test
- * expectation written before this port resolves to the same convention after it. The Scala
- * identifiers of the members are the identifiers the original constants holder used, which is
- * why the first member is reached as `NONE` rather than as `None`: `None` is already the empty
- * `Option` of the standard library, and a member of that name in this companion would shadow
- * it for every file that imported it. The name string, not the identifier, is the contract
- * here, and `PeriodAdditionConventions.NONE.name` is `"None"` exactly as the original's was.
+ * and in JSON. The first member is reached through the identifier `NONE` rather than `None`,
+ * because `None` is already the empty `Option` of the standard library and a member of that
+ * name in this companion would shadow it for every file that imported it. The name string,
+ * not the identifier, is the contract here: `PeriodAdditionConventions.NONE.name` is
+ * `"None"`.
  *
  * ===Failure===
  *
- * Adding a period cannot fail on the data it is given, so `adjust` is total in its signature,
- * as it was in the original. The one error it can propagate belongs to the holiday calendar
- * rather than to this type: asking a dated calendar about a year it does not cover is a broken
- * precondition of the call, and the calendar reports it by raising, which is the behaviour this
- * port keeps. Resolving a name is the other direction - text arrives as data, so `parse`
- * returns the failure instead of raising it, where the original raised an error from its
- * `of(String)` factory.
+ * Adding a period cannot fail on the data it is given, so `adjust` is total in its signature.
+ * The one error it can propagate belongs to the holiday calendar rather than to this type:
+ * asking a calendar about a date whose year lies outside 0 to 9999 is a broken precondition of
+ * the call, and the calendar raises `IllegalArgumentException` for it. Resolving a name is the
+ * other direction - text arrives as data, so `parse` reports an unrecognised name as a failure
+ * value.
  *
  * ===Thread safety===
  *
@@ -110,19 +106,26 @@ import com.opengamma.strata.collect.result.Failure
  *
  * @param name  the unique name of the convention, as it appears in text and in JSON
  */
-sealed abstract class PeriodAdditionConvention private[date] (val name: String) extends Named {
+sealed abstract class PeriodAdditionConvention private[date] (val name: String)
+    extends Named
+    with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to the package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be a fourth convention, outside the
+  // three this type publishes - is refused here instead.
+  JvmClosure.requireDeclaredMember(this, classOf[PeriodAdditionConvention])
 
   /**
    * Returns the name of this convention, which is how a convention renders as text.
    *
-   * This is the representation the type being ported produced and the representation `parse`
-   * reads back, so a name written by the original resolves to the same convention here.
+   * This is the representation `parse` reads back, so a rendered name resolves to the
+   * convention it was rendered from.
    *
    * @return the unique name of this convention
    */
   override def toString: String = name
 
-  //-------------------------------------------------------------------------
   /**
    * Adjusts the base date, adding the period and applying the convention rule.
    *
@@ -140,7 +143,7 @@ sealed abstract class PeriodAdditionConvention private[date] (val name: String) 
    *   depends on which days are business days
    * @return the adjusted date
    * @throws IllegalArgumentException where the rule of this convention consults the calendar
-   *   about a date outside the range that calendar supports
+   *   about a date whose year lies outside 0 to 9999
    */
   def adjust(baseDate: LocalDate, period: Period, calendar: HolidayCalendar): LocalDate
 
@@ -160,9 +163,8 @@ sealed abstract class PeriodAdditionConvention private[date] (val name: String) 
  * The three period addition conventions, and the lookup from a name to one of them.
  *
  * The members are declared here and nowhere else, which is what closes the family. Each is
- * published again by [[PeriodAdditionConventions]] under the identifier the original constants
- * holder used, so a call site may reach a convention through either object and obtain the same
- * value.
+ * published again by [[PeriodAdditionConventions]], so a call site may reach a convention
+ * through either object and obtain the same value.
  */
 object PeriodAdditionConvention {
 
@@ -217,8 +219,8 @@ object PeriodAdditionConvention {
    * the last business day of the month if the base date is the last business day of the month.
    * The business day adjustment is applied to produce the final result.
    *
-   * For example, adding a period of 1 month to June 29th will result in July 31st assuming
-   * that June 30th is not a valid business day and July 31st is.
+   * For example, adding a period of 1 month to June 29th results in July 31st where June
+   * 30th is not a valid business day and July 31st is.
    *
    * This is the one convention that consults the calendar it is given, on both sides of its
    * rule: the calendar decides whether the base date is the last business day of its month,
@@ -238,15 +240,13 @@ object PeriodAdditionConvention {
     override def isMonthBased: Boolean = true
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The complete set of period addition conventions, in declaration order.
    *
-   * The order is the declaration order of the enum being ported, which is the order the
-   * configuration resource of the original listed and the order a report over the family
-   * follows. It is not the order the `Order` instance below imposes, which is alphabetical by
-   * name. The list is non-empty by construction, which is what lets every operation over the
-   * family be written without a case for a family that has no members.
+   * The order is the order the members are declared above, which is the order a report over
+   * the family follows. It is not the order the `Order` instance below imposes, which is
+   * alphabetical by name. The list is non-empty by construction, which is what lets every
+   * operation over the family be written without a case for a family that has no members.
    *
    * @return the three conventions, in declaration order
    */
@@ -260,23 +260,21 @@ object PeriodAdditionConvention {
   /**
    * The lenient rewrites of the family, in the order they are applied.
    *
-   * These three rows are the lenient patterns the configuration of the type being ported
-   * declared, transcribed in the order that configuration listed them. Each expression is
+   * These three rows are the whole of the leniency this family declares. Each expression is
    * matched against the whole of the text, after the text has been folded to upper case, and
-   * the row that matches replaces it with a canonical name that is then looked up. They exist
-   * so that the identifier of a constant is accepted wherever the canonical name is - the
-   * original registered `LAST_BUSINESS_DAY` nowhere, yet accepted it leniently - and, because
-   * the fold to upper case happens first, they accept every spelling of those identifiers
-   * whatever its case.
+   * the row that matches rewrites it to a canonical name that is then looked up. They exist
+   * so that the identifier of a constant - `NONE`, `LAST_DAY`, `LAST_BUSINESS_DAY` - is
+   * accepted wherever the canonical name is and, because the fold to upper case happens
+   * first, they accept every spelling of those identifiers whatever its case.
    *
    * The rows are disjoint in practice: an expression matches only the whole of the text, so
    * `LAST_DAY` cannot claim `LAST_BUSINESS_DAY`, and a replacement produced by one row matches
    * none of the rows after it. The chain therefore performs at most one rewrite, whichever
    * order a future row is added in.
    *
-   * The rows are the source of each expression rather than a compiled expression, and are handed
-   * to the name lookup in that form, which compiles each of them once - insensitively to case,
-   * and only when this family first parses a name.
+   * The rows carry the source text of each expression rather than a built expression, and are
+   * handed to the name lookup in that form, which builds each of them once - insensitively to
+   * case, and only when this family first parses a name.
    */
   private val LenientSources: List[(String, String)] =
     List(
@@ -290,11 +288,10 @@ object PeriodAdditionConvention {
    *
    * This instance is the single route from text to a convention, and it is built from `values`
    * and `LenientSources` alone. Of the three tables a named family may declare, this family
-   * declares only the lenient rewrites, because the configuration of the type being ported
-   * declared only those: it named no alternate spelling of any convention and no group of
-   * names published for an external protocol. The whole name space of the family is therefore
-   * its three canonical names, those names folded to upper case, and whatever the three
-   * rewrites reach.
+   * declares only the lenient rewrites: it names no alternate spelling of any convention and
+   * no group of names published for an external protocol. The whole name space of the family
+   * is therefore its three canonical names, those names folded to upper case, and whatever the
+   * three rewrites reach.
    *
    * @return the name lookup for the three conventions
    */
@@ -311,8 +308,7 @@ object PeriodAdditionConvention {
    *
    * The match is exact: the canonical names as they are declared, and those names folded to
    * upper case. No lenient rewrite is applied, so the identifier of a constant does not
-   * resolve here even though `parse` accepts it. This is the lookup the `of(String)` factory
-   * of the original performed, with an absent value in place of the error it raised:
+   * resolve here even though `parse` accepts it:
    *
    * {{{
    * valueOf("LastDay")   // Some(LAST_DAY) - the canonical name
@@ -341,17 +337,16 @@ object PeriodAdditionConvention {
    * parse("Last Business Day")   // Left - never a name of this family
    * }}}
    *
-   * Where the type being ported signalled an unrecognised name by raising an error, this
-   * method reports it as a value: the result is `Left` of a chain holding one [[Failure]] whose
-   * reason is `PARSING` and whose message names both this family and the text that could not be
-   * resolved.
+   * Text that neither the exact lookup nor a rewrite resolves is reported as a value rather
+   * than raised: the result is `Left` of a chain holding one parsing [[Failure]], which names
+   * both this family and the text that could not be resolved.
    *
    * @param name  the text to parse
-   * @return the convention the text names, or the failure describing why it names none
+   * @return the convention the text names, or the failure naming this family and text that
+   *   matches none of its three canonical names, upper-cased or rewritten
    */
   def parse(name: String): EitherNec[Failure, PeriodAdditionConvention] = namedEnum.parse(name)
 
-  //-------------------------------------------------------------------------
   /**
    * The ordering and hashing of conventions.
    *
@@ -380,14 +375,12 @@ object PeriodAdditionConvention {
    * The JSON codec for conventions.
    *
    * A convention is written as the bare string of its canonical name - `"LastBusinessDay"` -
-   * and never as an object, which is the single-string form the type being ported wrote through
-   * its string conversion, so a document written before this port reads back here as the same
-   * convention. Being a `Codec`, this single instance serves as the encoder and as the decoder,
-   * so the two halves cannot drift apart. Decoding goes through `parse`, so a document is
-   * accepted whatever the case of the name it holds and whichever of the family's spellings it
-   * uses, and text resolving to no convention is reported as a decoding failure rather than
-   * raised. The codec is built at compile time from the `namedEnum` instance above and inspects
-   * no type while the program runs.
+   * and never as an object. Being a `Codec`, this single instance serves as the encoder and as
+   * the decoder, so the two halves cannot drift apart. Decoding goes through `parse`, so a
+   * document is accepted whatever the case of the name it holds and whichever of the family's
+   * spellings it uses, and text resolving to no convention is reported as a decoding failure
+   * rather than raised. The codec is built from the `namedEnum` instance above and inspects no
+   * type while the program runs.
    *
    * @return the codec reading and writing a convention as its canonical name
    */
@@ -401,10 +394,10 @@ object PeriodAdditionConvention {
  * default implementations include two different end-of-month rules. The convention is generally
  * only applicable for month-based periods.
  *
- * Every constant here is one of the members of [[PeriodAdditionConvention]], exposed under the
- * identifier the original constants holder gave it so that call sites reading
- * `PeriodAdditionConventions.LAST_DAY` port across unchanged. The values are the same objects,
- * so a constant taken from here and the matching member of the companion are indistinguishable.
+ * Every constant here is one of the members of [[PeriodAdditionConvention]], published under
+ * the identifier a call site reads it by - `PeriodAdditionConventions.LAST_DAY`. The values are
+ * the same objects, so a constant taken from here and the matching member of the companion are
+ * indistinguishable.
  */
 object PeriodAdditionConventions {
 
@@ -437,8 +430,8 @@ object PeriodAdditionConventions {
    * the last business day of the month if the base date is the last business day of the month.
    * The business day adjustment is applied to produce the final result.
    *
-   * For example, adding a period of 1 month to June 29th will result in July 31st assuming
-   * that June 30th is not a valid business day and July 31st is.
+   * For example, adding a period of 1 month to June 29th results in July 31st where June
+   * 30th is not a valid business day and July 31st is.
    */
   val LAST_BUSINESS_DAY: PeriodAdditionConvention = PeriodAdditionConvention.LAST_BUSINESS_DAY
 }

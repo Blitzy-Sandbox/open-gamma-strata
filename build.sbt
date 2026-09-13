@@ -1,17 +1,3 @@
-// ---------------------------------------------------------------------------
-// Scala port of the OpenGamma Strata `strata-collect` / `strata-basics`
-// modules. Exactly two sbt projects exist in this build:
-//
-//   strata-collect  -> strata-collect/  (the ported subset of Java collect)
-//   strata-basics   -> the ROOT project, with its source roots relocated
-//                      into strata-basics/ so the layout stays symmetrical
-//
-// sbt always materialises a project rooted at the build root, so making
-// `strata-basics` that project is the only way to end up with exactly the
-// two project ids. The Maven tree under modules/** is untouched and is never
-// referenced by this build.
-// ---------------------------------------------------------------------------
-
 ThisBuild / scalaVersion := "2.13.18"
 ThisBuild / organization := "com.opengamma.strata"
 ThisBuild / version := "2.12.74-SNAPSHOT"
@@ -45,13 +31,6 @@ lazy val scalaTestPlusVersion = "3.2.20.0"
 lazy val catsEffectTestingVersion = "1.8.0"
 lazy val disciplineScalaTestVersion = "2.3.0"
 
-// Settings shared by both projects. The compiler option list is defined here,
-// once, and applied unscoped so that it governs Compile, Test and the REPL
-// alike. `-release 21` pins the bytecode level to JVM 21 (class-file major
-// version 65) while also checking the sources against the JDK 21 API, and the
-// final option promotes every remaining warning to an error, so the build is
-// warning-clean by construction. No warning is filtered or silenced anywhere
-// in this build, and no option below is ever scoped away.
 lazy val commonSettings = Seq(
   scalacOptions ++= Seq(
     "-release",
@@ -92,10 +71,6 @@ lazy val commonSettings = Seq(
   // its default, so test fixtures and manifests are still copied as before.
   Compile / unmanagedSources / includeFilter := "*.scala",
   Test / unmanagedSources / includeFilter := "*.scala",
-  // Tests run in a forked JVM, so both output locations below are absolute and
-  // anchored at the build root rather than at a project base directory: the two
-  // projects have different base directories, and the parity harness plus the
-  // gate script expect all reports under <build root>/target.
   Test / fork := true,
   Test / javaOptions ++= Seq(
     s"-Dparity.report.dir=${parityReportDirectory((ThisBuild / baseDirectory).value).getAbsolutePath}"
@@ -117,6 +92,10 @@ lazy val `strata-collect` = Project("strata-collect", file("strata-collect"))
   .settings(name := "strata-collect")
   .settings(commonSettings)
 
+// sbt materialises a project rooted at the build root whether or not one is
+// declared, so `strata-basics` has to BE that project: it takes `file(".")` as
+// its base and relocates its source roots, below.
+//
 // `aggregate` makes a single `sbt test` at the build root run both projects'
 // suites; the "compile->compile;test->test" edge gives strata-basics both the
 // main classes and the test-scope helpers (testkit, generators) of
@@ -147,15 +126,23 @@ lazy val `strata-basics` = Project("strata-basics", file("."))
       parityReportDirectory((ThisBuild / baseDirectory).value),
       testReportDirectory((ThisBuild / baseDirectory).value)
     ),
-    // `sbt "strata-basics/run"` launches the demo without prompting. The demo
-    // is an IOApp, so it runs in its own JVM: that gives it the main thread and
-    // therefore the ordinary cats-effect shutdown and resource-cleanup path.
     Compile / mainClass := Some("com.opengamma.strata.basics.demo.BasicsDemoApp"),
+    // Fork the demo so cats-effect owns the process lifecycle: the IOApp gets
+    // its own main thread, shutdown hook and cancellation path.
     Compile / run / fork := true,
     // Law-checking libraries: only this project hosts the typeclass law suite,
     // so they stay off the strata-collect classpath.
+    //
+    // The invariant: exactly one ScalaTest/ScalaCheck adapter on this test
+    // classpath, the `scalacheck-1-20` one above that matches the resolved
+    // ScalaCheck. discipline-scalatest declares `scalacheck-1-18` instead - a
+    // different artifact id, so nothing evicts it, and the two publish the same
+    // class names with a byte-different `CheckerAsserting`. The exclusion is safe
+    // because discipline-scalatest reaches the adapter only through `Checkers`,
+    // identical in both; Gate 2's duplicate-class audit keeps it that way.
     libraryDependencies ++= Seq(
       "org.typelevel" %% "cats-laws" % catsVersion % Test,
-      "org.typelevel" %% "discipline-scalatest" % disciplineScalaTestVersion % Test
+      ("org.typelevel" %% "discipline-scalatest" % disciplineScalaTestVersion % Test)
+        .exclude("org.scalatestplus", "scalacheck-1-18_2.13")
     )
   )

@@ -7,13 +7,14 @@
 // This file declares two top-level packages, which is why it is written with package blocks
 // rather than with a leading package clause. The suite belongs in the package of its subject,
 // `com.opengamma.strata.collect.array`; the access probe at the foot of the file must sit
-// *outside* `com.opengamma.strata.collect`, because what it proves is that the two escape
-// hatches of the array type are unreachable from there, and a compile-time access check is
-// answered in the package of the code that asks. A block nested inside a package clause would
-// nest under that clause and stay inside `collect`, which is exactly the arrangement that could
-// not prove anything, so the two blocks are siblings at the root.
+// *outside* `com.opengamma.strata.collect`, because what it proves is that the two names the
+// Java original used for its escape hatches resolve to nothing from there, and a compile-time
+// name check is answered in the package of the code that asks. A block nested inside a package
+// clause would nest under that clause and stay inside `collect`, which is exactly the
+// arrangement that could not prove anything, so the two blocks are siblings at the root.
 package com.opengamma.strata.collect.array {
 
+  import java.lang.reflect.Modifier
   import java.util.Arrays
 
   import scala.annotation.tailrec
@@ -36,14 +37,7 @@ package com.opengamma.strata.collect.array {
   /**
    * Test [[DoubleArray]].
    *
-   * The Java original held forty-eight test methods and every one of them is carried here under
-   * its own name, so that the migration is traceable method by method rather than in bulk: the
-   * test-scope manifest of this port maps each Java method to the test below that answers for it,
-   * and nothing in this class is recorded as partial or dropped. Four of the Java methods exercise
-   * members that the port does not have; each of those is consolidated onto the member that
-   * replaces it and still has a test of its own, listed as such in the map below. Every
-   * hard-coded expected value of the original is carried across unchanged, including the
-   * comparison tolerance of 1e-14 that its array helper used.
+   * ===What this suite covers===
    *
    * ===Java method to Scala test===
    *
@@ -53,7 +47,9 @@ package com.opengamma.strata.collect.array {
    *  - `test_of_lambda` -> `test_of_lambda`, ported onto `DoubleArray.tabulate`
    *  - `test_of_stream` -> `test_of_stream`, consolidated onto construction from a sequence, since
    *    the port has no factory taking a primitive stream
-   *  - `test_ofUnsafe` -> `test_ofUnsafe`, ported
+   *  - `test_ofUnsafe` -> `test_ofUnsafe`, answered by what replaces the member rather than by the
+   *    member: the adopting factory of the original is not ported, and the test holds the
+   *    construction that replaces it to the copy it makes
    *  - `test_copyOf_List` -> `test_copyOf_List`, ported onto the immutable list of the standard
    *    library, which replaces the immutable-list fixture of the original
    *  - `test_copyOf_array` -> `test_copyOf_array`, ported
@@ -104,39 +100,41 @@ package com.opengamma.strata.collect.array {
    *    and whose machinery this port does without entirely
    *
    * The remaining tests answer requirements of this port rather than of the Java original: the
-   * copy-safety and deliberate-aliasing tests (`copy_safety_*`, `aliasing_*`), the proof that the
-   * two escape hatches cannot be reached from outside this module
-   * (`unsafe_members_are_inaccessible_outside_collect`), the failure paths of the sized and range
-   * factories that the original left untested (`negative_size_of_filled_and_tabulate`,
+   * copy-safety tests (`copy_safety_*`), the proof that the type hands out no run of values at
+   * all - asserted against the compiled class itself, and from outside this module
+   * (`no_member_hands_out_the_stored_array`, `the_public_constructor_copies_what_it_is_handed`,
+   * `unsafe_members_resolve_to_nothing`), the failure paths of the sized and range factories that
+   * the original left untested (`negative_size_of_filled_and_tabulate`,
    * `reversed_range_of_copyOf_and_subArray`), the bit-level equality cases (`ieee_*`) and the
    * property section (`property_*`).
    *
-   * ===Divergences from the Java original that this spec asserts===
+   * ===The contracts this spec pins===
    *
-   * Each of these is asserted below rather than described only, and each is a candidate line for
-   * the migration note of the port:
+   * Each of these is asserted below rather than described only:
    *
    *  - a bound beyond the end of the array being copied - `copyOf(array, 4)`,
    *    `copyOf(array, 0, 5)`, `subArray(4)`, `subArray(0, 4)` - fails with
-   *    `IllegalArgumentException` where the original
-   *    raised `IndexOutOfBoundsException`. The message text is unchanged. An index that reaches the
-   *    stored array directly, and a negative start index, still surface as the index exception the
-   *    runtime raises, exactly as in the original;
-   *  - `min` and `max` on an empty array fail with `IllegalArgumentException` where the original
-   *    raised `IllegalStateException`. Both messages are unchanged, and both are asserted here;
+   *    `IllegalArgumentException`, whose message names the bound and the length it exceeded. An
+   *    index that reaches the stored array directly, and a negative start index, surface as the
+   *    index exception the runtime raises;
+   *  - `min` and `max` of an empty array fail with `IllegalArgumentException`, and both messages
+   *    are asserted here;
    *  - a negative size asked of `filled` or `tabulate` fails with `IllegalArgumentException`,
-   *    checked before anything is allocated, where the original let the allocation itself raise
-   *    `NegativeArraySizeException`. That puts every size and shape failure of the array and
-   *    matrix types into one exception type, which the matrix factories already used;
+   *    checked before anything is allocated. That puts every size and shape failure of the array
+   *    and matrix types into one exception type;
    *  - `equalWithTolerance` never matches a not-a-number element: an array holding one is not
    *    equal within any tolerance to an array holding one at the same index, because no tolerance
    *    reaches such a value. Bit-for-bit structural equality - `equals`, `hashCode` and the
    *    lookups built on them - does keep such an element reflexive, and that asymmetry between
    *    the two contracts is deliberate: both are asserted here, side by side. The fuzzy contract
    *    itself belongs to the comparison this delegates to, whose own spec owns it;
-   *  - `ofUnsafe` and `toArrayUnsafe` are visible only inside this module, where the original
-   *    exposed both to every caller. This spec is inside the module and exercises both positively;
-   *    the prohibition outside it is proved from a probe object in a sibling package;
+   *  - `ofUnsafe` and `toArrayUnsafe` are not ported, where the original exposed both to every
+   *    caller. Restricting them to this module would not have been enough: such a restriction
+   *    holds in the source only, and the compiler emits the member as a public method either way,
+   *    so what this spec asserts instead is that the two names resolve nowhere, that no declared
+   *    member of the compiled class returns the run of values an instance holds, and that the one
+   *    public constructor copies what it is handed. The first of those is asserted here and again
+   *    from a probe object in a sibling package, the other two against the class itself;
    *  - the port has no meta-bean, no ordering and no JSON codec of its own for this type. The
    *    absence of each is asserted, next to a positive control proving the same assertion shape
    *    succeeds where the member or instance does exist, so that none of them can pass merely
@@ -146,11 +144,10 @@ package com.opengamma.strata.collect.array {
    *
    * ===Tolerances===
    *
-   * The element comparison of the array helper keeps the 1e-14 tolerance of the original, and
-   * every other comparison here is exact. The numerical parity of this type against values
-   * captured from the Java implementation, to 1e-9 absolute and relative, is measured by the
-   * parity spec of this module against its committed fixture; it is deliberately not duplicated
-   * here, and this spec reads no fixture and performs no effect.
+   * The element comparison of the array helper holds to 1e-14, and every other comparison here is
+   * exact. The numerical parity of this type against the values of the committed baseline
+   * fixture, to 1e-9 absolute and relative, is measured by the parity spec of this module; it is
+   * deliberately not duplicated here, and this spec reads no fixture and performs no effect.
    */
   final class DoubleArraySpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
 
@@ -223,10 +220,11 @@ package com.opengamma.strata.collect.array {
      * With no expected value the array must be the canonical empty instance, which is asserted by
      * reference: every factory and every operation of the port answers with that one instance
      * rather than with a fresh empty array, so identity is a stronger and equally true statement
-     * than emptiness. Otherwise the size is checked, then the contents through both the copying
-     * accessor and the one that hands back the stored array - checking both is what the original
-     * did, and it is what makes the copy and the stored array provably agree - and finally the two
-     * invariants every array of this type reports, one dimension and non-emptiness.
+     * than emptiness. Otherwise the size is checked, then the contents twice over through the
+     * copying accessor - the original read the copy and the stored array and required them to
+     * agree, and with no member handing out the stored array the two reads that can be made are
+     * two calls of that accessor, which must agree and must not be the same array - and finally
+     * the two invariants every array of this type reports, one dimension and non-emptiness.
      *
      * @param array  the array to inspect
      * @param expected  the values it must hold, in order
@@ -238,8 +236,11 @@ package com.opengamma.strata.collect.array {
         array.isEmpty shouldBe true
       } else {
         array.size shouldBe expected.length
-        assertArray(array.toArray, expected)
-        assertArray(array.toArrayUnsafe, expected)
+        val copied = array.toArray
+        val again = array.toArray
+        assertArray(copied, expected)
+        assertArray(again, expected)
+        (copied eq again) shouldBe false
         array.dimensions shouldBe 1
         array.isEmpty shouldBe false
       }
@@ -290,9 +291,8 @@ package com.opengamma.strata.collect.array {
     }
 
     test("test_of") {
-      // the original declared ten arity-specific factories, which exist to spare a caller an
-      // array allocation; the port has one varargs factory, so each arity the original declared
-      // is exercised here through it, from none up to nine values
+      // one varargs factory serves every arity, so it is exercised across the whole range a
+      // caller writes out by hand, from no values up to nine
       assertContent(DoubleArray.of())
       assertContent(DoubleArray.of(1.0), 1.0)
       assertContent(DoubleArray.of(1.0, 2.0), 1.0, 2.0)
@@ -312,13 +312,12 @@ package com.opengamma.strata.collect.array {
     }
 
     test("test_of_is_one_varargs_factory_over_every_arity") {
-      // The port collapses the original's arity family into one member taking any number of
-      // values, so a call listing its values out and a call expanding a sequence reach the same
-      // factory and must therefore answer alike. This asserts that at every arity the original
-      // declared, which is what establishes that nothing was lost by collapsing them, and that
-      // no arity-specific member remains: an overload of a different arity would make one of
-      // these pairs disagree only if it computed something different, so the comparison is made
-      // against values the sequence supplies rather than against a restated expectation
+      // One member takes any number of values, so a call listing its values out and a call
+      // expanding a sequence reach the same factory and must therefore answer alike. That is
+      // asserted at every arity from one to nine, which is what establishes that no arity is
+      // served by a member of its own that could compute something different. The comparison is
+      // made against values the sequence supplies rather than against a restated expectation, so
+      // a disagreement can only come from the factory
       val values = List(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5)
       DoubleArray.of(1.5) shouldBe DoubleArray.of(values.take(1): _*)
       DoubleArray.of(1.5, 2.5) shouldBe DoubleArray.of(values.take(2): _*)
@@ -391,17 +390,23 @@ package com.opengamma.strata.collect.array {
     }
 
     test("test_ofUnsafe") {
-      // `ofUnsafe` adopts the array it is given instead of copying it, which is why it is visible
-      // only inside this module - a caller outside it cannot reach it at all, as
-      // `unsafe_members_are_inaccessible_outside_collect` proves. Adopting is exactly what is
-      // asserted here: the value observes a later change to the array it was built from, which is
-      // why nothing outside this module is allowed to build one this way
+      // The original's adopting factory took over the array it was given, so a value built that
+      // way observed every later change to it. The port has no such member, and this is the test
+      // that answers for the Java method: the same call written against what replaces it - the
+      // copying factory, which is what every operation of the type now wraps its result with -
+      // and the assertion the original could not have made, that the value is unaffected by what
+      // happens to the array afterwards.
       val base = Array(1.0, 2.0, 3.0)
-      val test = DoubleArray.ofUnsafe(base)
+      val test = DoubleArray.copyOf(base)
       assertContent(test, 1.0, 2.0, 3.0)
       base(0) = 4.0
-      assertContent(test, 4.0, 2.0, 3.0)
-      assertContent(DoubleArray.ofUnsafe(DoubleArrayMath.EMPTY_DOUBLE_ARRAY))
+      assertContent(test, 1.0, 2.0, 3.0)
+
+      // the empty run of values is answered by the canonical instance, as it was through the
+      // adopting factory, so no fresh empty array can be brought into existence by any route
+      assertContent(DoubleArray.copyOf(DoubleArrayMath.EMPTY_DOUBLE_ARRAY))
+      DoubleArray.copyOf(DoubleArrayMath.EMPTY_DOUBLE_ARRAY) should be theSameInstanceAs
+        DoubleArray.EMPTY
     }
 
     test("test_copyOf_List") {
@@ -460,9 +465,7 @@ package com.opengamma.strata.collect.array {
       // it is rather than by the allocation it would otherwise reach. That is the same category,
       // and the same exception, as the bounds failures of the copying factories above and as the
       // negative dimensions of the matrix factories, so the whole family of size and shape
-      // failures reports one exception type. The Java original left a negative size to the
-      // runtime, which raised its size exception with the size as the message; that difference
-      // is the one asserted here
+      // failures reports one exception type, and the message names the argument and its value
       val zeroes = intercept[IllegalArgumentException](DoubleArray.filled(-1))
       zeroes.getMessage shouldBe "Argument 'size' must not be negative but has value -1"
       val valued = intercept[IllegalArgumentException](DoubleArray.filled(-1, 1.5))
@@ -559,7 +562,7 @@ package com.opengamma.strata.collect.array {
 
       val second = test.toArray
       (first eq second) shouldBe false
-      (first eq test.toArrayUnsafe) shouldBe false
+      (first eq test.toArray) shouldBe false
 
       first(0) = 9.0
       assertContent(test, 1.0, 2.0, 3.0)
@@ -1071,7 +1074,7 @@ package com.opengamma.strata.collect.array {
       val base = Array(0.5, 0.6)
       val joined = test.concat(ArraySeq.unsafeWrapArray(base): _*)
       assertContent(joined, 1.0, 2.0, 0.5, 0.6)
-      (joined.toArrayUnsafe eq base) shouldBe false
+      (joined.toArray eq base) shouldBe false
       base(0) = 9.0
       assertContent(joined, 1.0, 2.0, 0.5, 0.6)
 
@@ -1106,37 +1109,85 @@ package com.opengamma.strata.collect.array {
       assertContent(zeroes, 0.0, 0.0, 0.0)
     }
 
-    test("aliasing_of_the_unsafe_escape_hatches") {
-      // These two members are the deliberate exceptions to the copying above: one adopts the array
-      // it is given and the other hands back the array the value holds, so both alias. They are
-      // visible only inside this module - `private[collect]`, not `private[array]`, because the
-      // codec object of the module consumes them - which is why this spec can call them at all
-      // and why no caller outside the module can. Their aliasing is asserted rather than merely
-      // documented, because it is the reason the scope exists.
-      val base = Array(1.0, 2.0, 3.0)
-      val adopted = DoubleArray.ofUnsafe(base)
-      (adopted.toArrayUnsafe eq base) shouldBe true
-      base(1) = 9.0
-      adopted.get(1) shouldBe 9.0
+    test("no_member_hands_out_the_stored_array") {
+      // The copy safety above is asserted through the source, which is the right level for what
+      // each member does and the wrong level for the claim that no member does otherwise: a
+      // source file can only be read for the members it happens to mention. This test reads the
+      // compiled class instead, so a member added later is covered by it whether anyone thought
+      // to test that member or not.
+      //
+      // Two statements, and the second is the one that matters. No declared name carries the word
+      // the original's escape hatches were named for - that is the cheap check, and it is here
+      // because those two names are what a reader looks for. Then: of every member the class
+      // publishes, exactly one answers with a run of values, and it is the copying accessor. That
+      // is the statement immutability rests on, because a member of any other name that returned
+      // the stored array would defeat it just as thoroughly.
+      val declared = classOf[DoubleArray].getDeclaredMethods.toList
+      val companion = DoubleArray.getClass.getDeclaredMethods.toList
+      withClue("members whose name carries the word the original's escape hatches were named for: ") {
+        (declared ::: companion).map(method => method.getName).filter(name =>
+          name.contains("Unsafe")) shouldBe empty
+      }
 
-      val stored = adopted.toArrayUnsafe
-      stored(2) = 8.0
-      adopted.get(2) shouldBe 8.0
-      Arrays.equals(adopted.toArray, Array(1.0, 9.0, 8.0)) shouldBe true
+      val publicArrayReturns =
+        (declared ::: companion)
+          .filter(method => Modifier.isPublic(method.getModifiers))
+          .filter(method => method.getReturnType == classOf[Array[Double]])
+          .map(method => method.getName)
+          .distinct
+          .sorted
+      withClue(s"public members answering with a run of values: $publicArrayReturns: ") {
+        publicArrayReturns shouldBe List("toArray")
+      }
 
-      // an empty array is answered by the canonical instance even here, so no fresh empty value
-      // can be adopted into existence
-      DoubleArray.ofUnsafe(new Array[Double](0)) should be theSameInstanceAs DoubleArray.EMPTY
+      // and that one accessor answers with a fresh run of values on every call, so holding the
+      // result of one call is not a way to observe or change what a later call sees
+      val test = DoubleArray.of(1.0, 2.0, 3.0)
+      val first = test.toArray
+      val second = test.toArray
+      (first eq second) shouldBe false
+      first(0) = 9.0
+      second(1) = 8.0
+      assertContent(test, 1.0, 2.0, 3.0)
     }
 
-    test("unsafe_members_are_inaccessible_outside_collect") {
-      // The two calls compile here, inside `com.opengamma.strata.collect`, which is the positive
-      // control: the expressions are well formed and the members exist. The same two expressions
-      // are then offered to a probe object in a sibling package outside `collect`, where the
-      // compile-time access check denies them - which is the whole of the guarantee, since a
-      // scope that is merely documented is a convention and one the compiler keeps is a rule.
-      assertCompiles("com.opengamma.strata.collect.array.DoubleArray.ofUnsafe(Array(1.0))")
-      assertCompiles("com.opengamma.strata.collect.array.DoubleArray.of(1.0).toArrayUnsafe")
+    test("the_public_constructor_copies_what_it_is_handed") {
+      // The constructor is declared private and is emitted public regardless, because the
+      // companion that every factory lives in has to reach it. That is not a defect to be hidden
+      // - it cannot be hidden, in this language, on this platform - so it is the path this test
+      // takes deliberately: the array is handed to the constructor itself, reflectively, exactly
+      // as a caller outside this language would hand it over, and then changed. The value does not
+      // move, because the copy is made by the constructor rather than by the factory in front of
+      // it. There is exactly one such constructor, which is asserted too: a second one would be a
+      // second construction path to hold to the same contract.
+      val constructors = classOf[DoubleArray].getConstructors.toList
+      constructors should have size 1
+
+      val source = Array(1.0, 2.0, 3.0)
+      val built = constructors.head.newInstance(source.asInstanceOf[AnyRef]).asInstanceOf[DoubleArray]
+      assertContent(built, 1.0, 2.0, 3.0)
+      source(0) = 9.0
+      source(2) = 7.0
+      assertContent(built, 1.0, 2.0, 3.0)
+
+      // and nothing the value hands back afterwards reaches the array that built it
+      (built.toArray eq source) shouldBe false
+      Arrays.equals(source, Array(9.0, 2.0, 7.0)) shouldBe true
+    }
+
+    test("unsafe_members_resolve_to_nothing") {
+      // The two names the Java original published are offered to the compiler here, inside
+      // `com.opengamma.strata.collect`, where a member restricted to this module would have been
+      // visible - so this is the assertion that neither exists at all rather than that neither is
+      // reachable. The same two expressions are then offered to a probe object in a sibling
+      // package, which is what shows the answer does not depend on where the question is asked.
+      //
+      // The positive control is the line above each rejection: the same expression with a member
+      // that does exist compiles, so a rejection cannot be the reward for a malformed expression.
+      assertCompiles("com.opengamma.strata.collect.array.DoubleArray.copyOf(Array(1.0))")
+      assertDoesNotCompile("com.opengamma.strata.collect.array.DoubleArray.ofUnsafe(Array(1.0))")
+      assertCompiles("com.opengamma.strata.collect.array.DoubleArray.of(1.0).toArray")
+      assertDoesNotCompile("com.opengamma.strata.collect.array.DoubleArray.of(1.0).toArrayUnsafe")
       com.opengamma.strata.audit.DoubleArrayUnsafeAccessProbe.ofUnsafeIsInaccessible
       com.opengamma.strata.audit.DoubleArrayUnsafeAccessProbe.toArrayUnsafeIsInaccessible
     }
@@ -1313,7 +1364,7 @@ package com.opengamma.strata.collect.array {
         val first = a.toArray
         val second = a.toArray
         (first eq second) shouldBe false
-        (first eq a.toArrayUnsafe) shouldBe false
+        (first eq a.toArray) shouldBe false
         first(0) = 123456.5
         Arrays.equals(a.toArray, second) shouldBe true
       }
@@ -1526,44 +1577,49 @@ package com.opengamma.strata.collect.array {
 package com.opengamma.strata.audit {
 
   /**
-   * The proof that the two unsafe members of the array type cannot be reached from outside the
-   * `strata-collect` module.
+   * The proof that the two aliasing members of the Java array type are absent from the port, put
+   * from outside the `strata-collect` module.
    *
-   * Those members - the factory that adopts an array without copying it, and the accessor that
-   * hands back the array a value holds - are scoped to the whole of
-   * `com.opengamma.strata.collect` rather than to the package of the type itself, because the
-   * codec object of the module consumes both. That scope is what makes the copying of the public
-   * surface complete rather than conventional, and a scope is worth asserting only from a place
-   * the scope excludes: the spec of the array type lives inside `collect`, where both members are
-   * visible and where a check that they are not would fail.
+   * Those members - the factory that adopted an array without copying it, and the accessor that
+   * handed back the array a value held - are not ported under any name or any visibility. The
+   * spec of the array type asserts that from inside `com.opengamma.strata.collect`, which is the
+   * sharper place to assert it from, since a member merely restricted to that module would still
+   * be visible there. This object asserts it from a place no such restriction could ever have
+   * reached, so that the two answers together say the names resolve to nothing wherever the
+   * question is asked - and it is the place the assertion would have to be made from if either
+   * member were ever reintroduced behind a module scope.
    *
-   * So the two checks are made from here. This object is a sibling of `com.opengamma.strata` at
-   * the root rather than a member of `collect`, its package name says what it is for, and the
-   * compile-time check that rejects each expression below is answered in this package because
-   * that is where the code asking the question sits. Each reference is written out in full, so
-   * that nothing an import brought into the spec can change the outcome, and each method answers
-   * with the assertion it made so that the spec can state it as its own result.
+   * This object is a sibling of `com.opengamma.strata` at the root rather than a member of
+   * `collect`, its package name says what it is for, and the compile-time check that rejects each
+   * expression below is answered in this package because that is where the code asking the
+   * question sits. Each reference is written out in full, so that nothing an import brought into
+   * the spec can change the outcome, and each method answers with the assertion it made so that
+   * the spec can state it as its own result.
    *
-   * The corresponding positive controls - the same two expressions compiling inside `collect` -
-   * are in the spec, which is the only place they can be.
+   * The corresponding positive controls - the copying members of the same type, in the same
+   * expression shape, compiling from here - are the first line of each method, so a rejection
+   * below cannot be the reward for an expression that was malformed.
    */
   object DoubleArrayUnsafeAccessProbe extends org.scalatest.Assertions {
 
     /**
-     * Asserts that the adopting factory cannot be called from outside the module.
+     * Asserts that the name of the original's adopting factory resolves to nothing here.
      *
      * @return the assertion that the call does not compile here
      */
-    def ofUnsafeIsInaccessible: org.scalatest.Assertion =
+    def ofUnsafeIsInaccessible: org.scalatest.Assertion = {
+      assertCompiles("com.opengamma.strata.collect.array.DoubleArray.copyOf(Array(1.0))")
       assertDoesNotCompile("com.opengamma.strata.collect.array.DoubleArray.ofUnsafe(Array(1.0))")
+    }
 
     /**
-     * Asserts that the accessor handing back the stored array cannot be called from outside the
-     * module.
+     * Asserts that the name of the original's aliasing accessor resolves to nothing here.
      *
      * @return the assertion that the call does not compile here
      */
-    def toArrayUnsafeIsInaccessible: org.scalatest.Assertion =
+    def toArrayUnsafeIsInaccessible: org.scalatest.Assertion = {
+      assertCompiles("com.opengamma.strata.collect.array.DoubleArray.of(1.0).toArray")
       assertDoesNotCompile("com.opengamma.strata.collect.array.DoubleArray.of(1.0).toArrayUnsafe")
+    }
   }
 }

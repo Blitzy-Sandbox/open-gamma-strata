@@ -33,95 +33,52 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
 /**
  * Test [[ValueStepSequence]].
  *
- * This is a one-to-one port of the Java test class `ValueStepSequenceTest`: each of its seven
- * test methods has a test of the same name here, in the same order, and no test is split or
- * renamed. Every date, frequency and adjustment the Java test named is named here too, as a
- * literal rather than as something recomputed, because the whole value of a ported test is that
- * it agrees with the implementation it was written against.
+ * Every date, frequency and adjustment is stated as a literal rather than recomputed from the
+ * implementation, so a change in what the type produces shows up here as a failing assertion.
  *
- * ===The six tests that are not ports===
+ * ===The bounded expansion===
  *
- * `test_resolve_atMaximumSteps` and `test_resolve_beyondMaximumSteps` have no Java counterpart
- * because the behaviour they cover has none: [[ValueStepSequence.resolve]] bounds its expansion
- * at [[ValueStepSequence.MaximumStepCount]] steps, where the original expanded whatever span its
- * dates and frequency described. They are written as a pair straddling the ceiling by one step,
- * which is what makes them evidence of both halves of that bound - that a sequence filling the
- * ceiling still resolves, and that the one step past it is reported rather than expanded.
+ * [[ValueStepSequence.resolve]] bounds its expansion at [[ValueStepSequence.MaximumStepCount]]
+ * steps and reports a sequence describing more. `test_resolve_atMaximumSteps` and
+ * `test_resolve_beyondMaximumSteps` straddle that bound by exactly one step, so between them they
+ * cover both halves of it: a sequence filling the ceiling still resolves, and the one step past it
+ * is reported rather than expanded.
  *
- * The four that follow them cover the other behaviour the original did not have: the date
- * arithmetic of a resolution is '''guarded''', so a sequence whose dates sit at the edge of the
- * range `java.time` represents is answered rather than raised out of. They are written as a set
- * of four because the edge is reached in four distinguishable ways, and only two of them are
- * failures - `test_resolve_equalDatesAtMaximumDate` resolves a sequence whose two dates are both
- * the last date the calendar holds, which is the case a walk must not ask for a successor in;
- * `test_resolve_dateRangeOverflow` covers the two that genuinely need a date past the end of the
- * range, one in a rolling step and one in the adjustment of an endpoint;
- * `test_resolve_nearMinimumDate` covers the other end of the range, which fails nothing because
- * the walk only moves forward; and `test_resolve_dateRangeOverflow_throughValueSchedule` asserts
- * the same outcomes on the public path a caller outside this package reaches resolution through.
+ * ===The guarded date arithmetic===
  *
- * ===What the port changes, and why===
+ * The date arithmetic of a resolution is '''guarded''', so a sequence whose dates sit at the edge
+ * of the range `java.time` represents is answered rather than raised out of. The four date-range
+ * cases cover the distinguishable ways that edge is reached: `test_resolve_equalDatesAtMaximumDate`
+ * resolves a sequence whose two dates are both the last date the calendar holds, which is the case
+ * a walk must not ask for a successor in; `test_resolve_dateRangeOverflow` covers the two that need
+ * a date past the end of the range, one in a rolling step and one in the adjustment of an endpoint;
+ * `test_resolve_nearMinimumDate` covers the minimum-date end of the range, which fails nothing
+ * because the walk only moves forward; and `test_resolve_dateRangeOverflow_throughValueSchedule`
+ * asserts the same outcomes on the public path a caller outside this package reaches resolution
+ * through.
  *
- * Three of the seven methods asserted behaviour this port does not have, and each keeps its name
- * while asserting what replaced it, so nothing the Java test covered is silently dropped:
+ * ===Reaching resolution===
  *
- *   - `test_of_invalid` and `test_resolve_invalid` asserted that an `IllegalArgumentException`
- *     was raised. Construction and resolution report their outcome as a value here, so each of
- *     the three Java `assertThatIllegalArgumentException` sites is written as an assertion about
- *     a failure: the reason compared as a member of the closed family of reasons, and the message
- *     pinned both by pattern and word for word against the Java text. None of the three is a
- *     caller-contract precondition - the order of two dates, the type of an adjustment and
- *     whether a frequency divides a span all depend on the data supplied - so no exception is
- *     expected anywhere in this spec and none is intercepted. The date-range tests below make
- *     that claim an assertion rather than an omission: they state `noException should be thrownBy`
- *     over the very calls the ported implementation raised from.
- *   - `coverage` called `coverImmutableBean`, a reflective sweep over the properties of a bean
- *     through its meta-bean. There is no meta-bean and no reflective property access here, so its
- *     substance is asserted directly on the two instances the Java test swept: the accessors, the
- *     equality and hashing relation between them, the rendering, and the closed construction
- *     surface of a validated type - proved by requiring two snippets to fail to compile rather
- *     than by asserting something about one instance.
- *   - `test_serialization` asserted a Java serialization round trip, which is not part of this
- *     port at all. The JSON codec takes its place, so the round trip asserted is
- *     `decode(encode(x)) == x` in both directions together with the exact shape of the encoding,
- *     and with two documents the decoder has to reject because the validating factory rejects
- *     what they describe.
+ * `resolve` is `private[value]` and this spec declares that package, so the tests call it
+ * directly; a caller outside reaches it through the public [[ValueSchedule.resolveValues]].
  *
- * ===Resolution is reached directly, as it was in Java===
- *
- * `resolve` is visible within this package rather than publicly, exactly as the ported method
- * was package-private, and eight of the thirteen tests call it directly - a ninth reaches it
- * through the public [[ValueSchedule.resolveValues]], which is the only route a caller outside
- * this package has. That is legal from here because a
- * Scala access qualifier names a package rather than a compilation unit or a module: this spec
- * declares the package the type declares, so the member is in scope. Nothing is added to the
- * production type to make these tests possible, and nothing is reached by reflection.
- *
- * ===What is asserted elsewhere===
- *
- * Four duties that touch this type are module-wide and are discharged by module-wide specs
- * rather than repeated here: the sweep of every validated type's invalid inputs and their
- * accumulation (`SmartConstructorSpec`), the inventory of failure-returning methods
- * (`FailableSurfaceSpec`), the proof that no validated type has a public `apply` or `copy`
- * (`ApiSurfaceSpec`), and the property-based codec round trip over every codec-bearing type
- * (`json/JsonRoundTripSpec`). This spec stays with the seven ported methods and the six cases
- * that cover what the port added to `resolve`.
+ * Module-wide duties that touch this type are asserted in `SmartConstructorSpec`,
+ * `FailableSurfaceSpec`, `ApiSurfaceSpec` and `json/JsonRoundTripSpec`.
  */
 final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
-  /** The relative adjustment of the Java fixture `ADJ`, which varies the value at each step. */
+  /** The relative adjustment used throughout, which varies the value at each step. */
   private val Adj: ValueAdjustment = ValueAdjustment.ofDeltaAmount(-100.0d)
 
-  /** The second relative adjustment of the Java fixture `ADJ2`, used by the coverage instance. */
+  /** A second relative adjustment, differing from [[Adj]], used by the coverage instance. */
   private val Adj2: ValueAdjustment = ValueAdjustment.ofDeltaAmount(-200.0d)
 
   /**
-   * The replacing adjustment of the Java fixture `ADJ_BAD`.
+   * An adjustment that replaces the value rather than varying it.
    *
-   * A step that replaces the value discards whatever the previous step produced, so repeating
-   * one at every step of a sequence expresses nothing a single [[ValueStep]] does not already
-   * express. That is why the type rejects it, and this is the input the rejection is asserted
-   * with.
+   * The adjustment of a sequence has to be relative, so [[ValueStepSequence.of]] rejects one of
+   * type `Replace` with the message `ValueAdjustmentType must not be 'Replace'`. This is the
+   * input that rejection is asserted with.
    */
   private val AdjBad: ValueAdjustment = ValueAdjustment.ofReplace(100.0d)
 
@@ -129,16 +86,14 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
   /**
    * The message reported when the two dates are in the wrong order.
    *
-   * The three messages below are transcribed from the Java implementation - the first two from
-   * the checks of its `@ImmutableValidator`, the third from the template its `resolve` raised -
-   * and are asserted as literals as well as by pattern, so a change to the wording of the port
-   * cannot pass unnoticed and a reader comparing the two implementations can see that they
-   * agree.
+   * This and the two messages below are the messages the type reports - the first two from the
+   * checks of its factory, the third from the template its `resolve` formats. Each is asserted as
+   * a literal as well as by pattern, so a change to the wording cannot pass unnoticed.
    */
   private val InvalidDateOrder: String =
     "Invalid order: Expected 'firstStepDate' <= 'lastStepDate', but found: '2016-04-20' > '2016-04-19'"
 
-  /** The message reported for an adjustment that replaces the value, in the words of the bean. */
+  /** The message reported for an adjustment that replaces the value. */
   private val ReplacementNotAllowed: String = "ValueAdjustmentType must not be 'Replace'"
 
   /**
@@ -176,9 +131,7 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
   /**
    * The message reported when the dates and frequency describe more steps than the ceiling.
    *
-   * This message belongs to the port rather than to the Java original, which expanded whatever
-   * span it was given, so it is transcribed from the implementation for the same reason the
-   * ported messages are: to keep a change to its wording from passing unnoticed. It names the
+   * It is asserted as a literal, so a change to its wording cannot pass unnoticed. It names the
    * limit as well as the two adjusted dates and the frequency, because the limit is the part a
    * caller cannot work out from its own arguments.
    */
@@ -190,11 +143,9 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
   /**
    * The message reported when the arithmetic of a resolution leaves the range of dates.
    *
-   * This message belongs to the port rather than to the Java original, which performed the same
-   * arithmetic unguarded and let `java.time` raise out of a method that otherwise reported its
-   * outcome as a value. It names the frequency, which is what a rolling step adds, and the
-   * convention, which is what adjusts the result and can itself move a date off the end of the
-   * range; it names neither date, because either of them can be the one at fault.
+   * It names the frequency, which is what a rolling step adds, and the convention, which is what
+   * adjusts the result and can itself move a date off the end of the range; it names neither date,
+   * because either of them can be the one at fault.
    *
    * This first form is that of the rolling-step case below, a monthly frequency under the
    * convention that adjusts nothing.
@@ -219,11 +170,10 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
    *
    * One period of January 2014 under the convention that adjusts nothing is enough: what that
    * case is about is which channel the outcome comes back through, and the sequences it resolves
-   * name dates at the end of the calendar, so no period of any plausible schedule contains them.
-   * The convention matters and is deliberately 'None': the sequence is expanded under the
-   * convention of the '''schedule''', and a day-of-month convention would pull the dates of the
-   * sequence back to the first of the month and so resolve arithmetic that is the point of the
-   * case.
+   * name dates at the end of the calendar, which no period of this schedule contains. The
+   * convention matters and is deliberately 'None': the sequence is expanded under the convention
+   * of the '''schedule''', and a day-of-month convention would pull the dates of the sequence
+   * back to the first of their month, where the arithmetic this case is about is not reached.
    */
   private val ScheduleFixture: Schedule =
     ok(
@@ -234,11 +184,11 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   /**
-   * The expected JSON of the sequence the Java test serialized.
+   * The expected JSON of the sequence the round-trip case below encodes.
    *
-   * The document holds the four properties under the names the Java bean declared and in its
-   * declaration order: the dates in their ISO form, the frequency as the bare name its own codec
-   * writes, and the adjustment as the object its own codec writes.
+   * The document holds the four properties under the names the type declares and in declaration
+   * order: the dates in their ISO form, the frequency as the bare name its own codec writes, and
+   * the adjustment as the object its own codec writes.
    */
   private val ExpectedJson: String =
     """{"firstStepDate":"2016-04-20","lastStepDate":"2016-10-20","frequency":"P3M",""" +
@@ -352,14 +302,13 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   test("test_of") {
-    // The factory checks its arguments and so reports an outcome; these arguments are the ones
-    // the Java test used and they describe a sequence, so the outcome holds one.
+    // The factory checks its arguments and so reports an outcome; these arguments describe a
+    // sequence, so the outcome holds one.
     val result: ResultNec[ValueStepSequence] =
       ValueStepSequence.of(date(2016, 4, 20), date(2016, 10, 20), Frequency.P3M, Adj)
     result should beSuccess
 
-    // The four properties of the sequence, read back through the accessors that replace the
-    // `getFirstStepDate`-style getters of the bean being ported.
+    // The four properties of the sequence, read back through its accessors.
     val test: ValueStepSequence = sequence(result)
     test.firstStepDate shouldBe date(2016, 4, 20)
     test.lastStepDate shouldBe date(2016, 10, 20)
@@ -374,9 +323,8 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   test("test_of_invalid") {
-    // The two rejections the Java test asserted as raised exceptions, asserted here as the
-    // failures they are reported as. Both are faults in the data supplied rather than breaches of
-    // a caller contract, so both belong on the left of an outcome rather than in a raised error.
+    // The two rejections of the factory. Both are faults in the data supplied rather than
+    // breaches of a caller contract, so both are reported as failures rather than raised.
 
     // 1. The dates are in the wrong order. The reason is compared as a member of the closed
     // family of reasons, and the message is pinned both by pattern and as a literal.
@@ -395,11 +343,10 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
     replacing should haveFailureMessageMatching(".*must not be 'Replace'.*")
     messages(replacing) shouldBe List(ReplacementNotAllowed)
 
-    // The two checks are independent, so where both fail both are reported. That is more than the
-    // validator being ported said - it raised the first fault it found and stopped, so a caller
-    // correcting its input learned of the second only on the next attempt - and it is the one
-    // behaviour this test asserts that the Java test could not. The two are reported in the order
-    // they are checked, the order of the dates first and then the type of the adjustment.
+    // The two checks are independent, so where both fail both are reported, and a caller
+    // correcting its input is told about both at once rather than on the next attempt. The two
+    // are reported in the order they are checked, the order of the dates first and then the type
+    // of the adjustment.
     val bothFaults: ResultNec[ValueStepSequence] =
       ValueStepSequence.of(date(2016, 4, 20), date(2016, 4, 19), Frequency.P3M, AdjBad)
     bothFaults should beFailureWith(FailureReason.INVALID)
@@ -408,8 +355,8 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
     messages(bothFaults).size shouldBe 2
     messages(bothFaults) shouldBe List(InvalidDateOrder, ReplacementNotAllowed)
 
-    // Equal dates are in order, which is the edge the first check names and which neither
-    // implementation rejects.
+    // Equal dates are in order, which is the edge the first check names: the factory checks the
+    // pair for in-order-or-equal, so a one-step sequence is a legal value.
     sequence(
       ValueStepSequence.of(date(2016, 4, 20), date(2016, 4, 20), Frequency.P3M, Adj))
       .lastStepDate shouldBe date(2016, 4, 20)
@@ -417,8 +364,8 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   test("test_resolve") {
-    // The sequence of the Java test, resolved under the convention that adjusts nothing, so the
-    // dates the walk lands on are the quarterly anniversaries of the first date.
+    // A quarterly sequence resolved under the convention that adjusts nothing, so the dates the
+    // walk lands on are the quarterly anniversaries of the first date.
     val test: ValueStepSequence =
       sequence(ValueStepSequence.of(date(2016, 4, 20), date(2016, 10, 20), Frequency.P3M, Adj))
     val baseStep: ValueStep = ValueStep.of(date(2016, 1, 20), ValueAdjustment.ofReplace(500.0d))
@@ -428,7 +375,7 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
     // The step supplied is kept and the generated steps follow it, in date order. The whole list
     // is compared in one assertion - which also pins that nothing else is in it - and then
-    // element by element, as the Java test read it back through `get`.
+    // element by element.
     val steps: List[ValueStep] = resolved(result)
     steps.size shouldBe 4
     steps shouldBe List(
@@ -449,11 +396,9 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   test("test_resolve_with_roll_convention") {
     // An annual sequence under the IMM convention, which lands on the third Wednesday of each
-    // September rather than on the anniversary of the first date. The five dates are those of the
-    // Java test, asserted as literals: they are the evidence that the walk of this port - which
-    // iterates the `next` operation of the convention rather than stepping a mutable date -
-    // reaches exactly the dates the ported loop reached, and an off-by-one in that rewrite would
-    // show up here as a missing or an extra step.
+    // September rather than on the anniversary of the first date. The five dates are asserted as
+    // literals, so an off-by-one in the walk over the `next` operation of the convention shows up
+    // here as a missing or an extra step.
     val test: ValueStepSequence =
       sequence(ValueStepSequence.of(date(2022, 9, 21), date(2026, 9, 21), Frequency.P12M, Adj))
 
@@ -485,7 +430,7 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
     // A twelve month frequency over a six month span: the walk leaves the first date and the next
     // date it would reach is past the last date of the sequence, so the last date the walk lands
     // on is not the last date of the sequence and the arguments describe no sequence of steps
-    // under this convention. The Java implementation raised this; here it is reported.
+    // under this convention. That is reported as a failure.
     val test: ValueStepSequence =
       sequence(ValueStepSequence.of(date(2016, 4, 20), date(2016, 10, 20), Frequency.P12M, Adj))
     val baseStep: ValueStep = ValueStep.of(date(2016, 1, 20), ValueAdjustment.ofReplace(500.0d))
@@ -495,8 +440,7 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
     result should beFailureWith(FailureReason.INVALID)
     result should haveFailureMessageMatching(".*lastStepDate did not match frequency.*")
 
-    // The message names the frequency, the convention and the two dates that disagree, in the
-    // words of the template the Java implementation formatted.
+    // The message names the frequency, the convention and the two dates that disagree.
     failureMessage(result) shouldBe FrequencyMismatch
 
     // The step supplied is not returned alongside the failure: a resolution that fails produces
@@ -507,10 +451,10 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   test("test_resolve_atMaximumSteps") {
     // A daily frequency over a span of one day short of a hundred thousand: the largest
-    // expansion the ceiling of this port allows, and the case that proves the ceiling does not
-    // bite on a sequence that is merely large. The dates and the frequency are legal arguments -
-    // neither is checked against any schedule at construction - so the only thing deciding the
-    // outcome is the step count, and here it is exactly the limit.
+    // expansion the ceiling allows, and the case that shows the ceiling does not bite on a
+    // sequence that is merely large. The dates and the frequency are legal arguments - neither is
+    // checked against any schedule at construction - so the only thing deciding the outcome is
+    // the step count, and here it is exactly the limit.
     val test: ValueStepSequence =
       sequence(ValueStepSequence.of(CeilingFirstDate, LastDateAtCeiling, Frequency.P1D, Adj))
 
@@ -518,8 +462,8 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
     result should beSuccess
 
     // Every date of the walk produced a step, the first and the last of them being the two dates
-    // of the sequence, which is what makes the count above the count of the expansion rather
-    // than of something the ceiling truncated.
+    // of the sequence, so the count below is the count of accepted dates - which is what the
+    // ceiling limits - rather than of something truncated to fit it.
     val steps: List[ValueStep] = resolved(result)
     steps.size shouldBe ValueStepSequence.MaximumStepCount
     steps.head shouldBe ValueStep.of(CeilingFirstDate, Adj)
@@ -530,9 +474,9 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   test("test_resolve_beyondMaximumSteps") {
     // The same sequence with its last date one day later, which is one step more than the
-    // ceiling allows. The Java original expanded any span it was given, building a step object
-    // for each date; a caller is free to name dates centuries apart and a daily frequency, so
-    // that expansion is work and allocation decided by data (CWE-400). This port refuses it.
+    // ceiling allows. A caller is free to name dates centuries apart and a daily frequency, so an
+    // expansion with no bound on it is work and allocation decided by input data (CWE-400), which
+    // is why the bound exists.
     val test: ValueStepSequence =
       sequence(ValueStepSequence.of(CeilingFirstDate, LastDateBeyondCeiling, Frequency.P1D, Adj))
 
@@ -546,11 +490,10 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
     failureMessage(result) shouldBe ExpansionBeyondCeiling
     result.toOption shouldBe None
 
-    // And the refusal is reached from a span no amount of iteration could finish: a daily
-    // sequence ending at the last date the calendar holds describes hundreds of billions of
-    // steps. This case returning at all is the evidence that the ceiling bounds the walk itself
-    // rather than the list it produces - an expansion that materialised first would still be
-    // running, and would exhaust the heap long before it stopped.
+    // The same refusal from a span of hundreds of billions of steps: a daily sequence ending at
+    // the last date the calendar holds spans some 3.65e11 days. This case returning a failure at
+    // all is what shows the ceiling bounds the walk itself rather than the list it produces, since
+    // an expansion that materialised the list first could not complete in practice.
     val unbounded: ValueStepSequence =
       sequence(ValueStepSequence.of(CeilingFirstDate, LocalDate.MAX, Frequency.P1D, Adj))
     val unboundedResult: FailureOr[List[ValueStep]] =
@@ -582,10 +525,10 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
     // This is the case that decides where the walk stops. A walk that stepped past the date it
     // had reached in order to establish that it was finished would ask the convention for the day
-    // after the last date the calendar holds, and `java.time` raises rather than answering; the
-    // walk of this port accepts a date equal to the adjusted last date and stops there, which
-    // reaches the same list by never asking. The single step above is that list, and it arriving
-    // at all - rather than as a raised `DateTimeException` - is what this test pins.
+    // after the last date the calendar holds, which has no answer; the walk accepts a date equal
+    // to the adjusted last date and stops there, reaching the same list without ever asking. The
+    // single step above is that list, and it arriving as a value rather than as a raised
+    // `DateTimeException` is what this test pins.
     noException should be thrownBy test.resolve(List.empty, RollConventions.NONE)
 
     // The steps supplied are still kept and the generated step still follows them, so stopping at
@@ -600,9 +543,8 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
     // A sequence that genuinely needs a date the calendar cannot hold, which is the case the one
     // above is not: a monthly frequency from the day before the last date has to step a month
     // past the end of the range to discover whether it has finished, and that arithmetic has no
-    // answer. The Java implementation let `java.time` raise it out of a resolution that reports
-    // everything else as a value; this port reports it, and the reason is a member of the closed
-    // family of reasons like every other failure of this type.
+    // answer. The overflow is reported as a failure, carrying a reason from the same closed
+    // family every other failure of this type carries.
     val stepping: ValueStepSequence =
       sequence(
         ValueStepSequence.of(LocalDate.MAX.minusDays(1), LocalDate.MAX, Frequency.P1M, Adj))
@@ -615,8 +557,7 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
       ".*moved outside the range of supported dates")
     failureMessage(steppingResult) shouldBe MonthlyOverflow
 
-    // It is a failure rather than a raised exception, which is the whole point, and it carries no
-    // partial list of steps.
+    // It is a failure rather than a raised exception, and it carries no partial list of steps.
     noException should be thrownBy stepping.resolve(List.empty, RollConventions.NONE)
     steppingResult.toOption shouldBe None
 
@@ -704,9 +645,8 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // The Java sweep `coverImmutableBean` walked the properties of a bean through its meta-bean,
-    // on the two instances built below. There is neither a meta-bean nor reflective property
-    // access here, so what it stood for is asserted directly on the same two instances.
+    // Two instances differing in all four properties, on which the accessors, the equality and
+    // hashing relation, the rendering and the closed construction surface are asserted directly.
     val test: ValueStepSequence =
       sequence(ValueStepSequence.of(date(2016, 4, 20), date(2016, 10, 20), Frequency.P3M, Adj))
     val test2: ValueStepSequence =
@@ -724,8 +664,7 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
     // The two instances differ in all four properties and are therefore distinct, under the
     // platform equality and under `Hash` - the type's single equality-bearing instance, from
-    // which `Eq` is obtained by subtyping - which is the relation the bean sweep exercised by
-    // perturbing one property at a time.
+    // which `Eq` is obtained by subtyping.
     test should not be test2
     test2 should not be test
     Hash[ValueStepSequence].eqv(test, test2) shouldBe false
@@ -781,8 +720,8 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
            Frequency.P3M, ValueAdjustment.ofDeltaAmount(-100.0d)).map(
            _.lastStepDate)""")
 
-    // Reading the four properties by pattern is unaffected by that closure - `unapply` is
-    // available - which is what keeps a ported call site that matched on the bean readable.
+    // Reading the four properties by pattern is unaffected by that closure: `unapply` is
+    // available, so a sequence can still be matched on.
     val destructured: (LocalDate, LocalDate, Frequency, ValueAdjustment) = test match {
       case ValueStepSequence(firstStepDate, lastStepDate, frequency, adjustment) =>
         (firstStepDate, lastStepDate, frequency, adjustment)
@@ -792,19 +731,19 @@ final class ValueStepSequenceSpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   test("test_serialization") {
-    // Java serialization is not part of this port; the JSON codec takes its place. Both
-    // directions are asserted - an encoding that is wrong and a decoding that is wrong in the
-    // same way would still round trip - and the documents are compared as parsed JSON rather than
-    // as printed text, so the assertion is about the fields rather than the rendering.
+    // The JSON round trip. Both directions are asserted - an encoding that is wrong and a
+    // decoding that is wrong in the same way would still round trip - and the documents are
+    // compared as parsed JSON rather than as printed text, so the assertion is about the fields
+    // rather than the rendering.
     val test: ValueStepSequence =
       sequence(ValueStepSequence.of(date(2016, 4, 20), date(2016, 10, 20), Frequency.P3M, Adj))
     test.asJson shouldBe json(ExpectedJson)
     decode[ValueStepSequence](test.asJson.noSpaces) shouldBe Right(test)
     decode[ValueStepSequence](ExpectedJson) shouldBe Right(test)
 
-    // The key set is exactly the four properties, in the declaration order of the bean, and each
-    // is written in the form its own type publishes: the dates as ISO strings, the frequency as
-    // its bare name, the adjustment as an object.
+    // The key set is exactly the four properties, in declaration order, and each is written in
+    // the form its own type publishes: the dates as ISO strings, the frequency as its bare name,
+    // the adjustment as an object.
     test.asJson.asObject.map(_.keys.toList) shouldBe
       Some(List("firstStepDate", "lastStepDate", "frequency", "adjustment"))
     test.asJson.hcursor.downField("firstStepDate").as[String] shouldBe Right("2016-04-20")

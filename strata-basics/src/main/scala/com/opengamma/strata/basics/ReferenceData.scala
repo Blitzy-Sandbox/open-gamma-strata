@@ -8,6 +8,7 @@ package com.opengamma.strata.basics
 import cats.{Hash, Show}
 
 import com.opengamma.strata.basics.date.StandardHolidayCalendars
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.result.Failure
 
 /**
@@ -36,37 +37,30 @@ import com.opengamma.strata.collect.result.Failure
  * answering one question: what value, if any, is held for this identifier.
  *
  * An implementation must answer with a value of the type the identifier refers to, and an
- * implementation that holds values of several types at once has to establish that rather than
- * assume it, because a store keyed by identifier is keyed by an erased one. The tool for it is
- * the identifier's own witness, `ReferenceDataId.valueType`: narrowing the value found with
- * it - which is what [[ImmutableReferenceData]] does - turns a value of another type into an
- * absence instead of a mistyped answer. An implementation that produces its answer from a
- * pattern on the identifier, as `HolidaySafeReferenceData` does, has established it already.
+ * implementation that holds values of several types at once has to establish that, a store
+ * keyed by identifier being keyed by an erased one. The tool for it is the identifier's own
+ * witness, `ReferenceDataId.valueType`: narrowing the value found with it - which is what
+ * [[ImmutableReferenceData]] does - turns a value of another type into an absence instead of
+ * a mistyped answer. An implementation that produces its answer from a pattern on the
+ * identifier, as `HolidaySafeReferenceData` does, has established it already.
  *
  * The trait is deliberately open rather than sealed. Reference data is an extension point of
  * this library: `HolidaySafeReferenceData` in the `date` package supplies a weekend-only
- * calendar for an identifier the underlying data does not know, an application backs its
- * reference data with a database or a service, and a test supplies a fixture holding two
- * entries. None of those live in this file, and every one of them overrides at least one of
- * the members below, so neither sealing the trait nor making a member `final` would be
- * correct. Notably, the three defaults are written so that overriding `findValue` alone
- * keeps them consistent, while an implementation whose membership test is cheaper than a
- * lookup - or whose answer is "yes" for every identifier of a family, as
+ * calendar for an identifier the underlying data does not know, and a host application backs
+ * its reference data with a database or a service. Neither lives in this file, and both
+ * override at least one of the members below, so neither sealing the trait nor making a
+ * member `final` would be correct. Notably, the three defaults are written so that overriding
+ * `findValue` alone keeps them consistent, while an implementation whose membership test is
+ * cheaper than a lookup - or whose answer is "yes" for every identifier of a family, as
  * `HolidaySafeReferenceData`'s is - overrides `containsValue` as well.
  *
- * ===Divergences from the type being ported===
+ * ===A missing item of reference data is a value, not an interruption===
  *
- * The Java interface signalled the absence of a value by returning a reference to nothing
- * from a low-level `queryValueOrNull`, and expressed the three members below in terms of it.
- * This port has no such convention: [[findValue]] is the primitive and returns an `Option`,
- * so that low-level method has no counterpart and neither does the `Optional`-returning
- * wrapper that sat on top of it.
- *
- * [[getValue]] returns an `Either` where the Java original threw
- * `ReferenceDataNotFoundException`. That exception type is not ported: a missing item of
- * reference data is data about the request rather than a defect in the program, so it is
- * returned as a [[com.opengamma.strata.collect.result.Failure]] and the caller - which has
- * the context to decide whether a missing calendar is fatal - decides what to do about it.
+ * [[findValue]] is the primitive of the trait and answers with an `Option`, and [[getValue]]
+ * answers with an `Either` carrying a [[com.opengamma.strata.collect.result.Failure]] that
+ * names the identifier it could not find. A missing item of reference data is data about the
+ * request rather than a defect in the program, so the caller - which has the context to
+ * decide whether a missing calendar is fatal - is the one that decides what to do about it.
  * This is also what makes `ReferenceDataId.toReader` composition possible at all.
  *
  * @see [[ReferenceDataId]] for the identifiers a lookup is made with
@@ -105,9 +99,8 @@ trait ReferenceData {
    * value for every identifier of a family - overrides this method; such an override must
    * still agree with what `findValue` does for the same identifier.
    *
-   * The identifier is accepted with its type parameter unconstrained, exactly as the Java
-   * original accepted `ReferenceDataId<?>`: membership does not depend on the type of the
-   * value, so requiring the caller to know it would be noise.
+   * The identifier is accepted with its type parameter unconstrained: membership does not
+   * depend on the type of the value, so requiring the caller to know it would be noise.
    *
    * @param id  the identifier to find
    * @return true if this reference data contains a value for the identifier
@@ -128,13 +121,12 @@ trait ReferenceData {
    * } yield adjusted
    * }}}
    *
-   * The failure is a `Failure.MissingData` naming the identifier in its message and carrying
-   * it under the `id` attribute, so a caller can act on the identifier without parsing the
-   * message. The Java original's message additionally named the runtime class of the
-   * identifier; that fragment is deliberately dropped, because reporting it would mean
-   * introspecting the class of a value at run time and this port performs no reflection at
-   * all. The identifier's own `toString` is what identifies it, and every identifier family
-   * of this module renders itself as the name a user would recognise.
+   * The failure names the identifier in its message and carries it under the `id` attribute,
+   * so a caller can act on the identifier without parsing the message. Nothing about the
+   * runtime class of the identifier is reported, because reading the class of a value is
+   * reflection and no path that reads or writes reference data reflects. The identifier's own
+   * `toString` is what identifies it, and every identifier family of this module renders
+   * itself as the name a user would recognise.
    *
    * The failure is built only when the lookup comes back empty, which matters because this
    * method sits on the resolution path of every adjustment and schedule in the library.
@@ -174,14 +166,12 @@ trait ReferenceData {
 /**
  * Provides the ways of obtaining reference data, and the entry type a caller supplies it with.
  *
- * The four factories mirror the static methods of the Java interface one for one - [[of]],
- * [[standard]], [[minimal]] and [[empty]] - with the type-checking that Java performed by
- * reflection at construction time replaced by the [[Entry]] type, which cannot pair an
- * identifier with a value of the wrong type in the first place.
- *
- * `StandardReferenceData`, the package-private holder the Java original kept its two built-in
- * sets in, has no counterpart: it existed to give two constants a home, and they are
- * [[standard]] and [[minimal]] here.
+ * There are four: [[of]] builds a store from a caller's own entries laid over the minimal
+ * calendars, [[standard]] holds every built-in holiday calendar, [[minimal]] holds the four
+ * weekend and no-holiday calendars, and [[empty]] holds nothing. Only [[of]] can fail, and
+ * only because two entries name one identifier. Construction is type-safe because reference
+ * data is supplied as [[Entry]] values, which cannot pair an identifier with a value of the
+ * wrong type in the first place.
  */
 object ReferenceData {
 
@@ -197,27 +187,24 @@ object ReferenceData {
    * ReferenceData.Entry(HolidayCalendarIds.GBLO, "GBLO")     // does not compile
    * }}}
    *
-   * That is precisely the guarantee the Java original obtained at run time, by asking each
-   * identifier for the `Class` of the data it referred to and testing the value against it.
-   * Both failure modes that check reported - a value of the wrong type, and a value that
-   * was absent - are unrepresentable here, so neither the check nor the exceptions it threw
-   * are ported, and the reference data store needs no reflection to be sound.
+   * An entry is therefore the whole of what makes a lookup sound: a value of the wrong type
+   * and a value that is absent are both unrepresentable, so a store built from entries needs
+   * no reflection, and no run-time check, to answer at the type its identifier promises.
    *
-   * Construction cannot fail and both fields are already immutable values, so this is a
-   * total type in the sense of the port's construction policy: the constructor, `apply` and
-   * `copy` are all public.
+   * Construction cannot fail and both fields are already immutable values, so the
+   * constructor, `apply` and `copy` are all public.
    *
    * This type deliberately has no JSON codec. An entry is half of a heterogeneous store
    * whose value type is only known through its identifier, so no encoder could be written
-   * for an arbitrary entry; reference data is excluded from the port's codec inventory for
-   * the same reason, and the one kind of reference data that is serializable - a holiday
-   * calendar - carries its own codec.
+   * for an arbitrary entry; reference data carries no JSON form for the same reason, and the
+   * one kind of reference data that does have one - a holiday calendar - carries its own
+   * codec.
    *
    * @tparam T  the type of the reference data value
    * @param id  the identifier the value is held under
    * @param value  the reference data value
    */
-  final case class Entry[T](id: ReferenceDataId[T], value: T)
+  final case class Entry[T](id: ReferenceDataId[T], value: T) extends NoJavaSerialization
 
   /**
    * Provides the instances for [[Entry]].
@@ -265,12 +252,10 @@ object ReferenceData {
    * but the entries given, use [[ImmutableReferenceData.of]].
    *
    * Construction fails if two entries are supplied for the same identifier, because the
-   * caller's intent is then unknowable: silently keeping one of the two values would be a
-   * guess. The Java original could not report this, since it took a `Map` in which the
-   * ambiguity had already been resolved by whichever entry was inserted last. The failure
-   * names every duplicated identifier, ordered by its rendering rather than by the order
-   * they were supplied in, so the message is the same for the same set of entries however
-   * they were arranged.
+   * caller's intent is then unknowable: silently keeping one of the two values would decide
+   * something the caller did not. The failure names every duplicated identifier, ordered by
+   * its rendering rather than by the order they were supplied in, so the message is the same
+   * for the same set of entries however they were arranged.
    *
    * Layering the caller's entries over the minimal set is precisely what
    * [[ReferenceData.combinedWith]] means - the side asked first wins a clash - so that is how
@@ -294,8 +279,8 @@ object ReferenceData {
    * Every lookup against the result is empty, including those for the [[minimal]]
    * calendars. It behaves as the identity of [[ReferenceData.combinedWith]] - combining it
    * with a set of reference data on either side answers exactly as that set does - and it
-   * is the right starting point for a test that means to assert what happens when data is
-   * absent.
+   * is the starting point for code that means to observe how a caller behaves when the data
+   * it asks for is absent.
    *
    * @return empty reference data
    */
@@ -307,16 +292,16 @@ object ReferenceData {
    * Standard reference data is built into the library: it holds every built-in holiday
    * calendar - the rule-generated national calendars, the published Thai calendar, and the
    * four weekend and no-holiday calendars - keyed by its own identifier, and nothing else.
-   * It is what makes the demo and the test suite runnable without a source of market data,
-   * and production use of this library will generally supply its own calendars instead, or
-   * layer them over this set with `myData.combinedWith(ReferenceData.standard)`.
+   * It is what makes a date adjustment or a schedule runnable without a source of market
+   * data, and production use of this library will generally supply its own calendars
+   * instead, or layer them over this set with `myData.combinedWith(ReferenceData.standard)`.
    *
    * The value is computed once, on first use. That is not merely an optimisation: the
    * calendars are generated from rules, and this package and the `date` package are
-   * mutually dependent by design - a holiday calendar identifier is a
-   * [[ReferenceDataId]] defined there, while the built-in calendars are read from there
-   * here - exactly as they were in the Java original. Computing this eagerly would make
-   * the order in which the two packages happen to be initialised load-bearing.
+   * mutually dependent by design - a holiday calendar identifier is a [[ReferenceDataId]]
+   * defined there, while the built-in calendars are read from there here. Computing this
+   * eagerly would make the order in which the two packages happen to be initialised
+   * load-bearing.
    *
    * @return standard reference data, holding every built-in holiday calendar
    */
@@ -343,26 +328,24 @@ object ReferenceData {
    * Returns the failure reported when an identifier is not found.
    *
    * Extracted from [[ReferenceData.getValue]] so that the message and the attribute are
-   * written once, as the Java original extracted the same message for the same reason.
+   * written once.
    *
    * ===The failure names the identifier as the identifier renders itself===
    *
    * The message quotes the identifier exactly as its own rendering gives it, and the `id`
    * attribute carries that rendering whole; neither is shortened, escaped or rewritten on
    * the way in. That is what a caller acting on a missing-data failure needs, since the
-   * question it has to answer is which item of reference data to supply and an identifier
-   * altered in the message no longer answers it, and it is what keeps this text identical to
-   * the text of the type being ported, which the tests and the migration manifest compare
-   * against.
+   * question it has to answer is which item of reference data to supply, and an identifier
+   * altered in the message does not answer it.
    *
    * [[ReferenceDataId]] is an open contract, and nothing in it constrains `toString`: the
    * rendering of an identifier defined by a host application is text this library neither
    * produced nor can bound. Making such text safe to write out is therefore the business of
-   * writing a failure rather than of reporting one, and that is where this port performs it.
-   * The `Show[Failure]` instance, and the text form of every failure, which is defined as
-   * that instance, render the message and the key and the value of every attribute one
-   * bounded part at a time, escaping every character a line-oriented reader could act on. So
-   * no rendering of this failure spans more than one line or grows with the size of the
+   * writing a failure rather than of reporting one, and that is where it is performed. The
+   * `Show[Failure]` instance, and the text form of every failure, which is defined as that
+   * instance, render the message and the key and the value of every attribute one bounded
+   * part at a time, escaping every character a line-oriented reader could act on. So no
+   * rendering of this failure spans more than one line or grows with the size of the
    * identifier, whatever a host's `toString` returns (CWE-117), while the failure itself
    * keeps the whole of what it was built with for the code that means to act on it.
    *
@@ -398,20 +381,19 @@ object ReferenceData {
  * being filed under the identifier the entry itself carries. Nothing accepts a map of erased
  * identifiers to values: not the constructor, which is private and takes entries, and not
  * any factory, in this package or another. So a value cannot be filed under an identifier of
- * another type by any route, in any language.
+ * another type by any route.
  *
  * '''The way out.''' Closure is not by itself enough, because the store is keyed by an
  * identifier whose type argument is erased, a map lookup compares keys with ordinary
  * `equals`, and [[ReferenceDataId]] is deliberately open. A family parameterized in its
- * value type - which the trait permits, and which a host writes as soon as it has two kinds
- * of data to name - therefore has two instantiations that are one key: `GenericId[String]("x")`
+ * value type - which the trait permits, and which a host writes once it has two kinds of
+ * data to name - therefore has two instantiations that are one key: `GenericId[String]("x")`
  * and `GenericId[Int]("x")` are equal, one case class over one field with the type argument
  * erased. Filing is still correct in that situation, since each entry pairs its own types;
  * retrieval is what needs the second half. So the value found is narrowed by
  * `ReferenceDataId.valueType`, the witness the asking identifier carries, and a value of
  * another type is reported as absent rather than returned mistyped. That narrowing is one
- * type test and involves no reflection - a witness is a pattern, not a class token - and it
- * is what the Java original performed with `Class.isInstance` at construction time.
+ * type test and involves no reflection, a witness being a pattern rather than a class token.
  *
  * The store is published as an immutable view, [[values]], and reading it takes nothing away
  * from either half: a caller that reads erased values cannot file one, and a caller that
@@ -423,31 +405,17 @@ object ReferenceData {
  * and feeds the merged '''entries''' back through the same constructor, so even the internal
  * path builds a store the way a caller does.
  *
- * Equality, hashing and rendering are written out rather than synthesised, this no longer
- * being a case class. Two stores are equal when they hold equal maps - the same entries,
- * whatever order they were built in - equal stores hash alike, and the rendering lists the
- * entries ordered by identifier, so the same store reads the same way however it was
- * assembled.
+ * Equality, hashing and rendering are written out rather than synthesised, this being a
+ * final class rather than a case class. Two stores are equal when they hold equal maps - the
+ * same entries, whatever order they were built in - equal stores hash alike, and the
+ * rendering lists the entries ordered by identifier, so the same store reads the same way
+ * however it was assembled.
  *
- * ===Divergences from the type being ported===
- *
- * The Java original was a Joda bean: it validated each entry by asking the identifier for
- * the `Class` of the data it referred to and testing the value against it, it published the
- * store through a `getValues()` property, and it was serializable in both the Joda-Beans
- * and the Java-serialization senses.
- *
- * The property '''is''' ported, under the name it had: [[values]] is the same read-only view
- * of the same mapping, as an immutable Scala map. What is not ported is the reflective
- * validation, which the entry type and the witness narrowing of [[findValue]] replace between
- * them - the check is performed by the compiler where the value goes in, and by an ordinary
- * type test where it comes out, in neither case by reading a `Class`.
- *
- * Serialization is not ported in either sense. Java serialization is supported by no type of
- * this port, and this type has no JSON codec because its store is heterogeneous, the value
- * type of an entry being known only through its identifier, so no encoder for an arbitrary
- * store can exist. The one kind of reference data this library does serialize - a holiday
- * calendar - carries its own codec, so a store can be rebuilt from serialized calendars by a
- * caller that knows which identifiers it expects.
+ * This type has no JSON codec, because its store is heterogeneous: the value type of an
+ * entry is known only through its identifier, so no encoder for an arbitrary store can
+ * exist. The one kind of reference data that does have a JSON form - a holiday calendar -
+ * carries its own codec, so a store can be rebuilt from serialized calendars by a caller
+ * that knows which identifiers it expects.
  *
  * No typeclass instances are declared for this type. It is a container of reference data
  * rather than a value of the domain, and the `equals` below is what compares two stores.
@@ -477,8 +445,7 @@ final class ImmutableReferenceData private (entries: Iterable[ReferenceData.Entr
   /**
    * The reference data this store holds, as an immutable map of value by identifier.
    *
-   * This is the counterpart of the Java `getValues()` property, under the name it had, and it
-   * is how a store is '''inspected''' rather than interrogated: [[findValue]] answers one
+   * This is how a store is '''inspected''' rather than interrogated: [[findValue]] answers one
    * question about one identifier, while a caller that has to enumerate what it was given - to
    * report it, to re-file a subset of it, or to assert over it - needs the mapping itself.
    *
@@ -625,11 +592,11 @@ final class ImmutableReferenceData private (entries: Iterable[ReferenceData.Entr
   /**
    * Checks if this store holds the same reference data as another object.
    *
-   * Two stores are equal when they hold equal entries, which is the structural equality the
-   * case class this type used to be provided, and the equality `CombinedReferenceData` and
-   * every other container of reference data inherits by holding stores as fields. The order
-   * entries were supplied in is not part of the value, a `Map` being unordered, so two
-   * stores built from the same entries in different orders are one value.
+   * Two stores are equal when they hold equal entries, which is the structural equality
+   * `CombinedReferenceData` and every other container of reference data inherits by holding
+   * stores as fields. The order entries were supplied in is not part of the value, a `Map`
+   * being unordered, so two stores built from the same entries in different orders are one
+   * value.
    *
    * @param obj  the other object
    * @return true if the other object is a store holding equal entries
@@ -644,7 +611,7 @@ final class ImmutableReferenceData private (entries: Iterable[ReferenceData.Entr
    * Returns a hash code consistent with [[equals]].
    *
    * It is the hash of the entries, so equal stores hash alike and a store can be used as a
-   * key or held in a set - the contract the synthesised hash of the case class satisfied.
+   * key or held in a set.
    *
    * @return the hash code
    */
@@ -656,8 +623,8 @@ final class ImmutableReferenceData private (entries: Iterable[ReferenceData.Entr
    * The entries are rendered and then sorted, so the text is determined by what the store
    * holds and not by the iteration order of the underlying map: the same store reads the same
    * way however it was assembled, which is what makes this usable in a failure message and in
-   * the rendering of anything that holds a store. The shape follows the Java original's bean
-   * rendering, which named the property and listed the entries.
+   * the rendering of anything that holds a store. The shape names the property and lists the
+   * entries under it.
    *
    * @return the rendering, such as `ImmutableReferenceData{values={GBLO=HolidayCalendar[GBLO]}}`
    */
@@ -672,11 +639,11 @@ final class ImmutableReferenceData private (entries: Iterable[ReferenceData.Entr
 /**
  * Provides the ways of building an immutable set of reference data.
  *
- * Unlike `ReferenceData.of`, none of these factories adds the `ReferenceData.minimal`
- * calendars: the store holds exactly what it was given. That is the distinction the Java
- * original drew between the two `of` methods, and it is what makes this the right factory
- * for a test that means to assert that an identifier is absent, and the wrong one for
- * assembling the reference data of a running application.
+ * None of these factories adds the `ReferenceData.minimal` calendars, which is what
+ * distinguishes them from `ReferenceData.of`: the store holds exactly what it was given.
+ * That makes this the right way to build a store whose lookups are meant to be empty for
+ * everything it was not handed, and the wrong one for assembling the reference data of a
+ * running application.
  */
 object ImmutableReferenceData {
 
@@ -709,7 +676,7 @@ object ImmutableReferenceData {
    *
    * The sort belongs to the contract rather than to presentation: it is what makes the
    * failure a function of the set of entries, so the same ambiguity is reported as the same
-   * value however the caller assembled its list, and a test may state the expected text.
+   * value however the caller assembled its list.
    *
    * @param entries  the reference data entries
    * @return the reference data holding exactly the entries, or the failure describing the
@@ -736,8 +703,8 @@ object ImmutableReferenceData {
    * Obtains an instance from a single reference data entry.
    *
    * This cannot fail - one entry cannot duplicate an identifier, and the identifier fixes
-   * the type of the value - so it returns the store directly. It is primarily of interest
-   * to test cases, which is what the Java original said of the method it mirrors:
+   * the type of the value - so it returns the store directly. It is the shortest way to
+   * assemble a store where one item of reference data is all a caller has to supply:
    *
    * {{{
    * val refData = ImmutableReferenceData.of(HolidayCalendarIds.GBLO, calendar)
@@ -802,12 +769,10 @@ object ImmutableReferenceData {
  * val refData = myData.combinedWith(ReferenceData.standard)
  * }}}
  *
- * Constructing one directly is equivalent and is what a test asserting the combination
- * itself does. The Java original made this type package-private and accessible only through
- * that method; the Scala type is public because a case class synthesises a public `apply`
- * from a private constructor regardless, so hiding it would take a hand-written companion
- * for no benefit - the type has no invariant to protect, both fields being immutable
- * reference data.
+ * Constructing one directly is equivalent, and the type is public so that a caller may do
+ * so: it has no invariant to protect, both fields being immutable reference data, and a case
+ * class synthesises a public `apply` from a private constructor regardless, so hiding it
+ * would take a hand-written companion for no benefit.
  *
  * Equality is the structural equality of the case class, comparing the two underlying sets
  * in order, so combining the same two sets the other way round gives an unequal - and
@@ -818,14 +783,15 @@ object ImmutableReferenceData {
  * @param refData2  the second set of reference data, consulted for identifiers the first
  *   does not hold
  */
-final case class CombinedReferenceData(refData1: ReferenceData, refData2: ReferenceData) extends ReferenceData {
+final case class CombinedReferenceData(refData1: ReferenceData, refData2: ReferenceData)
+    extends ReferenceData
+    with NoJavaSerialization {
 
   /**
    * Checks if either underlying set of reference data contains a value for the identifier.
    *
    * The second set is asked only when the first does not hold the identifier, so a source
-   * whose membership test is expensive is not consulted needlessly. This mirrors the
-   * `containsValue` of the Java original, which short-circuited for the same reason.
+   * whose membership test is expensive is not consulted needlessly.
    *
    * @param id  the identifier to find
    * @return true if either underlying set contains a value for the identifier
@@ -837,8 +803,8 @@ final case class CombinedReferenceData(refData1: ReferenceData, refData2: Refere
    * Finds the reference data value, preferring the first underlying set.
    *
    * The lookup against the second set is evaluated only if the first comes back empty,
-   * `orElse` taking its argument by name; that is the same short circuit the Java original
-   * expressed by testing whether its first result was present.
+   * `orElse` taking its argument by name, so the second source is not consulted for an
+   * identifier the first holds.
    *
    * @tparam T  the type of the reference data value
    * @param id  the identifier to find

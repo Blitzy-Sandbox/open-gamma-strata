@@ -23,20 +23,16 @@ import com.opengamma.strata.collect.ArgCheck
  * turns into the members of its closed family. Nothing is defined here, so a constant and the
  * family can never describe the same index differently.
  *
- * The Java class being ported reached its instances through an `ExtendedEnum` registry, and said
- * in a comment that the indirection existed so the constants could be replaced by configuration
- * on the classpath. That registry is deliberately not ported: the family is closed, its members
- * are fixed at compile time, and resolution here is an ordinary lookup by name against it. There
- * is no registry, no reflection and no resource to read, so what `IborIndices.GBP_LIBOR_3M`
- * denotes is settled by this build rather than by whatever happens to be on the classpath.
+ * The family is closed and its members are fixed at compile time, so resolution here is an
+ * ordinary lookup by name against it: what `IborIndices.GBP_LIBOR_3M` denotes is settled by this
+ * build.
  *
  * ===Only some indices have a constant===
  *
  * The family has far more members than this object has constants - a constant exists for the
  * indices that come with example holiday calendar data, which is a subset of the published
- * table. The asymmetry is inherited from the Java original and is preserved exactly: no constant
- * is added and none is dropped. An index without a constant is not missing and is reached by
- * name through `IborIndex.valueOf` or `IborIndex.parse`, or found among `IborIndex.values`.
+ * table. An index without a constant is not missing and is reached by name through
+ * `IborIndex.valueOf` or `IborIndex.parse`, or found among `IborIndex.values`.
  *
  * For the same reason this object exposes ''only'' the constants. It publishes no `values`
  * sequence and no lookup map, because the companion of the family already provides both and a
@@ -44,27 +40,19 @@ import com.opengamma.strata.collect.ArgCheck
  *
  * ===Initialisation===
  *
- * The constants are eager, as the Java static fields were. Each one resolves its name against
- * the family the first time this object is touched, so a name that the family does not carry is
- * reported then - at once, and for every constant - rather than lying dormant until some later
- * caller happens to read that one field. The cost is one lookup per constant, paid once.
+ * The constants are eager. Each one resolves its name against the family the first time this
+ * object is touched, so a name that the family does not carry is reported then - at once, and
+ * for every constant - rather than lying dormant until some later caller happens to read that
+ * one field. The cost is one lookup per constant, paid once.
  *
- * ===Deliberate divergence: deprecation is documented, not annotated===
+ * ===Deprecation is stated, not annotated===
  *
- * Seven of the constants below carry an `@deprecated` note in the Javadoc of the Java original,
- * recording the date each rate stopped being published. Those notes are reproduced verbatim as
- * documentation, but no `@deprecated` annotation is attached to the members.
- *
- * The reason is that the note describes the rate, not this API. Nothing here is superseded and
- * there is nothing for a caller to migrate to: the index still exists, still has a definition,
- * and is still the right thing to reference when valuing a trade that was struck against it. The
- * state the note reports is already carried by the domain data, where every one of those seven
- * indices is marked inactive and can be tested with `IborIndex.active`, which is a value a
- * caller can branch on rather than a warning the compiler emits. Attaching the annotation as
- * well would additionally make every mention of those seven constants a build failure, because
- * this build reports deprecation as a warning and treats warnings as errors - and would do so in
- * the tests and callers that must reference them precisely ''in order'' to assert that the
- * inactive indices are still present and correct.
+ * Seven of the constants below document the date the rate they name stopped being published.
+ * Each of those constants is kept, because trades struck against that rate, and the documents
+ * stored with them, still name it, and the index still has a definition to value them with.
+ * None of them carries a deprecation annotation: whether a rate is still published is carried by
+ * the `active` flag of the index itself, which is `false` for each of those seven and which a
+ * caller can read and branch on.
  *
  * ===Thread safety===
  *
@@ -79,11 +67,10 @@ object IborIndices {
    * A lookup here returning nothing does not mean a caller asked for something unreasonable; it
    * means this object and the data table behind [[IborIndex]] disagree about what the family
    * contains. Both are fixed at compile time and neither is reachable from outside this library,
-   * so a disagreement between them is a defect in the port - a mistranscribed name string - and
-   * not a data-dependent failure that any caller could anticipate, recover from or be given as a
-   * value to inspect. It is therefore reported fail-fast through `ArgCheck`, which raises
-   * `IllegalArgumentException` exactly as the static initialiser of the Java original did when
-   * its own lookup failed.
+   * so a disagreement between them is a defect in this module - a mistranscribed name string -
+   * and not a data-dependent failure that any caller could anticipate, recover from or be given
+   * as a value to inspect. It is therefore reported fail-fast through `ArgCheck`, which raises
+   * `IllegalArgumentException`, so that the first touch of this object reports the breach.
    *
    * @param name the name the published index data gives the index, such as `GBP-LIBOR-3M`
    * @return the index of that name
@@ -92,14 +79,12 @@ object IborIndices {
   private def builtIn(name: String): IborIndex =
     IborIndex.valueOf(name).getOrElse {
       val message = s"Unknown built-in Ibor index: $name"
-      // Raises IllegalArgumentException; ArgCheck is the one place in either module that throws.
       ArgCheck.isTrue(false, message)
       // Unreachable: the check above never returns for a false condition. The call supplies the
       // `Nothing` that the result type of this method needs, and is not a second failure path.
       sys.error(message)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week LIBOR index for GBP.
    *
@@ -137,7 +122,6 @@ object IborIndices {
    */
   val GBP_LIBOR_12M: IborIndex = builtIn("GBP-LIBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week LIBOR index for CHF.
    *
@@ -175,7 +159,6 @@ object IborIndices {
    */
   val CHF_LIBOR_12M: IborIndex = builtIn("CHF-LIBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week LIBOR index for EUR.
    *
@@ -213,7 +196,6 @@ object IborIndices {
    */
   val EUR_LIBOR_12M: IborIndex = builtIn("EUR-LIBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week LIBOR index for JPY.
    *
@@ -251,7 +233,6 @@ object IborIndices {
    */
   val JPY_LIBOR_12M: IborIndex = builtIn("JPY-LIBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week LIBOR index for USD.
    *
@@ -289,7 +270,6 @@ object IborIndices {
    */
   val USD_LIBOR_12M: IborIndex = builtIn("USD-LIBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week EURIBOR index.
    *
@@ -345,7 +325,6 @@ object IborIndices {
    */
   val EUR_EURIBOR_12M: IborIndex = builtIn("EUR-EURIBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week TIBOR (Japan) index.
    *
@@ -385,7 +364,6 @@ object IborIndices {
    */
   val JPY_TIBOR_JAPAN_12M: IborIndex = builtIn("JPY-TIBOR-JAPAN-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week TIBOR (Euroyen) index.
    *
@@ -425,7 +403,6 @@ object IborIndices {
    */
   val JPY_TIBOR_EUROYEN_12M: IborIndex = builtIn("JPY-TIBOR-EUROYEN-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 month BBSW index.
    *
@@ -463,7 +440,6 @@ object IborIndices {
    */
   val AUD_BBSW_6M: IborIndex = builtIn("AUD-BBSW-6M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 month CDOR index.
    *
@@ -499,7 +475,6 @@ object IborIndices {
    */
   val CAD_CDOR_12M: IborIndex = builtIn("CAD-CDOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week PRIBOR index.
    *
@@ -549,7 +524,6 @@ object IborIndices {
    */
   val CZK_PRIBOR_12M: IborIndex = builtIn("CZK-PRIBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week CIBOR index.
    *
@@ -599,7 +573,6 @@ object IborIndices {
    */
   val DKK_CIBOR_12M: IborIndex = builtIn("DKK-CIBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week BUBOR index.
    *
@@ -649,7 +622,6 @@ object IborIndices {
    */
   val HUF_BUBOR_12M: IborIndex = builtIn("HUF-BUBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 4 week TIIE index.
    *
@@ -669,7 +641,6 @@ object IborIndices {
    */
   val MXN_TIIE_26W: IborIndex = builtIn("MXN-TIIE-26W")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week NIBOR index.
    *
@@ -701,7 +672,6 @@ object IborIndices {
    */
   val NOK_NIBOR_6M: IborIndex = builtIn("NOK-NIBOR-6M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 month BKBM index.
    *
@@ -739,7 +709,6 @@ object IborIndices {
    */
   val NZD_BKBM_6M: IborIndex = builtIn("NZD-BKBM-6M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week WIBOR index.
    *
@@ -771,7 +740,6 @@ object IborIndices {
    */
   val PLN_WIBOR_12M: IborIndex = builtIn("PLN-WIBOR-12M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 week STIBOR index.
    *
@@ -803,29 +771,28 @@ object IborIndices {
    */
   val SEK_STIBOR_6M: IborIndex = builtIn("SEK-STIBOR-6M")
 
-  //-------------------------------------------------------------------------
   /**
    * The 1 month JIBAR index.
    *
-   * The "Johannnesburg Interbank Average Rate".
+   * The "Johannesburg Interbank Average Rate".
    */
   val ZAR_JIBAR_1M: IborIndex = builtIn("ZAR-JIBAR-1M")
   /**
    * The 3 month JIBAR index.
    *
-   * The "Johannnesburg Interbank Average Rate".
+   * The "Johannesburg Interbank Average Rate".
    */
   val ZAR_JIBAR_3M: IborIndex = builtIn("ZAR-JIBAR-3M")
   /**
    * The 6 month JIBAR index.
    *
-   * The "Johannnesburg Interbank Average Rate".
+   * The "Johannesburg Interbank Average Rate".
    */
   val ZAR_JIBAR_6M: IborIndex = builtIn("ZAR-JIBAR-6M")
   /**
    * The 12 month JIBAR index.
    *
-   * The "Johannnesburg Interbank Average Rate".
+   * The "Johannesburg Interbank Average Rate".
    */
   val ZAR_JIBAR_12M: IborIndex = builtIn("ZAR-JIBAR-12M")
 }

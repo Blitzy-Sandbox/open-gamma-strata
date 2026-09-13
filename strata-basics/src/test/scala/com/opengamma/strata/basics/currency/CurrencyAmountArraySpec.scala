@@ -31,72 +31,28 @@ import com.opengamma.strata.collect.testkit.Outcome
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
- * Test [[CurrencyAmountArray]], ported from the Java `CurrencyAmountArrayTest`.
+ * Test [[CurrencyAmountArray]].
  *
- * The original holds twelve test methods, and this suite holds those twelve ported methods -
- * each under the name the original gave it, so that a Java test method and a test of this suite
- * stay in one-to-one correspondence in the migration manifest - plus one case of this port's own.
- * That thirteenth test covers the '''empty''' run: the direct factory of this type is total and
- * admits an array of no values, the Java test built runs of three elements only, and no other
- * suite of the module reached the boundary, so a regression that rejected an empty run or
- * mis-sized it would have failed nothing. It carries a descriptive name rather than a Java one
- * because there is no Java method it corresponds to.
+ * The amounts a caller reads are kept as one primitive array of values and a single currency, so
+ * each amount is built as it is read rather than stored: `iterator`, `toList` and `get` are three
+ * routes to the same amount and agree element by element, and an amount built from a value goes
+ * through the signed-zero normalisation of [[CurrencyAmount]], so a `-0.0` in the array is read
+ * back as `+0.0`. The factory that builds from a function reads it once per index and in index
+ * order, which is why some of the tests below count evaluations and record the indices rather
+ * than reading values only: a value-only assertion cannot tell one pass from two. The direct
+ * factory admits an array of no values, so the empty run is covered here.
  *
- * Three of the twelve keep their name and change what they assert, and each says so at the test
- * itself:
+ * The two factories that reject a mixed run of amounts report it in different words -
+ * `of(size, valueFunction)` with `Currencies differ: GBP and USD`, `of(amounts)` with the "only
+ * one" wording of `strata-collect`, `Multiple values found where only one was expected: GBP and
+ * USD`. Each is asserted as the production code words it, because that is the text a log line
+ * carries, and is pinned through `Regex.quote` so the comparison is literal rather than a pattern
+ * that happens to match.
  *
- *   - `test_plus` had a body that never called `plus`: it was a verbatim duplicate of
- *     `test_of_function_mixedCurrency`, so the member it names was covered nowhere. The name is
- *     kept and a body covering the contract of `plus` is written in its place.
- *   - `coverage` drove the reflective bean sweep of the library being ported, which no type of
- *     this port has. It asserts the equality, hashing and rendering instances that replaced the
- *     sweep, over the same two values the original built.
- *   - `test_serialization` round-tripped through Java serialization, which no type of this port
- *     supports. It asserts one concrete round trip through the codec that replaced it.
- *
- * Four further tests follow those twelve, under names of their own so that the correspondence
- * stays one-to-one. They pin the boundary between the amounts a caller holds and the single
- * primitive array their values are kept in, which the ported twelve exercise only for a three
- * element run of finite values: the order and the number of times a factory reads its input, the
- * agreement of `iterator`, `toList` and `get`, the point at which each amount is built, and the
- * normalisation an amount built from a value goes through.
- *
- * ===Failure is a value, so the fixtures are unwrapped===
- *
- * Four of the assertions of the original were `assertThatIllegalArgumentException`, and each is a
- * `Left` here: a collection or a function that does not describe one run of amounts is reported
- * by the factory, and a conversion the rate on offer cannot perform is reported by the
- * conversion. The reason is compared as a value of the closed family of reasons and the wording
- * is pinned through `Regex.quote`, so what is asserted is the literal message rather than a
- * pattern that happens to match it.
- *
- * Two wordings are worth reading twice, because the two factories that reject a mixed collection
- * of amounts do not report it identically:
- *
- *   - `of(size, valueFunction)` carries the wording of the implementation being ported,
- *     `Currencies differ: GBP and USD`.
- *   - `of(amounts)` reads the currencies of the collection through the "only one" check of
- *     `strata-collect` and carries that check's wording,
- *     `Multiple values found where only one was expected: GBP and USD`. The implementation being
- *     ported reached the same conclusion through the same shared helper - a stream reduction that
- *     threw from inside `Guavate.ensureOnlyOne` - so the route is the one it took and only the
- *     text differs. It is asserted as the production code words it, which is what a log line
- *     carries.
- *
- * The fixtures themselves are built through [[unwrap]], the single unwrapping helper of the
- * suite, so a fixture that fails to build is reported as a failed test naming the reason rather
- * than raising from somewhere else.
- *
- * ===What is asserted elsewhere===
- *
- * The compile-time proofs that this type has no public `apply`, no `copy` and no reachable
- * escape hatch into the backing array belong to `ApiSurfaceSpec`; the sweep over every validated
- * factory of the module to `SmartConstructorSpec`; the sweep over every failable method to
- * `FailableSurfaceSpec`; the typeclass laws to `TypeclassLawsSpec`; the property-based round trip
- * of every codec to `json.JsonRoundTripSpec`; the numerical parity of currency arithmetic against
- * the Java baseline to `parity.CurrencyMathParitySpec`, and of the underlying array itself to
- * `strata-collect`'s `parity.DoubleArrayParitySpec`. This suite asserts the cases of the Java
- * test it is ported from.
+ * The element invariant of the type - every value of an array is a value [[CurrencyAmount]]
+ * holds, so a value that is not a number is not an element of a run at all - is asserted in both
+ * of the channels that state it: the raise of the routes that are total in signature, and the
+ * failure of the routes that already report one.
  *
  * @see [[CurrencyAmountArray]] for the type under test
  * @see [[CurrencyAmount]] for a single amount
@@ -104,25 +60,16 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  */
 final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
 
-  /** The values of the fixture array, as the original wrote them. */
   private val Values: DoubleArray = DoubleArray.of(1d, 2d, 3d)
 
-  /** The rate of the conversion tests, as the original wrote it. */
   private val Rate: Double = 1.61d
 
-  /** The wording reported when two arrays that have to be combined differ in size. */
   private val SizeMismatchMessage: String = "Sizes must be equal, this size is 3, other size is 2"
 
-  /** The wording reported when an array is combined with amounts of another currency. */
   private val CurrencyMismatchMessage: String =
     "Currencies must be equal, this currency is GBP, other currency is USD"
 
-  /**
-   * A value of a type unrelated to an array, for the equality assertion that needs one.
-   *
-   * Held at the type `Any` so that the comparison reads as one against a foreign value rather
-   * than as one the compiler could reject outright.
-   */
+  /** Typed `Any` so the foreign-value equality assertion compiles as a comparison. */
   private val ForeignValue: Any = ""
 
   //-------------------------------------------------------------------------
@@ -134,29 +81,17 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
     test.get(0) shouldBe amountOf(GBP, 1d)
     test.get(1) shouldBe amountOf(GBP, 2d)
     test.get(2) shouldBe amountOf(GBP, 3d)
-    // the stream of the original is an iterator here, and the eager form of it is `toList`
     test.iterator.toList shouldBe gbpAmounts
     test.toList shouldBe gbpAmounts
   }
 
   /**
-   * Asserts the empty run, which is the boundary of the total factory and was covered nowhere.
+   * Asserts the empty run, the other end of what the direct factory admits.
    *
-   * The three-element fixture above is the only run the Java test built through this factory, and
-   * a run of '''no''' amounts is the other end of what the factory admits: the direct factory is
-   * total, an array of no values is a `DoubleArray`, and nothing in the type rejects one. It is
-   * the collection-based factory that needs an amount - it reads the currency from the amounts it
-   * is given, so an empty collection names no currency and is reported, which
-   * `test_of_CurrencyList_mixedCurrency` asserts. The two must not be confused, and this test is
-   * where the difference is stated.
-   *
-   * Every member whose answer could plausibly depend on there being an element is asserted: the
-   * currency is carried, the size is zero, the values are the empty array, both iteration forms
-   * produce nothing, the same-currency conversion answers with the instance itself without
-   * consulting the rate, a conversion that needs a rate applies it to no elements, and the codec
-   * round trip carries the empty run back as the value it started as. A regression that rejected
-   * an empty array, that assigned it the wrong size, that lost its currency or that broke its
-   * document form would fail here.
+   * An array of no values is a `DoubleArray` and nothing in the type rejects one, so the empty
+   * run is a value: every member whose answer could depend on there being an element is asserted
+   * here. The collection-based factory is the one that needs an amount, because it reads the
+   * currency from the amounts it is given.
    */
   test("an empty run of amounts is a value the total factory builds and the codec carries") {
     val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, DoubleArray.EMPTY)
@@ -167,22 +102,16 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
     test.iterator.toList shouldBe List.empty[CurrencyAmount]
     test.toList shouldBe List.empty[CurrencyAmount]
 
-    // the run is a value of the type, so it is equal to another built the same way and to no run
-    // of another currency or length
     test shouldBe CurrencyAmountArray.of(GBP, DoubleArray.EMPTY)
     test.hashCode shouldBe CurrencyAmountArray.of(GBP, DoubleArray.EMPTY).hashCode
     Eq[CurrencyAmountArray].eqv(test, CurrencyAmountArray.of(GBP, DoubleArray.EMPTY)) shouldBe true
     Eq[CurrencyAmountArray].eqv(test, CurrencyAmountArray.of(USD, DoubleArray.EMPTY)) shouldBe false
     Eq[CurrencyAmountArray].eqv(test, CurrencyAmountArray.of(GBP, Values)) shouldBe false
 
-    // the conversion into its own currency answers with the instance and consults no rate, and a
-    // conversion that does need one applies it to no elements
     val fxRate: FxRate = unwrap(FxRate.of(GBP, USD, Rate))
     test.convertedTo(GBP, fxRate) should haveValue(test)
     test.convertedTo(USD, fxRate) should haveValue(CurrencyAmountArray.of(USD, DoubleArray.EMPTY))
 
-    // and the document form of an empty run is the currency and an empty array of values, which
-    // reads back as the run it was written from
     val encoded: Json = test.asJson
     encoded.noSpaces shouldBe """{"currency":"GBP","values":[]}"""
     encoded.as[CurrencyAmountArray] shouldBe Right(test)
@@ -204,10 +133,8 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   /**
    * Asserts that a collection naming two currencies is reported rather than thrown.
    *
-   * The wording is that of the "only one" check the factory reads the currencies through, as the
-   * note on this class explains, and the empty collection is asserted alongside: it is the other
-   * way this factory can fail and the implementation being ported described it nowhere - it read
-   * the result of an empty stream reduction and raised a no-such-element error.
+   * The wording is that of the "only one" check the factory reads the currencies through. The
+   * empty collection is asserted alongside because it is the other way this factory fails.
    */
   test("test_of_CurrencyList_mixedCurrency") {
     val mixed: List[CurrencyAmount] =
@@ -223,13 +150,7 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
       Regex.quote("Argument iterable 'amounts' must not be empty"))
   }
 
-  /**
-   * Asserts the function form, including the one-evaluation-per-index guarantee it documents.
-   *
-   * The count is kept in an atomic integer rather than in a mutable local, both because neither
-   * the domain nor the test code of this port holds one and because the counter is written from
-   * inside a function the factory calls and read after it returns.
-   */
+  /** Asserts the function form, including the one-evaluation-per-index guarantee it documents. */
   test("test_of_function") {
     val values: List[CurrencyAmount] = gbpAmounts
     val calls: AtomicInteger = new AtomicInteger(0)
@@ -246,17 +167,14 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
     test.get(2) shouldBe amountOf(GBP, 3d)
     test.iterator.toList shouldBe values
     test.toList shouldBe values
-    // the factory documents one evaluation per index, in index order, and nothing more
     calls.get() shouldBe 3
   }
 
   /**
    * Asserts that a function producing two currencies is reported rather than thrown.
    *
-   * This route carries the wording of the implementation being ported. That implementation
-   * stopped at the first amount whose currency disagreed; this one evaluates every index and
-   * reports each currency that disagrees, which is why the outcome is read for the wording of a
-   * failure it holds rather than for a single failure.
+   * The factory evaluates every index and reports each currency that disagrees, so the outcome is
+   * read for the wording of a failure it holds rather than for a single failure.
    */
   test("test_of_function_mixedCurrency") {
     val mixed: List[CurrencyAmount] =
@@ -268,48 +186,33 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   /**
-   * Asserts the contract of `plus`, which the Java method of this name asserted nowhere.
+   * Asserts the whole failable surface of `plus`, the order the two checks run in included.
    *
-   * The body of the original was a verbatim duplicate of `test_of_function_mixedCurrency` - a
-   * copy-paste that left `plus` uncovered in the very test class named after it. The name is kept
-   * because the migration manifest joins a Java test method to a test of this suite by name, and
-   * the body is written for the member the name promises, so this port strictly increases what is
-   * covered rather than reproducing the omission.
-   *
-   * What is covered is the whole failable surface of the member: the element-wise sum, a size
-   * mismatch, a currency mismatch at equal size, the precedence between those two, and the form
-   * that adds a single amount to every element. The precedence assertion is the one that could
-   * not be inferred from the others: an array differing in both size and currency is reported as
-   * differing in size, because the size is examined first, and that ordering is the behaviour of
-   * the implementation being ported rather than an accident of how it was written.
+   * `plus` examines the size before the currency, so an array differing in both is reported as
+   * differing in size and the currency check is never reached - an order that cannot be inferred
+   * from either mismatch on its own.
    */
   test("test_plus") {
     val base: CurrencyAmountArray = CurrencyAmountArray.of(GBP, Values)
 
-    // the element-wise sum, delegated to the values themselves
     base.plus(CurrencyAmountArray.of(GBP, DoubleArray.of(1d, 1d, 1d))) should
       haveValue(CurrencyAmountArray.of(GBP, DoubleArray.of(2d, 3d, 4d)))
 
-    // a size mismatch: there is no amount to add at an index only one array holds
     val shorter: FailureOr[CurrencyAmountArray] =
       base.plus(CurrencyAmountArray.of(GBP, DoubleArray.of(1d, 1d)))
     shorter should beFailureWith(FailureReason.INVALID)
     shorter should haveFailureMessageMatching(Regex.quote(SizeMismatchMessage))
 
-    // a currency mismatch at equal size: the sum of amounts of two currencies has no currency
     val otherCurrency: FailureOr[CurrencyAmountArray] =
       base.plus(CurrencyAmountArray.of(USD, DoubleArray.of(1d, 1d, 1d)))
     otherCurrency should beFailureWith(FailureReason.INVALID)
     otherCurrency should haveFailureMessageMatching(Regex.quote(CurrencyMismatchMessage))
 
-    // both wrong: the size is checked first, so that is what is reported and the currency check
-    // is never reached
     val both: FailureOr[CurrencyAmountArray] =
       base.plus(CurrencyAmountArray.of(USD, DoubleArray.of(1d, 1d)))
     both should haveFailureMessageMatching(Regex.quote(SizeMismatchMessage))
     both shouldNot haveFailureMessageMatching(Regex.quote(CurrencyMismatchMessage))
 
-    // the single-amount form shifts every element, and has no size to disagree about
     base.plus(amountOf(GBP, 0.5d)) should
       haveValue(CurrencyAmountArray.of(GBP, DoubleArray.of(1.5d, 2.5d, 3.5d)))
     val amountCurrency: FailureOr[CurrencyAmountArray] = base.plus(amountOf(USD, 0.5d))
@@ -319,12 +222,10 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   /**
-   * Asserts the conversion, with the expectation written as the products the original wrote.
+   * Asserts the conversion, with the expectation written as products rather than as decimals.
    *
-   * The expected values are `1 * 1.61`, `2 * 1.61` and `3 * 1.61` rather than the decimals those
-   * products round to, exactly as the original wrote them: typing `1.61, 3.22, 4.83` would
-   * introduce a rounding the conversion never performs and would hide a real difference behind
-   * it.
+   * Typing `1.61, 3.22, 4.83` would introduce a rounding the conversion never performs and would
+   * hide a real difference behind it.
    */
   test("test_convertedTo") {
     val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, Values)
@@ -342,9 +243,8 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   /**
    * Asserts that a conversion the rate on offer cannot perform is reported rather than thrown.
    *
-   * The reason is the one this port gives a rate that is unavailable rather than the general
-   * invalid-argument reason, so a caller can tell a conversion it could fix by supplying a rate
-   * from one it could not.
+   * The reason is the conversion reason rather than the general invalid-argument one, so a caller
+   * can tell a conversion it could fix by supplying a rate from one it could not.
    */
   test("test_convertedTo_missingFxRate") {
     val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, Values)
@@ -363,16 +263,11 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
 
   //-------------------------------------------------------------------------
   /**
-   * Asserts the instances that replaced the reflective bean sweep of the original.
+   * Asserts the equality, hashing and rendering instances over two arrays and a foreign value.
    *
-   * The original drove `coverImmutableBean` over a GBP array and `coverBeanEquals` over that
-   * array and a USD one holding the same values. Neither has a target here - nothing of this port
-   * inspects a class while the program runs - so the two values are built as the original built
-   * them and the equality, hashing and rendering instances are asserted over them directly.
-   *
-   * Equality is by currency and then by the values element by element, compared on their bit
-   * patterns, so two separately built arrays holding equal values are equal and hash alike while
-   * the two currencies keep the GBP and USD arrays apart.
+   * Equality is by currency and then by the values element by element, so two separately built
+   * arrays holding equal values are equal and hash alike while the currencies keep the GBP and
+   * USD arrays apart.
    */
   test("coverage") {
     val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, Values)
@@ -394,17 +289,12 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   }
 
   /**
-   * Asserts the codec that replaced the Java serialization round trip of the original.
+   * Asserts one concrete round trip through the codec.
    *
-   * One concrete example, which is what the original asserted: an array is an object of its
-   * currency code and its values, the keys appear in the order the type declares its fields, and
-   * the document read back is the array that was written. The sweep over every codec of the module
-   * belongs to `json.JsonRoundTripSpec`.
-   *
-   * The second half is the one element this type admits that JSON cannot express as a number. It
-   * goes through the single policy this port has for a double, which writes it as a tagged string,
-   * so every array the type admits survives the round trip - and an array is compared on bit
-   * patterns, so an infinite element decoded back is equal to the one encoded.
+   * An array is an object of its currency code and its values, the keys appear in the order the
+   * type declares its fields, and the document read back is the array that was written. An
+   * infinite element is written as a tagged string, which is how a value JSON cannot express as a
+   * number survives the round trip.
    */
   test("test_serialization") {
     val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, Values)
@@ -420,36 +310,17 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   }
 
   //-------------------------------------------------------------------------
-  // The four tests below are additions to the ported set rather than ports of Java test
-  // methods, so each carries a name of its own and none of the names above changes: the
-  // migration manifest joins a Java test method to a test of this suite by name. They pin the
-  // boundary between the amounts a caller holds and the single primitive array this type keeps
-  // their values in - the order and the number of times a factory reads its input, the
-  // agreement of the three ways of reading amounts back, when each amount is built, and the
-  // normalisation every amount built from a value goes through. The tests above exercise that
-  // boundary only for a three element run of finite values.
-
   /**
    * Asserts that the function form reads each index exactly once, in index order.
    *
-   * `test_of_function` counts the evaluations; this records the indices themselves, which is the
-   * other half of the promise the factory documents - a function that reads a sequence of inputs
-   * sees index zero first and every index exactly once, so neither the amounts nor their values
-   * may be gathered by a second pass over the function. The indices are recorded in an atomic
-   * reference over an immutable vector, which is how the suites of this port record a sequence
-   * of calls: the writes happen inside a function the factory calls and the sequence is read
-   * after it returns, and neither a mutable field nor a mutable collection is involved.
-   *
-   * The run is two hundred elements rather than three so that the order is pinned well beyond
-   * the length at which a hand-written list of expected calls stays readable.
+   * `test_of_function` counts the evaluations; this records the indices themselves, so index zero
+   * is seen first and no index twice - neither the amounts nor their values may be gathered by a
+   * second pass over the function.
    */
   test("of_function reads each index exactly once, in index order") {
     val length: Int = 200
-    // the indices the function has been passed, newest last
     val seen: AtomicReference[Vector[Int]] = new AtomicReference(Vector.empty[Int])
     val recorded: Int => CurrencyAmount = index => {
-      // bound to a wildcard because the new sequence is of no interest here; the assertions
-      // below read it back from the reference
       val _ = seen.updateAndGet(indices => indices :+ index)
       amountOf(GBP, index.toDouble)
     }
@@ -463,13 +334,15 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
    * Asserts that `iterator`, `toList` and `get` agree element by element with the values.
    *
    * The three are one behaviour reading the values of the array by index, so they agree with
-   * each other and with the array itself, in index order, for every value this type admits -
-   * the two infinities included, which are values [[CurrencyAmount]] holds.
+   * each other and with the array itself, in index order, over the whole element domain of this
+   * type - every finite value, both infinities, which are values [[CurrencyAmount]] holds, and a
+   * signed zero, which it normalises. There is no fourth case: a value that is not a number is
+   * not an element of a run at all, which the element invariant asserted below establishes
+   * before an array exists, so none of the three can be presented with one.
    *
-   * A value that is not a number is the one value [[CurrencyAmount]] does not hold, and it is
-   * refused as the amount for that element is built rather than earlier: obtaining the iterator
-   * reads no element and raises nothing, while reading the element raises whichever of the three
-   * routes reads it.
+   * That is the point worth stating here: reading an element of a run is total. It raises
+   * nothing, it reports nothing, and it cannot be the place where a value smuggled in through
+   * some other route is discovered.
    */
   test("iterator, toList and get agree element by element with the values") {
     val values: DoubleArray =
@@ -481,83 +354,159 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
     test.iterator.toList shouldBe byIndex
     test.toList shouldBe byIndex
 
-    val withNotANumber: CurrencyAmountArray =
-      CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.NaN))
-    // obtaining the iterator reads no element, so nothing is raised by the call itself
-    noException should be thrownBy withNotANumber.iterator
-    an[IllegalArgumentException] should be thrownBy withNotANumber.get(1)
-    an[IllegalArgumentException] should be thrownBy withNotANumber.iterator.toList
-    an[IllegalArgumentException] should be thrownBy withNotANumber.toList
+    // the three routes read every element of the domain without raising, the infinities
+    // included, and obtaining the traversal reads nothing at all
+    noException should be thrownBy test.iterator
+    noException should be thrownBy test.iterator.toList
+    noException should be thrownBy test.toList
+    noException should be thrownBy List.range(0, test.size).map(index => test.get(index))
   }
 
   /**
    * Asserts that the iterator builds an amount only when it is read.
    *
-   * The element that is not a number sits at index one, so an iterator that built every amount
-   * when it was obtained, or read ahead of the caller, would raise the invariant of
-   * [[CurrencyAmount]] before the first amount could be taken. Taking the first amount and
-   * stopping therefore both succeeds and proves that a caller which stops early never pays for
-   * the rest of the run - which is what the member documents and what makes it the counterpart
-   * of the stream of the implementation being ported rather than of its list.
+   * Nothing is materialised when the traversal is obtained: the amounts are produced by the
+   * reads that ask for them. Two reads of one index are the observable consequence - they answer
+   * with two amounts that are equal and are not the same object, which a traversal holding
+   * amounts it had built up front could not do - and a consumer that stops early takes exactly
+   * the prefix it asked for.
+   *
+   * The assertion no longer runs through an element that is not a number, as it once did: such
+   * an element is not a value of this type, so it cannot be used to observe when an amount is
+   * built. What replaced it observes the same thing without depending on a refusal.
    */
   test("the iterator builds an amount only when it is read") {
-    val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.NaN))
+    val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, Values)
+    val first: CurrencyAmount = test.iterator.next()
+    val again: CurrencyAmount = test.iterator.next()
+    first shouldBe again
+    // two separate objects, so neither traversal handed out an amount it had built beforehand
+    (first eq again) shouldBe false
     test.iterator.take(1).toList shouldBe List(amountOf(GBP, 1d))
+    test.iterator.take(2).toList shouldBe List(amountOf(GBP, 1d), amountOf(GBP, 2d))
+  }
+
+  /**
+   * Asserts the element invariant on the routes that are total in signature.
+   *
+   * A value that is not a number is a value [[CurrencyAmount]] does not hold, so it is not a
+   * value an element of a run holds either, and this is where that is stated for the three
+   * routes whose signature has nowhere to report it: the direct factory, which takes the numbers
+   * a caller holds, and the two arithmetic members that produce numbers of their own. Each
+   * raises the documented invariant naming the argument and the index, exactly as the arithmetic
+   * of [[CurrencyAmount]] raises its own for the sum of two opposite infinities.
+   *
+   * The index matters as much as the refusal: a run of a hundred thousand values that is merely
+   * "not a number somewhere" tells a caller nothing about which value to look at.
+   */
+  test("the element invariant refuses a value that is not a number where a route is total") {
+    the[IllegalArgumentException] thrownBy
+      CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.NaN)) should have message
+      "Argument 'values' must not be NaN at index 1"
+    the[IllegalArgumentException] thrownBy
+      CurrencyAmountArray.of(GBP, DoubleArray.of(Double.NaN)) should have message
+      "Argument 'values' must not be NaN at index 0"
+
+    // an operation that produces such a value is refused where it is produced: zero times an
+    // infinite element, and a mapping that answers with one directly
+    val infinite: CurrencyAmountArray =
+      CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.PositiveInfinity))
+    the[IllegalArgumentException] thrownBy infinite.multipliedBy(0d) should have message
+      "Argument 'values' must not be NaN at index 1"
+    the[IllegalArgumentException] thrownBy
+      CurrencyAmountArray.of(GBP, Values).mapAmounts(_ => Double.NaN) should have message
+      "Argument 'values' must not be NaN at index 0"
+
+    // and the infinities themselves are elements the type holds, so the invariant is about the
+    // one value it refuses rather than about non-finite values in general
+    infinite.values.get(1).isPosInfinity shouldBe true
+    infinite.multipliedBy(2d).values shouldBe DoubleArray.of(2d, Double.PositiveInfinity)
+  }
+
+  /**
+   * Asserts the element invariant on the routes that already report failures.
+   *
+   * Where a member has a failure channel of its own, a refused element is reported in it rather
+   * than raised out of it - which is what makes a sum of opposed infinities and a conversion at
+   * a rate that is not a number answers a caller reads. The wording is the one the raising
+   * routes use, so the two channels cannot describe the same refusal differently.
+   *
+   * The existing checks of each member keep their precedence: `plus` reports the size and then
+   * the currency of the other array, and only an addition that actually happened can report a
+   * sum. The rate of the conversion is one an [[FxRate]] holds - it is neither negative nor
+   * zero, which is all that type asks - so this is reachable without inventing a provider.
+   */
+  test("the element invariant is reported where a route already reports") {
+    val positive: CurrencyAmountArray =
+      CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.PositiveInfinity))
+    val negative: CurrencyAmountArray =
+      CurrencyAmountArray.of(GBP, DoubleArray.of(1d, Double.NegativeInfinity))
+
+    val sum: FailureOr[CurrencyAmountArray] = positive.plus(negative)
+    sum should beFailureWith(FailureReason.INVALID)
+    sum should haveFailureMessageMatching(
+      Regex.quote("Argument 'values' must not be NaN at index 1"))
+
+    val difference: FailureOr[CurrencyAmountArray] = positive.minus(positive)
+    difference should beFailureWith(FailureReason.INVALID)
+    difference should haveFailureMessageMatching(
+      Regex.quote("Argument 'values' must not be NaN at index 1"))
+
+    // the single-amount forms report the same way, and the index named is the first offending
+    // element rather than the first element
+    positive.plus(amountOf(GBP, Double.NegativeInfinity)) should
+      haveFailureMessageMatching(Regex.quote("Argument 'values' must not be NaN at index 1"))
+    CurrencyAmountArray
+      .of(GBP, DoubleArray.of(Double.PositiveInfinity, 1d))
+      .minus(amountOf(GBP, Double.PositiveInfinity)) should
+      haveFailureMessageMatching(Regex.quote("Argument 'values' must not be NaN at index 0"))
+
+    // a rate that is not a number is a rate the type holds, and the conversion reports the
+    // values it would have produced rather than raising from underneath the failure channel
+    val notANumberRate: FxRate = unwrap(FxRate.of(GBP, USD, Double.NaN))
+    val converted: FailureOr[CurrencyAmountArray] =
+      CurrencyAmountArray.of(GBP, Values).convertedTo(USD, notANumberRate)
+    converted should beFailureWith(FailureReason.INVALID)
+    converted should haveFailureMessageMatching(
+      Regex.quote("Argument 'values' must not be NaN at index 0"))
+
+    // the size and currency checks still come first, so an array that differs in size reports
+    // that and never reaches the addition
+    val shorter: FailureOr[CurrencyAmountArray] =
+      positive.plus(CurrencyAmountArray.of(GBP, DoubleArray.of(1d)))
+    shorter should haveFailureMessageMatching(
+      Regex.quote("Sizes must be equal, this size is 2, other size is 1"))
   }
 
   /**
    * Asserts that an amount built from a negative zero value is normalised.
    *
-   * The array holds the value it was given, negative zero and all, because it neither examines
-   * nor changes the numbers handed to the total factory. Every amount read back out of it,
-   * however, is built through the construction path of [[CurrencyAmount]] and therefore carries
-   * that type's normalisation of the sign of zero - so the array keeps a negative zero while
-   * every route that reads it answers with a positive one.
-   *
-   * That difference is the assertion worth having here: it is observable only because both are
-   * compared on their bit patterns, and it is what shows that reading an element still performs
-   * the whole invariant of [[CurrencyAmount]] rather than pairing a number with a currency.
+   * The total factory neither examines nor changes the numbers it is handed, so the array keeps
+   * the negative zero, while every amount read back out of it is built through the construction
+   * path of [[CurrencyAmount]] and carries that type's normalisation of the sign of zero. The
+   * difference is asserted with `java.lang.Double.compare`, which separates `-0.0` from `+0.0`
+   * where `==` treats them as equal.
    */
   test("an amount built from a negative zero value is normalised") {
     val test: CurrencyAmountArray = CurrencyAmountArray.of(GBP, DoubleArray.of(-0d, 1d))
-    // the array keeps the value it was given: compared on bit patterns, -0.0 is not 0.0
+    // the array keeps the value it was given, which only a sign-aware comparison sees
     java.lang.Double.compare(test.values.get(0), -0d) shouldBe 0
     java.lang.Double.compare(test.values.get(0), 0d) should not be 0
-    // every route that builds an amount from that value normalises the sign
     java.lang.Double.compare(test.get(0).amount, 0d) shouldBe 0
     java.lang.Double.compare(test.toList.head.amount, 0d) shouldBe 0
     java.lang.Double.compare(test.iterator.toList.head.amount, 0d) shouldBe 0
-    // and the amounts are consequently equal to the amount the checking factory builds from a
-    // positive zero, equality of an amount being on the bit pattern of its number too
+    // equality of an amount compares its number the same way, so the normalised amounts are equal
+    // to one the checking factory builds from a positive zero
     test.get(0) shouldBe amountOf(GBP, 0d)
     test.iterator.toList shouldBe List(amountOf(GBP, 0d), amountOf(GBP, 1d))
   }
 
   /**
-   * Asserts that traversing the amounts crosses no boxing adapter, element by element.
+   * Asserts on the compiled form that traversing the amounts boxes neither index nor value.
    *
-   * The representation of this type exists to hold a run of amounts as one currency and one
-   * primitive array rather than as an object per element, and a traversal that boxed something
-   * per element would give back a share of what that buys - the numbers on their way out, or the
-   * indices on their way in. The property is therefore about the compiled form rather than about
-   * an answer, and it is asserted here on the compiled form directly, which is the only place it
-   * is visible: a behavioural test cannot distinguish a boxed traversal from an unboxed one.
-   *
-   * Three things are read, and together they cover both operands:
-   *
-   *   - the traversal has '''no mapping function''' left on the type at all. A traversal written
-   *     as a mapped range of indices compiles to a synthetic `$anonfun$iterator$…` method taking
-   *     its index as an object, and it is that method which unboxes per element; no method of
-   *     that name exists;
-   *   - the element accessor of the view the traversal reads takes its index as a
-   *     '''primitive''' `int` and answers with a [[CurrencyAmount]], so an index reaches the
-   *     array without being boxed and an amount leaves without being wrapped;
-   *   - the compiled view names '''no primitive adapter''' of the runtime at all, which is read
-   *     from its class file rather than inferred: no `BoxesRunTime` and no `valueOf` of a boxed
-   *     primitive appears anywhere in it.
-   *
-   * The class file is read from the class path as a resource and searched as bytes, so the
-   * assertion is on what the compiler actually emitted for this run of the suite.
+   * A behavioural test cannot distinguish a boxed traversal from an unboxed one, so what is read
+   * is the declared methods of the type and of the view it traverses, and the bytes of the view's
+   * class file as they were emitted for this run.
    */
   test("traversing the amounts crosses no boxing adapter") {
     val traversal: Class[_] =
@@ -588,11 +537,9 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   /**
    * Reads the compiled form of a class as text, for an assertion about what was emitted.
    *
-   * The class file is taken from the class path the suite is running against, so what is searched
-   * is the form produced by the compilation under test rather than a rebuild of it. The bytes are
-   * read as `ISO-8859-1` because that maps every byte to exactly one character: the names of the
-   * methods a class refers to are plain ASCII in its constant pool, so searching the text for one
-   * finds the reference and nothing else can be lost in the decoding.
+   * The bytes are read as `ISO-8859-1` because that maps every byte to exactly one character: the
+   * names a class refers to are plain ASCII in its constant pool, so searching the text for one
+   * finds the reference and nothing is lost in the decoding.
    *
    * @param target  the class whose compiled form is wanted
    * @return the bytes of its class file, one byte per character
@@ -608,12 +555,9 @@ final class CurrencyAmountArraySpec extends AnyFunSuite with Matchers {
   /**
    * Reads the value out of an outcome that is expected to have produced one.
    *
-   * This is the single unwrapping helper of the suite and it covers every shape a factory of this
-   * port returns - the single-failure outcome of [[CurrencyAmount.of]] and the accumulating
-   * outcome of [[CurrencyAmountArray.of]] and [[FxRate.of]] - through the same type class the
-   * matchers of this port are resolved by. An outcome carrying failures is reported as a failed
-   * test naming every one of them, so a fixture that cannot be built never appears as an error
-   * raised from an unrelated line.
+   * Both shapes the factories here return are covered - a single failure and an accumulated chain
+   * - and an outcome carrying failures is reported as a failed test naming every one of them, so
+   * a fixture that cannot be built never appears as an error raised from an unrelated line.
    *
    * @param outcome  the outcome expected to carry a value
    * @param shape  the view of that outcome as failures and a value

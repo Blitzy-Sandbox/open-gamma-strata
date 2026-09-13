@@ -17,7 +17,9 @@ import cats.data.NonEmptyList
 
 import io.circe.Codec
 
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
@@ -42,14 +44,14 @@ import com.opengamma.strata.collect.result.Failure
  * determined ''backwards'' from the end date of the schedule, with remaining days allocated to
  * the stub. The `ShortFinal`, `LongFinal` or `SmartFinal` convention causes the regular periods
  * to be determined ''forwards'' from the start date of the schedule, with remaining days
- * allocated to the stub. The `None` convention may be used to explicitly indicate there are no
- * stubs, and the `Both` convention to indicate there is both an initial and a final stub, which
- * must then be identified by dates.
+ * allocated to the stub. The `None` convention states explicitly that there are no stubs, and the
+ * `Both` convention that there is both an initial and a final stub, which must then be identified
+ * by dates.
  *
  * A convention is pure: every operation below is a function of its arguments and of the fixed
  * identity of the member, so the same inputs always produce the same result. Nothing is read from
- * reference data, from configuration or from the class path, and every member is immutable and
- * safe to share between threads.
+ * reference data or from configuration, and every member is immutable and safe to share between
+ * threads.
  *
  * ===A closed family===
  *
@@ -61,8 +63,8 @@ import com.opengamma.strata.collect.result.Failure
  *  - `Both`, which states that the two stubs are given by dates.
  *
  * The type is `sealed`, its constructor is not visible outside this package, and the name lookup
- * is built from those eight members alone, so nothing can add a ninth. A `match` over a
- * convention is therefore checked for exhaustiveness by the compiler.
+ * is built from those eight members alone, so nothing can add a ninth and a `match` covering the
+ * eight covers the family. Each name is a string written out beside the member it belongs to.
  *
  * The members are reached in two ways, both of which yield the same objects:
  *
@@ -71,59 +73,28 @@ import com.opengamma.strata.collect.result.Failure
  * StubConvention.parse("ShortInitial")    // text, leniently resolved
  * }}}
  *
- * ===What this replaces===
- *
- * The type being ported is a Java `enum` whose text form was derived from its constant
- * identifiers at class-initialization time by a shared, reflective name helper, and whose `of`
- * factory raised an error for text naming no constant. This port keeps both name forms and the
- * whole of the accepted name space, and discards the two mechanisms behind them. Each name is now
- * a string written out beside the member it belongs to, so it is legible in this file rather than
- * computed from an identifier; and rejected text is reported as a value, `valueOf` answering with
- * an `Option` and [[StubConvention.parse]] with a [[com.opengamma.strata.collect.result.Failure]]
- * on the left of an `EitherNec`. The annotations that registered the two directions with the
- * reflective string-conversion library of the original are gone with that library; the JSON codec
- * on the companion is their replacement and is built by the compiler.
- *
- * ===Divergences from the ported type===
- *
- * These are the deliberate differences, recorded here because they belong in the migration note:
- *
- *  - '''An invalid stub declaration is reported rather than raised.''' The ported `toImplicit`
- *    raised a `ScheduleException` carrying the offending schedule definition. That exception type
- *    has no counterpart in this port, so [[toImplicit]] returns `Either[Failure, StubConvention]`
- *    and the six rejections become a [[com.opengamma.strata.collect.result.Failure.Invalid]]
- *    carrying the ported message unchanged, together with the rendered definition under the
- *    attribute `definition`.
- *  - '''The definition is passed as rendered text.''' The ported method took the
- *    [[PeriodicSchedule]] itself, as an argument it permitted to be absent and used only for the
- *    error. This one takes the text that definition renders to, by name, so the schedule is
- *    rendered only when a rejection actually occurs, this file depends on no other type of its
- *    package, and the absent case the ported signature allowed cannot arise. A caller holding a
- *    definition passes `definition.toString`, which is the same text the ported exception carried.
- *  - '''The throwing factory is replaced by a reported one.''' The ported `of(String)` raised an
- *    error for unknown text; [[StubConvention.parse]] reports it, and [[StubConvention.valueOf]]
- *    answers with an `Option`. No throwing factory is published.
- *  - '''Absent arguments are not checked.''' The ported `toRollConvention` checked each of its
- *    three arguments for absence before using them, as a Java reference may be absent. A Scala
- *    reference of these types cannot be, so the three checks are dropped rather than reproduced,
- *    and the method keeps no error channel.
- *  - '''Accessors are renamed to Scala form.''' `getName` is [[name]]. The value it answers with
- *    is unchanged, and `toString` still returns it.
- *  - '''Java serialization is gone.''' No member is serializable through the Java mechanism. JSON
- *    is the wire form, through the codec on the companion, and a member is written as the bare
- *    string of its name.
- *  - '''The smart threshold is measured rather than stepped.''' The ported `isStubLong` of the two
- *    smart conventions asked whether seven days after the first date falls after the second, which
- *    raises `DateTimeException` for a first date within seven days of `LocalDate.MAX`. This port
- *    asks the equivalent question of the gap itself - whether fewer than seven days separate the
- *    two dates - which is total over the whole of `LocalDate` and therefore cannot take a member of
- *    this family outside the error channel of the schedule generation that calls it (AAP 0.3.3).
+ * Text naming no member of the family is reported as a value rather than raised:
+ * [[StubConvention.valueOf]] answers with an `Option` and [[StubConvention.parse]] with a
+ * [[com.opengamma.strata.collect.result.Failure]] on the left of an `EitherNec`. No factory of
+ * this family raises. An invalid declaration of explicit stubs is reported the same way, by
+ * [[toImplicit]]. JSON is the wire form, through the codec on the companion, which writes a
+ * member as the bare string of its name.
  *
  * @param name  the unique name of the convention, which is its identity in text and on the wire
  * @see [[RollConvention]] for the convention a stub convention implies
  * @see [[PeriodicSchedule]] for the schedule definition a stub convention is declared in
  */
-sealed abstract class StubConvention private[schedule] (val name: String) extends Named {
+sealed abstract class StubConvention private[schedule] (val name: String)
+    extends Named
+    with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to the package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be a ninth stub convention, shaping
+  // schedule generation by a rule outside the eight this type publishes - is refused here
+  // instead. Every member is a `case object` declared inside the companion below, which is what
+  // this admits.
+  JvmClosure.requireDeclaredMember(this, classOf[StubConvention])
 
   /**
    * Converts this stub convention to the appropriate roll convention.
@@ -195,7 +166,6 @@ sealed abstract class StubConvention private[schedule] (val name: String) extend
       StubConvention.impliedRollConvention(start, frequency, preferEndOfMonth)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this stub convention to one that creates implicit stubs, validating that any explicit
    * stubs are correct.
@@ -210,11 +180,11 @@ sealed abstract class StubConvention private[schedule] (val name: String) extend
    * example, if an initial stub is defined by dates then it cannot also be created automatically,
    * thus the implicit stub convention is `None`.
    *
-   * Where the ported method raised a `ScheduleException`, this one reports the rejection as a
-   * [[com.opengamma.strata.collect.result.Failure.Invalid]] whose message is the ported one and
-   * whose `definition` attribute holds the rendered definition. The definition is taken by name,
-   * so it is rendered only when a rejection occurs; a caller holding a [[PeriodicSchedule]] passes
-   * `definition.toString`.
+   * A declaration this convention does not admit is reported as a failure whose message names
+   * what was rejected and whose `definition` attribute holds the rendered definition. The
+   * definition is taken by name, so it is rendered only when a rejection occurs; a caller holding
+   * a [[PeriodicSchedule]] passes `definition.toString`, and the text of a definition is the only
+   * thing this decision needs from it.
    *
    * Each member states its own answer rather than inheriting one, so the eight decisions are
    * legible beside the members they belong to and a member added later cannot silently adopt
@@ -223,7 +193,10 @@ sealed abstract class StubConvention private[schedule] (val name: String) extend
    * @param definition  the text the schedule definition renders to, evaluated only on rejection
    * @param explicitInitialStub  an initial stub has been explicitly defined by dates
    * @param explicitFinalStub  a final stub has been explicitly defined by dates
-   * @return the effective stub convention, or the failure describing why the stubs are invalid
+   * @return the effective stub convention, or the failure naming the explicit stub this
+   *   convention does not admit: a stub at either end for `None`, a final stub for `ShortInitial`
+   *   and `LongInitial`, an initial stub for `ShortFinal` and `LongFinal`, or explicit stubs
+   *   missing from either end for `Both`; the two smart conventions admit every combination
    */
   private[schedule] def toImplicit(
       definition: => String,
@@ -236,7 +209,7 @@ sealed abstract class StubConvention private[schedule] (val name: String) extend
    * This is used by the smart conventions: `SmartInitial` and `SmartFinal` absorb a stub shorter
    * than seven days into the neighbouring period and retain one of seven days or more, while
    * `LongInitial` and `LongFinal` always absorb it and the remaining four members never do. The
-   * seven days are counted on unadjusted dates, as they are in the library being ported.
+   * seven days are counted on unadjusted dates.
    *
    * The two dates are the boundaries of the candidate stub, in order; the answer says whether the
    * boundary between them should be deleted so that the stub merges with the period next to it.
@@ -247,7 +220,6 @@ sealed abstract class StubConvention private[schedule] (val name: String) extend
    */
   private[schedule] def isStubLong(date1: LocalDate, date2: LocalDate): Boolean
 
-  //-------------------------------------------------------------------------
   /**
    * Checks if the schedule is calculated forwards from the start date to the end date.
    *
@@ -326,13 +298,11 @@ sealed abstract class StubConvention private[schedule] (val name: String) extend
   def isSmart: Boolean =
     this == StubConvention.SMART_INITIAL || this == StubConvention.SMART_FINAL
 
-  //-------------------------------------------------------------------------
   /**
    * Returns the formatted name of the type.
    *
    * This is the same string as [[name]], so a convention interpolated into a message renders as
-   * the mixed-case form the type being ported rendered, and agrees with the `Show` instance and
-   * with the JSON representation.
+   * its mixed-case name, and agrees with the `Show` instance and with the JSON representation.
    *
    * @return the formatted string representing the type
    */
@@ -343,23 +313,21 @@ sealed abstract class StubConvention private[schedule] (val name: String) extend
  * Provides the eight stub conventions, together with the name lookup, typeclass instances and
  * JSON codec for them.
  *
- * The members are declared in the order of the enum constants being ported, and [[values]]
- * preserves that order. Each member carries its own answer for the two package-private decisions
- * - the validation of explicit stubs and the seven-day smart rule - so the behaviour of a
- * convention is read beside the convention itself, exactly as it was read beside the constant it
- * is ported from.
+ * The members are declared in the order `None`, the three initial conventions, the three final
+ * conventions, then `Both`, and [[values]] preserves that order. Each member carries its own
+ * answer for the two package-private decisions - the validation of explicit stubs and the
+ * seven-day smart rule - so the behaviour of a convention is read beside the convention itself.
  *
- * The identifiers are the screaming-snake names of the ported constants, so a reader moving
- * between the two implementations finds the same identifiers, while the canonical names remain
- * the mixed-case strings the ported name helper produced.
+ * The identifiers are the upper-case, underscore-separated forms of the names, while the
+ * canonical names are the mixed-case strings the members carry.
  */
 object StubConvention {
 
   /**
    * Explicitly states that there are no stubs.
    *
-   * This is used to indicate that the term of the schedule evenly divides by the periodic
-   * frequency leaving no stubs. For example, a 6 month trade can be exactly divided by a 3 month
+   * This indicates that the term of the schedule evenly divides by the periodic frequency,
+   * leaving no stubs. For example, a 6 month trade can be exactly divided by a 3 month
    * frequency.
    *
    * If the term of the schedule is less than the frequency, then only one period exists. In this
@@ -460,7 +428,7 @@ object StubConvention {
    * results in a stub of less than 7 days, the stub will be combined with the next period. If this
    * results in a stub of 7 days or more, the stub will be retained. This is the equivalent of
    * [[LONG_INITIAL]] up to 7 days and [[SHORT_INITIAL]] beyond that. The 7 days are calculated
-   * based on unadjusted dates. This convention appears to match that used by Bloomberg.
+   * based on unadjusted dates.
    *
    * If there is no remaining period when calculating, then there is no stub. For example, a 6
    * month trade can be exactly divided by a 3 month frequency.
@@ -565,7 +533,7 @@ object StubConvention {
    * results in a stub of less than 7 days, the stub will be combined with the next period. If this
    * results in a stub of 7 days or more, the stub will be retained. This is the equivalent of
    * [[LONG_FINAL]] up to 7 days and [[SHORT_FINAL]] beyond that. The 7 days are calculated based
-   * on unadjusted dates. This convention appears to match that used by Bloomberg.
+   * on unadjusted dates.
    *
    * If there is no remaining period when calculating, then there is no stub. For example, a 6
    * month trade can be exactly divided by a 3 month frequency.
@@ -615,16 +583,13 @@ object StubConvention {
   }
 
 
-  //-------------------------------------------------------------------------
   /**
    * The complete set of stub conventions, in declaration order.
    *
-   * The order is the declaration order of the enum constants being ported - `None`, the three
-   * initial conventions, the three final conventions, then `Both` - and it is part of what this
-   * file preserves: it is the order the members claim their lookup keys in, the order the captured
-   * reference-data manifest lists them in, and the order a report over the family follows. It is
-   * not the order the `Order` instance below imposes, which is alphabetical by name. The list is
-   * non-empty by construction and holds exactly eight members.
+   * The order is `None`, the three initial conventions, the three final conventions, then `Both`.
+   * It is the order the members claim their lookup keys in and the order a report over the family
+   * follows, and it is '''not''' the order the `Order` instance below imposes, which is
+   * alphabetical by name. The list is non-empty by construction and holds exactly eight members.
    *
    * @return the eight conventions, in declaration order
    */
@@ -643,31 +608,28 @@ object StubConvention {
   /**
    * The spellings accepted in addition to the two keys every member is registered under.
    *
-   * The name helper of the type being ported accepted six spellings of each member: the constant
-   * identifier, the rendered name, and each of those folded to upper and to lower case. For
-   * `SHORT_INITIAL` those are `SHORT_INITIAL`, `short_initial`, `ShortInitial`, `SHORTINITIAL`
-   * and `shortinitial` - five distinct strings, the identifier already being upper case. The name
-   * lookup of a family registers each member under its rendered name and that name folded to
-   * upper case, so this table supplies precisely the remainder, and nothing beyond it:
+   * Six spellings of each member resolve: the identifier, the name, and each of those folded to
+   * upper and to lower case. For `SHORT_INITIAL` those are `SHORT_INITIAL`, `short_initial`,
+   * `ShortInitial`, `SHORTINITIAL` and `shortinitial` - five distinct strings, the identifier
+   * already being upper case. The name lookup of a family registers each member under its name
+   * and that name folded to upper case, so this table supplies precisely the remainder, and
+   * nothing beyond it:
    *
-   *  - the constant identifier and its lower-case form, for the six members whose identifier
-   *    differs from their rendered name by more than case - the underscore of `SHORT_INITIAL`
-   *    survives no case folding;
-   *  - the lower-case form of the rendered name, for every member.
+   *  - the identifier and its lower-case form, for the six members whose identifier differs from
+   *    their name by more than case - the underscore of `SHORT_INITIAL` survives no case folding;
+   *  - the lower-case form of the name, for every member.
    *
    * `NONE` and `BOTH` therefore need one row each: their identifiers are the upper-case forms of
-   * their rendered names and are already derived, leaving only `none` and `both`.
+   * their names and are already derived, leaving only `none` and `both`.
    *
    * Each row maps a spelling to a canonical name rather than to a member, which is the shape the
    * lookup takes, and the lookup expands the table with the upper-case form of every spelling in
    * it. That expansion lands only on keys which already resolve to the same member, so no row here
-   * can displace another or redirect a spelling the family already accepted.
+   * can displace another or redirect a spelling the family already accepts.
    *
    * This is the only table the family declares. It has '''no lenient patterns and no external
-   * name groups''', because the configuration of the library being ported declared neither - this
-   * family had no configuration resource at all, the whole of its name space having always been
-   * derived from its own constants. The two empty tables are passed explicitly below so that the
-   * absence is visible here rather than looked for elsewhere.
+   * name groups''': the whole name space of the family is these rows and the members' own names.
+   * The two empty tables are passed explicitly below so that the absence is visible here.
    */
   private val AlternateNames: Map[String, String] =
     Map(
@@ -697,20 +659,18 @@ object StubConvention {
    * The name lookup for this family.
    *
    * This instance is the single route from text to a convention, and it is built from [[values]]
-   * and the alternate spellings above alone. Nothing is read from a class or from the class path,
-   * so the name space of the family is fixed when this file is compiled.
+   * and the alternate spellings above alone, so the name space of the family is exactly the eight
+   * names and the spellings of that table.
    *
    * @return the name lookup for the eight conventions
    */
   implicit val namedEnum: NamedEnum[StubConvention] =
     NamedEnum.of(values, AlternateNames, Nil, Map.empty, "StubConvention")
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains the convention that the specified name identifies, if one does.
    *
-   * This is the exact lookup, and it accepts the six spellings of each member that the type being
-   * ported accepted, and only those:
+   * This is the exact lookup, and it accepts the six spellings of each member, and only those:
    *
    * {{{
    * valueOf("ShortInitial")   // Some(SHORT_INITIAL) - the rendered name
@@ -732,28 +692,24 @@ object StubConvention {
   /**
    * Parses a convention from text, tolerating the case of the input.
    *
-   * The exact lookup of [[valueOf]] is tried first, so every spelling the type being ported
-   * accepted is resolved by it. When that finds nothing, the text is folded to upper case and
-   * looked up once more, which is the whole of the leniency available to this family, since it
-   * declares no rewrite pattern for the step between the two lookups. The observable result is a
-   * lookup that ignores case while respecting every other character, so `sHoRtInItIaL` resolves
-   * here where the original rejected it, and `Short Initial` is rejected as it always was.
+   * The exact lookup of [[valueOf]] is tried first, so all six spellings of a member resolve
+   * there. When that finds nothing, the text is folded to upper case and looked up once more,
+   * which is the whole of the leniency available to this family, since it declares no rewrite
+   * pattern for the step between the two lookups. The observable result is a lookup that ignores
+   * case while respecting every other character, so `sHoRtInItIaL` resolves and `Short Initial`
+   * does not.
    *
-   * Where the original signalled an unrecognised name by raising an error, this method reports it
-   * as a value: the result is `Left` of a chain holding one
+   * An unresolved name is reported as a value: the result is `Left` of a chain holding one
    * [[com.opengamma.strata.collect.result.Failure.Parsing]] whose message names both this family
    * and the text that could not be resolved. The returned type is the same as
    * `collect.ResultNec[StubConvention]`, spelled out here for readability.
    *
-   * This method replaces the ported `of(String)`, which raised an error; no throwing factory is
-   * published by this companion.
-   *
    * @param name  the text to parse
-   * @return the convention the text names, or the failure describing why it names none
+   * @return the convention the text names, or the failure naming text that matches no name of the
+   *   family in any of its accepted spellings, case aside
    */
   def parse(name: String): EitherNec[Failure, StubConvention] = namedEnum.parse(name)
 
-  //-------------------------------------------------------------------------
   /**
    * The ordering and hashing of conventions.
    *
@@ -761,9 +717,9 @@ object StubConvention {
    * extends `Eq`, so summoning any of the three yields this one value and the three can never
    * disagree. All three are derived from `name`, which is sound because the eight names are
    * distinct and each member exists exactly once, so two conventions compare equal if, and only
-   * if, they are the same convention - the law the combined instance has to satisfy, and one that
-   * also makes this instance agree with `==` and with reference equality. Comparison by name makes
-   * the ordering alphabetical rather than the declaration ordering of the enum being ported.
+   * if, they are the same convention - which is what an ordering agreeing with equality requires,
+   * and what also makes this instance agree with `==` and with reference equality. Comparison by
+   * name makes the ordering alphabetical rather than the declaration order of [[values]].
    *
    * @return the ordering of conventions by name, which is also their hashing
    */
@@ -784,40 +740,36 @@ object StubConvention {
    * The JSON codec for conventions.
    *
    * A convention is written as the bare string of its name - `"ShortInitial"` - and never as an
-   * object, which is the single-string form the type being ported wrote through its
-   * string-conversion annotations, so a document written before this port is read after it as the
-   * same member. This is also the form a [[PeriodicSchedule]] carries its optional stub convention
-   * in, its derived product codec picking this instance up. A string is read back through
-   * [[parse]], so a document is accepted whatever the case of the name it holds, and one naming no
+   * object. This is also the form a [[PeriodicSchedule]] carries its optional stub convention in,
+   * its derived product codec picking this instance up. A string is read back through [[parse]],
+   * so a document is accepted whatever the case of the name it holds, and one naming no
    * convention of this family is rejected with a decoding failure carrying the message of the
    * parse failure.
    *
-   * The codec is assembled by the compiler from the family's own name lookup, taken from the
-   * shared JSON helpers of the collect module; nothing about it inspects a type, a class path or a
-   * configuration source while the program runs.
+   * The codec is built from the family's own name lookup, through the shared JSON helpers of the
+   * collect module.
    *
    * @return the codec reading and writing a convention as its name
    */
   implicit val codec: Codec[StubConvention] = Codecs.namedEnumCodec[StubConvention]
 
-  //-------------------------------------------------------------------------
   /** The attribute under which a rejected stub declaration carries the schedule definition. */
   private val DefinitionAttribute: String = "definition"
 
   /**
    * The length below which the two smart conventions absorb a stub into its neighbour.
    *
-   * Seven days is the threshold the library being ported used, and it is exclusive: a stub of
-   * exactly seven days is retained. It is held as a `Long` because that is the type the day count
-   * between two dates is measured in at the one call site, so no numeric widening occurs there.
+   * The threshold is exclusive: a stub of exactly seven days is retained. It is held as a `Long`
+   * because that is the type a day count between two dates is measured in at the one call site,
+   * so the comparison there is between values of one type.
    */
   private val SmartStubThresholdDays: Long = 7L
 
   /**
    * Reports an invalid stub declaration.
    *
-   * Every rejection of this family takes this shape: the reason is `INVALID`, the message is the
-   * one the ported exception carried, and the rendered schedule definition is attached under
+   * Every rejection of this family takes this shape: the reason is `INVALID`, the message names
+   * what was rejected, and the rendered schedule definition is attached under
    * [[DefinitionAttribute]] so that a report can name the definition that was rejected without
    * the message having to embed it. The definition is taken by name and is evaluated here, which
    * is to say only on the path that actually rejects.
@@ -825,24 +777,19 @@ object StubConvention {
    * ===Why the definition is attached exactly as it was rendered===
    *
    * The text is attached as the caller rendered it, with nothing dropped, shortened or escaped,
-   * because the attribute replaces the field the ported exception carried: the caller of this
-   * family is [[PeriodicSchedule]], which passes its own `toString`, and a report naming the
-   * rejected definition or a test comparing it with the definition that was supplied reads a
-   * summary rather than the definition itself if this method alters the text.
+   * so that a report naming the rejected definition reads the whole of what was supplied rather
+   * than a summary of it. The caller of this family is [[PeriodicSchedule]], which passes its own
+   * `toString`.
    *
    * That text is not constrained by this library. A schedule definition embeds a business day
    * adjustment, which names a holiday calendar identifier whose name is accepted as given, so the
    * definition may hold a line feed, a control character, or several thousand characters of
-   * anything. Making such text safe to write out belongs to the writing of the failure rather than
-   * to its construction, and that is where this port performs it: the
-   * [[com.opengamma.strata.collect.result.Failure.show]] instance, which is also the text form of
-   * every failure, bounds each part it writes - the message and the key and the value of every
-   * attribute - and escapes every character a line-oriented reader could act on. A definition
-   * attached here can consequently not forge a line of a log or a report that holds the failure
-   * (CWE-117), nor inflate that line to the size of the definition, while the attribute itself
-   * still answers with the whole of what was rendered.
+   * anything. Making such text safe to write out belongs to the rendering of a failure rather
+   * than to its construction, so a definition attached here cannot forge a line of a log or a
+   * report that holds the failure (CWE-117), nor inflate that line to the size of the definition,
+   * while the attribute itself still answers with the whole of what was rendered.
    *
-   * @param message  the message of the ported exception, verbatim
+   * @param message  the message naming what was rejected
    * @param definition  the text the rejected schedule definition renders to
    * @return the failure on the left of an `Either`
    */
@@ -874,8 +821,8 @@ object StubConvention {
    * Derives the roll convention implied by one date and a frequency.
    *
    * The date is the one the schedule rolls from - the start date when rolling forwards and the end
-   * date when rolling backwards - and it is the only date the derivation reads. The ported helper
-   * took the other date as well and never used it, so it is not a parameter here.
+   * date when rolling backwards - and it is the only date the derivation reads, which is why the
+   * other date is not a parameter.
    *
    * @param date  the date the schedule rolls from
    * @param frequency  the periodic frequency of the schedule
@@ -906,14 +853,13 @@ object StubConvention {
    * This is the rule both smart conventions apply, written once: the stub is absorbed when fewer
    * than seven days separate the two dates, so a gap of exactly seven days is retained and any
    * shorter gap - including a reversed pair, whose day count is negative - is absorbed. The dates
-   * are unadjusted, as they are in the library being ported.
+   * are unadjusted.
    *
    * The question is asked of the '''gap''' rather than by stepping seven days forward from the
    * first date, and the two are the same question by epoch-day algebra: `date1 + 7 > date2` holds
-   * exactly when `date2 - date1 < 7` does. Measuring is what makes this member total, where
-   * stepping raised for a first date within seven days of `LocalDate.MAX`; the schedule generation
-   * that asks it answers with `Either`, and a failure that depends on the dates of a definition
-   * belongs in that channel rather than in an exception (AAP 0.3.3).
+   * exactly when `date2 - date1 < 7` does. Measuring the gap is what makes this member total over
+   * the whole of `LocalDate`, where stepping forward from a date within seven days of
+   * `LocalDate.MAX` has no result to give.
    *
    * @param date1  the first date of the candidate stub
    * @param date2  the second date of the candidate stub

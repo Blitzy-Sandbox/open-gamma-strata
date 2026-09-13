@@ -21,6 +21,8 @@ import io.circe.generic.semiauto.deriveEncoder
 import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.collect.ArgCheck
 import com.opengamma.strata.collect.Decimal
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.ValidatedFailures
@@ -37,43 +39,47 @@ import com.opengamma.strata.collect.result.Failure
  *
  * Note that rounding a `Double` is not straightforward, because a floating point number is
  * based on a binary representation rather than a decimal one: the value `0.1` cannot be
- * represented exactly in a `Double`. Rounding one therefore goes through the decimal the
- * shortest text of that `Double` names, which is what the Java original did and is why the
- * three overloads below give the answers they do rather than the answers the underlying
- * binary values would give.
+ * represented exactly in a `Double`. Rounding one therefore goes through the decimal that the
+ * shortest text of that `Double` names, which is why the three overloads below give the answers
+ * they do rather than the answers the underlying binary values would give.
  *
  * ===The three overloads===
  *
  * `round(BigDecimal)` is the operation each convention defines, and the other two are
  * expressed in terms of the same rule so that a caller gets the same answer whichever
  * representation it holds. `round(Double)` converts to a `BigDecimal`, rounds, and converts
- * back, exactly as the default method of the Java interface did. `round(Decimal)` is stated by
- * each member rather than inherited, because the arithmetic of [[Decimal]] is total while
- * building one from a `BigDecimal` is not, and this operation is required to stay total; the
- * consequences of that choice are documented on the decimal overload of [[HalfUp]].
+ * back. `round(Decimal)` is stated by each member rather than inherited, because the arithmetic
+ * of [[Decimal]] is total while building one from a `BigDecimal` is not, and this operation is
+ * required to stay total; the consequences of that choice are documented on the decimal
+ * overload of [[HalfUp]].
  *
- * ===A closed hierarchy===
+ * ===A closed family===
  *
- * The Java interface invited extension: "additional implementations may be added by
- * implementing this interface". This port deliberately drops that extensibility. `Rounding` is
- * a sealed family of exactly the two conventions the library ships, so every use of one is
- * checked by the compiler for exhaustiveness, the JSON form below is a closed set of shapes,
- * and no implementation can appear whose behaviour the test suite has not measured. A caller
- * that needs a different rule composes the two members with its own code rather than adding a
- * third member here. This is a documented divergence from the original.
+ * `Rounding` is a sealed family of exactly the two conventions this library defines, so a match
+ * over a convention is checked for exhaustiveness at compile time and the JSON form below is a
+ * closed set of shapes. A caller that needs a different rule composes the two members with its
+ * own code rather than adding a third member here.
  *
- * The other deliberate divergence is a rename: the Java class `HalfUpRounding` is [[HalfUp]]
- * here, because the name of the member is also the key of its JSON form and `{"HalfUp":{...}}`
- * is the form this port specifies. The factory names - `none`, `of`, `ofDecimalPlaces`,
- * `ofFractionalDecimalPlaces` - and the property names `decimalPlaces` and `fraction` are
- * unchanged, so a ported call site reads as it did before.
+ * The name of each member is also the key of its JSON form, so a convention is written as
+ * `{"NoRounding":{}}` or `{"HalfUp":{...}}`. The four factories are `none`, `of`,
+ * `ofDecimalPlaces` and `ofFractionalDecimalPlaces`, and the two properties of the half-up
+ * convention are `decimalPlaces` and `fraction`.
  *
  * ===Thread safety===
  *
  * Every implementation is immutable and holds nothing but two integers, so an instance is safe
  * to share between any number of threads without synchronisation.
+ *
+ * ===Serialization===
+ *
+ * A rounding convention is written as JSON through the codec this file publishes and in no other
+ * form. Both members are a `case class` or a `case object`, which the compiler makes
+ * `java.io.Serializable` whether or not the library wants it, so the family's root mixes in
+ * [[NoJavaSerialization]]: [[NoRounding]] and [[HalfUp]] both refuse to be written to or read
+ * from an object stream, and a pair of integers assembled by a stream rather than by a factory of
+ * [[HalfUp]] cannot be presented as a rounding convention of this library.
  */
-sealed trait Rounding {
+sealed trait Rounding extends NoJavaSerialization {
 
   /**
    * Rounds the specified value according to the rules of the convention.
@@ -89,10 +95,9 @@ sealed trait Rounding {
   /**
    * Rounds the specified value according to the rules of the convention.
    *
-   * The value is converted to a `BigDecimal`, rounded and converted back, which is what the
-   * default method of the Java interface did, to the bit. The conversion is the one that reads
-   * the shortest text naming the `Double`, so `12.345` rounds as the decimal `12.345` and not
-   * as the slightly smaller binary value a `Double` actually holds.
+   * The value is converted to a `BigDecimal`, rounded and converted back. The conversion is the
+   * one that reads the shortest text naming the `Double`, so `12.345` rounds as the decimal
+   * `12.345` and not as the slightly smaller binary value a `Double` actually holds.
    *
    * @param value  the value to be rounded
    * @return the rounded value
@@ -102,10 +107,10 @@ sealed trait Rounding {
   /**
    * Rounds the specified value according to the rules of the convention.
    *
-   * This is stated by each member of the family rather than inherited, because the Java
-   * default built its answer through a factory that this port reports failures from, and this
-   * operation is required to stay total. Each member therefore rounds a decimal with the total
-   * arithmetic of [[Decimal]] itself.
+   * This is stated by each member of the family rather than inherited, because rounding through
+   * a `BigDecimal` would have to build a [[Decimal]] back from the result, which is an operation
+   * that reports a failure, and this one is required to stay total. Each member therefore rounds
+   * a decimal with the total arithmetic of [[Decimal]] itself.
    *
    * @param value  the value to be rounded
    * @return the rounded value
@@ -119,12 +124,11 @@ sealed trait Rounding {
  * This is the instance [[Rounding.none]] returns, and it is the identity on all three
  * representations: the value handed in is the value handed back, the same object where the
  * representation is a reference. `round(Double)` is stated here rather than inherited, so a
- * value that needs no rounding is not put through a `BigDecimal` and back - the original made
- * the same choice, and it is what keeps this convention exact for a value that no decimal
- * names, such as one that is not a number or either infinity.
+ * value that needs no rounding is not put through a `BigDecimal` and back, which is what keeps
+ * this convention exact for a value that no decimal names, such as one that is not a number or
+ * either infinity.
  *
- * Equality is the identity of a singleton, which is what the equality of the Java class - a
- * type test against a class with one instance - amounted to.
+ * Equality is the identity of a singleton: this convention has exactly one instance.
  */
 case object NoRounding extends Rounding {
 
@@ -153,7 +157,7 @@ case object NoRounding extends Rounding {
   override def round(value: Decimal): Decimal = value
 
   /**
-   * Returns the text form of this convention, which is that of the Java original.
+   * Returns the text form of this convention.
    *
    * @return `No rounding`
    */
@@ -169,9 +173,8 @@ case object NoRounding extends Rounding {
  * its market quotes in, and how a bond price is brought to the nearest thirty-second of a
  * point.
  *
- * The Java class this replaces was called `HalfUpRounding`; the name here is the shorter one
- * because it is also the key of the JSON form, `{"HalfUp":{...}}`. Both properties keep the
- * names the Java bean declared, in the same order.
+ * The name of this convention is also the key of its JSON form, `{"HalfUp":{...}}`, and both
+ * properties appear there under their own names and in declaration order.
  *
  * ===What the two fields mean===
  *
@@ -181,28 +184,26 @@ case object NoRounding extends Rounding {
  * inclusive, where 0 means there is no fractional part and rounding is to the decimal place
  * itself. Setting it to 32 rounds to the nearest one thirty-second of the last decimal place,
  * so `ofFractionalDecimalPlaces(4, 32)` rounds to the nearest 1/32nd of the fourth decimal
- * place. A fraction of 1 describes the same rounding as no fraction at all and is normalised
- * to 0 by the factories, which is why an instance never holds it.
+ * place. A fraction of 1 asks for the same rounding as no fractional part at all and is
+ * normalised to 0 by the factories, which is why an instance never holds it.
  *
  * ===Construction===
  *
  * This is a validated type: the only way to obtain one is through a factory of its companion,
- * which reports every reason the inputs describe no convention rather than throwing. The
- * primary constructor is private and no `apply` or `copy` exists, so an instance outside the
- * documented ranges cannot be built, whether by a caller, by a copy of a valid instance, or by
- * decoding a document. Pattern matching is unaffected: `unapply` is available, so
+ * and each public factory reports every bound its input breaks - the number of decimal places
+ * must be from 0 to 255 inclusive and the fraction from 0 to 256 inclusive - rather than
+ * raising. The primary constructor is private and no `apply` or `copy` exists, so an instance
+ * outside those ranges cannot be built, whether by a caller, by a copy of a valid instance, or
+ * by decoding a document. Pattern matching is unaffected: `unapply` is available, so
  * `case HalfUp(places, fraction) => ...` reads the two fields.
  *
  * ===Equality===
  *
  * Two instances are equal when both fields are equal, which is the equality synthesised for
- * this type and needs no help: the Java original compared instances by a packed hash code,
- * `(decimalPlaces << 16) + fraction`, and no two distinct pairs within the permitted ranges
- * collide there, so comparing the fields is the same relation stated directly. Both fields are
- * integers, so the bit-pattern treatment that the double-bearing types of this port apply to
- * equality does not arise here. The Java hash code value itself is not reproduced, and nothing
- * requires it to be: a hash code is not part of the contract of the type, and the value the
- * platform computes for the pair is stable within a run and across runs.
+ * this type and needs no help. Both fields are integers, so the bit-pattern treatment that the
+ * double-bearing types of this library apply to equality does not arise here. The hash code is
+ * whatever the platform computes for the pair; it is not part of the contract of the type, and
+ * it is stable within a run and across runs.
  *
  * @param decimalPlaces  the number of decimal places to round to, from 0 to 255 inclusive
  * @param fraction  the fraction of the smallest decimal place to round to, from 0 to 256
@@ -210,15 +211,41 @@ case object NoRounding extends Rounding {
  */
 sealed abstract case class HalfUp private (decimalPlaces: Int, fraction: Int) extends Rounding {
 
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // could hold a number of decimal places or a fraction outside the documented ranges - can be
+  // stopped is here. The single implementation is the companion's hidden `Impl`. The refusal of
+  // Java serialization is inherited from [[Rounding]], which carries it for the whole family.
+  JvmClosure.requireSoleImplementation(this, classOf[HalfUp.Impl])
+
+  // The invariant of this convention, stated over the two numbers the instance actually holds
+  // rather than over the arguments a factory was given, because the class file of the
+  // implementation carries a public constructor whatever the source asked for: a caller compiled
+  // outside this library can name that constructor directly, and the identity check above would
+  // admit a convention rounding to a scale `BigDecimal.setScale` cannot reach or scaling by a
+  // fraction no factory would accept. The two ranges are those of
+  // [[HalfUp.ofDecimalPlaces]] and [[HalfUp.ofFractionalDecimalPlaces]], and the third statement
+  // is the normalisation those factories apply: a fraction of 1 describes the same rounding as no
+  // fractional part, so it is mapped to 0 before an instance is built and an instance never holds
+  // it - which is what keeps two conventions that round identically equal to one another.
+  JvmClosure.requireInvariant(
+    "its number of decimal places is from 0 to 255 inclusive",
+    decimalPlaces >= 0 && decimalPlaces <= HalfUp.MaxDecimalPlaces)
+  JvmClosure.requireInvariant(
+    "its fraction is from 0 to 256 inclusive",
+    fraction >= 0 && fraction <= HalfUp.MaxFraction)
+  JvmClosure.requireInvariant(
+    "its fraction is normalised, a fraction of 1 being held as no fractional part",
+    fraction != 1)
+
   /**
    * The fraction as a `BigDecimal`, held once per instance rather than built once per call.
    *
-   * The Java original held the same value in a transient field, and held nothing at all when
-   * there was no fractional part. Nothing at all is not available to this port - no reference
-   * here is ever absent - so the field holds the fraction it was given, which is zero when
-   * there is no fractional part and is then never read. Building it is a lookup in the cache
-   * of small values of the platform for every fraction up to ten, and one small allocation
-   * beyond that, so holding it costs less than the alternative of building it per call.
+   * The field holds the fraction the instance was given, which is zero where there is no
+   * fractional part and is then never read. Building it is a lookup in the cache of small values
+   * of the platform for every fraction up to ten, and one small allocation beyond that, so
+   * holding it costs less than the alternative of building it per call.
    */
   private val fractionDecimal: BigDecimal = BigDecimal.valueOf(fraction.toLong)
 
@@ -227,15 +254,14 @@ sealed abstract case class HalfUp private (decimalPlaces: Int, fraction: Int) ex
    *
    * Where there is a fractional part the value is scaled up by the fraction, rounded to the
    * requested number of decimal places, and scaled back down; otherwise the scale is simply
-   * set. The operations and their order are those of the Java original, so this path agrees
-   * with it to the bit - including the scale of the result, which `BigDecimal` equality
-   * distinguishes: a value rounded to two decimal places comes back with a scale of exactly
-   * two, padded with zeros if need be.
+   * set. The scale of the result is the number of decimal places requested, padded with zeros
+   * if need be, which `BigDecimal` equality distinguishes: a value rounded to two decimal
+   * places comes back with a scale of exactly two.
    *
    * @param value  the value to be rounded
    * @return the rounded value, at the scale the requested rounding implies
    * @throws ArithmeticException if there is a fractional part whose division does not
-   *   terminate, which is the exact division the Java original performed
+   *   terminate, the division being exact
    */
   override def round(value: BigDecimal): BigDecimal =
     if (fraction > 1) {
@@ -252,25 +278,21 @@ sealed abstract case class HalfUp private (decimalPlaces: Int, fraction: Int) ex
    *
    * The rule is the one above, expressed in the arithmetic of [[Decimal]]: scale up by the
    * fraction, round to the requested number of decimal places, scale back down. Every step is
-   * total, which is what allows this operation to keep the total signature of the Java
-   * original. The Java default method instead rounded as a `BigDecimal` and rebuilt a decimal
-   * from the result, a step that reports a failure in this port, so it could not be reused
-   * here.
+   * total, which is what allows this operation to keep a total signature where rounding as a
+   * `BigDecimal` and rebuilding a decimal from the result would not.
    *
-   * Two consequences of taking the decimal route are deliberate and are recorded as
-   * divergences of this port:
+   * Two consequences of taking the decimal route are deliberate:
    *
    *   - where a fractional part leads to a division that does not terminate - a fraction of 3,
-   *     for example - the exact division of the Java original raises an `ArithmeticException`,
-   *     while the division of a decimal produces the quotient rounded to eighteen significant
-   *     digits. The decimal route therefore answers where the `BigDecimal` route above
-   *     refuses, and the two agree wherever the division terminates, which is every fraction
-   *     the market conventions use.
+   *     for example - the division of a decimal produces the quotient rounded to eighteen
+   *     significant digits, so this overload answers where the `BigDecimal` route above
+   *     refuses. The two agree wherever the division terminates, which is every fraction the
+   *     market conventions use.
    *   - a decimal holds a scale of at most eighteen and carries no trailing fractional zero,
    *     so a request for more decimal places than the value has leaves it unchanged rather
-   *     than padding it. The `BigDecimal` route above pads to the requested scale, as the
-   *     original did. The two values are numerically equal; they differ only in the scale, and
-   *     of the two representations only `BigDecimal` distinguishes that in equality.
+   *     than padding it, where the `BigDecimal` route above pads to the requested scale. The
+   *     two values are numerically equal; they differ only in the scale, and of the two
+   *     representations only `BigDecimal` distinguishes that in equality.
    *
    * @param value  the value to be rounded
    * @return the rounded value
@@ -286,12 +308,12 @@ sealed abstract case class HalfUp private (decimalPlaces: Int, fraction: Int) ex
     }
 
   /**
-   * Returns the text form of this convention, which is that of the Java original.
+   * Returns the text form of this convention.
    *
    * The rendering names the rounding rather than the fields, so it reads as `Round to 4dp`, or
-   * as `Round to 1/32 of 4dp` where there is a fractional part. This replaces the rendering
-   * that would otherwise be synthesised for this type, which would name the class and its two
-   * fields.
+   * as `Round to 1/32 of 4dp` where there is a fractional part. It is stated here rather than
+   * left to the rendering that would otherwise be synthesised for this type, which would name
+   * the class and its two fields.
    *
    * @return the rendering of the rounding this convention performs
    */
@@ -304,44 +326,38 @@ sealed abstract case class HalfUp private (decimalPlaces: Int, fraction: Int) ex
 /**
  * The factories, validation, instance cache and typeclass instances of [[HalfUp]].
  *
- * Every way of obtaining an instance is here, and each of the two public ones reports the
- * reasons its inputs describe no convention instead of throwing, which is what makes the type
- * impossible to hold in an invalid state. The messages are those of the Java original, word
- * for word, so a caller that logs one sees what it saw before.
+ * Every way of obtaining an instance is here, and each of the two public ones reports every
+ * bound its inputs break - the number of decimal places must be from 0 to 255 inclusive and the
+ * fraction from 0 to 256 inclusive - instead of raising, which is what makes the type impossible
+ * to hold in an invalid state.
  *
- * The two typeclass instances at the foot of this object - a `Hash` and a `Show`, the pair every
- * value type of this port carries - are the family's instances restated at the type of the
- * member, which is what the invariance of those typeclasses requires; [[Rounding]] keeps its own
- * pair for a value typed as the family, and the two agree by construction.
+ * The two typeclass instances at the foot of this object - a `Hash` and a `Show` - are the
+ * family's instances restated at the type of the member, which is what the invariance of those
+ * typeclasses requires; [[Rounding]] keeps its own pair for a value typed as the family, and the
+ * two agree by construction.
  */
 object HalfUp {
 
-  /** The rejection of a number of decimal places outside the permitted range. */
   private val DecimalPlacesMessage: String = "Invalid decimal places, must be from 0 to 255 inclusive"
 
-  /** The rejection of a fraction outside the permitted range. */
   private val FractionMessage: String = "Invalid fraction, must be from 0 to 256 inclusive"
 
-  /** The largest number of decimal places a convention may round to. */
   private val MaxDecimalPlaces: Int = 255
 
-  /** The largest fraction of the smallest decimal place a convention may round to. */
   private val MaxFraction: Int = 256
 
   /**
    * The cached instances, one per number of decimal places with no fractional part, for the
    * range of decimal places that trades actually use.
    *
-   * The Java original cached the same sixteen instances, for the same reason: a rounding
-   * convention is held by long-lived objects and asked for repeatedly, so a small fixed set of
-   * them is worth keeping. The cache is an immutable vector built once, and it is invisible
-   * from outside this object - two instances describing the same rounding are equal whether or
-   * not either came from here, and they render identically - so nothing observable depends on
-   * whether a given call was served from it.
+   * A rounding convention is held by long-lived objects and asked for repeatedly, so a small
+   * fixed set of them is worth keeping. The cache is an immutable vector built once, and it is
+   * invisible from outside this object - two instances describing the same rounding are equal
+   * whether or not either came from here, and they render identically - so nothing observable
+   * depends on whether a given call was served from it.
    */
-  private val Cache: Vector[HalfUp] = Vector.tabulate(16)(places => new HalfUp(places, 0) {})
+  private val Cache: Vector[HalfUp] = Vector.tabulate(16)(places => new Impl(places, 0))
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance that rounds to the specified number of decimal places.
    *
@@ -353,7 +369,8 @@ object HalfUp {
    * }}}
    *
    * @param decimalPlaces  the number of decimal places to round to, from 0 to 255 inclusive
-   * @return the rounding convention, or the failure describing why the input describes none
+   * @return the rounding convention, or the failure naming the bound the input breaks: the
+   *   number of decimal places must be from 0 to 255 inclusive
    */
   def ofDecimalPlaces(decimalPlaces: Int): ResultNec[HalfUp] =
     checkedDecimalPlaces(decimalPlaces)
@@ -384,25 +401,24 @@ object HalfUp {
    * @param decimalPlaces  the number of decimal places to round to, from 0 to 255 inclusive
    * @param fraction  the fraction of the smallest decimal place, such as 32 for 1/32, from 0
    *   to 256 inclusive
-   * @return the rounding convention, or the failures describing why the inputs describe none
+   * @return the rounding convention, or one failure for each bound the inputs break: the number
+   *   of decimal places must be from 0 to 255 inclusive and the fraction from 0 to 256 inclusive
    */
   def ofFractionalDecimalPlaces(decimalPlaces: Int, fraction: Int): ResultNec[HalfUp] =
     (checkedDecimalPlaces(decimalPlaces), checkedFraction(fraction))
       .mapN((places, rawFraction) => create(places, normalised(rawFraction)))
       .toEither
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance that rounds to the specified number of decimal places, for a caller
    * that has already established the number is in range.
    *
    * This exists for [[Rounding.of]], whose argument is the number of minor units of a
    * currency. That number is 0, 2 or 3 for every currency of the closed family - no row of the
-   * reference data carries anything else - so the range cannot be violated and the factory is
-   * total, exactly as the Java method it replaces was. The check below states that invariant
-   * rather than tests a possibility: it guards the contract of this method for any future
-   * caller, and reaching it would mean the caller, not its data, is wrong. That is why it is a
-   * fail-fast check rather than a reported failure.
+   * built-in currency data carries anything else - so the range cannot be violated and the
+   * factory is total. The check below states that invariant: it guards the contract of this
+   * method for any later caller, and reaching it would mean the caller, not its data, is wrong,
+   * which is why it fails fast rather than reporting a failure.
    *
    * @param decimalPlaces  the number of decimal places to round to, which the caller has
    *   established is from 0 to 255 inclusive
@@ -414,7 +430,6 @@ object HalfUp {
     create(decimalPlaces, 0)
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns the instance for a pair that is already checked and normalised, from the cache
    * where the cache holds it.
@@ -427,19 +442,36 @@ object HalfUp {
     if (fraction == 0 && decimalPlaces >= 0 && decimalPlaces < Cache.size) {
       Cache(decimalPlaces)
     } else {
-      new HalfUp(decimalPlaces, fraction) {}
+      new Impl(decimalPlaces, fraction)
     }
 
   /**
-   * Normalises a checked fraction, mapping the two fractions that describe no fractional part
+   * The one implementation of this rounding convention.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it - the single one, built both by [[create]] and by the cache it consults. It is declared
+   * rather than written as an anonymous subclass at either instantiation site for two reasons,
+   * both about what the class file says: a private member class is one a Java compiler refuses to
+   * name, where an anonymous class is public and can be instantiated directly by a caller in
+   * another language, and a named class can be compared against, which is what lets [[HalfUp]]
+   * refuse in its own constructor to be any other implementation.
+   *
+   * @param decimalPlaces  the number of decimal places, already checked to be in range
+   * @param fraction  the fraction, already checked to be in range and normalised
+   */
+  private final class Impl(decimalPlaces: Int, fraction: Int)
+      extends HalfUp(decimalPlaces, fraction)
+
+  /**
+   * Normalises a checked fraction, mapping the two fractions that ask for no fractional part
    * onto the one value that represents it.
    *
    * A fraction of 1 would scale the value by one before rounding and back afterwards, which is
-   * the rounding performed with no fractional part at all; the original collapsed the two the
-   * same way, so an instance never holds a fraction of 1.
+   * the rounding performed with no fractional part at all, so the two collapse and an instance
+   * never holds a fraction of 1.
    *
    * @param fraction  the checked fraction
-   * @return 0 where the fraction describes no fractional part, otherwise the fraction
+   * @return 0 where the fraction asks for no fractional part, otherwise the fraction
    */
   private def normalised(fraction: Int): Int = if (fraction <= 1) 0 else fraction
 
@@ -447,7 +479,7 @@ object HalfUp {
    * Checks that the number of decimal places is one a convention may round to.
    *
    * @param decimalPlaces  the number of decimal places to check
-   * @return the number if it is in range, otherwise the failure of the Java original
+   * @return the number if it is from 0 to 255 inclusive, otherwise the failure naming that range
    */
   private def checkedDecimalPlaces(decimalPlaces: Int): ValidatedFailures[Int] =
     Validate.cond(
@@ -459,7 +491,8 @@ object HalfUp {
    * Checks that the fraction is one a convention may round to.
    *
    * @param fraction  the fraction to check, before normalisation
-   * @return the fraction if it is in range, otherwise the failure of the Java original
+   * @return the fraction if it is from 0 to 256 inclusive, otherwise the failure naming that
+   *   range
    */
   private def checkedFraction(fraction: Int): ValidatedFailures[Int] =
     Validate.cond(
@@ -467,7 +500,6 @@ object HalfUp {
       fraction,
       Failure.Invalid(FractionMessage))
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of half-up rounding conventions.
    *
@@ -480,11 +512,6 @@ object HalfUp {
    * `HalfUp` only by this one, and because both are `Hash.fromUniversalHashCode` the two can never
    * disagree about a value they both see.
    *
-   * This type is a validated value type of its own right in the port's construction inventory,
-   * which is why the instance is required here rather than left to the family: every `[R]`, `[V]`,
-   * `[N]`, `[S]` and `[T]` type carries `Hash` and `Show`, and `Rounding.HalfUp` is named in that
-   * inventory as a `[V]` type beside `Rounding` itself as an `[S]` one.
-   *
    * @return the hashing of half-up rounding conventions
    */
   implicit val hash: Hash[HalfUp] = Hash.fromUniversalHashCode[HalfUp]
@@ -493,9 +520,9 @@ object HalfUp {
    * The rendering of half-up rounding conventions as text.
    *
    * Renders what `toString` renders - `Round to 4dp`, or `Round to 1/32 of 4dp` where there is a
-   * fractional part - which is the form of the Java original, so the two ways of putting a
-   * convention into a message agree whether the value is typed as the member or as the family.
-   * Declared here for the same reason the hashing above is: `cats.Show` is invariant as well.
+   * fractional part - so the two ways of putting a convention into a message agree whether the
+   * value is typed as the member or as the family. Declared here for the same reason the hashing
+   * above is: `cats.Show` is invariant as well.
    *
    * @return the rendering of a half-up rounding convention
    */
@@ -505,43 +532,36 @@ object HalfUp {
 /**
  * The factories, typeclass instances and JSON form of [[Rounding]].
  *
- * The four factories are those of the Java interface, under the same names. Two of them are
- * total - the convention that makes no change, and the one derived from a currency, whose
- * number of minor units is always in range - and the two that take a number of decimal places
- * from a caller report the reasons an input describes no convention, in the accumulating form
- * every validated factory of this port uses.
+ * There are four factories. Two of them are total - the convention that makes no change, and
+ * the one derived from a currency, whose number of minor units is always a number of decimal
+ * places a convention may round to - and the two that take a number of decimal places from a
+ * caller report every bound the input breaks, accumulating them.
  *
  * Two typeclass instances are published, and exactly two: a `Hash`, which is the single
  * equality-bearing instance of the family - `Hash` extends `Eq`, so declaring an `Eq` as well
  * would leave two instances that could disagree and one of them ambiguous - and a `Show` that
- * renders what `toString` renders. There is deliberately no `Order`: the Java type is not
- * `Comparable`, and two conventions have no ordering worth inventing. The instances are
- * published for the family rather than for its members, so they apply to a value however it is
- * typed.
+ * renders what `toString` renders. There is deliberately no `Order`: two conventions have no
+ * ordering worth inventing. The instances are published for the family rather than for its
+ * members, so they apply to a value however it is typed.
  */
 object Rounding {
 
-  /** The JSON key of the convention that makes no change. */
   private val NoRoundingKey: String = "NoRounding"
 
-  /** The JSON key of the half-up convention. */
   private val HalfUpKey: String = "HalfUp"
 
-  /** The rejection of a document that is not one of the two shapes of the family. */
   private val UnknownShapeMessage: String =
     s"Rounding must be an object holding exactly one of '$NoRoundingKey' or '$HalfUpKey'"
 
-  /** The rejection of a document whose no-rounding member carries anything but an empty object. */
   private val NoRoundingPayloadMessage: String =
     s"Rounding '$NoRoundingKey' must hold an empty object, as it has no fields"
 
-  //-------------------------------------------------------------------------
   // The two members of the family are declared beside this object rather than inside it,
   // because Scala requires every direct subtype of a sealed type to be declared in the same
-  // file and the file reads better with them at the top level - the Java original also had
-  // three top-level types. These three aliases make each member reachable through this
-  // companion as well, so `Rounding.HalfUp` and `HalfUp` name the same type and the same
-  // object, and a call site may spell either. They introduce no new entity.
+  // file, and the file reads better with them at the top level. These three aliases make each
+  // member reachable through this companion as well, so `Rounding.HalfUp` and `HalfUp` name the
+  // same type and the same object, and a call site may spell either. They introduce no new
+  // entity.
 
   /** The half-up convention, also reachable as `HalfUp`. */
   type HalfUp = com.opengamma.strata.basics.value.HalfUp
@@ -553,7 +573,6 @@ object Rounding {
   val NoRounding: com.opengamma.strata.basics.value.NoRounding.type =
     com.opengamma.strata.basics.value.NoRounding
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance that performs no rounding.
    *
@@ -572,9 +591,9 @@ object Rounding {
    * Rounding.of(Currency.USD).round(63.455)  // 63.46
    * }}}
    *
-   * The result is total, as it was in the original: the number of minor units of a currency is
-   * a small non-negative number for every currency of the closed family, so it is always a
-   * number of decimal places a convention may round to.
+   * The result is total: the number of minor units of a currency is a small non-negative number
+   * for every currency of the closed family, so it is always a number of decimal places a
+   * convention may round to.
    *
    * @param currency  the currency to round for
    * @return the rounding convention of the currency
@@ -585,11 +604,11 @@ object Rounding {
    * Obtains an instance that rounds to the specified number of decimal places.
    *
    * This returns a convention that rounds to the specified number of decimal places, following
-   * the normal `RoundingMode.HALF_UP` convention. Where the Java method threw, this reports the
-   * reason as a value.
+   * the normal `RoundingMode.HALF_UP` convention.
    *
    * @param decimalPlaces  the number of decimal places to round to, from 0 to 255 inclusive
-   * @return the rounding convention, or the failure describing why the input describes none
+   * @return the rounding convention, or the failure naming the bound the input breaks: the
+   *   number of decimal places must be from 0 to 255 inclusive
    */
   def ofDecimalPlaces(decimalPlaces: Int): ResultNec[Rounding] = HalfUp.ofDecimalPlaces(decimalPlaces)
 
@@ -599,17 +618,16 @@ object Rounding {
    * This returns a convention that rounds to a fraction of the specified number of decimal
    * places, following the normal `RoundingMode.HALF_UP` convention. For example, to round to
    * the nearest 1/32nd of the fourth decimal place, call this with the arguments 4 and 32.
-   * Where the Java method threw, this reports every reason as a value.
    *
    * @param decimalPlaces  the number of decimal places to round to, from 0 to 255 inclusive
    * @param fraction  the fraction of the smallest decimal place, such as 32 for 1/32, from 0
    *   to 256 inclusive
-   * @return the rounding convention, or the failures describing why the inputs describe none
+   * @return the rounding convention, or one failure for each bound the inputs break: the number
+   *   of decimal places must be from 0 to 255 inclusive and the fraction from 0 to 256 inclusive
    */
   def ofFractionalDecimalPlaces(decimalPlaces: Int, fraction: Int): ResultNec[Rounding] =
     HalfUp.ofFractionalDecimalPlaces(decimalPlaces, fraction)
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of rounding conventions.
    *
@@ -625,15 +643,13 @@ object Rounding {
   /**
    * The rendering of rounding conventions as text.
    *
-   * Renders what `toString` renders, which is the form of the Java original - `No rounding`,
-   * `Round to 4dp`, `Round to 1/32 of 4dp` - so the two ways of putting a convention into a
-   * message agree.
+   * Renders what `toString` renders - `No rounding`, `Round to 4dp`, `Round to 1/32 of 4dp` -
+   * so the two ways of putting a convention into a message agree.
    *
    * @return the rendering of a rounding convention
    */
   implicit val show: Show[Rounding] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The raw field shape both instances of the half-up member are derived over.
    *
@@ -641,35 +657,35 @@ object Rounding {
    * validated type is two steps: read the fields, then hand them to the factory that decides
    * whether they describe a value. This product is the shape those fields have, and both
    * directions of the member below go through it. Its field names are the JSON keys, and they
-   * are the names of the two properties the Java bean declared, in that order, which is what
-   * keeps the derived shape and the type from drifting apart. It exists only for that purpose:
-   * it is private, it is never returned, and nothing but the two instances below builds or
-   * reads one.
+   * are the names of the two properties of the member, in that order, which is what keeps the
+   * derived shape and the type from drifting apart. It exists only for that purpose: it is
+   * private, it is never returned, and nothing but the two instances below builds or reads one.
+   *
+   * The shape is `java.io.Serializable`, because the compiler makes every `case class` so, and it
+   * therefore mixes in [[NoJavaSerialization]] as every product of this port does: these fields
+   * reach the library as JSON through the codecs below and in no other form.
    *
    * @param decimalPlaces  the number of decimal places, unvalidated
    * @param fraction  the fraction of the smallest decimal place, unvalidated
    */
-  private final case class Raw(decimalPlaces: Int, fraction: Int)
+  private final case class Raw(decimalPlaces: Int, fraction: Int) extends NoJavaSerialization
 
-  /** The derived decoder of the raw field shape, used by the member decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /** The derived encoder of the raw field shape, used by the member encoder below. */
   private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
   /**
    * The encoding of the fields of the half-up convention.
    *
    * The shape is derived over the raw product above and a convention is contramapped into it,
-   * which is the idiom every type of this port whose constructor is not public uses - derive
-   * the product of the fields, then state how a value maps onto it - so the keys and their
-   * order come from one place and are not written out a second time here.
+   * which is the idiom for a type whose constructor is not public - derive the product of the
+   * fields, then state how a value maps onto it - so the keys and their order come from one
+   * place and are not written out a second time here.
    *
-   * The instance is private, and deliberately so. The codec this port publishes is the
-   * family's, listed once in its inventory of codec-bearing types; the two member instances
-   * exist for the derivations below to find and add nothing to the public surface. Anything
-   * holding a convention holds it at the type of the family, which is the type the published
-   * codec covers.
+   * The instance is private, and deliberately so. The codec this library publishes is the
+   * family's; the two member instances exist for the derivations below to find and add nothing
+   * to the public surface. Anything holding a convention holds it at the type of the family,
+   * which is the type the published codec covers.
    */
   private implicit val halfUpEncoder: Encoder[HalfUp] =
     rawEncoder.contramap[HalfUp](halfUp => Raw(halfUp.decimalPlaces, halfUp.fraction))
@@ -718,7 +734,7 @@ object Rounding {
    * The JSON encoding of rounding conventions.
    *
    * A convention is written as an object of one field, whose name is the member and whose value
-   * holds that member's fields - the shape a closed family takes throughout this port:
+   * holds that member's fields, which is the shape every closed family takes here:
    *
    * {{{
    * {"NoRounding":{}}
@@ -728,7 +744,7 @@ object Rounding {
    * The wrapper and both payloads are derived when this file is compiled, from the family and
    * from the member instances above, so no part of the encoding inspects a class while the
    * program runs and the keys are stated in one place each. The result is wrapped so that a
-   * field holding no value would be omitted, which is the policy every product of this port
+   * field holding no value would be omitted, which is the policy every product of this library
    * follows - no field of either member is optional, so the wrapping changes nothing about the
    * bytes of this type and exists so that the policy holds without exception.
    *

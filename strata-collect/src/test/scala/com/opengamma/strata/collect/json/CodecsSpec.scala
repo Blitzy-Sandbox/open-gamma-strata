@@ -321,7 +321,7 @@ object SampleBounds {
  * the four types below is one for which this module publishes a single sensible choice. They
  * are the whole of what that object offers. The derivation in the companion imports them
  * together, which is the whole purpose of that object: the plain numeric codec the JSON library
- * publishes for a double would otherwise be found instead, and the values this port has to
+ * publishes for a double would otherwise be found instead, and the values this module has to
  * carry outside the finite range would be lost.
  *
  * @param factor  a double, which adopts the tagged policy through the import
@@ -348,14 +348,14 @@ object SampleReading {
 /**
  * A product carrying a time of day, a type the nested implicits object deliberately omits.
  *
- * A time of day is one of the five date and time types whose instance this port takes from the
- * JSON library unchanged, so no member of that object covers it. This product exists to show
- * what a derivation site does under that policy: importing the object's members brings nothing
- * for this field, the library's own instance is found through its companion, and the document
+ * A time of day is one of the five date and time types whose instance comes from the JSON
+ * library unchanged, so no member of that object covers it. This product exists to show what a
+ * derivation site does under that policy: importing the object's members brings nothing for
+ * this field, the library's own instance is found through its companion, and the document
  * carries the library's ISO text.
  *
  * @param venue  a plain field, so the product has more than one
- * @param opens  a time of day, written by the instance the port adopts from the library
+ * @param opens  a time of day, written by the instance the library publishes for it
  */
 final case class SampleOpening(venue: String, opens: LocalTime)
 
@@ -374,14 +374,21 @@ final case class SampleOpening(venue: String, opens: LocalTime)
  *
  * The helpers are generic, and the concrete instances live at the types that use them, so this
  * is the only place where each shape can be asserted once for every type that will adopt it.
- * Three of those assertions carry further than this module:
+ * Four of those assertions carry further than this module:
  *
  *  - the single policy for a value outside the finite range, which every double, array element
  *    and matrix element of both modules goes through;
- *  - the failure a rejected payload produces - the messages of every cause joined by a
- *    semicolon and a space, positioned at the cursor that was being decoded - which every
- *    validated and every normalising type decodes through;
- *  - the omission of a field that holds no value, which every derived product encoder adopts.
+ *  - the failure a rejected payload produces - the messages of the causes joined by a
+ *    semicolon and a space, each rendered single-line and bounded and only so many of them
+ *    named, positioned at the cursor that was being decoded - which every validated and
+ *    every normalising type decodes through;
+ *  - the omission of a field that holds no value, which every derived product encoder adopts;
+ *  - the ceilings a document is read under - the length of an array, the three dimensions of a
+ *    matrix, and the size of a collection read through `boundedElements` or `boundedFields` -
+ *    which bound every numeric payload of both modules and every collection a type of either
+ *    module bounds. Each ceiling is asserted at the figure itself and one beyond it, and each
+ *    refusal is asserted to be reached without the payload having been read, since a ceiling
+ *    applied after the reading would have paid for what it was meant to refuse.
  *
  * ===What is deliberately absent===
  *
@@ -1166,30 +1173,40 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   /**
    * A JSON array of a stated length, as a payload of this spec.
    *
-   * The elements are one and the same JSON value repeated, which is what makes a very long
-   * payload affordable to build: the array states a length of its own choosing while holding
-   * a single element value, so the payload itself costs a run of references and nothing more.
+   * The elements are one and the same JSON value repeated, which is what makes a payload at
+   * the ceiling affordable to build: the element is built once and the array holds that one
+   * value in every position, so the payload itself costs a run of references and nothing more.
    * What the decoder does with that stated length is precisely what is under test.
+   *
+   * The element is bound before the array is filled deliberately. The filling evaluates what
+   * it is given once per position, so an element expression written inline would allocate a
+   * distinct value per position and a payload at the ceiling would cost the elements it was
+   * meant to state without holding.
    *
    * @param length  the number of elements the array states
    * @return the JSON array of that length
    */
-  private def arrayPayload(length: Int): Json =
-    Json.fromValues(Vector.fill(length)(Json.fromDoubleOrNull(1.0)))
+  private def arrayPayload(length: Int): Json = {
+    val element = Json.fromDoubleOrNull(1.0)
+    Json.fromValues(Vector.fill(length)(element))
+  }
 
   /**
    * A JSON array of rows of a stated shape, as a payload of this spec.
    *
-   * Built the same way and for the same reason as `arrayPayload`: one row value repeated, so
-   * a payload stating a shape of many rows costs a run of references rather than a distinct
-   * row for each of them.
+   * Built the same way and for the same reason as `arrayPayload`, and with the row bound
+   * before the filling for the same reason the element is: one row value is built and repeated,
+   * so a payload stating a shape far larger than anything the port reads costs two runs of
+   * references rather than the elements it names.
    *
    * @param rows  the number of rows the payload states
    * @param columns  the number of elements each of those rows states
    * @return the JSON array of rows of that shape
    */
-  private def rowsPayload(rows: Int, columns: Int): Json =
-    Json.fromValues(Vector.fill(rows)(arrayPayload(columns)))
+  private def rowsPayload(rows: Int, columns: Int): Json = {
+    val row = arrayPayload(columns)
+    Json.fromValues(Vector.fill(rows)(row))
+  }
 
   /** Payloads whose elements the array codec cannot read. */
   private val arraysWithBadElements = Table(
@@ -1281,19 +1298,42 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     outcome.left.value.history shouldBe List[CursorOp](CursorOp.MoveRight, CursorOp.DownArray)
   }
 
-  test("doubleArrayCodec decodes an array of every length the encoder can produce") {
-    // the length is the document's to state, and decoding accepts whatever it states: the
-    // factories that build one of these arrays are total over every length, so a decoder that
-    // refused one above some figure of its own would break the round trip for arrays the port
-    // itself creates and writes. This payload states one element more than 2^20, the figure a
-    // withdrawn decoder ceiling stopped at, so the assertion fails again the moment a ceiling
-    // of that kind returns. It is the memory-heaviest payload in this suite and deliberately
-    // the only one of its size: the contract is pinned once, not at intervals.
-    val length = (1 << 20) + 1
-    val decoded = Codecs.doubleArrayCodec.decodeJson(arrayPayload(length)).value
-    decoded.size shouldBe length
+  test("doubleArrayCodec accepts an array holding as many elements as it reads") {
+    // the ceiling is set above every length the port itself produces, so the length exactly at
+    // it is a length that decodes: this is the assertion that would fail if a later revision
+    // lowered the figure to one the library's own values can reach
+    val payload = arrayPayload(Codecs.MaximumArrayElements)
+    val decoded = Codecs.doubleArrayCodec.decodeJson(payload).value
+    decoded.size shouldBe Codecs.MaximumArrayElements
     decoded.get(0) shouldBe 1.0
-    decoded.get(length - 1) shouldBe 1.0
+    decoded.get(Codecs.MaximumArrayElements - 1) shouldBe 1.0
+  }
+
+  test("doubleArrayCodec rejects an array stating more elements than it reads") {
+    // the length is the document's to state, so it is measured against the ceiling before any
+    // element is read and nothing is allocated for a payload beyond it
+    val payload = arrayPayload(Codecs.MaximumArrayElements + 1)
+    val outcome = Codecs.doubleArrayCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumArrayElements} elements in the array, " +
+        s"but the payload states ${Codecs.MaximumArrayElements + 1}"
+  }
+
+  test("doubleArrayCodec refuses an array beyond the ceiling without reading its elements") {
+    // the answer does not depend on the elements: a payload beyond the ceiling whose every
+    // element is unreadable is still refused for its length, which is what shows the length is
+    // measured before anything is read, and therefore before anything is allocated for it
+    val payload = Json.fromValues(Vector.fill(Codecs.MaximumArrayElements + 1)(Json.fromString("rubbish")))
+    val outcome = Codecs.doubleArrayCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumArrayElements} elements in the array, " +
+        s"but the payload states ${Codecs.MaximumArrayElements + 1}"
+  }
+
+  test("doubleArrayCodec positions an array beyond the ceiling at the cursor it was decoding") {
+    val payload = Json.obj("series" -> arrayPayload(Codecs.MaximumArrayElements + 1))
+    val outcome = payload.hcursor.downField("series").as[DoubleArray](Codecs.doubleArrayCodec)
+    outcome.left.value.history shouldBe List[CursorOp](CursorOp.DownField("series"))
   }
 
   test("doubleArrayCodec round-trips every generated array exactly") {
@@ -1375,6 +1415,26 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     Codecs.doubleMatrixCodec.decodeJson(ragged).isLeft shouldBe true
   }
 
+  test("doubleMatrixCodec rejects an empty row stated before a row holding elements") {
+    // this is the payload whose two answers are told apart by the order the shape is settled
+    // in: the widths are measured across every row before any dimension is taken from one of
+    // them, so the disagreement between an empty row and a row of one element is seen for what
+    // it is. A shape read from the first row alone would have called this matrix zero columns
+    // wide and answered with the empty matrix, discarding the element the document states
+    val ragged = Json.arr(Json.arr(), numbers(1.0))
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(ragged)
+    outcome.left.value.message shouldBe
+      "Expected every row of the matrix to hold the same number of elements"
+    outcome.left.value.history shouldBe List.empty[CursorOp]
+  }
+
+  test("doubleMatrixCodec decodes rows that are all empty as the empty matrix") {
+    // rows that agree on holding nothing describe a rectangle of no columns, and the type
+    // collapses every such shape onto the single empty matrix; the contrast with the payload
+    // above is that these rows agree, so there is nothing to refuse
+    Codecs.doubleMatrixCodec.decodeJson(Json.arr(Json.arr(), Json.arr())).value shouldBe DoubleMatrix.EMPTY
+  }
+
   test("doubleMatrixCodec rejects a JSON value that is not an array") {
     forAll(nonArrayPayloads) { (payload: Json) =>
       Codecs.doubleMatrixCodec.decodeJson(payload).isLeft shouldBe true
@@ -1409,39 +1469,95 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     outcome.left.value.history shouldBe List.empty[CursorOp]
   }
 
-  test("doubleMatrixCodec decodes a matrix of more rows than any withdrawn ceiling allowed") {
-    // 5000 rows is beyond the 4096 a withdrawn decoder ceiling stopped at, and a matrix of that
-    // many rows is one the port's own total factories build and its encoder writes, so reading
-    // it back is part of the round-trip contract rather than a leniency
-    val rows = 5000
-    val decoded = Codecs.doubleMatrixCodec.decodeJson(rowsPayload(rows, 1)).value
-    decoded.rowCount shouldBe rows
-    decoded.columnCount shouldBe 1
+  test("doubleMatrixCodec accepts a matrix stating as many elements as it reads") {
+    val side = 1024
+    side * side shouldBe Codecs.MaximumMatrixElements
+    val decoded = Codecs.doubleMatrixCodec.decodeJson(rowsPayload(side, side)).value
+    decoded.rowCount shouldBe side
+    decoded.columnCount shouldBe side
   }
 
-  test("doubleMatrixCodec decodes a matrix of wider rows than any withdrawn ceiling allowed") {
-    // the same contract in the other dimension: 5000 elements in a row is beyond the 4096 the
-    // withdrawn column ceiling stopped at
-    val columns = 5000
-    val decoded = Codecs.doubleMatrixCodec.decodeJson(rowsPayload(1, columns)).value
-    decoded.rowCount shouldBe 1
-    decoded.columnCount shouldBe columns
+  test("doubleMatrixCodec rejects a matrix stating more rows than it reads") {
+    val payload = rowsPayload(Codecs.MaximumMatrixRows + 1, 1)
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumMatrixRows} rows in the matrix, " +
+        s"but the payload states ${Codecs.MaximumMatrixRows + 1}"
   }
 
-  test("doubleMatrixCodec decodes a payload of many empty rows as the empty matrix") {
-    // the type collapses a shape with no column onto the empty matrix however many rows the
-    // payload states, and this payload states more rows than any withdrawn ceiling allowed
-    Codecs.doubleMatrixCodec.decodeJson(rowsPayload(5000, 0)).value shouldBe DoubleMatrix.EMPTY
+  test("doubleMatrixCodec rejects a matrix stating a row longer than it reads") {
+    val payload = rowsPayload(1, Codecs.MaximumMatrixColumns + 1)
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumMatrixColumns} elements in each row of the matrix, " +
+        s"but the payload states ${Codecs.MaximumMatrixColumns + 1}"
   }
 
-  test("the array and matrix decoders publish no payload ceiling of their own") {
-    // the decoders once carried four public size constants, which were both an asymmetry with
-    // the total factories and public API the plan never authorised; these four lines are what
-    // fails if any of them is reintroduced under its old name
-    assertDoesNotCompile("Codecs.MaximumArrayElements")
-    assertDoesNotCompile("Codecs.MaximumMatrixRows")
-    assertDoesNotCompile("Codecs.MaximumMatrixColumns")
-    assertDoesNotCompile("Codecs.MaximumMatrixElements")
+  test("doubleMatrixCodec rejects a matrix whose dimensions are each acceptable but whose product is not") {
+    // neither dimension is beyond its own ceiling here; what is beyond a ceiling is the number
+    // of elements the two of them together name, which is what would have been allocated
+    val payload = rowsPayload(Codecs.MaximumMatrixRows, Codecs.MaximumMatrixColumns)
+    val elements = Codecs.MaximumMatrixRows.toLong * Codecs.MaximumMatrixColumns.toLong
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumMatrixElements} elements in the matrix, " +
+        s"but the payload states $elements"
+  }
+
+  test("doubleMatrixCodec refuses a shape whose element count would not fit in the width of a count") {
+    // a square of this side names more elements than an Int can hold, and an Int product of the
+    // two dimensions would be zero - the first line below is that arithmetic, stated so the
+    // reader can see what is being guarded against. The refusal names the row ceiling because
+    // the row count is compared first, which is what keeps the wrapped arithmetic unreachable:
+    // no shape whose product could wrap gets as far as the product at all, and the product is
+    // computed in the wider width regardless
+    val side = 65536
+    side.toLong * side.toLong shouldBe 4294967296L
+    side * side shouldBe 0
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(rowsPayload(side, side))
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumMatrixRows} rows in the matrix, but the payload states $side"
+  }
+
+  test("doubleMatrixCodec refuses a matrix beyond the row ceiling without reading its rows") {
+    // as with the array, the refusal stands even though not one of the rows could have been
+    // read, so the shape is settled from the payload rather than from what reading it produced
+    val payload = Json.fromValues(Vector.fill(Codecs.MaximumMatrixRows + 1)(Json.fromString("rubbish")))
+    val outcome = Codecs.doubleMatrixCodec.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumMatrixRows} rows in the matrix, " +
+        s"but the payload states ${Codecs.MaximumMatrixRows + 1}"
+  }
+
+  test("doubleMatrixCodec positions a matrix beyond a ceiling at the cursor it was decoding") {
+    val payload = Json.obj("grid" -> rowsPayload(Codecs.MaximumMatrixRows + 1, 1))
+    val outcome = payload.hcursor.downField("grid").as[DoubleMatrix](Codecs.doubleMatrixCodec)
+    outcome.left.value.history shouldBe List[CursorOp](CursorOp.DownField("grid"))
+  }
+
+  test("doubleMatrixCodec accepts a payload of many empty rows only up to the row ceiling") {
+    // a row holding nothing still costs a row, so the row ceiling applies to a shape whose
+    // element count is zero
+    Codecs.doubleMatrixCodec.decodeJson(rowsPayload(Codecs.MaximumMatrixRows, 0)).value shouldBe
+      DoubleMatrix.EMPTY
+    Codecs.doubleMatrixCodec.decodeJson(rowsPayload(Codecs.MaximumMatrixRows + 1, 0)).isLeft shouldBe true
+  }
+
+  test("the published ceilings are the figures the documentation of each of them states") {
+    // the figures are part of the public surface of this object, so they are pinned here: a
+    // change to any of them is a change to what documents this port reads, and has to be a
+    // deliberate edit of this line rather than a side effect of one somewhere else
+    Codecs.MaximumArrayElements shouldBe 1048576
+    Codecs.MaximumMatrixRows shouldBe 4096
+    Codecs.MaximumMatrixColumns shouldBe 4096
+    Codecs.MaximumMatrixElements shouldBe 1048576
+    // one array's worth of elements is the most a single numeric payload can ask for, whichever
+    // of the two shapes it arrives in
+    Codecs.MaximumMatrixElements shouldBe Codecs.MaximumArrayElements
+    // the collection ceiling is the figure the library already enforces on its own expansions,
+    // a hundred thousand periods of a generated schedule and a hundred thousand steps of a
+    // resolved sequence, so no collection any value of this port holds can exceed it
+    Codecs.MaximumCollectionElements shouldBe 100000
   }
 
   test("doubleMatrixCodec round-trips every generated matrix exactly") {
@@ -1454,6 +1570,186 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
     forAll(Arbitraries.genDoubleMatrix) { (matrix: DoubleMatrix) =>
       Codecs.doubleMatrixCodec.decodeJson(reparse(Codecs.doubleMatrixCodec(matrix))) shouldBe Right(matrix)
     }
+  }
+
+  //-------------------------------------------------------------------------
+  // boundedElements and boundedFields: the ceiling a collection of a value is read under
+  //-------------------------------------------------------------------------
+  /** The elements a bounded collection holds, standing in for the collection of any type. */
+  private val elementsDecoder: Decoder[List[Int]] = Decoder.decodeList[Int]
+
+  /** The name the refusals of `boundedElements` use below, as a type of this port would. */
+  private val BoundedWhat: String = "dates in the calendar"
+
+  /** A collection bounded at a limit small enough to state a payload beyond it inline. */
+  private val boundedThree: Decoder[List[Int]] = Codecs.boundedElements(BoundedWhat, 3)(elementsDecoder)
+
+  /** The object shape the field-bounding tests read, two collections under known names. */
+  private val fieldsDecoder: Decoder[Map[String, List[Int]]] = Decoder.decodeMap[String, List[Int]]
+
+  /** The same shape with a limit on each of its two collections, `left` examined first. */
+  private val boundedLeftThenRight: Decoder[Map[String, List[Int]]] =
+    Codecs.boundedFields("left" -> 2, "right" -> 3)(fieldsDecoder)
+
+  /** The same two limits in the other order, which is what makes the order observable. */
+  private val boundedRightThenLeft: Decoder[Map[String, List[Int]]] =
+    Codecs.boundedFields("right" -> 3, "left" -> 2)(fieldsDecoder)
+
+  /**
+   * A JSON array of consecutive whole numbers, as a payload of these tests.
+   *
+   * @param length  the number of elements the array states
+   * @return the JSON array holding the numbers from one upwards
+   */
+  private def wholeNumbers(length: Int): Json =
+    Json.fromValues(Vector.tabulate(length)(index => Json.fromInt(index + 1)))
+
+  /**
+   * A JSON array of a stated length whose every element is unreadable as a number.
+   *
+   * This is what shows a ceiling to be applied before the payload is read: a decoder that
+   * reached the elements of one of these would report an element, so a refusal that names the
+   * count instead is a refusal reached without them.
+   *
+   * @param length  the number of elements the array states
+   * @return the JSON array of that length, holding text in every position
+   */
+  private def rubbishElements(length: Int): Json = {
+    val element = Json.fromString("rubbish")
+    Json.fromValues(Vector.fill(length)(element))
+  }
+
+  test("boundedElements decodes a payload within its limit exactly as the decoder it wraps") {
+    boundedThree.decodeJson(wholeNumbers(0)) shouldBe Right(List.empty[Int])
+    boundedThree.decodeJson(wholeNumbers(1)) shouldBe Right(List(1))
+    boundedThree.decodeJson(wholeNumbers(3)) shouldBe Right(List(1, 2, 3))
+  }
+
+  test("boundedElements rejects a payload stating more elements than its limit") {
+    val outcome = boundedThree.decodeJson(wholeNumbers(4))
+    outcome.left.value.message shouldBe
+      s"Expected at most 3 $BoundedWhat, but the payload states 4"
+  }
+
+  test("boundedElements refuses a payload beyond its limit without reading its elements") {
+    // every element here is unreadable, and the refusal still names the count: the count is
+    // taken from the JSON as it stands, so nothing the wrapped decoder would have allocated is
+    // allocated for a payload this refuses
+    val outcome = boundedThree.decodeJson(rubbishElements(4))
+    outcome.left.value.message shouldBe
+      s"Expected at most 3 $BoundedWhat, but the payload states 4"
+    // the same payload within the limit is refused by the wrapped decoder instead, at the
+    // element it could not read, which is what the ceiling is being kept clear of
+    val readable = boundedThree.decodeJson(rubbishElements(3))
+    readable.left.value.message shouldBe "Int"
+  }
+
+  test("boundedElements positions its refusal at the cursor it was decoding") {
+    val payload = Json.obj("holidays" -> wholeNumbers(4))
+    val outcome = payload.hcursor.downField("holidays").as[List[Int]](boundedThree)
+    outcome.left.value.message shouldBe
+      s"Expected at most 3 $BoundedWhat, but the payload states 4"
+    outcome.left.value.history shouldBe List[CursorOp](CursorOp.DownField("holidays"))
+  }
+
+  test("boundedElements passes a payload that is not an array to the decoder it wraps") {
+    // a value with no elements to count has nothing for the ceiling to say about it, so what
+    // is wrong with it is reported by the wrapped decoder, in its own words and at its own
+    // position, exactly as it would be without the wrapper
+    forAll(nonArrayPayloads) { (payload: Json) =>
+      val wrapped = boundedThree.decodeJson(payload)
+      val unwrapped = elementsDecoder.decodeJson(payload)
+      wrapped.left.value.message shouldBe unwrapped.left.value.message
+      wrapped.left.value.history shouldBe unwrapped.left.value.history
+    }
+  }
+
+  test("boundedElements applies the published collection ceiling to every collection the port can build") {
+    // the ceiling a type of this port actually passes is the published one, and it is above
+    // every collection the library's own factories produce, so a payload at it decodes and the
+    // one element beyond it is refused
+    val bounded = Codecs.boundedElements("entries", Codecs.MaximumCollectionElements)(elementsDecoder)
+    bounded.decodeJson(wholeNumbers(Codecs.MaximumCollectionElements)).value.size shouldBe
+      Codecs.MaximumCollectionElements
+    val outcome = bounded.decodeJson(rubbishElements(Codecs.MaximumCollectionElements + 1))
+    outcome.left.value.message shouldBe
+      s"Expected at most ${Codecs.MaximumCollectionElements} entries, " +
+        s"but the payload states ${Codecs.MaximumCollectionElements + 1}"
+  }
+
+  test("boundedFields decodes an object whose named fields are within their limits") {
+    val payload = Json.obj("left" -> wholeNumbers(2), "right" -> wholeNumbers(3))
+    boundedLeftThenRight.decodeJson(payload) shouldBe
+      Right(Map("left" -> List(1, 2), "right" -> List(1, 2, 3)))
+  }
+
+  test("boundedFields rejects an object whose named field states more elements than its limit") {
+    val payload = Json.obj("left" -> wholeNumbers(3), "right" -> wholeNumbers(3))
+    val outcome = boundedLeftThenRight.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      "Expected at most 2 elements in the left field, but the payload states 3"
+    outcome.left.value.history shouldBe List[CursorOp](CursorOp.DownField("left"))
+  }
+
+  test("boundedFields positions its refusal at the field, however deeply the object is nested") {
+    val payload = Json.obj("calendar" -> Json.obj("left" -> wholeNumbers(3)))
+    val outcome = payload.hcursor.downField("calendar").as[Map[String, List[Int]]](boundedLeftThenRight)
+    outcome.left.value.history shouldBe
+      List[CursorOp](CursorOp.DownField("left"), CursorOp.DownField("calendar"))
+  }
+
+  test("boundedFields refuses a field beyond its limit without reading its elements") {
+    val payload = Json.obj("left" -> rubbishElements(3))
+    val outcome = boundedLeftThenRight.decodeJson(payload)
+    outcome.left.value.message shouldBe
+      "Expected at most 2 elements in the left field, but the payload states 3"
+  }
+
+  test("boundedFields reports the first of the named fields that exceeds its limit") {
+    // both fields are beyond their limits, and which one is reported is the order the limits
+    // were given in: one refusal naming one field, rather than a list to be interpreted
+    val payload = Json.obj("left" -> wholeNumbers(3), "right" -> wholeNumbers(4))
+    boundedLeftThenRight.decodeJson(payload).left.value.message shouldBe
+      "Expected at most 2 elements in the left field, but the payload states 3"
+    boundedRightThenLeft.decodeJson(payload).left.value.message shouldBe
+      "Expected at most 3 elements in the right field, but the payload states 4"
+  }
+
+  test("boundedFields passes over a field the object does not hold") {
+    val payload = Json.obj("right" -> wholeNumbers(3))
+    boundedLeftThenRight.decodeJson(payload) shouldBe Right(Map("right" -> List(1, 2, 3)))
+  }
+
+  test("boundedFields passes over a field whose value is not an array") {
+    // the field holds no elements to count, so the wrapped decoder reports it exactly as it
+    // would without the wrapper
+    val payload = Json.obj("left" -> Json.fromString("rubbish"))
+    val wrapped = boundedLeftThenRight.decodeJson(payload)
+    val unwrapped = fieldsDecoder.decodeJson(payload)
+    wrapped.left.value.message shouldBe unwrapped.left.value.message
+    wrapped.left.value.history shouldBe unwrapped.left.value.history
+  }
+
+  test("boundedFields passes over a payload holding none of the fields it names") {
+    // a value that is not an object, and an object whose fields are other than the named ones,
+    // both hold nothing for a limit to apply to, so every payload of this kind reaches the
+    // wrapped decoder untouched - whether that decoder then succeeds or reports the payload
+    forAll(nonArrayPayloads) { (payload: Json) =>
+      val wrapped = boundedLeftThenRight.decodeJson(payload)
+      val unwrapped = fieldsDecoder.decodeJson(payload)
+      wrapped.map(fields => fields.keySet) shouldBe unwrapped.map(fields => fields.keySet)
+      wrapped.left.toOption.map(failure => failure.message) shouldBe
+        unwrapped.left.toOption.map(failure => failure.message)
+    }
+  }
+
+  test("boundedFields with no limits is the decoder it wraps") {
+    // the limits are a varargs list, so the empty list is expressible and has to mean exactly
+    // nothing: this is what keeps a caller from having to special-case a type with no bounded
+    // field at all
+    val payload = Json.obj("left" -> wholeNumbers(9))
+    Codecs.boundedFields[Map[String, List[Int]]]()(fieldsDecoder).decodeJson(payload) shouldBe
+      fieldsDecoder.decodeJson(payload)
   }
 
 
@@ -1702,6 +1998,149 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
 
 
   //-------------------------------------------------------------------------
+  // The bridge to the JSON layer is where rejected text is neutralised
+  //
+  // A factory of this port quotes what it refused, so the message of a failure
+  // carries text a payload supplied, as it arrived. Every helper above reports
+  // such a failure through one bridge, and these cases pin what that bridge
+  // does with the text: each message is rendered single-line and bounded, and
+  // only so many messages are named, so neither the shape nor the size of a
+  // decoding failure can be dictated by whoever wrote the document. The cases
+  // that pin the ordinary readings - a single cause as its own message, two
+  // causes joined by a semicolon and a space, the position of the cursor - are
+  // the ones above, and they are unaffected: ordinary text renders to itself.
+  //-------------------------------------------------------------------------
+  /**
+   * The greatest number of causes one decoding failure names, before the overflow marker.
+   *
+   * The constant itself is private to `Codecs`, as the bound is its own business. It is
+   * restated here because the cases below pin the behaviour at the boundary - ten causes
+   * named and the rest counted - which is what makes the bound a contract rather than an
+   * implementation detail that may drift.
+   */
+  private val MaxReportedFailures: Int = 10
+
+  /**
+   * The greatest number of characters of one rendered message, the bound of the renderer of
+   * the failure model plus the three characters of its marker.
+   *
+   * Restated here for the same reason: a decoding failure inherits the bound of that renderer,
+   * and a case that asserts a concrete number is what shows the inheritance is real.
+   */
+  private val MaxRenderedMessage: Int = 512 + 3
+
+  /**
+   * A message that quotes the text it refused, as the parsing factories of this port do.
+   *
+   * @param text  the text that was refused, interpolated as it stands
+   * @return the message such a factory reports
+   */
+  private def rejectionMessage(text: String): String = s"Ticker name not found: '$text'"
+
+  /**
+   * The message of one of several accumulated causes.
+   *
+   * @param number  the position of the cause among those accumulated
+   * @return the message that cause reports
+   */
+  private def causeMessage(number: Int): String = s"Element $number is not acceptable"
+
+  /**
+   * Several accumulated causes, in the order a factory would have produced them.
+   *
+   * @param count  how many causes to accumulate, at least one
+   * @param message  the message of the cause at each position, counted from one
+   * @return the causes as a chain, in that order
+   */
+  private def accumulated(count: Int, message: Int => String): NonEmptyChain[Failure] =
+    NonEmptyChain(
+      Failure.Invalid(message(1)),
+      List.range(2, count + 1).map(number => Failure.Invalid(message(number))): _*)
+
+  /**
+   * A parsed-string codec whose parsing refuses every text, with the causes supplied.
+   *
+   * The value type is the sample parsed value of this file, so nothing about the fixture
+   * differs from the codecs under test above except what its factory says when it refuses -
+   * which is the only thing these cases are about.
+   *
+   * @param causes  the causes the parsing reports for the text it was given
+   * @return the codec whose decoding always fails
+   */
+  private def rejectingCodec(causes: String => NonEmptyChain[Failure]): Codec[SampleTicker] =
+    Codecs.parsedStringCodecNec[SampleTicker](text => Left(causes(text)), ticker => SampleTicker.print(ticker))
+
+  test("the bridge escapes a message that could otherwise forge a line of the log holding it") {
+    // The finding this case pins: the text of the payload reached the decoding failure as it
+    // arrived, so a document could state a line of its own in whatever read the failure.
+    val codec = rejectingCodec(text => NonEmptyChain.one(Failure.Parsing(rejectionMessage(text))))
+    val forged = "GB\nPARSING: forged\rmore"
+    val outcome = codec.decodeJson(Json.fromString(forged))
+    val message = outcome.left.value.message
+    message shouldBe "Ticker name not found: 'GB\\nPARSING: forged\\rmore'"
+    message should not include "\n"
+    message should not include "\r"
+    message.exists(_.isControl) shouldBe false
+    // The failure the factory built is unchanged - it still quotes what was refused, which is
+    // what a caller correcting its document needs - so the neutralisation is the writing out.
+    Failure.Parsing(rejectionMessage(forged)).message should include("\n")
+    // And the position is reported as before, since only the message is rendered.
+    val nested = Json.obj("ticker" -> Json.fromString(forged))
+    val positioned = nested.hcursor.downField("ticker").as[SampleTicker](codec)
+    positioned.left.value.message shouldBe message
+    positioned.left.value.history shouldBe List[CursorOp](CursorOp.DownField("ticker"))
+  }
+
+  test("the bridge bounds the message of a cause, however much text the payload quoted") {
+    val codec = rejectingCodec(text => NonEmptyChain.one(Failure.Parsing(rejectionMessage(text))))
+    val payload = "A" * 10000
+    val outcome = codec.decodeJson(Json.fromString(payload))
+    val message = outcome.left.value.message
+    message.length should be <= MaxRenderedMessage
+    message.length should be < 600
+    message should startWith("Ticker name not found: 'AAAA")
+    message should endWith("...")
+    // The cause carries the whole of the text, as the failure model requires.
+    Failure.Parsing(rejectionMessage(payload)).message.length should be > 10000
+  }
+
+  test("the bridge names at most ten causes and states how many it left out") {
+    val codec = rejectingCodec(_ => accumulated(25, causeMessage))
+    val message = codec.decodeJson(Json.fromString("ab")).left.value.message
+    message shouldBe
+      (List.range(1, MaxReportedFailures + 1).map(causeMessage) :+ s"and ${25 - MaxReportedFailures} more")
+        .mkString("; ")
+    message.split("; ").length shouldBe MaxReportedFailures + 1
+    message should include(causeMessage(MaxReportedFailures))
+    message should not include causeMessage(MaxReportedFailures + 1)
+    message should endWith("and 15 more")
+  }
+
+  test("no payload that drives a cause per element can make a decoding failure large") {
+    // The two bounds together: fifty causes, each quoting ten thousand characters, where the
+    // failures themselves hold half a million characters of payload.
+    val quoted = "A" * 10000
+    val codec = rejectingCodec(_ => accumulated(50, number => s"${causeMessage(number)}: '$quoted'"))
+    val message = codec.decodeJson(Json.fromString("ab")).left.value.message
+    message.length should be <= (MaxReportedFailures + 1) * (MaxRenderedMessage + "; ".length)
+    message.length should be < 6000
+    message should endWith("and 40 more")
+    message.exists(_.isControl) shouldBe false
+  }
+
+  test("the bridge neutralises the causes of a validated product as well as those of a parse") {
+    // The same bridge serves every helper, so a product whose factory refuses its raw fields
+    // reports in exactly the shape a refused text does.
+    val decoder: Decoder[SampleBounds] =
+      Codecs.validatedDecoder[RawBounds, SampleBounds](raw =>
+        Left(NonEmptyChain.one(Failure.Invalid(s"Bounds are unacceptable: 'low=${raw.low}\nINVALID: forged'"))))
+    val outcome = decoder.decodeJson(rawBoundsJson(1, 3))
+    outcome.left.value.message shouldBe "Bounds are unacceptable: 'low=1\\nINVALID: forged'"
+    outcome.left.value.message should not include "\n"
+    outcome.left.value.history shouldBe List.empty[CursorOp]
+  }
+
+  //-------------------------------------------------------------------------
   // Codecs.implicits: one import carries the whole policy to a derivation site
   //-------------------------------------------------------------------------
   /** A reading whose every field holds a value the plain numeric codec would lose. */
@@ -1802,13 +2241,14 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   // The date and time types the port carries in fields, which the library covers
   //-------------------------------------------------------------------------
   /**
-   * The five date and time types of this port's fields, with the text each is written as.
+   * The five date and time types carried in the fields of this module's products, with the
+   * text each is written as.
    *
-   * Every row is the form the serialization policy of this port records, and every row is
-   * asserted against the codec the port actually publishes for that type - which for all five
-   * is the one the library ships, adopted unchanged because what it produces is what the
-   * policy states. The port declares no date or time codec of its own beyond the day of the
-   * week, which the library does not cover at all.
+   * Every row is the form the serialization policy records, and every row is asserted against
+   * the codec in scope for that type - which for all five is the one the library ships,
+   * adopted unchanged because what it produces is what the policy states. `Codecs` declares
+   * no date or time codec of its own beyond the day of the week, which the library does not
+   * cover at all.
    *
    * The time of day is the row worth reading twice. The library's encoder formats through the
    * standard ISO pattern for a time, which always writes a seconds field, so eleven o'clock is
@@ -1909,9 +2349,9 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   }
 
   test("a time of day is written by the library's own instance, which the port adopts") {
-    // the port declares no codec for this type, so the instance found for it here is the
-    // library's: what these rows assert is the adopted behaviour, and a port-declared encoder
-    // reintroduced in front of it would have to produce exactly the same text to pass
+    // `Codecs` declares no codec for this type, so the instance found for it here is the
+    // library's: what these rows assert is the adopted behaviour, and a locally declared
+    // encoder placed in front of it would have to produce exactly the same text to pass
     forAll(localTimeForms) { (time: LocalTime, text: String) =>
       Encoder[LocalTime].apply(time) shouldBe Json.fromString(text)
     }
@@ -1927,18 +2367,19 @@ final class CodecsSpec extends AnyFunSuite with Matchers with EitherValues with 
   test("a time of day is read back from a document that leaves its seconds out") {
     // reading is the more forgiving of the two directions: the adopted decoder accepts every
     // form the ISO text allows, so a document written by hand without the seconds field, or
-    // with a fraction that says nothing, names the same time the port would have written
+    // with a fraction that says nothing, names the same time the encoder writes
     Decoder[LocalTime].decodeJson(Json.fromString("11:00")) shouldBe Right(LocalTime.of(11, 0))
     Decoder[LocalTime].decodeJson(Json.fromString("11:00:00.000")) shouldBe Right(LocalTime.of(11, 0))
     Decoder[LocalTime].decodeJson(Json.fromString("11:00:30.0")) shouldBe Right(LocalTime.of(11, 0, 30))
   }
 
   test("a product carrying a time of day derives the instance the port adopts from the library") {
-    // this derivation deliberately imports nothing from the port's implicits object, and needs
-    // to import nothing: that object carries no member for a time of day, so the instance the
-    // derivation finds through the library's own companion is the whole of the policy for this
-    // type. The import would in fact not compile here, since an unused one is an error under
-    // this build's settings - which is itself the absence stated as a fact about this file.
+    // this derivation deliberately imports nothing from `Codecs.implicits`, and needs to
+    // import nothing: that object offers a double, a day of the week, an array of doubles and
+    // a matrix of doubles and no member for a time of day, so the instance the derivation
+    // finds through the library's own companion is the whole of the policy for this type. The
+    // import would in fact not compile here, since an unused one is an error under this
+    // build's settings - which is itself the absence stated as a fact about this file.
     val encoder: Encoder[SampleOpening] = deriveEncoder[SampleOpening]
     val decoder: Decoder[SampleOpening] = deriveDecoder[SampleOpening]
     val opening = SampleOpening("London", LocalTime.of(11, 0))

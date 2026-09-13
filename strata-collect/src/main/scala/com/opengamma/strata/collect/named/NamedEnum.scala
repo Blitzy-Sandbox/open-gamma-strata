@@ -47,23 +47,18 @@ import com.opengamma.strata.collect.result.Failure
  * Sample.namedEnum.parse("alternate") // Right(Standard)
  * }}}
  *
- * ===What this replaces===
+ * ===What makes the family closed===
  *
- * The type being ported resolved a name through a registry assembled while the program ran.
- * It read the constants of a family back from its own class reflectively, then merged in
- * any further members, alternate spellings, lenient rewrites and external mappings declared
- * in configuration found on the class path, so the set of resolvable names was not known
- * until the class path was. This port keeps every resolution rule of that mechanism and
- * discards the mechanism itself: the members arrive as a `NonEmptyList`, the three tables
- * arrive as Scala values, and nothing is read from a class or from the class path. What a
- * family can resolve is therefore visible in its companion and settled at compile time,
- * which is what makes the family closed.
+ * The members arrive as a `NonEmptyList` and the three tables arrive as Scala values, held
+ * by the lookup and read from nowhere else: no name is resolved by interrogating a class, a
+ * class path or a configuration source, and a lookup consults nothing but what its family
+ * handed it. What a family can resolve is therefore visible in its companion and settled
+ * when that companion is compiled, which is what makes the family closed - the set of
+ * resolvable names is the same in every program that links the family.
  *
  * ===What a family declares===
  *
- * A family declares its members and up to three tables over them, each reproducing one
- * section of the configuration that the previous configuration-driven runtime registry
- * read:
+ * A family declares its members and up to three tables over them:
  *
  *  - '''members''' - the canonical values, in declaration order, published as `values`.
  *  - '''alternate names''' - a map from an alternate spelling to a canonical name, applied
@@ -93,13 +88,18 @@ import com.opengamma.strata.collect.result.Failure
  *     a member named `Standard` both `Standard` and `STANDARD` resolve while `standard`
  *     does not. `valueOf` stops here.
  *  1. '''lenient rewriting''' - reached by `parse` alone, and only when the two steps above
- *     found nothing. The original text is folded to upper case, then every lenient pattern
- *     is applied in the order the family declared them: a pattern whose expression matches
- *     the whole of the current text replaces that text with its replacement, which may
- *     refer back to captured groups, and the pattern after it sees the replacement rather
- *     than the original. The rewrites therefore compose into a chain.
+ *     found nothing and the text is within the family's `lenientLengthCeiling`. The original
+ *     text is folded to upper case, then every lenient pattern is applied in the order the
+ *     family declared them: a pattern whose expression matches the whole of the current text
+ *     replaces that text with its replacement, which may refer back to captured groups, and
+ *     the pattern after it sees the replacement rather than the original. The rewrites
+ *     therefore compose into a chain.
  *  1. '''repeat lookup''' - steps 1 and 2 are applied once more to the text that survived
  *     the chain.
+ *
+ * Steps 1 and 2 are applied to text of any length; steps 3 and 4 are the bounded ones, and
+ * the ceiling that bounds them is derived from the family's own data, so no text either
+ * exact lookup could resolve is refused for its size.
  *
  * Two consequences of that order are worth stating. An alternate name takes precedence
  * over every lenient pattern, because step 1 is reached before step 3 and `parse` returns
@@ -109,8 +109,8 @@ import com.opengamma.strata.collect.result.Failure
  * resolve `standard` where `valueOf` does not.
  *
  * Both operations are total. `valueOf` answers with an `Option`, and `parse` answers with a
- * `Failure.Parsing` on the left of an `EitherNec` where the type being ported raised an
- * error.
+ * `Failure.Parsing` on the left of an `EitherNec`, so text that names no member is reported
+ * rather than raised.
  *
  * ===Names that collide===
  *
@@ -122,14 +122,37 @@ import com.opengamma.strata.collect.result.Failure
  * only view that can be narrower than the member list is `byUpperName`, where the two
  * members of a pair genuinely share one folded key and the earlier of them keeps it.
  *
- * That is the precedence of the loader of the type being ported that read a family from
- * configuration, which registered each row under its own name with an unconditional put and
- * under the folded spelling only where the spelling was free. The other loader of the ported
- * library, the one that read a family from its own constants, made both registrations
- * conditional; the two agree for every family whose names are distinct once case is
- * discounted, and the first is the one that keeps a member resolvable by its own name when
- * they are not. One family of this library has such a pair, and it is the reason this order
- * is the one implemented here rather than the other.
+ * The order of the two registrations is what settles that: the canonical one is
+ * unconditional and the folded one is conditional, so a member can lose its folded key but
+ * never the name it publishes. One family of this library declares such a pair, so the
+ * precedence is exercised rather than hypothetical.
+ *
+ * ===Closure on the JVM, not only in the source===
+ *
+ * A family is closed because its base class is `sealed` and its constructor is private to its
+ * package, so no other Scala source can declare a member of it. Neither modifier reaches the
+ * class file: Scala 2.13 records `sealed` nowhere in the bytecode, and a constructor private to a
+ * package is emitted as public, because the JVM has no equivalent access level. A class compiled
+ * against this library by other means could therefore declare itself a member of a family and
+ * resolve nothing through this lookup while still being one of its values everywhere the family's
+ * type is accepted - which is how a "closed" set of currencies, indices or conventions would
+ * regain the dynamic members this port deliberately removed.
+ *
+ * The lookup cannot see that, since it only ever answers with the members it was given. The
+ * closure is therefore completed where the JVM does give a hook: the constructor of the family's
+ * own base class, which every subtype must call. A family of this port opens its base class with
+ *
+ * {{{
+ * sealed abstract class Sample private[pkg] (val name: String) extends Named with NoJavaSerialization {
+ *   JvmClosure.requireDeclaredMember(this, classOf[Sample])
+ * }
+ * }}}
+ *
+ * so an instance whose class was not declared inside the family's own companion cannot be
+ * constructed at all, and `values` stays the whole of the family at run time. The mixin alongside
+ * it closes the other route around a factory - `java.io.ObjectInputStream`, which the `case
+ * object` members would otherwise take part in through the `Serializable` supertype the compiler
+ * gives them.
  *
  * ===Instances===
  *
@@ -177,6 +200,11 @@ trait NamedEnum[A <: Named] {
    * folded to upper case. No lenient pattern is applied, so text that differs from a name
    * in any way other than its case resolves only if an alternate name says it should.
    *
+   * It is not bounded in length. Two hashed lookups over the text cost one pass over it,
+   * which is what the text costs to hold, so an alternate spelling longer than every
+   * canonical name of the family resolves here exactly - and it is counted in
+   * [[lenientLengthCeiling]], so the lenient stage admits its folded forms too.
+   *
    * @param name  the name to look up
    * @return the member with that name, or `None` when no member has it
    */
@@ -194,31 +222,36 @@ trait NamedEnum[A <: Named] {
    * carries no attributes, so that two failures from the same family over the same text are
    * equal and can be compared directly.
    *
-   * ===Every length of text is rewritten===
+   * ===The length of text the lenient stage accepts===
    *
-   * The four steps above are applied to text of whatever length arrives, which is what the
-   * lenient lookup of the type being ported did and what the specification of this port
-   * requires: no text is refused for its size, so a family whose expression accepts text of
-   * an unbounded shape - a composite calendar name, say - resolves it however long it is.
+   * The first two steps are applied to text of whatever length arrives: the exact lookup is a
+   * pair of hashed lookups and costs one pass over the text, so a canonical name, the
+   * upper-case form of one and an alternate spelling resolve however long they are. The last
+   * two are bounded by [[lenientLengthCeiling]], which is the family's own longest datum plus
+   * a margin: text beyond the ceiling is reported with the family's ordinary not-found
+   * failure, without the fold to upper case that would copy it and without a single
+   * expression being applied to it. Because the ceiling is at least the longest key and the
+   * longest alternate spelling the family holds, no text either exact lookup could resolve is
+   * ever beyond it.
    *
-   * What the length of the text may not do is cost more than the text is worth, and that is
-   * settled where the expressions are handed over rather than where the text is: each
-   * expression is examined once, when the family declares it, for the character every full
-   * match of it must end with, and an expression whose character the text does not end with
-   * is a match that cannot happen and is not attempted. The condition is a consequence of
+   * Within the ceiling the length of the text still may not cost more than the text is worth,
+   * and that is settled where the expressions are handed over rather than where the text is:
+   * each expression is examined once, when the family declares it, for the character every
+   * full match of it must end with, and an expression whose character the text does not end
+   * with is a match that cannot happen and is not attempted. The condition is a consequence of
    * the expression - it is derived only where the shape of the expression proves it, and no
    * condition at all otherwise - so it decides nothing about which text resolves, and leaves
    * one pass over the expressions costing what a pass over the text costs.
    *
    * ===The text the failure quotes back===
    *
-   * The failure names the text it was handed as that text stands, which is the message the
-   * ported lookup produced, character for character: a caller correcting its input is given
-   * back exactly what was refused. Text that came from outside the library is consequently
-   * inside the failure, and making it safe to write out belongs to the writing: the text form
-   * of a failure and [[com.opengamma.strata.collect.result.Failure.show]] bound every part
-   * they write and escape anything a line-oriented reader could act on, so a name from
-   * outside cannot forge a line of a log or make that line as large as itself.
+   * The failure names the text it was handed as that text stands, character for character and
+   * neither folded nor rewritten: a caller correcting its input is given back exactly what was
+   * refused. Text that came from outside the library is consequently inside the failure, and
+   * making it safe to write out belongs to the writing: the text form of a failure and
+   * [[com.opengamma.strata.collect.result.Failure.show]] bound every part they write and escape
+   * anything a line-oriented reader could act on, so a name from outside cannot forge a line of
+   * a log or make that line as large as itself.
    *
    * Every family resolves its names through this one operation, so the message is the same
    * shape for each of them rather than for some of them, and a family added later inherits it.
@@ -329,12 +362,38 @@ trait NamedEnum[A <: Named] {
    * an expression rather than read its text; the source of each expression here is the row as
    * the family declared it. It is neither the table the family handed over nor the expressions
    * `parse` applies - those are compiled once, from the same sources, to be insensitive to
-   * case, which is how the mechanism being ported compiled them - so a caller that only needs
-   * the rows should read `lenientSources` and compile nothing.
+   * case - so a caller that only needs the rows should read `lenientSources` and compile
+   * nothing.
    *
    * @return the lenient rewrites, each an expression and the replacement for it
    */
   def lenientPatterns: List[(Regex, String)]
+
+  /**
+   * The greatest length of text the lenient stage of the family is applied to.
+   *
+   * The ceiling is a constant of the family, derived from the family's own data and from
+   * nothing else: the longest key a member is registered under - canonical names and their
+   * upper-case forms alike - the longest spelling and the longest target of the expanded
+   * alternate-name table, and the longest expression source the family declared, plus a
+   * margin. A family with longer names therefore gets a longer ceiling, and one whose
+   * expressions are written out at length gets a ceiling that covers them.
+   *
+   * Both sides of the alternate-name table count, because the text that survives the rewrites
+   * is looked up through that table as well: a rewrite may produce an alternate spelling, and
+   * a table row may name a value the family's own `values` does not hold, in which case its
+   * target is longer than any key. Taking the greatest length of all four sources therefore
+   * bounds the text that either of the two lookups could still resolve, which is what makes
+   * the ceiling safe to apply before the rewrites rather than after them.
+   *
+   * The property that matters of it is one a specification can state: the ceiling of a family
+   * can never refuse text that family could resolve. It is published for exactly that reason -
+   * a caller has no need of it, and the two operations it bounds, `parse` and
+   * `rewriteLeniently`, apply it themselves.
+   *
+   * @return the greatest length of text the rewrites of this family are applied to
+   */
+  def lenientLengthCeiling: Int
 
   /**
    * Applies every lenient rewrite of the family to the specified text, in order.
@@ -344,6 +403,14 @@ trait NamedEnum[A <: Named] {
    * back to the groups the expression captured, and the expression after it is applied to
    * what the one before it produced, so the rewrites chain. Text that no expression matches
    * comes back unchanged, and a family that declares no expression is the identity.
+   *
+   * Text longer than [[lenientLengthCeiling]] comes back unchanged as well, no expression
+   * having been applied to it, which is the same bound `parse` applies to its own lenient
+   * stage and is applied here for the same reason: the caller this operation exists for runs
+   * the chain itself, so the bound has to live with the chain rather than with one of its
+   * callers. A family whose ceiling refuses the text is left to answer the text through its
+   * own exact lookups, which is exactly what the rewrites coming back empty-handed leaves it
+   * to do.
    *
    * The text is expected to have been folded to upper case already, as `parse` folds it: the
    * expressions are applied without regard to case, but a rewrite that produces a canonical
@@ -381,6 +448,23 @@ object NamedEnum {
   private val CaseInsensitiveFlag: String = "(?i)"
 
   /**
+   * The room allowed above the longest text a family knows, bounding its lenient stage.
+   *
+   * The ceiling a family applies before rewriting text is derived from its own data - the
+   * longest lookup key, the longest alternate spelling, the longest alternate target and the
+   * longest expression source it holds - and this margin is added to it, so that a spelling
+   * longer than anything the family declares is still rewritten as long as it is within reach
+   * of one. The tables this library transcribes size the margin: the longest expression source
+   * any of them declares is fifty characters and the longest name or alternate spelling any of
+   * them realises is under sixty, while the longest spelling a caller can sensibly offer one of
+   * those rows - a screaming-snake or spaced form of a name - runs a handful of characters
+   * beyond the name itself. Thirty-two characters of room therefore admits every declared row
+   * and every spelling of one with room to spare, while leaving the ceiling of every family a
+   * small constant.
+   */
+  private val LenientLengthMargin: Int = 32
+
+  /**
    * The characters of an expression that stand for something other than themselves.
    *
    * Used only to decide whether the tail of an expression source is a plain literal, which
@@ -390,19 +474,14 @@ object NamedEnum {
    */
   private val Metacharacters: Set[Char] = Set('.', '\\', '+', '*', '?', '[', ']', '^', '$', '(', ')', '{', '}', '|')
 
-  /** Opens a character class, the one construct whose single-character form is read here. */
   private val ClassOpen: Char = '['
 
-  /** Closes a character class. */
   private val ClassClose: Char = ']'
 
-  /** Negates a character class, which makes its single-character form say nothing useful. */
   private val ClassNegate: Char = '^'
 
-  /** Escapes the character after it, which is therefore not the character it spells. */
   private val Escape: Char = '\\'
 
-  /** Separates the alternatives of an expression, either of which a match may take. */
   private val Alternation: Char = '|'
 
   /**
@@ -415,10 +494,8 @@ object NamedEnum {
    */
   private val GroupWithMeaning: String = "(?"
 
-  /** Opens a quoted run, inside which no character means what it would otherwise mean. */
   private val QuoteOpen: String = "\\Q"
 
-  /** The number of characters of a character class holding exactly one character. */
   private val SingleCharacterClassLength: Int = 3
 
   /**
@@ -599,13 +676,12 @@ object NamedEnum {
     /**
      * The members keyed by the name each of them publishes.
      *
-     * A canonical name is claimed unconditionally, which is the registration the loader of
-     * the type being ported performed for a family read from configuration and the property
-     * every member of every family depends on: the name a member renders is the name that
-     * reaches it, whatever the other members of the family are called. Two members sharing
-     * one canonical name would be a family with two identities for one name, which the
-     * closedness specification rules out; were it to happen the earlier would keep the name,
-     * and this fold rather than a conversion to a map is what makes that so.
+     * A canonical name is claimed unconditionally, which is the property every member of
+     * every family depends on: the name a member renders is the name that reaches it, whatever
+     * the other members of the family are called. Two members sharing one canonical name would
+     * be a family with two identities for one name, which the closedness specification rules
+     * out; were it to happen the earlier would keep the name, and this fold rather than a
+     * conversion to a map is what makes that so.
      */
     private lazy val canonicalEntries: Map[String, A] =
       values.toList.foldLeft(Map.empty[String, A]) {
@@ -619,9 +695,9 @@ object NamedEnum {
      * The canonical names above, and then the folded spelling of each member's name added
      * only where the name space has room for it - so a folded key is taken by the member
      * whose canonical name it is if there is one, and otherwise by the first member to offer
-     * it. That is the order of the ported loader's two registrations, the first
-     * unconditional and the second conditional, and the reason a member can lose its folded
-     * key but never its own name.
+     * it. The two registrations are ordered, the canonical one unconditional and the folded
+     * one conditional, which is the reason a member can lose its folded key but never its own
+     * name.
      */
     private lazy val byName: Map[String, A] =
       values.toList.foldLeft(canonicalEntries) {
@@ -669,12 +745,12 @@ object NamedEnum {
     /**
      * The lenient rewrites, each compiled once and examined once.
      *
-     * The compiled expression of a rule is made insensitive to case, as the mechanism being
-     * ported made it: `parse` has folded its input to upper case by the time a rule is
-     * applied, so an expression written in the mixed case of its original row could never
-     * match otherwise, and a class of characters written as upper case would never match a
-     * lower-case letter. One expression per rule exists in the program, made here from the
-     * source the family handed over and used by every parse thereafter.
+     * The compiled expression of a rule is made insensitive to case, and the rows depend on
+     * that: `parse` has folded its input to upper case by the time a rule is applied, so an
+     * expression whose row is written in mixed case could never match otherwise, and a class
+     * of characters written as upper case would never match a lower-case letter. One
+     * expression per rule exists in the program, made here from the source the family handed
+     * over and used by every parse thereafter.
      */
     private lazy val lenientRules: List[LenientRule] =
       suppliedSources.map { case (source, replacement) => new LenientRule(source, replacement) }
@@ -692,6 +768,30 @@ object NamedEnum {
      */
     override lazy val lenientPatterns: List[(Regex, String)] =
       suppliedSources.map { case (source, replacement) => (source.r, replacement) }
+
+    /**
+     * The greatest length of text this family hands to its lenient rewrites.
+     *
+     * The longest text the family could plausibly be asked to rewrite, taken from the
+     * family's own data and nothing else: the longest key a member is registered under, the
+     * longest spelling and the longest target of the expanded alternate-name table, and the
+     * longest expression source the family declared, plus
+     * [[NamedEnum.LenientLengthMargin]]. The sources are read as the family supplied them
+     * rather than through `lenientPatterns`, so computing the ceiling compiles no expression.
+     *
+     * Computed once, like every other table derived here: the value is a constant of the
+     * family and is read on the miss path of every parse.
+     */
+    override lazy val lenientLengthCeiling: Int = {
+      val keyLengths = byName.iterator.map { case (key, _) => key.length }
+      val aliasLengths = alternateNames.iterator.flatMap { case (spelling, canonicalName) =>
+        Iterator(spelling.length, canonicalName.length)
+      }
+      val sourceLengths = suppliedSources.iterator.map { case (source, _) => source.length }
+      val longest = (keyLengths ++ aliasLengths ++ sourceLengths)
+        .foldLeft(0)((widest, length) => math.max(widest, length))
+      longest + LenientLengthMargin
+    }
 
     /**
      * The external groups with their rows resolved to values.
@@ -718,37 +818,73 @@ object NamedEnum {
     /**
      * Parses text into a member, applying the leniency the family declares.
      *
-     * The exact lookup runs first, so an alternate spelling and a canonical name resolve as
-     * they always did. Only when it misses is the lenient stage reached: the text is folded
-     * to upper case, every rewrite is applied to it in the order the family declared them,
-     * and the exact lookup is tried once more on what survives. This is the lenient lookup
-     * of the type being ported, step for step, and it is applied to text of every length -
-     * nothing is refused for its size, at either stage.
+     * The exact lookup runs first and unbounded, so an alternate spelling and a canonical
+     * name of any length resolve as they always did. Only when it misses is the lenient stage
+     * reached: the text is folded to upper case, every rewrite is applied to it in the order
+     * the family declared them, and the exact lookup is tried once more on what survives.
+     * This is the lenient lookup of the type being ported, step for step, bounded by
+     * [[lenientLengthCeiling]] - text beyond the ceiling is reported with the failure the
+     * rewrites would have reported for it, without the fold to upper case that would copy it
+     * and without a single expression being applied to it.
      *
-     * The length of the text costs what one pass over the text costs, and no more. That is
-     * settled by the rules rather than here: a rule knows the character every full match of
-     * it must end with, where its expression proves one, and text that does not end with
-     * that character is a match that cannot happen and is not attempted. See
-     * [[LenientRule]] for why that leaves the answer untouched.
+     * ===Why the lenient stage is bounded and the exact lookup is not===
+     *
+     * The rewrites are the only part of this algorithm whose cost is a function of the length
+     * of the text rather than of the size of the family, and an expression that consumes text
+     * of unbounded length - a greedy or repeated group followed by a literal, say - can make
+     * that cost grow faster than the text does. Bounding the text the rewrites see makes the
+     * cost of rejecting a name a constant of the family, and bounding it here, where the fold
+     * to upper case would otherwise copy the whole of it, removes the copy as well.
+     *
+     * The ceiling is derived from the family's own data - its longest key, its longest
+     * alternate spelling, its longest alternate target, its longest expression source, plus a
+     * margin - so a family with longer names is given a longer ceiling, and no text that
+     * either exact lookup could resolve is ever beyond it. What it narrows is therefore one
+     * deliberate case: an expression that rewrites arbitrarily long text into the name of a
+     * member, handed text longer than the family's ceiling, now reports that text instead of
+     * rewriting it.
+     *
+     * Three facts place that narrowing. The rewrites are reached only after the alias-aware
+     * exact lookup has missed, so nothing a family resolves exactly depends on them. The
+     * lenient lookup of the type being ported applied its configured expressions to text of
+     * any length in exactly the same way, so the exposure is inherited here rather than
+     * introduced. And no table this library transcribes declares such an expression: every
+     * source in them is anchored to a literal shape of a fixed size, which is why the ceiling
+     * closes the case while it is still unrealised rather than after a family realises it.
+     *
+     * A full pass over the expressions for text within the ceiling is not narrowed and is not
+     * meant to be: it is the cost the ported algorithm has, and the order of the pass is
+     * behaviour. What bounds that pass is the requirement each rule reads from its own
+     * expression - see [[LenientRule]] - which decides nothing about which text resolves.
+     *
+     * The comparison is written into the lookup rather than left to `rewriteLeniently`, which
+     * applies the same ceiling itself: the fold to upper case happens between the two, so a
+     * ceiling applied only inside the chain would copy the text before refusing it.
      *
      * @param name  the text to parse
      * @return the member the text names, or the failure describing why it names none
      */
     override def parse(name: String): EitherNec[Failure, A] =
       valueOf(name)
-        .orElse(valueOf(rewriteLeniently(name.toUpperCase(Locale.ENGLISH))))
+        .orElse(
+          if (name.length > lenientLengthCeiling) None
+          else valueOf(rewriteLeniently(name.toUpperCase(Locale.ENGLISH))))
         .toRight(notFound(name))
 
     override def rewriteLeniently(name: String): String =
-      lenientRules.foldLeft(name)((current, rule) => rule.rewrite(current))
+      if (name.length > lenientLengthCeiling) {
+        name
+      } else {
+        lenientRules.foldLeft(name)((current, rule) => rule.rewrite(current))
+      }
 
     /**
      * The failure reported for text that names no member.
      *
-     * The message is the one the ported lookup raised - the family, then the text as it was
-     * supplied - so the failure names exactly what was rejected. Bounding that text and
-     * escaping what it may hold is the business of writing a failure out, which
-     * [[Failure.show]] and the text form of a failure do for every part they write.
+     * The message is the name of the family, then the text as it was supplied, so the failure
+     * names exactly what was rejected. Bounding that text and escaping what it may hold is the
+     * business of writing a failure out, which [[Failure.show]] and the text form of a failure
+     * do for every part they write.
      *
      * @param name  the text that was rejected, as it was supplied
      * @return the failure naming the family and the text
@@ -774,10 +910,9 @@ object NamedEnum {
    * ===The expression===
    *
    * Compiled once, here, from the source the family declared, with the inline flag that
-   * makes it insensitive to case - prefixed unless the source already carries it. The
-   * mechanism being ported compiled its expressions the same way, and the rows depend on it:
-   * the text a rule sees has been folded to upper case, so a row written in mixed case would
-   * never match without it.
+   * makes it insensitive to case - prefixed unless the source already carries it. The rows
+   * depend on that flag: the text a rule sees has been folded to upper case, so a row
+   * written in mixed case would never match without it.
    *
    * ===What it needs of the text===
    *
@@ -786,9 +921,10 @@ object NamedEnum {
    * text. For most expressions that cost is one pass; for an expression holding a group that
    * can consume text of unbounded length it is a pass per position the group could end at,
    * which is a cost that grows faster than the text does. Text arriving from outside the
-   * library reaches this - a name to parse, a name in a document being read - so that
-   * difference is the difference between rejecting a name in microseconds and rejecting it
-   * in minutes.
+   * library reaches this - a name to parse, a name in a document being read - and while
+   * `lenientLengthCeiling` bounds how much of it a rule is ever handed, that difference is
+   * the difference between one pass over a name and a pass per character of it, which is
+   * work a family declaring several dozen rules does several dozen times.
    *
    * It is closed by asking of the expression, once, a question about the language it
    * matches: which character must a full match end with? Where the tail of the source is a
@@ -804,7 +940,11 @@ object NamedEnum {
    * lenient algorithm as that of the type being ported - is satisfied either way. What
    * changes is only the work: the one expression among the transcribed tables that can
    * consume unbounded text, `(.*)[(](.*)[)]`, requires a closing bracket at the end, so text
-   * crafted to make it backtrack is now declined on its last character.
+   * crafted to make it backtrack is declined on its last character rather than matched. The
+   * requirement and the ceiling are independent of each other and both are kept: the ceiling
+   * decides how much text a rule may be handed, this requirement decides which rules are
+   * worth handing it to, and only the second of the two leaves every answer untouched by
+   * construction.
    *
    * The comparison of characters ignores case, because the expression does. A source that
    * turns case sensitivity off again is therefore tested more weakly than it needs to be,
@@ -817,21 +957,19 @@ object NamedEnum {
    */
   private final class LenientRule(source: String, replacement: String) {
 
-    /** The expression of this rule, compiled once and insensitive to case. */
     private val expression: Regex =
       (if (source.startsWith(CaseInsensitiveFlag)) source else CaseInsensitiveFlag + source).r
 
-    /** The character every full match of this rule ends with, where the source proves one. */
     private val requiredFinalCharacter: Option[Char] = finalCharacterOf(source)
 
     /**
      * Applies this rule to the specified text, where it matches the whole of it.
      *
-     * One matcher serves both purposes, as the ported loop did: it decides whether the rule
-     * applies and then performs the replacement. Asking the expression to replace within the
-     * text a second time would match that text a second time, which is a scan and an
-     * allocation this needs not - a matcher resets itself when it replaces, so the
-     * replacement sees the whole of the text exactly as the test did.
+     * One matcher serves both purposes: it decides whether the rule applies and then performs
+     * the replacement. Asking the expression to replace within the text a second time would
+     * match that text a second time, which is a scan and an allocation this needs not - a
+     * matcher resets itself when it replaces, so the replacement sees the whole of the text
+     * exactly as the test did.
      *
      * @param current  the text as the rules before this one left it
      * @return the replacement where this rule matches the whole of the text, the text
@@ -859,7 +997,8 @@ object NamedEnum {
   }
 
   /**
-   * The character every full match of the specified expression source must end with.
+   * The character every full match of the specified expression source must end with, where
+   * the source proves one.
    *
    * Read from the text of the source and nothing else, and conservative at every turn: an
    * answer is returned only where the shape of the source proves it, so a source this reader
@@ -902,7 +1041,9 @@ object NamedEnum {
    *
    * The shape read is three characters: an unescaped opening bracket, one character that is
    * neither the negation nor an escape, and the closing bracket. A class of any other shape,
-   * and a closing bracket that is part of something else, yields no answer.
+   * and a closing bracket that is part of something else, yields no answer. The negation is
+   * excluded because a negated class of one character matches every character except that
+   * one, which makes its single character say nothing useful about how a match ends.
    *
    * @param body  the source, without any leading inline flag
    * @return the single character of the closing class, where that is what closes the source

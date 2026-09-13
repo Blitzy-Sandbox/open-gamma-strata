@@ -14,7 +14,9 @@ import cats.data.NonEmptyList
 import io.circe.Decoder
 import io.circe.Encoder
 
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.named.NamedEnum
 
 /**
@@ -76,7 +78,15 @@ import com.opengamma.strata.collect.named.NamedEnum
  *
  * @see [[Failure]] for the failures that carry a reason
  */
-sealed abstract class FailureReason private[result] (val name: String) extends Named {
+sealed abstract class FailureReason private[result] (val name: String)
+    extends Named
+    with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to the package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be an eleventh reason, outside the
+  // ten this type publishes - is refused here instead.
+  JvmClosure.requireDeclaredMember(this, classOf[FailureReason])
 
   /**
    * Returns the canonical name of this reason.

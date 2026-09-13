@@ -58,7 +58,25 @@ import com.opengamma.strata.collect.json.Codecs
  * @param decimal  the underlying decimal, whose scale is at most the fixed scale
  * @param fixedScale  the scale the value is presented at, from the scale of the decimal to 18
  */
-sealed abstract case class FixedScaleDecimal private (decimal: Decimal, fixedScale: Int) {
+sealed abstract case class FixedScaleDecimal private (decimal: Decimal, fixedScale: Int)
+    extends NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala and leave no trace
+  // in the class file, so a subtype compiled by other means is stopped here instead. The single
+  // implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[FixedScaleDecimal.Impl])
+
+  // The invariant of this type, for the same reason [[Decimal]] states its own: the implementation
+  // class carries a public constructor in the class file, so a caller compiled outside this
+  // library could otherwise hold a fixed scale below the decimal's own - which would print fewer
+  // digits than the value has - or above the range the type accepts.
+  JvmClosure.requireInvariant(
+    "its fixed scale is at least the scale of its decimal",
+    fixedScale >= decimal.scale)
+  JvmClosure.requireInvariant(
+    "its fixed scale is at most the largest scale a decimal has",
+    fixedScale <= Decimal.MAX_SCALE)
 
   //-------------------------------------------------------------------------
   /**
@@ -141,7 +159,7 @@ object FixedScaleDecimal {
    */
   def of(decimal: Decimal, fixedScale: Int): ResultNec[FixedScaleDecimal] =
     (checkedNotBelowDecimal(decimal, fixedScale), checkedWithinMaximum(fixedScale))
-      .mapN((_, _) => new FixedScaleDecimal(decimal, fixedScale) {})
+      .mapN((_, _) => new Impl(decimal, fixedScale))
       .toEither
 
   /**
@@ -181,6 +199,22 @@ object FixedScaleDecimal {
     }
 
   //-------------------------------------------------------------------------
+  /**
+   * The one implementation of a fixed-scale decimal.
+   *
+   * A `sealed abstract case class` is instantiated through a concrete subclass, and this is the
+   * only one. It is a declared private member class rather than an anonymous subclass written at
+   * the instantiation site because of what the two forms leave in the class file: a private member
+   * class is one a Java compiler refuses to name, an anonymous class is public and directly
+   * instantiable from another language, and only a named class can be compared against - which is
+   * how [[FixedScaleDecimal]] refuses in its own constructor to be any other implementation.
+   *
+   * @param decimal  the underlying decimal, already checked against the scale
+   * @param fixedScale  the scale to present it at, already checked
+   */
+  private final class Impl(decimal: Decimal, fixedScale: Int)
+      extends FixedScaleDecimal(decimal, fixedScale)
+
   /**
    * Checks that the scale supplied shows every digit the decimal holds.
    */

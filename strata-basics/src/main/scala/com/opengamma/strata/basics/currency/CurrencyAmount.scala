@@ -17,6 +17,8 @@ import io.circe.generic.semiauto.deriveEncoder
 import com.opengamma.strata.collect.ArgCheck
 import com.opengamma.strata.collect.DoubleArrayMath
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
@@ -38,8 +40,7 @@ import com.opengamma.strata.collect.result.Failure
  *
  * ===What an amount may hold===
  *
- * An amount holds any `Double` except not-a-number, and that asymmetry is the one the
- * implementation being ported chose rather than an accident of this port. The two infinities are
+ * An amount holds any `Double` except a value that is not a number. The two infinities are
  * accepted, because a calculation that overflows still describes a direction, while a value that
  * is not a number describes nothing at all and would silently poison every amount it was added
  * to. A negative zero is accepted and normalised to a positive zero, so `-0.0` never survives
@@ -50,13 +51,11 @@ import com.opengamma.strata.collect.result.Failure
  * [[CurrencyAmount.of]] is the public route and reports a rejected amount as a [[Failure]], so a
  * caller holding text, a document or a user's input decides what to do about a value this type
  * does not admit before it has one. The arithmetic below takes a second, internal route: it
- * normalises and checks exactly as `of` does, but it keeps the total signature the implementation
- * being ported had, and a result that is not a number - reachable only by combining infinities,
- * as in `+∞ + −∞` - raises the invariant through
- * [[com.opengamma.strata.collect.ArgCheck]] rather than widening every arithmetic method into a
- * failure channel. That split is deliberate and is recorded as a divergence of this port: the
- * data-dependent failures of this type are values, and the numeric edge that only an infinite
- * operand can reach is an invariant.
+ * normalises and checks exactly as `of` does, but its signature stays total, and a result that is
+ * not a number - reachable only by combining infinities, as in `+∞ + −∞` - raises the invariant
+ * through [[com.opengamma.strata.collect.ArgCheck]] rather than widening every arithmetic method
+ * into a failure channel. That split is deliberate: the data-dependent failures of this type are
+ * values, and the numeric edge that only an infinite operand can reach is an invariant.
  *
  * ===Which operations can fail===
  *
@@ -70,12 +69,11 @@ import com.opengamma.strata.collect.result.Failure
  * ===Equality and ordering===
  *
  * Two amounts are equal when their currencies are equal and their amounts have the same bit
- * pattern, which is the comparison the generated bean performed. It differs from the comparison a
- * plain case class would have synthesised in two places: a value that is not a number equals
- * itself, and a negative zero differs from a positive zero - the second being unreachable here,
- * since construction normalises it away. Amounts order by currency alphabetically and then by
- * amount, which is how the implementation being ported compared them, and that ordering agrees
- * with equality: `compare` returns zero exactly when the two are equal.
+ * pattern. That differs from the comparison a plain case class would have synthesised in two
+ * places: a value that is not a number equals itself, and a negative zero differs from a positive
+ * zero - the second being unreachable here, since construction normalises it away. Amounts order
+ * by currency alphabetically and then by amount, and that ordering agrees with equality:
+ * `compare` returns zero exactly when the two are equal.
  *
  * There is deliberately no `Monoid` or `Semigroup` for this type. Combining two amounts is
  * exactly what [[plus]] does, and it can fail, which a `Semigroup` has no way to report;
@@ -85,18 +83,15 @@ import com.opengamma.strata.collect.result.Failure
  * ===Conversions to the exact-decimal types===
  *
  * [[toMoney]] rounds this amount to the minor units of its currency and [[toBigMoney]] keeps it
- * at scale twelve, which are the two conversions the implementation being ported published here;
- * `Money.of(amount)` and `BigMoney.of(amount)` are the same two conversions reached from the
- * other side, and [[Money.toCurrencyAmount]] and [[BigMoney.toCurrencyAmount]] convert back. The
- * three types therefore form one graph, and every edge of it can be travelled in either
- * direction.
+ * at scale twelve; `Money.of(amount)` and `BigMoney.of(amount)` are the same two conversions
+ * reached from the other side, and [[Money.toCurrencyAmount]] and [[BigMoney.toCurrencyAmount]]
+ * convert back. The three types therefore form one graph, and every edge of it can be travelled
+ * in either direction.
  *
- * The two members here answer with an outcome where the implementation being ported was total,
- * and the difference is a property of what this type admits rather than a stylistic choice: an
- * amount may be infinite, and no decimal is, so an infinite amount is not a money value. The
- * implementation being ported raised in exactly that case, from the decimal conversion its
- * factories performed; reporting it keeps the rejection visible in the signature instead of
- * raising it from a conversion that reads as an accessor.
+ * Both members here answer with an outcome, because of what this type admits: an amount may be
+ * infinite, and no decimal is, so an infinite amount is not a money value. Reporting that keeps
+ * the rejection visible in the signature instead of raising it from a conversion that reads as
+ * an accessor.
  *
  * This type is immutable and thread-safe: a value of it can be shared freely, and every
  * operation returns a new value rather than changing the one it was called on.
@@ -109,14 +104,32 @@ import com.opengamma.strata.collect.result.Failure
  * @see [[FxRateProvider]] for the source of the rates the conversions use
  */
 sealed abstract case class CurrencyAmount private (currency: Currency, amount: Double)
-    extends FxConvertible[CurrencyAmount] {
+    extends FxConvertible[CurrencyAmount]
+    with NoJavaSerialization {
 
-  //-------------------------------------------------------------------------
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means can be
+  // stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[CurrencyAmount.Impl])
+
+  // The invariant of this type, stated over the number the instance actually holds rather than
+  // over the argument a factory was given, because the implementation class carries a public
+  // constructor in the class file whatever the source asked for: a class compiled outside this
+  // library can call it directly, and identity alone would then admit an amount holding a value
+  // that is not a number - the one value this type refuses - or a negative zero, which every
+  // route into the type normalises away. Both are what `CurrencyAmount.checkedAmount` establishes.
+  JvmClosure.requireInvariant("its amount is a number", !amount.isNaN)
+  JvmClosure.requireInvariant(
+    "its amount is a positive zero where it is zero, a negative zero being normalised",
+    // the two zeroes compare equal, so the bit pattern is what tells them apart: the pattern of a
+    // positive zero is zero, and that of a negative zero is not
+    amount != 0d || java.lang.Double.doubleToLongBits(amount) == 0L)
+
   /**
    * Returns a copy of this amount with the specified amount added.
    *
-   * The addition is ordinary `Double` arithmetic, performed in the order the implementation being
-   * ported performed it, so the result agrees with it bit for bit.
+   * The addition is ordinary `Double` arithmetic, this amount plus the other.
    *
    * The two amounts have to be in the same currency, since an amount is a number ''of'' a
    * currency and there is no meaningful sum of amounts of different ones. A mismatch is reported
@@ -143,9 +156,9 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    * Returns a copy of this amount with the specified value added.
    *
    * The value is taken to be in the currency of this amount, so no currency can disagree and the
-   * addition is total, as it was in the implementation being ported. The one numeric edge is the
-   * documented invariant of this type: adding an infinity of the opposite sign to an infinite
-   * amount produces a value that is not a number, which no amount may hold.
+   * addition is total. The one numeric edge is the documented invariant of this type: adding an
+   * infinity of the opposite sign to an infinite amount produces a value that is not a number,
+   * which no amount may hold.
    *
    * @param amountToAdd  the value to add, in the currency of this amount
    * @return this amount with the value added
@@ -159,8 +172,8 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    * Returns a copy of this amount with the specified amount subtracted.
    *
    * This is [[plus]] read in the other direction and behaves the same way in every respect: the
-   * currencies have to agree, the subtraction is ordinary `Double` arithmetic in the order the
-   * implementation being ported used, and a difference that is not a number raises the invariant.
+   * currencies have to agree, the subtraction is ordinary `Double` arithmetic - this amount minus
+   * the other - and a difference that is not a number raises the invariant.
    *
    * @param amountToSubtract  the amount to subtract, in the same currency as this one
    * @return this amount with the other subtracted, or the failure describing the currency
@@ -189,13 +202,11 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
   def minus(amountToSubtract: Double): CurrencyAmount =
     CurrencyAmount.create(currency, amount - amountToSubtract)
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this amount with the amount multiplied by the specified value.
    *
-   * The multiplication is written as the amount times the value, the order the implementation
-   * being ported used, so a product that rounds differently under the other order rounds the same
-   * way here.
+   * The multiplication is written as the amount times the value, so a product that rounds
+   * differently under the other order rounds as this order gives it.
    *
    * @param valueToMultiplyBy  the scalar value to multiply the amount by
    * @return this amount with its amount multiplied
@@ -214,9 +225,7 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    * base.mapAmount(value => if (value < 0) 0d else value * 3)
    * }}}
    *
-   * The currency is carried through unchanged, since the operation is on the number alone. The
-   * operation is an ordinary function rather than the primitive-specialised interface of the
-   * implementation being ported, which is the same thing expressed in this language.
+   * The currency is carried through unchanged, since the operation is on the number alone.
    *
    * @param mapper  the operation to apply to the amount
    * @return this amount with the operation applied to its amount
@@ -226,7 +235,6 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
   def mapAmount(mapper: Double => Double): CurrencyAmount =
     CurrencyAmount.create(currency, mapper(amount))
 
-  //-------------------------------------------------------------------------
   /**
    * Checks whether the amount is zero.
    *
@@ -237,7 +245,7 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
   /**
    * Checks whether the amount is greater than zero.
    *
-   * Zero and negative amounts are not positive, as in the implementation being ported.
+   * Zero and negative amounts are not positive.
    *
    * @return true if the amount is greater than zero
    */
@@ -246,13 +254,12 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
   /**
    * Checks whether the amount is less than zero.
    *
-   * Zero and positive amounts are not negative, as in the implementation being ported.
+   * Zero and positive amounts are not negative.
    *
    * @return true if the amount is less than zero
    */
   def isNegative: Boolean = amount < 0d
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this amount with the amount negated.
    *
@@ -283,7 +290,6 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    */
   def negative: CurrencyAmount = if (amount > 0d) negated else this
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this amount to the equivalent [[Money]].
    *
@@ -294,10 +300,9 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    * becomes `JPY 101` because the yen quotes none.
    *
    * It answers with an outcome because this type admits amounts no decimal holds: the two
-   * infinities, and any amount whose magnitude needs more than eighteen digits. The
-   * implementation being ported raised for both, from the decimal conversion its factory
-   * performed. Every other amount converts, so a caller holding an amount that came from
-   * ordinary arithmetic reads the `Right`.
+   * infinities, and any amount whose magnitude needs more than eighteen digits. Every other
+   * amount converts, so a caller holding an amount that came from ordinary arithmetic reads the
+   * `Right`.
    *
    * {{{
    * CurrencyAmount.of(Currency.AUD, 100.125d).flatMap(amount => amount.toMoney)   // AUD 100.13
@@ -323,22 +328,20 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    */
   def toBigMoney: FailureOr[BigMoney] = BigMoney.of(this)
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this amount into the specified currency at the specified rate.
    *
    * The amount is multiplied by the rate, in that order, so `GBP 100` converted into `USD` at
    * `1.6` is `USD 160`.
    *
-   * Converting into the currency this amount already has is the one case that needs a decision,
-   * and the decision is the one the implementation being ported made: such a conversion requires
-   * no arithmetic, so a rate of one - within a tolerance of `1e-8`, which is the literal that
-   * implementation used - returns this amount unchanged, and any other rate is reported as a
-   * failure rather than silently applied. That keeps a caller from scaling an amount by passing a
-   * rate for a conversion that does not happen. A rate that is not a number, and an infinite
-   * rate, are both reported as a failure rather than applied: under the comparison used neither
-   * is within any finite tolerance of one, since the distance from one to either of them is not
-   * a finite quantity and neither of them equals one.
+   * Converting into the currency this amount already has is the one case that needs a decision:
+   * such a conversion requires no arithmetic, so a rate of one - within a tolerance of `1e-8` -
+   * returns this amount unchanged, and any other rate is reported as a failure rather than
+   * silently applied. That keeps a caller from scaling an amount by passing a rate for a
+   * conversion that does not happen. A rate that is not a number, and an infinite rate, are both
+   * reported as a failure rather than applied: under the comparison used neither is within any
+   * finite tolerance of one, since the distance from one to either of them is not a finite
+   * quantity and neither of them equals one.
    *
    * {{{
    * gbp100.convertedTo(Currency.USD, 1.6d)   // Right(USD 160)
@@ -348,8 +351,9 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    *
    * @param resultCurrency  the currency of the result
    * @param fxRate  the rate from the currency of this amount to the result currency
-   * @return this amount expressed in the result currency, or the failure describing why the rate
-   *   supplied does not describe that conversion
+   * @return this amount expressed in the result currency, or the failure naming the broken
+   *   condition: a conversion into the currency this amount already has requires a rate of one,
+   *   compared within `1e-8`
    */
   def convertedTo(resultCurrency: Currency, fxRate: Double): FailureOr[CurrencyAmount] =
     if (currency == resultCurrency) {
@@ -367,10 +371,10 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    *
    * This is the [[FxConvertible]] implementation of this type. An amount already in the requested
    * currency is returned unchanged and the provider is not consulted, so such a conversion
-   * succeeds even under a provider that supplies no rates at all - which is the behaviour of the
-   * implementation being ported and the reason a single-currency amount needs no rate for a
-   * conversion into its own currency. Otherwise the provider converts the amount, and the failure
-   * it reports when it holds no rate for the pair is the failure of this conversion.
+   * succeeds even under a provider that supplies no rates at all - a single-currency amount needs
+   * no rate for a conversion into its own currency. Otherwise the provider converts the amount,
+   * and the failure it reports when it holds no rate for the pair is the failure of this
+   * conversion.
    *
    * @param resultCurrency  the currency of the result
    * @param rateProvider  the provider of FX rates
@@ -388,15 +392,14 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
         .flatMap(converted => CurrencyAmount.of(resultCurrency, converted))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Checks whether this amount equals another object.
    *
    * Another amount is equal when it holds the same currency and an amount with the same bit
-   * pattern. The bit comparison is the one the generated bean performed, and it differs from the
-   * comparison a case class would have synthesised for two values: one that is not a number,
-   * which here equals itself, and a negative zero, which here differs from a positive zero and
-   * which construction ensures no amount holds. An object of any other type is not equal.
+   * pattern. The bit comparison differs from the comparison a case class would have synthesised
+   * for two values: one that is not a number, which here equals itself, and a negative zero,
+   * which here differs from a positive zero and which construction ensures no amount holds. An
+   * object of any other type is not equal.
    *
    * @param obj  the object to compare to
    * @return true if the other object is an amount holding the same currency and the same amount
@@ -411,11 +414,10 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
   /**
    * Returns a hash code consistent with [[equals]].
    *
-   * The mixing is that of the bean this replaces - the hash of the currency, multiplied by the
-   * usual odd prime, plus the hash of the amount - with the amount hashed by its bit pattern so
-   * that two amounts which [[equals]] calls equal always agree here too. Every part of it is a
-   * function of the value alone, so the hash of an amount is identical in every run of every
-   * program, which is what the byte-stability properties of the test suite rely on.
+   * The mixing is the hash of the currency, multiplied by the usual odd prime, plus the hash of
+   * the amount, with the amount hashed by its bit pattern so that two amounts which [[equals]]
+   * calls equal always agree here too. Every part of it is a function of the value alone, so the
+   * hash of an amount is identical in every run of every program.
    *
    * @return the hash code of the currency and the amount held
    */
@@ -426,11 +428,10 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
    *
    * The form is the currency code, a space and the amount - `GBP 12.34` - which is the form
    * [[CurrencyAmount.parse]] reads back. An amount that is a whole number is written without a
-   * fractional part, so `GBP 100` rather than `GBP 100.0`; that is how the implementation being
-   * ported wrote it, and it is what documents, rendered output and test expectations carry. The
-   * two values outside the real numbers are written as the platform writes them, `Infinity` and
-   * `-Infinity`, and [[CurrencyAmount.parse]] reads those two forms back as well, so every value
-   * an amount may hold survives the round trip through its text.
+   * fractional part, so `GBP 100` rather than `GBP 100.0`. The two values outside the real
+   * numbers are written as the platform writes them, `Infinity` and `-Infinity`, and
+   * [[CurrencyAmount.parse]] reads those two forms back as well, so every value an amount may
+   * hold survives the round trip through its text.
    *
    * @return the formatted amount
    */
@@ -444,7 +445,7 @@ sealed abstract case class CurrencyAmount private (currency: Currency, amount: D
  * either checks the amount and reports what it rejected, as [[of]] and [[parse]] do, or is
  * reached from an amount that already exists, as the arithmetic of the type is - and that
  * arithmetic stays total in signature, raising the documented invariant only for a result no
- * amount may hold. Neither the constructor nor a generated `apply` or `copy` is available, and
+ * amount may hold. Neither the constructor nor a synthesised `apply` or `copy` is available, and
  * the type is sealed, so an amount that is not a number or a negative zero cannot be built.
  *
  * @see [[CurrencyAmount]] for the type itself and for what an amount may hold
@@ -455,8 +456,7 @@ object CurrencyAmount {
    * The name of the amount field, as the argument name of the checks that reject it.
    *
    * This is the name that appears in `Argument 'amount' must not be NaN`, the message both routes
-   * into the type report for a value that is not a number, so the wording is that of the
-   * implementation being ported.
+   * into the type report for a value that is not a number.
    */
   private val AmountField: String = "amount"
 
@@ -472,12 +472,7 @@ object CurrencyAmount {
   private val NonUnitRateMessage: String =
     "FX rate must be 1 when no conversion required"
 
-  /**
-   * The tolerance within which a rate counts as one for a conversion that does not convert.
-   *
-   * This is the literal the implementation being ported used for the same comparison, so a rate
-   * it accepted for a conversion into the currency of the amount is accepted here as well.
-   */
+  /** The tolerance within which a rate counts as one for a conversion that does not convert. */
   private val NoConversionTolerance: Double = 1e-8
 
   /**
@@ -489,7 +484,27 @@ object CurrencyAmount {
    */
   private val SeparatorIndex: Int = 3
 
-  //-------------------------------------------------------------------------
+  /**
+   * The longest the amount part of the text form may be.
+   *
+   * The amount is read as a double, and a double has no longest spelling in the way a period or
+   * a currency code does - a caller may write any number of digits and the reading rounds them -
+   * so, exactly as with an identifier, the only bound available is one this type states. Without
+   * one, a sender chooses how much text [[parse]] copies and how much numeric reading it does.
+   *
+   * The number is chosen from what it takes to write a double exactly rather than from what a
+   * machine can hold. The longest exact decimal spelling of a finite double is that of the
+   * smallest subnormal, which needs 767 significant digits after a leading zero and a point, and
+   * every other value needs fewer; a thousand characters is above all of them, so no spelling
+   * that names a double exactly is refused for its size. What is refused is text carrying digits
+   * that cannot change the value it names, which is the only thing beyond this bound.
+   *
+   * [[Money]] and [[BigMoney]] read the same text form and are bounded already, at the 256
+   * characters their [[com.opengamma.strata.collect.Decimal]] reads within; this is looser
+   * because a double spells values that a decimal of eighteen digits does not.
+   */
+  private val MaxAmountTextLength: Int = 1024
+
   /**
    * Obtains a zero amount in the specified currency.
    *
@@ -504,8 +519,7 @@ object CurrencyAmount {
    * Obtains an amount in the specified currency.
    *
    * Every `Double` describes an amount except a value that is not a number, which this rejects,
-   * and a negative zero, which it normalises to a positive zero. The two infinities are accepted,
-   * exactly as the implementation being ported accepted them.
+   * and a negative zero, which it normalises to a positive zero. The two infinities are accepted.
    *
    * The failure has a single cause - there is one thing that can be wrong with the arguments - so
    * it is reported as one [[Failure]] rather than as a chain of them, and its message is the one
@@ -537,10 +551,8 @@ object CurrencyAmount {
    * and then the amount is checked as above. Either step can fail, and the failure of the first
    * is the failure of the lookup.
    *
-   * A code outside the closed set of currencies this port holds is reported rather than invented.
-   * The implementation being ported created a currency for any three upper case letters, so this
-   * rejects text it accepted; that follows from the closed currency family and is recorded as a
-   * divergence with it.
+   * A code outside the closed set of currencies [[Currency]] holds is reported rather than
+   * invented, so three upper case letters naming no currency of that set do not name an amount.
    *
    * @param currencyCode  the three letter ISO-4217 currency code, upper case
    * @param amount  the amount of that currency
@@ -549,14 +561,12 @@ object CurrencyAmount {
   def of(currencyCode: String, amount: Double): FailureOr[CurrencyAmount] =
     Currency.of(currencyCode).flatMap(currency => of(currency, amount))
 
-  //-------------------------------------------------------------------------
   /**
    * Parses an amount from text of the form `AAA 12.34`.
    *
    * The parsed form is the three letter currency code, a space and the amount, which is the form
    * [[CurrencyAmount.toString]] writes. The shape of the text is checked before anything is read
-   * from it, in the order the implementation being ported checked it, so the two wordings it
-   * reported are the two wordings reported here:
+   * from it, so the two wordings reported are:
    *
    *   - text too short to name an amount, or text whose fourth character is not a space, is
    *     `Unable to parse amount, invalid format: <text>`, and so is text whose amount part
@@ -574,42 +584,54 @@ object CurrencyAmount {
    * CurrencyAmount.parse("GBP NaN")       // Left - names a number this type rejects
    * }}}
    *
-   * The case of the currency code is tolerated, as it was in the implementation being ported,
-   * because the code is resolved through [[Currency.parse]]. The cause of a rejection is
-   * deliberately not carried in the failure: the implementation being ported wrapped it in the
-   * exception it threw, but the message - which is what a caller reads, logs and asserts on -
-   * named only the text, and keeping the failure to that one message keeps two failures over the
-   * same text equal and their serialized form stable.
+   * The case of the currency code is tolerated, because the code is resolved through
+   * [[Currency.parse]]. The cause of a rejection is deliberately not carried in the failure: the
+   * message - which is what a caller reads, logs and asserts on - names only the text, and
+   * keeping the failure to that one message keeps two failures over the same text equal and their
+   * encoded form identical.
    *
-   * Both wordings name the text as it was given, so each reads as the original's did. The text
-   * came from outside the library, so bounding it and escaping what it may hold belong to the
-   * writing of a failure, which [[com.opengamma.strata.collect.result.Failure.show]] and the
-   * text form of a failure perform for every part they write.
+   * Both wordings name the text as it was given. The text came from outside the library, so
+   * bounding it and escaping what it may hold belong to the writing of a failure, which
+   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure perform
+   * for every part they write.
    *
    * @param amountStr  the amount as text, in the form `AAA 12.34`
-   * @return the amount the text names, or the failure describing why it names none
+   * @return the amount the text names, or the failure naming the broken condition: the text has
+   *   to be a currency code, a space and an amount this type admits
    */
   def parse(amountStr: String): FailureOr[CurrencyAmount] =
+    // Every decision about the shape and the size of the text is taken from its length and from
+    // the position of a separator within it, and all of them are taken before either part is cut
+    // out of it. The order matters: a second separator used to be looked for in the amount part
+    // AFTER that part had been copied out, so text shaped as a well-formed prefix followed by a
+    // tail of a sender's choosing was copied in full only to be discarded by the very next
+    // comparison, and a tail that carried no second separator went on to be read as a number at
+    // whatever length it arrived (CWE-400/CWE-770).
     if (amountStr.length <= SeparatorIndex + 1 || amountStr.charAt(SeparatorIndex) != ' ') {
       Left(invalidFormat(amountStr))
+    } else if (amountStr.indexOf(' ', SeparatorIndex + 1) >= 0) {
+      // a second separator is the shape failure it always was, decided now from an index scan
+      // rather than from a copy of the part it was found in
+      Left(invalidFormat(amountStr))
+    } else if (amountStr.length - (SeparatorIndex + 1) > MaxAmountTextLength) {
+      // Text longer than any number can be written with names no amount, which is exactly what
+      // the wording below says, so the ceiling reports through it rather than through a wording
+      // of its own: what reaches a caller for an oversized amount is what has always reached it
+      // for an unreadable one. The text is not read and neither part is copied.
+      Left(Failure.Parsing(s"Unable to parse amount: $amountStr"))
     } else {
       val currencyCode = amountStr.substring(0, SeparatorIndex)
       val amountText = amountStr.substring(SeparatorIndex + 1)
-      if (amountText.indexOf(' ') >= 0) {
-        Left(invalidFormat(amountStr))
-      } else {
-        val parsed: Option[CurrencyAmount] = for {
-          currency <- Currency.parse(currencyCode).toOption
-          parsedAmount <- amountText.toDoubleOption
-          value <- of(currency, parsedAmount).toOption
-        } yield value
-        // the text is rendered rather than interpolated as it stands, which bounds the message
-        // and keeps it to one line while leaving an in-bound spelling quoted as it was given
-        parsed.toRight(Failure.Parsing(s"Unable to parse amount: $amountStr"))
-      }
+      val parsed: Option[CurrencyAmount] = for {
+        currency <- Currency.parse(currencyCode).toOption
+        parsedAmount <- amountText.toDoubleOption
+        value <- of(currency, parsedAmount).toOption
+      } yield value
+      // the text is rendered rather than interpolated as it stands, which bounds the message
+      // and keeps it to one line while leaving an in-bound spelling quoted as it was given
+      parsed.toRight(Failure.Parsing(s"Unable to parse amount: $amountStr"))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Creates an amount, normalising it and checking the invariant, which every route funnels
    * through.
@@ -624,13 +646,12 @@ object CurrencyAmount {
    * It is visible to the currency package rather than to this file alone because the types of
    * this package that hold amounts as numbers - [[CurrencyAmountArray]],
    * [[MultiCurrencyAmount]], [[MultiCurrencyAmountArray]], [[Money]] and [[BigMoney]] - have to
-   * turn a number they hold back into an amount, and each of them was doing it by adding the
-   * number to the zero amount of the currency. That route allocates a zero amount, a function
-   * that closes over the number and then the amount itself, three objects where the one returned
-   * is the only one the caller keeps, and a run of a hundred thousand values pays that for each
-   * of them. Calling this directly performs the very same normalisation and the very same check -
-   * there is no second definition of what an amount is - and allocates exactly the object it
-   * returns.
+   * turn a number they hold back into an amount. Reaching that through the zero amount of the
+   * currency would allocate a zero amount, a function that closes over the number and then the
+   * amount itself, three objects where the one returned is the only one the caller keeps, and a
+   * run of a hundred thousand values would pay that for each of them. Calling this directly
+   * performs the very same normalisation and the very same check - there is no second definition
+   * of what an amount is - and allocates exactly the object it returns.
    *
    * The contract a caller inside this package takes on is only that the number is a number it
    * means as an amount: this method still normalises the sign of zero and still raises the
@@ -644,7 +665,23 @@ object CurrencyAmount {
    * @throws java.lang.IllegalArgumentException if the amount is not a number
    */
   private[currency] def create(currency: Currency, amount: Double): CurrencyAmount =
-    new CurrencyAmount(currency, checkedAmount(amount)) {}
+    new Impl(currency, checkedAmount(amount))
+
+  /**
+   * The one implementation of an amount.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[CurrencyAmount]] refuse in its own constructor to be any other implementation.
+   *
+   * @param currency  the currency
+   * @param amount  the amount, already normalised and checked by [[create]]
+   */
+  private final class Impl(currency: Currency, amount: Double)
+      extends CurrencyAmount(currency, amount)
 
   /**
    * Normalises a number and checks that it is an amount, answering with the number itself.
@@ -660,9 +697,9 @@ object CurrencyAmount {
    * have to apply this invariant to a number they are about to store, and the number is all they
    * want back. Reaching it through [[create]] means building an amount and reading its number
    * again, an object allocated and discarded per entry, which for an aggregation over `E` entries
-   * is `E` objects that exist only to be unwrapped. The aggregation of this port is required to be
-   * one pass that allocates the value it returns, and this is what lets it be that while keeping
-   * the check where it belongs.
+   * is `E` objects that exist only to be unwrapped. An aggregation is instead one pass that
+   * allocates the value it returns, and this is what lets it be that while keeping the check
+   * where it belongs.
    *
    * A caller inside this package therefore uses this where it holds a number and [[create]] where
    * it holds an amount; neither is reachable from outside the package, so the public factories
@@ -674,9 +711,8 @@ object CurrencyAmount {
    */
   private[currency] def checkedAmount(amount: Double): Double = {
     // Adding a positive zero is the whole of the normalisation: `-0.0 + 0.0` is `0.0` while every
-    // other value, the infinities included, is left exactly as it was. The implementation being
-    // ported normalised the sign of zero with the same addition and called it weird in a comment
-    // for the same reason it looks odd here - the arithmetic identity is the mechanism.
+    // other value, the infinities included, is left exactly as it was. The addition looks odd
+    // because the arithmetic identity is itself the mechanism that removes the sign of zero.
     val normalised = amount + 0d
     ArgCheck.notNaN(normalised, AmountField)
     normalised
@@ -688,10 +724,9 @@ object CurrencyAmount {
    *
    * This is [[create]] under a name the rest of the package can reach, and it exists so that a
    * conversion whose answer always exists allocates the amount it returns and nothing else.
-   * [[Money.toCurrencyAmount]] and [[BigMoney.toCurrencyAmount]] are the callers it was added
-   * for: the amount of a money value is a decimal, whose `Double` is finite by construction, so
-   * neither has anything to report and neither should build a zero amount on the way to the one
-   * it returns. The implementation being ported constructed the result once, and so does this.
+   * [[Money.toCurrencyAmount]] and [[BigMoney.toCurrencyAmount]] are its callers: the amount of a
+   * money value is a decimal, whose `Double` is finite by construction, so neither has anything
+   * to report and neither should build a zero amount on the way to the one it returns.
    *
    * It is `private[currency]` rather than public because it names no failure channel: a caller
    * outside the package has no way to know that the value it holds is one this type admits, and
@@ -711,9 +746,9 @@ object CurrencyAmount {
   /**
    * The failure reported for text whose shape does not admit an amount.
    *
-   * The text is quoted as it stands, which is the wording the implementation being ported
-   * produced; bounding it and escaping what it may hold belong to the writing of a failure,
-   * which the text form of one and [[Failure.show]] perform for every part they write.
+   * The text is quoted as it stands; bounding it and escaping what it may hold belong to the
+   * writing of a failure, which the text form of one and [[Failure.show]] perform for every part
+   * they write.
    */
   private def invalidFormat(amountStr: String): Failure =
     Failure.Parsing(s"Unable to parse amount, invalid format: $amountStr")
@@ -721,14 +756,11 @@ object CurrencyAmount {
   /**
    * Renders an amount without a fractional part when it is a whole number.
    *
-   * A whole number is converted to a `Long` before it is rendered, which is what the
-   * implementation being ported did and is why `GBP 100` is written rather than `GBP 100.0`. The
-   * conversion saturates rather than wrapping, so a finite whole number beyond the range of a
-   * `Long` renders as that range's end: an amount of `1e20` is written as
-   * `9223372036854775807`. That is what the implementation being ported wrote, from the same
-   * narrowing conversion, and it is kept rather than corrected so that the text of an amount is
-   * unchanged by this port. An infinite amount is not a whole number by the test above and so
-   * takes the other branch, where the platform writes it as `Infinity` or `-Infinity`.
+   * A whole number is converted to a `Long` before it is rendered, which is why `GBP 100` is
+   * written rather than `GBP 100.0`. The conversion saturates rather than wrapping, so a finite
+   * whole number beyond the range of a `Long` renders as that range's end: an amount of `1e20` is
+   * written as `9223372036854775807`. An infinite amount is not a whole number by the test above
+   * and so takes the other branch, where the platform writes it as `Infinity` or `-Infinity`.
    *
    * @param amount  the amount to render
    * @return the amount as text, without a fractional part when it is a whole number
@@ -736,16 +768,14 @@ object CurrencyAmount {
   private def formatAmount(amount: Double): String =
     if (DoubleArrayMath.isMathematicalInteger(amount)) amount.toLong.toString else amount.toString
 
-  //-------------------------------------------------------------------------
   /**
    * The ordering, hashing and equality of amounts.
    *
-   * Amounts order by currency alphabetically and then by amount, which is the comparison the
-   * implementation being ported performed. The amounts are compared by bit pattern, the
-   * comparison [[CurrencyAmount.equals]] performs, so the ordering agrees with equality exactly:
-   * `compare` returns zero precisely when `eqv` holds, for every value including the ones outside
-   * the real numbers. No secondary comparison is needed, since the two fields of the type are
-   * exactly the two the comparison reads.
+   * Amounts order by currency alphabetically and then by amount. The amounts are compared by bit
+   * pattern, the comparison [[CurrencyAmount.equals]] performs, so the ordering agrees with
+   * equality exactly: `compare` returns zero precisely when `eqv` holds, for every value including
+   * the ones outside the real numbers. No secondary comparison is needed, since the two fields of
+   * the type are exactly the two the comparison reads.
    *
    * This is the only equality-bearing instance of the type. `Order` and `Hash` both extend `Eq`,
    * so a separate `Eq` would be a second answer to the same question; one is declared here and
@@ -778,12 +808,10 @@ object CurrencyAmount {
    */
   implicit val show: Show[CurrencyAmount] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   // The codec of the double field, brought into scope for the two derivations below and for
-  // nothing else: the amount goes through the single policy this port has for a double, which
-  // writes the values JSON cannot express as the tagged strings `"NaN"`, `"Infinity"` and
-  // `"-Infinity"`. The import is what makes that choice deliberate and local, as the codec
-  // support of `strata-collect` intends.
+  // nothing else: the amount is written under the single policy for a double, which represents
+  // the values JSON cannot express as the tagged strings `"NaN"`, `"Infinity"` and `"-Infinity"`.
+  // Importing it here is what keeps that choice deliberate and local.
   import Codecs.implicits._
 
   /**
@@ -796,22 +824,21 @@ object CurrencyAmount {
    * and the encoder below derives over it and is contramapped from an amount that is already
    * valid. It exists only for that purpose - it is private and it is never returned, so no caller
    * can hold an unchecked pair. Its field names are the JSON keys, and they are the names of the
-   * two fields of [[CurrencyAmount]] itself, which is what keeps the derived shape and the type
-   * from drifting apart.
+   * two fields of [[CurrencyAmount]] itself, which keeps the derived shape and the type from
+   * drifting apart.
    *
    * @param currency  the currency, read from its three letter code
    * @param amount  the amount, unchecked, read as a number or as one of the three tagged strings
    */
-  private final case class Raw(currency: Currency, amount: Double)
+  private final case class Raw(currency: Currency, amount: Double) extends NoJavaSerialization
 
-  /** The derived decoder of the raw field shape, used by the checking decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
   /**
    * The derived encoder of the raw field shape, used by the encoder below.
    *
-   * This sits after the import above deliberately: the derivation picks up the double codec of
-   * this port from that import, which is what writes an infinite amount as its tagged string. A
+   * This sits after the import above deliberately: the derivation picks up the tagged double
+   * codec from that import, which is what writes an infinite amount as its tagged string. A
    * derivation site without that import in scope would take circe's plain numeric encoder
    * instead, which has no representation for a value JSON cannot express.
    */
@@ -827,15 +854,13 @@ object CurrencyAmount {
    * }}}
    *
    * The shape is derived at compile time over the raw product above rather than written out
-   * field by field, which is what every product of this port does, and the value is contramapped
-   * into that product: an amount in memory has already been checked, so nothing further has to be
-   * decided on the way out. Deriving it is what keeps the document and the type in step - a field
-   * added to one is a field added to the other, with no second list of names to keep current. An
-   * infinite amount is written as the tagged string the double policy of this port defines, so
-   * every value this type admits survives a round trip. The result is wrapped so that a field
-   * holding no value would be omitted, which is the policy every product of this port follows -
-   * this type has no optional field, so the wrapping changes nothing about its output and exists
-   * so that the policy holds without exception.
+   * field by field, and the value is contramapped into that product: an amount in memory has
+   * already been checked, so nothing further has to be decided on the way out. Deriving it is
+   * what keeps the document and the type in step - a field added to one is a field added to the
+   * other, with no second list of names to maintain. An infinite amount is written as the tagged
+   * string the double policy defines, so every value this type admits survives a round trip. The
+   * result is wrapped so that a field holding no value is omitted; this type has no optional
+   * field, so the wrapping changes nothing about its output and keeps it inside that one policy.
    *
    * @return the JSON encoding of an amount
    */
@@ -848,9 +873,9 @@ object CurrencyAmount {
    *
    * This is the inverse of the encoding above, and it decides whether the fields describe an
    * amount exactly as a caller's arguments are decided: the payload is read into the raw shape
-   * and handed to `of`, so a document naming a currency this port does not hold, or an amount that
-   * is not a number, is a decoding failure carrying the reason rather than a value this type
-   * would not have built.
+   * and handed to `of`, so a document naming a code that is not one of the currencies
+   * [[Currency]] holds, or an amount that is not a number, is a decoding failure carrying the
+   * reason rather than a value this type would not have built.
    *
    * @return the JSON decoding of an amount
    */

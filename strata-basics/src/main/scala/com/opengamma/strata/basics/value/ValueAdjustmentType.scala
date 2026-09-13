@@ -14,7 +14,9 @@ import io.circe.Codec
 import io.circe.Decoder
 import io.circe.Encoder
 
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.named.NamedEnum
@@ -37,11 +39,11 @@ import com.opengamma.strata.collect.named.NamedEnum
  * Multiplier       200        1.1             result = baseValue * modifyingValue = (200 * 1.1) = 220
  * }}}
  *
- * The arithmetic of each member is written in exactly the shape the type being ported used,
+ * The arithmetic of each member is written in exactly the shape the table above states,
  * rather than in an algebraically equivalent one, because floating-point addition and
  * multiplication do not associate: rewriting `baseValue + baseValue * modifyingValue` as
  * `baseValue * (1 + modifyingValue)` would change the result in the last bits for some
- * inputs. Keeping the shape keeps every result bit-identical to the original.
+ * inputs.
  *
  * ===A closed family===
  *
@@ -49,53 +51,57 @@ import com.opengamma.strata.collect.named.NamedEnum
  * constructor is visible only inside this package, and each member exists exactly once as a
  * value in the companion, so no further type can be brought into being - not by a caller,
  * not by a subclass in another file, and not by anything discovered while the program runs.
- * The compiler therefore checks a `match` over the types for exhaustiveness, and the set of
- * types observable at run time is precisely the set visible at compile time.
+ * A `match` over the types is therefore checked for exhaustiveness when this file is compiled,
+ * and the set of types observable at run time is precisely the set visible at compile time.
  *
- * That closedness is what replaces the run-time machinery of the original, where the lookup
- * keys of this enum were derived while the program ran by a shared name helper that read the
- * constants of the Java enum back from its class. This port derives nothing and reads
- * nothing: the members are listed in `values`, the spellings they answer to are listed in the
- * companion, and a name is resolved against them by the [[NamedEnum]] instance published
- * there.
+ * Nothing about the family is derived or read while the program runs: the members are listed in
+ * `values`, the spellings they answer to are listed in the companion, and a name is resolved
+ * against them by the [[NamedEnum]] instance published there.
  *
  * ===Names===
  *
  * The canonical name of a type is its mixed case form - `Replace`, `DeltaAmount`,
- * `DeltaMultiplier`, `Multiplier` - which the name helper of the original derived from the
- * constant identifier and which this port states directly. That is the string `name`
- * returns, the string `toString` renders, the string `Show` produces and the string the JSON
- * codec writes, so a stored or transmitted adjustment type always takes that one form. The
- * Scala identifier of each member is that same canonical name, so
- * `ValueAdjustmentType.DeltaAmount` is both how the member is written in code and how it
- * renders. The constant identifiers of the Java enum - `DELTA_AMOUNT` and its fellows - remain
- * accepted spellings of the name lookup, so text written against the original still resolves
- * even though no member is spelled that way in code.
+ * `DeltaMultiplier`, `Multiplier`. That is the string `name` returns, the string `toString`
+ * renders, the string `Show` produces and the string the JSON codec writes, so a stored or
+ * transmitted adjustment type always takes that one form. The Scala identifier of each member
+ * is that same canonical name, so `ValueAdjustmentType.DeltaAmount` is both how the member is
+ * written in code and how it renders. The SCREAMING_SNAKE spellings - `DELTA_AMOUNT` and its
+ * fellows - are accepted spellings of the name lookup even though no member is spelled that
+ * way in code.
  *
- * Parsing is described on `valueOf` and `parse`. In short, every spelling the original
- * accepted is accepted here: the canonical mixed case form, the Java constant identifier, the
- * run-together form, and the upper and lower case variants of each.
+ * Parsing is described on `valueOf` and `parse`. In short, four kinds of spelling resolve: the
+ * canonical mixed case form, the SCREAMING_SNAKE form, the run-together form, and the upper
+ * and lower case variants of each.
  *
  * ===Equality, ordering and rendering===
  *
  * The companion publishes exactly one equality-bearing instance, an `Order` that is also a
- * `Hash`, so there is no way for two notions of equality to disagree about a type. It
- * compares by `name`, which makes the ordering alphabetical, whereas the enum being ported
- * compared its constants by declaration position; `values` still lists the members in
- * declaration order, so both orders remain available and neither is implied by the other.
+ * `Hash`, so there is no way for two notions of equality to disagree about a type. It compares
+ * by `name`, which makes the ordering alphabetical, while `values` lists the members in
+ * declaration order, so both orders are available and neither is implied by the other.
  *
  * @param name  the canonical name of this type, as it is rendered and parsed
  */
-sealed abstract class ValueAdjustmentType private[value] (val name: String) extends Named {
+sealed abstract class ValueAdjustmentType private[value] (val name: String)
+    extends Named
+    with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to the package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be a fifth way of adjusting a value,
+  // outside the four this type publishes and outside what every value schedule resolves through -
+  // is refused here instead. Every member is a `case object` declared inside the companion below,
+  // which is what this admits.
+  JvmClosure.requireDeclaredMember(this, classOf[ValueAdjustmentType])
 
   /**
    * Adjusts the base value based on the type and the modifying value.
    *
    * The operation is total: every pair of values has a result, and a result that is not a
    * number - reached only from an input that is not a number, or from an infinite input
-   * whose arithmetic is undefined - is returned as such rather than reported, exactly as in
-   * the type being ported. A caller that requires a finite result checks the value it gets
-   * back, or checks its inputs before calling.
+   * whose arithmetic is undefined - is returned as such rather than reported. A caller that
+   * requires a finite result checks the value it gets back, or checks its inputs before
+   * calling.
    *
    * @param baseValue  the base, or previous, value to be adjusted
    * @param modifyingValue  the value that the type uses to modify the base value
@@ -106,9 +112,8 @@ sealed abstract class ValueAdjustmentType private[value] (val name: String) exte
   /**
    * Returns the canonical name of this type.
    *
-   * This is the same string as `name`, which reproduces the rendering of the type being
-   * ported, so an adjustment type interpolated into a message reads as its mixed case name
-   * rather than as the SCREAMING_SNAKE spelling the Java enum constant would have rendered.
+   * This is the same string as `name`, so an adjustment type interpolated into a message
+   * reads as its mixed case name rather than as any other spelling the name lookup accepts.
    * It is stated here rather than left to the rendering a `case object` derives, so the
    * rendering stays a statement about `name` and not about how the members are spelled.
    *
@@ -121,13 +126,12 @@ sealed abstract class ValueAdjustmentType private[value] (val name: String) exte
  * Provides the four value adjustment types, together with the name lookup, typeclass
  * instances and JSON codec for them.
  *
- * The members are declared in the order of the enum constants being ported, and `values`
- * preserves that order.
+ * The four members are declared below, and `values` lists them in that declaration order.
  */
 object ValueAdjustmentType {
 
   /**
-   * The modifying value replaces the base value. The input base value is ignored.
+   * The modifying value stands in for the base value, which is ignored.
    *
    * The result is `modifyingValue`.
    */
@@ -175,11 +179,11 @@ object ValueAdjustmentType {
   /**
    * The complete set of value adjustment types, in declaration order.
    *
-   * The order is the declaration order of the enum constants being ported and is part of what
-   * this file preserves; it is not the order the `Order` instance below imposes, which is
-   * alphabetical by name. The list is non-empty by construction, which is what allows every
-   * operation over the family - a name lookup table, a generator, an exhaustive report - to
-   * be written without a case for a family that has no members.
+   * The order is the declaration order of the members above; it is not the order the `Order`
+   * instance below imposes, which is alphabetical by name. The list is non-empty by
+   * construction, which is what allows every operation over the family - a name lookup table,
+   * a generator, an exhaustive report - to be written without a case for a family that has no
+   * members.
    *
    * @return the four types, in declaration order
    */
@@ -194,24 +198,17 @@ object ValueAdjustmentType {
   /**
    * The alternate spellings of the family, each mapped to a canonical name.
    *
-   * Every key here is text, never a Scala identifier: the SCREAMING_SNAKE forms are the
-   * identifiers of the constants of the Java enum being ported, which no member of this family
-   * is named after any more, and they are carried as lookup keys so that text written against
-   * the original still resolves.
+   * Every key here is text, never a Scala identifier: the SCREAMING_SNAKE forms are lookup
+   * keys of this family, and no member is spelled that way in code.
    *
-   * The name helper of the original registered six lookup keys for every constant: the Java
-   * constant identifier, that identifier in upper and in lower case, the canonical mixed case
-   * form, and that form in upper and in lower case. A named family registers two of those on
-   * its own - the canonical name and the canonical name folded to upper case - so this table
-   * supplies the rest, and only the rest: the Java constant identifier, that identifier in
-   * lower case, and the canonical form run together in lower case. Nothing here is a spelling
-   * the original did not accept, and nothing the family already registers is repeated, which
-   * keeps the set of resolvable names identical to the original's rather than merely a superset
-   * of it.
+   * A named family registers two spellings of every member on its own - the canonical name and
+   * the canonical name folded to upper case - so this table supplies the rest: the
+   * SCREAMING_SNAKE form, that form in lower case, and the canonical form run together in
+   * lower case. Nothing the family already registers is repeated here.
    *
-   * The two members whose Java constant identifier is a single word need only one row each. For
-   * `Replace` and `Multiplier` that identifier and the run-together form are both the canonical
-   * name folded to upper case, which the family already registers, so only the lower case form
+   * The two members whose SCREAMING_SNAKE form is a single word need only one row each. For
+   * `Replace` and `Multiplier` that form and the run-together form are both the canonical name
+   * folded to upper case, which the family already registers, so only the lower case form
    * remains. The two compound members need three rows each, which is how eight rows cover four
    * members.
    */
@@ -235,8 +232,7 @@ object ValueAdjustmentType {
    * only the alternate spellings: there is no pattern that rewrites text before it is looked
    * up, and no group of names published for an external protocol. The whole name space of the
    * family is therefore its four canonical names, those four names folded to upper case, and
-   * the eight spellings of `Alternates` - sixteen names in all, which is exactly the set of
-   * sixteen the enum being ported could parse.
+   * the eight spellings of `Alternates` - sixteen names in all.
    *
    * @return the name lookup for the four types
    */
@@ -247,15 +243,15 @@ object ValueAdjustmentType {
    * Obtains the type with the specified name, if one exists.
    *
    * The match is exact: the alternate spellings above are consulted, and the result is
-   * compared against the canonical names and against those names folded to upper case. Every
-   * spelling the type being ported accepted resolves here, and nothing else does:
+   * compared against the canonical names and against those names folded to upper case. Those
+   * sixteen spellings resolve, and nothing else does:
    *
    * {{{
    * valueOf("DeltaAmount")   // Some(DeltaAmount) - the canonical name
    * valueOf("DELTAAMOUNT")   // Some(DeltaAmount) - the canonical name in upper case
    * valueOf("deltaamount")   // Some(DeltaAmount) - the canonical name in lower case
-   * valueOf("DELTA_AMOUNT")  // Some(DeltaAmount) - the Java constant identifier
-   * valueOf("delta_amount")  // Some(DeltaAmount) - that identifier in lower case
+   * valueOf("DELTA_AMOUNT")  // Some(DeltaAmount) - the SCREAMING_SNAKE form
+   * valueOf("delta_amount")  // Some(DeltaAmount) - that form in lower case
    * valueOf("Delta Amount")  // None - never a name of this family
    * }}}
    *
@@ -273,13 +269,12 @@ object ValueAdjustmentType {
    * The lookup first tries the exact match of `valueOf`. When that finds nothing, the input is
    * folded to upper case and looked up once more, which is the whole of the leniency available
    * to this family, since it declares no rewrite pattern for the step between the two lookups.
-   * Every spelling the enum being ported accepted is therefore resolved by this method too,
-   * and text that differs from one of them in case alone is resolved as well.
+   * Every spelling `valueOf` resolves is therefore resolved by this method too, and text that
+   * differs from one of them in case alone is resolved as well.
    *
-   * Where the original signalled an unrecognised name by raising an error, this method reports
-   * it as a value: the result is `Left` of a chain holding one failure whose reason is
-   * `PARSING` and whose message names both this family and the text that could not be
-   * resolved. No input raises.
+   * Text that names no type of this family is reported as a value: the result is `Left` of a
+   * chain holding one failure whose reason is `PARSING` and whose message names both this
+   * family and the text that could not be resolved. No input raises.
    *
    * {{{
    * parse("DeltaAmount")  // Right(DeltaAmount)
@@ -288,7 +283,8 @@ object ValueAdjustmentType {
    * }}}
    *
    * @param name  the text to parse
-   * @return the type the text names, or the failure describing why it names none
+   * @return the type the text names, or the failure naming this family and the text, when the
+   *   text matches none of the family's sixteen spellings in either of the two lookups
    */
   def parse(name: String): ResultNec[ValueAdjustmentType] = namedEnum.parse(name)
 
@@ -298,10 +294,10 @@ object ValueAdjustmentType {
    * This is the only equality-bearing instance of the type: `Order` extends `Eq` and `Hash`
    * extends `Eq`, so summoning any of the three yields this one value and the three can never
    * disagree. Comparison is over `name`, which makes the ordering alphabetical rather than the
-   * declaration ordering of the enum being ported, and equality follows it - names are unique
-   * across the family, so two types compare equal if, and only if, they are the same type,
-   * which is the law the combined instance has to satisfy. Since each member exists exactly
-   * once, that agrees with the identity of the members themselves.
+   * declaration ordering of `values`, and equality follows it - names are unique across the
+   * family, so two types compare equal if, and only if, they are the same type, which is the
+   * law the combined instance has to satisfy. Since each member exists exactly once, that
+   * agrees with the identity of the members themselves.
    *
    * @return the ordering of types by name, which is also their hashing
    */
@@ -332,9 +328,7 @@ object ValueAdjustmentType {
    * The JSON encoder for types.
    *
    * A type is written as the bare string of its canonical name - `"DeltaAmount"` - and never
-   * as an object, so a serialized adjustment carries its type as one readable word. That is
-   * the single-string form the type being ported wrote, which is what allows a document
-   * written before this port to be read after it.
+   * as an object, so an encoded adjustment carries its type as one readable word.
    *
    * @return the encoder writing a type as its canonical name
    */

@@ -14,97 +14,45 @@ import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.basics.currency.CurrencyAmount
 
 /**
- * Matchers for [[CurrencyAmount]], for use in the specs of this module and of every module
- * built on it.
- *
- * An amount pairs a number with the currency it is denominated in, and a spec holding one
- * almost always has something to say about both halves - with the number compared against a
- * tolerance, because it came out of floating point arithmetic. This is the vocabulary for
- * saying it, ported from the fluent assertion helper the original test tree used:
+ * Matchers for [[CurrencyAmount]], for use in the specs of this module and of every module built
+ * on it. An amount pairs a number with the currency it is denominated in, and a spec holding one
+ * usually asserts on both halves, the number against a tolerance because it came out of floating
+ * point arithmetic:
  *
  *   - `haveCurrency(expected)` - the amount is denominated in that currency.
- *   - `haveAmount(expected)` - the amount is exactly that number.
+ *   - `haveAmount(expected)` - the number is exactly that value.
  *   - `haveAmount(expected, tolerance)` - the number is within that tolerance of `expected`.
  *   - `haveAmount(expected +- tolerance)` - the same check, written with the tolerance
  *     operator of the test framework.
  *   - `beCloseTo(expected, tolerance)` - the currency equals that of another amount and the
  *     number is within tolerance of its number.
  *
- * ===Using them===
- *
- * Bring them into scope either by importing the members of the companion, which is what a
- * spec of this port conventionally does, or by mixing in this trait:
+ * Import the members of the companion, or mix in this trait; `and`, `or`, `should not` and
+ * `shouldNot` compose these matchers as they do any other:
  *
  * {{{
  * import com.opengamma.strata.basics.testkit.CurrencyAmountMatchers._
  *
- * class SomethingSpec extends AnyFunSuite with Matchers {
- *   test("conversion") {
- *     val result: CurrencyAmount = someMethodCall()
- *     result should haveCurrency(Currency.USD)
- *     result should (haveCurrency(Currency.USD) and haveAmount(123.45, 1e-6))
- *     result should haveAmount(123.45 +- 1e-6)
- *     result should beCloseTo(expected, 1e-6)
- *   }
- * }
+ * val result: CurrencyAmount = someMethodCall()
+ * result should haveCurrency(Currency.USD)
+ * result should not (haveCurrency(Currency.GBP))
+ * result should (haveCurrency(Currency.USD) and haveAmount(123.45, 1e-6))
+ * result should haveAmount(100.0)
+ * result should haveAmount(123.45 +- 1e-6)
+ * result should beCloseTo(expected, 1e-6)
  * }}}
  *
- * The second line is how the chained form of the helper being ported reads here. That helper
- * returned itself from every method so that the two halves of an amount could be asserted in
- * one expression; a matcher composes the same way through `and`, and two `should` statements
- * one after the other say the same thing with a separate diagnostic for each half. Either
- * reading is available, and `should not`, `shouldNot` and `or` work on these matchers as they
- * do on any other.
+ * A spec that also asserts on the outcome of an operation that can fail imports
+ * `com.opengamma.strata.collect.testkit.ResultMatchers._` beside this import and applies these
+ * matchers to the value projected out of the `Either`; no matcher here reaches inside an outcome.
  *
- * The last line is the whole-value form: `beCloseTo` takes the other amount rather than its
- * two parts, which is what a spec wants when it already holds the expected amount. It is
- * deliberately not spelled as equality, because equality of amounts is exact - the framework
- * already provides `equal` and `===` for that - while this form is the tolerant comparison
- * the ported helper offered under the name of equality.
+ * Every amount is a `Double`, and this build treats the widening of a whole number to a decimal
+ * as an error, so a call site writes `haveAmount(2560.0)`; there is deliberately no whole number
+ * overload, which would double this vocabulary and make `haveAmount(1, 2)` ambiguous with the
+ * tolerant form. `beCloseTo` is the tolerant comparison of two whole amounts and is deliberately
+ * not equality, for which the test framework already provides `equal` and `===`.
  *
- * ===Amounts are written as decimals===
- *
- * Every amount here is a `Double`, and this file is compiled in a build that treats the
- * widening of a whole number to a decimal as an error rather than performing it silently. A
- * call site therefore writes `haveAmount(2560.0)` and `haveAmount(0.0)` where the assertions
- * being ported wrote `hasAmount(2560)` and `hasAmount(0)`. There is deliberately no whole
- * number overload to paper over that: it would double every member of this vocabulary, make
- * `haveAmount(1, 2)` ambiguous with the tolerant form for readers, and hide from a spec the
- * one thing an amount always is.
- *
- * ===Composing with the other matchers of this port===
- *
- * There is no object here gathering these matchers together with those of
- * [[com.opengamma.strata.collect.testkit.ResultMatchers]], and none is needed. The helper
- * being ported had one - a class whose only purpose was to re-expose the amount assertion
- * beside the assertions of the other modules - because that assertion style was entered
- * through a single overloaded method name, so a spec could import one definition of it and no
- * more. A matcher carries its own name, so a spec that needs both vocabularies imports both
- * and sees every name in each:
- *
- * {{{
- * import com.opengamma.strata.collect.testkit.ResultMatchers._
- * import com.opengamma.strata.basics.testkit.CurrencyAmountMatchers._
- * }}}
- *
- * That pairing is also the answer for an operation that can fail. An operation of this
- * library reports a failure as a value rather than by abandoning the call stack, so a spec
- * asserting on one asserts the outcome with the matchers above and applies the matchers here
- * to the value projected out of it - there is deliberately no matcher in this file that
- * reaches inside an outcome:
- *
- * {{{
- * val converted: FailureOr[CurrencyAmount] = someConversion()
- * converted should beSuccess
- * converted.value should haveAmount(123.45 +- 1e-6)  // `value` from ScalaTest EitherValues
- * }}}
- *
- * ===A frozen contract===
- *
- * The specs of the sibling `currency` package import these names, so every member is public
- * and no name may drift. This trait, its companion and its members are the whole of that
- * contract; the helpers below are private because they are the shared reading of a comparison
- * and not part of it.
+ * The published names are a contract: the specs of the sibling `currency` package import them.
  *
  * @see [[com.opengamma.strata.collect.testkit.ResultMatchers]] for the matchers over the
  *   outcome of an operation that can fail, which compose with these at the call site
@@ -112,17 +60,9 @@ import com.opengamma.strata.basics.currency.CurrencyAmount
 trait CurrencyAmountMatchers {
 
   /**
-   * Matches an amount denominated in the specified currency.
-   *
-   * A currency is a value of a closed family whose members are the single instance of each
-   * currency in the reference data, so this is an ordinary comparison of two values and no
-   * tolerance applies. On failure the expected and the actual currency are reported in the
-   * wording of the assertion being ported, so a failure of a ported spec reads as it did.
-   *
-   * {{{
-   * amount should haveCurrency(Currency.USD)
-   * amount should not (haveCurrency(Currency.GBP))
-   * }}}
+   * Matches an amount denominated in the specified currency. A currency is a value of a closed
+   * family, so this is an ordinary comparison of two values and no tolerance applies; a failure
+   * reports the expected and the actual currency.
    *
    * @param expected  the currency the amount is expected to be denominated in
    * @return the matcher for an amount in that currency
@@ -138,24 +78,16 @@ trait CurrencyAmountMatchers {
     }
 
   /**
-   * Matches an amount whose number is exactly the specified value.
+   * Matches an amount whose number is exactly the specified value, where exactly means
+   * `java.lang.Double.compare(actual, expected) == 0` - the comparison [[CurrencyAmount]] itself
+   * performs for equality, and not the one `==` performs on a decimal. Every `NaN` equals every
+   * other `NaN`, because the payload is canonicalised, and `-0.0` does not match `0.0`; it is not
+   * raw bit equality, and neither case is reachable through an amount, whose construction rejects
+   * a `NaN` and normalises a `-0.0` away.
    *
-   * Exactly means bit for bit, which is the comparison [[CurrencyAmount]] itself performs and
-   * therefore the one under which this matcher and the equality of the type always agree. Two
-   * consequences follow from that and from neither being the comparison the `==` operator
-   * performs on a decimal: a value that is not a number matches itself, and a negative zero
-   * does not match a positive zero. The second is unreachable through an amount, whose
-   * construction normalises a negative zero away, and the first is unreachable as an actual
-   * amount, which may not hold a value that is not a number; both are stated because they are
-   * what makes the comparison total.
-   *
-   * Use this form only for a value that arithmetic cannot have perturbed - an amount carried
-   * through unchanged, a whole number, a zero. For anything a calculation produced, prefer
+   * Use this form only for a number arithmetic cannot have perturbed - an amount carried through
+   * unchanged, a whole number, a zero. For anything a calculation produced, prefer
    * [[haveAmount(expected:Double,tolerance:Double)* haveAmount(expected, tolerance)]].
-   *
-   * {{{
-   * amount should haveAmount(100.0)
-   * }}}
    *
    * @param expected  the number the amount is expected to hold
    * @return the matcher for an amount holding exactly that number
@@ -171,11 +103,9 @@ trait CurrencyAmountMatchers {
     }
 
   /**
-   * Matches an amount whose number is within the specified tolerance of the specified value.
-   *
-   * The bound is inclusive: a difference of exactly the tolerance matches. The comparison is
-   * the one the assertion being ported performed, in its order, so a spec that passed there
-   * passes here for the same reason:
+   * Matches an amount whose number is within the specified tolerance of the specified value. The
+   * bound is inclusive - a difference of exactly the tolerance matches - and the comparison takes
+   * three cases in this order:
    *
    *   1. the two numbers being exactly equal matches, whatever they are, which is what lets
    *      an infinite amount be compared against the same infinity;
@@ -184,18 +114,10 @@ trait CurrencyAmountMatchers {
    *   3. otherwise the absolute difference is compared against the tolerance.
    *
    * A zero tolerance therefore reduces exactly to
-   * [[haveAmount(expected:Double)* haveAmount(expected)]], and a negative tolerance is
-   * rejected when the matcher is built - not when it is applied - so the failure is reported
-   * against the line of the spec that wrote it, as the tolerance value of the ported
-   * assertion also was.
-   *
-   * The diagnostic of a failure carries the tolerance and the observed difference beside the
-   * expected and actual numbers, which is what makes a failure at the scale this port is
-   * required to hold to readable at all.
-   *
-   * {{{
-   * amount should haveAmount(123.45, 1e-6)
-   * }}}
+   * [[haveAmount(expected:Double)* haveAmount(expected)]], and a negative tolerance is a broken
+   * precondition of the call rather than a reported failure: it is rejected when the matcher is
+   * built, not when it is applied. A failure carries the tolerance and the observed difference
+   * beside the expected and actual numbers.
    *
    * @param expected  the number the amount is expected to be close to
    * @param tolerance  the largest difference that still matches, zero or greater
@@ -218,19 +140,13 @@ trait CurrencyAmountMatchers {
 
   /**
    * Matches an amount whose number is within the specified spread, written with the tolerance
-   * operator of the test framework.
-   *
-   * This is [[haveAmount(expected:Double,tolerance:Double)* haveAmount(expected, tolerance)]]
-   * reached through the notation a spec of this framework reads most naturally, and it is that
-   * matcher: the spread is taken apart into its centre and its tolerance and handed to it, so
-   * the comparison, the inclusive bound, the rejection of a negative tolerance and the
-   * diagnostic are the same ones. In particular the comparison is the one of the assertion
-   * being ported and not the one the spread itself performs, which reaches the same verdict
-   * for every finite pair but differs where a number is infinite.
-   *
-   * {{{
-   * amount should haveAmount(2560.0 +- 1e-6)
-   * }}}
+   * operator of the test framework. The spread is taken apart into its centre and its tolerance
+   * and handed to
+   * [[haveAmount(expected:Double,tolerance:Double)* haveAmount(expected, tolerance)]], so the
+   * comparison, the inclusive bound, the rejection of a negative tolerance and the diagnostic are
+   * that matcher's - in particular the comparison is the one documented there and not the one
+   * `Spread` itself performs, which reaches the same verdict for every finite pair but differs
+   * where a number is infinite.
    *
    * @param spread  the expected number with the tolerance around it, as `expected +- tolerance`
    * @return the matcher for an amount within that spread
@@ -241,23 +157,15 @@ trait CurrencyAmountMatchers {
 
   /**
    * Matches an amount denominated in the same currency as the specified amount and within the
-   * specified tolerance of its number.
-   *
-   * The two halves are checked in the order the assertion being ported checked them - the
-   * currency first, then the number - so an amount that differs in both is reported as a
-   * currency mismatch, which is the more informative of the two answers and the one a ported
-   * spec expects to read. Each half is checked by the matcher that publishes it, so the
-   * comparison of the currency and the inclusive tolerant comparison of the number are
-   * exactly those documented above, and a negative tolerance is rejected here too, when the
-   * matcher is built.
+   * specified tolerance of its number. The currency is checked first and the number second, so an
+   * amount that differs in both is reported as a currency mismatch, the more informative of the
+   * two answers; each half is checked by the matcher that publishes it, so both comparisons are
+   * those documented above and a negative tolerance is rejected here too, when the matcher is
+   * built.
    *
    * This is the tolerant comparison of two whole amounts, deliberately distinct from their
-   * equality: `amount should equal (expected)` compares both halves exactly, which is right
-   * for an amount that arithmetic cannot have perturbed and wrong for one it has.
-   *
-   * {{{
-   * amount should beCloseTo(expected, 1e-6)
-   * }}}
+   * equality: `amount should equal (expected)` compares both halves exactly, which is right for an
+   * amount arithmetic cannot have perturbed and wrong for one it has.
    *
    * @param expected  the amount this one is expected to be close to
    * @param tolerance  the largest difference of the two numbers that still matches, zero or
@@ -291,33 +199,30 @@ trait CurrencyAmountMatchers {
 
   //-------------------------------------------------------------------------
   /**
-   * Compares two numbers exactly, by bit pattern.
-   *
-   * This is the comparison [[CurrencyAmount]] uses for its own equality, reached through the
-   * comparison of the boxed type rather than through the `==` operator, so that a value that
-   * is not a number equals itself and a negative zero differs from a positive zero. It is
-   * also the first question the tolerant comparison asks, which is what lets that comparison
-   * accept an infinity compared against itself.
+   * Compares two numbers exactly, as `java.lang.Double.compare(actual, expected) == 0`: the
+   * comparison [[CurrencyAmount]] uses for its own equality, and not the one `==` performs on a
+   * decimal. Every `NaN` equals every other `NaN`, because the payload is canonicalised, while
+   * `-0.0` and `0.0` stay distinct, so this is not raw bit equality, which would tell two `NaN`
+   * payloads apart. Neither case arises for an actual amount - the factory rejects a `NaN` and
+   * normalises a `-0.0` away - and exactness is the first question the tolerant comparison asks,
+   * which is what lets an infinity match itself.
    *
    * @param actual  the number the amount holds
    * @param expected  the number it is compared against
-   * @return true if the two have the same bit pattern
+   * @return true when `java.lang.Double.compare` reports the two equal - equal finite numbers, the
+   *   same infinity, or two `NaN`s whatever their payloads - and false for `-0.0` against `0.0`
    */
   private def isExactly(actual: Double, expected: Double): Boolean =
     java.lang.Double.compare(actual, expected) == 0
 
   /**
-   * Compares two numbers within a tolerance, reproducing the comparison of the assertion this
-   * file is ported from.
-   *
-   * The three cases are, in order: two numbers that are already exactly equal match; a number
-   * that is infinite or not a number does not match anything it is not exactly equal to,
-   * since no finite tolerance spans a difference that is not finite; any other pair matches
-   * when the absolute difference is no greater than the tolerance, the bound being inclusive.
-   *
-   * Written this way the comparison is total - every pair of numbers reaches a verdict, with
-   * no arithmetic on a value outside the real numbers deciding it - and a zero tolerance
-   * reduces it to [[isExactly]].
+   * Compares two numbers within a tolerance, in three ordered cases: two numbers that are already
+   * exactly equal match; a number that is infinite or not a number does not match anything it is
+   * not exactly equal to, since no finite tolerance spans a difference that is not finite; any
+   * other pair matches when the absolute difference is no greater than the tolerance, the bound
+   * being inclusive. Written this way the comparison is total - every pair of numbers reaches a
+   * verdict without arithmetic on a value outside the real numbers deciding it - and a zero
+   * tolerance reduces it to [[isExactly]].
    *
    * @param actual  the number the amount holds
    * @param expected  the number it is compared against
@@ -335,14 +240,10 @@ trait CurrencyAmountMatchers {
     }
 
   /**
-   * Rejects a negative tolerance.
-   *
-   * A tolerance below zero cannot be satisfied by any pair of numbers except through the
-   * exactness case, so a spec that writes one has made a mistake in the spec rather than
-   * found one in the code. It is rejected as a broken precondition of the call, at the point
-   * the matcher is built, which is where the tolerance of the ported assertion was rejected
-   * too. Nothing about the amount is involved, so this is not reported as a failure value:
-   * the data has no say in it.
+   * Rejects a negative tolerance, which can only be satisfied through the exactness case and is
+   * therefore a mistake in the spec rather than a finding in the code. It is a broken precondition
+   * of the call, rejected where the matcher is built; nothing about the amount is involved, so it
+   * is not reported as a failure value.
    *
    * @param tolerance  the tolerance to check
    * @throws java.lang.IllegalArgumentException if the tolerance is negative
@@ -351,11 +252,10 @@ trait CurrencyAmountMatchers {
     require(tolerance >= 0d, s"Tolerance must be zero or greater but was: $tolerance")
 
   /**
-   * Renders the difference between two numbers for a diagnostic.
-   *
-   * The difference of a pair the tolerant comparison rejected for not being finite is itself
-   * not finite, and is rendered as it comes out rather than suppressed: reading `Infinity` or
-   * `NaN` as the difference is how the reader of a failure learns which case was hit.
+   * Renders the difference between two numbers for a diagnostic. The difference of a pair the
+   * tolerant comparison rejected for not being finite is itself not finite, and is rendered as it
+   * comes out: reading `Infinity` or `NaN` as the difference is how the reader of a failure learns
+   * which case was hit.
    *
    * @param actual  the number the amount holds
    * @param expected  the number it was compared against
@@ -366,17 +266,7 @@ trait CurrencyAmountMatchers {
 }
 
 /**
- * The matchers of [[CurrencyAmountMatchers]], ready to be imported.
- *
- * This object is what makes the single wildcard import
- *
- * {{{
- * import com.opengamma.strata.basics.testkit.CurrencyAmountMatchers._
- * }}}
- *
- * supply the whole vocabulary. It supplies these matchers and nothing else: the matchers of
- * the test framework itself are brought in by the spec, by extending the framework's own
- * matcher trait, and the matchers over the outcome of an operation that can fail are imported
- * from the module below this one, so that a spec sees exactly one definition of each name.
+ * The matchers of [[CurrencyAmountMatchers]], ready to be imported as
+ * `import com.opengamma.strata.basics.testkit.CurrencyAmountMatchers._`.
  */
 object CurrencyAmountMatchers extends CurrencyAmountMatchers

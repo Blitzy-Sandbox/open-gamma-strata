@@ -23,6 +23,8 @@ import io.circe.generic.semiauto.deriveEncoder
 import com.opengamma.strata.basics.schedule.Frequency
 import com.opengamma.strata.basics.schedule.RollConvention
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.json.Codecs
@@ -44,28 +46,27 @@ import com.opengamma.strata.collect.result.Failure
  * A sequence is a rule rather than a list: it holds two dates and a frequency, and the dates the
  * rule names are worked out only when it is resolved against the roll convention of the schedule
  * it applies to. [[resolve]] performs that expansion, walking the frequency from the first date to
- * the last and pairing each date it lands on with the adjustment, and it is where a sequence that
- * does not in fact line up with its frequency, describes more steps than the expansion ceiling
- * allows, or names a date the calendar cannot reach is reported. All three depend on the data of
- * the sequence and the convention rather than on any caller contract, so all three are reported
- * as failure values; nothing about a resolution is raised.
+ * the last and pairing each date it lands on with the adjustment. It is where three conditions
+ * are checked: the walk has to land exactly on the adjusted last date, it may accept at most
+ * [[ValueStepSequence.MaximumStepCount]] dates, and every date it computes has to lie inside the
+ * range `java.time` represents. All three depend on the data of the sequence and the convention
+ * rather than on any caller contract, so a breach of any of them is reported as a failure value;
+ * nothing about a resolution is raised.
  *
  * ===Construction===
  *
  * Construction is validating, so the primary constructor is private and there is neither an
  * `apply` nor a `copy`: [[ValueStepSequence.of]] is the only way to obtain a sequence, and every
- * value that exists therefore has its dates in order and an adjustment that varies the value
- * rather than replacing it. The two conditions are independent and are reported together when
- * both fail, which is more than the validator of the bean being ported managed - it raised the
- * first fault it found and stopped.
+ * value that exists therefore has its first date on or before its last and an adjustment whose
+ * type is not `Replace`. The two conditions are independent and are reported together when both
+ * fail.
  *
  * ===Equality===
  *
- * Equality and hashing are those of the four properties, and so are those of [[ValueAdjustment]]
+ * Equality and hashing are those of the four fields, and so are those of [[ValueAdjustment]]
  * where the modifying value is concerned: an adjustment compares its double by bit pattern rather
- * than by numeric comparison, which is what the bean equality of the Java original did and what
- * every double-bearing type of this port does. A sequence carries no double of its own, so it
- * inherits that behaviour whole rather than restating it.
+ * than by numeric comparison. A sequence carries no double of its own, so it takes that
+ * behaviour whole rather than restating it.
  *
  * ===Thread safety===
  *
@@ -87,17 +88,45 @@ import com.opengamma.strata.collect.result.Failure
  *   frequency of that schedule - a sequence cannot change the value more often than the schedule
  *   has periods to change it in
  * @param adjustment  the adjustment representing the change that occurs at each step. The
- *   adjustment type must not be `Replace`: a step that replaces the value discards whatever the
- *   previous step produced, so repeating one produces the same value at every step and expresses
- *   nothing a single [[ValueStep]] does not already express
+ *   adjustment type must not be `Replace`: an adjustment of that type yields its modifying value
+ *   whatever the base value is, so repeating one produces the same value at every step and
+ *   expresses nothing a single [[ValueStep]] does not already express
  */
 sealed abstract case class ValueStepSequence private (
     firstStepDate: LocalDate,
     lastStepDate: LocalDate,
     frequency: Frequency,
-    adjustment: ValueAdjustment) {
+    adjustment: ValueAdjustment)
+    extends NoJavaSerialization {
 
-  //-------------------------------------------------------------------------
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // could hold dates out of order or a `Replace` adjustment, the two checks `of` accumulates -
+  // can be stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[ValueStepSequence.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the class file of the implementation carries a
+  // public constructor whatever the source asked for: a caller compiled outside this library can
+  // name that constructor directly, and the identity check above would admit a sequence whose
+  // dates run backwards or whose adjustment replaces the value. These are the two checks
+  // [[ValueStepSequence.of]] accumulates, and [[ValueStepSequence.resolve]] depends on both: it
+  // walks the frequency forward from the first date to the last, which terminates because the
+  // first is not after the last, and it applies the adjustment at each step, which says something
+  // only where the adjustment modifies the previous value rather than discarding it.
+  //
+  // Nothing about the frequency is stated, exactly as the factory states nothing about it: a
+  // frequency is positive and canonical by its own invariant, and whether it divides the span
+  // between the two dates depends on the roll convention of the schedule the sequence is applied
+  // to, which [[ValueStepSequence.resolve]] decides.
+  JvmClosure.requireInvariant(
+    "its first step date falls on or before its last step date",
+    !firstStepDate.isAfter(lastStepDate))
+  JvmClosure.requireInvariant(
+    "its adjustment is not of type 'Replace'",
+    adjustment.`type` != ValueAdjustmentType.Replace)
+
   /**
    * Resolves this sequence to a list of steps, appending them to the steps already held.
    *
@@ -106,15 +135,12 @@ sealed abstract case class ValueStepSequence private (
    * convention, and each subsequent date is the one the convention reaches from the date before
    * it. That is why the convention is applied to '''every''' generated date rather than only to
    * the two ends - an annual sequence under the IMM convention lands on the third Wednesday of
-   * each September, not on the anniversary of the first one - and it is what the corresponding
-   * method of the Java original did, date by date, through the same two operations.
+   * each September, not on the anniversary of the first one.
    *
-   * The walk is the one place this port differs in shape from that method, and only in shape: the
-   * original maintained a pair of mutable dates and a mutable builder, while this recurses over
-   * the `next` operation of the convention from the adjusted first date, in the tail-recursive
-   * [[ValueStepSequence.rolledDates]]. The sequence of dates is identical, because `next` always
-   * returns a date strictly after the one handed to it, so the walk always terminates and the
-   * dates it accepts are exactly those from the adjusted first date up to the adjusted last one.
+   * The walk recurses over the `next` operation of the convention from the adjusted first date,
+   * in the tail-recursive [[ValueStepSequence.rolledDates]]. `next` always returns a date strictly
+   * after the one handed to it, so the walk always terminates and the dates it accepts are
+   * exactly those from the adjusted first date up to the adjusted last one.
    *
    * That property is also why the walk '''stops at''' the adjusted last date rather than stepping
    * past it: a date equal to the adjusted last date is the end of the expansion, and because
@@ -122,33 +148,30 @@ sealed abstract case class ValueStepSequence private (
    * only be discarded. Asking for it is therefore pure waste - and, one frequency short of
    * `LocalDate.MAX`, waste that fails, which is what the guard below is about.
    *
-   * Terminating is not the same as being small, which is the first of the two behavioural
-   * differences from the original: the walk is '''bounded''' at
+   * Terminating is not the same as being small, so the walk is '''bounded''' at
    * [[ValueStepSequence.MaximumStepCount]] steps, and a sequence describing more than that is
-   * reported rather than expanded. The bound is applied to
-   * the walk itself rather than to the list it produces, so a daily frequency over a span of
-   * centuries - which the dates and frequency of a sequence are free to describe, since neither is
-   * checked against any schedule at construction - allocates one date beyond the ceiling instead
-   * of however many its span implies. See the ceiling for why the count is where it is.
+   * reported rather than expanded. The bound is applied to the walk itself rather than to the
+   * list it produces, so a daily frequency over a span of centuries - which the dates and
+   * frequency of a sequence are free to describe, since neither is checked against any schedule
+   * at construction - allocates one date beyond the ceiling instead of however many its span
+   * implies. See the ceiling for why the count is where it is.
    *
-   * Every piece of date arithmetic the resolution performs is '''guarded''', which is the second
-   * behavioural difference from the original: both endpoint adjustments and every rolling step go
-   * through [[ValueStepSequence.guardedDate]], so the two exceptions `java.time` raises at the
-   * edges of the date range become the failure value this member already answers with. There are
-   * two ways to reach that edge, and both are legal arguments - the two dates of a sequence are
-   * checked against each other and against nothing else, so `LocalDate.MAX` is as valid a last
-   * date as any other. A rolling step from a date within one frequency of the end of the range
-   * leaves it; and an endpoint adjustment can leave it too, because a day-of-week convention
-   * moves a date '''forward''' to the next matching day, which from the last few days of the
-   * range is off the end of it. The ported loop let both raise, so a resolution reached through
-   * the public [[ValueSchedule.resolveValues]] could throw where its signature promises a value;
-   * this port reports them, in the terms it reports everything else.
+   * Every piece of date arithmetic the resolution performs is '''guarded''': both endpoint
+   * adjustments and every rolling step go through [[ValueStepSequence.guardedDate]], so the two
+   * exceptions `java.time` raises at the edges of the date range become the failure value this
+   * member already answers with. There are two ways to reach that edge, and both are legal
+   * arguments - the two dates of a sequence are checked against each other and against nothing
+   * else, so `LocalDate.MAX` is as valid a last date as any other. A rolling step from a date
+   * within one frequency of the end of the range leaves it; and an endpoint adjustment can leave
+   * it too, because a day-of-week convention moves a date '''forward''' to the next matching day,
+   * which from the last few days of the range is off the end of it. Both are reported as failure
+   * values, so a resolution reached through the public [[ValueSchedule.resolveValues]] answers
+   * with a value in every case its signature promises one.
    *
    * The last date the walk lands on has to '''be''' the adjusted last date of this sequence. Where
    * it is not, the frequency does not divide the span of the sequence - a twelve month frequency
-   * over six months, say - and that is reported rather than resolved, because the dates a caller
-   * supplied describe no sequence of steps under this convention. The report names the frequency,
-   * the convention and the two dates that disagree, in the words of the original.
+   * over six months, say - and that is reported rather than resolved. The report names the
+   * frequency, the convention and the two dates that disagree.
    *
    * The generated steps are appended '''after''' the steps supplied and are in date order, so a
    * caller resolving several sequences into one list builds it up by threading the list through
@@ -159,15 +182,16 @@ sealed abstract case class ValueStepSequence private (
    * sequence.flatMap(_.resolve(existingSteps, RollConventions.NONE))              // Right(steps)
    * }}}
    *
-   * This is visible within this package rather than publicly, as it was in the Java original: it
-   * is the operation [[ValueSchedule]] performs while resolving its own steps, and a caller
-   * outside reaches it through that.
+   * This is visible within this package rather than publicly: it is the operation
+   * [[ValueSchedule]] performs while resolving its own steps, and a caller outside reaches it
+   * through that.
    *
    * @param existingSteps  the existing list of steps, which the generated steps are appended to
    * @param rollConv  the roll convention of the schedule this sequence applies to
-   * @return the steps supplied followed by the generated steps, or the failure describing why the
-   *   dates and frequency of this sequence describe no sequence of steps under the convention,
-   *   describe more steps than [[ValueStepSequence.MaximumStepCount]], or describe a date outside
+   * @return the steps supplied followed by the generated steps, or the failure naming the broken
+   *   condition: walking the frequency of this sequence under the convention has to land exactly
+   *   on the adjusted last date, the walk may accept at most
+   *   [[ValueStepSequence.MaximumStepCount]] dates, and every date it computes has to lie inside
    *   the range `java.time` represents
    */
   private[value] def resolve(
@@ -177,8 +201,7 @@ sealed abstract case class ValueStepSequence private (
       start <- guardedDate(rollConv)(rollConv.adjust(firstStepDate))
       adjustedLastStepDate <- guardedDate(rollConv)(rollConv.adjust(lastStepDate))
       dates <- rolledDates(start, start, adjustedLastStepDate, rollConv, List.empty, 0)
-      // the last date reached, or the adjusted first date where the walk reached nothing at all,
-      // which is the state the mutable variable of the original was left in by an empty loop
+      // the last date reached, or the adjusted first date where the walk reached nothing at all
       prev = dates.lastOption.getOrElse(start)
       generated <-
         if (prev == adjustedLastStepDate) {
@@ -194,14 +217,14 @@ sealed abstract case class ValueStepSequence private (
   /**
    * Walks one expansion, accepting the dates of the steps and refusing an oversized one.
    *
-   * This is the whole of the walk [[resolve]] performs, written as the tail recursion the Agent
-   * Action Plan requires of this module's generation - no loop and no mutable cursor - and the
-   * recursion is what carries the three things a step of the walk decides between:
+   * This is the whole of the walk [[resolve]] performs, written as a tail recursion over the
+   * dates rather than as a loop over a moving cursor, and the recursion is what carries the three
+   * things a step of the walk decides between:
    *
    *  - '''the walk has finished.''' A date after the adjusted last date is not part of the
-   *    expansion, so the dates accepted so far are the answer. This is the branch a sequence
-   *    whose frequency does not divide its span ends on, and the one an adjusted first date
-   *    already past the adjusted last date ends on immediately, having accepted nothing;
+   *    expansion, so the dates accepted up to that point are the answer. This is the branch a
+   *    sequence whose frequency does not divide its span ends on, and the one an adjusted first
+   *    date already past the adjusted last date ends on immediately, having accepted nothing;
    *  - '''the walk has reached the end exactly.''' A date equal to the adjusted last date is the
    *    final step of the expansion, so it is accepted and the walk stops '''without''' asking the
    *    convention for a successor. The list is the same one a walk that stepped past the end
@@ -228,10 +251,11 @@ sealed abstract case class ValueStepSequence private (
    *   that a refusal can name the span it refused
    * @param adjustedLastStepDate  the last date of the sequence, adjusted by the convention
    * @param rollConv  the roll convention the walk rolls with
-   * @param accepted  the dates accepted so far, most recent first
+   * @param accepted  the dates accepted up to this point, most recent first
    * @param count  how many dates have been accepted, which is the length of `accepted`
-   * @return the dates of the expansion in schedule order, or the failure describing why the
-   *   expansion is refused
+   * @return the dates of the expansion in schedule order, or the failure naming the broken
+   *   condition: at most [[ValueStepSequence.MaximumStepCount]] dates may be accepted, and every
+   *   rolling step has to stay inside the range `java.time` represents
    */
   @tailrec
   private def rolledDates(
@@ -271,8 +295,7 @@ sealed abstract case class ValueStepSequence private (
    * `java.time` arithmetic of an adjustment or a roll can raise at the edges of the supported
    * date range become the failure value [[resolve]] answers with everywhere else. Nothing else is
    * caught: an exception of any other type is a defect rather than a property of the dates, and
-   * swallowing it would hide it. It is the same guard the schedule package applies to the same
-   * arithmetic while generating a schedule, stated in the terms of this type.
+   * swallowing it would hide it.
    *
    * @param rollConv  the roll convention the arithmetic is performed under, which the failure
    *   names alongside the frequency because the two of them decide the date being computed
@@ -287,12 +310,11 @@ sealed abstract case class ValueStepSequence private (
         Left(Failure.Invalid(ValueStepSequence.dateRangeOverflow(frequency, rollConv)))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Renders this sequence as text.
    *
-   * The rendering is the property-by-property form of the Java bean being ported, naming all four
-   * properties in declaration order. It is one line; the example below is wrapped only to fit:
+   * The rendering names all four fields, in declaration order, inside braces. It is one line; the
+   * example below is wrapped only to fit:
    *
    * {{{
    * ValueStepSequence{firstStepDate=2016-04-20, lastStepDate=2016-10-20, frequency=P3M,
@@ -310,32 +332,29 @@ sealed abstract case class ValueStepSequence private (
  * Companion of [[ValueStepSequence]], holding its factory, its typeclass instances and its codec.
  *
  * The single factory is the only way to obtain a sequence from outside this file, which is what
- * makes the invariants of the type - dates in order, and an adjustment that varies rather than
- * replaces - properties of every value that exists rather than properties a caller is asked to
- * respect. It replaces both the factory and the private builder of the bean being ported, the
- * latter having had no counterpart here.
+ * makes the invariants of the type - the first date on or before the last, and an adjustment
+ * whose type is not `Replace` - properties of every value that exists rather than properties a
+ * caller is asked to respect.
  *
  * Two typeclass instances are published, and exactly two: a `Hash`, which is the single
  * equality-bearing instance of the type - `Hash` extends `Eq`, so declaring an `Eq` as well would
  * leave two instances that could disagree and one of them ambiguous - and a `Show`. There is
- * deliberately no `Order`: the Java type is not `Comparable`, and while two sequences could be
- * ranked by their first date, doing so would order values that differ in three other properties by
- * one of them alone.
+ * deliberately no `Order`: two sequences could be ranked by their first date, but doing so would
+ * order values that differ in three other fields by one of them alone.
  */
 object ValueStepSequence {
 
-  //-------------------------------------------------------------------------
   /**
    * The greatest number of steps [[ValueStepSequence.resolve]] will expand a sequence into.
    *
    * A sequence is a rule rather than a list, and nothing about its two dates or its frequency is
-   * checked against any schedule when it is built - the Java original checked neither either, and
-   * could not, because the schedule is not known until the sequence is resolved. So the span a
-   * caller supplies, divided by the frequency it supplies, is the only thing deciding how many
-   * steps an expansion produces, and a daily frequency over a span of centuries describes millions
-   * of them. Expanding that strictly, as the original did, is unbounded work and unbounded
-   * allocation driven by data (CWE-400), so this port draws a ceiling and reports a sequence that
-   * crosses it.
+   * checked against any schedule when it is built, because the schedule is not known until the
+   * sequence is resolved. So the span a caller supplies, divided by the frequency it supplies, is
+   * the only thing deciding how many steps an expansion produces, and a daily frequency over a
+   * span of centuries describes millions of them. Expanding every span strictly would be
+   * unbounded work and unbounded allocation driven by data (CWE-400), so this ceiling is drawn
+   * and a sequence that crosses it is reported. It is checked inside the walk, by
+   * [[ValueStepSequence.rolledDates]], as each date is accepted.
    *
    * The count is where it is for two reasons. A step only means something against a period
    * boundary of the schedule the sequence is resolved with, and the schedule generation of this
@@ -351,22 +370,17 @@ object ValueStepSequence {
    */
   private[value] val MaximumStepCount: Int = 100000
 
-  /** The name the first date is reported under, which is the property name of the bean. */
   private val FirstStepDateField: String = "firstStepDate"
 
-  /** The name the last date is reported under, which is the property name of the bean. */
   private val LastStepDateField: String = "lastStepDate"
 
-  /**
-   * Reported when the adjustment replaces the value rather than varying it, in the words of the
-   * bean being ported.
-   */
+  /** Reported when the adjustment is of type `Replace` rather than one that varies the value. */
   private val ReplacementNotAllowed: String = "ValueAdjustmentType must not be 'Replace'"
 
   /**
    * The ordering of dates the order check below is performed with.
    *
-   * The checking helpers of this port are generic in the type being compared and take its cats
+   * The checking helpers used below are generic in the type being compared and take its cats
    * ordering, and cats publishes no instance for `java.time.LocalDate` - the class implements
    * `Comparable[ChronoLocalDate]` rather than `Comparable[LocalDate]`, so the ordering derived
    * from a comparable type does not apply to it either. The instance is therefore stated here, as
@@ -377,13 +391,11 @@ object ValueStepSequence {
   private implicit val dateOrder: Order[LocalDate] =
     Order.from((first, second) => first.compareTo(second))
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance from the dates, frequency and change.
    *
    * The first date must be before the last date or equal to it, and the adjustment must not be of
-   * type `Replace`. Both conditions are the validator of the bean being ported, and both are
-   * reported in its words:
+   * type `Replace`:
    *
    * {{{
    * ValueStepSequence.of(date(2016, 4, 20), date(2016, 10, 20), Frequency.P3M, deltaAmount)
@@ -398,20 +410,19 @@ object ValueStepSequence {
    *
    * The two checks are '''combined rather than sequenced''', so a caller supplying two bad
    * arguments is told about both of them in one chain of reasons instead of correcting one and
-   * being sent back for the other. That is the last line above and is more than the validator
-   * managed: it raised the first fault it found and stopped.
+   * being sent back for the other. That is the last line above.
    *
    * Nothing about the frequency is checked here. Whether it divides the span between the two
    * dates depends on the roll convention of the schedule the sequence is applied to, which is not
    * known until [[ValueStepSequence.resolve]] is reached, and whether it is coarser than that
-   * schedule's own frequency is a question about the schedule; the Java original checked neither
-   * at construction either.
+   * schedule's own frequency is a question about the schedule.
    *
    * @param firstStepDate  the first date of the sequence
    * @param lastStepDate  the last date of the sequence
    * @param frequency  the frequency of changes
    * @param adjustment  the adjustment at each step
-   * @return the varying step sequence, or the failures describing why the arguments describe none
+   * @return the varying step sequence, or the failures naming the broken conditions: the first
+   *   date has to be on or before the last date, and the adjustment type must not be `Replace`
    */
   def of(
       firstStepDate: LocalDate,
@@ -424,15 +435,14 @@ object ValueStepSequence {
       .mapN((_, _) => create(firstStepDate, lastStepDate, frequency, adjustment))
       .toEither
 
-  //-------------------------------------------------------------------------
   /**
    * Creates a value, which every route into the type funnels through.
    *
    * This is the only instantiation of the type and it is private, so the factory above is the
    * whole of its construction. The type is an abstract case class whose constructor is private, so
-   * it has neither a public `apply` nor a `copy` and this is written as an anonymous extension of
-   * it - the shape every validated type of this port uses to keep those two synthesised members
-   * from existing while `unapply` and pattern matching still do.
+   * it has neither a public `apply` nor a `copy`, and this builds [[Impl]], the subclass declared
+   * and hidden here, which keeps those two synthesised members from existing while `unapply` and
+   * pattern matching still do.
    *
    * @param firstStepDate  the checked first date of the sequence
    * @param lastStepDate  the checked last date of the sequence
@@ -445,14 +455,35 @@ object ValueStepSequence {
       lastStepDate: LocalDate,
       frequency: Frequency,
       adjustment: ValueAdjustment): ValueStepSequence =
-    new ValueStepSequence(firstStepDate, lastStepDate, frequency, adjustment) {}
+    new Impl(firstStepDate, lastStepDate, frequency, adjustment)
+
+  /**
+   * The one implementation of a value step sequence.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[ValueStepSequence]] refuse in its own constructor to be any other implementation.
+   *
+   * @param firstStepDate  the checked first date of the sequence
+   * @param lastStepDate  the checked last date of the sequence
+   * @param frequency  the frequency of changes
+   * @param adjustment  the checked adjustment at each step
+   */
+  private final class Impl(
+      firstStepDate: LocalDate,
+      lastStepDate: LocalDate,
+      frequency: Frequency,
+      adjustment: ValueAdjustment)
+      extends ValueStepSequence(firstStepDate, lastStepDate, frequency, adjustment)
 
   /**
    * Describes a sequence whose frequency does not reach its last date under a roll convention.
    *
-   * The text is that of the message the Java original raised, with the frequency and the
-   * convention rendered by their names, which is what their own text forms render and therefore
-   * what the template of the original interpolated.
+   * The frequency and the convention are rendered by their names, which is what their own text
+   * forms render, and the two dates that disagree are named alongside them.
    *
    * @param frequency  the frequency of the sequence being resolved
    * @param rollConv  the roll convention it was resolved under
@@ -473,12 +504,11 @@ object ValueStepSequence {
    *
    * The message names the limit as well as the sequence being expanded, because the limit is the
    * part a caller cannot see from its own arguments: the two dates and the frequency are what it
-   * supplied, and the count they imply is the thing it has to be told about. It is a message of
-   * this port rather than a transcription - the Java original expanded any span it was given - and
-   * the reason it exists is set out on [[ValueStepSequence.MaximumStepCount]].
+   * supplied, and the count they imply is the thing it has to be told about. The reason the limit
+   * exists is set out on [[ValueStepSequence.MaximumStepCount]].
    *
    * The dates named are the ones the walk actually used, adjusted by the convention, rather than
-   * the two properties of the sequence: they are the endpoints of the expansion being refused, and
+   * the two dates the sequence holds: they are the endpoints of the expansion being refused, and
    * where a convention moves either endpoint the adjusted pair is what explains the count.
    *
    * @param frequency  the frequency of the sequence being resolved
@@ -504,12 +534,9 @@ object ValueStepSequence {
    * date forward past the end of the range. The two dates are not named, because either of them
    * can be the one at fault - a step overflows from the date it steps from, an endpoint
    * adjustment from the endpoint it adjusts - and naming one of them would point at the wrong one
-   * half of the time; the sequence itself renders all four of its properties.
+   * half of the time; the sequence itself renders all four of its fields.
    *
-   * This is a message of this port rather than a transcription: the ported implementation
-   * performed the same arithmetic unguarded and let `java.time` raise out of a method that
-   * otherwise reported its outcome. The reason it exists is set out on
-   * [[ValueStepSequence.guardedDate]].
+   * The reason this message exists is set out on [[ValueStepSequence.guardedDate]].
    *
    * @param frequency  the frequency of the sequence being resolved
    * @param rollConv  the roll convention it was resolved under
@@ -519,14 +546,13 @@ object ValueStepSequence {
     s"ValueStepSequence frequency '${frequency.name}' using roll convention" +
       s" '${rollConv.name}' moved outside the range of supported dates"
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of sequences.
    *
    * Taken from the `equals` and `hashCode` of the type, which are those synthesised for its four
-   * properties and so are those of [[ValueAdjustment]] where its double is concerned - compared by
-   * bit pattern, as every double-bearing type of this port compares one. This is the type's only
-   * equality-bearing instance, and `Eq[ValueStepSequence]` is obtained from it by subtyping.
+   * fields and so are those of [[ValueAdjustment]] where its double is concerned - compared by
+   * bit pattern. This is the type's only equality-bearing instance, and `Eq[ValueStepSequence]`
+   * is obtained from it by subtyping.
    *
    * @return the hashing of sequences
    */
@@ -542,7 +568,6 @@ object ValueStepSequence {
    */
   implicit val show: Show[ValueStepSequence] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The raw field shape of a sequence, from which both halves of the codec below are derived.
    *
@@ -550,6 +575,10 @@ object ValueStepSequence {
    * constructor of a product and this type has none - it is an abstract case class whose
    * constructor is private - so there is no public shape to derive from. Writing the four fields
    * out by hand instead would state the same contract a second time.
+   *
+   * The shape is `java.io.Serializable`, because the compiler makes every `case class` so, and it
+   * therefore mixes in [[NoJavaSerialization]] as every product of this port does: these fields
+   * reach the library as JSON through the codecs below and in no other form.
    *
    * @param firstStepDate  the first date, carried as its ISO date string
    * @param lastStepDate  the last date, carried as its ISO date string
@@ -561,18 +590,16 @@ object ValueStepSequence {
       lastStepDate: LocalDate,
       frequency: Frequency,
       adjustment: ValueAdjustment)
+      extends NoJavaSerialization
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
-  /** The derived decoder of the raw field shape, used by the validating decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
   /**
    * The JSON encoding of sequences.
    *
-   * A value is an object holding its four properties, under the names the Java bean declared and
-   * in declaration order:
+   * A value is an object holding its four fields, under their own names and in declaration order:
    *
    * {{{
    * {"firstStepDate":"2016-04-20","lastStepDate":"2016-10-20","frequency":"P3M",
@@ -580,10 +607,9 @@ object ValueStepSequence {
    * }}}
    *
    * The dates are written in their ISO form, the frequency as the bare name its own codec writes,
-   * and the adjustment as the object its own codec writes. No property of this type is optional,
-   * so nothing is ever dropped from the document; the encoder is wrapped in the same
-   * empty-field-dropping combinator every product of this port is wrapped in, so that the policy
-   * is stated in one place and holds if a property ever becomes optional.
+   * and the adjustment as the object its own codec writes. No field of this type is optional, so
+   * nothing is ever dropped from the document; the encoder is wrapped in the field-dropping
+   * combinator all the same, so that the policy holds if a field ever becomes optional.
    *
    * Both halves of the codec are assembled by the same compile-time derivation over the same raw
    * shape, which is what keeps them from drifting apart, and no part of the encoding inspects a
@@ -603,9 +629,9 @@ object ValueStepSequence {
    *
    * This is the inverse of the encoding above, and it decides whether the fields describe a value
    * exactly as a caller's arguments are decided: the payload is read into the raw shape and handed
-   * to [[ValueStepSequence.of]], so a document whose dates are in the wrong order or whose
-   * adjustment replaces the value is a decoding failure carrying every reason it is, rather than a
-   * value this type would not have built. All four fields have to be present.
+   * to [[ValueStepSequence.of]], so a document whose first date is after its last, or whose
+   * adjustment is of type `Replace`, is a decoding failure carrying every reason it is, rather
+   * than a value this type would not have built. All four fields have to be present.
    *
    * @return the JSON decoding of sequences
    */

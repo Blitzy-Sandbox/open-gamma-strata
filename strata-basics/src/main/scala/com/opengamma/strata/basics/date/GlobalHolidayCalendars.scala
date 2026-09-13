@@ -49,44 +49,38 @@ import scala.collection.immutable.SortedSet
  * Outside its range a calendar answers from its weekend alone, because
  * [[ImmutableHolidayCalendar]] derives the range it holds data for from the earliest and
  * latest holiday it was built with. A query about 1949 or 2100 therefore succeeds and reports
- * only Saturday and Sunday, rather than failing; that is the behaviour of the library being
- * ported and is deliberately preserved.
+ * only Saturday and Sunday, rather than failing.
  *
- * ===Divergences from the library being ported===
+ * ===Purity and memoisation===
  *
- * The generators of the original accumulated into a mutable collection that each rule added
- * to, and its helpers were procedures that took that collection and mutated it. Here every
- * generator is a pure function of no arguments and every helper returns the dates it
+ * Every generator is a pure function of no arguments, and every helper returns the dates it
  * contributes:
  *
- *   - [[usCommon]] and [[newZealand]] return the shared holidays of their region rather than
- *     appending them to a collection the caller owns;
- *   - [[citizensDay]] takes the holidays accumulated so far and returns them, extended where
- *     the rule applies, because the rule reads what has already been accumulated;
+ *   - [[usCommon]] and [[newZealand]] return the holidays shared by the calendars of their
+ *     region, which each caller combines with the holidays particular to its own calendar;
+ *   - [[citizensDay]] takes the holidays the earlier rules established and returns them,
+ *     extended where the rule applies, because the rule reads what is already established;
  *   - [[addDateWithHungarianBridging]] returns both the holidays and the working Saturdays a
  *     bridged holiday implies, as a pair;
  *   - [[addHungarianSaturdays]] returns the transformed holidays as the ordered set the
  *     calendar is built from, since it both removes the weekend days and adds the Saturdays
  *     that are not working Saturdays;
- *   - [[removeSatSun]] filters lazily rather than removing in place.
+ *   - [[removeSatSun]] filters lazily, leaving the dates it keeps uncollected.
  *
- * The original also cached its output in a binary resource written by a `main` method, which a
- * comment at the top of the file warned had to be re-run by hand whenever a rule changed. That
- * cache and its writer are not carried: a generator here is called at most once per calendar
- * because [[StandardHolidayCalendars]] holds the results, and a rule change therefore cannot
- * fall out of step with the data it produces.
+ * A generator is called at most once per calendar, because [[StandardHolidayCalendars]] holds
+ * the calendar each one produces, so the dates a caller sees cannot fall out of step with the
+ * rules that produce them.
  *
  * ===Determinism===
  *
  * Every generator is deterministic and depends on nothing outside its own rules, so two calls
- * produce equal calendars and the calendars can be compared byte for byte against a baseline
- * captured from the library being ported. Each one produces its dates as an iterator and
- * collects them, once, into the sorted set the calendar is built from, so a calendar does not
- * depend on the order its rules happened to be written in, and duplicates - which the rules do
- * produce, New Year's Eve bumped from a Sunday landing on a New Year's Day that is already a
- * holiday, for instance - collapse rather than being carried. Tokyo is the one generator whose
+ * produce equal calendars. Each one produces its dates as an iterator and collects them, once,
+ * into the sorted set the calendar is built from, so a calendar does not depend on the order
+ * its rules happened to be written in, and duplicates - which the rules do produce, New Year's
+ * Eve bumped from a Sunday landing on a New Year's Day that is already a holiday, for
+ * instance - collapse rather than being carried. Tokyo is the one generator whose
  * years are accumulated into a set as they are computed rather than afterwards, because its
- * citizens' day rule reads the holidays established so far - see [[citizensDay]].
+ * citizens' day rule reads the holidays the earlier rules established - see [[citizensDay]].
  *
  * That single ordering is the whole cost of ordering a calendar. Dropping the weekend days does
  * not depend on the order of the dates, so it happens before the set is built rather than after
@@ -132,10 +126,10 @@ private[date] object GlobalHolidayCalendars {
    *
    * This is [[weekdaysOnly]] for a caller that holds the ordered set rather than the dates it was
    * built from - which is the Tokyo calendar, whose rules accumulate into one because the
-   * citizens' day rule reads the holidays established so far. Filtering a sorted set yields a
-   * sorted set, in one pass over it and with no date compared against another, so ordering that
-   * calendar's dates a second time is avoided rather than moved: the accumulation its rules
-   * require is the only ordering pass it makes.
+   * citizens' day rule reads the holidays the earlier rules established. Filtering a sorted set
+   * yields a sorted set, in one pass over it and with no date compared against another, so
+   * ordering that calendar's dates a second time is avoided rather than moved: the accumulation
+   * its rules require is the only ordering pass it makes.
    *
    * @param dates  the dates, ordered by [[ImmutableHolidayCalendar.dateOrdering]]
    * @return the dates that fall on a weekday, in the same order
@@ -171,15 +165,12 @@ private[date] object GlobalHolidayCalendars {
 
     ImmutableHolidayCalendar.ofNormalized(id, weekdaysOnly(dates), satSunWeekend, Nil)
 
-  //-------------------------------------------------------------------------
-  // generate GBLO
   // common law (including before 1871) good friday and christmas day (unadjusted for weekends)
   // from 1871 easter monday, whit monday, first Mon in Aug and boxing day
   // from 1965 to 1970, first in Aug moved to Mon after last Sat in Aug
   // from 1971, whitsun moved to last Mon in May, last Mon in Aug
   // from 1974, added new year
   // from 1978, added first Mon in May
-  // see Hansard for specific details
   // 1965, Whitsun, Last Mon Aug - http://hansard.millbanksystems.com/commons/1964/mar/04/staggered-holidays
   // 1966, Whitsun May - http://hansard.millbanksystems.com/commons/1964/mar/04/staggered-holidays
   // 1966, 29th Aug - http://hansard.millbanksystems.com/written_answers/1965/nov/25/august-bank-holiday
@@ -255,16 +246,13 @@ private[date] object GlobalHolidayCalendars {
       // christmas
       List(christmasBumpedSatSun(year), boxingDayBumpedSatSun(year)))
 
-  //-------------------------------------------------------------------------
-  // generate FRPA
-  // data sources
   // http://www.legifrance.gouv.fr/affichCodeArticle.do?idArticle=LEGIARTI000006902611&cidTexte=LEGITEXT000006072050
   // http://jollyday.sourceforge.net/data/fr.html
   // Euronext holidays only New Year, Good Friday, Easter Monday, Labour Day, Christmas Day, Boxing Day
   // New Years Eve is holiday for cash markets and derivatives in 2015
   // https://www.euronext.com/en/holidays-and-hours
   // https://www.euronext.com/en/trading/nyse-euronext-trading-calendar/archives
-  // some sources have Monday is holiday when Tuesday is, and Friday is holiday when Thursday is (not applying this)
+  // the Monday before a Tuesday holiday, and the Friday after a Thursday holiday, are not holidays here
   /**
    * Generates the Paris holiday calendar, `FRPA`.
    *
@@ -304,9 +292,6 @@ private[date] object GlobalHolidayCalendars {
         date(year, 12, 25), // christmas day
         date(year, 12, 26))) // saint stephen
 
-  //-------------------------------------------------------------------------
-  // generate DEFR
-  // data sources
   // https://www.feiertagskalender.ch/index.php?geo=3122&klasse=3&jahr=2017&hl=en
   // http://jollyday.sourceforge.net/data/de.html
   // http://en.boerse-frankfurt.de/basics-marketplaces-tradingcalendar2019
@@ -354,9 +339,6 @@ private[date] object GlobalHolidayCalendars {
         date(year, 12, 26), // saint stephen
         date(year, 12, 31))) // new year
 
-  //-------------------------------------------------------------------------
-  // generate CHZU
-  // data sources
   // http://jollyday.sourceforge.net/data/ch.html
   // https://github.com/lballabio/quantlib/blob/master/QuantLib/ql/time/calendars/switzerland.cpp
   // http://www.six-swiss-exchange.com/funds/trading/trading_and_settlement_calendar_en.html
@@ -393,8 +375,6 @@ private[date] object GlobalHolidayCalendars {
       date(year, 12, 25), // christmas day
       date(year, 12, 26)) // saint stephen
 
-  //-------------------------------------------------------------------------
-  // generate EUTA
   // 1997 - 1998 (testing phase), Jan 1, christmas day
   // https://www.ecb.europa.eu/pub/pdf/other/tagien.pdf
   // in 1999, Jan 1, christmas day, Dec 26, Dec 31
@@ -444,14 +424,12 @@ private[date] object GlobalHolidayCalendars {
         Nil
       })
 
-  //-------------------------------------------------------------------------
-  // common US holidays
   /**
    * Calculates the holidays common to the United States calendars for one year.
    *
-   * Where the procedure being ported appended these dates to a collection supplied by the
-   * caller, this returns them, and the caller combines them with the holidays particular to
-   * its own calendar.
+   * The dates returned are the holidays the United States calendars here have in common, as
+   * varied by the arguments; each caller combines them with the holidays particular to its own
+   * calendar.
    *
    * @param year  the year
    * @param bumpBack  true if Independence Day and Christmas Day move back to Friday when they
@@ -487,7 +465,7 @@ private[date] object GlobalHolidayCalendars {
       } else {
         List(date(year, 5, 1).`with`(lastInMonth(MONDAY)))
       },
-      // juneteenth (seems like it wasn't widely applied in 2021)
+      // juneteenth, from 2022
       if (year >= 2022) {
         List(bumpToFriOrMon(date(year, 6, 19)))
       } else {
@@ -524,7 +502,6 @@ private[date] object GlobalHolidayCalendars {
         List(bumpSunToMon(date(year, 7, 4)), bumpSunToMon(date(year, 12, 25)))
       })
 
-  // generate USGS
   // https://www.sifma.org/resources/general/holiday-schedule/
   /**
    * Generates the United States government securities holiday calendar, `USGS`.
@@ -555,11 +532,8 @@ private[date] object GlobalHolidayCalendars {
         Nil
       })
 
-  //-------------------------------------------------------------------------
-  // generate USNY
   // http://www.cs.ny.gov/attendance_leave/2012_legal_holidays.cfm
   // http://www.cs.ny.gov/attendance_leave/2013_legal_holidays.cfm
-  // etc
   // ignore election day and lincoln day
   /**
    * Generates the New York State holiday calendar, `USNY`.
@@ -572,8 +546,6 @@ private[date] object GlobalHolidayCalendars {
       (1950 to 2099).iterator
         .flatMap(year => usCommon(year, bumpBack = false, columbusVeteran = true, mlkStartYear = 1986)))
 
-  //-------------------------------------------------------------------------
-  // generate NYFD
   // https://www.newyorkfed.org/aboutthefed/holiday_schedule.html
   /**
    * Generates the Federal Reserve Bank of New York holiday calendar, `NYFD`.
@@ -586,8 +558,6 @@ private[date] object GlobalHolidayCalendars {
       (1950 to 2099).iterator
         .flatMap(year => usCommon(year, bumpBack = false, columbusVeteran = true, mlkStartYear = 1986)))
 
-  //-------------------------------------------------------------------------
-  // generate NYSE
   // https://www.nyse.com/markets/hours-calendars
   // http://www1.nyse.com/pdfs/closings.pdf
   /**
@@ -714,9 +684,6 @@ private[date] object GlobalHolidayCalendars {
       date(2025, 1, 9)) // Death of Jimmy Carter
 
 
-  //-------------------------------------------------------------------------
-  // generate JPTO
-  // data sources
   // https://www.boj.or.jp/en/about/outline/holi.htm/
   // http://web.archive.org/web/20110513190217/http://www.boj.or.jp/en/about/outline/holi.htm/
   // http://web.archive.org/web/20130502031733/http://www.boj.or.jp/en/about/outline/holi.htm
@@ -730,10 +697,11 @@ private[date] object GlobalHolidayCalendars {
    * Generates the Tokyo holiday calendar, `JPTO`.
    *
    * The years are accumulated in order rather than independently, because the citizens' day
-   * rule reads the holidays established so far - see [[citizensDay]]. That accumulation is the
-   * ordered set the calendar is built from, so this is the one generator that does not order its
-   * dates through [[weekdaysOnly]]: it drops the weekend days from the set it already has - see
-   * [[weekdaysOf]] - and so orders the calendar once, as every other generator here does.
+   * rule reads the holidays the earlier rules established - see [[citizensDay]]. That
+   * accumulation is the ordered set the calendar is built from, so this is the one generator
+   * that does not order its dates through [[weekdaysOnly]]: it drops the weekend days from the
+   * set it already has - see [[weekdaysOf]] - and hands the result straight to the factory, so
+   * it too orders the calendar once.
    *
    * @return the calendar of Tokyo bank holidays from 1950 to 2099
    */
@@ -750,10 +718,6 @@ private[date] object GlobalHolidayCalendars {
         date(2019, 5, 1), // accession
         date(2019, 5, 2), // accession
         date(2019, 10, 22)) // enthronement
-    // The accumulation these rules require is already the ordered set the calendar is built
-    // from, so this calendar does not go through `satSunCalendar`: the weekend days are dropped
-    // from the ordered set in place and the result handed straight to the factory, leaving the
-    // accumulation as the one ordering pass over the whole calendar.
     ImmutableHolidayCalendar.ofNormalized(
       HolidayCalendarIds.JPTO,
       weekdaysOf(withOneOffDates),
@@ -764,9 +728,9 @@ private[date] object GlobalHolidayCalendars {
   /**
    * Adds the Tokyo bank holidays of one year to those already established.
    *
-   * The order of the three steps is the order of the rules in the calendar being ported and
-   * cannot be rearranged: the citizens' day rule tests membership of the holidays accumulated
-   * before it, and the second application of that rule can see the date the first one added.
+   * The order of the three steps is load-bearing and cannot be rearranged: the citizens' day
+   * rule asks whether the holidays accumulated before it contain the two dates its day sits
+   * between, and the second application of that rule can see the date the first one added.
    *
    * @param holidays  the holidays established by the earlier years and the earlier rules
    * @param year  the year
@@ -902,7 +866,7 @@ private[date] object GlobalHolidayCalendars {
       List(bumpSunToMon(date(year, 11, 3))),
       // labor (from 1948)
       List(bumpSunToMon(date(year, 11, 23))),
-      // emperor (current emporer birthday)
+      // emperor's birthday - 23 December from 1990 to 2018, 23 February from 2020
       if (year >= 1990 && year < 2019) {
         List(bumpSunToMon(date(year, 12, 23)))
       } else if (year >= 2020) {
@@ -913,17 +877,15 @@ private[date] object GlobalHolidayCalendars {
       // new years eve - bank of Japan, but not national holiday
       List(bumpSunToMon(date(year, 12, 31))))
 
-  // extra day between two other holidays, appears to exclude weekends
   /**
    * Adds the day between two holidays that the citizens' day rule declares.
    *
-   * The rule reads the holidays established so far, which is why this takes them and returns
-   * them rather than returning the date it contributes: whether the rule applies at all
-   * depends on both of the named dates already being holidays. Membership of the accumulated
-   * set answers that question exactly as membership of the accumulated list did in the
-   * calendar being ported.
+   * The rule reads the holidays the earlier rules established, which is why this takes them and
+   * returns them rather than returning the date it contributes: whether the rule applies at all
+   * depends on both of the named dates already being holidays. The day between is declared only
+   * where `date1` falls on a Monday, a Tuesday or a Wednesday, so it never falls at a weekend.
    *
-   * @param holidays  the holidays established so far
+   * @param holidays  the holidays the earlier rules established
    * @param date1  the earlier of the two dates the new holiday would sit between
    * @param date2  the later of the two dates the new holiday would sit between
    * @return the holidays, extended with the day after `date1` where the rule applies
@@ -943,9 +905,6 @@ private[date] object GlobalHolidayCalendars {
       holidays
     }
 
-  //-------------------------------------------------------------------------
-  // generate CAMO
-  // data sources
   // https://www.cnesst.gouv.qc.ca/en/working-conditions/leave/statutory-holidays/list-paid-statutory-holidays
   // https://www.canada.ca/en/revenue-agency/services/tax/public-holidays.html
   /**
@@ -989,9 +948,6 @@ private[date] object GlobalHolidayCalendars {
         // christmas
         bumpToMon(date(year, 12, 25))))
 
-  //-------------------------------------------------------------------------
-  // generate CATO
-  // data sources
   // http://www.labour.gov.on.ca/english/es/pubs/guide/publicholidays.php
   // http://www.cra-arc.gc.ca/tx/hldys/menu-eng.html
   // http://www.tmxmoney.com/en/investor_tools/market_hours.html
@@ -1048,9 +1004,6 @@ private[date] object GlobalHolidayCalendars {
         // boxing (public)
         boxingDayBumpedSatSun(year)))
 
-  //-------------------------------------------------------------------------
-  // generate DKCO
-  // data sources
   // http://www.finansraadet.dk/Bankkunde/Pages/bankhelligdage.aspx
   // web archive history of those pages
   /**
@@ -1096,9 +1049,6 @@ private[date] object GlobalHolidayCalendars {
       // new years eve
       date(year, 12, 31))
 
-  //-------------------------------------------------------------------------
-  // generate NOOS
-  // data sources
   // http://www.oslobors.no/ob_eng/Oslo-Boers/About-Oslo-Boers/Opening-hours
   // http://www.oslobors.no/Oslo-Boers/Om-Oslo-Boers/AApningstider
   // web archive history of those pages
@@ -1144,8 +1094,6 @@ private[date] object GlobalHolidayCalendars {
       date(year, 12, 31))
 
 
-  //-------------------------------------------------------------------------
-  // generate NZAU
   // https://www.nzfma.org/Site/practices_standards/market_conventions.aspx
   /**
    * Generates the Auckland holiday calendar, `NZAU`.
@@ -1167,7 +1115,6 @@ private[date] object GlobalHolidayCalendars {
       // auckland anniversary day
       List(date(year, 1, 29).minusDays(3).`with`(nextOrSame(MONDAY))))
 
-  // generate NZWE
   // https://www.nzfma.org/Site/practices_standards/market_conventions.aspx
   /**
    * Generates the Wellington holiday calendar, `NZWE`.
@@ -1189,7 +1136,6 @@ private[date] object GlobalHolidayCalendars {
       // wellington anniversary day
       List(date(year, 1, 22).minusDays(3).`with`(nextOrSame(MONDAY))))
 
-  // generate NZBD
   // https://www.nzfma.org/Site/practices_standards/market_conventions.aspx
   /**
    * Generates the New Zealand bank holiday calendar, `NZBD`.
@@ -1198,21 +1144,19 @@ private[date] object GlobalHolidayCalendars {
    * because the `NZD-BBR` index is published on both the Wellington and the Auckland
    * anniversary days, so neither city's calendar describes it and the national holidays alone
    * do. The identifier is built here rather than taken from [[HolidayCalendarIds]], which does
-   * not declare it, exactly as in the library being ported.
+   * not declare it.
    *
    * @return the calendar of New Zealand national bank holidays from 1950 to 2099
    */
   def generateNewZealand(): ImmutableHolidayCalendar = {
-    // artificial non-ISDA definition named after BRBD for Brazil
-    // this is needed as NZD-BBR index is published on both Wellington and Auckland anniversary days
     satSunCalendar(HolidayCalendarId.of("NZBD"), (1950 to 2099).iterator.flatMap(newZealand))
   }
 
   /**
    * Calculates the holidays common to the New Zealand calendars for one year.
    *
-   * Where the procedure being ported appended these dates to a collection supplied by the
-   * caller, this returns them, and the caller adds its own city's anniversary day.
+   * The dates returned are the national holidays; each caller adds its own city's anniversary
+   * day.
    *
    * @param year  the year
    * @return the national holidays of that year, before the weekend days are removed
@@ -1265,9 +1209,9 @@ private[date] object GlobalHolidayCalendars {
    *
    * The date follows the Maori lunar calendar and so cannot be derived from a rule of the
    * Gregorian year; the legislation that created the holiday therefore lists it, for 2022 to
-   * 2052 inclusive, and this is that list. A year outside that range has no Matariki day
-   * here, which is the behaviour of the library being ported and not a claim that the holiday
-   * ends in 2052.
+   * 2052 inclusive, and this is that list. A year outside that range has no Matariki day here,
+   * which is the extent of the legislated list rather than a claim that the holiday ends in
+   * 2052.
    *
    * @param year  the year
    * @return Matariki day of that year, or nothing where the legislation does not name one
@@ -1298,9 +1242,6 @@ private[date] object GlobalHolidayCalendars {
       Nil
     }
 
-  //-------------------------------------------------------------------------
-  // generate PLWA
-  // data sources#
   // http://isap.sejm.gov.pl/DetailsServlet?id=WDU19510040028 and linked pages
   // https://www.gpw.pl/dni_bez_sesji_en
   // http://jollyday.sourceforge.net/data/pl.html
@@ -1310,13 +1251,12 @@ private[date] object GlobalHolidayCalendars {
   /**
    * Generates the Warsaw holiday calendar, `PLWA`.
    *
-   * The holiday law dates from 1951, but the situation before then is unknown, so the 1951
-   * date is ignored and the calendar starts in 1950 like the others.
+   * The holiday law dates from 1951, and its rules are applied from 1950 so that this calendar
+   * covers the same range of years as the others.
    *
    * @return the calendar of Warsaw bank holidays from 1950 to 2099
    */
   def generateWarsaw(): ImmutableHolidayCalendar = {
-    // holiday law dates from 1951, but don't know situation before then, so ignore 1951 date
     satSunCalendar(
       HolidayCalendarId.of("PLWA"),
       (1950 to 2099).iterator.flatMap(warsawYear) ++
@@ -1401,9 +1341,7 @@ private[date] object GlobalHolidayCalendars {
     }
   }
 
-  //-------------------------------------------------------------------------
-  // generate SEST
-  // data sources - history of dates that STIBOR fixing occurred
+  // the dates on which the STIBOR fixing occurred
   // http://www.riksbank.se/en/Interest-and-exchange-rates/search-interest-rates-exchange-rates/?g5-SEDP1MSTIBOR=on&from=2016-01-01&to=2016-10-05&f=Day&cAverage=Average&s=Comma#search
   /**
    * Generates the Stockholm holiday calendar, `SEST`.
@@ -1452,7 +1390,6 @@ private[date] object GlobalHolidayCalendars {
         // new years eve (fixings, rule based on sample data)
         date(year, 12, 31)))
 
-  //-------------------------------------------------------------------------
   // http://www.rba.gov.au/schedules-events/bank-holidays/bank-holidays-2016.html
   // http://www.rba.gov.au/schedules-events/bank-holidays/bank-holidays-2017.html
   // web archive history of those pages
@@ -1506,7 +1443,6 @@ private[date] object GlobalHolidayCalendars {
         // boxing
         boxingDayBumpedSatSun(year)))
 
-  //-------------------------------------------------------------------------
   // http://www.gov.za/about-sa/public-holidays
   // http://www.gov.za/sites/www.gov.za/files/Act36of1994.pdf
   // http://www.gov.za/sites/www.gov.za/files/Act48of1995.pdf
@@ -1514,9 +1450,9 @@ private[date] object GlobalHolidayCalendars {
   /**
    * Generates the Johannesburg holiday calendar, `ZAJO`.
    *
-   * The rules are those of the act of 7 December 1994, applied from 1950. The older act of
-   * 1952 is outside the scope of these rules, as it was outside the scope of the library being
-   * ported.
+   * The rules are those of the act of 7 December 1994, and they are what this calendar models
+   * across the whole of its range: the years before 1995, which the act of 1952 governed, carry
+   * the 1994 rules too.
    *
    * @return the calendar of Johannesburg bank holidays from 1950 to 2099
    */
@@ -1533,7 +1469,7 @@ private[date] object GlobalHolidayCalendars {
    */
   private def johannesburgYear(year: Int): List[LocalDate] =
     // from 1995 (act of 7 Dec 1994)
-    // older act from 1952 not implemented here
+    // these rules are the ones applied across the whole range, 1950 to 2099
     List(
       // new year
       bumpSunToMon(date(year, 1, 1)),
@@ -1549,11 +1485,11 @@ private[date] object GlobalHolidayCalendars {
       bumpSunToMon(date(year, 5, 1)),
       // youth day
       bumpSunToMon(date(year, 6, 16)),
-      // womens day
+      // national women's day
       bumpSunToMon(date(year, 8, 9)),
       // heritage day
       bumpSunToMon(date(year, 9, 24)),
-      // reconcilliation
+      // day of reconciliation
       bumpSunToMon(date(year, 12, 16)),
       // christmas
       christmasBumpedSun(year),
@@ -1566,7 +1502,6 @@ private[date] object GlobalHolidayCalendars {
    * @return the dates declared by proclamation rather than by the holiday rules
    */
   private def johannesburgElectionDays: List[LocalDate] =
-    // mostly election days
     List(
       // http://www.gov.za/sites/www.gov.za/files/40125_proc%2045.pdf
       date(2016, 8, 3),
@@ -1588,7 +1523,6 @@ private[date] object GlobalHolidayCalendars {
       date(2000, 1, 2))
 
 
-  //-------------------------------------------------------------------------
   // http://www.magyarkozlony.hu/dokumentumok/b0d596a3e6ce15a2350a9e138c058a78dd8622d0/megtekintes (article 148)
   // http://www.mfa.gov.hu/NR/rdonlyres/18C1949E-D740-45E0-923A-BDFC81EC44C8/0/ListofHolidays2016.pdf
   // http://jollyday.sourceforge.net/data/hu.html
@@ -1602,7 +1536,7 @@ private[date] object GlobalHolidayCalendars {
   /**
    * Generates the Budapest holiday calendar, `HUBU`.
    *
-   * This calendar is unlike every other one here in two ways, and both are load-bearing.
+   * Two things set this calendar apart from every other one here, and both are load-bearing.
    *
    * First, its weekend is '''Sunday alone'''. Hungary bridges a holiday that falls on a
    * Tuesday or a Thursday by taking the intervening Monday or Friday off and working the
@@ -1625,7 +1559,6 @@ private[date] object GlobalHolidayCalendars {
    */
   def generateBudapest(): ImmutableHolidayCalendar = {
     val byYear = (1950 to 2099).map(budapestYear)
-    // some Saturdays are work days
     val workDays = byYear.iterator.flatMap(_._2).toSet
     ImmutableHolidayCalendar.ofNormalized(
       HolidayCalendarId.of("HUBU"),
@@ -1713,7 +1646,6 @@ private[date] object GlobalHolidayCalendars {
       (Nil, Nil)
     }
 
-  // an attempt to divine the official rules from the data available
   /**
    * Calculates the days off, and the working Saturday, that a bridged Hungarian holiday
    * implies.
@@ -1725,8 +1657,8 @@ private[date] object GlobalHolidayCalendars {
    * since Saturday and Sunday are already handled - Sunday by the calendar's weekend and
    * Saturday by [[addHungarianSaturdays]].
    *
-   * Where the procedure being ported added to a collection of holidays and a collection of
-   * working days supplied by the caller, this returns both as a pair.
+   * These rules follow the published Hungarian holiday dates, which is why the Saturday worked
+   * in return is supplied per year rather than computed from the holiday.
    *
    * @param date  the date of the holiday
    * @param relativeWeeksTue  the number of weeks between the bridged Monday and the Saturday
@@ -1745,10 +1677,10 @@ private[date] object GlobalHolidayCalendars {
       case MONDAY | WEDNESDAY | FRIDAY =>
         (List(date), Nil)
       case TUESDAY =>
-        // a Saturday is now a workday
+        // a Saturday becomes a workday in return
         (List(date.minusDays(1), date), List(date.plusDays(4).plusWeeks(relativeWeeksTue.toLong)))
       case THURSDAY =>
-        // a Saturday is now a workday
+        // a Saturday becomes a workday in return
         (List(date.plusDays(1), date), List(date.plusDays(2).plusWeeks(relativeWeeksThu.toLong)))
       case _ =>
         (Nil, Nil)
@@ -1763,8 +1695,7 @@ private[date] object GlobalHolidayCalendars {
    * Saturday is added as a holiday. Sunday needs no listing, because it is the calendar's
    * weekend day.
    *
-   * The range ends on the last Saturday strictly before the last day of 2099, which is where
-   * the loop being ported stopped.
+   * The range ends on the last Saturday strictly before the last day of 2099.
    *
    * Both the removal and the addition are lazy, so the holidays and the Saturdays are ordered
    * together in one pass and the result is the ordered set the calendar is built from; nothing
@@ -1778,7 +1709,6 @@ private[date] object GlobalHolidayCalendars {
       holidays: IterableOnce[LocalDate],
       workDays: Set[LocalDate]): SortedSet[LocalDate] = {
 
-    // add all saturdays
     val endDate = LocalDate.of(2099, 12, 31)
     val saturdays = Iterator
       .iterate(LocalDate.of(1950, 1, 7))(saturday => saturday.plusDays(7))
@@ -1788,8 +1718,6 @@ private[date] object GlobalHolidayCalendars {
     ImmutableHolidayCalendar.sortedDates(removeSatSun(holidays) ++ saturdays)
   }
 
-  //-------------------------------------------------------------------------
-  // generate MXMC
   // dates of published fixings - https://twitter.com/Banxico
   // http://www.banxico.org.mx/SieInternet/consultarDirectorioInternetAction.do?accion=consultarCuadro&idCuadro=CF111&locale=en
   // http://www.gob.mx/cms/uploads/attachment/file/161094/calendario_vacaciones2016.pdf
@@ -1825,7 +1753,7 @@ private[date] object GlobalHolidayCalendars {
         date(year, 5, 1),
         // independence
         date(year, 9, 16)),
-      // inaguration day - occurring once in every 6 years (2024, 2030, etc).
+      // inauguration day - occurring once in every 6 years (2024, 2030, etc).
       if (year >= 2024 && (year + 4) % 6 == 0) {
         List(date(year, 10, 1))
       } else {
@@ -1841,8 +1769,6 @@ private[date] object GlobalHolidayCalendars {
         // christmas
         date(year, 12, 25)))
 
-  // generate BRBD
-  // a holiday in this calendar is only declared if there is a holiday in Sao Paulo, Rio de Janeiro and Brasilia
   // http://www.planalto.gov.br/ccivil_03/leis/l0662.htm
   // http://www.planalto.gov.br/ccivil_03/Leis/L6802.htm
   // http://www.planalto.gov.br/ccivil_03/leis/2002/L10607.htm
@@ -1856,7 +1782,6 @@ private[date] object GlobalHolidayCalendars {
    * @return the calendar of Brazilian bank holidays from 1950 to 2099
    */
   def generateBrazil(): ImmutableHolidayCalendar = {
-    // base law is from 1949, reworded in 2002
     satSunCalendar(HolidayCalendarId.of("BRBD"), (1950 to 2099).iterator.flatMap(brazilYear))
   }
 
@@ -1884,7 +1809,7 @@ private[date] object GlobalHolidayCalendars {
         easter(year).plusDays(60),
         // independence
         date(year, 9, 7)),
-      // aparedica
+      // Our Lady of Aparecida
       if (year >= 1980) {
         List(date(year, 10, 12))
       } else {
@@ -1904,7 +1829,6 @@ private[date] object GlobalHolidayCalendars {
       // christmas
       List(date(year, 12, 25)))
 
-  // generate CZPR
   // https://www.cnb.cz/en/public/media_service/schedules/media_svatky.html
   /**
    * Generates the Prague holiday calendar, `CZPR`.
@@ -1914,7 +1838,6 @@ private[date] object GlobalHolidayCalendars {
    * @return the calendar of Prague bank holidays from 1950 to 2099
    */
   def generatePrague(): ImmutableHolidayCalendar = {
-    // dates are fixed - no moving Sunday to Monday or similar
     satSunCalendar(HolidayCalendarId.of("CZPR"), (1950 to 2099).iterator.flatMap(pragueYear))
   }
 
@@ -1958,8 +1881,6 @@ private[date] object GlobalHolidayCalendars {
         // boxing
         date(year, 12, 26)))
 
-  //-------------------------------------------------------------------------
-  // date
   /**
    * Obtains a date from a year, a month and a day.
    *
@@ -1971,7 +1892,6 @@ private[date] object GlobalHolidayCalendars {
   private def date(year: Int, month: Int, day: Int): LocalDate =
     LocalDate.of(year, month, day)
 
-  // bump to following Monday
   /**
    * Moves a date that falls at a weekend forward to the following Monday.
    *
@@ -1987,7 +1907,6 @@ private[date] object GlobalHolidayCalendars {
       date
     }
 
-  // bump Sunday to following Monday
   /**
    * Moves a date that falls on a Sunday forward to the following Monday.
    *
@@ -2001,7 +1920,6 @@ private[date] object GlobalHolidayCalendars {
       date
     }
 
-  // bump to Saturday to Friday and Sunday to Monday
   /**
    * Moves a date that falls at a weekend to the nearer working day.
    *
@@ -2018,7 +1936,6 @@ private[date] object GlobalHolidayCalendars {
       date
     }
 
-  // christmas
   /**
    * Calculates the observed Christmas Day, moved to the 27th when it falls at a weekend.
    *
@@ -2034,7 +1951,6 @@ private[date] object GlobalHolidayCalendars {
     }
   }
 
-  // christmas (if Christmas is Sunday, moved to Monday)
   /**
    * Calculates the observed Christmas Day, moved to the 26th when it falls on a Sunday.
    *
@@ -2050,7 +1966,6 @@ private[date] object GlobalHolidayCalendars {
     }
   }
 
-  // boxing day
   /**
    * Calculates the observed Boxing Day, moved to the 28th when it falls at a weekend.
    *
@@ -2066,7 +1981,6 @@ private[date] object GlobalHolidayCalendars {
     }
   }
 
-  // boxing day (if Christmas is Sunday, boxing day moved from Monday to Tuesday)
   /**
    * Calculates the observed Boxing Day, moved to the 27th when it falls on a Monday - which is
    * to say when Christmas Day fell on a Sunday and took the Monday.
@@ -2083,7 +1997,6 @@ private[date] object GlobalHolidayCalendars {
     }
   }
 
-  // first of a month
   /**
    * Obtains the first day of a month.
    *
@@ -2094,14 +2007,12 @@ private[date] object GlobalHolidayCalendars {
   private def first(year: Int, month: Int): LocalDate =
     LocalDate.of(year, month, 1)
 
-  // remove any holidays covered by Sat/Sun
   /**
    * Removes the dates that fall at a weekend.
    *
    * A holiday that falls on a Saturday or a Sunday is not observed, and the calendars here
    * treat the weekend as a weekend rather than as a holiday, so such a date is dropped rather
-   * than carried. Where the procedure being ported removed the dates in place, this filters
-   * and returns what is left, in the order of its argument.
+   * than carried. What is left is returned in the order of the argument.
    *
    * The filtering is lazy and the dates are not collected, because the caller is about to
    * collect them into the ordered set of the calendar - see [[weekdaysOnly]] - and materialising
@@ -2113,14 +2024,12 @@ private[date] object GlobalHolidayCalendars {
   private def removeSatSun(dates: IterableOnce[LocalDate]): Iterator[LocalDate] =
     dates.iterator.filterNot(d => isWeekend(d))
 
-  // calculate easter day by Delambre
   /**
    * Calculates Easter Sunday of a year, by Delambre's algorithm.
    *
-   * This is the anonymous Gregorian computus, transcribed unchanged from the library being
-   * ported: every division is integer division, and the intermediate quantities carry the
-   * single-letter names the algorithm is published with rather than descriptive ones, because
-   * they have no meaning to describe.
+   * This is the anonymous Gregorian computus: every division is integer division, and the
+   * intermediate quantities carry the single-letter names the algorithm is published with
+   * rather than descriptive ones, because they have no meaning to describe.
    *
    * @param year  the year
    * @return Easter Sunday of that year

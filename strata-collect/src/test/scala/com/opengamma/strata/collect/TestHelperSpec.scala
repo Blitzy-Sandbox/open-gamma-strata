@@ -19,30 +19,26 @@ import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import com.opengamma.strata.collect.testkit.TestHelper._
 
 /**
- * Tests the retained helper subset of the ported test kit.
+ * Tests the helper subset the test kit offers.
  *
  * The helper is a cross-module contract: the dependent module's specs bring its
  * members into scope with exactly the import used above, so the names and
- * signatures exercised here are what keeps that module compiling. Only the four
- * retained helper groups are covered - the two date factories, the list factory
- * and the two capture helpers. The members the migration drops have no
- * counterpart in the helper itself, and that includes the two assertion helpers
- * the original test class exercised exclusively: one compared two references
- * and one asserted a reference was set. Their replacement is not another helper
- * but the test framework's own equality matcher, with `Option` standing in for
- * the absent reference the first special-cased and the second rejected - which
- * is why no case below writes that literal at all. The seven cases that covered
- * those helpers are therefore ported one-for-one onto that replacement, in the
- * dedicated section at the end of this file, rather than counted against the
- * helper tests above; the helper tests carry only their own cases.
+ * signatures exercised here are what keeps that module compiling. Its four
+ * helper groups are the whole of what is covered - the two date factories, the
+ * list factory and the two capture helpers. Beyond them, the final section of
+ * this file asserts what the framework's own equality and presence matchers
+ * report over `Option`, which is how absence is spelled here, so no case in
+ * this file needs a reference standing for a value that is not there. Those
+ * cases are about the matchers rather than about the kit, and the helper tests
+ * above carry only their own.
  *
- * Two properties of the port are made observable rather than assumed. The list
- * factory's result is bound to the fully qualified immutable Scala list type,
- * so the test would not compile if the helper returned some other collection -
- * it is the change of return type, away from the third-party collection of the
- * original, that the binding pins down. And the whole fixed-arity family of the
- * original collapsed into one variadic member here, so each arity the family
- * offered is exercised through that single member.
+ * Two properties of the helper are made observable rather than assumed. The
+ * list factory's result is bound to the fully qualified immutable Scala list
+ * type, so the test would not compile if the helper returned some other
+ * collection - the binding, not a runtime check, is what pins the return type
+ * down. And the factory is one variadic member rather than a family of
+ * fixed-arity ones, so every arity a caller can reach is exercised through that
+ * single member.
  *
  * The capture helpers redirect process-global state, so this spec never asserts
  * on that state from outside a capture. Restoration is observed from inside an
@@ -579,26 +575,26 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
   }
 
   //-------------------------------------------------------------------------
-  // The replacement for the two dropped assertion helpers
+  // Comparing two values and asserting one is present
   //
-  // The original test class exercised two helpers this port does not keep: one
-  // compared two references, special-casing the case where both were absent,
-  // and one asserted that a reference was set. What replaces them is the test
-  // framework's own equality matcher together with `Option`, which is how this
-  // port spells absence, so that is what the seven cases below assert - one for
-  // each case of the original, in its order.
+  // A spec of this module compares two values with the framework's equality
+  // matcher and states presence with its `defined` matcher, over `Option`,
+  // which is how absence is spelled here. The seven cases below assert what
+  // those two matchers hold and what they report: two equal values, two absent
+  // values and a present value asserted to be present on the holding side;
+  // two unequal values, a present value against an absent one, an absent value
+  // against a present one and an absent value asserted to be present on the
+  // reporting side.
   //
-  // Three of those cases covered the reporting direction: the original called
-  // the helper with operands it expected to be rejected, caught the resulting
-  // error and asserted its message. The cases here do the same, through
-  // `intercept` and an assertion about the reported text, because a case that
-  // only established that something was thrown would pass just as well against
-  // a matcher that rejected everything.
+  // Each reporting case reads the message through `intercept` and asserts the
+  // text it carries, because a case that only established that something was
+  // thrown would pass just as well against a matcher that rejected everything.
   //-------------------------------------------------------------------------
 
   test("the equality assertion that replaced the removed comparison helper holds for two equal values") {
-    // Two values that are equal without being the same instance, exactly as the
-    // original built them: a literal, and a substring of a longer literal.
+    // Two values that are equal without being the same instance: a literal, and
+    // a substring of a longer literal, so the matcher is read as equality and
+    // never as identity.
     val computed = "abcd".substring(0, 3)
     computed shouldBe "abc"
     // And the same pair as present values, which is the shape the cases over
@@ -607,10 +603,9 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
   }
 
   test("the equality assertion that replaced the removed comparison helper holds for two absent values") {
-    // The case the removed helper had to special-case before it compared
-    // anything. Absence is a value here, so the matcher needs no special case:
-    // two absent values are equal for the same reason any other two equal
-    // values are.
+    // Absence is a value here, so the matcher needs no special case for it: two
+    // absent values are equal for the same reason any other two equal values
+    // are, whether absence is written as the empty option or as `None`.
     val absent: Option[String] = Option.empty[String]
     absent shouldBe Option.empty[String]
     absent shouldBe None
@@ -620,8 +615,7 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
     val reported = intercept[TestFailedException] {
       "abc" shouldBe "def"
     }
-    // Both operands appear in the report. That is the property the original
-    // asserted of the helper's message, and it is what makes a failure here
+    // Both operands appear in the report, which is what makes a failure here
     // diagnosable rather than merely a failure.
     reported.getMessage should include("abc")
     reported.getMessage should include("def")
@@ -648,8 +642,8 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
   }
 
   test("the presence assertion that replaced the removed non-null helper holds for a value that is present") {
-    // What the removed helper asserted of a reference that was set, over the
-    // type that carries presence in this port.
+    // Presence is asserted over the type that carries it, both as being defined
+    // and as not being empty, so either spelling of the matcher holds.
     val present = Option("abc")
     present shouldBe defined
     present should not be empty
@@ -659,9 +653,8 @@ final class TestHelperSpec extends AnyFunSuite with Matchers with ScalaCheckProp
     val reported = intercept[TestFailedException] {
       Option.empty[String] shouldBe defined
     }
-    // The report names the value it rejected and what it required of it, which
-    // is more than the original's helper gave: its message was whatever the
-    // caller passed in.
+    // The report names both the value it rejected and what it required of it,
+    // so the message stands on its own without a caller supplying one.
     reported.getMessage should include("None")
     reported.getMessage should include("defined")
   }

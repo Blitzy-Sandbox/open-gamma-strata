@@ -8,8 +8,7 @@ package com.opengamma.strata.basics.index
 import com.opengamma.strata.collect.ArgCheck
 
 /**
- * Constants for the standard Overnight rate indices, published under the identifiers the ported
- * library used.
+ * Constants for the standard Overnight rate indices.
  *
  * Each constant is the standard definition of the index it names, carrying the currency the rate
  * is quoted in, the calendar of the days the rate fixes on, the offsets from a fixing date to the
@@ -17,36 +16,32 @@ import com.opengamma.strata.collect.ArgCheck
  * against it accrue on. A floating rate that has a constant here is fully supported by this
  * library, with example holiday calendar data behind its fixing calendar.
  *
- * ===Constants, not a registry===
+ * ===Constants, not indirection===
  *
- * The holder being ported indirected every constant through an extended enum so that
- * configuration found on the classpath could replace a member. That indirection is gone: the
- * [[OvernightIndex]] family is closed, its members are created once from the index data
+ * The [[OvernightIndex]] family is closed: its members are created once from the index data
  * transcribed into this module, and each constant here is simply a name looked up in that family.
  * A constant and the member it names are therefore the same object - indistinguishable by `eq`, by
- * `==` and in a pattern match - and nothing outside this build can substitute either.
+ * `==` and in a pattern match - and no member can be substituted from outside this build.
  *
  * ===Twenty-one constants over thirty-five members===
  *
  * The family publishes thirty-five indices, and this holder declares twenty-one constants naming
  * twenty of them - `EUR_ESTR` and `EUR_ESTER` name the same member under its current and its
- * retired spelling - which is exactly the set, and exactly the pairing, that the original holder
- * declared. The fifteen members with no constant here (the Swedish, Danish, Singaporean, Chilean,
- * Colombian, Czech, Hong Kong, Hungarian, Indonesian, Israeli, Indian, Russian, Saudi and Turkish
- * rates, Singapore contributing two) are reached through [[OvernightIndex.valueOf]] or
- * [[OvernightIndex.parse]] under the name the index data declares, exactly as they were reached in
- * the original. Nothing is added here and nothing is dropped: publishing a further index is a
+ * retired spelling. The fifteen members with no constant here (the Swedish, Danish, Singaporean,
+ * Chilean, Colombian, Czech, Hong Kong, Hungarian, Indonesian, Israeli, Indian, Russian, Saudi and
+ * Turkish rates, Singapore contributing two) are reached through [[OvernightIndex.valueOf]] or
+ * [[OvernightIndex.parse]] under the name the index data declares. Publishing a further index is a
  * change to the index data, never to this file.
  *
  * ===Two retired names===
  *
- * `CHF_TOIS` and `EUR_ESTER` name rates that are no longer current, and both were marked
- * deprecated in the original. They are kept, because a trade or a stored document written against
- * either name still has to resolve, and the note on each says what replaced it. Those notes are
- * carried as documentation rather than as a `@deprecated` annotation: this build compiles warnings
- * as errors, so annotating the two constants would turn every reference to them - from a test, or
- * from a later port of a module that reads a historic trade - into a build failure, which would
- * remove the names rather than deprecate them.
+ * `CHF_TOIS` and `EUR_ESTER` name rates whose names have been retired. Both constants stay
+ * published, because a trade or a stored document written against either name still has to
+ * resolve, and the note on each names what to use in its place. Neither constant carries a
+ * `@deprecated` annotation: whether the rate behind an index is still published is carried by the
+ * index's `active` flag - false for the Swiss tomorrow/next rate `CHF_TOIS` names, true for the
+ * euro short-term rate that `EUR_ESTER` and `EUR_ESTR` both name - so a caller reads publication
+ * state from the index itself rather than from the shape of this declaration.
  *
  * @see [[OvernightIndex]] for the family itself, its members and the lookup of one by name
  * @see [[OvernightIndexData]] for the transcribed data the members are built from
@@ -58,17 +53,16 @@ object OvernightIndices {
    * not have.
    *
    * The lookup is the alias-aware one of the family, so a constant may be declared under a retired
-   * spelling and still resolve to the member that replaced it. That is how `EUR_ESTER` is declared
-   * below, and it is the one constant here whose name is not a row of the index data.
+   * spelling and still resolve to the member carrying the current name. That is how `EUR_ESTER` is
+   * declared below, and it is the one constant here whose name is not a row of the index data.
    *
    * An absent value cannot be caused by a caller. Every name below is fixed text in this file and
    * every member is built from data transcribed into this module, so a name that does not resolve
    * means the two disagree - a defect in this library rather than a data-dependent failure, and
    * one that has to surface at once and loudly. It is therefore raised through the module's single
-   * fail-fast channel, [[com.opengamma.strata.collect.ArgCheck]], which is what the static
-   * initialiser being ported did when its own lookup failed. The second statement is unreachable
-   * and exists only because the check is declared to return no value, while this method has to
-   * return an index.
+   * fail-fast channel, [[com.opengamma.strata.collect.ArgCheck]], while this object is being
+   * initialised. The second statement is unreachable and exists only because the check is declared
+   * to return no value, while this method has to return an index.
    *
    * @param name  the name of the index to look up, such as `GBP-SONIA`
    * @return the index published under that name
@@ -81,7 +75,6 @@ object OvernightIndices {
       sys.error(message)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * The SONIA index for GBP.
    *

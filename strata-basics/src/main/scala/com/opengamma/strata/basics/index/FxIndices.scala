@@ -8,14 +8,11 @@ package com.opengamma.strata.basics.index
 import com.opengamma.strata.collect.ArgCheck
 
 /**
- * Constants for the standard foreign exchange indices, published under the identifiers the ported
- * library used.
+ * Constants for the standard foreign exchange indices.
  *
  * An FX index is an agreed mechanism for determining a rate of exchange, published daily by an
  * administrator: the reference rates of the European Central Bank, or the closing spot rates of
- * the London market. Each constant here names one member of [[FxIndex]], exposed under the name
- * the original constants holder gave it, so that a call site reading `FxIndices.EUR_USD_ECB`
- * ports across unchanged.
+ * the London market. Each constant here names one member of [[FxIndex]].
  *
  * The values are the same objects as the members of the [[FxIndex]] companion, so a constant
  * taken from here and the member of the same name are indistinguishable - including by `eq`, by
@@ -26,19 +23,16 @@ import com.opengamma.strata.collect.ArgCheck
  * flag saying whether it is still published; see [[FxIndex]] for why the symmetry with the other
  * three families of the hierarchy stops there.
  *
- * Unlike the holder being ported, the constants are not indirected through a registry. That
- * indirection existed so that configuration on the class path could replace a member; the family
- * is closed here and nothing can replace a member of it, so the registry field that holder held
- * is not ported and each constant is resolved directly against the family.
+ * The family is closed and no member of it can be substituted, so each constant is resolved
+ * directly against the family rather than through any indirection.
  *
  * ===Eight constants for sixteen published indices===
  *
- * Only the European Central Bank rates and the London closing rates are named here, exactly as in
- * the holder being ported. The eight remaining published indices - the local rates of the
- * definitions annex, such as `USD/KRW-KFTC18-KRW02` - deliberately have no constant, and giving
- * one to them would be adding to the published API of this library rather than porting it. They
- * are reached through [[FxIndex.valueOf]], [[FxIndex.of]] and [[FxIndex.values]], which own the
- * contract of the family; this object adds nothing to it.
+ * Only the European Central Bank rates and the London closing rates are named here. The eight
+ * remaining published indices - the local rates of the definitions annex, such as
+ * `USD/KRW-KFTC18-KRW02` - have no constant, and are reached through [[FxIndex.valueOf]],
+ * [[FxIndex.of]] and [[FxIndex.values]], which own the contract of the family; this object adds
+ * nothing to it.
  *
  * ===A pair of currencies does not name a constant===
  *
@@ -65,12 +59,11 @@ object FxIndices {
    *
    * An absent value cannot be caused by a caller: it would mean that this holder and the
    * published index data of the family disagree about the name of an index, which is a defect in
-   * this library rather than a data-dependent failure, and is what the initialiser of the holder
-   * being ported raised an error for. It is reported through the module's single sanctioned
-   * fail-fast channel, [[com.opengamma.strata.collect.ArgCheck]], so that every breach of an
-   * invariant of this library reports the same kind of error. The second statement is unreachable
-   * and exists only because the first is declared to return no value, while this operation must
-   * produce an index.
+   * this library rather than a data-dependent failure. It is reported through the module's single
+   * sanctioned fail-fast channel, [[com.opengamma.strata.collect.ArgCheck]], so that every breach
+   * of an invariant of this library reports the same kind of error. The second statement is
+   * unreachable and exists only because the first is declared to return no value, while this
+   * operation must produce an index.
    *
    * @param name  the name of the published index, such as `EUR/USD-ECB`
    * @return the index of that name
@@ -83,7 +76,6 @@ object FxIndices {
       sys.error(message)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * The FX index for conversion from EUR to CHF, as defined by the European Central Bank
    * "Euro foreign exchange reference rates".
@@ -108,7 +100,6 @@ object FxIndices {
    */
   val EUR_USD_ECB: FxIndex = builtIn("EUR/USD-ECB")
 
-  //-------------------------------------------------------------------------
   /**
    * The FX index for conversion from USD to CHF, as defined by the WM company
    * "Closing Spot rates".
@@ -125,9 +116,8 @@ object FxIndices {
    * The FX index for conversion from EUR to USD, as defined by the WM company
    * "Closing Spot rates".
    *
-   * The documentation of the constant being ported names the wrong counter currency for this one
-   * rate; the index is the euro against the dollar, as its name and the published data both say,
-   * and only the sentence describing it is corrected here.
+   * The rate is the euro against the dollar, as both the index name `EUR/USD-WM` and the published
+   * data say.
    */
   val EUR_USD_WM: FxIndex = builtIn("EUR/USD-WM")
 

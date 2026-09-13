@@ -116,15 +116,6 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  * the distribution itself, so a later change to that generator which stopped producing one of
  * the three shapes is caught here rather than quietly weakening every case above it.
  *
- * ===Traceability===
- *
- * Every test method of the class being ported has a named case here, and the mapping from
- * one to the other is recorded in the comment block at the foot of this file. Five of those
- * methods tested machinery that has no counterpart in this port - the factory that ran a
- * supplied block, the five collector factories, the entry-stream helper, the reflective
- * sweep and Java serialization - and the block says for each what carries its intent
- * instead.
- *
  * @see [[Failure]] for the failure an outcome reports
  * @see [[FailureReason]] for the reasons a failure can carry
  * @see [[com.opengamma.strata.collect.testkit.ResultMatchers]] for the matchers used here
@@ -341,11 +332,10 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCh
   }
 
   test("a computation written to report its own failures gives a value and reports none") {
-    // The factory being ported ran a block and caught what it raised. Nothing in this port
-    // raises to report a failure: a computation that can fail returns its failures, which
-    // is what `parseAll` above does, and it ends at `of`. This run has nothing to report,
-    // so the outcome is the plain success `of` builds from a value alone and the fallback
-    // the caller was holding is never needed.
+    // Nothing in this module raises in order to report a failure: a computation that can
+    // fail returns its failures, which is what `parseAll` above does, and it ends at `of`.
+    // This run has nothing to report, so the outcome is the plain success `of` builds from
+    // a value alone and the fallback the caller was holding is never needed.
     val fallback: List[Int] = List.empty[Int]
     val outcome: ValueWithFailures[List[Int]] = parseAll(List("1", "2"))
 
@@ -360,9 +350,8 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCh
 
   test("a computation that cannot produce a value keeps the fallback it was given and reports one ERROR failure") {
     // Where the computation cannot produce a value it reports that and hands back the
-    // fallback with it, which is the behaviour of the factory being ported - reached here
-    // by returning the failure rather than by raising it, so `of` is the whole of the
-    // machinery involved.
+    // fallback with it - the failure is returned rather than raised, which makes `of` the
+    // whole of the machinery involved.
     val fallback: String = ""
     val outcome: ValueWithFailures[String] =
       ValueWithFailures.of(fallback, List(Failure.Error("boom")))
@@ -1055,152 +1044,3 @@ final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCh
   }
 
 }
-
-/*
- * ---------------------------------------------------------------------------
- * Traceability: the test class being ported, method by method.
- * ---------------------------------------------------------------------------
- *
- * The class being ported, `ValueWithFailuresTest`, declared 27 test methods. Every one of
- * them has a named case in this spec, listed below as
- *
- *     <java method> -> "<name of the case here>"   <status>
- *
- * with a short reason wherever the subject of the Java method is machinery this port does
- * not have. Two statuses appear: `ported`, where the case carries the same assertion over
- * the same behaviour, and `consolidated:ValueWithFailuresSpec`, where two Java methods
- * reach one member here and both keep a case of their own so that the mapping stays one
- * row per Java method. No method of this class is dropped and none is covered in part.
- *
- * The case names below are the names that appear in the test report, so they are the names
- * a traceability check matches against; they must not be edited without editing this block
- * with them.
- *
- *  1. test_of_array_noFailures
- *       -> "of with a value alone is a plain success that reports no failures"
- *       ported
- *  2. test_of_array
- *       -> "of with failures is a partial success holding the value and the failures in order"
- *       ported - the variadic factory of the original collapses onto the collection form,
- *       so one member serves both call shapes and this case exercises it
- *  3. test_of_list
- *       -> "of takes its failures from an ordered list and reports them in that order"
- *       ported
- *  4. test_of_set
- *       -> "of takes its failures from a set and reports every one of them"
- *       ported - membership is asserted rather than order, as in the original
- *  5. test_of_supplier_success
- *       -> "a computation written to report its own failures gives a value and reports none"
- *       ported - the factory that ran a supplied block has no counterpart and none is
- *       supplied, because nothing in this port reports a failure by raising: a computation
- *       that can fail returns its failures and ends at `of`, and that is the contract this
- *       case asserts, over the production factory and the reporting computation of this file
- *  6. test_of_supplier_failure
- *       -> "a computation that cannot produce a value keeps the fallback it was given and reports one ERROR failure"
- *       ported - same subject as row 5; retaining the fallback value alongside the one
- *       reported failure is the behaviour the Java case existed to assert, and it is
- *       asserted here of `of(value, failures)` rather than of anything that catches
- *  7. test_map
- *       -> "map transforms the value and preserves the failures"
- *       ported - through the functor of the alias rather than a declared member
- *  8. test_mapFailureItems
- *       -> "leftMap rewrites the failures and preserves the value"
- *       ported - through the bifunctor of the alias
- *  9. test_mapFailureItems_noFailures
- *       -> "leftMap on an outcome that reports nothing leaves it equal to the outcome it was given"
- *       ported
- * 10. test_flatMap
- *       -> "flatMap reports the failures already present before those the function adds"
- *       ported - including the ordering of the two failures, which the Java case asserted
- *       position by position
- * 11. test_combinedWith
- *       -> "two outcomes combine their values and accumulate their failures in order"
- *       ported - through the applicative of the alias
- * 12. test_combinedWith_differentTypes
- *       -> "outcomes of different value types combine into one value carrying both failures"
- *       ported
- * 13. test_combining
- *       -> "combiningValues is the binary operator that reduces many outcomes into one"
- *       ported - the member returns the operator, so it is handed to a reduction here where
- *       the original handed it to the reduction of a stream
- * 14. test_withValue_value
- *       -> "withValue replaces the value and keeps the failures already reported"
- *       ported
- * 15. test_withValue_valueFailures
- *       -> "withValue with further failures reports the existing ones before the supplied ones"
- *       ported
- * 16. test_withValue_ValueWithFailures
- *       -> "withValue with another outcome takes its value and adds its failures last"
- *       ported
- * 17. test_withAdditionalFailures
- *       -> "withAdditionalFailures appends the supplied failures after the existing ones"
- *       ported
- * 18. test_toValueWithFailures
- *       -> "reducing outcomes with combiningValues multiplies the values and reports every failure"
- *       ported - the collector object has no counterpart; the identity and the binary
- *       operator it was given become the starting outcome and the operator of a fold, and
- *       the product and the three messages asserted are those of the Java case
- * 19. test_combineAsList
- *       -> "combineValuesAsList holds the values as a list and reports every failure"
- *       ported
- * 20. test_toCombinedValuesAsList
- *       -> "combining outcomes as a list replaces the collector the original streamed into"
- *       consolidated:ValueWithFailuresSpec - the collector and the static method of the
- *       original reach the one member exercised in row 19; this case keeps its own name and
- *       adds what the collector implied, a source that can be traversed only once
- * 21. test_combineAsSet
- *       -> "combineValuesAsSet holds the values as a set and reports every failure"
- *       ported
- * 22. test_toCombinedValuesAsSet
- *       -> "combining outcomes as a set replaces the collector the original streamed into"
- *       consolidated:ValueWithFailuresSpec - as row 20, for the set-valued member
- * 23. test_toCombinedResultsAsList
- *       -> "results bridge into outcomes so that only the values that succeeded survive"
- *       ported - the collector is replaced by the bridge from a result to an outcome
- *       followed by `combineValuesAsList`
- * 24. test_toCombinedResultAsMap
- *       -> "a map of results keeps the entries that succeeded and reports the one that did not"
- *       ported - the entry-stream helper of the original has no counterpart, so the
- *       immutable map is folded directly, in sorted key order so the reported failures have
- *       a fixed order
- * 25. test_toCombinedValuesAsMap
- *       -> "a map of outcomes keeps every entry and reports the failures of each"
- *       ported - same subject as row 24; every key survives here because every entry has a
- *       value, which is the distinction between the two cases
- * 26. coverage
- *       -> "equality, hashing and rendering distinguish the three shapes an outcome can take"
- *       ported - the reflective sweep over the properties of a bean has no counterpart, the
- *       type no longer being a bean; the behaviour the sweep existed to check is asserted
- *       directly
- * 27. test_serialization
- *       -> "decomposing an outcome and rebuilding it from its parts yields an equal outcome"
- *       ported - Java serialization has no counterpart, and the alias containers of this
- *       package are excluded from the closed inventory of covered serialized forms, so the
- *       structural round trip is what replaces it
- *
- * Seven cases here have no counterpart in the class being ported, because they assert
- * behaviour that class could not have or facts it never stated:
- *
- *   - "an outcome can report failures and carry no value at all" - the third shape of an
- *     `Ior`, which the mandatory value of the original ruled out.
- *   - "withAdditionalFailures with nothing to add returns the outcome it was given" - the
- *     documented identity of adding nothing, asserted as identity rather than equality.
- *   - "rebuilding an arbitrary outcome from its parts returns the outcome it was given" -
- *     rows 26 and 27 above state this of three outcomes written out here; this states it of
- *     every outcome the generator of this module can draw, of all three shapes.
- *   - "the value and the whole of every failure survive a rebuild in the order they were
- *     reported" - the same round trip, asserted part by part, so a rebuild that kept the
- *     count and the order of the failures while losing their attributes would be caught.
- *   - "equal outcomes hash alike, and the three shapes over one value are three distinct
- *     outcomes" - the equality and hashing of row 26, over an arbitrary value and an
- *     arbitrary chain rather than over one string and one pair of failures.
- *   - "the order of the failures an outcome reports is part of the outcome" - asserted over
- *     chains of two to four failures that are distinct by construction, which is what makes
- *     a reversal observable; row 3 states it of one pair.
- *   - "every one of the three shapes arises from the generator of partial successes" - the
- *     spread of the generator the four cases above draw from, pinned so that a later change
- *     to it which dropped a shape fails here instead of quietly weakening them.
- *
- * That makes 34 cases in this file, all of which count towards the test total this module
- * is required to reach.
- */

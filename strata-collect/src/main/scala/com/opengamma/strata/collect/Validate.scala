@@ -326,12 +326,11 @@ object Validate {
    * Validate.matches(SchemeRegex, scheme, "scheme")
    * }}}
    *
-   * The failure quotes the argument back as it was given, which is the message the original
-   * produced, character for character: the caller correcting its input is handed exactly what
-   * the check refused. The argument reached the library from outside it, so writing it out is
-   * where it is made safe - the text form of a failure and
-   * [[com.opengamma.strata.collect.result.Failure.show]] bound every part they write and
-   * escape anything a line-oriented reader could act on.
+   * The failure quotes the argument back as it was given, character for character: the caller
+   * correcting its input is handed exactly what the check refused. The argument reached the
+   * library from outside it, so writing it out is where it is made safe - the text form of a
+   * failure and [[com.opengamma.strata.collect.result.Failure.show]] bound every part they
+   * write and escape anything a line-oriented reader could act on.
    *
    * @param pattern  the pattern to check against
    * @param argument  the argument to check
@@ -352,15 +351,15 @@ object Validate {
    * Validate.matches(c => c >= 'A' && c <= 'Z', 1, 3, code, "code", "[A-Z]{1,3}")
    * }}}
    *
-   * The predicate replaces the character matcher of the Java original, which is why the
-   * equivalent regular expression is still passed separately: a function cannot describe
-   * itself, so the caller supplies the readable form that the error message quotes. The
-   * three ways of failing share one message, as they do in the original, because what the
-   * caller has to correct is the same in each case.
+   * The equivalent regular expression is passed separately because a function cannot describe
+   * itself: the predicate decides, and the caller supplies the readable form that the error
+   * message quotes. The three ways of failing - too short, too long, or holding a character
+   * the predicate rejects - share one message, because what the caller has to correct is the
+   * same in each case.
    *
    * The failure quotes the argument back as it was given, exactly as in the form of this check
-   * above and for the same reason: the message is the one the original produced, and bounding
-   * what it quotes belongs to the writing of a failure rather than to the building of one.
+   * above and for the same reason, and bounding what it quotes belongs to the writing of a
+   * failure rather than to the building of one.
    *
    * @param matcher  the predicate that every character has to satisfy
    * @param minLength  the minimum length to allow
@@ -384,8 +383,8 @@ object Validate {
   }
 
   // extracted so that the wording exists once for both forms of the check; the value is
-  // quoted as it stands, which is the wording of the check being ported, and bounding it for
-  // a reader is the business of writing the failure out rather than of building it
+  // quoted as it stands, and bounding it for a reader is the business of writing the failure
+  // out rather than of building it
   private def matchesMsg(pattern: String, name: String, value: String): String =
     s"Argument '$name' with value '$value' must match pattern: $pattern"
 

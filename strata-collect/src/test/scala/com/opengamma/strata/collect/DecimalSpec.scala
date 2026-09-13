@@ -680,7 +680,8 @@ class DecimalSpec
   // These three cases are the one place in this spec where the clock is read, and they read it
   // for a resource bound rather than for throughput: the assertion is not that the factory is
   // fast but that the work it does is proportional to the text it was given rather than to the
-  // number the text names.
+  // number the text names - which is why the text they use is a dozen characters long and
+  // names five hundred million whole digits.
 
   /**
    * The bound the guarded path is asserted to stay inside, in milliseconds.
@@ -691,7 +692,6 @@ class DecimalSpec
    */
   private val ExpansionBoundMillis: Long = 5000L
 
-  /** Text naming more whole digits than any decimal holds, in twelve characters. */
   private val HugeExponentText: String = "1e500000000"
 
   /**
@@ -839,7 +839,6 @@ class DecimalSpec
       }
     }
 
-  /** Asserts that the factory reads one text exactly as the reference route reads it. */
   private def assertTextAgrees(str: String): Assertion =
     withClue(s"reading '$str': ") {
       Decimal.of(str).left.map(failure => failure.reason) shouldBe textReference(str)
@@ -849,7 +848,8 @@ class DecimalSpec
    * The fullwidth digit one, built from its code point as [[ArabicIndicOne]] is.
    *
    * A second unicode digit outside ASCII, from a different block, so the delegation to
-   * `BigDecimal` is asserted over more than the one digit the ported table carries.
+   * `BigDecimal` is asserted over more than one such digit: this digit and the Arabic-Indic
+   * one each head a row of `delegatedTexts`, where both are read as the value one.
    */
   private val FullWidthOne: String = 0xff11.toChar.toString
 
@@ -888,7 +888,6 @@ class DecimalSpec
       FullWidthOne.head,
       LoneSurrogate.head)
 
-  /** The narrower alphabet of the exhaustive sweep, one character of each kind the pass sees. */
   private val SweepCharacters: List[Char] =
     List('0', '1', '.', '-', '+', 'e', 'A', ' ', ArabicIndicOne.head, LoneSurrogate.head)
 
@@ -914,7 +913,6 @@ class DecimalSpec
     Gen.frequency((10, free), (8, wellFormed), (1, oversized))
   }
 
-  /** Every text of the given length over the given alphabet. */
   private def textsOfLength(alphabet: List[Char], length: Int): List[String] =
     if (length == 0) {
       List("")
@@ -979,9 +977,12 @@ class DecimalSpec
   /**
    * Text the pass evaluates itself, with the unscaled value and scale it counts.
    *
-   * The counting is the counting of the ported scanner: a leading zero contributes no
-   * significant digit, a zero after the point still occupies a place, and a trailing zero of
-   * the fraction is removed by the normalisation every factory shares rather than by the pass.
+   * The counting each row states is the counting the pass performs: a leading zero
+   * contributes no significant digit, a zero after the point still occupies a place, and a
+   * trailing zero of the fraction is removed by the normalisation every factory shares rather
+   * than by the pass. The rows carry the boundaries of that counting - eighteen significant
+   * digits and eighteen places, at both signs - since a text naming more of either is handed
+   * to `BigDecimal` instead.
    */
   private val passCountedTexts: TableFor3[String, Long, Int] = Table(
     ("text", "unscaled", "scale"),
@@ -1035,11 +1036,10 @@ class DecimalSpec
   }
 
   test("parsing names the text it rejected, and the failure renders bounded and on one line") {
-    // No counterpart in the ported tests: the type being ported reported a malformed numeral by
-    // naming the offending character rather than the text. Two things bound what a log receives
-    // here and they are independent: text longer than the type reads is rejected by its own
-    // guard before a numeral is quoted at all, and the rendering of any failure bounds every
-    // part it writes.
+    // A malformed numeral is reported by naming the text that was refused, so two independent
+    // bounds decide what a log can receive from it: text longer than the type reads is
+    // rejected by the length guard before a numeral is quoted at all, and the rendering of any
+    // failure bounds every part it writes.
     val payload = "H" * 10000
     val bounded: FailureOr[Decimal] = Decimal.of(payload)
     bounded should beFailureWith(FailureReason.PARSING)

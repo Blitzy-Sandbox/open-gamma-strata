@@ -21,6 +21,8 @@ import io.circe.generic.semiauto.deriveEncoder
 import com.opengamma.strata.collect.ArgCheck
 import com.opengamma.strata.collect.Collections
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.array.DoubleArray
@@ -40,18 +42,28 @@ import com.opengamma.strata.collect.result.toNec
  *
  * ===What the representation guarantees===
  *
- * Two structural properties hold of every value of this type, and both are established before a
- * value exists rather than checked when one is read:
+ * Three properties hold of every value of this type, and each is established before a value
+ * exists rather than checked when one is read:
  *
- *   - the size is zero or greater, and
- *   - every array of values has exactly that many elements, one per index of the run.
+ *   - the size is zero or greater,
+ *   - every array of values has exactly that many elements, one per index of the run, and
+ *   - every element of every array is a value [[CurrencyAmount]] holds.
  *
  * The second is why a currency and an index always name a number: a currency that is held at all
- * is held for the whole run. The implementation being ported relied on the same two properties -
- * it validated the size in its constructor and the array lengths in its `of` and again when it
- * was deserialized - and here they are the post-condition of the one checking factory, the
- * `of` that reads a map of values per currency, which every route that could break them goes
- * through.
+ * is held for the whole run. The third is why that number is always an amount: the elements of a
+ * run are amounts kept as numbers, so a value that is not a number is no more an element than it
+ * is an amount - the two infinities are held, as an amount holds them, and only a not-a-number
+ * value is refused. All three are the post-condition of the one checking factory - the `of` that
+ * reads a map of values per currency - which every route that could break them goes through, and
+ * of the one construction point behind it.
+ *
+ * Which channel reports a refused element is the channel the route in question already has,
+ * which is the policy of this port for a numeric-domain edge: the checking factory, [[total]],
+ * the four members that add or subtract, [[convertedTo]] and the decoder report
+ * `Argument 'values' for GBP must not be NaN at index N` as a [[Failure]] - one per offending
+ * currency, in currency order, beside any other reason the same input gives - while the routes
+ * that are total in signature, [[multipliedBy]] and [[mapAmounts]], raise that same wording as a
+ * documented invariant.
  *
  * ===Zero padding===
  *
@@ -67,10 +79,8 @@ import com.opengamma.strata.collect.result.toNec
  * array.getValues(Currency.USD)       // Right([0.0, 2.0])
  * }}}
  *
- * This is the behaviour of the implementation being ported, which allocated a full-length array
- * for a currency the first time it saw it and wrote only the indices where that currency
- * appeared, leaving the rest at zero. It is worth stating because it is observable: reading index
- * zero back with [[get]] answers `[GBP 1, USD 0]`, naming both currencies, and not `[GBP 1]`.
+ * The padding is worth stating because it is observable: reading index zero back with [[get]]
+ * answers `[GBP 1, USD 0]`, naming both currencies, and not `[GBP 1]`.
  *
  * ===Which operations can fail===
  *
@@ -81,24 +91,26 @@ import com.opengamma.strata.collect.result.toNec
  * calling code, so each is reported as a [[Failure]] rather than by abandoning the call.
  *
  * Everything else here is total: reading an index, scaling every value, mapping every value,
- * listing the amounts. Two documented invariants can still be raised, exactly as they were by
- * the implementation being ported - an index outside the run is the index exception of the
- * runtime, and reading back a value that is not a number is an amount [[CurrencyAmount]] does not
- * admit.
+ * listing the amounts. One documented invariant can be raised by reading - an index outside the
+ * run is the index exception of the runtime - and two more by the arithmetic that is total in
+ * signature, where scaling or mapping produces a value that is not a number. Reading an index
+ * cannot raise the invariant of [[CurrencyAmount]]: the element invariant above holds of every
+ * value of this type, so every number a currency and an index name is already an amount.
  *
  * ===Equality===
  *
  * Two runs are equal when they have the same size and hold the same currencies with values that
- * are equal element by element, compared by bit pattern as [[DoubleArray]] compares them. That is
- * the comparison the generated bean of the implementation being ported performed, and it differs
- * from a numeric comparison in two deliberate places the round-trip properties of the test suite
- * rely on: a value that is not a number equals itself, so a run always equals itself, and a
- * negative zero differs from a positive zero. Because the currencies are held in a map, two runs
- * built from the same data in different orders are equal without anything having to be sorted
- * when they are compared.
+ * are equal element by element, compared by bit pattern as [[DoubleArray]] compares them. That
+ * differs from a numeric comparison in one deliberate place the round-trip properties of the test
+ * suite rely on: a negative zero differs from a positive zero. The other place a bit comparison
+ * differs, a value that is not a number comparing equal to itself, is unreachable here - the
+ * element invariant above admits no such value - and it is [[DoubleArray]] itself, which does
+ * admit one, that the property rests on. Because the currencies are held in a map, two runs built
+ * from the same data in different orders are equal without anything having to be sorted when they
+ * are compared.
  *
- * There is deliberately no ordering. The implementation being ported is not comparable, and a run
- * of multi-currency amounts has no ordering worth inventing.
+ * There is deliberately no ordering: a run of multi-currency amounts has no ordering worth
+ * inventing.
  *
  * ===Thread safety===
  *
@@ -116,9 +128,37 @@ import com.opengamma.strata.collect.result.toNec
 sealed abstract case class MultiCurrencyAmountArray private (
     size: Int,
     values: SortedMap[Currency, DoubleArray])
-    extends FxConvertible[CurrencyAmountArray] {
+    extends FxConvertible[CurrencyAmountArray]
+    with NoJavaSerialization {
 
-  //-------------------------------------------------------------------------
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means can be
+  // stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[MultiCurrencyAmountArray.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the implementation class carries a public
+  // constructor in the class file whatever the source asked for: a class compiled outside this
+  // library can call it directly, and identity alone would then admit a run whose size is not the
+  // length of the arrays it holds - so that reading one scenario of it would reach past the end of
+  // an array, or would read fewer currencies than the run has. These are the two structural
+  // properties `MultiCurrencyAmountArray.checked` establishes and every other route into the type
+  // holds by construction. The third is the element invariant: the elements of a run are amounts
+  // kept as numbers, so a value that is not a number is no more an element of a run than it is an
+  // amount, and identity alone would admit a run whose every later reader failed on it.
+  //
+  // The map is walked once per statement, over one entry per currency, and the third walks each
+  // array on its bit patterns - all of which is less than the factory that builds the arrays has
+  // already cost.
+  JvmClosure.requireInvariant("its size is not negative", size >= 0)
+  JvmClosure.requireInvariant(
+    "it holds exactly one value per index of the run for each of its currencies",
+    values.forall { case (_, currencyValues) => currencyValues.size == size })
+  JvmClosure.requireInvariant(
+    "every value of every currency it holds is a number",
+    values.forall { case (_, currencyValues) => currencyValues.indexOf(Double.NaN) < 0 })
+
   /**
    * Gets the set of currencies this run holds values for.
    *
@@ -143,9 +183,6 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * array.getValues(Currency.CHF)   // Left(Failure.Invalid("No values available for CHF"))
    * }}}
    *
-   * The wording is that of the implementation being ported, so a log or an expectation carrying
-   * the message of the exception it raised carries this message unchanged.
-   *
    * @param currency  the currency to read the values of
    * @return the values of that currency, or the failure naming the currency this run does not
    *   hold
@@ -158,20 +195,19 @@ sealed abstract case class MultiCurrencyAmountArray private (
    *
    * The amount names every currency of the run, taking each currency's value at that position,
    * counting from zero. A currency whose value there is zero is named with a zero amount rather
-   * than left out, which is the reconstruction the implementation being ported performed and the
-   * visible consequence of the zero padding described on this type:
+   * than left out, which is the visible consequence of the zero padding described on this type:
    *
    * {{{
    * MultiCurrencyAmountArray.of(oneGbp, twoUsd).get(0)   // [GBP 1, USD 0]
    * }}}
    *
-   * This is total in signature, as it was there, and it raises that implementation's two
-   * documented invariants rather than widening into a failure channel: an index outside the run
-   * is the index exception of the runtime, exactly as reading the [[DoubleArray]] of a currency
-   * directly would be, and a value that is not a number is an amount [[CurrencyAmount]] does not
-   * admit. The second is reachable only from a run built with such a value, and it is the
-   * behaviour of the implementation being ported, whose own `get` raised it too. A run holding no
-   * currency answers with an empty amount for any index, as it did there, since no array is read.
+   * This is total in signature, and it raises one documented invariant rather than widening into a
+   * failure channel: an index outside the run is the index exception of the runtime, exactly as
+   * reading the [[DoubleArray]] of a currency directly would be. The invariant of
+   * [[CurrencyAmount]] cannot be raised from here, although the amount is built through the
+   * construction path that performs it: the element invariant of this type holds of every value of
+   * the type, so every number a currency and an index name is already an amount. A run holding no
+   * currency answers with an empty amount for any index, since no array is read.
    *
    * ===What reconstructing an index costs===
    *
@@ -181,19 +217,18 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * package-private checked-map constructor of [[MultiCurrencyAmount]], which normalises and
    * checks each number as it goes into the one map the returned value holds: reading an index
    * builds the value it answers with and nothing else. Routing the pairs through the aggregating
-   * factory instead - as this once did - would allocate a [[CurrencyAmount]] per currency for
-   * that factory to unwrap again, and would re-merge entries that cannot collide, building a
-   * second map to reach a value the first one already described.
+   * factory instead would allocate a [[CurrencyAmount]] per currency for that factory to unwrap
+   * again, and would re-merge entries that cannot collide, building a second map to reach a value
+   * the first one already described.
    *
-   * The invariant of an amount is applied by exactly the same computation either way, so a value
-   * that is not a number is refused as it is read and with the same message, and a negative zero
-   * held in an array is normalised to a positive zero in the amount, as they were before.
+   * The invariant of an amount is applied by exactly the same computation either way - it is the
+   * check the element invariant of this type has already established every value passes - and a
+   * negative zero held in an array is normalised to a positive zero in the amount.
    *
    * @param index  the zero-based index to retrieve
    * @return the amount at that index, naming every currency of the run
    * @throws java.lang.IndexOutOfBoundsException if the index is outside the run and the run holds
    *   at least one currency
-   * @throws java.lang.IllegalArgumentException if a value at that index is not a number
    */
   def get(index: Int): MultiCurrencyAmount =
     MultiCurrencyAmount.create(values.iterator.map { case (currency, currencyValues) =>
@@ -207,9 +242,8 @@ sealed abstract case class MultiCurrencyAmountArray private (
   /**
    * Returns the amounts of this run, one at a time.
    *
-   * This is the member the stream of the implementation being ported becomes. A stream is a lazy
-   * sequence that is traversed once, which is what an `Iterator` is in this language, so a call
-   * site that streamed the amounts in order to filter, map or fold them reads the same way here:
+   * The amounts are handed back as a lazy sequence that is traversed once, so a caller may
+   * filter, map or fold them without ever holding the whole run of amounts:
    *
    * {{{
    * array.iterator.map(_.getAmountOrZero(Currency.GBP)).toList
@@ -235,7 +269,6 @@ sealed abstract case class MultiCurrencyAmountArray private (
    */
   def toList: List[MultiCurrencyAmount] = iterator.toList
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a run with every value multiplied by the specified factor.
    *
@@ -247,8 +280,16 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * The currencies are unchanged: scaling a run by a plain number does not convert it, and
    * [[convertedTo]] is the member that does.
    *
+   * This is total in signature, as it was in the implementation being ported, and it raises the
+   * element invariant of this type for a product that is not a number - a factor of zero applied
+   * to an infinite value, or a factor that is itself not a number - naming the currency and the
+   * index of the first such product. That is the policy of this port for a numeric-domain edge
+   * reached from the values a caller chose, and it is what the arithmetic of [[CurrencyAmount]]
+   * does for the sum of two opposite infinities.
+   *
    * @param factor  the multiplicative factor
    * @return a copy of this run with every value multiplied by the factor
+   * @throws java.lang.IllegalArgumentException if a product is not a number
    */
   def multipliedBy(factor: Double): MultiCurrencyAmountArray =
     mapValues(currencyValues => currencyValues.multipliedBy(factor))
@@ -265,21 +306,22 @@ sealed abstract case class MultiCurrencyAmountArray private (
    *
    * The operation is applied to each value of each currency, the currencies taken in the order
    * the run holds them and the values of each in index order, and the currencies themselves are
-   * carried through unchanged since the operation is on the numbers alone. It is an ordinary
-   * function rather than the primitive-specialised interface of the library being ported, which
-   * is the same thing expressed in this language.
+   * carried through unchanged since the operation is on the numbers alone.
    *
-   * The operation may produce a value that is not a number, exactly as the arrays of this run may
-   * hold one; it is reading such a value back as an amount that raises the invariant of
-   * [[CurrencyAmount]], not producing it here.
+   * The operation may produce a value that is not a number, which is not a value the arrays of a
+   * run hold: this is total in signature and raises the element invariant of this type for such
+   * an image, naming the currency and the index, as [[multipliedBy]] does for such a product.
+   * The refusal happens here, where the value was produced, rather than later where something
+   * read it back.
    *
    * @param mapper  the operation to apply to each value
    * @return a copy of this run with the operation applied to every value
+   * @throws java.lang.IllegalArgumentException if the operation produces a value that is not a
+   *   number
    */
   def mapAmounts(mapper: Double => Double): MultiCurrencyAmountArray =
     mapValues(currencyValues => currencyValues.map(mapper))
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this run into the specified currency, taking the rates from the specified provider.
    *
@@ -288,24 +330,21 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * currency dimension, so what is left is one array of values in one currency, exactly as
    * converting a [[MultiCurrencyAmount]] leaves one [[CurrencyAmount]].
    *
-   * The arithmetic is the arithmetic of the implementation being ported, in its order: the value
-   * at an index starts at zero, and each currency's value at that index, multiplied by that
-   * currency's rate, is added to it, the currencies taken in the order of their codes. Floating
-   * point addition is order-sensitive, so stating the order is what makes the result reproducible
-   * and what lets it be compared against a captured baseline. That is also why the starting zero
-   * is stated: it is what turns a product of `-0.0` into the positive zero the implementation
-   * being ported produced by adding into a zeroed buffer.
+   * The arithmetic has a stated order: the value at an index starts at zero, and each currency's
+   * value at that index, multiplied by that currency's rate, is added to it, the currencies taken
+   * in the order of their codes. Floating point addition is order-sensitive, so stating the order
+   * is what makes the result reproducible. That is also why the starting zero is stated: adding
+   * into it is what turns a product of `-0.0` into a positive zero.
    *
    * The rate of a currency is asked for exactly once and applied to that currency's whole array,
-   * where the implementation being ported asked once per element. For a provider whose answers
-   * are a function of the pair - which every provider of this port is - the two produce identical
-   * numbers, and asking once is both faster and what guarantees that a whole run is converted at
-   * a single rate. A single unavailable rate fails the whole conversion, carrying the failure the
-   * provider reported, and no later rate is asked for: a partially converted run would be
-   * numbers with no meaning.
+   * which is both cheaper than one question per element and what guarantees that a whole run is
+   * converted at a single rate. A single unavailable rate fails the whole conversion, carrying
+   * the failure the provider reported, and no later rate is asked for: a partially converted run
+   * would be numbers with no meaning.
    *
-   * The rate is asked for even when a currency of the run is the result currency, as it was
-   * there, and the providers of this port answer that with one.
+   * A currency of the run that is already the result currency is asked about like any other
+   * rather than passed through unconverted, so the rate of a currency against itself is the
+   * provider's to answer.
    *
    * ===What a conversion allocates===
    *
@@ -317,18 +356,26 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * something else and dropped. What is held between the two halves is one small structure per
    * currency of the run, holding that currency's rate beside the array the run already holds.
    *
+   * The sum at an index can be a value no amount holds - opposed infinities in two currencies,
+   * or a rate that is not a number, which an [[FxRate]] holds because it is neither negative nor
+   * zero - and a run of single-currency amounts does not hold one either. The converted values
+   * therefore go through the checked construction of [[CurrencyAmountArray]], so such a
+   * conversion is reported in the failure channel this member already has rather than raised out
+   * of it.
+   *
    * @param resultCurrency  the currency of the result
    * @param rateProvider  the provider of FX rates
-   * @return this run expressed in the result currency, or the failure the provider reported for
-   *   the first rate the conversion needed and could not get
+   * @return this run expressed in the result currency, the failure the provider reported for the
+   *   first rate the conversion needed and could not get, or the failure describing a converted
+   *   value that is not a number
    */
   override def convertedTo(
       resultCurrency: Currency,
       rateProvider: FxRateProvider): FailureOr[CurrencyAmountArray] =
     ratesOf(values.iterator, resultCurrency, rateProvider, Vector.empty)
-      .map(prepared => CurrencyAmountArray.of(resultCurrency, converted(prepared)))
+      .flatMap(prepared =>
+        CurrencyAmountArray.checkedOne(resultCurrency, converted(prepared)))
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a run holding the values of this run added to the values of the other run.
    *
@@ -347,9 +394,8 @@ sealed abstract case class MultiCurrencyAmountArray private (
    *                           //   "Sizes must be equal, this size is 2, other size is 3"))
    * }}}
    *
-   * The wording is that of the implementation being ported. The result is built through the
-   * checking factory of this type, as it was there, so the structural properties of this type are
-   * established for the result rather than assumed of it.
+   * The result is built through the checking factory of this type, so the two structural
+   * properties are established for the result rather than inherited from the operands.
    *
    * @param other  the other run of values
    * @return this run with the other added element by element, or the failure describing the size
@@ -374,11 +420,11 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * twoLongInGbp.plus(multiOfGbpAndUsd)   // Right(GBP shifted, USD filled with the USD amount)
    * }}}
    *
-   * The result is built through the checking factory of this type, as the implementation being
-   * ported built it, which is why this reports a failure channel it cannot currently fill: the
-   * arrays it assembles all have the size of this run by construction. Keeping the channel is
-   * what makes that a property of the factory rather than of a reading of this method, so a check
-   * added to the factory needs no change here.
+   * The result is built through the checking factory of this type, and the failure channel this
+   * reports is that factory's: the arrays assembled here all have the size of this run by
+   * construction, so no input of this method fills the channel. Keeping it is what makes the
+   * check a property of the factory rather than of a reading of this method, so a check added to
+   * the factory needs no change here.
    *
    * @param amount  the amount to add to every index
    * @return this run with the amount added at every index, or the failure the checking factory
@@ -396,11 +442,10 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * Returns a run holding the values of this run with the values of the other run subtracted.
    *
    * This is the element-wise `plus` above read in the other direction, and it behaves the same
-   * way in every respect but one: a currency
-   * only the other run holds is carried through negated rather than as it stands, since nothing
-   * minus that currency's values is their negation. That was the behaviour of the implementation
-   * being ported, and it is the zero padding of this type again - this run holds zero for that
-   * currency at every index.
+   * way in every respect but one: a currency only the other run holds is carried through negated
+   * rather than as it stands, since nothing minus that currency's values is their negation. That
+   * is the zero padding of this type again - this run holds zero for that currency at every
+   * index.
    *
    * The sizes have to be equal, for the reason element-wise addition gives, and the failure is
    * worded identically.
@@ -439,17 +484,20 @@ sealed abstract case class MultiCurrencyAmountArray private (
         (mine, value) => mine.minus(value),
         value => DoubleArray.filled(size, -value)))
 
-  //-------------------------------------------------------------------------
   /**
    * Applies an operation to the values of every currency, keeping the currencies and the size.
    *
    * This is the shape of the two total arithmetic members above. The operation is applied per
    * currency, in the order of the currency codes, and it may not change the length of an array -
-   * every operation that reaches it is element-wise - so the structural properties of this type
-   * carry over to the result and the unchecked construction is the right one.
+   * every operation that reaches it is element-wise - so the size and the array lengths of this
+   * type carry over to the result. What does not carry over is the element invariant: the
+   * operation produces numbers of its own, so the construction it goes through establishes that
+   * invariant and raises it, which is what the two members above document.
    *
    * @param operation  the operation to apply to each currency's values
    * @return this run with the operation applied to the values of every currency
+   * @throws java.lang.IllegalArgumentException if the operation produces a value that is not a
+   *   number
    */
   private def mapValues(operation: DoubleArray => DoubleArray): MultiCurrencyAmountArray =
     MultiCurrencyAmountArray.create(
@@ -475,13 +523,13 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * traversal of them is what makes that unconditional, since a traversal decides for itself how
    * much of its input it reads.
    *
-   * The recursion is in tail position and compiles to a loop, so a run of any number of
-   * currencies is prepared without consuming stack.
+   * The recursion is in tail position and runs as a loop, so a run of any number of currencies is
+   * prepared without consuming stack.
    *
    * @param remaining  the currencies of this run still to be asked about, in code order
    * @param resultCurrency  the currency every value is to be converted into
    * @param rateProvider  the provider of FX rates, asked once per currency
-   * @param prepared  the rate and values of each currency asked about so far, in code order
+   * @param prepared  the rate and values of the currencies already asked about, in code order
    * @return the rate and values of every currency in code order, or the failure the provider
    *   reported for the first rate it could not supply
    */
@@ -526,15 +574,14 @@ sealed abstract case class MultiCurrencyAmountArray private (
   /**
    * Adds up the converted values of every currency at one index of the run.
    *
-   * The accumulation is the one the implementation being ported performed, in its order and with
-   * its operands: it starts at zero, it takes the currencies by position - which is the order of
+   * The accumulation starts at zero, it takes the currencies by position - which is the order of
    * their codes - and each term is that currency's value at the index multiplied by that
    * currency's rate, in that operand order. Floating point addition and multiplication both round,
    * so each of those three things is part of the number this produces and none of them is
-   * incidental: the captured parity baseline of this port records the numbers this order gives.
+   * incidental.
    *
-   * The recursion is in tail position and compiles to a loop over two primitive-indexed buffers,
-   * so an index costs no allocation at all and a run of any number of currencies converts without
+   * The recursion is in tail position and runs as a loop over two primitive-indexed buffers, so
+   * an index costs no allocation at all and a run of any number of currencies converts without
    * consuming stack.
    *
    * @param rates  the rate of each currency, by position in code order
@@ -567,9 +614,8 @@ sealed abstract case class MultiCurrencyAmountArray private (
    *
    * The union of the two sets of currencies is taken: a currency both runs hold is combined with
    * the first operation, a currency only this run holds is carried through as it stands, and a
-   * currency only the other run holds goes through the second operation. That is exactly the
-   * three-way choice the implementation being ported made, and the two operations are what
-   * distinguish addition from subtraction.
+   * currency only the other run holds goes through the second operation. The two operations are
+   * what distinguish addition from subtraction.
    *
    * The currencies of this run are taken first, in the order of their codes, then those only the
    * other run holds, likewise ordered; the result is sorted regardless, so the traversal order is
@@ -601,8 +647,7 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * per currency rather than one array per currency, which is the shape the two members that take
    * an amount need. The three-way choice is the same one, and a currency only the amount names
    * produces a full-length array through the second operation - filled with that value for
-   * addition, with its negation for subtraction - which is how the implementation being ported
-   * introduced such a currency.
+   * addition, with its negation for subtraction.
    *
    * @param amount  the amount to combine with this run
    * @param onBoth  the operation applied to the values of a currency both operands name
@@ -627,7 +672,7 @@ sealed abstract case class MultiCurrencyAmountArray private (
    * Checks that the other run has the same size as this one.
    *
    * Both members that combine two runs share this, so the two report the same reason in the same
-   * wording - that of the implementation being ported.
+   * wording.
    *
    * @param other  the other run
    * @return nothing when the two runs have the same size, otherwise the failure describing the
@@ -640,16 +685,14 @@ sealed abstract case class MultiCurrencyAmountArray private (
       Left(MultiCurrencyAmountArray.differentSizes(size, other.size))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Checks whether this run equals another object.
    *
    * Another run is equal when it has the same size and holds the same currencies with values that
    * are equal element by element. The values are compared by [[DoubleArray]], whose equality is
    * bit for bit, so a value that is not a number equals itself and a negative zero differs from a
-   * positive zero - the comparison the generated bean of the implementation being ported
-   * performed. The map comparison is by content, so it does not matter in what order either run
-   * was built. An object of any other type is not equal.
+   * positive zero. The map comparison is by content, so it does not matter in what order either
+   * run was built. An object of any other type is not equal.
    *
    * @param obj  the object to compare to
    * @return true if the other object is a run of the same size holding the same values per
@@ -664,12 +707,11 @@ sealed abstract case class MultiCurrencyAmountArray private (
   /**
    * Returns a hash code consistent with [[equals]].
    *
-   * The mixing is that of the bean this replaces - a seed, then each field in declaration order -
-   * with the map contributing the hash of its entries, each of which is the hash of a currency
-   * code and the hash of a [[DoubleArray]], computed from the bit patterns of its elements.
-   * Everything it reads is a function of the value alone, so the hash of a run is identical in
-   * every run of every program, which is what the byte-stability and round-trip properties of the
-   * test suite depend on, and it agrees with the equality above.
+   * The mixing is a seed, then each field in declaration order, with the map contributing the
+   * hash of its entries, each of which is the hash of a currency code and the hash of a
+   * [[DoubleArray]], computed from the bit patterns of its elements. Everything it reads is a
+   * function of the value alone, so the hash of a run is identical in every execution of every
+   * program, and it agrees with the equality above.
    *
    * @return the hash code of the size and the values held
    */
@@ -679,18 +721,15 @@ sealed abstract case class MultiCurrencyAmountArray private (
   /**
    * Returns this run as text.
    *
-   * The form is the one the generated bean produced, the two fields named in declaration order
-   * between braces, with the values rendered as the sorted map of the library being ported
-   * rendered them:
+   * The form is the two fields named in declaration order between braces, the values written as a
+   * braced list of one entry per currency:
    *
    * {{{
    * MultiCurrencyAmountArray{size=2, values={GBP=[1.0, 0.0], USD=[0.0, 2.0]}}
    * }}}
    *
-   * It is kept exactly so that ported code and the logs it writes read as they did before, and it
-   * is what the `Show` instance of the companion renders. Every value of every array appears, so
-   * the text of a long run is long - it describes the whole value rather than summarising it, as
-   * the text of the implementation being ported did.
+   * It is what the `Show` instance of the companion renders. Every value of every array appears,
+   * so the text of a long run is long - it describes the whole value rather than summarising it.
    *
    * @return the rendering of this run
    */
@@ -698,11 +737,11 @@ sealed abstract case class MultiCurrencyAmountArray private (
     s"MultiCurrencyAmountArray{size=$size, values=$renderedValues}"
 
   /**
-   * Renders the values as the sorted map of the library being ported rendered them.
+   * Renders the values per currency as a braced list of entries.
    *
-   * That library wrote a map as its entries between braces, each entry as its key, an equals sign
-   * and its value, separated by commas - which is not how a map of this language renders itself,
-   * hence rendering it here rather than interpolating it.
+   * Each entry is its currency, an equals sign and that currency's values, the entries separated
+   * by a comma and a space and taken in currency order. That is not how a map of this language
+   * renders itself, hence rendering it here rather than interpolating the map.
    *
    * @return the rendering of the values per currency
    */
@@ -715,10 +754,10 @@ sealed abstract case class MultiCurrencyAmountArray private (
 /**
  * Provides the ways of obtaining a run of multi-currency amounts, and the instances for the type.
  *
- * This companion is the only place a [[MultiCurrencyAmountArray]] is created. Neither the
- * constructor nor a generated `apply` or `copy` is available and the type is sealed, so a run
- * whose arrays disagree about their length, or whose size does not match them, cannot exist: the
- * factory that reads such input reports it instead.
+ * This companion is the only place a [[MultiCurrencyAmountArray]] is created. The constructor is
+ * private, no `apply` or `copy` is published and the type is sealed, so a run whose arrays
+ * disagree about their length, or whose size does not match them, cannot exist: the factory that
+ * reads such input reports it instead.
  *
  * ===The four ways in===
  *
@@ -730,20 +769,22 @@ sealed abstract case class MultiCurrencyAmountArray private (
  *   - `of(size, valueFunction)` produces them from the index.
  *
  * The fourth reads the representation directly, one array per currency, and is therefore the one
- * that has something to check - that the arrays agree about their length:
+ * that has something to check - that the arrays agree about their length, and that every value
+ * in them is a value an amount holds:
  *
  *   - `of(values)` reports what it rejects as a chain of [[Failure]].
  *
  * [[total]] is the aggregating factory: it combines runs of single-currency amounts into one run,
  * adding the arrays of a currency that appears more than once. It inherits the failure channel of
- * the fourth, since arrays of different lengths cannot be combined or held together.
+ * the fourth, since arrays of different lengths cannot be combined or held together and since
+ * adding two arrays can produce a value no amount holds.
  *
  * ===Instances===
  *
  * Two typeclass instances are published, and exactly two: a `Hash`, which is the single
  * equality-bearing instance of the type - `Hash` extends `Eq`, so declaring an `Eq` as well would
  * leave two instances that could disagree and one of them ambiguous - and a `Show`. There is
- * deliberately no `Order`, matching the implementation being ported, which is not comparable.
+ * deliberately no `Order`, a run of multi-currency amounts having no ordering worth inventing.
  *
  * @see [[MultiCurrencyAmountArray]] for the type itself, the two structural properties every run
  *   has, and the zero padding the three total factories apply
@@ -751,20 +792,27 @@ sealed abstract case class MultiCurrencyAmountArray private (
 object MultiCurrencyAmountArray {
 
   /**
-   * The seed of the hash code, standing in for the identity hash of the class that the generated
-   * bean used, so that hashing is reproducible across runs. Any constant would do; the hash of
-   * the type name is used because it is stable, specified by the platform, and distinct from the
-   * seed of every other type of this port.
+   * The seed of the hash code, which makes hashing reproducible from one execution to the next.
+   * Any constant would do; the hash of the type name is taken because it is stable, is specified
+   * by the platform, and distinguishes this type's seed from that of any other type deriving one
+   * from its own name.
    */
   private val HashSeed: Int = "MultiCurrencyAmountArray".hashCode
 
   /**
-   * The name of the size, as the argument name of the checks that read it.
-   *
-   * This is the name the implementation being ported gave the same property, so the message
-   * reported for a size the type does not admit is worded as it was there.
+   * The name of the size, as the argument name of the checks that read it, so a size this type
+   * does not admit is reported against the name `size`.
    */
   private val SizeField: String = "size"
+
+  /**
+   * The name of the values, as the argument name of the check that rejects an element.
+   *
+   * This is the name of the field itself, so the message reported for a value the type does not
+   * admit names the thing a caller passed - `Argument 'values' for GBP must not be NaN at
+   * index 1`.
+   */
+  private val ValuesField: String = "values"
 
   /**
    * The ordering the values of every run are held in.
@@ -772,7 +820,7 @@ object MultiCurrencyAmountArray {
    * It is the cats `Order` of [[Currency]] turned into an `Ordering`, so the order of the
    * currencies of a run, of the entries of its JSON object, of its rendering and of the rates
    * asked for by a conversion all come from the one source of truth for comparing currencies -
-   * their codes. The implementation being ported held the same map sorted the same way.
+   * their codes.
    */
   private val currencyOrdering: Ordering[Currency] = Order[Currency].toOrdering
 
@@ -785,7 +833,6 @@ object MultiCurrencyAmountArray {
   private val noGroups: SortedMap[Currency, Vector[CurrencyAmountArray]] =
     SortedMap.empty[Currency, Vector[CurrencyAmountArray]](currencyOrdering)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance from the specified multi-currency amounts.
    *
@@ -812,8 +859,7 @@ object MultiCurrencyAmountArray {
    *
    * Every currency any amount names becomes a currency of the run, holding that amount's value
    * at the indices where the amount names it and zero at every other index - the zero padding
-   * described on this type, which is what the implementation being ported did by allocating a
-   * full-length array for a currency the first time it saw it:
+   * described on this type:
    *
    * {{{
    * MultiCurrencyAmountArray.of(List(oneGbp, twoUsd))
@@ -822,7 +868,6 @@ object MultiCurrencyAmountArray {
    *
    * The collection is read once, into an indexed sequence, so a lazy or single-use collection is
    * traversed exactly once even though the values of each currency are then built per currency.
-   * The implementation being ported took a `List`, which is one of the collections accepted here.
    *
    * @param amounts  the amounts, one per index of the run
    * @return the run holding those amounts
@@ -845,27 +890,19 @@ object MultiCurrencyAmountArray {
    * because the values are held per currency: producing each currency's array by calling the
    * function again would evaluate it once per currency and index, which would be wrong for a
    * function that counts its calls, reads a sequence of inputs or is expensive. The amounts are
-   * therefore materialised once, in order, and the arrays are built from them - the same single
-   * pass over the input the implementation being ported made.
+   * therefore materialised once, in order, and the arrays are built from them in a single pass
+   * over that sequence.
    *
    * A negative size is refused as a caller contract rather than reported as a failure: there is
    * no data a caller could hold that makes a run of minus one amounts meaningful, so this is an
-   * invariant of the call and not a property of its input. That is the contract the
-   * implementation being ported declared - its size was declared as a property that must not be
-   * negative, and this factory was documented as raising an argument exception for a size it does
-   * not admit - but not what its code did: the constructor written by hand for that class skipped
-   * the validation its declaration asked for, so a negative size there produced a run whose size
-   * contradicted its values and whose every index was unreadable. Enforcing the declared contract
-   * is the one behaviour of this factory that differs from that code, it is recorded as a
-   * divergence with the port, and it is what lets the two structural properties of this type hold
-   * without exception - the decoder refuses a negative size for the same reason.
+   * invariant of the call and not a property of its input. Refusing it is what lets the two
+   * structural properties of this type hold without exception - the decoder refuses a negative
+   * size for the same reason.
    *
-   * A size of zero is admitted and describes the run of size zero, as it did there; the exception
-   * the documentation of that factory promised for a size of zero was never raised by it, and is
-   * not raised here.
+   * A size of zero is admitted and describes the run of size zero.
    *
    * @param size  the number of amounts, zero or greater
-   * @param valueFunction  the function used to obtain the amount at each index
+   * @param valueFunction  the function that produces the amount at each index
    * @return the run holding the amounts the function produced
    * @throws java.lang.IllegalArgumentException if the size is negative
    */
@@ -890,17 +927,14 @@ object MultiCurrencyAmountArray {
    * MultiCurrencyAmountArray.of(Map.empty)                                 // Right(size 0)
    * }}}
    *
-   * An empty map describes the run of size zero, as it did in the implementation being ported,
-   * which documented exactly that; a run of non-zero size holding no currency is built with one
-   * of the other factories.
+   * An empty map describes the run of size zero; a run of non-zero size holding no currency is
+   * built with one of the other factories.
    *
    * Every array that disagrees is reported, not only the first, so a caller reads one chain
-   * naming each of them. The wording of each is that of the implementation being ported, which
-   * reported the size it had settled on and the size it found; which array is the reference is
-   * settled by the order of the currency codes rather than by the iteration order of the map
-   * handed in, so the same map always produces the same reasons in the same order - the
-   * implementation being ported read an unordered map here and its message depended on that
-   * order.
+   * naming each of them. Each reason names the size settled on and the size found. Which array is
+   * the reference is settled by the order of the currency codes rather than by the iteration
+   * order of the map handed in, so the same map always produces the same reasons in the same
+   * order whatever collection it arrives in.
    *
    * @param values  the values per currency, each array holding one value per index of the run
    * @return the run holding those values, or the failures describing the arrays that disagree
@@ -917,9 +951,8 @@ object MultiCurrencyAmountArray {
    *
    * Each [[CurrencyAmountArray]] contributes its values under its own currency, and a currency
    * that appears more than once has its runs added element by element, in the order the input
-   * presents them - the aggregation the implementation being ported performed with a collector,
-   * whose role this member takes over. Floating point addition is order-sensitive, so stating
-   * that order is what makes the total reproducible.
+   * presents them. Floating point addition is order-sensitive, so stating that order is what
+   * makes the total reproducible.
    *
    * {{{
    * MultiCurrencyAmountArray.total(List(gbpRun, usdRun))          // Right(GBP and USD)
@@ -941,6 +974,11 @@ object MultiCurrencyAmountArray {
    *   - runs of '''different''' currencies whose lengths differ are the second, reported by the
    *     checking factory above, one reason per run that disagrees with the length of the first
    *     run in currency order, in currency order.
+   *
+   * A third reason comes from the addition itself rather than from the lengths: two runs of one
+   * currency holding opposite infinities at an index sum to a value no amount holds, which the
+   * checking factory reports naming that currency and index. It is reported alongside the second
+   * class of reason, since both are found by the same factory over the same assembled map.
    *
    * An empty input describes the run of size zero.
    *
@@ -981,11 +1019,11 @@ object MultiCurrencyAmountArray {
   /**
    * Collects the runs offered to [[total]] by currency, stopping at the first length that differs.
    *
-   * Nothing is added up here: a run is kept as the reference it arrived as, appended to what its
-   * currency has been offered so far, so a pass over the input costs one small entry per currency
-   * and one per run rather than a full-length array per arrival. The runs of a currency are kept
-   * in the order the input presented them, which is the order they are added up in, and the
-   * currencies are kept in code order, which is the order the reasons of a rejection and the
+   * Nothing is added up here: a run is kept as the reference it arrived as, appended to the runs
+   * its currency has already been offered, so a pass over the input costs one small entry per
+   * currency and one per run rather than a full-length array per arrival. The runs of a currency
+   * are kept in the order the input presented them, which is the order they are added up in, and
+   * the currencies are kept in code order, which is the order the reasons of a rejection and the
    * currencies of the result appear in.
    *
    * The length of an arriving run is compared with the length of the first run of its currency,
@@ -994,11 +1032,11 @@ object MultiCurrencyAmountArray {
    * can be made without adding anything up. Returning at once is what the promise of [[total]]
    * rests on - the outcome is already decided, so no further element of the input is pulled.
    *
-   * The recursion is in tail position and compiles to a loop, so an input of any length is
-   * collected without consuming stack.
+   * The recursion is in tail position and runs as a loop, so an input of any length is collected
+   * without consuming stack.
    *
    * @param remaining  the runs still to be collected, pulled one at a time
-   * @param accumulated  the runs collected so far, by currency in code order and in input order
+   * @param accumulated  the runs already collected, by currency in code order and in input order
    * @return the runs of every currency, or the failure describing the first length that differs
    *   from the length of the first run of its currency
    */
@@ -1026,14 +1064,12 @@ object MultiCurrencyAmountArray {
    * Adds up the runs of one currency into the one array that currency contributes.
    *
    * A single run contributes the values it already holds, with nothing computed and nothing
-   * allocated - which is what the aggregation of a currency offered once has always produced.
-   * Several runs are added element by element in one pass per index, so the currency costs
-   * exactly one array however many runs it was offered.
+   * allocated. Several runs are added element by element in one pass per index, so the currency
+   * costs exactly one array however many runs it was offered.
    *
    * The addition starts at the first run's value rather than at zero and takes the runs in input
-   * order, which is the accumulation the pairwise addition of the implementation being ported
-   * performed: both are part of the number produced, since floating point addition rounds and
-   * adding into a zero would normalise a negative zero away.
+   * order. Both are part of the number produced, since floating point addition rounds and adding
+   * into a zero would normalise a negative zero away.
    *
    * @param runs  the runs of one currency, in input order, all of the same length
    * @return the values of that currency in the total
@@ -1053,11 +1089,10 @@ object MultiCurrencyAmountArray {
    *
    * The runs are taken by position, which is the order the input presented them, and each value
    * is added to what has accumulated - `accumulated + arriving`, in that operand order, which is
-   * the order the pairwise addition of the implementation being ported performed and the order
-   * the captured parity baseline of this port records.
+   * part of the number produced because floating point addition rounds.
    *
-   * The recursion is in tail position and compiles to a loop over a primitive-indexed buffer, so
-   * an index costs no allocation at all.
+   * The recursion is in tail position and runs as a loop over a primitive-indexed buffer, so an
+   * index costs no allocation at all.
    *
    * @param values  the values of each run of the currency, by position in input order
    * @param index  the index being added up
@@ -1077,13 +1112,14 @@ object MultiCurrencyAmountArray {
       summedAt(values, index, position + 1, accumulated + values(position).get(index))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Builds a run from amounts that have already been read into an indexed sequence.
    *
    * This is where the three total factories meet, and it is where the size of the run is settled:
-   * one index per amount. It needs no check - [[arraysOf]] produces one array of exactly that
-   * length per currency - so it is the unchecked construction.
+   * one index per amount. It has nothing of its own to check: [[arraysOf]] produces one array of
+   * exactly that length per currency, and every number in those arrays came out of a
+   * [[MultiCurrencyAmount]] - which holds amounts - or is the padded zero, so the element
+   * invariant of the construction point cannot refuse one of them.
    *
    * @param amounts  the amounts, one per index, in index order
    * @return the run holding those amounts
@@ -1094,23 +1130,20 @@ object MultiCurrencyAmountArray {
   /**
    * Turns amounts into one full-length array of values per currency.
    *
-   * This is the zero padding of the three total factories, written as the pure counterpart of the
-   * buffer the implementation being ported allocated per currency and wrote into: the currencies
-   * of all the amounts are collected first, and then each currency's array is produced from the
-   * amounts by index. Reading an absent currency as `0.0` is what makes it faithful - that is
-   * exactly what an untouched element of that buffer held.
+   * This is the zero padding of the three total factories: the currencies of all the amounts are
+   * collected first, and then each currency's array is produced from the amounts by index, an
+   * amount that does not name the currency contributing `0.0` at its index.
    *
    * The number of each cell is read straight out of the map the amount holds, which
    * [[MultiCurrencyAmount.toMap]] hands back without copying, and which holds numbers that are
-   * already normalised amounts. That is what keeps the transposition to the arrays it produces:
-   * asking the amount for a [[CurrencyAmount]] per cell - as this once did - would allocate one
-   * domain object for every currency and every index, C×N of them for C currencies and N
-   * amounts, each built only to have its number read back out and then discarded, where the
-   * implementation being ported wrote the number into a primitive buffer.
+   * already normalised amounts. That is what keeps the transposition to the arrays it produces
+   * free of intermediate objects: asking the amount for a [[CurrencyAmount]] per cell would
+   * allocate one domain object for every currency and every index, C×N of them for C currencies
+   * and N amounts, each built only to have its number read back out and then discarded.
    *
    * Each array is built in one pass over the amounts with no buffer being handed out, which is
-   * what the copy-safe construction of [[DoubleArray]] requires: the escape hatches the
-   * implementation being ported used to wrap its buffers are not available outside that module.
+   * what the copy-safe construction of [[DoubleArray]] requires - it copies whatever it is given
+   * and hands back nothing that aliases its own storage.
    *
    * @param amounts  the amounts, one per index, in index order
    * @return one array per currency any amount names, each holding one value per amount
@@ -1128,22 +1161,32 @@ object MultiCurrencyAmountArray {
   }
 
   /**
-   * Builds a run after establishing both of its structural properties, reporting what it rejects.
+   * Builds a run after establishing all three of its properties, reporting what it rejects.
    *
    * This is the single checking route into the type. It is what the `of` that reads a map of
-   * values per currency performs, what the four arithmetic members that combine values route
-   * their results through -
-   * as the implementation being ported routed its own through its `of` - and what the decoder
-   * hands a payload to, which is why a document may not declare a size its arrays do not have.
+   * values per currency performs, what [[total]] finishes with, what the four arithmetic members
+   * that combine values route their results through, and what the decoder hands a payload to,
+   * which is why a document may neither declare a size its arrays do not have nor carry an element
+   * this type does not hold.
    *
-   * Both classes of reason are accumulated rather than sequenced, so a caller reads every reason
-   * its input gives: the size being negative, and each array whose length is not that size. The
-   * arrays are examined in currency order, so the reasons are ordered the same way for the same
-   * input.
+   * All three classes of reason are accumulated rather than sequenced, so a caller reads every
+   * reason its input gives: the size being negative, each array whose length is not that size,
+   * and each currency holding a value that is not a number. The arrays are examined in currency
+   * order in both of the per-currency passes, so the reasons are ordered the same way for the
+   * same input, and a currency holding several such values is reported once - at the first of
+   * them, which is the one a caller looks at.
+   *
+   * The element examination is performed here rather than being left to the raise of [[create]]
+   * because every route through this one has a failure channel: a caller reading a map of values
+   * from a document, a file or a wire did not write those numbers, so a run it cannot have is an
+   * answer to be read and not an exception thrown past it. [[create]] still performs the
+   * invariant - it answers to the routes that have no channel - and it is reached from here only
+   * when nothing was found, `toLeft` taking its argument by name.
    *
    * @param size  the size the run is to have, zero or greater
    * @param values  the values per currency, ordered by currency code
-   * @return the run, or the failures describing the size and the arrays that disagree with it
+   * @return the run, or the failures describing the size, the arrays that disagree with it and
+   *   the values that are not numbers
    */
   private def checked(
       size: Int,
@@ -1155,8 +1198,11 @@ object MultiCurrencyAmountArray {
           case (_, currencyValues) if currencyValues.size != size => currencyValues.size
         }
         .map(found => differentArraySizes(size, found)))
+    val notANumbers = Collections.toNonEmptyChain(notANumberIndices(values).map {
+      case (currency, index) => notANumber(currency, index)
+    })
     Collections
-      .concatNonEmptyChains(List(negativeSize, differingLengths).flatten)
+      .concatNonEmptyChains(List(negativeSize, differingLengths, notANumbers).flatten)
       .toLeft(create(size, values))
   }
 
@@ -1172,7 +1218,8 @@ object MultiCurrencyAmountArray {
    *
    * @param size  the size the run is to have
    * @param values  the values per currency, ordered by currency code
-   * @return the run, or the single failure describing why those values do not describe one
+   * @return the run, or the single failure naming the broken constraint: the size must be zero or
+   *   greater, and every array must hold exactly that many values
    */
   private def checkedOne(
       size: Int,
@@ -1180,21 +1227,85 @@ object MultiCurrencyAmountArray {
     checked(size, values).left.map(Failure.collapse)
 
   /**
-   * Builds a run without checking anything, which is the only call of the constructor.
+   * Builds a run, establishing the element invariant, which is the only call of the constructor.
    *
    * Every route into the type ends here, and each of them has already established the two
    * structural properties: the total factories build one array of the run's length per currency,
    * the element-wise arithmetic preserves the lengths of the arrays it is given, and [[checked]]
-   * has just examined them. Keeping the construction in one place is what makes that reviewable.
+   * has just examined them. The third property, that every element is a value
+   * [[CurrencyAmount]] holds, is a property of the numbers rather than of the route, and it is
+   * established here so that it holds for every route at once - including the two arithmetic
+   * members that are total in signature and produce numbers of their own, which have no channel
+   * to report it in. Keeping both the construction and that invariant in one place is what makes
+   * the type's promise reviewable at a single site.
+   *
+   * The check is a fail-fast [[ArgCheck]], and the message - which names the currency and the
+   * index, since a run says nothing about which of its numbers is wrong - is taken by name, so
+   * the happy path allocates nothing for it. `hasNext` inspects the scan without consuming its
+   * first entry, so the message can still take that entry from the same iterator. A route with a
+   * failure channel of its own does not reach the raise: [[checked]] performs the same
+   * examination first and reports it.
    *
    * @param size  the size of the run
    * @param values  the values per currency, each holding exactly `size` elements
    * @return the run
+   * @throws java.lang.IllegalArgumentException if a value of any currency is not a number
    */
   private def create(
       size: Int,
-      values: SortedMap[Currency, DoubleArray]): MultiCurrencyAmountArray =
-    new MultiCurrencyAmountArray(size, values) {}
+      values: SortedMap[Currency, DoubleArray]): MultiCurrencyAmountArray = {
+    val offending: Iterator[(Currency, Int)] = notANumberIndices(values)
+    ArgCheck.isTrue(
+      !offending.hasNext, {
+        val (currency, index) = offending.next()
+        notANumberMessage(currency, index)
+      })
+    new Impl(size, values)
+  }
+
+  /**
+   * Finds, per currency, the index of the first value that is not a number.
+   *
+   * The currencies are examined in the order the run holds them, which is the order of their
+   * codes, and a currency whose values are all numbers contributes nothing - so the result is
+   * empty for the values of every run this type has, and holds one entry per offending currency
+   * otherwise. It is an iterator rather than a collection because both of its callers need only
+   * as much of it as their answer depends on: the raise of [[create]] needs the first entry and
+   * the accumulation of [[checked]] needs all of them.
+   *
+   * The scan of each array is `DoubleArray.indexOf`, which compares bit patterns: that finds a
+   * not-a-number value however it arose, where an ordinary comparison finds none, and it is one
+   * pass over the primitive array with nothing boxed.
+   *
+   * @param values  the values per currency, ordered by currency code
+   * @return the currency and index of the first offending value of each offending currency, in
+   *   currency order
+   */
+  private def notANumberIndices(
+      values: SortedMap[Currency, DoubleArray]): Iterator[(Currency, Int)] =
+    values.iterator
+      .map { case (currency, currencyValues) =>
+        (currency, currencyValues.indexOf(Double.NaN))
+      }
+      .filter { case (_, index) => index >= 0 }
+
+  /**
+   * The one implementation of a run of multi-currency amounts.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[MultiCurrencyAmountArray]] refuse in its own constructor to be any other
+   * implementation.
+   *
+   * @param size  the size of the run
+   * @param values  the values per currency, each holding exactly `size` elements, as every route
+   *   into [[create]] has already established
+   */
+  private final class Impl(size: Int, values: SortedMap[Currency, DoubleArray])
+      extends MultiCurrencyAmountArray(size, values)
 
   /**
    * Sorts values by currency code, whatever collection they arrive in.
@@ -1211,12 +1322,8 @@ object MultiCurrencyAmountArray {
       values: Map[Currency, DoubleArray]): SortedMap[Currency, DoubleArray] =
     SortedMap.from(values)(currencyOrdering)
 
-  //-------------------------------------------------------------------------
   /**
    * The failure reported when a currency's values are read from a run that does not hold it.
-   *
-   * The wording is that of the implementation being ported, so a log or an expectation carrying
-   * the message of the exception it raised carries this message unchanged.
    *
    * @param currency  the currency the run does not hold
    * @return the failure naming that currency
@@ -1227,8 +1334,8 @@ object MultiCurrencyAmountArray {
   /**
    * The failure reported when two runs that have to be combined have different sizes.
    *
-   * The wording is that of the implementation being ported, and it is the wording
-   * [[CurrencyAmountArray]] reports for the same disagreement, as it was there.
+   * It is the wording [[CurrencyAmountArray]] reports for the same disagreement, so the two types
+   * describe a mismatched pair of runs identically.
    *
    * @param thisSize  the size of the run the operation was called on
    * @param otherSize  the size of the other run
@@ -1240,8 +1347,7 @@ object MultiCurrencyAmountArray {
   /**
    * The failure reported when the arrays of a map do not all hold the same number of values.
    *
-   * The wording is that of the implementation being ported, which named the length it had settled
-   * on and the length it found.
+   * It names the length the run is to have and the length of the array that disagrees with it.
    *
    * @param expected  the length the run is to have
    * @param found  the length of the array that disagrees with it
@@ -1250,7 +1356,36 @@ object MultiCurrencyAmountArray {
   private def differentArraySizes(expected: Int, found: Int): Failure =
     Failure.Invalid(s"Arrays must have the same size but found sizes $expected and $found")
 
-  //-------------------------------------------------------------------------
+  /**
+   * The wording of the element invariant, which is defined here and nowhere else.
+   *
+   * Both channels that report a refused element read it from here - the raise of [[create]] and
+   * the failures of [[checked]] - so the two cannot drift apart. It carries the whole location of
+   * the value: the currency, rendered as its code, because a run holds one array per currency and
+   * the arrays are otherwise indistinguishable to a reader of the message, and the index within
+   * that currency's array, because a run of a hundred thousand values says nothing about which of
+   * them is wrong.
+   *
+   * @param currency  the currency whose values hold the offending value
+   * @param index  the index of that value within the currency's array
+   * @return the message naming the argument, the currency and that index
+   */
+  private def notANumberMessage(currency: Currency, index: Int): String =
+    s"Argument '$ValuesField' for $currency must not be NaN at index $index"
+
+  /**
+   * The failure reported for a value that is not a number.
+   *
+   * The reason is the invalid-argument reason of this port, as it is for the two structural
+   * rejections of this type, and the message is the one wording above.
+   *
+   * @param currency  the currency whose values hold the offending value
+   * @param index  the index of that value within the currency's array
+   * @return the failure describing that value
+   */
+  private def notANumber(currency: Currency, index: Int): Failure =
+    Failure.Invalid(notANumberMessage(currency, index))
+
   /**
    * The hashing and equality of runs of multi-currency amounts.
    *
@@ -1267,29 +1402,28 @@ object MultiCurrencyAmountArray {
   /**
    * The rendering of runs of multi-currency amounts as text.
    *
-   * Renders what `toString` renders, which is the form of the implementation being ported.
+   * Renders what `toString` renders.
    *
    * @return the rendering of a run
    */
   implicit val show: Show[MultiCurrencyAmountArray] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   // The codec of the arrays, brought into scope for the two derivations below and for nothing
-  // else. It has to be taken from here rather than from the JSON library, which has no instance
-  // for an array of this port at all and whose instance for a double cannot express a value that
-  // is not a number; importing them at this point is what makes that choice deliberate and local,
-  // as the codec support of `strata-collect` intends.
+  // else. It has to be taken from here because the JSON library has no instance for
+  // [[DoubleArray]] and its instance for a double cannot express a value that is not a number;
+  // importing at this point is what keeps that choice local, as the codec support of
+  // `strata-collect` intends.
   import Codecs.implicits._
 
   /**
    * The raw field shape both codecs of this type are derived over.
    *
-   * A type whose constructor is private cannot be derived over directly, so this product is the
-   * shape of its two fields and is what makes the derivation possible in both directions: the
-   * decoder below derives over it and then builds through the checking factory, and the encoder
-   * below derives over it and is contramapped from a run that already exists. It exists only for
-   * that purpose - it is private and it is never returned, so no caller can hold an unchecked
-   * pair. Its field names are the JSON keys, and they are the names of the two fields of
+   * A type whose constructor is private has no shape a codec can be derived over, so this product
+   * states its two fields and makes the derivation possible in both directions: the decoder below
+   * derives over it and then builds through the checking factory, and the encoder below derives
+   * over it and is contramapped from a run that already exists. It exists only for that purpose -
+   * it is private and it is never returned, so no caller can hold an unchecked pair. Its field
+   * names are the JSON keys, and they are the names of the two fields of
    * [[MultiCurrencyAmountArray]] itself, which is what keeps the derived shape and the type from
    * drifting apart.
    *
@@ -1306,17 +1440,16 @@ object MultiCurrencyAmountArray {
    *   strings
    */
   private final case class Raw(size: Int, values: Map[Currency, DoubleArray])
+      extends NoJavaSerialization
 
-  /** The derived decoder of the raw field shape, used by the checking decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
   /**
-   * The derived encoder of the raw field shape, used by the encoder below.
+   * The derived encoder of the raw field shape.
    *
-   * This sits after the import above deliberately: the derivation picks up the array codec of
-   * this port from that import, which is what writes an infinite element as its tagged string. A
-   * derivation site without that import in scope would not compile at all, the JSON library
-   * having no encoder for the array type.
+   * It sits after the import above deliberately: the derivation reads the array codec of this
+   * library from that import, and that codec is what writes an infinite element as its tagged
+   * string.
    */
   private val rawEncoder: Encoder.AsObject[Raw] = deriveEncoder[Raw]
 
@@ -1333,18 +1466,17 @@ object MultiCurrencyAmountArray {
    * The currencies appear in the order of their codes. That is not a convention of the encoder
    * but a property of the value being encoded - a run holds its values in a map sorted by
    * currency - so two runs built from the same data in different orders encode to identical
-   * bytes, which is what makes the byte-stability property of the test suite hold for this type
-   * without anything being sorted here.
+   * bytes without anything being sorted here.
    *
-   * The shape is derived when this file is compiled rather than written out field by field, which
-   * is what every product of this port does, and no part of it inspects a class while the program
-   * runs. Every element of every array goes through the single policy of this port for a double,
-   * so a value that is not a number and the two infinities appear as the strings `"NaN"`,
-   * `"Infinity"` and `"-Infinity"` while a finite value is written as a JSON number, exactly to
-   * the bit - which is what lets every run this type admits survive a round trip. The result is
-   * wrapped so that a field holding no value would be omitted, the policy every product of this
-   * port follows; this type has no optional field, so the wrapping changes nothing about its
-   * output and exists so that the policy holds without exception.
+   * The shape is derived at compile time rather than written out field by field, and no part of
+   * it inspects a class while the program runs. Every element of every array goes through the one
+   * policy this library has for a double, so a value that is not a number and the two infinities
+   * appear as the strings `"NaN"`, `"Infinity"` and `"-Infinity"` while a finite value is written
+   * as a JSON number, exactly to the bit - which is what lets every run this type admits survive
+   * a round trip. The result is wrapped so that a field holding no value would be omitted, the
+   * policy every product of this library follows; this type has no optional field, so the
+   * wrapping changes nothing about its output and exists so that the policy holds without
+   * exception.
    *
    * @return the JSON encoding of a run
    */
@@ -1358,11 +1490,14 @@ object MultiCurrencyAmountArray {
    * This is the inverse of the encoding above and is likewise derived at compile time. Both
    * fields have to be present, and the payload is read into the raw shape and handed to the
    * checking factory, so the only route into the type from a document is the route a caller
-   * takes: a document declaring a size its arrays do not have, or a negative size, is a decoding
-   * failure carrying those reasons rather than a run this type would not have built. What a
-   * document can get wrong inside a field is refused by the field codecs, which report a currency
-   * code this port does not hold and an element that is neither a number nor one of the three
-   * tagged strings.
+   * takes: a document declaring a size its arrays do not have, a negative size, or an element
+   * that decodes to a value this type does not hold - the tagged string `"NaN"`, which the policy
+   * of this port for a double reads as a not-a-number value - is a decoding failure carrying
+   * those reasons rather than a run this type would not have built. The last of the three is why
+   * a payload carrying `"NaN"` is refused here rather than read into a run whose every later
+   * reader fails on it. What a document can get wrong inside a field is refused by the field
+   * codecs, which report a currency code this port does not hold and an element that is neither a
+   * number nor one of the three tagged strings.
    *
    * The size is taken from the payload rather than derived from the arrays, which is what lets a
    * run of non-zero size holding no currency - a legitimate value of this type, built by the

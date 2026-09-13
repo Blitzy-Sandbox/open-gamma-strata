@@ -38,65 +38,30 @@ import com.opengamma.strata.collect.testkit.ResultMatchers
 import com.opengamma.strata.collect.testkit.TestHelper.date
 
 /**
- * Test [[SchedulePeriod]], ported from the Java `SchedulePeriodTest`.
+ * Test [[SchedulePeriod]].
  *
- * This is a one-to-one port: each of the Java class's twenty-three test methods has a test of the
- * same name here, in the same order, and no test has been added, split off or dropped. The Java
- * class parameterised nothing, so every method became one plain `test("…")` block, which is what
- * keeps the method-level traceability recorded in `manifest/java-test-mapping.csv` exact - the
- * acceptance gate joins that file to the JUnit XML on the suite class and the test name, so both
- * have to match character for character.
+ * `SchedulePeriod` is a validated type: [[SchedulePeriod.of]] and `toAdjusted` answer
+ * `EitherNec[Failure, SchedulePeriod]` and `subSchedule` answers
+ * `EitherNec[Failure, PeriodicSchedule]`, so a pair of dates that describes no period is a `Left`
+ * asserted through the matchers of [[ResultMatchers]] and no test here asserts a throw.
+ * Expectations that read as bare periods are unwrapped by [[sp]].
  *
- * The eleven dates of the Java fixture and its `1e-6` comparison tolerance are reproduced
- * unchanged, and every expected value in this file is the value the Java test asserted. Where the
- * shape of the port makes a Java assertion inexpressible, the test keeps its name and asserts what
- * the port does in its place; each such substitution is commented at the case that makes it, and
- * the four kinds of substitution are these:
+ * The type publishes no `apply`, no `copy` and no builder - it is a `sealed abstract case class`
+ * with a private constructor - so the two-argument [[SchedulePeriod.of]] is the route that
+ * defaults each unadjusted date to its adjusted counterpart.
  *
- *   - '''The null-argument cases have no counterpart.''' Five of the Java methods -
- *     `test_of_null`, `test_yearFraction_null`, `test_isRegular_null`, `test_contains_null` and the
- *     null rows inside them - asserted that `ArgChecker.notNull` rejects a `null` argument. This
- *     port never writes `null` (Agent Action Plan §0.10.1, Rule 5, which greps the sources for it),
- *     and every parameter involved is a reference type the caller can only satisfy with a value, so
- *     there is no such call to make. `test_of_null` asserts instead the validation `of` really does
- *     perform - both pairs of dates in time-line order and distinct - and the three
- *     `*_null` cases assert that the member is total for valid arguments and that the arguments
- *     cannot be omitted, swapped or mistyped, proved with `assertDoesNotCompile`.
- *   - '''Failure is a value, never a raised exception.''' `SchedulePeriod` is a validated type
- *     (AAP §0.3.3 `[V]`): `of` and `toAdjusted` return `EitherNec[Failure, SchedulePeriod]` and
- *     `subSchedule` returns `EitherNec[Failure, PeriodicSchedule]`. Every Java
- *     `assertThatIllegalArgumentException` therefore becomes an assertion about a `Left`, made
- *     through the matchers of [[ResultMatchers]], and no test in this file asserts a throw. The
- *     expectations that the Java test wrote as bare values are unwrapped by [[sp]] so that they
- *     read as they did in the original.
- *   - '''The Joda bean builder has no target.''' `SchedulePeriod.builder()` does not exist: the type
- *     is a `sealed abstract case class` with a private constructor, so it has no public `apply` and
- *     no `copy` either, and the builder's defaulting of each absent unadjusted date to its adjusted
- *     counterpart survives as the two-argument [[SchedulePeriod.of]] (AAP §0.1.2).
- *     `test_builder_defaults` and `coverage_builder` assert that defaulting through the factory and
- *     prove the three removed routes are absent.
- *   - '''The reflective coverage helpers have no target.''' `coverImmutableBean` and
- *     `assertSerialization` are not part of this port's test kit, so `coverage` asserts what the
- *     bean sweep was checking - the four properties of two distinct values and the typeclass
- *     instances the companion publishes - and `test_serialization` asserts a circe round trip in
- *     place of Java serialization. Joda-Beans wire compatibility is out of scope (AAP §0.2.2).
- *
- * One assertion in this file has no Java ancestor at all, and this spec owns it: the ordering of
- * `SchedulePeriod` carries a '''tie-break''' the Java `compareTo` did not have. Java compared the
- * unadjusted start date and then the unadjusted end date and stopped, so two periods that differ
- * only in their adjusted dates compared equal while being unequal; cats requires `compare == 0`
- * exactly where `eqv` holds, so [[SchedulePeriod.order]] continues with the adjusted start date and
- * then the adjusted end date. The first two keys are untouched, so every ordering Java produced is
- * still produced. `coverage_equals` asserts the tie-break and the agreement of comparison with
- * equality over the whole Java fixture; the divergence is recorded in `SCALA_MIGRATION.md`.
+ * The ordering compares the unadjusted start date, then the unadjusted end date, then the adjusted
+ * start date and then the adjusted end date. The last two keys are the tie-break that makes
+ * `compare == 0` hold exactly where `eqv` does, including over periods that differ only in an
+ * adjusted date; `coverage_equals` asserts that agreement over every pair of its values.
  */
 class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
 
   //-------------------------------------------------------------------------
-  /** The reference data the sub-schedule cases are resolved against, as in the Java fixture. */
+  /** The reference data the sub-schedule cases are resolved against. */
   private val REF_DATA: ReferenceData = ReferenceData.standard
 
-  // The dates of the Java test class, unchanged, including its notes on the days of the week.
+  // The dates every case below is built from; the days of the week that matter are noted.
   private val JUN_15: LocalDate = date(2014, JUNE, 15) // Sunday
   private val JUN_16: LocalDate = date(2014, JUNE, 16)
   private val JUN_17: LocalDate = date(2014, JUNE, 17)
@@ -109,7 +74,7 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
   private val AUG_18: LocalDate = date(2014, AUGUST, 18) // Monday
   private val SEP_17: LocalDate = date(2014, SEPTEMBER, 17)
 
-  /** The comparison tolerance of the Java test class, `within(1e-6)`. */
+  /** The tolerance every year-fraction comparison of this spec is made to. */
   private val TOLERANCE: Double = 1e-6
 
   //-------------------------------------------------------------------------
@@ -160,8 +125,8 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
    * Returns the failures the validated factory reported, failing the test if it built a period.
    *
    * `test_of_null` asserts the '''number''' and the '''text''' of the reasons a rejected pair of
-   * dates produces, because accumulating both causes of one call is the behaviour that replaces
-   * the throwing validator of the bean being ported.
+   * dates produces, because the validated factory accumulates both causes of one call rather than
+   * stopping at the first.
    *
    * @param result  the result of the validated factory
    * @return the failures the factory reported, in the order it reported them
@@ -185,12 +150,9 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
 
   //-------------------------------------------------------------------------
   test("test_of_null") {
-    // Java asserted that each of the four dates being `null`, and all four being `null`, is
-    // rejected by `ArgChecker.notNull`. There is no counterpart: every parameter is a `LocalDate`
-    // and this port never writes `null`, so the five calls cannot be made. What the factory does
-    // decide about its arguments is their order, which is the check Java ran immediately after the
-    // null guards, so that is what the five rows become - one per way a pair of dates can fail to
-    // describe a period, each reported as `Failure.Invalid`.
+    // What `of` decides about its arguments is the order and the distinctness of its two pairs of
+    // dates, adjusted and unadjusted. Each row below breaks the order or the distinctness of one
+    // pair or the other, and each violation is reported as `Failure.Invalid`.
     SchedulePeriod.of(JUL_18, JUL_05, JUL_04, JUL_17) should beFailureWith(FailureReason.INVALID)
     SchedulePeriod.of(JUL_05, JUL_18, JUL_17, JUL_04) should beFailureWith(FailureReason.INVALID)
     SchedulePeriod.of(JUL_05, JUL_05, JUL_04, JUL_17) should beFailureWith(FailureReason.INVALID)
@@ -204,8 +166,8 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
           "Invalid order: Expected 'startDate' < 'endDate', " +
             "but found: '2014-07-18' >= '2014-07-05'"))
 
-    // Both pairs broken at once are reported together, which the throwing validator could not do:
-    // it raised at the first pair it found out of order (AAP §0.3.3 requires `[V]` accumulation).
+    // Both pairs broken at once are reported together, because the validated factory accumulates
+    // rather than stopping at the first pair it finds out of order.
     failuresOf(SchedulePeriod.of(JUL_18, JUL_05, JUL_17, JUL_04)).map(failure => failure.message)
       .shouldBe(
         List(
@@ -238,10 +200,8 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
   }
 
   test("test_builder_defaults") {
-    // The Joda bean builder has no target in this port. Java built a period from the two adjusted
-    // dates alone and relied on the builder's pre-build step to default each unadjusted date to
-    // its adjusted counterpart; the two-argument factory is that behaviour (AAP §0.1.2), so the
-    // case asserts the same four values through it and proves the builder is gone.
+    // The two-argument factory defaults each unadjusted date to its adjusted counterpart, and the
+    // type publishes no builder, which the snippet closing the case proves.
     val test: SchedulePeriod = sp(SchedulePeriod.of(JUL_05, JUL_18))
     test.startDate shouldBe JUL_05
     test.endDate shouldBe JUL_18
@@ -254,8 +214,8 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
   test("test_yearFraction") {
     val test: SchedulePeriod = sp(SchedulePeriod.of(JUN_16, JUL_18, JUN_16, JUL_17))
     val schedule: Schedule = Schedule.ofTerm(test)
-    // The delegation Java asserted: the period's own year fraction is the day count applied to its
-    // adjusted dates with the schedule supplied as the schedule information the convention reads.
+    // The period's own year fraction is the day count applied to its adjusted dates, with the
+    // schedule supplied as the schedule information the convention reads.
     test.yearFraction(DayCounts.ACT_360, schedule) shouldBe
       (DayCounts.ACT_360.yearFraction(JUN_16, JUL_18, schedule) +- TOLERANCE)
     // The value itself, which 'Act/360' fixes: thirty-two days over a three-hundred-and-sixty-day
@@ -266,10 +226,9 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
   test("test_yearFraction_null") {
     val test: SchedulePeriod = sp(SchedulePeriod.of(JUN_16, JUL_18, JUN_16, JUL_17))
     val schedule: Schedule = Schedule.ofTerm(test)
-    // Java asserted that a `null` day count, a `null` schedule and both being `null` are rejected.
-    // Neither parameter can be `null` here, so the case asserts what remains of the contract: the
-    // member is total for the valid pair - it answers a number rather than a failure - and neither
-    // argument can be omitted or supplied in the other's position.
+    // The member is total for a valid pair - it answers a number rather than a failure - and the
+    // type publishes no overload taking one of the two arguments, the two in the other order, or
+    // none at all, which is what the snippets below prove.
     test.yearFraction(DayCounts.ACT_360, schedule) should be > 0.0
     assertDoesNotCompile("test.yearFraction(DayCounts.ACT_360)")
     assertDoesNotCompile("test.yearFraction(schedule)")
@@ -305,12 +264,10 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
 
   test("test_isRegular_null") {
     val test: SchedulePeriod = sp(SchedulePeriod.of(JUN_16, JUL_18))
-    // Java asserted a `null` frequency, a `null` roll convention and both being `null`. As above,
-    // neither is expressible, so the case asserts the member is total for valid arguments - both
-    // answers are produced, not just one - and that the two arguments cannot be transposed. The
-    // period of the Java fixture is not regular under any monthly convention, because its two
-    // dates fall on different days of the month and the check is symmetric, so the regular answer
-    // is taken from a period whose dates share a day of the month.
+    // Both answers are produced, not just one, and the type publishes no overload taking one of
+    // the two arguments, the two transposed, or none at all. The first period is not regular under
+    // any monthly convention, because its two dates fall on different days of the month, so the
+    // regular answer is taken from a period whose dates share a day of the month.
     test.isRegular(Frequency.P1M, RollConventions.DAY_18) shouldBe false
     sp(SchedulePeriod.of(JUN_18, JUL_18))
       .isRegular(Frequency.P1M, RollConventions.DAY_18) shouldBe true
@@ -330,9 +287,8 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
 
   test("test_contains_null") {
     val test: SchedulePeriod = sp(SchedulePeriod.of(JUN_16, JUL_18))
-    // Java asserted a `null` date. Not expressible: the parameter is a `LocalDate`, so the case
-    // asserts the member is total on both sides of its boundary and that nothing but a date is
-    // accepted in its place.
+    // The member answers on both sides of its boundary, and the type publishes no overload taking
+    // text in place of a date or no argument at all.
     test.contains(JUN_16) shouldBe true
     test.contains(JUL_18) shouldBe false
     assertDoesNotCompile("""test.contains("2014-06-16")""")
@@ -341,9 +297,9 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
 
   //-------------------------------------------------------------------------
   test("test_subSchedule_1monthIn3Month") {
-    // `subSchedule` answers the sub-schedule's definition, as the method being ported did, and the
-    // dates are generated from it with reference data the caller supplies - two steps where Java
-    // wrote one, because the definition is validated and the generation needs a holiday calendar.
+    // `subSchedule` answers the sub-schedule's definition, and the dates are generated from it
+    // with reference data the caller supplies: the definition is validated, and generating dates
+    // from it needs a holiday calendar.
     val test: SchedulePeriod = sp(SchedulePeriod.of(JUN_17, SEP_17))
     val schedule: Schedule = sched(
       ps(
@@ -356,8 +312,8 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
     schedule.period(0) shouldBe sp(SchedulePeriod.of(JUN_17, JUL_17))
     schedule.period(1) shouldBe sp(SchedulePeriod.of(JUL_17, AUG_17))
     schedule.period(2) shouldBe sp(SchedulePeriod.of(AUG_17, SEP_17))
-    // Java's `getFrequency` is `periodicFrequency` here, the plainly typed value; the name
-    // `frequency` belongs to the `Option`-returning member of the schedule information interface.
+    // `periodicFrequency` is the plainly typed value; the name `frequency` belongs to the
+    // `Option`-returning member of the schedule information interface.
     schedule.periodicFrequency shouldBe Frequency.P1M
     schedule.rollConvention shouldBe RollConventions.DAY_17
   }
@@ -410,8 +366,7 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
   //-------------------------------------------------------------------------
   test("test_toAdjusted") {
     // `toAdjusted` reports failure as a value, because adjustment can bring the two dates of a
-    // period onto one day, so each expectation is a `Right`. Java's lambda `date -> date` is a
-    // Scala function handed to [[DateAdjuster]].
+    // period onto one day, so each expectation is a `Right`.
     val test1: SchedulePeriod = sp(SchedulePeriod.of(JUN_15, SEP_17))
     test1.toAdjusted(DateAdjuster(adjusted => adjusted)) shouldBe Right(test1)
     // The identity path answers this very instance, which is load-bearing: `Schedule.toAdjusted`
@@ -435,10 +390,9 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
 
   //-------------------------------------------------------------------------
   test("test_compareTo") {
-    // Java's `Comparable` has no counterpart; the comparison is the `Order` instance the companion
-    // publishes, and the nine rows below are Java's matrix unchanged. Each of the three periods is
-    // built from two dates, so its adjusted pair equals its unadjusted pair and the two keys the
-    // port adds after Java's two cannot change any of these answers.
+    // The comparison is the `Order` instance the companion publishes. Each of the three periods is
+    // built from two dates, so its adjusted pair equals its unadjusted pair and the tie-break on
+    // the adjusted dates cannot change any of the nine answers below.
     val a: SchedulePeriod = sp(SchedulePeriod.of(JUL_05, JUL_18))
     val b: SchedulePeriod = sp(SchedulePeriod.of(JUL_04, JUL_18))
     val c: SchedulePeriod = sp(SchedulePeriod.of(JUL_05, JUL_17))
@@ -470,8 +424,8 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
     (a1 == d) shouldBe false
     (a1 == e) shouldBe false
 
-    // The port publishes one equality-bearing instance, an `Order` that is also a `Hash`, so the
-    // case additionally asserts that it agrees with `equals` and `hashCode` on the same values.
+    // One equality-bearing instance is published, an `Order` that is also a `Hash`, so the case
+    // additionally asserts that it agrees with `equals` and `hashCode` on the same values.
     Eq[SchedulePeriod].eqv(a1, a2) shouldBe true
     Eq[SchedulePeriod].eqv(a1, b) shouldBe false
     Eq[SchedulePeriod].eqv(a1, c) shouldBe false
@@ -480,12 +434,11 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
     Hash[SchedulePeriod].hash(a1) shouldBe a1.hashCode
     Hash[SchedulePeriod].hash(a1) shouldBe Hash[SchedulePeriod].hash(a2)
 
-    // The ordering tie-break this spec owns (AAP §0.3.3, recorded in `SCALA_MIGRATION.md`). Java's
-    // `compareTo` compared the unadjusted start date and then the unadjusted end date and stopped,
-    // so `a1` against `b` and `a1` against `c` - pairs sharing both unadjusted dates and differing
-    // in one adjusted date - compared '''equal''' while being '''unequal'''. Cats requires the two
-    // notions to agree, so the ordering continues with the adjusted start date and then the
-    // adjusted end date: the comparison is non-zero exactly where equality is false.
+    // The tie-break on the adjusted dates. `a1` against `b` and `a1` against `c` are pairs that
+    // share both unadjusted dates and differ in one adjusted date, so comparing the unadjusted
+    // pair alone would call them '''equal''' while equality calls them '''unequal'''; continuing
+    // with the adjusted start date and then the adjusted end date makes the comparison non-zero
+    // exactly where equality is false.
     a1.unadjustedStartDate shouldBe c.unadjustedStartDate
     a1.unadjustedEndDate shouldBe c.unadjustedEndDate
     (Order[SchedulePeriod].compare(a1, c) > 0) shouldBe true
@@ -493,7 +446,7 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
     (Order[SchedulePeriod].compare(a1, b) > 0) shouldBe true
     Order[SchedulePeriod].compare(a1, a2) shouldBe 0
 
-    // `compare == 0` if and only if `eqv`, over every pair of the Java fixture.
+    // `compare == 0` if and only if `eqv`, over every pair of these six values.
     val values: List[SchedulePeriod] = List(a1, a2, b, c, d, e)
     values.foreach { left =>
       values.foreach { right =>
@@ -505,9 +458,9 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
 
   //-------------------------------------------------------------------------
   test("coverage_builder") {
-    // Java exercised the four setters of the bean builder. There is no builder, no public `apply`
-    // and no `copy`, so the case asserts the same construction through the four-date factory -
-    // every accessor reads back exactly what was supplied - and proves the three routes are absent.
+    // Construction goes through the four-date factory, and every accessor reads back exactly what
+    // was supplied. The type publishes no builder, no `apply` and no `copy`, which the three
+    // snippets closing the case prove.
     val test: SchedulePeriod = sp(SchedulePeriod.of(JUL_05, JUL_18, JUL_04, JUL_17))
     test.startDate shouldBe JUL_05
     test.endDate shouldBe JUL_18
@@ -520,10 +473,8 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // `coverImmutableBean` walked the bean's meta-properties reflectively. There is no meta-bean to
-    // walk, so the ground it covered is asserted directly: the four properties of two distinct
-    // values, and the two typeclass instances the companion publishes in place of the bean's
-    // equality, hashing and generated text.
+    // The four properties of two distinct values, and the two typeclass instances the companion
+    // publishes: an `Order` that is also a `Hash`, and a `Show`.
     val test: SchedulePeriod = sp(SchedulePeriod.of(JUL_05, JUL_18, JUL_04, JUL_17))
     val other: SchedulePeriod = sp(SchedulePeriod.of(JUL_05, JUL_18))
     test.startDate shouldBe JUL_05
@@ -540,18 +491,17 @@ class SchedulePeriodSpec extends AnyFunSuite with Matchers with ResultMatchers {
     Hash[SchedulePeriod].hash(other) shouldBe other.hashCode
     Show[SchedulePeriod].show(test) shouldBe test.toString
     Show[SchedulePeriod].show(other) shouldBe other.toString
-    // The text is this port's own form: a period that adjusts nothing renders as its two dates,
-    // and any other period adds the unadjusted pair, so nothing a value holds is hidden.
+    // A period that adjusts nothing renders as its two dates, and any other period adds the
+    // unadjusted pair, so nothing a value holds is hidden.
     test.toString shouldBe "2014-07-05 to 2014-07-18 (unadjusted 2014-07-04 to 2014-07-17)"
     other.toString shouldBe "2014-07-05 to 2014-07-18"
   }
 
   test("test_serialization") {
-    // `assertSerialization` checked Java serialization, which this port does not support, and
-    // Joda-Beans wire compatibility is out of scope (AAP §0.2.2). The replacement is the circe
-    // round trip through the compile-time product codec: the keys are the four Java property names
-    // in their declaration order, each date is an ISO-8601 string, and a payload that violates an
-    // invariant of the type is rejected by the validating decoder rather than carried into a value.
+    // The JSON round trip through the compile-time product codec: the keys are the four property
+    // names in their declaration order, each date is an ISO-8601 string, and a payload that
+    // violates an invariant of the type is rejected by the validating decoder rather than carried
+    // into a value.
     val test: SchedulePeriod = sp(SchedulePeriod.of(JUL_05, JUL_18, JUL_04, JUL_17))
     val encoded: Json = test.asJson
     encoded.noSpaces shouldBe

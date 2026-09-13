@@ -35,27 +35,25 @@ import com.opengamma.strata.collect.result.Failure
  *
  * ===The implementations in this module===
  *
- * Five types convert to themselves, the currency of each amount they hold being replaced by the
- * requested one: [[CurrencyAmount]], [[Money]], [[BigMoney]], [[Payment]] and
+ * Five types convert to themselves, each amount they hold being restated in the requested
+ * currency: [[CurrencyAmount]], [[Money]], [[BigMoney]], [[Payment]] and
  * [[CurrencyAmountArray]]. Two collapse to a simpler type, as described above:
  * [[MultiCurrencyAmount]] converts to a [[CurrencyAmount]], and [[MultiCurrencyAmountArray]]
  * to a [[CurrencyAmountArray]].
  *
- * [[AdjustablePayment]] is deliberately absent from that list, matching the type being ported:
- * it is resolved against reference data to produce a [[Payment]], and it is that [[Payment]]
- * which is convertible. A holder of an adjustable payment therefore resolves first and converts
- * afterwards, rather than converting an amount whose date is not yet fixed.
+ * [[AdjustablePayment]] is deliberately absent from that list: it is resolved against reference
+ * data to produce a [[Payment]], and it is that [[Payment]] which is convertible. A holder of an
+ * adjustable payment therefore resolves first and converts afterwards, rather than converting an
+ * amount whose date is still subject to a business day adjustment.
  *
  * ===A missing rate is a value, not an abandoned call===
  *
- * The type being ported declared that the conversion could raise a runtime exception when no FX
- * rate could be found, which left the possibility of failure out of the signature entirely. Here
- * the outcome is an `Either`: the converted object is a `Right`, and the absence of a rate the
- * conversion needed is a `Left` carrying the [[Failure]] produced by the provider - typically a
- * [[com.opengamma.strata.collect.result.Failure.CurrencyConversion]] naming the pair that could
- * not be converted. A caller consequently cannot use a converted amount without first deciding
- * what to do when the conversion was not possible, and no implementation needs to abandon the
- * call stack in order to report that state.
+ * The outcome of a conversion is an `Either`: the converted object is a `Right`, and the absence
+ * of a rate the conversion needed is a `Left` carrying the [[Failure]] produced by the provider -
+ * typically a [[com.opengamma.strata.collect.result.Failure.CurrencyConversion]] naming the pair
+ * that could not be converted. The possibility of failure is therefore part of the signature: a
+ * caller cannot use a converted amount without first deciding what to do when the conversion was
+ * not possible, and no implementation abandons the call stack in order to report that state.
  *
  * The failure channel is that of the provider, so an implementation is written by mapping over
  * the provider's own result rather than by inspecting it - here `rebuild` stands for whatever
@@ -69,17 +67,16 @@ import com.opengamma.strata.collect.result.Failure
  *
  * The trait is open rather than a closed family, and deliberately so. It is implemented from
  * many files - every monetary type listed above lives in its own - and further modules of the
- * library implement it for their own measures, such as cash flows and sensitivities, as the
- * modules yet to be ported do. Sealing it would require every one of those types to be declared
- * in this file, which is neither possible across modules nor desirable within one.
+ * library implement it for their own measures, such as cash flows and sensitivities. Sealing it
+ * would require every one of those types to be declared in this file, which is neither possible
+ * across modules nor desirable within one.
  *
- * Every implementation in this module is immutable, so a conversion is inherently safe to call
- * from several threads at once. The type being ported required only thread-safety and allowed a
- * mutable implementation; an implementation outside this module is still held to that weaker
- * requirement, because a conversion that observes mutable state may be asked for concurrently.
- *
- * The trait carries no data of its own, only this contract, and so has no serialized form: the
- * types that implement it are serialized individually and this trait is not.
+ * An implementation is required to convert an instance of itself to the requested currency using
+ * only the rates the supplied provider answers with, to report a rate it needs and cannot obtain
+ * as the provider's failure rather than by any other means, and to be safe to call from several
+ * threads at once, because a conversion that observes mutable state may be asked for
+ * concurrently. Every implementation in this module is immutable, which satisfies the last of
+ * those by construction.
  *
  * @tparam R  the result type expressed in a single currency
  */
@@ -97,8 +94,7 @@ trait FxConvertible[R] {
    * under a provider that supplies no rates at all. An instance holding several currencies has
    * no such shortcut: it asks the provider for a rate for every amount it holds, including any
    * amount already in the requested currency, and therefore needs a provider that answers for a
-   * currency against itself - which is what [[FxRateProvider.minimal]] is for. Both behaviours
-   * are those of the types being ported and are preserved by their implementations here.
+   * currency against itself - which is what [[FxRateProvider.minimal]] is for.
    *
    * @param resultCurrency  the currency of the result
    * @param rateProvider  the provider of FX rates

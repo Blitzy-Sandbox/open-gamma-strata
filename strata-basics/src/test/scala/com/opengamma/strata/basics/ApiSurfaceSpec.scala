@@ -5,6 +5,11 @@
  */
 package com.opengamma.strata.basics
 
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.ObjectOutputStream
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Modifier
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -13,8 +18,10 @@ import java.time.LocalDate
 import java.time.Period
 import java.time.YearMonth
 
+import scala.util.Try
 import scala.util.Using
 
+import org.scalatest.Assertion
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
@@ -90,6 +97,8 @@ import com.opengamma.strata.basics.value.ValueStepSequence
 import com.opengamma.strata.collect.Decimal
 import com.opengamma.strata.collect.FailureOr
 import com.opengamma.strata.collect.FixedScaleDecimal
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.ValidatedFailures
 import com.opengamma.strata.collect.ValueWithFailures
@@ -99,117 +108,50 @@ import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 
 /**
- * Holds the '''shape''' of this module's public API to the policy the port was designed around,
- * by asserting things that no ordinary test can express: that a constructor does '''not''' exist,
- * that a hierarchy cannot be extended from outside the file that declares it, and that a member
- * of a neighbouring module is out of reach from here.
+ * Holds the '''shape''' of this module's public API to its construction policy, by asserting what
+ * no ordinary test can express: that a constructor does '''not''' exist, that a hierarchy cannot
+ * be extended from outside the file that declares it, and that a member of a neighbouring module
+ * is out of reach from here. A spec that never writes `CurrencyAmount(GBP, 100)` says nothing
+ * about whether that expression would compile, and one that never declares a new `Index` says
+ * nothing about whether the family is still closed, so the compiler is what these guarantees are
+ * asserted against, through ScalaTest's `assertTypeError`, `assertDoesNotCompile` and
+ * `assertCompiles`. The acceptance gate for explicit error handling runs this suite alongside
+ * `SmartConstructorSpec`, `FailableSurfaceSpec` and `FailureSpec`.
  *
- * Everything a running test can observe - what a factory returns, what a calculation computes -
- * is covered by the specs of the individual types. What they cannot observe is the absence of
- * something: a spec that never writes `CurrencyAmount(GBP, 100)` says nothing about whether that
- * expression would compile, and a spec that never declares a new `Index` says nothing about
- * whether the family is still closed. Those are the guarantees a well-meant future change breaks
- * silently, so they are asserted here against the compiler itself, through ScalaTest's
- * `assertTypeError`, `assertDoesNotCompile` and `assertCompiles`.
- *
- * ===What is asserted===
- *
- * The file is one '''inventory''' of the module's public surface. Every entry is a
- * [[ApiSurfaceSpec.SurfaceRow]] declared once, carrying the kind of surface it is, the subject it
- * is about, the claim it makes and the audit that proves the claim; the tests of this suite are
- * then registered from that inventory, one per row, and the coverage assertions at the end
- * compare the inventory against the kind lists the port's construction policy fixes. A row and
- * its test are therefore the same thing: deleting a subject's audit deletes its row, which the
- * coverage assertions report, rather than leaving a name in a list that nothing exercises.
- *
- * The kinds, which are the sections of the inventory:
- *
- *  1. '''Validated (`[V]`) and normalising (`[N]`) types.''' Each is represented as
- *     `sealed abstract case class X private (...)`, a form that generates neither `apply` nor
- *     `copy` while still supporting `unapply`. The alternative that suggests itself,
- *     `final case class X private (...)`, hides '''neither''' of them, so the distinction is
- *     invisible in the source and shows up only when someone writes `X(...)` and it compiles.
- *     Each type is held to all three facts: no `apply`, no `copy`, and a working `unapply`. The
- *     last matters as much as the first two - a change that locked the types down harder, by
- *     dropping `case` altogether, would cost pattern matching everywhere.
- *  1. '''Total (`[T]`) types.''' The construction policy is not "lock everything down": a total
- *     type accepts every well-typed input, has nothing to check and nothing to rewrite, and
- *     therefore keeps the ordinary case class surface - `apply`, `copy` and `unapply`. Every one
- *     of them is audited positively, so that a later tidy-up which "made every type consistent"
- *     by locking them down would fail here and be discussed rather than absorbed. The two
- *     numeric wrappers are the policy's own exception - a final class over a private primitive
- *     array, with copy-safe total factories - and are audited as that.
- *  1. '''Closed families.''' The registry the port replaced could be extended at runtime from a
- *     configuration file; the sealed families that replaced it cannot be extended at all, which
- *     is what makes exhaustive matching sound. Scala 2 enforces sealing per '''file''', so a
- *     subtype declared '''here''' does not compile - and that is also the reason
- *     `index/Index.scala` and `date/HolidayCalendar.scala` are single large files rather than one
- *     file per type. How that is proved without proving something else by accident is described
- *     below, because it is the one place where the obvious assertion is the wrong one.
- *  1. '''Open contracts.''' Several traits are deliberately '''not''' sealed: `ReferenceData`,
- *     which an application implements to supply its own holidays, `ReferenceDataId`, which it
- *     implements to name data of its own, `FloatingRate`, which `FloatingRateName` implements
- *     from another file, and the forward-path contracts kept for the next slice of the migration.
- *     Being implementable is the only property this slice can give them, and it is asserted by
- *     implementing them here.
- *  1. '''Function, alias and witness surfaces.''' What is left of the public surface once the
- *     data types are accounted for: the single-abstract-method callbacks the numeric wrappers
- *     take, the lookup function type of `FloatingRate`, the type aliases both module roots
- *     re-export, and the value-type witness reference data narrows a lookup with. None of them
- *     carries data, which is why none of them appears in the port's codec inventory, and each is
- *     recorded here so that the two inventories together account for every public surface of both
- *     modules rather than for the data types alone.
- *  1. '''Module-internal reference data.''' The transcribed index tables are `private[basics]`,
- *     so they are outside the published surface altogether; each is recorded with the published
- *     family that carries its columns, which is what a caller reads instead.
- *  1. '''Policy rows.''' The private constructors themselves, the unassignability of published
- *     fields, and the copy safety of the numeric wrappers: `DoubleArray` and `DoubleMatrix` wrap
- *     a primitive array that callers must not be able to alias, so the two escape hatches that
- *     would hand it over - `ofUnsafe` and `toArrayUnsafe` - are `private[collect]`. Their own
- *     module's specs cannot prove that, being inside `collect`; this module can, and does,
- *     together with runtime proof that the public factories and `toArray` really copy.
+ * Every entry is a [[ApiSurfaceSpec.SurfaceRow]] declared once, carrying the kind of surface it
+ * is, the subject, the claim and the audit that proves it; one test is registered per row, and
+ * the coverage assertions at the end hold the inventory to the kind lists of the construction
+ * policy, so deleting a subject's audit deletes its row and is reported. Each section below is
+ * one kind, and says what its rows assert and why.
  *
  * ===How sealing is proved without proving something else instead===
  *
- * Most of these families also hide their constructor, so the obvious probe -
+ * Most closed families also hide their constructor, so the obvious probe -
  * `final class Host extends Currency("XYZ", 2, "USD")` - is rejected for '''two''' reasons at
- * once, and would still be rejected if the family stopped being sealed. An assertion like that
- * cannot report what it claims to.
+ * once, and would still be rejected if the family stopped being sealed. Sealing is therefore
+ * proved by a '''trait''' probe: `trait Host extends Currency` calls no constructor, needs no
+ * arguments and implements no member, which leaves the `sealed` modifier as the only thing the
+ * compiler can object to; constructor privacy is asserted separately, by the class probe. The
+ * control is the sensitivity test near the end, where the same trait probe '''compiles''' over
+ * every contract this module leaves open - so a trait probe is not something the compiler
+ * rejects out of hand.
  *
- * So sealing is proved by a '''trait''' probe: `trait Host extends Currency` calls no
- * constructor, needs no arguments and implements no member, which leaves the `sealed` modifier as
- * the only thing the compiler can object to. Constructor privacy is then asserted separately, by
- * the class probe, and labelled as the different property it is. The control that keeps the
- * technique honest is at the end of the file: the same trait probe '''compiles''' over every
- * contract this module leaves open, so a trait probe is not something the compiler rejects out of
- * hand.
+ * ===How the negatives are kept honest===
  *
- * ===How the assertions are kept honest===
+ * A negative compile assertion can fail for the wrong reason - a typo, a missing import, an
+ * argument of the wrong type - and pass while proving nothing. Three habits guard against that:
+ * `assertTypeError` rather than `assertDoesNotCompile` wherever the expected failure is a type
+ * error, because the weaker form is satisfied by a parse error too; arguments read off a live
+ * instance's own accessors, so that the arity and the types of every `X(...)` snippet are right
+ * by construction and the missing `apply` is the only thing left to object to; and an
+ * `assertCompiles` of the nearest legal form - almost always the type's own factory over the same
+ * arguments - beside every negative, so the difference between the two is the only possible
+ * cause. The exception to the first is an assignment, whose diagnostic depends on the shape of
+ * the target; the `ReadOnlyFields` row says why that group deliberately takes the weaker form.
  *
- * A negative compile assertion has one failure mode that matters: the snippet fails for the
- * wrong reason - a typo, a missing import, an argument of the wrong type - and the assertion
- * passes while proving nothing. Three habits guard against it here, and every test in the file
- * follows them.
- *
- *  - '''`assertTypeError` rather than `assertDoesNotCompile`''' wherever the expected failure is
- *    a type error. `assertDoesNotCompile` is satisfied by a parse error too, so a mistyped
- *    snippet would satisfy it; `assertTypeError` requires the snippet to parse and then fail to
- *    typecheck, which is what "this member does not exist" and "this type cannot be extended"
- *    are.
- *  - '''Arguments taken from a live instance's own accessors.''' Every `X(...)` snippet is
- *    written as `X(instance.field1, instance.field2)`, so the arity and the types are right by
- *    construction and no value can be out of the type's domain. The only thing left for the
- *    compiler to object to is the missing `apply`.
- *  - '''A legal counterpart beside every negative.''' Each negative is paired with an
- *    `assertCompiles` of the nearest legal form - almost always the type's own factory over
- *    exactly the same arguments. When the legal form compiles and the illegal one does not, the
- *    difference between them is the only possible cause.
- *
- * One consequence of the build's `-Wunused` setting, under warnings as errors, is worth recording, because
- * it shapes every test below: a value referenced '''only''' inside a snippet string counts as
- * unused and fails the build. Every fixture here is therefore also used in ordinary code - which
- * is no loss, since that ordinary code is the `unapply` destructuring and the accessor reads the
- * construction policy calls for anyway.
+ * A value referenced '''only''' inside a snippet string counts as unused under the build's
+ * `-Wunused` setting, with warnings as errors, and fails the build; every fixture here is
+ * therefore also used in ordinary code.
  */
 class ApiSurfaceSpec extends AnyFunSuite with Matchers {
 
@@ -233,13 +175,9 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   private val adjustment: BusinessDayAdjustment = BusinessDayAdjustment.of(modifiedFollowing, gbloId)
 
   /**
-   * Takes the value out of a factory result, failing the test with the reason where there is
-   * none.
-   *
-   * The fixtures are built through the very factories the file is about, most of which report
-   * their refusals rather than throwing. A fixture that cannot be built is a broken test rather
-   * than a failed assertion, and this reports it as such - naming the failure, so that a fixture
-   * broken by a change to a validation rule says which rule rejected it.
+   * Takes the value out of a factory result, naming the failure where there is no value: a
+   * fixture broken by a change to a validation rule is a broken test, and says which rule
+   * rejected it.
    *
    * @tparam E  the type of the failure the factory reports, either a `Failure` or a chain of them
    * @tparam A  the type being built
@@ -253,9 +191,8 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
     }
 
   //-------------------------------------------------------------------------
-  // one live instance of every type whose construction policy is asserted, each built through
-  // the factory that type publishes - which is itself the first half of the proof, since a type
-  // with no public constructor can be reached no other way
+  // the live instances the rows below audit, each built through the factory its type publishes -
+  // the only way in, for a type with no public constructor
   //-------------------------------------------------------------------------
   private val standardId: StandardId = valueOf(StandardId.of("OG-Ticker", "AAPL"))
   private val country: Country = valueOf(Country.of("GB"))
@@ -316,24 +253,24 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   private val doubleMatrix: DoubleMatrix = DoubleMatrix.of(2, 2, 1.0, 2.0, 3.0, 4.0)
 
   /**
-   * Names the kind of an observation by matching the sealed family with no default branch.
+   * Names the kind of an observation by narrowing to the implementations this module publishes.
    *
-   * This is the compile-time half of the closedness proof of `IndexObservation`, and it is
-   * deliberately written as a method of this suite rather than inside a compile-assertion string:
-   * the match is exhaustive only because the family admits exactly the four types below, so a
-   * fifth direct subtype - anywhere, since the family is sealed and its file is the only place
-   * one could be declared - would make it inexhaustive, which this build's fatal-warning setting
-   * reports as a compilation error of this file. The absence of a `case _` is the whole point and must not be
-   * "fixed" by adding one.
+   * `IndexObservation` is an open contract, so the four implementations below are what the module
+   * builds rather than every value the type admits, and the compiler cannot check a match over it
+   * for exhaustiveness. The default branch is therefore required rather than optional, and it is
+   * the branch a host's own observation reaches - which is what the open-contract row uses it to
+   * show. It must not be removed in an attempt to make the match a closedness proof: the trait is
+   * deliberately extensible, and a match without the branch does not compile here.
    *
    * @param observation  the observation to name the kind of
-   * @return the name of its kind
+   * @return the name of its kind, or `other` for an implementation from outside this module
    */
   private def kindOfObservation(observation: IndexObservation): String = observation match {
     case _: IborIndexObservation => "Ibor"
     case _: OvernightIndexObservation => "Overnight"
     case _: PriceIndexObservation => "Price"
     case _: FxIndexObservation => "Fx"
+    case _ => "other"
   }
 
   private val payment: Payment = Payment(currencyAmount, jan15)
@@ -349,12 +286,10 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   /**
    * The `Bus/252` day count, typed as the member of the family rather than as the family.
    *
-   * `ofBus252` answers with a `DayCount`, which is what a caller wants, but an audit of the
-   * member's own construction surface has to be written against the member: a `copy` added to
-   * `DayCount.Bus252` would be invisible through a witness typed as `DayCount`, so the negative
-   * assertion in that row would pass while the policy it stands for had been broken. The pattern
-   * below is what types it, and it fails the fixture rather than the assertion if `ofBus252` ever
-   * answers with something else.
+   * `ofBus252` answers with a `DayCount`, but a `copy` added to `DayCount.Bus252` would be
+   * invisible through a witness typed as `DayCount`, so that row's negative assertion would pass
+   * while the property it stands for had been broken. The pattern below types it, and fails the
+   * fixture rather than the assertion if `ofBus252` ever answers with something else.
    */
   private val bus252Member: DayCount.Bus252 = bus252 match {
     case member: DayCount.Bus252 => member
@@ -364,18 +299,17 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   /**
    * Registers one test per inventory row, which is what makes a row and its audit the same thing.
    *
-   * The name of each test is the row's own rendering, so a failure names the kind, the subject and
-   * the claim that failed, and the coverage assertions at the end of the file compare the
-   * registered names against the inventory they came from.
+   * The name of each test is the row's own rendering, so a failure names the kind, the subject
+   * and the claim.
+   *
+   * @param rows  the inventory rows to register
    */
   private def register(rows: List[SurfaceRow]): Unit =
     rows.foreach(entry => test(entry.testName)(entry.audit()))
 
   /**
-   * Builds one inventory row.
-   *
-   * The audit is taken by name and stored as a function, so it runs when its test runs rather than
-   * while the inventory is being built.
+   * Builds one inventory row, taking the audit by name so that it runs when its test runs rather
+   * than while the inventory is being built.
    *
    * @param kind  the kind of surface the row is about
    * @param subject  the type, member or alias the row is about
@@ -399,10 +333,8 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   /**
    * The root of the checkout, found by walking up from wherever the tests were started.
    *
-   * The derivation below reads the module sources, so it needs the one directory they are both
-   * under. It is identified by what it contains rather than by a path handed in, so the
-   * derivation works from any working directory a runner might choose; failing to find it fails
-   * the test, because a derivation that quietly skipped would assert nothing.
+   * It is identified by what it contains rather than by a path handed in, so the derivation below
+   * works from any working directory a runner might choose.
    */
   private lazy val repositoryRoot: Path =
     Iterator
@@ -444,12 +376,10 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   /**
    * The declarations of one keyword a source publishes.
    *
-   * A declaration counts as published when its line begins with the keyword, possibly behind
-   * the modifiers that may precede it, and does '''not''' begin with `private` or `protected`.
-   * Anchoring at the start of the line is what keeps documentation out: a Scaladoc line begins
-   * with `*` and a commented-out one with `/`, so neither can be mistaken for a declaration,
-   * and the compile assertions of this file - which quote declarations inside strings - are in
-   * a different file from the sources being read.
+   * A declaration counts as published when its line begins with the keyword, possibly behind the
+   * modifiers that may precede it, and does '''not''' begin with `private` or `protected`.
+   * Anchoring at the start of the line keeps documentation out, a Scaladoc line beginning with
+   * `*` and a commented-out declaration with `/`.
    *
    * @param lines  the lines of the source
    * @param keyword  the declaration keyword, such as `trait` or `type`
@@ -463,14 +393,195 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       .toSet
   }
 
+
+  //-------------------------------------------------------------------------
+  // The compiled classes of both modules, and the two properties asserted over all of them.
+  //
+  // Everything above this point is asserted against the compiler: a constructor that does not
+  // exist, a hierarchy that cannot be extended, a member that is out of reach. None of that
+  // survives into the class file. `sealed` leaves no trace in the bytecode of this language
+  // version, a `private` or `private[pkg]` constructor is emitted public because the JVM has no
+  // matching access level, and the compiler gives every case class a `java.io.Serializable`
+  // supertype. A caller compiled by another language against the same class files therefore sees
+  // an extensible hierarchy with reachable constructors, and `java.io.ObjectInputStream` sees a
+  // read path into every product that does not go through a factory.
+  //
+  // The two policy rows at the end of the inventory close that gap and are asserted over the
+  // compiled output rather than over a list of types, so a type added later is audited by the
+  // same assertion that audits the ones written today.
+  //-------------------------------------------------------------------------
+  /**
+   * The directories the build compiles the two modules' main sources into.
+   *
+   * Found under each module's `target`, by the `scala-<binary version>/classes` layout sbt uses,
+   * so the audit does not have to name a compiler version. Both must be present: an audit that
+   * quietly found no classes would assert nothing at all, which is the one way a sweep over
+   * "every compiled class" can pass while being empty.
+   */
+  private lazy val classDirectories: List[File] = {
+    val directories: List[File] =
+      List("strata-collect", "strata-basics").flatMap { module =>
+        val target: File = repositoryRoot.resolve(s"$module/target").toFile
+        Option(target.listFiles())
+          .fold(List.empty[File])(entries => entries.toList)
+          .filter(entry => entry.isDirectory && entry.getName.startsWith("scala-"))
+          .map(entry => new File(entry, "classes"))
+          .filter(entry => entry.isDirectory)
+      }
+    withClue(
+      "the JVM closure is audited over both modules' compiled output, which must be present: ")(
+      directories.map(directory => directory.getPath) should have size 2)
+    directories
+  }
+
+  /**
+   * Every class file under a directory, at any depth.
+   *
+   * @param directory  the directory to walk
+   * @return the class files it holds, including those of its subdirectories
+   */
+  private def classFiles(directory: File): List[File] =
+    Option(directory.listFiles())
+      .fold(List.empty[File])(entries => entries.toList)
+      .flatMap { entry =>
+        if (entry.isDirectory) { classFiles(entry) }
+        else if (entry.getName.endsWith(".class")) { List(entry) }
+        else { Nil }
+      }
+
+  /**
+   * Every class the two modules' main sources compile to.
+   *
+   * Loaded without initialising, so that reading the shape of a family costs nothing and building
+   * its instances is left to the fixtures. A class that cannot be loaded fails the audit rather
+   * than being skipped, since a skipped class is one this file would claim to have audited.
+   */
+  private lazy val compiledClasses: List[Class[_]] = {
+    val loaded: List[Either[String, Class[_]]] =
+      classDirectories.flatMap { directory =>
+        val root: Path = directory.toPath
+        classFiles(directory).map { file =>
+          val binaryName: String =
+            root
+              .relativize(file.toPath)
+              .toString
+              .stripSuffix(".class")
+              .replace(File.separator, ".")
+          Try(Class.forName(binaryName, false, getClass.getClassLoader)).toEither.left
+            .map(cause => s"$binaryName could not be loaded: $cause")
+        }
+      }
+    withClue("every compiled class of both modules must be loadable to be audited: ")(
+      loaded.collect { case Left(failure) => failure } shouldBe empty)
+    loaded.collect { case Right(loadedClass) => loadedClass }
+  }
+
+  /**
+   * Whether a class carries the compiler's product encoding, which is what a case class and a
+   * case object are given and what `java.io.ObjectInputStream` would otherwise populate field by
+   * field.
+   *
+   * @param candidate  the class to test
+   * @return true when the class is a product
+   */
+  private def isProduct(candidate: Class[_]): Boolean =
+    classOf[Product].isAssignableFrom(candidate)
+
+  /**
+   * Whether a class refuses Java serialization, by carrying the refusal hooks of the two-way
+   * blocker every value type of these modules mixes in.
+   *
+   * @param candidate  the class to test
+   * @return true when the class refuses Java serialization
+   */
+  private def refusesSerialization(candidate: Class[_]): Boolean =
+    classOf[NoJavaSerialization].isAssignableFrom(candidate)
+
+  /**
+   * Whether a class is one the compiler generated rather than one these sources declare.
+   *
+   * A singleton module, an anonymous class of a derivation or a partial function, and a lambda
+   * carry no state of this library: a module deserializes to the singleton it already is, and the
+   * others exist only to hold the machinery of a derived codec or a function literal. They are
+   * `java.io.Serializable` because their supertypes are, and they are the only classes the sweep
+   * of the second policy row below exempts - which is why the exemption is defined by the shape of
+   * a compiler-generated name rather than by a list of classes that could grow quietly.
+   *
+   * @param candidate  the class to test
+   * @return true when the class is compiler-generated
+   */
+  private def isCompilerGenerated(candidate: Class[_]): Boolean = {
+    val name: String = candidate.getName
+    name.endsWith("$") || name.contains("$anon") || name.contains("$$Lambda")
+  }
+
+  /**
+   * Whether an implementation is declared inside the family it implements.
+   *
+   * The declaring class of a member class is the class it is nested in, and the implementations
+   * of these modules are nested in the companion of the type they implement or in the companion
+   * of one of that type's own ancestors - the second being the shape `DayCount.Bus252` has, whose
+   * implementation is declared by `DayCount` because that is the family whose construction guard
+   * admits it. A class nested in anything else, or in nothing at all, is one the family did not
+   * declare.
+   *
+   * @param candidate  the implementation class
+   * @param parent  the abstract class it extends
+   * @return true when the implementation is declared inside the family
+   */
+  private def declaredInFamily(candidate: Class[_], parent: Class[_]): Boolean =
+    Option(candidate.getDeclaringClass).exists { declaring =>
+      // The type arguments are written out because `getSuperclass` answers with a class bounded
+      // below by its own argument, which an inferred existential cannot thread through the fold.
+      val ancestors: Iterator[Class[_]] =
+        Iterator.unfold[Class[_], Option[Class[_]]](Option(parent)) { current =>
+          current.map(ancestor => (ancestor, Option[Class[_]](ancestor.getSuperclass)))
+        }
+      ancestors.exists(ancestor => ancestor == declaring)
+    }
+
+  /**
+   * Asserts that one value refuses Java serialization in both directions.
+   *
+   * The write path is the whole of `java.io.ObjectOutputStream.writeObject`, which consults the
+   * value's `writeReplace` before it writes a single byte, so the refusal happens before anything
+   * leaves the process. The read path cannot be exercised from a stream - there is no way to
+   * produce one - so it is exercised through the hook `java.io.ObjectInputStream` would call on
+   * the object it had just populated: `readResolve`, which refuses, so an instance reconstructed
+   * around a forged stream never reaches the caller that asked for it.
+   *
+   * @param subject  how the value is described in a failure
+   * @param value  the value that must refuse
+   * @return the assertion that it refused in both directions
+   */
+  private def refusesJavaSerialization(subject: String, value: AnyRef): Assertion = {
+    val refused: IllegalArgumentException =
+      intercept[IllegalArgumentException] {
+        Using.resource(new ObjectOutputStream(new ByteArrayOutputStream()))(stream =>
+          stream.writeObject(value))
+      }
+    withClue(s"$subject refuses to be written by java.io.ObjectOutputStream: ")(
+      refused.getMessage should include("Java serialization is not supported by this library"))
+
+    val readHook: InvocationTargetException =
+      intercept[InvocationTargetException](value.getClass.getMethod("readResolve").invoke(value))
+    withClue(s"$subject raises rather than answers on the read hook: ")(
+      readHook.getCause shouldBe an[IllegalArgumentException])
+    withClue(s"$subject refuses the read hook java.io.ObjectInputStream would call: ")(
+      readHook.getCause.getMessage should include(
+        "Java serialization is not supported by this library"))
+  }
+
   //-------------------------------------------------------------------------
   // The validated and normalising types of both modules.
   //
-  // Each of these checks, rewrites, or both, what it is given, so a caller that could reach a
-  // constructor or a `copy` could build a value the factory would have refused, or one that had
-  // skipped the rewrite and would then compare unequal to the same value built properly. The
-  // three assertions per type are the whole policy: the factory is the only way in, the value
-  // cannot be modified into another one, and taking it apart still works.
+  // Each checks, rewrites, or both, what it is given, so a caller who could reach a constructor
+  // or a `copy` could build a value the factory would have refused, or one that had skipped the
+  // rewrite and would then compare unequal to the same value built properly. The representation
+  // is `sealed abstract case class X private (...)`: `abstract` leaves `apply` and `copy`
+  // ungenerated, `case` keeps `unapply`, and the three assertions per type are those three facts.
+  // The `unapply` matters as much as the other two, since dropping `case` to lock the types down
+  // further would cost pattern matching everywhere.
   //-------------------------------------------------------------------------
   private val validatedRows: List[SurfaceRow] = List(
     row(Validated, "StandardId", "publishes no apply and no copy, and destructures through unapply") {
@@ -787,13 +898,9 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "DayCount.Bus252",
       "publishes no apply and no copy, and destructures through unapply") {
       // The one member of a sealed family that is not a singleton - the calendar is part of the
-      // convention and appears in its name - and a validated type under the same policy as every
-      // other: a `sealed abstract case class` whose constructor is visible to `DayCount` alone.
-      // `ofBus252` is the only way in, and `unapply` is what the `case` keyword is kept for.
-      //
-      // The witness is typed as the member rather than as the family, deliberately: a `copy`
-      // added to `DayCount.Bus252` would be invisible through a `DayCount`, so the negative
-      // assertion would pass while the policy it stands for had been broken.
+      // convention and appears in its name - and a validated type under the same policy, whose
+      // constructor is visible to `DayCount` alone, so `ofBus252` is the only way in. The witness
+      // is typed as the member rather than as the family, for the reason `bus252Member` gives.
       val DayCount.Bus252(calendar) = bus252Member
       calendar shouldBe gblo
       bus252Member.name shouldBe "Bus/252 GBLO"
@@ -898,15 +1005,12 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       Normalising,
       "ImmutableHolidayCalendar",
       "publishes no apply and no copy, and destructures through unapply") {
-      // `of` normalises what it is given, so the factory is the only way in. The case parameter is
-      // the identifier, which is the whole of this type's equality - as in the library being
-      // ported, where two calendars claiming to be `GBLO` are one calendar - so `unapply` hands
-      // back exactly what equality is defined on.
-      //
-      // The packed months the calendar answers from are abstract members rather than case
-      // parameters, and that is what keeps them out of reach: the last two assertions are that
-      // they cannot be read from outside the `date` package at all, which would not be true of a
-      // case parameter, since `unapply` would hand the array over to anyone.
+      // The case parameter is the identifier, which is the whole of this type's equality - two
+      // calendars claiming to be `GBLO` are one calendar - so `unapply` hands back exactly what
+      // equality is defined on. The packed months the calendar answers from are `private[date]`
+      // abstract members rather than case parameters, which is what keeps them out of reach: the
+      // last two assertions are that they cannot be read from outside the `date` package, which
+      // would not be true of a case parameter, since `unapply` would hand the array to anyone.
       val ImmutableHolidayCalendar(calendarId) = immutableCalendar
       calendarId shouldBe HolidayCalendarId.of("APISURFACE")
       immutableCalendar.holidays.toList shouldBe List(jan15)
@@ -929,9 +1033,8 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   //
   // A total type accepts every well-typed input, has nothing to check and nothing to rewrite, so
   // it keeps `apply`, `copy` and `unapply`: hiding them would cost callers convenience and buy no
-  // invariant. Every total type of the construction policy is audited here, so that a later
-  // tidy-up which "made every type consistent" by locking one of them down would fail and be
-  // discussed rather than absorbed.
+  // invariant. Every one is audited positively, so that a later tidy-up which "made every type
+  // consistent" by locking one of them down fails here and is discussed rather than absorbed.
   //-------------------------------------------------------------------------
   private val totalRows: List[SurfaceRow] = List(
     row(Total, "CurrencyPair", "is a total type and keeps its public apply and copy") {
@@ -1016,11 +1119,10 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       assertCompiles("""calculationTargetList.copy(targets = calculationTargetList.targets)""")
     },
     row(Total, "ReferenceData.Entry", "is a total type and keeps its public apply and copy") {
-      // The entry is what makes filing type-safe - it pairs an identifier only with a value of
-      // its own type - and beyond that it has nothing to check, the compiler having checked it.
-      // So it keeps the whole case class surface, and the identifier's type parameter travels
-      // through `copy`; the last assertion is the check itself, which is a compile error rather
-      // than a validation failure.
+      // The entry pairs an identifier only with a value of its own type, which the compiler
+      // checks, so it has nothing to check itself and keeps the whole case class surface, the
+      // type parameter travelling through `copy`. The last assertion is that check, which is a
+      // compile error rather than a validation failure.
       val ReferenceData.Entry(id, value) = referenceDataEntry
       id shouldBe gbloId
       value shouldBe gblo
@@ -1034,12 +1136,11 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       Total,
       "DoubleArray",
       "is total through copy-safe factories, which is the policy's own representation exception") {
-      // The construction policy's one representation exception, and the primitive array is the
-      // reason for it: a case class over `Array[Double]` would hand the array out through
-      // `unapply` and `copy`, so this is a final class whose factories copy instead. It is total
-      // in the sense that matters - every well-typed input is accepted, nothing is rejected and
-      // nothing rewritten - and the copy safety that stands in for the case surface is audited by
-      // the policy rows at the end of this file.
+      // The one representation exception, and the primitive array is the reason for it: a case
+      // class over `Array[Double]` would hand the array out through `unapply` and `copy`, so this
+      // is a final class whose factories copy instead. It is total in the sense that matters -
+      // every well-typed input is accepted - and the copy safety that stands in for the case
+      // surface is audited by the policy rows at the end, at run time as well as structurally.
       doubleArray.size shouldBe 3
       doubleArray.get(0) shouldBe 1.0
       DoubleArray.of(1.0, 2.0, 3.0) shouldBe doubleArray
@@ -1066,17 +1167,15 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   // The closed families.
   //
-  // The implementation being ported resolved a convention or an index through a registry that a
-  // configuration file on the classpath could add to at run time. The port replaced that with
-  // sealed families whose members exist only in their companions, which is what lets a match over
-  // a family be checked for exhaustiveness and what makes `values` the whole truth about it.
+  // Every subtype of each is declared in the family's own file, which is what lets a match over
+  // the family be checked for exhaustiveness and makes the `values` a named family publishes the
+  // whole truth about it. Scala 2 enforces sealing per file, so a subtype declared here does not
+  // compile.
   //
   // Each row states that the family's own members are reachable, then proves the sealing with a
   // trait probe, then - where the family also hides its constructor - asserts that separately
-  // with a class probe. The two are different properties and neither stands in for the other: a
-  // class probe over a family with a package-private constructor is rejected whether or not the
-  // family is sealed, which is exactly why the trait probe exists. The control that keeps the
-  // trait probe honest is the last test of this file.
+  // with a class probe whose arguments are read off a published value. The scaladoc above says
+  // why the two probes are separate assertions and neither stands in for the other.
   //-------------------------------------------------------------------------
   private val closedFamilyRows: List[SurfaceRow] = List(
     row(
@@ -1085,11 +1184,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "is sealed against a subtype declared outside its file, against a class as well as a trait") {
       (iborIndex: Index).name shouldBe "GBP-LIBOR-3M"
       Index.parse("GBP-LIBOR-3M") shouldBe Right(iborIndex)
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends Index; () }""")
-      // the same over a class supplying every member, which is what someone extending the
-      // family would write: this family is a trait, so sealing is again the only cause
       assertTypeError("""{ final class Host extends Index { def name: String = "Bespoke-Index" }; () }""")
     },
     row(
@@ -1097,11 +1192,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "RateIndex",
       "is sealed against a subtype declared outside its file, against a class as well as a trait") {
       (overnightIndex: RateIndex).fixingCalendar shouldBe gbloId
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends RateIndex; () }""")
-      // the same over a class supplying every member, which is what someone extending the
-      // family would write: this family is a trait, so sealing is again the only cause
       assertTypeError(
         """{
            |  final class Host extends RateIndex {
@@ -1121,11 +1212,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "FloatingRateIndex",
       "is sealed against a subtype declared outside its file, against a class as well as a trait") {
       (priceIndex: FloatingRateIndex).currency shouldBe gbp
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends FloatingRateIndex; () }""")
-      // the same over a class supplying every member, which is what someone extending the
-      // family would write: this family is a trait, so sealing is again the only cause
       assertTypeError(
         """{
            |  final class Host extends FloatingRateIndex {
@@ -1143,12 +1230,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "IborIndex",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       iborIndex.tenor shouldBe tenor
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends IborIndex; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[index]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends IborIndex(
@@ -1171,12 +1253,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "OvernightIndex",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       overnightIndex.currency shouldBe gbp
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends OvernightIndex; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[index]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends OvernightIndex(
@@ -1196,12 +1273,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "PriceIndex",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       priceIndex.region shouldBe valueOf(Country.of("GB"))
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends PriceIndex; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[index]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends PriceIndex(
@@ -1215,12 +1287,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
     },
     row(ClosedFamily, "FxIndex", "is sealed against a subtype declared outside its file, and hides its constructor") {
       fxIndex.currencyPair.base shouldBe Currency.EUR
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends FxIndex; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[index]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends FxIndex(
@@ -1237,11 +1304,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "is sealed against a subtype declared outside its file, against a class as well as a trait") {
       HolidayCalendars.SAT_SUN.name shouldBe "Sat/Sun"
       gblo.isHoliday(LocalDate.of(2020, 12, 25)) shouldBe true
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends HolidayCalendar; () }""")
-      // the same over a class supplying every member, which is what someone extending the
-      // family would write: this family is a trait, so sealing is again the only cause
       assertTypeError(
         """{
            |  final class Host extends HolidayCalendar {
@@ -1256,12 +1319,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "DayCount",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       DayCounts.ACT_365F.name shouldBe "Act/365F"
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends DayCount; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[date]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError("""{ final class Host extends DayCount("Bespoke-Day-Count"); () }""")
     },
     row(
@@ -1270,11 +1328,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "is sealed against a subtype declared outside its file, against a class as well as a trait") {
       val rounding: Rounding = Rounding.of(gbp)
       rounding.round(1.2345) shouldBe 1.23
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends Rounding; () }""")
-      // the same over a class supplying every member, which is what someone extending the
-      // family would write: this family is a trait, so sealing is again the only cause
       assertTypeError(
         """{
            |  final class Host extends Rounding {
@@ -1289,12 +1343,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "Currency",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       gbp.minorUnitDigits shouldBe 2
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends Currency; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[currency]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError("""{ final class Host extends Currency("XYZ", 2, "USD"); () }""")
     },
     row(
@@ -1302,12 +1351,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "BusinessDayConvention",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       modifiedFollowing.adjust(jan15, gblo) shouldBe jan15
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends BusinessDayConvention; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[date]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends BusinessDayConvention("Bespoke-Business-Day-Convention") {
@@ -1322,12 +1366,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "RollConvention",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       RollConventions.EOM.adjust(jan15) shouldBe LocalDate.of(2020, 1, 31)
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends RollConvention; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[schedule]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends RollConvention("Bespoke-Roll-Convention") {
@@ -1341,12 +1380,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "PeriodAdditionConvention",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       (PeriodAdditionConventions.LAST_DAY: PeriodAdditionConvention).isMonthBased shouldBe true
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends PeriodAdditionConvention; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[date]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends PeriodAdditionConvention("Bespoke-Period-Addition-Convention") {
@@ -1362,12 +1396,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "DateSequence",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       (DateSequences.QUARTERLY_IMM: DateSequence).name shouldBe "Quarterly-IMM"
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends DateSequence; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[date]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends DateSequence("Bespoke-Date-Sequence") {
@@ -1382,12 +1411,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "StubConvention",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       StubConvention.SHORT_INITIAL.isCalculateBackwards shouldBe true
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends StubConvention; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[schedule]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError("""{ final class Host extends StubConvention("Bespoke-Stub-Convention"); () }""")
     },
     row(
@@ -1395,12 +1419,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "FloatingRateType",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       FloatingRateType.Ibor.isIbor shouldBe true
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends FloatingRateType; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[index]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError("""{ final class Host extends FloatingRateType("Bespoke-Floating-Rate-Type"); () }""")
     },
     row(
@@ -1408,12 +1427,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "ValueAdjustmentType",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       ValueAdjustmentType.Replace.adjust(100.0, 200.0) shouldBe 200.0
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends ValueAdjustmentType; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[value]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends ValueAdjustmentType("Bespoke-Value-Adjustment-Type") {
@@ -1428,12 +1442,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "FloatingRateName",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       gbpLiborName.externalName shouldBe "GBP-LIBOR"
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends FloatingRateName; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[index]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError(
         """{
            |  final class Host extends FloatingRateName(
@@ -1449,11 +1458,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "Failure",
       "is sealed against a subtype declared outside its file, against a class as well as a trait") {
       Failure.Invalid("a reason").reason shouldBe FailureReason.INVALID
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends Failure; () }""")
-      // the same over a class supplying every member, which is what someone extending the
-      // family would write: this family is a trait, so sealing is again the only cause
       assertTypeError(
         """{
            |  final case class Host(message: String) extends Failure {
@@ -1466,41 +1471,10 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
     },
     row(
       ClosedFamily,
-      "IndexObservation",
-      "is sealed against an observation declared outside its file, and matches exhaustively") {
-      // The observations are a closed set of four, one per index family, and the families are
-      // themselves closed - so there is no fifth kind of thing to observe, and the trait says so.
-      // The positive half is the exhaustiveness the sealing buys: `kindOfObservation` matches the
-      // four types with no default branch, and a family that admitted a fifth type would make that
-      // match inexhaustive, which this build's fatal-warning setting turns into a compilation
-      // error. It is therefore not merely an assertion here but a condition of this file
-      // compiling at all.
-      val observations: List[IndexObservation] =
-        List(iborObservation, overnightObservation, priceObservation, fxObservation)
-      observations.map(kindOfObservation) shouldBe List("Ibor", "Overnight", "Price", "Fx")
-      observations.map(_.index) shouldBe List(iborIndex, overnightIndex, priceIndex, fxIndex)
-      // The negative half. Both names the snippet uses resolve in this scope - the control on the
-      // first line proves it - and the trait's single member is satisfied by the body, so the only
-      // thing left to reject the declaration is the `sealed` modifier on the trait.
-      assertCompiles("""{ val witness: Index = iborIndex; witness.name; () }""")
-      assertTypeError("""{ trait Host extends IndexObservation; () }""")
-      assertTypeError(
-        """{
-           |  final class Host extends IndexObservation { def index: Index = iborIndex }
-           |  ()
-           |}""".stripMargin)
-    },
-    row(
-      ClosedFamily,
       "FailureReason",
       "is sealed against a subtype declared outside its file, and hides its constructor") {
       FailureReason.MISSING_DATA.name shouldBe "MISSING_DATA"
-      // sealing, isolated: the probe is a trait, so it calls no constructor and implements no
-      // member, and the `sealed` modifier is the only objection the compiler has left
       assertTypeError("""{ trait Host extends FailureReason; () }""")
-      // constructor privacy, a separate property asserted separately: the class probe is
-      // rejected by `private[result]` too, so it cannot stand in for the assertion
-      // above; its arguments are read off a published value, so nothing else can be the cause
       assertTypeError("""{ final class Host extends FailureReason("BESPOKE"); () }""")
     })
 
@@ -1509,18 +1483,17 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   //
   // Sealing is not free, and several traits of this module pay a price that is too high. An
   // application supplies its own holidays by implementing `ReferenceData`, and names data of its
-  // own by implementing `ReferenceDataId`, which is what the library being ported documented and
-  // what the module's own `HolidaySafeReferenceData` does, so sealing either would make both
-  // impossible. `FloatingRate` is implemented by `FloatingRateName` as well as by the index
-  // families, and sealing it would drag `FloatingRateName` and its four hundred rows of data into
-  // `Index.scala`. `IndexObservation` is not among them: it is sealed, its four implementations
-  // share its file, and its closedness is proved in the group above.
+  // own by implementing `ReferenceDataId`, as this module's own `HolidaySafeReferenceData` does,
+  // so sealing either would make both impossible. `FloatingRate` is implemented by
+  // `FloatingRateName` as well as by the index families, and sealing it would drag
+  // `FloatingRateName` and its four hundred rows of data into `Index.scala`. `IndexObservation`
+  // pays the same price for the same reason: the ported interface is a plain Java interface an
+  // application may implement, and sealing it would drag all four observations into its file
+  // instead of leaving each in its own.
   //
-  // The rest are the forward-path contracts kept for the next slice of the migration, which have
-  // no implementation inside this module at all. Being implementable is the only property this
-  // slice can assert about them, and an unnoticed change to their shape would be found by nothing
-  // else - so the implementations live in the companion as ordinary classes rather than inside
-  // compile-assertion strings, which puts the compiler's check on them at every build.
+  // Being implementable is the property asserted, and every host implementation lives in the
+  // companion as ordinary code rather than inside a compile-assertion string, which puts the
+  // compiler's check on it at every build.
   //-------------------------------------------------------------------------
   private val openContractRows: List[SurfaceRow] = List(
     row(OpenContract, "ReferenceData", "is open, so an application can supply reference data of its own") {
@@ -1541,6 +1514,28 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       id.resolve(ReferenceData.empty).isLeft shouldBe true
       id.toReader.run(ReferenceData.empty).isLeft shouldBe true
       HostReferenceDataId("a label") shouldBe id
+    },
+    row(OpenContract, "IndexObservation", "is open, so a host can observe an indicator of its own") {
+      // The positive half: an implementation declared outside this module - in the companion of
+      // this suite, which is outside `IndexObservation.scala` - satisfies the contract, is carried
+      // by a signature written in terms of the trait, and reaches the default branch of
+      // `kindOfObservation`, which is the branch an open contract obliges a caller to write.
+      val host: IndexObservation = HostIndexObservation(iborIndex)
+      host.index shouldBe iborIndex
+      kindOfObservation(host) shouldBe "other"
+      // and the same declaration compiles as written, so the openness is a property of the trait
+      // rather than of the one implementation above.
+      assertCompiles(
+        """{
+           |  final class Anonymous extends IndexObservation { def index: Index = iborIndex }
+           |  ()
+           |}""".stripMargin)
+      // The four implementations this module publishes, each narrowing to its own kind and
+      // reporting the index it observes - which is the whole of what the trait declares.
+      val observations: List[IndexObservation] =
+        List(iborObservation, overnightObservation, priceObservation, fxObservation)
+      observations.map(kindOfObservation) shouldBe List("Ibor", "Overnight", "Price", "Fx")
+      observations.map(_.index) shouldBe List(iborIndex, overnightIndex, priceIndex, fxIndex)
     },
     row(OpenContract, "FloatingRate", "is open, so FloatingRateName can implement it from another file") {
       val host: FloatingRate = new HostFloatingRate("HOST-LIBOR", gbpLiborName)
@@ -1577,24 +1572,20 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   // What is left of the public surface once the data types are accounted for.
   //
-  // A data type is covered twice over: by its construction-kind row above, and by the port's
-  // codec inventory, which lists every type it serializes and every type it excludes with the
-  // reason. Neither list can hold the surfaces below, because none of them is data: four are the
-  // single-abstract-method callbacks the numeric wrappers take instead of boxing an index, one is
-  // the lookup function type `FloatingRate` composes, five are the type aliases the two module
-  // roots re-export, and one is the witness reference data narrows a lookup with. They are
-  // recorded here so that the two inventories '''together''' account for every public surface of
-  // both modules, which is the property the codec inventory's closure claim rests on.
+  // None of these is data: five are the single-abstract-method callbacks the numeric wrappers
+  // take instead of boxing an index, one is the lookup function type `FloatingRate` composes,
+  // five are the type aliases the two module roots re-export, and one is the witness reference
+  // data narrows a lookup with. Recording them here is what makes this inventory account for
+  // every public surface of both modules rather than for the data types alone.
   //-------------------------------------------------------------------------
   private val functionSurfaceRows: List[SurfaceRow] = List(
     row(
       FunctionSurface,
       "DoubleArray.DoubleTernaryOperator",
       "is a callback a lambda satisfies, and carries no data to serialize") {
-      // The port's replacement for the primitive functional interface the Java original took
-      // here: a single-abstract-method trait, so a lambda is converted to it and the call site
-      // reads as a three-argument function, while the compiled method passes `double` rather than
-      // a boxed argument. A caller that wants to retain an operator implements it explicitly.
+      // A single-abstract-method trait, so a lambda is converted to it and the call site reads as
+      // a three-argument function, while the compiled method passes `double` rather than a boxed
+      // argument. A caller that wants to retain an operator implements it explicitly.
       val other: DoubleArray = DoubleArray.of(4.0, 5.0, 6.0)
       doubleArray.combineReduce(other, (total, first, second) => total + first * second) shouldBe 32.0
       val explicit: DoubleArray.DoubleTernaryOperator = new DoubleArray.DoubleTernaryOperator {
@@ -1607,9 +1598,8 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       FunctionSurface,
       "DoubleMatrix.ElementAction",
       "is a callback a lambda satisfies, and carries no data to serialize") {
-      // The callback `forEach` takes. The action is applied in row-major order, which the cells
-      // below record; the assignment keeps the lambda's result `Unit`, as the callback's own
-      // method is.
+      // The callback `forEach` takes, applied in row-major order, which the cells below record;
+      // the assignment keeps the lambda's result `Unit`, as the callback's own method is.
       val cells: Array[String] = Array.fill(4)("")
       doubleMatrix.forEach((rowIndex, columnIndex, value) =>
         cells(rowIndex * 2 + columnIndex) = s"$rowIndex$columnIndex=$value")
@@ -1619,8 +1609,6 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       FunctionSurface,
       "DoubleMatrix.ElementFunction",
       "is a callback a lambda satisfies, and carries no data to serialize") {
-      // The callback `mapWithIndex` takes, which differs from `ElementAction` only in answering
-      // with the new value of the element rather than with nothing.
       doubleMatrix.mapWithIndex((rowIndex, columnIndex, value) =>
         value + rowIndex + columnIndex) shouldBe DoubleMatrix.of(2, 2, 1.0, 3.0, 4.0, 6.0)
     },
@@ -1628,7 +1616,6 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       FunctionSurface,
       "DoubleMatrix.RowArrayFunction",
       "is a callback a lambda satisfies, and carries no data to serialize") {
-      // The callback `ofArrays` takes, which builds a matrix one row of primitives at a time.
       DoubleMatrix.ofArrays(2, 2)(rowIndex =>
         Array(rowIndex * 2.0 + 1.0, rowIndex * 2.0 + 2.0)) shouldBe doubleMatrix
     },
@@ -1636,7 +1623,6 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       FunctionSurface,
       "DoubleMatrix.RowArrayObjectFunction",
       "is a callback a lambda satisfies, and carries no data to serialize") {
-      // The same for `ofArrayObjects`, whose rows are `DoubleArray` values rather than arrays.
       DoubleMatrix.ofArrayObjects(2, 2)(rowIndex =>
         DoubleArray.of(rowIndex * 2.0 + 1.0, rowIndex * 2.0 + 2.0)) shouldBe doubleMatrix
     },
@@ -1644,9 +1630,9 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       FunctionSurface,
       "FloatingRate.Lookup",
       "is the function type a family's probe takes, and carries no data to serialize") {
-      // One family's alias-aware lookup by name, widened to the floating rate it answers with.
-      // It is a function type, so a host composes a search of its own from ordinary lambdas, and
-      // the standard composition is the four families of this module in their documented order.
+      // One family's alias-aware lookup by name, widened to the floating rate it answers with. It
+      // is a function type, so a host composes a search of its own from ordinary lambdas; the
+      // standard composition is the four families of this module in their documented order.
       val hostLookup: FloatingRate.Lookup =
         name => if (name == "HOST-LIBOR") Some(gbpLiborName) else None
       hostLookup("HOST-LIBOR") shouldBe Some(gbpLiborName)
@@ -1661,9 +1647,9 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "collect.FailureOr",
       "is the module root's name for the type the result package defines") {
       // The four aliases below are re-exports: the module root names the same type its `result`
-      // package defines, so that a caller importing the root needs no second import. Each row is
-      // the proof that the two names denote one type - the evidence is a compile-time one, and
-      // applying it is what uses it - rather than two similar ones that could drift apart.
+      // package defines, so a caller importing the root needs no second import. Each row proves
+      // the two names denote one type rather than two that could drift apart, and applying the
+      // compile-time evidence is what uses it.
       val nested: com.opengamma.strata.collect.result.FailureOr[Int] = Right(1)
       val root: FailureOr[Int] = nested
       root shouldBe Right(1)
@@ -1724,10 +1710,9 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       "ReferenceDataType",
       "recognises a value by pattern, and is reached only through its factory") {
       // The witness an identifier carries so that reference data can check the value it found
-      // against the identifier that asked for it. It is behaviour rather than data - it holds the
-      // pattern that recognises a value - so it has no codec, and it is not a construction kind
-      // either: the constructor is private, `of` is the only factory, and there is no `unapply`
-      // because a caller has nothing to take out of it.
+      // against the identifier that asked for it. It holds the pattern that recognises a value,
+      // so it is behaviour rather than data and no construction kind applies: the constructor is
+      // private, `of` is the only factory, and a caller has nothing to take out of it.
       val text: ReferenceDataType[String] =
         ReferenceDataType.of("Sample") { case sample: String => sample }
       text.name shouldBe "Sample"
@@ -1742,14 +1727,11 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   // The transcribed reference data, which is module-internal rather than published.
   //
-  // Each index family is built from a table of rows transcribed from the configuration the Java
-  // implementation loaded at run time. A row is the shape that transcription is written in, not a
-  // value of the published API: a caller reads the family, whose members carry every column of
-  // the row it was built from. So the tables and their row types are `private[basics]`, which is
-  // the visibility `PriceIndexData` has always had and which the other four now share, and they
-  // are outside the published surface altogether - neither a construction kind nor a codec
-  // applies to them. Each row below records that decision against the family that carries the
-  // data, which is what a caller reads instead.
+  // Each index family is built from a table of rows. A row is the shape the transcription is
+  // written in, not a value of the published API: a caller reads the family, whose members carry
+  // every column of the row it was built from. The tables and their row types are all
+  // `private[basics]`, so neither a construction kind nor a codec applies to them; each row below
+  // records that against the published family that carries the data.
   //-------------------------------------------------------------------------
   private val moduleInternalRows: List[SurfaceRow] = List(
     row(
@@ -1805,19 +1787,20 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   // The policy rows: the private constructors themselves, the unassignability of published
   // fields, and the copy safety of the two numeric wrappers.
   //
-  // Hiding `apply` would buy nothing if the constructor were reachable, and the representation
-  // the validated and normalising types use - `sealed abstract case class X private (...)`,
-  // instantiated as `new X(...) {}` inside the companion - makes it easy to assume the
-  // anonymous-subclass route is available to everyone. It is not, and the first row is the proof,
-  // taken across every package that has such a type so that no one package can drift on its own.
+  // Hiding `apply` would buy nothing if the constructor were reachable, and the `new X(...) {}`
+  // the validated and normalising types use inside their companions makes it easy to assume the
+  // anonymous-subclass route is open to everyone. It is not, and the first row is the proof, over
+  // ten types spanning seven packages of the two modules.
   //
   // `DoubleArray` and `DoubleMatrix` wrap a primitive array, and the whole immutability of the
-  // types rests on no caller ever holding a reference to it. The two members that would hand it
-  // over - `ofUnsafe`, which wraps an array the caller keeps, and `toArrayUnsafe`, which returns
-  // the array itself - are `private[collect]`, so they serve the module that needs them and
-  // nobody else. The collect module's own specs cannot show that, being inside `collect`; this
-  // module is outside it, so the assertions below are the proof, and they are followed by the
-  // runtime half: that the public API really does copy in both directions.
+  // types rests on no caller ever holding a reference to it. The two members of the Java original
+  // that would have handed it over - `ofUnsafe`, which wrapped an array the caller kept, and
+  // `toArrayUnsafe`, which returned the array itself - are not ported under any name: a module
+  // restriction would have held in the source only, leaving both public in the compiled class, so
+  // the copy is made by the one constructor every factory passes through instead. The rows below
+  // are what this module can prove about that from outside `collect`: neither name resolves, no
+  // public member of either compiled class answers with the storage it holds, and the public API
+  // really does copy in both directions.
   //-------------------------------------------------------------------------
   private val policyRows: List[SurfaceRow] = List(
     row(Policy, "PrivateConstructors", "close every validated and normalising type to direct instantiation") {
@@ -1833,16 +1816,13 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       assertTypeError("""new FixedScaleDecimal(fixedScaleDecimal.decimal, fixedScaleDecimal.fixedScale) {}""")
     },
     row(Policy, "ReadOnlyFields", "make every published field unassignable, whatever the type's kind") {
-      // This is the one group written with `assertDoesNotCompile` rather than `assertTypeError`, and
-      // deliberately: the compiler's objection to an assignment depends on the shape of the target -
-      // a missing `_=` member for an accessor, a non-assignable expression for an application - and
-      // the weaker assertion accepts either, where the stricter one would tie the test to whichever
-      // diagnostic this compiler version happens to produce. Everywhere the shape of the rejection
-      // is the point - a missing `apply`, a missing `copy`, an inaccessible member, an illegal
-      // inheritance - the file uses `assertTypeError` instead.
-      //
-      // Accessors are read back first, so that a failure here means the field stopped being
-      // read-only rather than that it stopped existing.
+      // Assignments are asserted with `assertDoesNotCompile` rather than `assertTypeError` - here
+      // and in the `ImmutableReferenceData.values` row, the only other one - and deliberately:
+      // the compiler's objection to an assignment depends on the shape of the target, a missing
+      // `_=` member for an accessor and a non-assignable expression for an application, and the
+      // weaker assertion accepts either, where the stricter one would tie the test to whichever
+      // diagnostic this compiler version happens to produce. Accessors are read back first, so a
+      // failure means the field stopped being read-only rather than that it stopped existing.
       currencyAmount.amount shouldBe 100.0
       schedulePeriod.startDate shouldBe jan15
       iborIndex.name shouldBe "GBP-LIBOR-3M"
@@ -1853,7 +1833,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       assertDoesNotCompile("""immutableCalendar.startYear = 2021""")
       assertDoesNotCompile("""doubleArray.get(0) = 99.0""")
     },
-    row(Policy, "DoubleArray.ofUnsafe", "and toArrayUnsafe are private[collect] and out of reach from this module") {
+    row(Policy, "DoubleArray.ofUnsafe", "and toArrayUnsafe are not ported, so neither name resolves here") {
       doubleArray.get(0) shouldBe 1.0
       assertCompiles("""DoubleArray.of(1.0, 2.0, 3.0)""")
       assertCompiles("""DoubleArray.copyOf(Array(1.0, 2.0, 3.0))""")
@@ -1862,7 +1842,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       assertTypeError("""DoubleArray.ofUnsafe(Array(1.0, 2.0, 3.0))""")
       assertTypeError("""doubleArray.toArrayUnsafe""")
     },
-    row(Policy, "DoubleMatrix.ofUnsafe", "and toArrayUnsafe are private[collect] and out of reach from this module") {
+    row(Policy, "DoubleMatrix.ofUnsafe", "and toArrayUnsafe are not ported, so neither name resolves here") {
       doubleMatrix.get(1, 1) shouldBe 4.0
       assertCompiles("""DoubleMatrix.of(2, 2, 1.0, 2.0, 3.0, 4.0)""")
       assertCompiles("""DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(3.0, 4.0)))""")
@@ -1870,6 +1850,62 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       assertCompiles("""doubleMatrix.toArray""")
       assertTypeError("""DoubleMatrix.ofUnsafe(Array(Array(1.0, 2.0), Array(3.0, 4.0)))""")
       assertTypeError("""doubleMatrix.toArrayUnsafe""")
+    },
+    row(
+      Policy,
+      "UnsafeArrayHooks",
+      "are absent from the compiled numeric classes, whose only route to an array copies") {
+      // The two rows above ask the compiler, which answers about names. This one asks the
+      // compiled classes, which is the level the guarantee actually holds at: a member restricted
+      // to `collect` would be rejected by the compiler here and would still be a public method
+      // callable from bytecode, so a name that does not resolve is necessary and not sufficient.
+      //
+      // Of every public member of the four classes - the two types and their companions - the
+      // ones that answer with a primitive array are named here, and each is a copier: the three
+      // accessors, which copy out of a value, and the matrix's compiler-named deep copy, which
+      // copies the argument it is handed and reads no field of any instance. Anything else
+      // appearing in this list would be a route to the storage, whatever it was called.
+      val members =
+        List(
+          classOf[DoubleArray].getDeclaredMethods.toList,
+          DoubleArray.getClass.getDeclaredMethods.toList,
+          classOf[DoubleMatrix].getDeclaredMethods.toList,
+          DoubleMatrix.getClass.getDeclaredMethods.toList).flatten
+
+      members.map(member => member.getName).filter(name => name.contains("Unsafe")) shouldBe empty
+
+      val arrayReturns =
+        members
+          .filter(member => Modifier.isPublic(member.getModifiers))
+          .filter(member =>
+            member.getReturnType == classOf[Array[Double]] ||
+              member.getReturnType == classOf[Array[Array[Double]]])
+          .map(member => member.getName)
+          .distinct
+          .sorted
+      withClue(s"public members answering with a primitive array: $arrayReturns: ") {
+        arrayReturns shouldBe
+          List("columnArray", "com$opengamma$strata$collect$array$DoubleMatrix$$deepClone",
+            "rowArray", "toArray")
+      }
+
+      // and the copying is observable from here, through the one construction path bytecode can
+      // reach: the constructor of each type, invoked with an array this module still holds.
+      val arraySource = Array(1.0, 2.0, 3.0)
+      val builtArray = classOf[DoubleArray].getConstructors.head
+        .newInstance(arraySource.asInstanceOf[AnyRef])
+        .asInstanceOf[DoubleArray]
+      arraySource(0) = 99.0
+      builtArray.get(0) shouldBe 1.0
+
+      val rowSource = Array(Array(1.0, 2.0), Array(3.0, 4.0))
+      val builtMatrix = classOf[DoubleMatrix].getConstructors.head
+        .newInstance(rowSource.asInstanceOf[AnyRef], Integer.valueOf(2), Integer.valueOf(2))
+        .asInstanceOf[DoubleMatrix]
+      rowSource(0)(0) = 99.0
+      rowSource(1) = Array(99.0, 99.0)
+      builtMatrix.get(0, 0) shouldBe 1.0
+      builtMatrix.get(1, 1) shouldBe 4.0
     },
     row(Policy, "Decimal.MAX_SCALE", "is private[collect] and out of reach from this module") {
       decimal.scale shouldBe 2
@@ -1913,17 +1949,13 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
     row(Policy, "ImmutableReferenceData.values", "is public, and an immutable Scala map a caller cannot alter") {
       val store: ImmutableReferenceData = ImmutableReferenceData.of(gbloId, gblo)
 
-      // published, and it answers with what the store holds
       store.values(gbloId) shouldBe gblo
 
-      // an immutable Scala map: the immutable ascription compiles, the mutable one does not, and
-      // no member that would alter the store in place exists on what a caller is handed. Rule 10
-      // also forbids a `java.util` type in a public signature, which the first line pins.
-      //
-      // The first three rejections are type errors - a mismatched ascription and a member that
-      // does not exist - so they are asserted as such. The fourth is an assignment, whose
-      // diagnostic depends on the shape of the target in the way the `ReadOnlyFields` row above
-      // describes, so it takes the weaker assertion for the same reason that row does.
+      // an immutable Scala map, which the first ascription pins: the immutable form compiles, the
+      // mutable one does not, and no member that would alter the store in place exists on what a
+      // caller is handed. The two type errors - a mismatched ascription and a member that does
+      // not exist - are asserted as such; the third rejection is an assignment, so it takes the
+      // weaker assertion for the reason `ReadOnlyFields` gives.
       assertCompiles(
         """val view: scala.collection.immutable.Map[ReferenceDataId[_], Any] = store.values""")
       assertTypeError(
@@ -1932,26 +1964,250 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       assertDoesNotCompile("""store.values(gbloId) = gblo""")
 
       // and it is a view, not a route in: what a caller does with the map it was given cannot
-      // change the store, whose only construction path remains the entry-based factories
+      // change the store, whose only construction path remains its own factories
       val exported: Map[ReferenceDataId[_], Any] = store.values
       (exported - (gbloId: ReferenceDataId[_])) shouldBe Map.empty[ReferenceDataId[_], Any]
       store.values(gbloId) shouldBe gblo
       store.findValue(gbloId) shouldBe Some(gblo)
+    },
+    row(
+      Policy,
+      "JvmConstructionClosure",
+      "keeps every implementation of a closed type inside that type at run time, not only in the source") {
+      // The first half: every validated and normalising value in this file is an instance of the
+      // one implementation its companion declares, and that class is private and final in the
+      // class file - so a caller compiled by another language against these class files cannot
+      // name it, cannot extend it, and has nothing else to extend. The names are read off the
+      // values the fixtures built through the factories, so a type whose factory started
+      // answering with something else fails here rather than silently reopening.
+      val published: List[(String, AnyRef)] = List(
+        "StandardId" -> standardId,
+        "Country" -> country,
+        "Decimal" -> decimal,
+        "FixedScaleDecimal" -> fixedScaleDecimal,
+        "CurrencyAmount" -> currencyAmount,
+        "CurrencyAmountArray" -> currencyAmountArray,
+        "MultiCurrencyAmount" -> multiCurrencyAmount,
+        "MultiCurrencyAmountArray" -> multiCurrencyAmountArray,
+        "Money" -> money,
+        "BigMoney" -> bigMoney,
+        "FxRate" -> gbpUsdRate,
+        "FxMatrix" -> fxMatrix,
+        "Tenor" -> tenor,
+        "MarketTenor" -> marketTenor,
+        "HolidayCalendarId" -> compositeCalendarId,
+        "ImmutableHolidayCalendar" -> immutableCalendar,
+        "DayCount.Bus252" -> bus252Member,
+        "SequenceDate" -> sequenceDate,
+        "AdjustableDates" -> adjustableDates,
+        "DaysAdjustment" -> daysAdjustment,
+        "PeriodAdjustment" -> periodAdjustment,
+        "TenorAdjustment" -> tenorAdjustment,
+        "IborIndexObservation" -> iborObservation,
+        "OvernightIndexObservation" -> overnightObservation,
+        "FxIndexObservation" -> fxObservation,
+        "Frequency" -> frequency,
+        "SchedulePeriod" -> schedulePeriod,
+        "Schedule" -> schedule,
+        "PeriodicSchedule" -> periodicSchedule,
+        "HalfUp" -> halfUp,
+        "ValueStep" -> valueStep,
+        "ValueStepSequence" -> valueStepSequence,
+        "ValueSchedule" -> valueSchedule)
+      withClue("every validated and normalising type of both modules is audited here: ")(
+        published should have size 33)
+      published.foreach {
+        case (subject, value) =>
+          val implementation: Class[_] = value.getClass
+          withClue(s"$subject is built as the hidden implementation its family declares: ") {
+            Modifier.isPrivate(implementation.getModifiers) shouldBe true
+            Modifier.isFinal(implementation.getModifiers) shouldBe true
+            declaredInFamily(implementation, implementation.getSuperclass) shouldBe true
+          }
+      }
+
+      // The second half, and the exhaustive one: over every class the two modules compile to,
+      // every subclass of an abstract class of theirs is closed, in one of the three ways a class
+      // file can be closed. It is abstract, so no instance of it exists; or it is a singleton; or
+      // it is a named final class, so nothing compiled elsewhere can extend it. What this reports
+      // is therefore a subclass something outside these modules could extend, and an anonymous
+      // implementation - the `new X(...) {}` form the validated types were first written with,
+      // which the compiler publishes as a class no declaration names and whose constructor is
+      // public - wherever either is reintroduced.
+      //
+      // Two of the three allowances are worth stating, because each is a shape that only became
+      // legitimate once the hierarchies were closed properly. An abstract candidate passes
+      // without being nested inside its parent: no instance of it can exist, and the concrete
+      // classes that do extend it are swept by this same pass, which is what closes the
+      // hierarchy. It is also the only shape a multi-level closed hierarchy can take - the index
+      // families are the case in point, `RateIndex` extending `FloatingRateIndex` extending
+      // `Index`, each a top-level abstract class so that a class file compiled elsewhere cannot
+      // claim the type without running a constructor this library controls, and a top-level class
+      // has no declaring class to be nested in. A named final candidate passes likewise, because
+      // a total type is published as itself: `PriceIndexObservation` is a `final case class` with
+      // a public `apply` by AAP 0.3.3, since an index paired with a month cannot be inconsistent,
+      // and it is closed against being extended all the same.
+      //
+      // The stronger claim - that the implementation of a validated or normalising type is nested
+      // inside that type and private - is not weakened by any of this: it is asserted above, over
+      // all 33 of them, one live value at a time.
+      val openImplementations: List[String] =
+        compiledClasses.flatMap { candidate =>
+          Option(candidate.getSuperclass)
+            .filter(parent =>
+              parent.getName.startsWith("com.opengamma.strata.") &&
+                Modifier.isAbstract(parent.getModifiers))
+            .flatMap { parent =>
+              val named: Boolean =
+                !candidate.isAnonymousClass && !candidate.isSynthetic &&
+                  !candidate.getName.contains("$anon$")
+              val closedShape: Boolean =
+                Modifier.isAbstract(candidate.getModifiers) ||
+                  candidate.getName.endsWith("$") ||
+                  (named && Modifier.isFinal(candidate.getModifiers))
+              if (closedShape) { None }
+              else { Some(s"${candidate.getName} extends ${parent.getName}") }
+            }
+        }
+      withClue("the sweep must find implementations to audit, or it asserts nothing: ")(
+        compiledClasses.size should be >= 300)
+      withClue("every implementation of an abstract type of these modules is closed: ")(
+        openImplementations shouldBe empty)
+
+      // The closure of the three levels that carry no data and were traits until the class file
+      // was read rather than the source: a trait compiles to a plain JVM interface, which a class
+      // compiled elsewhere may implement without running any constructor of this library, so a
+      // match the compiler proved exhaustive could meet a case that does not exist in the source.
+      // All three are abstract classes now, and the root refuses a subtype outside the families it
+      // admits. `IndexObservation` is deliberately not among them - it is an open contract, which
+      // the open-contract row above audits as one, and its four leaf types carry their own closure.
+      withClue("the root of the index hierarchy is a class, so claiming it runs a constructor: ")(
+        classOf[Index].isInterface shouldBe false)
+      withClue("the intermediates of the index hierarchy are classes for the same reason: ") {
+        classOf[RateIndex].isInterface shouldBe false
+        classOf[FloatingRateIndex].isInterface shouldBe false
+      }
+
+      // And the guard itself, which is what makes the two halves above hold at run time rather
+      // than only in the class file: it admits the implementation a family publishes and refuses
+      // every other class, so a subtype compiled elsewhere cannot finish construction.
+      JvmClosure.requireSoleImplementation(currencyAmount, currencyAmount.getClass)
+      JvmClosure.requireDeclaredMember(DayCounts.ACT_360, classOf[DayCount])
+      JvmClosure.requireDeclaredMember(gbp, classOf[Currency])
+      JvmClosure.requireDeclaredMember(iborIndex, classOf[IborIndex])
+      val foreignImplementation: IllegalArgumentException =
+        intercept[IllegalArgumentException](
+          JvmClosure.requireSoleImplementation(currencyAmount, classOf[FxRate]))
+      foreignImplementation.getMessage should include("admits only the implementation it publishes")
+      val foreignMember: IllegalArgumentException =
+        intercept[IllegalArgumentException](
+          JvmClosure.requireDeclaredMember(new AnyRef, classOf[Currency]))
+      foreignMember.getMessage should include("is a closed family")
+      foreignMember.getMessage should include("is not one of its published members")
+
+      // The subtype guard of a closed root, which is what the two roots above run: it admits a
+      // value of a permitted family and refuses one of any other class, so a class file that
+      // claims the root type cannot finish construction.
+      JvmClosure.requirePermittedSubtype(iborIndex, classOf[IborIndex], classOf[FxIndex])
+      val foreignSubtype: IllegalArgumentException =
+        intercept[IllegalArgumentException](
+          JvmClosure.requirePermittedSubtype(new AnyRef, classOf[IborIndex], classOf[FxIndex]))
+      foreignSubtype.getMessage should include("is not one of the subtypes this hierarchy admits")
+
+      // And the last of the four, which is the one that closes the gap the other three cannot.
+      // A hidden implementation is private in the source and in the `InnerClasses` metadata that
+      // `javac` reads, but the class and its constructor are both `ACC_PUBLIC` in the class file,
+      // so a class file emitted without a Scala or Java compiler can call that constructor and
+      // present arguments no factory would have accepted. Its runtime class is then exactly the
+      // one the identity guard admits, which is why identity alone is not closure: what refuses
+      // such a value is each type restating its own invariant over the fields it holds.
+      // (Reflection reports the `InnerClasses` access flag for the class itself, which is the
+      // `private` the assertion above reads and the one `javac` honours; the constructor's own
+      // access flag is the entry point, and it is public.)
+      withClue("the implementation constructors are public in the class file, which is why the " +
+        "invariant and not the identity is what closes them: ")(
+        currencyAmount.getClass.getDeclaredConstructors.exists(constructor =>
+          Modifier.isPublic(constructor.getModifiers)) shouldBe true)
+      JvmClosure.requireInvariant("a satisfied condition holds", condition = true)
+      val brokenInvariant: IllegalArgumentException =
+        intercept[IllegalArgumentException](
+          JvmClosure.requireInvariant("its amount is a number", condition = false))
+      brokenInvariant.getMessage should include("a value of this type requires that")
+      brokenInvariant.getMessage should include("its amount is a number")
+    },
+    row(
+      Policy,
+      "JavaSerialization",
+      "is refused by every product of both modules, on the write path and on the read path") {
+      // The exhaustive half. The compiler gives every case class and every case object a
+      // `java.io.Serializable` supertype, which is a second construction path into each of them:
+      // `java.io.ObjectInputStream` populates the fields of a product from a stream without
+      // consulting the factory that validated them. Every product of both modules therefore
+      // carries the refusal, and this is asserted over the compiled classes so that a type added
+      // later is covered by the same assertion.
+      val products: List[Class[_]] = compiledClasses.filter(isProduct)
+      withClue("both modules publish products, or this audit would assert nothing: ")(
+        products.size should be >= 150)
+      withClue("every compiled product of both modules refuses Java serialization: ")(
+        products.filterNot(refusesSerialization).map(candidate => candidate.getName) shouldBe empty)
+
+      // and the refusal is not overridable, which is the difference between a refusal and a
+      // convention. `writeReplace` and `readResolve` are the two hooks the JDK consults, and a
+      // subclass that overrode them - returning itself rather than refusing - would be written
+      // and read normally, its fields populated by the stream. Both are declared `final` in
+      // `NoJavaSerialization`, so the compiler emits them `ACC_FINAL` on every class that mixes
+      // it in, and a class file that declares an override is rejected when it is loaded, with
+      // `IncompatibleClassChangeError`, before any stream is read. That is asserted here over the
+      // emitted methods of every product rather than over the source that declares them.
+      val overridableHooks: List[String] =
+        products.flatMap { product =>
+          List("writeReplace", "readResolve").flatMap { hook =>
+            Try(product.getMethod(hook)).toOption
+              .filterNot(method => Modifier.isFinal(method.getModifiers))
+              .map(method => s"${product.getName}.${method.getName}")
+          }
+        }
+      withClue("neither serialization hook can be overridden by a subclass of a product: ")(
+        overridableHooks shouldBe empty)
+      withClue("the hooks are present to be final, or the assertion above is vacuous: ") {
+        Modifier.isFinal(currencyAmount.getClass.getMethod("writeReplace").getModifiers) shouldBe true
+        Modifier.isFinal(currencyAmount.getClass.getMethod("readResolve").getModifiers) shouldBe true
+      }
+
+      // and nothing else that takes part in Java serialization holds data of this library: what
+      // remains is the compiler's own encoding, which `isCompilerGenerated` describes
+      val residue: List[String] =
+        compiledClasses
+          .filter(candidate =>
+            classOf[java.io.Serializable].isAssignableFrom(candidate) &&
+              !refusesSerialization(candidate) &&
+              !isProduct(candidate))
+          .filterNot(isCompilerGenerated)
+          .map(candidate => candidate.getName)
+      withClue("no type of either module takes part in Java serialization: ")(residue shouldBe empty)
+
+      // The behavioural half: one value of every shape these modules publish, refused on the way
+      // out and refused by the hook that would hand a forged instance back to a caller.
+      refusesJavaSerialization("a validated value", currencyAmount)
+      refusesJavaSerialization("a normalised value", tenor)
+      refusesJavaSerialization("a total case class", payment)
+      refusesJavaSerialization("a case object member of a closed family", DayCounts.ACT_360)
+      refusesJavaSerialization("a family member built from a data table", gbp)
+      refusesJavaSerialization("an index", iborIndex)
+      refusesJavaSerialization("a floating rate name", gbpLiborName)
+      refusesJavaSerialization("an index observation", iborObservation)
+      refusesJavaSerialization("a holiday calendar", immutableCalendar)
+      refusesJavaSerialization("a member of a sealed sum", Rounding.none)
+      refusesJavaSerialization("a failure", Failure.Invalid("refused"))
+      refusesJavaSerialization("a failure reason", FailureReason.INVALID)
+      refusesJavaSerialization("a schedule", schedule)
     })
 
   //-------------------------------------------------------------------------
   // The inventory itself, the tests derived from it, and the assertions that hold the two to
   // each other.
   //-------------------------------------------------------------------------
-  /**
-   * Every row of the audit, in the order the sections above declare them.
-   *
-   * This is the single source the tests of this suite are registered from, which is the point of
-   * the structure: a subject is audited because it has a row, and it is counted as covered because
-   * it has a row, so the two cannot disagree. The coverage assertions below compare the subjects
-   * of this list against the kind lists the construction policy fixes, and the registration
-   * assertion compares the names it produces against the names ScalaTest actually holds.
-   */
+  /** Every row of the audit, in the order the sections above declare them. */
   private val inventory: List[SurfaceRow] =
     validatedRows :::
       normalisingRows :::
@@ -1967,9 +2223,8 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   register(inventory)
 
   test("the construction-policy inventory is exactly the one the port's policy fixes") {
-    // The expected sets are the policy's own kind lists, transcribed in the companion. A type
-    // that loses its audit loses its row, and a row that is added for a type the policy does not
-    // classify has nowhere to be counted, so either shows up here rather than in a review.
+    // A type that loses its audit loses its row, and a row added for a type the construction
+    // policy does not classify has nowhere to be counted, so either shows up here.
     subjectsOf(Validated) shouldBe ExpectedValidatedSubjects
     subjectsOf(Normalising) shouldBe ExpectedNormalisingSubjects
     subjectsOf(Total) shouldBe ExpectedTotalSubjects
@@ -1986,11 +2241,10 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   }
 
   test("every inventory row registers its own test, and every test of this suite comes from one") {
-    // The two halves of the same property, and both are needed. The first says the inventory is
-    // exercised: every row's name is a test ScalaTest holds. The second says the inventory is the
-    // whole of the audit: the only tests not derived from a row are the three assertions of this
-    // section, the sensitivity control and the source derivation, so an audit added outside the
-    // inventory - which would then be counted by nothing - changes the total and fails here.
+    // Both halves are needed. The first says the inventory is exercised: every row's name is a
+    // test ScalaTest holds. The second says the inventory is the whole of the audit: the only
+    // tests not derived from a row are the three of this section, the sensitivity control and the
+    // source derivation, so an audit added outside the inventory changes the total and fails.
     inventory.map(entry => entry.testName).distinct should have size inventory.size.toLong
     inventory.map(entry => entry.testName).toSet.subsetOf(testNames) shouldBe true
     testNames should have size (inventory.size + StandaloneTests).toLong
@@ -1999,11 +2253,12 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   test("the sealing proof is sensitive, because the same probe compiles over an open contract") {
     // What keeps every sealing assertion above honest. A trait probe is rejected by the `sealed`
     // modifier and by nothing else, which is only worth asserting if the compiler would otherwise
-    // accept it - so here it is accepted, over every contract this module leaves open. If some
-    // later change made a trait probe fail for an unrelated reason, this test would fail and the
-    // sealing rows would stop being evidence of anything.
+    // accept it - so here it is accepted, over every contract this module leaves open. A later
+    // change that made a trait probe fail for an unrelated reason fails this test rather than
+    // leaving the sealing rows as evidence of nothing.
     assertCompiles("""{ trait Host extends ReferenceData; () }""")
     assertCompiles("""{ trait Host extends ReferenceDataId[HolidayCalendar]; () }""")
+    assertCompiles("""{ trait Host extends IndexObservation; () }""")
     assertCompiles("""{ trait Host extends FloatingRate; () }""")
     assertCompiles("""{ trait Host extends CalculationTarget; () }""")
     assertCompiles("""{ trait Host extends Resolvable[CalculationTarget]; () }""")
@@ -2013,18 +2268,11 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
   }
 
   test("the function, alias and witness surfaces are derived from the sources, not transcribed") {
-    // The other coverage assertions of this file compare the inventory against sets transcribed
-    // from the port's construction policy, which is the right check for a data type: the policy
-    // names it, so a type that lost its audit is a type missing from the inventory.
-    //
-    // The surfaces below are the ones the policy does not enumerate - a callback trait nested in
-    // a numeric wrapper's companion, a type alias a module root publishes, the witness an
-    // identifier carries - so a transcribed set cannot report a new one. Here the expectation is
-    // read out of the sources instead: every published `trait` of the two numeric wrappers, every
-    // published `type` of the two module roots and of the floating-rate companion, and every
-    // published class of the identifier source. Adding a sixth callback, a fifth alias or a
-    // second witness therefore fails this test until it is classified and audited, which is what
-    // the closure claim of the codec inventory rests on.
+    // A set transcribed from the construction policy cannot report a surface the policy does not
+    // enumerate, so these expectations are read out of the sources instead: every published
+    // `trait` of the two numeric wrappers, every published `type` of the two module roots and of
+    // the floating-rate companion, and every published class of the identifier source. Adding a
+    // sixth callback, a sixth alias or a second witness fails this test until it is audited.
     val callbacks =
       publicDeclarations(
         sourceLines("strata-collect/src/main/scala/com/opengamma/strata/collect/array/DoubleArray.scala"),
@@ -2057,8 +2305,7 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
       subjectsOf(WitnessSurface) shouldBe witnesses)
 
     // and the transcribed tables are read the same way: each is module-internal in the source
-    // itself, so a row type that became published would be an unaudited public data type - which
-    // is the form the omission originally took
+    // itself, so a row type that became published would be an unaudited public data type
     val tables =
       List(
         "IborIndexData" -> "IborIndexRow",
@@ -2087,35 +2334,25 @@ class ApiSurfaceSpec extends AnyFunSuite with Matchers {
  * What [[ApiSurfaceSpec]] is built from: the vocabulary of its inventory, the kind lists the
  * inventory is held to, and the host implementations of this module's open contracts.
  *
- * The vocabulary is [[ApiSurfaceSpec.Kind]] and [[ApiSurfaceSpec.SurfaceRow]] - one kind of public
- * surface, and one row of the audit - followed by the expected subjects of each kind, transcribed
- * from the port's construction policy. Those sets are the '''expectation''': the suite's coverage
- * assertions compare the inventory it actually declares against them, so a subject that loses its
- * audit is reported rather than silently stopping being audited, and a row added for a subject the
- * policy does not classify has nowhere to be counted.
+ * The vocabulary is [[ApiSurfaceSpec.Kind]] and [[ApiSurfaceSpec.SurfaceRow]], followed by the
+ * expected subjects of each kind, transcribed from the construction policy and held to the
+ * declared inventory by the coverage assertions.
  *
- * The host implementations are the positive half of the open-contract rows. They live here rather
- * than inside the spec class for a reason the compiler insists on: a case class nested in a class
- * carries a reference to its enclosing instance, which makes the equality check it synthesises
- * unverifiable at run time and - under this build's fatal-warning setting - an error. Nested in
- * an object they have no such reference, and the equality of `HostTarget` and `HostConvertible`,
- * which two of the rows rely on, is the ordinary structural one.
- *
- * Every one of them is declared as ordinary code rather than inside a compile-assertion string, so
- * the compiler checks each of them at every build of this module: a change that sealed one of
- * these contracts, or altered the shape of a member, would stop this file from compiling.
+ * The host implementations are the positive half of the open-contract rows, and they live here
+ * rather than inside the spec class for a reason the compiler insists on: a case class nested in
+ * a class carries a reference to its enclosing instance, which makes the equality check it
+ * synthesises unverifiable at run time and - under this build's fatal-warning setting - an error.
+ * Nested in an object they have no such reference, and the equality of the three case classes
+ * below, which three of the rows rely on, is the ordinary structural one.
  */
 private object ApiSurfaceSpec {
 
   /**
    * The kind of public surface an inventory row is about.
    *
-   * The first three are the construction kinds of the port's policy, which fix what a type's
-   * constructor surface must look like. The rest are the other ways a public surface can be
-   * classified: a closed family, an open contract, a function type, an alias, a witness, data
-   * that is not published at all, or a policy that spans several types at once. Every row carries
-   * exactly one of them, and the coverage assertions compare the rows of each kind against the
-   * subjects that kind is expected to have.
+   * The first three are the construction kinds, which fix what a type's constructor surface must
+   * look like; the rest are the other ways a public surface can be classified. Every row carries
+   * exactly one kind.
    *
    * @param tag  how the kind is rendered at the start of a test name
    */
@@ -2130,7 +2367,7 @@ private object ApiSurfaceSpec {
   /** A total type: every well-typed input is accepted, so the case class surface is kept. */
   case object Total extends Kind("[T]")
 
-  /** A sealed family, whose members exist only in their companion. */
+  /** A sealed family, whose subtypes are all declared in its own file. */
   case object ClosedFamily extends Kind("sealed")
 
   /** A contract left open on purpose, because an application or another file implements it. */
@@ -2154,8 +2391,8 @@ private object ApiSurfaceSpec {
   /**
    * One row of the audit: what it is about, what it claims, and the assertions that prove it.
    *
-   * The audit is held as a function rather than run when the row is built, so that the inventory
-   * can be assembled - and counted - before any of it executes.
+   * The audit is held as a function, so the inventory can be assembled - and counted - before it
+   * executes.
    *
    * @param kind  the kind of surface the row is about
    * @param subject  the type, member or alias the row is about
@@ -2175,9 +2412,7 @@ private object ApiSurfaceSpec {
   /**
    * The validated types of the construction policy, transcribed from it.
    *
-   * Twenty-three types, every one of which must publish neither `apply` nor `copy` and must still
-   * destructure. The set is the expectation the inventory is held to, so a type that loses its
-   * audit is reported here rather than quietly stopping being audited.
+   * Twenty-three types, each publishing neither `apply` nor `copy` and still destructuring.
    */
   val ExpectedValidatedSubjects: Set[String] = Set(
     "StandardId",
@@ -2220,9 +2455,8 @@ private object ApiSurfaceSpec {
   /**
    * The total types of the construction policy, transcribed from it.
    *
-   * The last two are the policy's own representation exception - a final class over a private
-   * primitive array, with copy-safe total factories - and are audited as that rather than as case
-   * classes.
+   * The last two are the representation exception - a final class over a private primitive array,
+   * with copy-safe total factories - and are audited as that rather than as case classes.
    */
   val ExpectedTotalSubjects: Set[String] = Set(
     "CurrencyPair",
@@ -2260,19 +2494,20 @@ private object ApiSurfaceSpec {
     "ValueAdjustmentType",
     "FloatingRateName",
     "Failure",
-    "FailureReason",
-    "IndexObservation")
+    "FailureReason")
 
   /**
    * The contracts this module leaves open.
    *
-   * `IndexObservation` is deliberately absent: its four implementations share its file, so the
-   * family is sealed, its row sits with the closed families and the sensitivity control below
-   * carries one probe fewer than it once did.
+   * `IndexObservation` is one of them: the ported interface is a plain Java interface, so an
+   * application may observe an indicator of its own, and the four observations this module builds
+   * each live in a file of their own - which sealing the trait would forbid. Its row therefore
+   * sits with the open contracts, and the sensitivity control below carries a probe for it.
    */
   val ExpectedOpenContractSubjects: Set[String] = Set(
     "ReferenceData",
     "ReferenceDataId",
+    "IndexObservation",
     "FloatingRate",
     "CalculationTarget",
     "DateAdjuster",
@@ -2312,31 +2547,31 @@ private object ApiSurfaceSpec {
     "ReadOnlyFields",
     "DoubleArray.ofUnsafe",
     "DoubleMatrix.ofUnsafe",
+    "UnsafeArrayHooks",
     "Decimal.MAX_SCALE",
     "DoubleArray.toArray",
     "DoubleArray factories",
     "DoubleMatrix.toArray",
     "DoubleMatrix factories",
-    "ImmutableReferenceData.values")
+    "ImmutableReferenceData.values",
+    "JvmConstructionClosure",
+    "JavaSerialization")
 
   /**
    * The number of tests this suite declares outside the inventory.
    *
-   * The three coverage assertions, which compare the inventory against the sets above, the
-   * sensitivity control for the sealing probes, and the derivation that reads the function,
-   * alias and witness surfaces out of the module sources. Nothing else may be registered by
-   * hand: the registration assertion compares this number plus the size of the inventory
-   * against what ScalaTest holds, so an audit written outside a row fails it.
+   * The two coverage assertions, the registration assertion, the sensitivity control for the
+   * sealing probes, and the derivation that reads the function, alias and witness surfaces out of
+   * the module sources. The registration assertion compares this number plus the size of the
+   * inventory against what ScalaTest holds, so an audit written outside a row fails it.
    */
   val StandaloneTests: Int = 5
 
   /**
    * A host's own reference data, wrapping another source and passing every question to it.
    *
-   * This is the shape `HolidaySafeReferenceData` has, reduced to the part that matters here: it
-   * lives outside `ReferenceData.scala`, it implements the one abstract member, and it overrides
-   * the derived one - all three of which must be possible for an application to supply holidays
-   * of its own.
+   * It lives outside `ReferenceData.scala`, implements the one abstract member and overrides the
+   * derived one - all three of which an application supplying its own holidays needs.
    *
    * @param underlying  the reference data the host already has
    */
@@ -2348,11 +2583,9 @@ private object ApiSurfaceSpec {
   /**
    * A host's own identifier, which resolves through the default the trait supplies.
    *
-   * It implements the one member the trait leaves abstract - the witness for the type of data
-   * it refers to - and nothing else, which is the whole of what an application has to write
-   * for reference data of a type this library already knows: the witness for a holiday
-   * calendar is published by `ReferenceDataType`. A host naming data of its own type declares
-   * a witness for it the same way, with `ReferenceDataType.of`.
+   * It implements the one member the trait leaves abstract - the witness for the type of data it
+   * refers to - and nothing else, which is the whole of what an application has to write for data
+   * of a type this library already knows.
    */
   final case class HostReferenceDataId(label: String) extends ReferenceDataId[HolidayCalendar] {
     override def valueType: ReferenceDataType[HolidayCalendar] = ReferenceDataType.holidayCalendar
@@ -2361,6 +2594,15 @@ private object ApiSurfaceSpec {
   /** A host's own floating rate, which is what `FloatingRateName` is from another file. */
   final class HostFloatingRate(val name: String, val floatingRateName: FloatingRateName)
       extends FloatingRate
+
+  /**
+   * A host's own observation, declared outside the file that declares the contract it satisfies.
+   *
+   * It exists to be compiled: an implementation of `IndexObservation` from outside the module is
+   * the extension point the open trait offers, and a change that sealed the trait would stop this
+   * declaration compiling rather than merely fail an assertion.
+   */
+  final case class HostIndexObservation(index: Index) extends IndexObservation
 
   /** A host's own calculation target, the contract every financial instrument will implement. */
   final case class HostTarget(notional: CurrencyAmount) extends CalculationTarget

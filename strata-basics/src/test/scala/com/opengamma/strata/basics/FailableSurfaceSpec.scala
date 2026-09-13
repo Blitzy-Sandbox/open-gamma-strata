@@ -120,177 +120,134 @@ import com.opengamma.strata.collect.testkit.Outcome
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
- * Asserts the failable public '''method''' surface of both ported modules, one case per owner and
- * method family enumerated from the sources of the two modules, and one per entry of the inventory
- * of AAP section 0.3.3.
- *
- * That inventory was produced by applying one classification rule to every `throw` and every
- * `ArgChecker` call of the public methods of the Java classes being ported:
- *
- *   - a method whose failure depends on the '''data''' of its arguments - mismatched currencies,
- *     an unknown identifier, unequal sizes, unparseable text, an inconsistent schedule definition
- *     - reports that failure as a value, returning `Either[Failure, A]` or its accumulating form
- *     `EitherNec[Failure, A]`;
- *   - a throw that guards a '''caller contract''' independent of the values supplied - an index
- *     within bounds, dates given in order, the schedule information a convention is defined in
- *     terms of - or that guards a '''numeric domain edge''' remains a fail-fast `ArgCheck` throw,
- *     documented as such on the method that raises it.
- *
- * This suite asserts each method on the side of that line the inventory puts it on, and it must
- * never move one across: a method listed as reporting a value is asserted to return a `Left`, and
- * a method listed as raising is asserted with `intercept`, every hand-written `intercept` carrying
- * a comment that names why that particular refusal is a contract or a numeric edge rather than a
- * value, and every generated one naming the exception type it intercepts in its row. Together
- * with `SmartConstructorSpec`, which owns the '''constructor''' half of the same inventory, this is
- * the Rule 5 gate of AAP section 0.10.1:
+ * Asserts the failable public '''method''' surface of both modules, one case per owner and method
+ * family enumerated from their sources and one per entry of the documented inventory.
+ * This suite and `SmartConstructorSpec`, which owns the constructor half of the same inventory,
+ * are the explicit-error-handling gate:
  * `sbt -batch "testOnly *SmartConstructorSpec *FailableSurfaceSpec *ApiSurfaceSpec *FailureSpec"`.
  *
- * ===The inventory is derived, not transcribed===
+ * ===The classification rule===
  *
- * The plan's inventory is a list of names, and a suite that asserted only those names would cover
- * whatever the list happened to hold. This suite therefore '''enumerates''' the surface instead:
- * while it is being built it reads every Scala source of both modules from [[SourceRoots]] and
- * collects
+ * One rule places every failing member on one side of a line:
  *
- *   - every public `def` whose declared return type is a failure channel (`Either`, `EitherNec`,
- *     `ResultNec`, `FailureOr`, `ValidatedNec`, `ValidatedFailures`, `Validated` or
- *     `ValueWithFailures`), and
- *   - every public `def` whose scaladoc documents a throw with a `@throws` tag,
+ *   - a failure that depends on the '''data''' of the arguments - mismatched currencies, an
+ *     unknown identifier, unequal sizes, unparseable text, an inconsistent schedule definition -
+ *     is reported as a value, through `Either[Failure, A]` or its accumulating form
+ *     `EitherNec[Failure, A]`;
+ *   - a refusal that guards a '''caller contract''' independent of the values supplied - an index
+ *     within bounds, dates given in order, the schedule information a convention is defined in
+ *     terms of - or a '''numeric domain edge''' is a fail-fast `ArgCheck` throw, documented on the
+ *     method that raises it.
  *
- * keyed by `Owner.method`, and then requires one '''row''' of its registry per family so
- * enumerated. A row is `Rejects` (the call must report at least one failure), `Raises` (the call
- * must raise the documented exception), `Total` (the family carries the channel but no input can
- * fill it - the reason is part of the row and the call must succeed) or `Covered` (an abstract
- * declaration whose failure another named row asserts). One test is generated per row, so a row
- * cannot exist without an executed assertion, and the coverage tests at the end of the suite hold
- * the two together in both directions: a family with no row fails, and a row naming a family the
- * enumeration no longer finds fails too. Every count this suite reports - the size of the surface,
- * the rows by kind, the entries of the plan - is computed from one of those two sets and printed by
- * `derived_inventory_counts`; none is written down.
+ * A member on the reporting side is asserted to return a `Left`; one on the raising side is
+ * asserted with `intercept`, and each hand-written `intercept` names why that refusal is a
+ * contract or a numeric edge rather than a value.
+ *
+ * ===The enumeration is derived, not transcribed===
+ *
+ * A suite asserting only the names the plan lists would cover whatever the list happened to hold,
+ * so this one reads the sources of both modules while it is being built, keys the failable
+ * declarations it finds by `Owner.method`, and requires one '''row''' of its registry per family
+ * and one '''claim''' per signature. The coverage tests at the end compare rows and claims with
+ * the enumeration in both directions, so a member added to either module, or one whose signature
+ * changes, fails here until something accounts for it. Every count the suite reports is computed
+ * from the enumeration or the registry and printed by `derived_inventory_counts`; none is written
+ * down. The enumeration and the four row kinds are described where they are built, below.
  *
  * The plan's own list is kept as [[aapFailableEntries]], [[aapReconciledEntries]] and
- * [[aapContractEntries]], each entry still paired with the hand-written test that covers it, and
- * `aap_inventory_is_a_subset_of_the_derived_surface` asserts that every name it holds is a family
- * the enumeration found - with two entries reconciled by name, each carrying the reason the plan's
- * name has no declaration of its own and the row or test that stands in for it.
+ * [[aapContractEntries]], each entry paired with the hand-written test that covers it. Two entries
+ * name no declaration of their own and are reconciled by name, each carrying its reason and the
+ * row or test that stands in for it. The hand-written tests assert messages, attributes,
+ * accumulation counts and success cases that a generated row does not; the row for such a member
+ * names its test with `alsoAssertedBy`, and the coverage tests check the test named still exists.
  *
- * The hand-written tests above the registry are not replaced by it: they assert messages,
- * attributes, accumulation counts and positive controls that a generated row does not, and the row
- * for such a member names its test with `alsoAssertedBy`, which the coverage tests check still
- * exists.
+ * ===What neighbouring suites assert instead===
  *
- * ===What this suite deliberately does not assert===
+ * The accumulation behaviour of the validated factories, and the messages of the two numeric-edge
+ * refusals, are `SmartConstructorSpec`'s; here a factory appears only where the inventory lists
+ * it, where the enumeration requires a row, or where it builds a fixture. The message '''text'''
+ * of a failure belongs to the spec of the type that produces it: a failure here is asserted by its
+ * [[FailureReason]], compared as a value of the closed family rather than as a string, and by the
+ * attribute the contract fixes where it fixes one - the `definition` of a rejected schedule.
  *
- * Two things belong to neighbouring suites and are not repeated here, so that a failure has one
- * home:
+ * ===Success cases and reference data===
  *
- *   - the accumulation behaviour of the validated factories themselves - which reasons a factory
- *     reports and in what combination - is `SmartConstructorSpec`'s, and this suite touches a
- *     factory only where the inventory lists it, where the enumeration requires a row for it, or
- *     where it has to build a fixture. That is also where the '''messages''' of the two
- *     numeric-edge refusals of AAP 0.3.3 are asserted - `CurrencyAmount` arithmetic reaching `NaN`
- *     from infinite operands and `Decimal` arithmetic overflowing eighteen digits - while the rows
- *     here assert that each of those families raises at all, because a throwing family the
- *     enumeration finds and this registry skipped would make the enumeration representative rather
- *     than exhaustive;
- *   - the exact message '''text''' of a failure belongs to the spec of the type that produces it.
- *     Here a failure is asserted by its [[FailureReason]], compared as a value of the closed family
- *     and never as a string, and by the attribute the AAP fixes where it fixes one - the
- *     `definition` of a rejected schedule. A message is matched only where it is the one thing that
- *     distinguishes two failures of the same reason from the same method.
- *
- * One further asymmetry is asserted rather than assumed: `Schedule.periodEndDate` answers `None`
- * for a date outside every period where the Java original threw. That is the one place this port is
- * '''more''' total than Java, and it is asserted as a `None` and never as a throw.
- *
- * ===Positive assertions===
- *
- * A suite in which everything fails would pass every assertion here, so the entries whose failure
- * is easiest to trigger by accident carry the success case as well: `CurrencyPair.other` for a
- * currency that is in the pair, `Frequency.exactDivide` for an integral ratio, `Country.of` for an
- * unknown but well-formed code - `Country` is an open validated value and `of("ZZ")` succeeds -
- * and every reference-data-resolving member against `ReferenceData.standard`.
- *
- * ===Reference data===
- *
- * Reference data is threaded explicitly at every call, as AAP section 0.6.5 requires: the success
- * side of a resolving member is asserted against [[standardRefData]] and its failure side against
- * [[emptyRefData]], which holds nothing at all. No ambient default is consulted anywhere.
+ * A suite in which everything failed would satisfy every failure assertion, so the entries whose
+ * failure is easiest to trigger by accident carry the success case too. Reference data is threaded
+ * explicitly at every call: the success side of a resolving member is asserted against
+ * [[standardRefData]] and its failure side against [[emptyRefData]], which holds nothing at all.
+ * No ambient default is consulted anywhere.
  *
  * @see `SmartConstructorSpec` for the constructor half of the same inventory
- * @see `ApiSurfaceSpec` for the compile-time half of Rule 5 - the absence of `apply` and `copy`
+ * @see `ApiSurfaceSpec` for the compile-time half - the absence of `apply` and `copy`
  */
 final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
   import FailableSurfaceSpec._
 
   //-------------------------------------------------------------------------
-  // Dates. Named as the Java tests of the schedule package named them, so that a reader comparing
-  // the two sees the same fixtures.
+  // Dates. The first four are the boundaries of the fixture schedule; the last two are the pair
+  // that needs a stub the 'None' convention forbids.
 
-  /** The 15th of January 2014, a Wednesday, and the start of the fixture schedule. */
   private val JAN_15: LocalDate = LocalDate.of(2014, 1, 15)
 
-  /** The 15th of April 2014, the second boundary of the fixture schedule. */
   private val APR_15: LocalDate = LocalDate.of(2014, 4, 15)
 
-  /** The 15th of July 2014, the third boundary of the fixture schedule. */
   private val JUL_15: LocalDate = LocalDate.of(2014, 7, 15)
 
-  /** The 15th of October 2014, the end of the fixture schedule. */
   private val OCT_15: LocalDate = LocalDate.of(2014, 10, 15)
 
-  /** The 4th of June 2014, the start of the Java `test_none_badStub` scenario. */
   private val JUN_04: LocalDate = LocalDate.of(2014, 6, 4)
 
-  /** The 17th of September 2014, the end of the Java `test_none_badStub` scenario. */
   private val SEP_17: LocalDate = LocalDate.of(2014, 9, 17)
 
-  /** The attribute key a rejected schedule definition is carried under, fixed by AAP 0.3.3. */
+  /** The attribute key a rejected schedule definition is carried under. */
   private val DefinitionAttribute: String = "definition"
 
   /** The part of an `ArgCheck` message that names the year precondition of a holiday calendar. */
   private val UnsupportedDateMessage: String = "outside the accepted range"
 
-  //-------------------------------------------------------------------------
-  // Reference data, threaded explicitly into every resolving call (AAP 0.6.5).
+  /** The part of an `ArgCheck` message that names the limit on how far a shift may walk. */
+  private val ShiftMagnitudeMessage: String = "business days is outside the accepted range"
 
-  /** Every built-in holiday calendar, which is the success side of every resolving member. */
+  /** The part of an `ArgCheck` message that names the limit on how deep a composite may read. */
+  private val CompositeDepthMessage: String = "cannot read through more than"
+
+  /** The part of an `ArgCheck` message that names a calendar with no possible business day. */
+  private val NoBusinessDayMessage: String = "no business day"
+
+  //-------------------------------------------------------------------------
+  // Reference data, threaded explicitly into every resolving call.
+
   private lazy val standardRefData: ReferenceData = ReferenceData.standard
 
-  /** Reference data holding nothing, which is the failure side of every resolving member. */
   private lazy val emptyRefData: ReferenceData = ReferenceData.empty
 
   //-------------------------------------------------------------------------
-  // Currency fixtures.
+  // Currency fixtures. Each pair disagrees in exactly one respect - the currency, or the size of
+  // the run - so that the failure a member reports for it has one cause.
 
-  /** One hundred pounds. */
   private lazy val gbp100: CurrencyAmount = obtained(CurrencyAmount.of(Currency.GBP, 100d))
 
-  /** One hundred dollars, which disagrees in currency with [[gbp100]]. */
   private lazy val usd100: CurrencyAmount = obtained(CurrencyAmount.of(Currency.USD, 100d))
 
-  /** One hundred euro, which no fixture matrix holds a rate for. */
+  /** One hundred euro, which the pound/dollar matrix holds no rate for. */
   private lazy val eur100: CurrencyAmount = obtained(CurrencyAmount.of(Currency.EUR, 100d))
 
-  /** One hundred pounds as money, rounded to the minor units of its currency. */
   private lazy val gbpMoney: Money = obtained(Money.of(Currency.GBP, 100d))
 
-  /** One hundred dollars as money, which disagrees in currency with [[gbpMoney]]. */
   private lazy val usdMoney: Money = obtained(Money.of(Currency.USD, 100d))
 
-  /** One hundred pounds as unrounded money. */
   private lazy val gbpBigMoney: BigMoney = obtained(BigMoney.of(Currency.GBP, 100d))
 
-  /** One hundred dollars as unrounded money. */
   private lazy val usdBigMoney: BigMoney = obtained(BigMoney.of(Currency.USD, 100d))
 
   /**
    * An infinite amount, which this type admits and no decimal holds.
    *
-   * An amount rejects only a value that is not a number, so the two infinities are values of it -
-   * and neither of them is a value of either exact-decimal type. This fixture is therefore the
-   * failure side of the two conversions to those types.
+   * An amount rejects only a value that is not a number, so the two infinities are values of it
+   * and neither is a value of either exact-decimal type. This is the failure side of the two
+   * conversions to those types.
    */
   private lazy val infiniteAmount: CurrencyAmount =
     obtained(CurrencyAmount.of(Currency.GBP, Double.PositiveInfinity))
@@ -298,42 +255,34 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /** A finite amount whose magnitude needs more than the eighteen digits a decimal holds. */
   private lazy val oversizedAmount: CurrencyAmount = obtained(CurrencyAmount.of(Currency.GBP, 1e30d))
 
-  /** The rate two, which no conversion into a currency's own currency may apply. */
+  /** The decimal two, which as a rate no conversion into a currency's own currency may apply. */
   private lazy val two: Decimal = obtained(Decimal.of(2L))
 
-  /** Three pound values. */
   private lazy val gbpArray: CurrencyAmountArray =
     CurrencyAmountArray.of(Currency.GBP, DoubleArray.of(1d, 2d, 3d))
 
-  /** Three dollar values, which disagree in currency with [[gbpArray]]. */
   private lazy val usdArray: CurrencyAmountArray =
     CurrencyAmountArray.of(Currency.USD, DoubleArray.of(1d, 2d, 3d))
 
-  /** Two pound values, which disagree in size with [[gbpArray]]. */
   private lazy val shortGbpArray: CurrencyAmountArray =
     CurrencyAmountArray.of(Currency.GBP, DoubleArray.of(1d, 2d))
 
-  /** A three-long run of pound values. */
   private lazy val gbpRun: MultiCurrencyAmountArray =
     accepted(MultiCurrencyAmountArray.of(Map(Currency.GBP -> DoubleArray.of(1d, 2d, 3d))))
 
-  /** A two-long run of pound values, which disagrees in size with [[gbpRun]]. */
   private lazy val shortRun: MultiCurrencyAmountArray =
     accepted(MultiCurrencyAmountArray.of(Map(Currency.GBP -> DoubleArray.of(1d, 2d))))
 
-  /** One hundred pounds as a multi-currency amount. */
   private lazy val gbpMulti: MultiCurrencyAmount = obtained(MultiCurrencyAmount.of(gbp100))
 
   //-------------------------------------------------------------------------
-  // FX fixtures. Two matrices with no currency in common, and three rates.
+  // FX fixtures. Two matrices with no currency in common, and three rates of which two cross and
+  // two share nothing.
 
-  /** A matrix holding the pound and the dollar. */
   private lazy val gbpUsdMatrix: FxMatrix = FxMatrix.of(Currency.GBP, Currency.USD, 1.6d)
 
-  /** A matrix holding the euro and the franc, sharing no currency with [[gbpUsdMatrix]]. */
   private lazy val eurChfMatrix: FxMatrix = FxMatrix.of(Currency.EUR, Currency.CHF, 1.1d)
 
-  /** The rate of the pound against the dollar. */
   private lazy val gbpUsdRate: FxRate = accepted(FxRate.of(Currency.GBP, Currency.USD, 1.6d))
 
   /** The rate of the euro against the dollar, which crosses with [[gbpUsdRate]]. */
@@ -356,11 +305,11 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         StubConvention.NONE,
         RollConventions.DAY_15))
 
-  /** The three-period schedule the definition generates, resolved against the built-in calendars. */
+  /** The three-period schedule the definition generates, over the built-in calendars. */
   private lazy val schedule: Schedule = obtained(quarterly.createSchedule(standardRefData))
 
   /**
-   * A definition that is accepted and then generates nothing, the Java `test_none_badStub`.
+   * A definition that is accepted and then generates nothing.
    *
    * The fourth of June to the seventeenth of September by `P1M` needs a stub, and the 'None' stub
    * convention forbids one. Nothing about a stub is decided at construction - deciding it needs the
@@ -377,7 +326,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         RollConventions.DAY_4))
 
   /**
-   * A definition whose two dates adjust onto one another, the Java `test_emptyWhenAdjusted_term`.
+   * A definition whose two dates adjust onto one another.
    *
    * The 29th to the 31st of May 2015 as one 'Term' period, adjusted by modified following over a
    * Saturday/Sunday weekend: the end date is a Sunday and moves back onto the start date, so the
@@ -392,22 +341,19 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         BusinessDayAdjustment.of(BusinessDayConventions.MODIFIED_FOLLOWING, HolidayCalendarIds.SAT_SUN)))
 
   //-------------------------------------------------------------------------
-  // Numeric fixtures.
+  // Numeric fixtures. Two arrays of different sizes and two matrices of different shapes, so that
+  // an element-wise member can be handed a mismatched operand.
 
-  /** Three values. */
   private lazy val threeValues: DoubleArray = DoubleArray.of(1d, 2d, 3d)
 
-  /** Two values, which disagree in size with [[threeValues]]. */
   private lazy val twoValues: DoubleArray = DoubleArray.of(1d, 2d)
 
-  /** A two-by-two matrix. */
   private lazy val squareMatrix: DoubleMatrix = DoubleMatrix.of(2, 2, 1d, 2d, 3d, 4d)
 
-  /** A one-by-two matrix, which disagrees in shape with [[squareMatrix]]. */
   private lazy val flatMatrix: DoubleMatrix = DoubleMatrix.of(1, 2, 1d, 2d)
 
   /**
-   * A calendar holding two holidays of 2014 and nothing else.
+   * A calendar holding two holidays of 2014 and a Saturday/Sunday weekend.
    *
    * Built here rather than taken from the built-in set so that this suite depends on no calendar
    * data of its own: what matters is only that the calendar holds holidays, and therefore an array
@@ -419,12 +365,44 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       List(LocalDate.of(2014, 1, 1), LocalDate.of(2014, 12, 25)),
       List(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY))
 
+  /**
+   * A composite calendar reading through exactly as many calendars as the family allows.
+   *
+   * It is built by nesting combinations directly rather than through `combinedWith`, which
+   * would collapse a combination of a calendar with itself; nothing about the parts matters
+   * beyond their number. Combining or linking anything with this one exceeds the limit by one,
+   * which is what the two composition rows below assert. Its identifier is never asked for, so
+   * nesting this deeply costs nothing beyond the objects themselves.
+   */
+  private lazy val deepestCalendar: HolidayCalendar =
+    (1 to HolidayCalendar.MaxCompositeDepth)
+      .foldLeft(HolidayCalendars.SAT_SUN)((inner, _) => HolidayCalendar.Combined(inner, HolidayCalendars.THU_FRI))
+
+  /**
+   * A calendar whose parts between them close every day of the week.
+   *
+   * Both parts are ordinary calendars - a western weekend and a working week - so this is a
+   * composite no single factory could have refused, and it is what makes the progress
+   * requirement of a business-day search necessary rather than merely defensive.
+   */
+  private lazy val alwaysClosedCalendar: HolidayCalendar =
+    HolidayCalendars.SAT_SUN.combinedWith(
+      ImmutableHolidayCalendar.of(
+        HolidayCalendarId.of("TestFailableSurfaceWorkingWeek"),
+        List(LocalDate.of(2014, 1, 1)),
+        List(
+          DayOfWeek.MONDAY,
+          DayOfWeek.TUESDAY,
+          DayOfWeek.WEDNESDAY,
+          DayOfWeek.THURSDAY,
+          DayOfWeek.FRIDAY)))
+
   //-------------------------------------------------------------------------
   /**
    * Unwraps the outcome of a member that reports a single failure, failing the test if it failed.
    *
-   * Used only to build fixtures. The message of the failure is reported, so a fixture that stops
-   * being buildable says why rather than only that it did.
+   * Used to build fixtures. The message is reported, so a fixture that stops being buildable says
+   * why rather than only that it did.
    *
    * @param outcome  the outcome to unwrap
    * @tparam A  the type of the value
@@ -470,10 +448,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       value => fail(s"Expected a failure but the call answered: $value"))
 
   //-------------------------------------------------------------------------
-  // FX and currency. Thirty-eight entries of the inventory, every one of them a failure that
-  // depends on the data supplied - a rate the provider does not hold, two currencies that
-  // disagree, text that names no value, a mapped amount no decimal holds - and therefore reported
-  // rather than raised.
+  // FX and currency. Every failure of this group depends on the data supplied - a rate the
+  // provider does not hold, two currencies that disagree, text that names no value, a mapped
+  // amount no decimal holds - and is therefore reported rather than raised.
   //-------------------------------------------------------------------------
 
   test("FxRateProvider.fxRate reports a rate the provider cannot supply") {
@@ -484,7 +461,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val refusedIdentity: FailureOr[Double] = FxRateProvider.noConversion().fxRate(Currency.GBP, Currency.GBP)
     refusedIdentity should beFailureWith(FailureReason.CURRENCY_CONVERSION)
 
-    // the minimal provider answers the identity and refuses everything else
     val minimal: FailureOr[Double] = FxRateProvider.minimal().fxRate(Currency.GBP, Currency.USD)
     minimal should beFailureWith(FailureReason.CURRENCY_CONVERSION)
     val identity: FailureOr[Double] = FxRateProvider.minimal().fxRate(Currency.GBP, Currency.GBP)
@@ -495,11 +471,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val refused: FailureOr[Double] = FxRateProvider.minimal().convert(100d, Currency.GBP, Currency.USD)
     refused should beFailureWith(FailureReason.CURRENCY_CONVERSION)
 
-    // a conversion into the currency the amount already has needs no rate, so it answers
     val unchanged: FailureOr[Double] = FxRateProvider.minimal().convert(100d, Currency.GBP, Currency.GBP)
     unchanged should haveValue(100d)
 
-    // the decimal-valued form reports the same failure, its rate lookup being the same one
     val refusedDecimal: FailureOr[Decimal] =
       FxRateProvider.minimal().convert(two, Currency.GBP, Currency.USD)
     refusedDecimal should beFailureWith(FailureReason.CURRENCY_CONVERSION)
@@ -511,7 +485,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val unplaceable: FailureOr[FxMatrix] = FxMatrix.of(List(gbpUsdRate, eurCadRate))
     unplaceable should beFailureWith(FailureReason.CURRENCY_CONVERSION)
 
-    // a collection whose rates connect places in the order it holds them
     val placed: FailureOr[FxMatrix] = FxMatrix.of(List(gbpUsdRate, eurUsdRate))
     placed should beSuccess
   }
@@ -521,7 +494,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       gbpUsdMatrix.withRate(CurrencyPair.of(Currency.EUR, Currency.CHF), 1.1d)
     disjoint should beFailureWith(FailureReason.CURRENCY_CONVERSION)
 
-    // one currency in common is enough: the other is added and its cross rates computed
     val placed: FailureOr[FxMatrix] =
       gbpUsdMatrix.withRate(CurrencyPair.of(Currency.GBP, Currency.CHF), 1.2d)
     placed should beSuccess
@@ -531,7 +503,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val disjoint: FailureOr[FxMatrix] = gbpUsdMatrix.merge(eurChfMatrix)
     disjoint should beFailureWith(FailureReason.CURRENCY_CONVERSION)
 
-    // merging through a shared currency answers, every added rate being derived through it
     val shared: FxMatrix = obtained(gbpUsdMatrix.withRate(CurrencyPair.of(Currency.USD, Currency.CHF), 0.9d))
     val merged: FailureOr[FxMatrix] = gbpUsdMatrix.merge(shared)
     merged should beSuccess
@@ -545,7 +516,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("FxMatrix.convert reports a rate the matrix does not hold") {
-    // an amount in a currency the matrix does not hold cannot be converted
     val absent: FailureOr[CurrencyAmount] = gbpUsdMatrix.convert(eur100, Currency.USD)
     absent should beFailureWith(FailureReason.CURRENCY_CONVERSION)
 
@@ -564,7 +534,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val samePair: FailureOr[FxRate] = gbpUsdRate.crossRate(gbpUsdRate)
     samePair should beFailureWith(FailureReason.CURRENCY_CONVERSION)
 
-    // and two rates over four currencies have no currency in common
     val disjoint: FailureOr[FxRate] = gbpUsdRate.crossRate(eurCadRate)
     disjoint should beFailureWith(FailureReason.CURRENCY_CONVERSION)
 
@@ -580,8 +549,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("FxIndex.of(CurrencyPair) reports a pair no published index quotes") {
-    // AAP 0.8.1 conflict 7: the family is closed, so an unconfigured pair is reported rather than
-    // having an index minted for it as the Java `createFxIndex` fallback did
+    // the family is closed, so a pair no published index quotes is reported rather than minted
     val unconfigured: FailureOr[FxIndex] = FxIndex.of(CurrencyPair.of(Currency.GBP, Currency.BRL))
     unconfigured should beFailureWith(FailureReason.PARSING)
 
@@ -597,8 +565,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("CurrencyAmount.plus and minus report a currency mismatch") {
-    // one row per inventory entry: the two members that take an amount and can therefore disagree
-    // about its currency. The scalar forms are total and are asserted below them.
+    // the two members that take an amount can disagree about its currency; the scalar forms
+    // carry no error channel and are asserted below them
     val mismatches: TableFor2[String, FailureOr[CurrencyAmount]] = Table(
       ("member", "outcome"),
       ("CurrencyAmount.plus(CurrencyAmount)", gbp100.plus(usd100)),
@@ -609,7 +577,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       }
     }
 
-    // matching currencies answer, and the scalar forms carry no error channel at all
     gbp100.plus(gbp100) should beSuccess
     gbp100.minus(gbp100) should beSuccess
     gbp100.plus(50d).amount shouldBe 150d
@@ -624,9 +591,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("CurrencyAmount.convertedTo reports a non-unit rate for the same currency") {
-    // the rate is not applied where no conversion happens, so a rate that is not one is a caller
-    // scaling an amount through a conversion that does not occur - reported, since whether the two
-    // currencies agree is a property of the arguments
+    // the rate is not applied where no conversion happens, so a rate that is not one would
+    // silently scale the amount; whether the two currencies agree is a property of the arguments,
+    // so the refusal is reported
     val nonUnit: FailureOr[CurrencyAmount] = gbp100.convertedTo(Currency.GBP, 2d)
     nonUnit should beFailureWith(FailureReason.INVALID)
 
@@ -647,7 +614,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       }
     }
 
-    // a rate of one into the currency already held answers with the value unchanged
     val one: Decimal = obtained(Decimal.of(1L))
     gbpMoney.convertedTo(Currency.GBP, one) should haveValue(gbpMoney)
     gbpBigMoney.convertedTo(Currency.GBP, one) should haveValue(gbpBigMoney)
@@ -671,10 +637,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("Money.mapAmount and BigMoney.mapAmount report a result no decimal holds") {
-    // These two take a function on `BigDecimal`, which has no bound on its precision, so a mapper
-    // can return a number outside the range a decimal holds. That is a property of the function and
-    // the value it is applied to rather than of the calling code, so it is reported; the sibling
-    // `map`, whose function works on the decimal itself, cannot produce such a value and is total.
+    // the function is on `BigDecimal`, whose precision is unbounded, so a mapper can return a
+    // number outside the range a decimal holds - a property of the function and its argument, so
+    // reported. The sibling `map` works on the decimal itself and is total.
     val oversized: TableFor2[String, FailureOr[Any]] = Table(
       ("member", "outcome"),
       ("Money.mapAmount", gbpMoney.mapAmount(amount => amount.multiply(new BigDecimal("1E+30")))),
@@ -685,19 +650,15 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       }
     }
 
-    // a mapper whose result a decimal holds answers with the mapped value, rounded by the type's
-    // own constructor - so the failure above is the oversized result and not the method itself
     gbpMoney.mapAmount(amount => amount.multiply(new BigDecimal("2"))) should beSuccess
     gbpBigMoney.mapAmount(amount => amount.multiply(new BigDecimal("2"))) should beSuccess
   }
 
   test("CurrencyAmount.toMoney and CurrencyAmount.toBigMoney report an amount no decimal holds") {
-    // Two inventory entries, four rows: each conversion refuses the two classes of amount that
-    // this type admits and no decimal holds. An amount rejects only a value that is not a number,
-    // so an infinite amount is a value of it, and a finite amount may need more digits than the
-    // eighteen a decimal carries. Both are properties of the value converted rather than of the
-    // calling code, so both are reported - the type being ported raised for each of them, from the
-    // same decimal conversion these two delegate to.
+    // Four rows: each conversion refuses the two classes of amount this type admits and no decimal
+    // holds. An amount rejects only a value that is not a number, so an infinity is a value of it,
+    // and a finite amount may need more than the eighteen digits a decimal carries. Both are
+    // properties of the value converted, so both are reported.
     val unholdable: TableFor2[String, FailureOr[Any]] = Table(
       ("member", "outcome"),
       ("CurrencyAmount.toMoney, infinite", infiniteAmount.toMoney),
@@ -710,17 +671,14 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       }
     }
 
-    // an ordinary amount converts through both, so the failures above belong to the value and not
-    // to the conversions, and each answers the value the corresponding factory answers
     infiniteAmount.amount.isInfinite shouldBe true
     gbp100.toMoney should haveValue(gbpMoney)
     gbp100.toBigMoney should haveValue(gbpBigMoney)
   }
 
   test("CurrencyAmountArray arithmetic reports size and currency mismatches") {
-    // Four inventory entries, six rows: the two element-wise members can disagree about either the
-    // size or the currency, and the two scalar members only about the currency. The production code
-    // checks the size before the currency, which is the order of the type being ported.
+    // Six rows: the two element-wise members can disagree about either the size or the currency,
+    // and the two scalar members only about the currency.
     val mismatches: TableFor2[String, FailureOr[CurrencyAmountArray]] = Table(
       ("member", "outcome"),
       ("CurrencyAmountArray.plus(CurrencyAmountArray), sizes", gbpArray.plus(shortGbpArray)),
@@ -749,9 +707,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("MultiCurrencyAmountArray arithmetic reports a size mismatch") {
-    // Four inventory entries. The two run-valued members disagree about size and report it; the two
-    // amount-valued members keep the same channel but cannot fill it, an amount describing every
-    // index of the run by construction, so they are asserted on the side they can actually answer.
+    // The two run-valued members disagree about size and report it; the two amount-valued members
+    // keep the same channel but cannot fill it - an amount describes every index of the run by
+    // construction - so they are asserted on the side they can answer.
     val mismatches: TableFor2[String, FailureOr[MultiCurrencyAmountArray]] = Table(
       ("member", "outcome"),
       ("MultiCurrencyAmountArray.plus(MultiCurrencyAmountArray)", gbpRun.plus(shortRun)),
@@ -782,7 +740,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val held: FailureOr[CurrencyAmount] = gbpMulti.getAmount(Currency.GBP)
     held should haveValue(gbp100)
 
-    // the total-valued reader is the way to ask without an error channel, and answers zero
     gbpMulti.getAmountOrZero(Currency.AUD).amount shouldBe 0d
   }
 
@@ -791,7 +748,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val absent: FailureOr[Currency] = pair.other(Currency.EUR)
     absent should beFailureWith(FailureReason.INVALID)
 
-    // both currencies of the pair answer, which is the case this member exists for
     pair.other(Currency.GBP) should haveValue(Currency.USD)
     pair.other(Currency.USD) should haveValue(Currency.GBP)
   }
@@ -804,12 +760,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("Currency.parse reports a code outside the closed family") {
-    // AAP 0.8.1 conflict 4: the family is the 74 configured codes, so an unknown code is reported
-    // where Java minted a currency for it
+    // the family is closed, so a code it does not hold is reported rather than minted
     val unknown: FailureOr[Currency] = Currency.parse("XYZ")
     unknown should beFailureWith(FailureReason.PARSING)
 
-    // case is folded, so the canonical code and its lower case both name the same currency
     Currency.parse("GBP") should haveValue(Currency.GBP)
     Currency.parse("gbp") should haveValue(Currency.GBP)
     val tooLong: FailureOr[Currency] = Currency.of("GBPX")
@@ -818,9 +772,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 
 
   //-------------------------------------------------------------------------
-  // Location. Two entries. `Country` is an open validated value rather than a closed family, so a
-  // well-formed code names a country whether or not the reference data knows it; only the three
-  // letter lookup, which has to be translated through that data, can fail on a well-formed input.
+  // Location. `Country` is an open validated value rather than a closed family, so a well-formed
+  // code names a country whether or not the reference data knows it; only the three letter lookup,
+  // which has to be translated through that data, can fail on a well-formed input.
   //-------------------------------------------------------------------------
 
   test("Country.of reports a malformed code and accepts any well-formed one") {
@@ -829,7 +783,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val tooShort: ResultNec[Country] = Country.of("G")
     tooShort should beFailureWith(FailureReason.INVALID)
 
-    // the open code space: a code the reference data names no country for is still a country
     Country.of("ZZ") should beSuccess
     Country.of("GB") should haveValue(Country.GB)
   }
@@ -847,8 +800,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   //-------------------------------------------------------------------------
-  // Schedule and frequency. Fifteen entries. A schedule definition is judged against the calendar
-  // it is rolled out over, so almost everything here is decided by data rather than by the call.
+  // Schedule and frequency. A schedule definition is judged against the calendar it is rolled out
+  // over, so almost everything here is decided by data rather than by the call.
   //-------------------------------------------------------------------------
 
   test("Frequency.eventsPerYear reports a frequency with no exact count") {
@@ -864,7 +817,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val inexact: FailureOr[Int] = Frequency.P3M.exactDivide(Frequency.P2M)
     inexact should beFailureWith(FailureReason.INVALID)
 
-    // a frequency of days does not divide a frequency of months at all, the two being incommensurate
+    // a frequency of days does not divide a frequency of months at all, the two being
+    // incommensurate
     val incommensurate: FailureOr[Int] = Frequency.P3M.exactDivide(Frequency.P1D)
     incommensurate should beFailureWith(FailureReason.INVALID)
 
@@ -899,14 +853,13 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         RollConventions.DAY_15)
     reversed should beFailureWith(FailureReason.INVALID)
 
-    // the fixture definition is the success side, built by the same factory
     quarterly.startDate shouldBe JAN_15
     quarterly.endDate shouldBe OCT_15
   }
 
   test("PeriodicSchedule.createSchedule reports a definition that generates nothing") {
-    // AAP 0.3.3: `ScheduleException` becomes `Failure.Invalid` carrying the rejected definition
-    // under the `definition` attribute, so a report can name it without parsing the message
+    // the rejected definition is carried under the `definition` attribute, so a report can name
+    // it without parsing the message
     val rejected: FailureOr[Schedule] = collapsingDefinition.createSchedule(standardRefData)
     rejected should beFailureWith(FailureReason.INVALID)
     rejected should haveFailureMessageMatching(".*duplicate adjusted dates.*")
@@ -939,19 +892,16 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val reversed: ResultNec[SchedulePeriod] = SchedulePeriod.of(OCT_15, JAN_15)
     reversed should beFailureWith(FailureReason.INVALID)
 
-    // one pair of dates fills both roles, so a bad pair is reported under both pairs of names:
-    // the accumulation the validator of the bean being ported could not express
+    // one pair of dates fills both roles, so a bad pair is reported under both pairs of names
     failuresOf(reversed) should have size 2
 
     SchedulePeriod.of(JAN_15, APR_15) should beSuccess
   }
 
   test("Schedule.of reports periods that do not run from earliest to latest") {
-    // The one invariant of the field that is not carried by its type: `NonEmptyList` states that
-    // there is a period, and this factory states that the periods form a time line. A list that
-    // does not is data - a document or a transformation is exactly how a reversed one arrives -
-    // and every member that reads the periods in order would otherwise answer wrongly rather than
-    // fail, which is why the refusal belongs at construction.
+    // The one invariant the field's type does not carry: `NonEmptyList` states that there is a
+    // period, this factory that the periods form a time line. A list that does not is data, and
+    // every member reading the periods in order would otherwise answer wrongly rather than fail.
     val reversed: ResultNec[Schedule] =
       Schedule.of(
         NonEmptyList.of(schedule.period(1), schedule.period(0)),
@@ -959,9 +909,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         RollConventions.DAY_15)
     reversed should beFailureWith(FailureReason.INVALID)
 
-    // both date pairs of one misplacement are reported, the unadjusted time line the schedule was
-    // generated on and the adjusted one its dates fall on, because they are two statements about
-    // the same list
+    // both date pairs of one misplacement are reported - the unadjusted time line the schedule
+    // was generated on and the adjusted one its dates fall on
     val failures: List[Failure] = failuresOf(reversed)
     failures should have size 2
     failures.map(_.message).count(_.contains("the unadjusted end date")) shouldBe 1
@@ -999,14 +948,12 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val unmatched: FailureOr[Schedule] = schedule.merge(3, LocalDate.of(2014, 2, 1), OCT_15)
     unmatched should beFailureWith(FailureReason.INVALID)
 
-    // a group size that does not divide the regular periods is reported the same way
     val ungrouped: FailureOr[Schedule] = schedule.merge(2, JAN_15, OCT_15)
     ungrouped should beFailureWith(FailureReason.INVALID)
 
     schedule.merge(3, JAN_15, OCT_15) should beSuccess
-    // `merge` additionally carries a documented dates-in-order `ArgCheck` precondition; it is a
-    // caller contract and is asserted by `ScheduleSpec`, not here, because this entry of the
-    // inventory is a reported failure and must not be asserted as a throw
+    // `merge` also carries a dates-in-order `ArgCheck` precondition, which the registry's
+    // `Schedule.merge(dates out of order)` row raises
   }
 
   test("Schedule.mergeRegular reports an unusable group size") {
@@ -1027,7 +974,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val rejected: FailureOr[Schedule] = schedule.toAdjusted(collapsing)
     rejected should beFailureWith(FailureReason.INVALID)
 
-    // an adjuster that moves nothing answers with the schedule itself
     schedule.toAdjusted(DateAdjuster(date => date)) should haveValue(schedule)
   }
 
@@ -1037,15 +983,13 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val beyond: FailureOr[RollConvention] = RollConvention.ofDayOfMonth(32)
     beyond should beFailureWith(FailureReason.INVALID)
 
-    // the thirty-first normalises onto the end-of-month convention, as in the Java original
     RollConvention.ofDayOfMonth(31) should haveValue(RollConventions.EOM)
     RollConvention.ofDayOfMonth(15) should haveValue(RollConventions.DAY_15)
   }
 
   test("RollConvention.ofDayOfWeek is total for every day of the week") {
-    // The inventory lists this member beside `ofDayOfMonth` because the Java pair shared a lookup.
-    // Here the argument is an enumerated day rather than a number, so there is no out-of-range
-    // input to report and the member is total: seven days, seven conventions, no error channel.
+    // The argument is an enumerated day rather than a number, so there is no out-of-range input
+    // to report and the member is total: seven days, seven conventions, no error channel.
     RollConvention.ofDayOfWeek(DayOfWeek.MONDAY) shouldBe RollConventions.DAY_MON
     RollConvention.ofDayOfWeek(DayOfWeek.TUESDAY) shouldBe RollConventions.DAY_TUE
     RollConvention.ofDayOfWeek(DayOfWeek.WEDNESDAY) shouldBe RollConventions.DAY_WED
@@ -1056,8 +1000,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   //-------------------------------------------------------------------------
-  // Dates and adjustments. Eleven entries. Every adjustment resolves its calendar against the
-  // reference data it is handed, so its failure is the absence of that calendar - data, not a call.
+  // Dates and adjustments. Every adjustment resolves its calendar against the reference data it
+  // is handed, so its failure is the absence of that calendar - data, not a call.
   //-------------------------------------------------------------------------
 
   test("Tenor.of reports a period that is no tenor") {
@@ -1071,7 +1015,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("Tenor.parse reports text that names no tenor") {
-    // text that is not a period at all is a parse failure
     val rubbish: FailureOr[Tenor] = Tenor.parse("2K")
     rubbish should beFailureWith(FailureReason.PARSING)
 
@@ -1097,7 +1040,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("MarketTenor.parse reports text that names no market tenor") {
-    // empty text is refused first, with the message of the check the type being ported performed
+    // empty text is refused before any attempt to parse it
     val empty: FailureOr[MarketTenor] = MarketTenor.parse("")
     empty should beFailureWith(FailureReason.INVALID)
     val rubbish: FailureOr[MarketTenor] = MarketTenor.parse("2K")
@@ -1125,11 +1068,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("DaysAdjustment.of reports a business day addition of no days") {
-    // The one condition the three fields can break together: the addition calendar is what decides
-    // whether the days are calendar days or business days, so a day count of zero paired with a
-    // calendar other than the no-holidays identifier asks for a business-day addition of zero
-    // days, which names no day at all. Whether it happens depends on the two values a caller
-    // holds, which is why it is reported rather than raised.
+    // The one condition the three fields can break together: the addition calendar decides whether
+    // the days are calendar or business days, so zero days over any calendar but the no-holidays
+    // identifier asks for a business-day addition of no day at all. It depends on two of the
+    // caller's values, so it is reported.
     val zeroDaysOverCalendar: ResultNec[DaysAdjustment] =
       DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)
     zeroDaysOverCalendar should beFailureWith(FailureReason.INVALID)
@@ -1154,9 +1096,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("DaysAdjustment resolution reports a calendar the reference data does not hold") {
-    // The failure of the resolving members, which is the other half of this type's surface: the
-    // construction above judges the three fields, and here the calendar identifier becomes a
-    // calendar or does not.
     val adjustment: DaysAdjustment =
       DaysAdjustment.ofBusinessDays(2, HolidayCalendarId.of("NoSuchCalendarFS"))
     val unresolved: FailureOr[LocalDate] = adjustment.adjust(JAN_15, emptyRefData)
@@ -1228,8 +1167,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("DayCount.ofBus252 reports a calendar the reference data does not hold") {
-    // AAP 0.6.5: the Java factory resolved the identifier against ambient standard reference data;
-    // here the caller passes the data, so the absence of the calendar is reported to it
     val unresolved: FailureOr[DayCount] = DayCount.ofBus252(HolidayCalendarIds.BRBD, emptyRefData)
     unresolved should beFailureWith(FailureReason.MISSING_DATA)
 
@@ -1240,8 +1177,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 
 
   //-------------------------------------------------------------------------
-  // Reference data. Two entries. An identifier that the data does not hold is the absence of data
-  // rather than a broken call, which is why the Java `ReferenceDataNotFoundException` is not ported.
+  // Reference data. An identifier the data does not hold is the absence of data rather than a
+  // broken call, so it is reported rather than raised.
   //-------------------------------------------------------------------------
 
   test("ReferenceDataId.resolve reports an identifier the reference data does not hold") {
@@ -1250,7 +1187,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     unresolved should beFailureWith(FailureReason.MISSING_DATA)
     failureOf(unresolved).attributes.get("id") shouldBe Some(absent.toString)
 
-    // the same identifier resolves against data that holds it, and through the reader form too
     val held: ReferenceData = ImmutableReferenceData.of(absent, Int.box(1))
     absent.resolve(held) should haveValue(Int.box(1))
     absent.toReader.run(held) should haveValue(Int.box(1))
@@ -1269,7 +1205,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   //-------------------------------------------------------------------------
-  // Identifiers. Three entries, every one of them a judgement about text a caller supplied.
+  // Identifiers. Every failure here is a judgement about text a caller supplied.
   //-------------------------------------------------------------------------
 
   test("StandardId.of reports parts that name no identifier") {
@@ -1306,8 +1242,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   //-------------------------------------------------------------------------
-  // Values. Nine entries. A value definition is judged against the schedule it is resolved
-  // against, so the factories are the cheap half and resolution is where the data is judged.
+  // Values. A value definition is judged against the schedule it is resolved against, so the
+  // factories are the cheap half and resolution is where the data is judged.
   //-------------------------------------------------------------------------
 
   test("CurrencyAmountArray.of reports an empty collection and mixed currencies") {
@@ -1316,7 +1252,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val mixed: ResultNec[CurrencyAmountArray] = CurrencyAmountArray.of(List(gbp100, usd100))
     mixed should beFailureWith(FailureReason.INVALID)
 
-    // the size-and-function form reports the same two conditions of the values it produces
     val mixedFromFunction: ResultNec[CurrencyAmountArray] =
       CurrencyAmountArray.of(2, index => if (index == 0) gbp100 else usd100)
     mixedFromFunction should beFailureWith(FailureReason.INVALID)
@@ -1354,7 +1289,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val atZero: ResultNec[ValueStep] = ValueStep.of(0, ValueAdjustment.ofReplace(200d))
     atZero should beFailureWith(FailureReason.INVALID)
 
-    // the field-wise factory reports a step positioned by neither field and one positioned by both
     val neither: ResultNec[ValueStep] = ValueStep.of(None, None, ValueAdjustment.ofReplace(200d))
     neither should beFailureWith(FailureReason.INVALID)
     val both: ResultNec[ValueStep] =
@@ -1366,11 +1300,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("ValueSchedule.of reports two steps that name one position with different adjustments") {
-    // The condition construction decides is the half of the Java original's contradiction that
-    // needs no schedule: two steps carrying the same position - the same period index, or the same
-    // date - and different adjustments ask for two values at one point of the time line whatever
-    // schedule they are resolved against. One failure is reported per such position; everything
-    // else about a definition is judged by `resolveValues`, which is the entry below.
+    // The half of the contradiction that needs no schedule: two steps at the same position - the
+    // same period index, or the same date - with different adjustments ask for two values at one
+    // point of the time line whatever schedule resolves them. One failure per such position; the
+    // rest of a definition is judged by `resolveValues` below.
     val replace200: ValueAdjustment = ValueAdjustment.ofReplace(200d)
     val replace300: ValueAdjustment = ValueAdjustment.ofReplace(300d)
     val byIndex: ResultNec[ValueSchedule] =
@@ -1412,7 +1345,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       ValueStepSequence.of(JAN_15, OCT_15, Frequency.P3M, ValueAdjustment.ofReplace(200d))
     replacing should beFailureWith(FailureReason.INVALID)
 
-    // both faults at once are reported together
     val bothFaults: ResultNec[ValueStepSequence] =
       ValueStepSequence.of(OCT_15, JAN_15, Frequency.P3M, ValueAdjustment.ofReplace(200d))
     failuresOf(bothFaults) should have size 2
@@ -1430,11 +1362,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val rejected: FailureOr[DoubleArray] = beyond.resolveValues(schedule)
     rejected should beFailureWith(FailureReason.INVALID)
 
-    // two steps resolving to one period with different adjustments contradict one another, and
-    // this is the pair only the schedule can see: one step names the period by its index and the
-    // other by the date of its boundary, so the positions differ until the periods are in hand
-    // (a pair naming one position twice is refused by construction instead, which is the entry
-    // for `ValueSchedule.of`)
+    // the pair only the schedule can see: one step names the period by its index and the other by
+    // the date of its boundary, so the positions differ until the periods are in hand. A pair
+    // naming one position twice is refused by construction instead.
     val contradictory: ValueSchedule =
       accepted(
         ValueSchedule.of(
@@ -1469,16 +1399,14 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   //-------------------------------------------------------------------------
-  // Collect members reached from this module. Four entries. They belong to the ported subset of
-  // `strata-collect` and are asserted here because `strata-basics` is where they are consumed.
+  // Collect members reached from this module. They belong to `strata-collect` and are asserted
+  // here because `strata-basics` is where they are consumed.
   //-------------------------------------------------------------------------
 
   test("NamedEnum.parse reports a name no member of the family carries") {
     val unknown: ResultNec[Currency] = NamedEnum[Currency].parse("NotACurrency")
     unknown should beFailureWith(FailureReason.PARSING)
 
-    // the alias-aware lookup and the lenient rewriting are what parsing is, and both answer for a
-    // name the family does carry
     NamedEnum[Currency].parse("GBP") should haveValue(Currency.GBP)
     NamedEnum[Currency].valueOf("GBP") shouldBe Some(Currency.GBP)
     NamedEnum[Currency].valueOf("NotACurrency") shouldBe None
@@ -1518,10 +1446,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   //-------------------------------------------------------------------------
-  // Index observations and floating rates. Thirteen entries. An observation computes dates from
-  // the calendars of its index, so it is built only through a factory that resolves them - either
-  // per fixing, through `of`, or once for a series of fixings, through the `resolve` of the index
-  // and of the observation type, which report the same failure at the point of resolution.
+  // Index observations and floating rates. An observation computes dates from the calendars of
+  // its index, so it is built only through a factory that resolves them - either per fixing,
+  // through `of`, or once for a series of fixings, through the `resolve` of the index and of the
+  // observation type, which report the same failure at the point of resolution.
   //-------------------------------------------------------------------------
 
   test("IborIndexObservation.of reports a calendar the reference data does not hold") {
@@ -1551,8 +1479,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   test("IborIndex.resolve reports a calendar the reference data does not hold") {
     // The batch route reports the missing calendar once, at the point of resolution, rather than
     // per fixing: there is no function to apply, so the failure cannot be deferred. Both published
-    // entry points are exercised - the one on the index, where the library being ported declared
-    // it, and the one on the observation type, where this port implements it.
+    // entry points are exercised, the one on the index and the one on the observation type.
     val unresolvedIndex: FailureOr[java.time.LocalDate => IborIndexObservation] =
       IborIndices.GBP_LIBOR_3M.resolve(emptyRefData)
     unresolvedIndex should beFailureWith(FailureReason.MISSING_DATA)
@@ -1577,9 +1504,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("OvernightIndexObservation.resolve reports a calendar the reference data does not hold") {
-    // The Overnight family publishes its batch resolution on the observation type alone, because
-    // the index being ported declares no `resolve` - only the Ibor and the exchange-rate families
-    // do - and the failure is the same one its per-fixing factory reports.
+    // The Overnight family publishes its batch resolution on the observation type alone - only
+    // the Ibor and exchange-rate indices declare `resolve` - and reports the same failure as its
+    // per-fixing factory.
     val unresolved: FailureOr[java.time.LocalDate => OvernightIndexObservation] =
       OvernightIndexObservation.resolve(OvernightIndices.GBP_SONIA, emptyRefData)
     unresolved should beFailureWith(FailureReason.MISSING_DATA)
@@ -1588,7 +1515,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("FloatingRateName.toIborIndex reports a name of the wrong kind and a tenor no index carries") {
-    // an Overnight name is not an Ibor name, which is a property of the name rather than of the call
+    // an Overnight name is not an Ibor name, which is a property of the name rather than of the
+    // call
     val wrongKind: FailureOr[Any] = FloatingRateNames.GBP_SONIA.toIborIndex(Tenor.TENOR_3M)
     wrongKind should beFailureWith(FailureReason.INVALID)
 
@@ -1597,7 +1525,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     unpublished should beFailureWith(FailureReason.PARSING)
 
     FloatingRateNames.GBP_LIBOR.toIborIndex(Tenor.TENOR_3M) should haveValue(IborIndices.GBP_LIBOR_3M)
-    // a tenor of one year normalises onto twelve months, as in the Java original
+    // a tenor of one year normalises onto twelve months
     FloatingRateNames.GBP_LIBOR.toIborIndex(Tenor.TENOR_1Y) should haveValue(IborIndices.GBP_LIBOR_12M)
   }
 
@@ -1618,8 +1546,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("FloatingRateName.defaultIborIndex reports a currency with no published default") {
-    // only 23 currencies publish one, and the Brazilian real - whose market has no term rate - is
-    // one of those that does not
+    // the Brazilian real, whose market has no term rate, publishes no default Ibor index
     val absent: FailureOr[FloatingRateName] = FloatingRateName.defaultIborIndex(Currency.BRL)
     absent should beFailureWith(FailureReason.MISSING_DATA)
 
@@ -1635,27 +1562,21 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 
 
   //-------------------------------------------------------------------------
-  // The other side of the classification line: the twelve documented `ArgCheck` refusals of AAP
-  // section 0.3.3, plus the one member this port makes more total than Java. Every `intercept`
-  // below carries the reason that particular refusal is a caller contract rather than a value:
-  // the condition it guards is a property of how the method was called and not of the data it was
-  // given, so a caller cannot correct it by supplying better data - it has to call differently.
-  // Both `ArgCheck` throws are `IllegalArgumentException`, that object being the single place in
-  // either module where a throw is written.
+  // The other side of the classification line: twelve contract rows, nine of them refusals the
+  // method raises and three of them totality contracts - a member that deliberately does not
+  // refuse, asserted on the side it answers on. The classification rule is that a refusal guards
+  // a property of how the method was called rather than of the data it was given, so a caller
+  // cannot correct it by supplying better data; it has to call differently. `ArgCheck` is the one
+  // place either module writes a throw, and what it writes is `IllegalArgumentException`; the two
+  // index refusals below let the array access itself raise, which is `IndexOutOfBoundsException`.
   //
-  // The message and accumulation behaviour of the two numeric-edge throws of the same section -
-  // `CurrencyAmount` arithmetic reaching `NaN` from infinite operands, and `Decimal` arithmetic
-  // overflowing eighteen digits - belong to `SmartConstructorSpec`, which owns every
-  // construction-time refusal. That each of those families raises at all is asserted here by its
-  // generated `Raises` row, because the enumeration finds them and a family it finds that this
-  // registry skipped would make the enumeration representative rather than exhaustive.
+  // `SmartConstructorSpec` asserts the messages of the two numeric-edge throws of the same
+  // inventory; the generated `Raises` rows below assert that those families raise at all.
   //-------------------------------------------------------------------------
 
   test("DoubleArray.get raises for an index outside the array") {
-    // Contract, not data: an index is the caller's own arithmetic over a size it can read, so an
-    // index outside the array is a mistake in the calling code. The Java original let the array
-    // access raise, and so does this port, which is why the exception is the one the JVM throws
-    // for a bad array index rather than one this library composes.
+    // Contract, not data: an index is the caller's own arithmetic over a size it can read. The
+    // array access itself raises, so the exception is the JVM's and not one this library composes.
     intercept[IndexOutOfBoundsException](threeValues.get(3))
     intercept[IndexOutOfBoundsException](threeValues.get(-1))
 
@@ -1664,9 +1585,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("DoubleArray element-wise arithmetic raises for arrays of different sizes") {
-    // Contract, not data: two arrays of different lengths have no element-wise sum, and the caller
-    // holds both sizes before it calls. AAP 0.3.3 lists the dimension errors of the two numeric
-    // wrappers as fail-fast throws for that reason, which also keeps the inner loops total.
+    // Contract, not data: two arrays of different lengths have no element-wise sum, and the
+    // caller holds both sizes before it calls. Refusing fail-fast keeps the inner loops total.
     intercept[IllegalArgumentException](threeValues.plus(twoValues))
     intercept[IllegalArgumentException](threeValues.minus(twoValues))
     intercept[IllegalArgumentException](threeValues.multipliedBy(twoValues))
@@ -1703,9 +1623,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 
   test("HolidayCalendar operations raise for a year outside zero to 9999") {
     // Contract, not data: a calendar holds its holidays as an array of months from its first year,
-    // so a date whose year lies outside 0 to 9999 is a date no calendar could hold data for and
-    // the question cannot be asked at all. That is a property of the argument's position in the
-    // time line rather than of the holidays supplied, so AAP 0.3.3 keeps it a fail-fast refusal.
+    // so a date whose year lies outside 0 to 9999 is one no calendar could hold data for - a
+    // property of where the argument falls on the time line, not of the holidays supplied.
     intercept[IllegalArgumentException](datedCalendar.isHoliday(LocalDate.MIN)).getMessage should
       include(UnsupportedDateMessage)
     intercept[IllegalArgumentException](datedCalendar.isHoliday(LocalDate.MAX)).getMessage should
@@ -1721,6 +1640,193 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     // every date of the supported range answers, including the years the calendar holds no data for
     datedCalendar.isHoliday(LocalDate.of(2014, 1, 1)) shouldBe true
     datedCalendar.isHoliday(LocalDate.of(1800, 1, 1)) shouldBe false
+  }
+
+  test("HolidayCalendar refuses a shift larger than any search can satisfy") {
+    // Contract, not data: shifting by business days walks them one at a time, so the cost of the
+    // call is the number asked for - and the number is `Int`-wide, which makes two thousand
+    // million business days a request that occupies a processor for the best part of a minute to
+    // name a date six million years away. No convention of finance names such a shift, and the
+    // caller holds the count before it calls, so the limit is a precondition and is refused
+    // rather than reported. Its magnitude is measured in `Long` arithmetic, which is what makes
+    // the smallest `Int` - whose negation overflows back to itself - refused as well.
+    intercept[IllegalArgumentException](
+      datedCalendar.shift(JAN_15, Int.MaxValue)).getMessage should include(ShiftMagnitudeMessage)
+    intercept[IllegalArgumentException](
+      datedCalendar.shift(JAN_15, Int.MinValue)).getMessage should include(ShiftMagnitudeMessage)
+    intercept[IllegalArgumentException](
+      HolidayCalendars.SAT_SUN.shift(JAN_15, HolidayCalendar.MaxBusinessDayShift + 1)).getMessage should
+      include(ShiftMagnitudeMessage)
+    // the adjuster form judges the count where it is named rather than when it is applied
+    intercept[IllegalArgumentException](
+      datedCalendar.adjustBy(Int.MinValue)).getMessage should include(ShiftMagnitudeMessage)
+
+    // every shift within the limit answers, and the calendar of no holidays adds its days
+    // arithmetically, so no limit applies to it at all
+    datedCalendar.shift(JAN_15, 2) shouldBe LocalDate.of(2014, 1, 17)
+    HolidayCalendars.NO_HOLIDAYS.shift(JAN_15, Int.MaxValue).getYear should be > 5000000
+  }
+
+  test("HolidayCalendar refuses a search of a calendar that has no business day") {
+    // Contract, not data: a search for the next business day walks one day at a time, and a
+    // calendar whose parts between them close every day of the week has none to find. Here the
+    // two parts are a western weekend and a working week - both perfectly ordinary calendars - so
+    // no single factory could have refused the combination, and without a progress requirement
+    // the search would walk millions of days to the end of the range of dates and then report the
+    // year it reached, which says nothing about what is wrong.
+    intercept[IllegalArgumentException](
+      alwaysClosedCalendar.nextOrSame(JAN_15)).getMessage should include(NoBusinessDayMessage)
+    intercept[IllegalArgumentException](
+      alwaysClosedCalendar.previousOrSame(JAN_15)).getMessage should include(NoBusinessDayMessage)
+    // the refusal names the calendar and the date the search began at
+    val refusal: String = intercept[IllegalArgumentException](alwaysClosedCalendar.nextOrSame(JAN_15)).getMessage
+    refusal should include(JAN_15.toString)
+    refusal should include(alwaysClosedCalendar.name)
+
+    // a calendar that has business days answers as it always did
+    HolidayCalendars.SAT_SUN.nextOrSame(LocalDate.of(2014, 1, 18)) shouldBe LocalDate.of(2014, 1, 20)
+  }
+
+  test("HolidayCalendar refuses a composite deeper than the family allows") {
+    // Contract, not data: a composite reads a pair of calendars on every query, either of which
+    // may be a composite, so deciding a date, composing the identifier, writing the calendar out
+    // and reading one back all walk a tree whose height is the nesting. A tree tall enough
+    // exhausts the stack, which ends the calling thread rather than the calculation, and nothing
+    // about combining calendars needs the height: a payment settling in every centre this library
+    // knows about reads some thirty calendars.
+    intercept[IllegalArgumentException](
+      deepestCalendar.combinedWith(datedCalendar)).getMessage should include(CompositeDepthMessage)
+    intercept[IllegalArgumentException](
+      deepestCalendar.linkedWith(datedCalendar)).getMessage should include(CompositeDepthMessage)
+    // the limit cannot be gone round by building the composite directly, the judgement being part
+    // of constructing one
+    intercept[IllegalArgumentException](
+      HolidayCalendar.Combined(deepestCalendar, datedCalendar)).getMessage should
+      include(CompositeDepthMessage)
+    intercept[IllegalArgumentException](
+      HolidayCalendar.Linked(deepestCalendar, datedCalendar)).getMessage should
+      include(CompositeDepthMessage)
+
+    // a composite at the limit is a calendar like any other and answers for its dates
+    deepestCalendar.isHoliday(LocalDate.of(2014, 1, 18)) shouldBe true
+    HolidayCalendars.SAT_SUN.combinedWith(datedCalendar).isHoliday(LocalDate.of(2014, 1, 1)) shouldBe true
+  }
+
+  /**
+   * A calendar whose weekend is Monday to Friday, which is a calendar: Saturday is open.
+   *
+   * Paired with [[weekendClosedCalendar]] below to merge two calendars that are each ordinary on
+   * their own into one that would have no business day at all - the weekend of a merged calendar
+   * closing every day either of its parts closes.
+   */
+  private lazy val weekdayClosedCalendar: ImmutableHolidayCalendar =
+    ImmutableHolidayCalendar.of(
+      HolidayCalendarId.of("TestFailableSurfaceWeekdaysClosed"),
+      List(LocalDate.of(2014, 1, 1)),
+      List(
+        DayOfWeek.MONDAY,
+        DayOfWeek.TUESDAY,
+        DayOfWeek.WEDNESDAY,
+        DayOfWeek.THURSDAY,
+        DayOfWeek.FRIDAY))
+
+  /** A calendar whose weekend is the ordinary one, over the same years as the calendar above. */
+  private lazy val weekendClosedCalendar: ImmutableHolidayCalendar =
+    ImmutableHolidayCalendar.of(
+      HolidayCalendarId.of("TestFailableSurfaceWeekendClosed"),
+      List(LocalDate.of(2014, 1, 1)),
+      List(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY))
+
+  test("ImmutableHolidayCalendar refuses a weekend that closes every day") {
+    // Contract, not data: outside the years its holidays cover a calendar answers from its
+    // weekend alone, so one whose weekend closes all seven days has no business day in any of
+    // those years - no next, no previous, no shift and no schedule. The working days such a
+    // calendar might declare do not make it one either, naming individual dates inside the years
+    // the holidays cover rather than opening any day of the week. The library being ported built
+    // the calendar and let every search on it run to the end of the range of dates instead.
+    intercept[IllegalArgumentException](
+      ImmutableHolidayCalendar.of(
+        HolidayCalendarId.of("TestFailableSurfaceEveryDayClosed"),
+        List(LocalDate.of(2014, 1, 1)),
+        DayOfWeek.values().toList)).getMessage should include(NoBusinessDayMessage)
+    intercept[IllegalArgumentException](
+      ImmutableHolidayCalendar.of(
+        HolidayCalendarId.of("TestFailableSurfaceEveryDayClosedWorking"),
+        List(LocalDate.of(2014, 1, 1)),
+        DayOfWeek.values().toList,
+        List(LocalDate.of(2014, 1, 2)))).getMessage should include(NoBusinessDayMessage)
+
+    // six days closed is a calendar, however unusual, and answers for the seventh
+    val sixDaysClosed: ImmutableHolidayCalendar = ImmutableHolidayCalendar.of(
+      HolidayCalendarId.of("TestFailableSurfaceSixDaysClosed"),
+      List(LocalDate.of(2014, 1, 1)),
+      DayOfWeek.values().toList.filterNot(day => day == DayOfWeek.WEDNESDAY))
+    sixDaysClosed.isBusinessDay(LocalDate.of(2014, 1, 8)) shouldBe true
+
+    // The same refusal reaches the eager merge, which is the other way such a calendar could
+    // come about: the merged weekend closes every day either part closes, so two calendars that
+    // are each ordinary alone - a Monday-to-Friday weekend and a Saturday/Sunday one - would
+    // merge into a calendar with no business day. The lazy composite holds its parts apart
+    // instead and is built; a search of it is what reports the pair has none.
+    intercept[IllegalArgumentException](
+      ImmutableHolidayCalendar.combined(weekdayClosedCalendar, weekendClosedCalendar))
+      .getMessage should include(NoBusinessDayMessage)
+    intercept[IllegalArgumentException](
+      ImmutableHolidayCalendar.combined(weekendClosedCalendar, weekdayClosedCalendar))
+      .getMessage should include(NoBusinessDayMessage)
+    weekdayClosedCalendar.combinedWith(weekendClosedCalendar).name shouldBe
+      "TestFailableSurfaceWeekdaysClosed+TestFailableSurfaceWeekendClosed"
+
+    // ... and merging two calendars that between them leave a day open is unaffected
+    ImmutableHolidayCalendar
+      .combined(weekendClosedCalendar, datedCalendar)
+      .isBusinessDay(LocalDate.of(2014, 1, 8)) shouldBe true
+  }
+
+  test("HolidayCalendarId.resolve reports a name joining more calendars than one can read") {
+    // Data, not contract, and the counterpart of the three refusals above: `of` accepts any name,
+    // so how many calendars a composite identifier joins is decided by whatever text reached it -
+    // and resolving such a name would build a calendar as deep as the name is wide. Resolution
+    // answers with a failure everywhere else, so it answers with one here too rather than raising
+    // the refusal the construction of the calendar would have raised.
+    val tooWide: FailureOr[HolidayCalendar] = overWideCompositeId.resolve(standardRefData)
+    tooWide should beFailureWith(FailureReason.INVALID)
+    failureOf(tooWide).attributes.get("components") shouldBe
+      Some((HolidayCalendar.MaxCompositeDepth + 1).toString)
+    failureOf(tooWide).message should include(HolidayCalendar.MaxCompositeDepth.toString)
+
+    // a composite of ordinary width resolves exactly as it always did
+    HolidayCalendarIds.GBLO.combinedWith(HolidayCalendarIds.USNY).resolve(standardRefData) should beSuccess
+  }
+
+  test("DaysAdjustment.of reports a business day addition no calendar can walk") {
+    // Data, not contract, because the day count of an adjustment is data: it is read from a
+    // document, held in a convention and passed around, so a count no calendar can walk arrives
+    // from outside the program and is reported rather than raised. The same count handed to the
+    // factory that names a kind of addition is refused where it is named, which is what keeps
+    // every adjustment a factory builds one this factory accepts.
+    val tooManyDays: ResultNec[DaysAdjustment] =
+      DaysAdjustment.of(Int.MaxValue, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)
+    tooManyDays should beFailureWith(FailureReason.INVALID)
+    failuresOf(tooManyDays) should have size 1
+    failureOf(tooManyDays.left.map(_.head)).message should include(ShiftMagnitudeMessage)
+    intercept[IllegalArgumentException](
+      DaysAdjustment.ofBusinessDays(Int.MaxValue, HolidayCalendarIds.GBLO)).getMessage should
+      include(ShiftMagnitudeMessage)
+    intercept[IllegalArgumentException](
+      DaysAdjustment.ofBusinessDays(
+        Int.MinValue,
+        HolidayCalendarIds.GBLO,
+        BusinessDayAdjustment.NONE)).getMessage should include(ShiftMagnitudeMessage)
+
+    // a calendar-day addition adds its days in one step whatever their number, so the limit does
+    // not apply to it, and an addition within the limit is accepted as it always was
+    DaysAdjustment.of(Int.MaxValue, HolidayCalendarIds.NO_HOLIDAYS, BusinessDayAdjustment.NONE) should
+      beSuccess
+    DaysAdjustment.of(
+      HolidayCalendar.MaxBusinessDayShift,
+      HolidayCalendarIds.GBLO,
+      BusinessDayAdjustment.NONE) should beSuccess
   }
 
   test("DayCount.yearFraction raises for dates out of time-line order") {
@@ -1747,11 +1853,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("DayCount Act/Act ICMA raises for schedule information it is not given") {
-    // Contract, not data: the rule of this convention is defined in terms of the end of the
-    // schedule, the end of the period containing the first date and the frequency. A schedule that
-    // cannot supply them is a caller asking this convention a question it has no rule for - which
-    // is what Java's `UnsupportedOperationException` said - so the port refuses through `ArgCheck`
-    // even though the accessors themselves are now total and answer `None` (AAP 0.6.1).
+    // Contract, not data: this convention's rule is defined in terms of the end of the schedule,
+    // the end of the period containing the first date and the frequency, so a schedule that cannot
+    // supply them is a caller asking a question it has no rule for - refused even though the
+    // accessors themselves answer `None`.
     val simple: DayCount.ScheduleInfo = DayCount.ScheduleInfo.simple
     intercept[IllegalArgumentException](
       DayCounts.ACT_ACT_ICMA.yearFraction(JAN_15, APR_15, simple)).getMessage shouldBe
@@ -1798,10 +1903,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("DayCount 30E/360 ISDA raises for the schedule end it reads at the end of February") {
-    // Contract, not data, and the narrowest of the four: this convention reads the end of the
-    // schedule only to decide whether a second date that is the last day of February is the final
-    // date of the schedule. A pair that reaches that branch without a schedule end is a caller
-    // asking for a rule that cannot be evaluated; every other pair never asks.
+    // Contract, not data, and the narrowest of the four: the end of the schedule is read only to
+    // decide whether a second date falling on the last day of February is the schedule's own end,
+    // so only a pair reaching that branch without a schedule end is refused.
     val simple: DayCount.ScheduleInfo = DayCount.ScheduleInfo.simple
     intercept[IllegalArgumentException](
       DayCounts.THIRTY_E_360_ISDA.yearFraction(
@@ -1816,9 +1920,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 
   test("DayCount 30U/360 reads the end-of-month flag and never refuses for it") {
     // The fourth reader of schedule information, and the one that cannot refuse: the flag is the
-    // single accessor of `ScheduleInfo` that is not optional - it defaults to true, as the Java
-    // interface defaulted it - so this convention always has the fact its rule reads. It is listed
-    // in the inventory beside the three above to record exactly that asymmetry.
+    // single accessor of `ScheduleInfo` that is not optional - it defaults to true - so the fact
+    // this rule reads is always there. That asymmetry is why it has a row of its own.
     val simple: DayCount.ScheduleInfo = DayCount.ScheduleInfo.simple
     simple.isEndOfMonthConvention shouldBe true
     DayCounts.THIRTY_U_360.yearFraction(JAN_15, APR_15, simple) shouldBe (90d / 360d)
@@ -1827,10 +1930,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     val withoutEom: DayCount.ScheduleInfo = new DayCount.ScheduleInfo {
       override def isEndOfMonthConvention: Boolean = false
     }
-    // a leap-year February month-end to the next February month-end: with the flag set, the
-    // end-of-month rule moves both dates to the thirtieth and the period is a whole year; with it
-    // clear, the ISDA rule leaves the 29th and the 28th where they are and the period is a day
-    // short. The flag is read, and the difference is the reading - not a refusal.
+    // a leap-year February month-end to the next: with the flag set both dates move to the
+    // thirtieth and the period is a whole year; with it clear the 29th and the 28th stay where
+    // they are and the period is a day short. The difference is the reading, not a refusal.
     val endOfFebruary: LocalDate = LocalDate.of(2012, 2, 29)
     val eomResult: Double = DayCounts.THIRTY_U_360.yearFraction(endOfFebruary, LocalDate.of(2013, 2, 28), simple)
     val plainResult: Double =
@@ -1840,11 +1942,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("Schedule.periodEndDate answers None for a date outside every period") {
-    // The one place this port is more total than Java: `getPeriodEndDate` threw for a date the
-    // schedule does not contain, and here it answers `None`. A date outside the schedule is data
-    // rather than a broken call - the caller may hold a date from anywhere - so it is asserted as a
-    // `None` and never as a throw. The conventions that read this accessor refuse on their own
-    // behalf, which is the entry above.
+    // A date outside every period is data rather than a broken call - a caller may hold a date
+    // from anywhere - so this accessor answers `None`, asserted as a `None` and never as a throw.
+    // The conventions that read it refuse on their own behalf, which is the row above.
     schedule.periodEndDate(JAN_15) shouldBe Some(APR_15)
     schedule.periodEndDate(APR_15) shouldBe Some(JUL_15)
     schedule.periodEndDate(JAN_15.minusDays(1L)) shouldBe None
@@ -1860,38 +1960,31 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   //=========================================================================
   // THE DERIVED ENUMERATION
   //
-  // Everything above this point is a hand-written test of one named member. Everything below
-  // reads the sources of both modules while the suite is being built and derives the failable
-  // surface from them, so that the inventory is a function of the code rather than a
-  // transcription of it: a member added to either module, or one whose signature changes, is a
-  // failing assertion here until a row of the registry accounts for it.
-  //
-  // Two enumerations are taken, one per side of the classification line of AAP 0.3.3:
+  // Everything above is a hand-written test of one named member. Everything below reads the
+  // sources of both modules while the suite is being built, taking two enumerations, one per side
+  // of the classification line:
   //
   //   - every public `def` whose '''declared return type''' is a failure channel - `Either`,
   //     `EitherNec`, `ResultNec`, `FailureOr`, `ValidatedNec`, `ValidatedFailures`, `Validated`
   //     or `ValueWithFailures` - which is the surface that reports failure as a value;
   //   - every public `def` whose scaladoc carries a `@throws` tag, which is the surface that
-  //     refuses by raising, and which the port documents on the method that raises.
+  //     refuses by raising.
   //
-  // The reading is textual and deliberately conservative: it skips `private` and `protected`
-  // declarations, every member of a non-visible owner, and every `def` nested inside another
-  // `def`, and it reads a return type only where the declaration states one. A member that
-  // returns a failure channel it does not name - a function '''producing''' a validation, say,
-  // as `TypedStringCompanion.matchingPattern` does - is therefore not enumerated, and neither is
-  // a failure reached through a type parameter with no channel in the signature. The counts of
-  // what was enumerated are printed by `derived_inventory_counts`, so a reader of the gate sees
-  // the size of the surface this suite claims to cover rather than having to trust a number.
+  // The reading is textual and deliberately conservative, which is what makes the enumeration
+  // honest about its own limits: it skips `private` and `protected` declarations, every member of
+  // a non-visible owner and every `def` nested inside another `def`, and it reads a return type
+  // only where the declaration states one. So a member returning a channel it does not name - a
+  // function '''producing''' a validation, as `TypedStringCompanion.matchingPattern` does - is not
+  // enumerated, and neither is a failure reached through a type parameter with no channel in the
+  // signature. The sizes of both enumerations are printed by `derived_inventory_counts`.
   //=========================================================================
 
   /**
-   * The main source roots of the two ported modules, relative to the repository root.
+   * The main source roots of the two modules, relative to the repository root.
    *
-   * The test JVM is forked with the build root as its working directory - `Test / fork := true`
-   * in `build.sbt`, where `strata-basics` is the root project - so both paths resolve as they
-   * are written. [[scalaSourcesOf]] refuses a root that is not a directory instead of
-   * enumerating nothing, because an empty enumeration would make every coverage assertion of
-   * this suite pass for the wrong reason.
+   * The test JVM is forked with the build root as its working directory, so both paths resolve as
+   * written. [[scalaSourcesOf]] refuses a root that is not a directory rather than enumerating
+   * nothing, which would make every coverage assertion here pass for the wrong reason.
    */
   private val SourceRoots: List[String] =
     List("strata-collect/src/main/scala", "strata-basics/src/main/scala")
@@ -1899,15 +1992,12 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * The number of lines a declaration's signature is read across.
    *
-   * A signature is joined from the line the `def` starts on and the lines following it, because
-   * the longest parameter lists of either module are formatted over several lines. Twelve covers
-   * every declaration in both modules - the longest is the eleven-property factory of
-   * `PeriodicSchedule`, whose return type is reached inside that window - and the joined text is
+   * Twelve covers every declaration of both modules: the longest is the eleven-parameter factory
+   * of `PeriodicSchedule`, whose return type stands on the twelfth line. The joined text is
    * truncated at the body, so reading past the end of a signature is harmless.
    */
   private val SignatureLines: Int = 12
 
-  /** The declared return types the enumeration reads as a failure channel. */
   private val FailureChannelPattern: Regex =
     """^(?:Either|EitherNec|ResultNec|FailureOr|ValidatedFailures|ValidatedNec|Validated|ValueWithFailures)\[""".r
 
@@ -1924,7 +2014,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
    * Lists the Scala sources under one source root, refusing a root that is not a directory.
    *
    * @param root  the source root, relative to the repository root
-   * @return every Scala source under the root, ordered by path
+   * @return every Scala source under it, ordered by path
    */
   private def scalaSourcesOf(root: String): List[File] = {
     val directory: File = new File(root)
@@ -1964,8 +2054,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * Answers whether the `=` at a position is part of an operator rather than the body's.
    *
-   * `==`, `=>`, `!=`, `<=` and `>=` all hold an `=` that does not open a body, and a signature
-   * truncated at one of them would lose its return type.
+   * `==`, `=>`, `!=`, `<=` and `>=` each hold an `=` that opens no body, and a signature truncated
+   * at one of them would lose its return type.
    *
    * @param text  the text being read
    * @param position  the position of the `=`
@@ -1981,10 +2071,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
    * Truncates joined signature text at the point its body begins.
    *
    * The body begins at the first `=` or `{` outside every bracket, so a default argument, a
-   * function type in a parameter list and a comparison inside a type argument are all passed
-   * over. A declaration with no body - the abstract members of the traits - is left as it
-   * stands, which is why the caller reads the return type as a '''prefix''' rather than as the
-   * whole of what remains.
+   * function type and a comparison inside a type argument are passed over. A declaration with no
+   * body is left as it stands, so the caller reads the return type as a '''prefix'''.
    *
    * @param text  the joined lines of a declaration
    * @return the text up to the body
@@ -2008,10 +2096,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * Reads the declared return type of a signature, where it states one.
    *
-   * The return type is what follows the first `:` outside every bracket after the method's name,
-   * so the type parameters, the context bounds and every parameter list are passed over. A
-   * declaration that states no return type - one whose type is inferred - has none to read, and
-   * is answered with `None` rather than with the type of one of its parameters.
+   * The return type follows the first `:` outside every bracket after the method's name, so the
+   * type parameters, the context bounds and every parameter list are passed over. A declaration
+   * whose type is inferred is answered with `None` rather than with a parameter's type.
    *
    * @param signature  the signature, already truncated at its body
    * @param method  the declared name of the method
@@ -2041,16 +2128,11 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * Reads the declared parameter types of a signature, as the identity of that one declaration.
    *
-   * The parameter section is everything between the method's name and the `:` that introduces
-   * the return type, which is the same depth-zero colon [[returnTypeOf]] reads the type from. It
-   * is split at the commas standing one bracket deep - the commas that separate parameters,
-   * rather than those inside a `Map[String, Int]` - so several parameter lists contribute their
-   * parameters to one rendering, there being no member of either module whose overloads differ
-   * only in how their parameters are grouped. Each parameter is reduced to its declared type:
-   * everything up to its own first colon is its name and modifiers, and anything from a trailing
-   * `=` is a default value, so neither renaming a parameter nor changing a default changes the
-   * identity of a declaration. Whitespace is removed last, which is what makes the identity
-   * survive reformatting of a signature across lines.
+   * The section between the method's name and the depth-zero `:` [[returnTypeOf]] reads from is
+   * split at the commas one bracket deep, so several parameter lists contribute to one rendering
+   * and the comma inside a `Map[String, Int]` is passed over. Each parameter is reduced to its
+   * declared type and whitespace is removed, so renaming a parameter, changing a default or
+   * reformatting a signature across lines leaves a declaration's identity unchanged.
    *
    * @param signature  the signature, already truncated at its body
    * @param method  the declared name of the method
@@ -2086,12 +2168,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * Flattens the parameter lists of a section into one comma-separated text.
    *
-   * A top-level `(...)` is a parameter list, and its contents are taken; a top-level `[...]` is
-   * the type parameters, which are no part of the parameters and are dropped whole. Several lists
-   * contribute their parameters to one text separated by commas, and what stands between the
-   * lists - nothing but spaces - is dropped. Brackets nested inside a parameter are kept as they
-   * are, so the comma of a `Map[String, Int]` stays one bracket deep and the split that follows
-   * passes over it.
+   * A top-level `(...)` is a parameter list and its contents are taken; a top-level `[...]` is the
+   * type parameters and is dropped whole. Brackets nested inside a parameter are kept as they are.
    *
    * @param section  the parameter section of a signature, between the method's name and the `:`
    *   introducing its return type
@@ -2120,9 +2198,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * Reduces one declared parameter to the type it declares.
    *
-   * Everything up to the parameter's own colon is its name and its modifiers, and anything from a
-   * default value is dropped - the `=` that introduces one being distinguished from the `=>` of a
-   * by-name or function type, which belongs to the type and stays.
+   * Everything up to the parameter's own colon is its name and modifiers, and a default value is
+   * dropped - the `=` that introduces one being distinguished from the `=>` of a by-name or
+   * function type, which belongs to the type and stays.
    *
    * @param parameter  the parameter as it was written, with its name, its modifiers and any
    *   default value
@@ -2151,9 +2229,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * Splits text at every occurrence of a separator standing at one bracket depth.
    *
-   * Depth is counted over `(`, `[`, `)` and `]` from zero at the start of the text, so a
-   * separator inside a nested type is passed over and the split is the one a reader of the
-   * signature would make.
+   * Depth is counted over `(`, `[`, `)` and `]` from zero at the start of the text, so a separator
+   * inside a nested type is passed over.
    *
    * @param text  the text to split
    * @param separator  the separating character
@@ -2177,7 +2254,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
    *
    * The match is on the head of the type, so `Either[Failure, LocalDate => IborIndexObservation]`
    * and `Either[E, List[A]]` are both channels: what matters is that the caller has to handle a
-   * failure to reach the value, not which failure type the left side names.
+   * failure to reach the value, not which type the left side names.
    *
    * @param returnType  the declared return type
    * @return true where the type is a failure channel
@@ -2188,11 +2265,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * Reads one source file, enumerating its public failure-returning and throwing declarations.
    *
-   * The owners currently open are tracked by indentation, which is what closes them again, and a
-   * `def` opened at a smaller indentation than the one being read makes the inner declaration a
-   * local one - it belongs to the body of the outer method and is no part of the public surface.
-   * A `@throws` tag is attributed to the next declaration read after the scaladoc that carries
-   * it, which is where the port documents one.
+   * Indentation tracks the owners currently open and also closes them, and a `def` opened at a
+   * smaller indentation makes the inner declaration local - no part of the public surface. A
+   * `@throws` tag is attributed to the next declaration read after the scaladoc carrying it.
    *
    * @param file  the source file to read
    * @return the declarations it holds
@@ -2260,41 +2335,34 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   private lazy val scannedFiles: List[ScanState] =
     SourceRoots.flatMap(scalaSourcesOf).map(scannedFile)
 
-  /** Every public declaration whose declared return type is a failure channel. */
   private lazy val derivedFailableDeclarations: List[Declaration] =
     scannedFiles.flatMap(_.failable.reverse)
 
-  /** Every public declaration whose scaladoc documents a throw. */
   private lazy val derivedThrowingDeclarations: List[Declaration] =
     scannedFiles.flatMap(_.throwing.reverse)
 
-  /** The failure-returning families, each with the declarations that make it up. */
   private lazy val derivedFailableFamilies: Map[String, List[Declaration]] =
     derivedFailableDeclarations.groupBy(_.family)
 
-  /** The throw-documenting families, each with the declarations that make it up. */
   private lazy val derivedThrowingFamilies: Map[String, List[Declaration]] =
     derivedThrowingDeclarations.groupBy(_.family)
 
   //=========================================================================
   // THE REGISTRY
   //
-  // One row per enumerated family, each carrying the evidence of its own classification rather
-  // than the name of a test that is trusted to hold some. A row is one of four kinds, and
-  // exactly one assertion is generated per row, so a row cannot exist without an assertion
-  // being executed for it:
+  // One row per enumerated family, carrying the evidence of its own classification rather than the
+  // name of a test trusted to hold some. Exactly one assertion is generated per row, in one of
+  // four kinds:
   //
-  //   - `Rejects`  - the call must report at least one failure, and the reason where AAP 0.3.3
-  //                  fixes one;
-  //   - `Raises`   - the call must raise, and the exception type is asserted;
-  //   - `Total`    - the family carries the channel but no input can fill it: the reason is
-  //                  recorded in the row and the call must '''succeed''';
-  //   - `Covered`  - an abstract declaration or a delegating overload whose failure is asserted
-  //                  by another row, which must exist and must itself be a failing row.
+  //   - `Rejects`  - the call reports at least one failure, with the reason where one is fixed;
+  //   - `Raises`   - the call raises, and the exception type is asserted;
+  //   - `Total`    - the channel is carried but no input can fill it: the row states the reason
+  //                  and the call must '''succeed''';
+  //   - `Covered`  - a declaration or delegating overload whose failure another row asserts, which
+  //                  must exist and must itself be a failing row.
   //
-  // Where a hand-written test above asserts more about the same member - a message, an
-  // attribute, an accumulation count - the row names it with `alsoAssertedBy`, and
-  // `registry_references_existing_tests` asserts that the test named still exists.
+  // A row whose member a hand-written test above says more about names that test with
+  // `alsoAssertedBy`, and `aap_inventory_entries_name_an_existing_test` checks it still exists.
   //=========================================================================
 
 
@@ -2444,12 +2512,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
    * A row recording that another row asserts this member's failure, for a member that can be
    * called.
    *
-   * This is [[covered]] for a concrete member rather than an abstract declaration, and it asserts
-   * both halves of what such a row claims: that the failure of the channel this member carries is
-   * asserted somewhere in this registry, by a row that really fails, and that this member's own
-   * call reaches the value - which is the part that says the arguments it can be handed cannot
-   * fill the channel. A member that starts refusing what it accepts today fails the second half,
-   * and one whose covering row stops failing fails the first, so neither half can rot unnoticed.
+   * This is [[covered]] for a concrete member, and it asserts both halves of what such a row
+   * claims: that a row of this registry really fails for the channel this member carries, and
+   * that this member's own call reaches the value. A member that starts refusing what it accepts
+   * today fails the second half, and one whose covering row stops failing fails the first.
    *
    * @param label  the member the row accounts for
    * @param by  the label of the row that asserts the failure of the channel
@@ -2480,8 +2546,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       })
 
   //-------------------------------------------------------------------------
-  // Fixtures the rows need beyond those the hand-written tests above use. Each is `lazy`, so a
-  // fixture is built only if a row that reads it runs.
+  // Fixtures the rows need beyond those the hand-written tests above use. The values are `lazy`,
+  // so a fixture is built only if a row that reads it runs.
 
   /** A failure to hand to the members that propagate one rather than produce one. */
   private val surfaceFailure: Failure = Failure.Invalid("A failure supplied by FailableSurfaceSpec")
@@ -2489,14 +2555,12 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /** An identifier no reference data holds, which reaches the default `resolve` of the trait. */
   private object SurfaceMissingId extends ReferenceDataId[HolidayCalendar] {
 
-    /** The published witness for a calendar, which every calendar identifier answers with. */
     override def valueType: ReferenceDataType[HolidayCalendar] = ReferenceDataType.holidayCalendar
   }
 
-  /** A typed string, the abstraction having no instance in either module (AAP 0.3.3). */
+  /** A typed string, the abstraction having no instance of its own in either module. */
   private final class SurfaceLabel(val name: String) extends Named
 
-  /** The companion of [[SurfaceLabel]], which is what publishes its validated factory. */
   private object SurfaceLabel
       extends TypedStringCompanion[SurfaceLabel](
         TypedStringCompanion.matchingPattern(
@@ -2504,22 +2568,31 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
           "A surface label is one to five upper case letters"),
         new SurfaceLabel(_))
 
-  /** An identifier naming a calendar that no reference data of this suite holds. */
   private lazy val unknownCalendarId: HolidayCalendarId = HolidayCalendarId.of("NoSuchCalendarFS")
+
+  /**
+   * A composite identifier joining more calendars than one calendar may read through.
+   *
+   * `HolidayCalendarId.of` accepts any name, so the number of parts is whatever the text says,
+   * and a name of this many parts describes a calendar deeper than the family allows. Resolving
+   * it reports that in its own failure channel, which is what the row reading this asserts; the
+   * parts are named so that none of them resolves either, so the row cannot pass for the wrong
+   * reason.
+   */
+  private lazy val overWideCompositeId: HolidayCalendarId =
+    HolidayCalendarId.of(
+      (1 to HolidayCalendar.MaxCompositeDepth + 1).map(index => s"NoSuchCalendarFS$index").mkString("+"))
 
   /** The entry of the fixture calendar, used to supply one identifier twice. */
   private lazy val calendarEntry: ReferenceData.Entry[HolidayCalendar] =
     ReferenceData.Entry[HolidayCalendar](HolidayCalendarId.of("TestFailableSurface"), datedCalendar)
 
-  /** An adjustment naming a calendar no reference data holds, so resolving it reports. */
   private lazy val unresolvableDays: DaysAdjustment =
     DaysAdjustment.ofBusinessDays(2, unknownCalendarId)
 
-  /** A date adjustment naming a calendar no reference data holds. */
   private lazy val unresolvableBusinessDay: BusinessDayAdjustment =
     BusinessDayAdjustment.of(BusinessDayConventions.FOLLOWING, unknownCalendarId)
 
-  /** An adjustable date naming a calendar no reference data holds. */
   private lazy val unresolvableDate: AdjustableDate =
     AdjustableDate.of(JAN_15, unresolvableBusinessDay)
 
@@ -2529,15 +2602,27 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /** Two at a fixed scale of two, which is what a scale-changing map is applied to. */
   private lazy val fixedTwo: FixedScaleDecimal = accepted(FixedScaleDecimal.of(two, 2))
 
-  /** A run of one value that is not a number, which the amount type does not admit. */
-  private lazy val notANumberArray: CurrencyAmountArray =
-    CurrencyAmountArray.of(Currency.GBP, DoubleArray.of(Double.NaN))
+  /**
+   * A run of one infinite value, whose scaling by zero is a value no amount admits.
+   *
+   * The element invariant of [[CurrencyAmountArray]] refuses a value that is not a number at
+   * construction, so a run holding one is no longer a fixture this suite can build - which is
+   * why the rows below assert the refusal at the routes that produce or accept such a value
+   * rather than at the routes that read one back.
+   */
+  private lazy val infiniteArray: CurrencyAmountArray =
+    CurrencyAmountArray.of(Currency.GBP, DoubleArray.of(Double.PositiveInfinity))
+
+  /** A run of one infinite value per currency, whose scaling by zero is likewise refused. */
+  private lazy val infiniteRun: MultiCurrencyAmountArray =
+    accepted(
+      MultiCurrencyAmountArray.of(
+        Map(Currency.GBP -> DoubleArray.of(Double.PositiveInfinity))))
 
   /** An infinite amount, which is admitted, and whose sum with its negation is not. */
   private lazy val gbpInfinite: CurrencyAmount =
     obtained(CurrencyAmount.of(Currency.GBP, Double.PositiveInfinity))
 
-  /** The negation of [[gbpInfinite]]. */
   private lazy val gbpNegativeInfinite: CurrencyAmount =
     obtained(CurrencyAmount.of(Currency.GBP, Double.NegativeInfinity))
 
@@ -2548,7 +2633,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /** An infinite multi-currency amount, for the same numeric edge one value further out. */
   private lazy val multiInfinite: MultiCurrencyAmount = obtained(MultiCurrencyAmount.of(gbpInfinite))
 
-  /** The negation of [[multiInfinite]]. */
   private lazy val multiNegativeInfinite: MultiCurrencyAmount =
     obtained(MultiCurrencyAmount.of(gbpNegativeInfinite))
 
@@ -2565,7 +2649,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   private lazy val hugeMoney: Money =
     obtained(Money.of(Currency.GBP, new BigDecimal("999999999999999999")))
 
-  /** Unrounded money of eighteen digits, for the same overflow. */
   private lazy val hugeBigMoney: BigMoney =
     obtained(BigMoney.of(Currency.GBP, new BigDecimal("999999999999999999")))
 
@@ -2581,7 +2664,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   private lazy val collapsingAdjuster: DateAdjuster =
     DateAdjuster(date => if (date == JUL_15) APR_15 else date)
 
-  /** Two steps that name period index one with different adjustments. */
   private lazy val contradictorySteps: List[ValueStep] =
     List(
       accepted(ValueStep.of(1, ValueAdjustment.ofReplace(200d))),
@@ -2591,23 +2673,19 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   private lazy val valueSchedule: ValueSchedule =
     accepted(ValueSchedule.of(100d, accepted(ValueStep.of(1, ValueAdjustment.ofReplace(200d)))))
 
-  /** A sequence of steps, which a definition holding steps may also carry. */
   private lazy val stepSequence: ValueStepSequence =
     accepted(ValueStepSequence.of(APR_15, JUL_15, Frequency.P3M, ValueAdjustment.ofDeltaAmount(-1d)))
 
   //-------------------------------------------------------------------------
-  // The rows of `strata-collect`, in the order the enumeration reads its files. The module is
-  // the error channel of this port, so most of its failable surface is the channel itself:
-  // `Validate` produces failures, the `result` package converts and combines them, and the two
-  // decimal types are where a value can be out of range.
+  // The rows of `strata-collect`, in the order the enumeration reads its files. The module is the
+  // error channel, so most of its failable surface is the channel itself: `Validate` produces
+  // failures, the `result` package converts and combines them, and the two decimal types are where
+  // a value can be out of range.
 
-  /** The rows accounting for the failable surface of `strata-collect`. */
   private val collectFailableRows: List[SurfaceRow] = List(
-    // Collections.scala
     rejects("Collections.ensureOnlyOne")(Collections.ensureOnlyOne(List(1, 2))),
     rejects("Collections.toSortedMap")(
       Collections.toSortedMap(List(gbp100, gbp100), (amount: CurrencyAmount) => amount.currency)),
-    // Decimal.scala
     rejectsWith("Decimal.mapAsDouble", FailureReason.INVALID)(two.mapAsDouble(_ => Double.NaN)),
     rejectsWith("Decimal.mapAsBigDecimal", FailureReason.INVALID)(
       two.mapAsBigDecimal(_ => new BigDecimal("1E+30"))),
@@ -2617,14 +2695,11 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejects("Decimal.ofScaled")(Decimal.ofScaled(Long.MaxValue, -1)),
     rejectsWith("Decimal.parse", FailureReason.PARSING)(Decimal.parse("Rubbish"))
       .alsoAssertedBy("Decimal.parse reports text that names no decimal"),
-    // FixedScaleDecimal.scala
     rejects("FixedScaleDecimal.map")(fixedTwo.map(_ => obtained(Decimal.of(0.001)))),
     rejects("FixedScaleDecimal.of")(FixedScaleDecimal.of(two, 19))
       .alsoAssertedBy("FixedScaleDecimal.of reports a scale the decimal cannot be held at"),
     rejects("FixedScaleDecimal.parse")(FixedScaleDecimal.parse("Rubbish")),
-    // TypedString.scala
     rejects("TypedStringCompanion.of")(SurfaceLabel.of("lower case")),
-    // Validate.scala
     total("Validate.valid", "it lifts a value into the passing outcome and reads nothing about it")(
       Validate.valid(1)),
     rejects("Validate.invalid")(Validate.invalid[Int](surfaceFailure)),
@@ -2658,12 +2733,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       Validate.inOrderNotEqual(Currency.USD, Currency.AUD, "first", "second")),
     rejects("Validate.inOrderOrEqual")(
       Validate.inOrderOrEqual(Currency.USD, Currency.AUD, "first", "second")),
-    // named/NamedEnum.scala
     rejectsWith("NamedEnum.parse", FailureReason.PARSING)(NamedEnum[Currency].parse("NotACurrency"))
       .alsoAssertedBy("NamedEnum.parse reports a name no member of the family carries"),
-    // result/FailureReason.scala
     rejectsWith("FailureReason.parse", FailureReason.PARSING)(FailureReason.parse("NotAReason")),
-    // result/package.scala
     rejects("result.toNec")(result.toNec[Int](Left(surfaceFailure))),
     rejects("result.toValidated")(result.toValidated(result.toNec[Int](Left(surfaceFailure)))),
     rejects("result.toResult")(result.toResult(Validate.invalid[Int](surfaceFailure))),
@@ -2686,13 +2758,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 
   //-------------------------------------------------------------------------
   // The rows of the root package of `strata-basics`: reference data, resolution and identifiers.
-  // The two resolution traits are extension points with no implementation inside this module -
-  // the trades and positions that implement them are migrated in later slices - so their rows
-  // are covered by the resolving members that do exist.
+  // The two resolution traits are extension points with no implementation inside this module, so
+  // their rows are covered by the resolving members that do exist.
 
-  /** The rows accounting for the failable surface of the root package of `strata-basics`. */
   private val basicsRootFailableRows: List[SurfaceRow] = List(
-    // ReferenceData.scala
     rejectsWith("ReferenceData.getValue", FailureReason.MISSING_DATA)(
       emptyRefData.getValue(HolidayCalendarIds.GBLO))
       .alsoAssertedBy("ReferenceData.getValue reports an identifier the reference data does not hold"),
@@ -2700,11 +2769,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       ReferenceData.of(calendarEntry, calendarEntry)),
     rejectsWith("ImmutableReferenceData.of", FailureReason.INVALID)(
       ImmutableReferenceData.of(calendarEntry, calendarEntry)),
-    // ReferenceDataId.scala
     rejectsWith("ReferenceDataId.resolve", FailureReason.MISSING_DATA)(
       SurfaceMissingId.resolve(standardRefData))
       .alsoAssertedBy("ReferenceDataId.resolve reports an identifier the reference data does not hold"),
-    // Resolvable.scala
     covered(
       "Resolvable.resolve",
       by = "BusinessDayAdjustment.resolve",
@@ -2718,30 +2785,24 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         "no type of either module implements it - it is the contract the trades of later slices " +
           "implement - and the failure such an implementation propagates is the failure of " +
           "resolving an identifier"),
-    // StandardId.scala
     rejectsWith("StandardId.of", FailureReason.INVALID)(StandardId.of("", "1"))
       .alsoAssertedBy("StandardId.of reports parts that name no identifier"),
     rejectsWith("StandardId.parse", FailureReason.PARSING)(StandardId.parse("NoSeparator"))
       .alsoAssertedBy("StandardId.parse reports text that names no identifier"),
-    // StandardSchemes.scala
     rejects("StandardSchemes.createTicMic")(StandardSchemes.createTicMic("ULVR", "LSE")),
     rejects("StandardSchemes.splitTicMic")(
       StandardSchemes.splitTicMic(accepted(StandardId.of("OG-Ticker", "NoMic"))))
       .alsoAssertedBy("StandardSchemes.splitTicMic reports an identifier that is no TICMIC"))
 
   //-------------------------------------------------------------------------
-  // The rows of the currency package. Two failure shapes account for nearly all of it: two
-  // currencies that disagree, and a rate the provider asked for does not hold. The money types
-  // add a third - an amount no decimal holds - and the runs of amounts add a fourth, two runs
-  // that disagree in length.
+  // The rows of the currency package. Four failure shapes account for it: two currencies that
+  // disagree, a rate the provider does not hold, an amount no decimal holds, and two runs that
+  // disagree in length.
 
-  /** The rows accounting for the failable surface of the currency package. */
   private val currencyFailableRows: List[SurfaceRow] = List(
-    // AdjustablePayment.scala
     rejects("AdjustablePayment.of")(AdjustablePayment.of(Currency.GBP, Double.NaN, JAN_15)),
     rejectsWith("AdjustablePayment.resolve", FailureReason.MISSING_DATA)(
       obtained(AdjustablePayment.of(Currency.GBP, 100d, unresolvableDate)).resolve(emptyRefData)),
-    // BigMoney.scala
     rejectsWith("BigMoney.plus", FailureReason.INVALID)(gbpBigMoney.plus(usdBigMoney))
       .alsoAssertedBy("Money.plus, Money.minus, BigMoney.plus and BigMoney.minus report a currency mismatch"),
     rejectsWith("BigMoney.minus", FailureReason.INVALID)(gbpBigMoney.minus(usdBigMoney))
@@ -2758,11 +2819,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       .alsoAssertedBy("Money.convertedTo and BigMoney.convertedTo report a non-unit rate for the same currency"),
     rejects("BigMoney.of")(BigMoney.of(Currency.GBP, Double.NaN)),
     rejectsWith("BigMoney.parse", FailureReason.PARSING)(BigMoney.parse("Rubbish")),
-    // Currency.scala
     rejects("Currency.of")(Currency.of("GBPX")),
     rejectsWith("Currency.parse", FailureReason.PARSING)(Currency.parse("XYZ"))
       .alsoAssertedBy("Currency.parse reports a code outside the closed family"),
-    // CurrencyAmount.scala
     rejectsWith("CurrencyAmount.plus", FailureReason.INVALID)(gbp100.plus(usd100))
       .alsoAssertedBy("CurrencyAmount.plus and minus report a currency mismatch"),
     rejectsWith("CurrencyAmount.minus", FailureReason.INVALID)(gbp100.minus(usd100))
@@ -2779,7 +2838,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         "CurrencyAmount.toMoney and CurrencyAmount.toBigMoney report an amount no decimal holds"),
     rejectsWith("CurrencyAmount.parse", FailureReason.PARSING)(CurrencyAmount.parse("Rubbish"))
       .alsoAssertedBy("CurrencyAmount.parse reports text that names no amount"),
-    // CurrencyAmountArray.scala
     rejectsWith("CurrencyAmountArray.convertedTo", FailureReason.CURRENCY_CONVERSION)(
       gbpArray.convertedTo(Currency.EUR, gbpUsdMatrix)),
     rejectsWith("CurrencyAmountArray.plus", FailureReason.INVALID)(gbpArray.plus(shortGbpArray))
@@ -2789,20 +2847,17 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("CurrencyAmountArray.of", FailureReason.INVALID)(
       CurrencyAmountArray.of(List.empty[CurrencyAmount]))
       .alsoAssertedBy("CurrencyAmountArray.of reports an empty collection and mixed currencies"),
-    // CurrencyPair.scala
     rejectsWith("CurrencyPair.other", FailureReason.INVALID)(
       CurrencyPair.of(Currency.GBP, Currency.USD).other(Currency.EUR))
       .alsoAssertedBy("CurrencyPair.other reports a currency that is not in the pair"),
     rejectsWith("CurrencyPair.parse", FailureReason.PARSING)(CurrencyPair.parse("Rubbish"))
       .alsoAssertedBy("CurrencyPair.parse reports text that names no pair"),
-    // FxConvertible.scala
     covered(
       "FxConvertible.convertedTo",
       by = "CurrencyAmount.convertedTo",
       reason =
         "it is the abstract declaration of the trait, implemented by every amount type of this " +
           "package"),
-    // FxMatrix.scala
     rejectsWith("FxMatrix.fxRate", FailureReason.CURRENCY_CONVERSION)(
       gbpUsdMatrix.fxRate(Currency.EUR, Currency.CHF))
       .alsoAssertedBy("FxMatrix.fxRate reports a rate the matrix does not hold"),
@@ -2825,7 +2880,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
           (CurrencyPair.of(Currency.EUR, Currency.CHF), 1.1d)))),
     rejects("FxMatrix.fromMatrix")(
       FxMatrix.fromMatrix(Vector(Currency.GBP, Currency.USD), DoubleMatrix.of(1, 2, 1d, 1.6d))),
-    // FxRate.scala
     rejectsWith("FxRate.fxRate", FailureReason.CURRENCY_CONVERSION)(
       gbpUsdRate.fxRate(Currency.EUR, Currency.CHF)),
     rejectsWith("FxRate.crossRate", FailureReason.CURRENCY_CONVERSION)(gbpUsdRate.crossRate(eurCadRate))
@@ -2833,14 +2887,12 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejects("FxRate.of")(FxRate.of(Currency.GBP, Currency.USD, 0d)),
     rejectsWith("FxRate.parse", FailureReason.PARSING)(FxRate.parse("Rubbish"))
       .alsoAssertedBy("FxRate.parse reports text that names no rate"),
-    // FxRateProvider.scala
     rejectsWith("FxRateProvider.fxRate", FailureReason.CURRENCY_CONVERSION)(
       FxRateProvider.noConversion().fxRate(Currency.GBP, Currency.USD))
       .alsoAssertedBy("FxRateProvider.fxRate reports a rate the provider cannot supply"),
     rejectsWith("FxRateProvider.convert", FailureReason.CURRENCY_CONVERSION)(
       FxRateProvider.noConversion().convert(100d, Currency.GBP, Currency.USD))
       .alsoAssertedBy("FxRateProvider.convert reports a rate the provider cannot supply"),
-    // Money.scala
     total(
       "Money.getValue",
       "the amount is at the currency's scale by construction and no currency has more than " +
@@ -2855,7 +2907,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       .alsoAssertedBy("Money.convertedTo and BigMoney.convertedTo report a non-unit rate for the same currency"),
     rejects("Money.of")(Money.of(Currency.GBP, Double.NaN)),
     rejectsWith("Money.parse", FailureReason.PARSING)(Money.parse("Rubbish")),
-    // MultiCurrencyAmount.scala
     rejectsWith("MultiCurrencyAmount.getAmount", FailureReason.INVALID)(
       gbpMulti.getAmount(Currency.AUD))
       .alsoAssertedBy("MultiCurrencyAmount.getAmount reports a currency the amount does not hold"),
@@ -2864,7 +2915,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("MultiCurrencyAmount.of", FailureReason.INVALID)(
       MultiCurrencyAmount.of(gbp100, gbp100))
       .alsoAssertedBy("MultiCurrencyAmount.of reports a duplicated currency"),
-    // MultiCurrencyAmountArray.scala
     rejectsWith("MultiCurrencyAmountArray.getValues", FailureReason.INVALID)(
       gbpRun.getValues(Currency.AUD))
       .alsoAssertedBy("MultiCurrencyAmountArray.getValues reports a currency the run does not hold"),
@@ -2902,37 +2952,29 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       .alsoAssertedBy("MultiCurrencyAmountArray.of reports values of unequal length"),
     rejects("MultiCurrencyAmountArray.total")(
       MultiCurrencyAmountArray.total(List(gbpArray, shortGbpArray))),
-    // Payment.scala
     rejectsWith("Payment.convertedTo", FailureReason.CURRENCY_CONVERSION)(
       obtained(Payment.of(Currency.GBP, 100d, JAN_15)).convertedTo(Currency.EUR, gbpUsdMatrix)),
     rejects("Payment.of")(Payment.of(Currency.GBP, Double.NaN, JAN_15)))
 
   //-------------------------------------------------------------------------
-  // The rows of the date package. Every adjustment resolves its calendar against the reference
-  // data it is handed, so the failure of a resolving member is the absence of that calendar;
-  // every factory over a period or a tenor refuses a period the convention it is paired with
-  // cannot add, or a count that is no period at all.
+  // The rows of the date package. A resolving member fails through the absence of the calendar it
+  // is asked to resolve; a factory over a period or a tenor refuses a period the convention it is
+  // paired with cannot add, or a count that is no period at all.
 
-  /** The rows accounting for the failable surface of the date package. */
   private val dateFailableRows: List[SurfaceRow] = List(
-    // AdjustableDate.scala
     rejectsWith("AdjustableDate.adjusted", FailureReason.MISSING_DATA)(
       unresolvableDate.adjusted(emptyRefData)),
-    // AdjustableDates.scala
     rejectsWith("AdjustableDates.adjusted", FailureReason.MISSING_DATA)(
       accepted(AdjustableDates.of(unresolvableBusinessDay, JAN_15)).adjusted(emptyRefData)),
     rejectsWith("AdjustableDates.of", FailureReason.INVALID)(
       AdjustableDates.of(List.empty[LocalDate]))
       .alsoAssertedBy("AdjustableDates.of reports dates that describe no set"),
-    // BusinessDayAdjustment.scala
     rejectsWith("BusinessDayAdjustment.adjust", FailureReason.MISSING_DATA)(
       unresolvableBusinessDay.adjust(JAN_15, emptyRefData)),
     rejectsWith("BusinessDayAdjustment.resolve", FailureReason.MISSING_DATA)(
       unresolvableBusinessDay.resolve(emptyRefData)),
-    // BusinessDayConvention.scala
     rejectsWith("BusinessDayConvention.parse", FailureReason.PARSING)(
       BusinessDayConvention.parse("NotAConvention")),
-    // DateSequence.scala
     rejectsWith("DateSequence.parse", FailureReason.PARSING)(DateSequence.parse("NotASequence")),
     rejectsWith("SequenceDate.base", FailureReason.INVALID)(SequenceDate.base(0))
       .alsoAssertedBy("SequenceDate.of reports fields that describe no instruction"),
@@ -2941,12 +2983,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("SequenceDate.of", FailureReason.INVALID)(
       SequenceDate.of(Some(YearMonth.of(2014, 6)), Some(Period.ofMonths(1)), 1, fullSequence = true))
       .alsoAssertedBy("SequenceDate.of reports fields that describe no instruction"),
-    // DayCount.scala
     rejectsWith("DayCount.ofBus252", FailureReason.MISSING_DATA)(
       DayCount.ofBus252(unknownCalendarId, emptyRefData))
       .alsoAssertedBy("DayCount.ofBus252 reports a calendar the reference data does not hold"),
     rejectsWith("DayCount.parse", FailureReason.PARSING)(DayCount.parse("NotADayCount")),
-    // DaysAdjustment.scala
     rejectsWith("DaysAdjustment.adjust", FailureReason.MISSING_DATA)(
       unresolvableDays.adjust(JAN_15, emptyRefData))
       .alsoAssertedBy("DaysAdjustment resolution reports a calendar the reference data does not hold"),
@@ -2956,13 +2996,18 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("DaysAdjustment.of", FailureReason.INVALID)(
       DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE))
       .alsoAssertedBy("DaysAdjustment.of reports a business day addition of no days"),
+    rejectsWith("DaysAdjustment.of(magnitude)", FailureReason.INVALID)(
+      DaysAdjustment.of(Int.MaxValue, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE))
+      .alsoAssertedBy("DaysAdjustment.of reports a business day addition no calendar can walk"),
     // HolidayCalendar.scala
     rejectsWith("HolidayCalendars.of", FailureReason.PARSING)(
       HolidayCalendars.of("NoSuchCalendarFS")),
-    // HolidayCalendarId.scala
     rejectsWith("HolidayCalendarId.resolve", FailureReason.MISSING_DATA)(
       unknownCalendarId.resolve(emptyRefData))
       .alsoAssertedBy("HolidayCalendarId.resolve reports a calendar the reference data does not hold"),
+    rejectsWith("HolidayCalendarId.resolve(parts)", FailureReason.INVALID)(
+      overWideCompositeId.resolve(standardRefData))
+      .alsoAssertedBy("HolidayCalendarId.resolve reports a name joining more calendars than one can read"),
     // MarketTenor.scala
     total(
       "MarketTenor.ofSpot",
@@ -2977,10 +3022,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("MarketTenor.ofSpotYears", FailureReason.INVALID)(MarketTenor.ofSpotYears(0)),
     rejectsWith("MarketTenor.parse", FailureReason.PARSING)(MarketTenor.parse("2K"))
       .alsoAssertedBy("MarketTenor.parse reports text that names no market tenor"),
-    // PeriodAdditionConvention.scala
     rejectsWith("PeriodAdditionConvention.parse", FailureReason.PARSING)(
       PeriodAdditionConvention.parse("NotAConvention")),
-    // PeriodAdjustment.scala
     rejectsWith("PeriodAdjustment.adjust", FailureReason.MISSING_DATA)(
       accepted(
         PeriodAdjustment.of(
@@ -3003,7 +3046,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       PeriodAdjustment.ofLastDay(Period.ofDays(3), BusinessDayAdjustment.NONE)),
     rejectsWith("PeriodAdjustment.ofLastBusinessDay", FailureReason.INVALID)(
       PeriodAdjustment.ofLastBusinessDay(Period.ofDays(3), BusinessDayAdjustment.NONE)),
-    // Tenor.scala
     rejectsWith("Tenor.of", FailureReason.INVALID)(Tenor.of(Period.ZERO))
       .alsoAssertedBy("Tenor.of reports a period that is no tenor"),
     rejectsWith("Tenor.ofDays", FailureReason.INVALID)(Tenor.ofDays(0)),
@@ -3012,7 +3054,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("Tenor.ofYears", FailureReason.INVALID)(Tenor.ofYears(0)),
     rejectsWith("Tenor.parse", FailureReason.PARSING)(Tenor.parse("2K"))
       .alsoAssertedBy("Tenor.parse reports text that names no tenor"),
-    // TenorAdjustment.scala
     rejectsWith("TenorAdjustment.adjust", FailureReason.MISSING_DATA)(
       accepted(
         TenorAdjustment.of(
@@ -3037,17 +3078,14 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       TenorAdjustment.ofLastBusinessDay(Tenor.TENOR_1W, BusinessDayAdjustment.NONE)))
 
   //-------------------------------------------------------------------------
-  // The rows of the index package. An index is a closed family, so text that names no member is
-  // a parse failure; every calculation over a fixing date reads the index's calendars from the
-  // reference data it is handed, so its failure is the absence of a calendar. The conversions of
-  // a floating rate name refuse a name of the wrong kind, and the Euroyen TIBOR name - whose
-  // every published index has been retired - is what reaches the retired-family failures.
+  // The rows of the index package. An index is a closed family, so text that names no member is a
+  // parse failure; every calculation over a fixing date reads the index's calendars from the
+  // reference data it is handed, so its failure is the absence of a calendar. The conversions of a
+  // floating rate name refuse a name of the wrong kind, and the Euroyen TIBOR name - whose every
+  // published index has been retired - is what reaches the retired-family failures.
 
-  /** The rows accounting for the failable surface of the index package. */
   private val indexFailableRows: List[SurfaceRow] = List(
-    // FloatingRate.scala
     rejectsWith("FloatingRate.parse", FailureReason.PARSING)(FloatingRate.parse("NotAnIndex")),
-    // FloatingRateName.scala
     rejectsWith("FloatingRateName.defaultTenor", FailureReason.MISSING_DATA)(euroyenName.defaultTenor),
     total(
       "FloatingRateName.normalized",
@@ -3075,23 +3113,19 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("FloatingRateName.defaultOvernightIndex", FailureReason.MISSING_DATA)(
       FloatingRateName.defaultOvernightIndex(Currency.KRW))
       .alsoAssertedBy("FloatingRateName.defaultOvernightIndex reports a currency with no published default"),
-    // FloatingRateType.scala
     rejectsWith("FloatingRateType.parse", FailureReason.PARSING)(
       FloatingRateType.parse("NotAType")),
-    // FxIndexObservation.scala
     rejectsWith("FxIndexObservation.of", FailureReason.MISSING_DATA)(
       FxIndexObservation.of(FxIndices.EUR_GBP_ECB, JAN_15, emptyRefData))
       .alsoAssertedBy("FxIndexObservation.of reports a calendar the reference data does not hold"),
     rejectsWith("FxIndexObservation.resolve", FailureReason.MISSING_DATA)(
       FxIndexObservation.resolve(FxIndices.EUR_GBP_ECB, emptyRefData))
       .alsoAssertedBy("FxIndex.resolve reports a calendar the reference data does not hold"),
-    // IborIndexObservation.scala
     rejectsWith("IborIndexObservation.of", FailureReason.MISSING_DATA)(
       IborIndexObservation.of(IborIndices.GBP_LIBOR_3M, JAN_15, emptyRefData))
       .alsoAssertedBy("IborIndexObservation.of reports a calendar the reference data does not hold"),
     rejectsWith("IborIndexObservation.resolve", FailureReason.MISSING_DATA)(
       IborIndexObservation.resolve(IborIndices.GBP_LIBOR_3M, emptyRefData)),
-    // Index.scala
     rejectsWith("Index.parse", FailureReason.PARSING)(Index.parse("NotAnIndex")),
     rejectsWith("FloatingRateIndex.parse", FailureReason.PARSING)(
       FloatingRateIndex.parse("NotAnIndex")),
@@ -3132,7 +3166,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("FxIndex.of", FailureReason.PARSING)(
       FxIndex.of(CurrencyPair.of(Currency.BRL, Currency.KRW)))
       .alsoAssertedBy("FxIndex.of(CurrencyPair) reports a pair no published index quotes"),
-    // OvernightIndexObservation.scala
     rejectsWith("OvernightIndexObservation.resolve", FailureReason.MISSING_DATA)(
       OvernightIndexObservation.resolve(OvernightIndices.GBP_SONIA, emptyRefData))
       .alsoAssertedBy(
@@ -3144,20 +3177,17 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   //-------------------------------------------------------------------------
   // The rows of the location, schedule and value packages. A schedule definition is judged
   // against the dates it holds and then against the calendar it is rolled out over, which is why
-  // the generating members report separately from the factory; the `with*` members of a
-  // definition re-run that judgement, so the five that replace a date can report and the five
-  // that replace an adjustment or a convention cannot.
+  // the generating members report separately from the factory; the `with*` members re-run that
+  // judgement, so those replacing a date can report and those replacing an adjustment or a
+  // convention cannot.
 
-  /** The rows accounting for the failable surface of the location, schedule and value packages. */
   private val scheduleFailableRows: List[SurfaceRow] = List(
-    // location/Country.scala
     rejectsWith("Country.code3Char", FailureReason.MISSING_DATA)(accepted(Country.of("EU")).code3Char),
     rejectsWith("Country.of", FailureReason.INVALID)(Country.of("abc"))
       .alsoAssertedBy("Country.of reports a malformed code and accepts any well-formed one"),
     rejectsWith("Country.parse", FailureReason.INVALID)(Country.parse("abc")),
     rejectsWith("Country.of3Char", FailureReason.PARSING)(Country.of3Char("ZZZ"))
       .alsoAssertedBy("Country.of3Char reports a code that names no country"),
-    // schedule/Frequency.scala
     rejectsWith("Frequency.eventsPerYear", FailureReason.INVALID)(
       accepted(Frequency.of(Period.ofMonths(5))).eventsPerYear)
       .alsoAssertedBy("Frequency.eventsPerYear reports a frequency with no exact count"),
@@ -3172,7 +3202,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("Frequency.ofYears", FailureReason.INVALID)(Frequency.ofYears(0)),
     rejectsWith("Frequency.parse", FailureReason.PARSING)(Frequency.parse("2K"))
       .alsoAssertedBy("Frequency.parse reports text that names no frequency"),
-    // schedule/PeriodicSchedule.scala
     rejectsWith("PeriodicSchedule.createSchedule", FailureReason.INVALID)(
       badStubDefinition.createSchedule(standardRefData))
       .alsoAssertedBy("PeriodicSchedule.createSchedule reports a definition that generates nothing"),
@@ -3221,13 +3250,11 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       "a roll convention is read when the schedule is generated, not by the definition's " +
         "invariants")(
       quarterly.withRollConvention(Some(RollConventions.DAY_15))),
-    // schedule/RollConvention.scala
     rejectsWith("RollConvention.parse", FailureReason.PARSING)(
       RollConvention.parse("NotAConvention")),
     rejectsWith("RollConvention.ofDayOfMonth", FailureReason.INVALID)(
       RollConvention.ofDayOfMonth(32))
       .alsoAssertedBy("RollConvention.ofDayOfMonth reports a day outside one to thirty-one"),
-    // schedule/Schedule.scala
     rejectsWith("Schedule.merge", FailureReason.INVALID)(
       schedule.merge(3, LocalDate.of(2014, 2, 1), OCT_15))
       .alsoAssertedBy("Schedule.merge reports a date that matches no period of the schedule"),
@@ -3242,7 +3269,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         Frequency.P3M,
         RollConventions.DAY_15))
       .alsoAssertedBy("Schedule.of reports periods that do not run from earliest to latest"),
-    // schedule/SchedulePeriod.scala
     total(
       "SchedulePeriod.subSchedule",
       "it derives a definition from the two unadjusted dates of this period, which " +
@@ -3257,10 +3283,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       schedule.period(1).toAdjusted(collapsingAdjuster)),
     rejectsWith("SchedulePeriod.of", FailureReason.INVALID)(SchedulePeriod.of(OCT_15, JAN_15))
       .alsoAssertedBy("SchedulePeriod.of reports dates that describe no period"),
-    // schedule/StubConvention.scala
     rejectsWith("StubConvention.parse", FailureReason.PARSING)(
       StubConvention.parse("NotAConvention")),
-    // value/Rounding.scala
     rejectsWith("HalfUp.ofDecimalPlaces", FailureReason.INVALID)(HalfUp.ofDecimalPlaces(-1)),
     rejectsWith("HalfUp.ofFractionalDecimalPlaces", FailureReason.INVALID)(
       HalfUp.ofFractionalDecimalPlaces(-1, 257)),
@@ -3269,10 +3293,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("Rounding.ofFractionalDecimalPlaces", FailureReason.INVALID)(
       Rounding.ofFractionalDecimalPlaces(-1, 257))
       .alsoAssertedBy("Rounding.ofFractionalDecimalPlaces accumulates both rejections"),
-    // value/ValueAdjustmentType.scala
     rejectsWith("ValueAdjustmentType.parse", FailureReason.PARSING)(
       ValueAdjustmentType.parse("NotAType")),
-    // value/ValueSchedule.scala
     rejectsWith("ValueSchedule.resolveValues", FailureReason.INVALID)(
       accepted(ValueSchedule.of(100d, accepted(ValueStep.of(5, ValueAdjustment.ofReplace(200d)))))
         .resolveValues(schedule))
@@ -3287,16 +3309,13 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     rejectsWith("ValueSchedule.of", FailureReason.INVALID)(
       ValueSchedule.of(100d, contradictorySteps))
       .alsoAssertedBy("ValueSchedule.of reports two steps that name one position with different adjustments"),
-    // value/ValueStep.scala
     rejectsWith("ValueStep.of", FailureReason.INVALID)(
       ValueStep.of(0, ValueAdjustment.ofReplace(200d)))
       .alsoAssertedBy("ValueStep.of reports a position that names no period"),
-    // value/ValueStepSequence.scala
     rejectsWith("ValueStepSequence.of", FailureReason.INVALID)(
       ValueStepSequence.of(OCT_15, JAN_15, Frequency.P3M, ValueAdjustment.ofDeltaAmount(-100d)))
       .alsoAssertedBy("ValueStepSequence.of reports arguments that describe no sequence"))
 
-  /** Every row of the failure-returning side of the derived inventory. */
   private val failableRows: List[SurfaceRow] =
     collectFailableRows ::: basicsRootFailableRows ::: currencyFailableRows ::: dateFailableRows :::
       indexFailableRows ::: scheduleFailableRows
@@ -3304,25 +3323,19 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   //=========================================================================
   // THE THROWING SIDE
   //
-  // One row per family whose scaladoc documents a throw. Each row raises that throw, and the
-  // comment above each group names why the refusal is a caller contract or a numeric edge rather
-  // than a value - the classification rule of AAP 0.3.3 - so that a member does not move across
-  // the line unnoticed. A family whose label is also the label of a failure-returning row above
-  // names the refusal in brackets, because the two rows are two different statements about one
-  // member: `Money.plus` reports a currency mismatch and raises for an amount no decimal holds.
-  //
-  // Where a family documents two different throws - an index outside the array and a value that
-  // is not a number - both are rows, and where the hand-written tests above assert the same
-  // throw with its message, the row names that test.
+  // One row per family whose scaladoc documents a throw, and the scaladoc above each group names
+  // why those refusals are caller contracts or numeric edges rather than values. A family that
+  // also has a failure-returning row above names the refusal in brackets, the two rows being two
+  // statements about one member: `Money.plus` reports a currency mismatch and raises for an amount
+  // no decimal holds. A family documenting two throws has a row for each.
   //=========================================================================
 
   /**
-   * The rows of `ArgCheck`, which is the single place in either module where a throw is written.
+   * The rows of `ArgCheck`, the single place in either module where a throw is written.
    *
-   * Every one of these guards a caller contract: the condition is a property of the call - a
-   * count that must be positive, a text that must match, two values that must be in order - and
-   * not of data a caller could correct by supplying better values. They are the throws every
-   * other contract refusal of both modules is routed through.
+   * Each guards a caller contract: the condition is a property of the call - a count that must be
+   * positive, a text that must match, two values that must be in order - and not of data a caller
+   * could correct with better values. Every other contract refusal is routed through these.
    */
   private val argCheckThrowingRows: List[SurfaceRow] = List(
     raises[IllegalArgumentException]("ArgCheck.isTrue")(ArgCheck.isTrue(validIfTrue = false)),
@@ -3363,14 +3376,12 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * The rows of the numeric types of `strata-collect`.
    *
-   * Two kinds of refusal live here, and AAP 0.3.3 keeps both fail-fast. A dimension or an index
-   * is the caller's own arithmetic over sizes it can read, so an array of the wrong length or an
-   * index outside one is a mistake in the calling code; and the overflow of the decimal
-   * representation beyond eighteen digits is a numeric domain edge, reachable only from values a
-   * caller chose to combine, which the port refuses exactly where the original refused it.
+   * Two kinds of refusal live here, both fail-fast. A dimension or an index is the caller's own
+   * arithmetic over sizes it can read, so an array of the wrong length or an index outside one is
+   * a mistake in the calling code; and the overflow of the decimal representation beyond eighteen
+   * digits is a numeric domain edge, reachable only from values a caller chose to combine.
    */
   private val numericThrowingRows: List[SurfaceRow] = List(
-    // Decimal.scala
     raises[IllegalArgumentException]("Decimal.plus")(hugeDecimal.plus(hugeDecimal)),
     raises[IllegalArgumentException]("Decimal.minus")(
       hugeDecimal.minus(hugeDecimal.multipliedBy(-1L))),
@@ -3385,7 +3396,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       two.roundToPrecision(-1, RoundingMode.HALF_UP)),
     raises[IllegalArgumentException]("Decimal.format")(two.format(19, RoundingMode.HALF_UP)),
     raises[IllegalArgumentException]("Decimal.formatAtLeast")(two.formatAtLeast(19)),
-    // DoubleArrayMath.scala
     raises[IllegalArgumentException]("DoubleArrayMath.combineByAddition")(
       DoubleArrayMath.combineByAddition(Array(1d), Array(1d, 2d))),
     raises[IllegalArgumentException]("DoubleArrayMath.combineByMultiplication")(
@@ -3400,7 +3410,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       DoubleArrayMath.reorderedCopy(Array(1d), Array(0, 1))),
     raises[IllegalArgumentException]("DoubleArrayMath.sortPairs")(
       DoubleArrayMath.sortPairs(Array(1d), Array(1d, 2d))),
-    // array/DoubleArray.scala
     raises[IndexOutOfBoundsException]("DoubleArray.get")(threeValues.get(3))
       .alsoAssertedBy("DoubleArray.get raises for an index outside the array"),
     raises[IllegalArgumentException]("DoubleArray.subArray")(threeValues.subArray(5)),
@@ -3432,7 +3441,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       DoubleArray.tabulate(-1)(index => index.toDouble)),
     raises[IllegalArgumentException]("DoubleArray.copyOf")(DoubleArray.copyOf(Array(1d), 5)),
     raises[IllegalArgumentException]("DoubleArray.filled")(DoubleArray.filled(-1)),
-    // array/DoubleMatrix.scala
     raises[IndexOutOfBoundsException]("DoubleMatrix.get")(squareMatrix.get(2, 0))
       .alsoAssertedBy("DoubleMatrix.get raises for a position outside the matrix"),
     raises[IndexOutOfBoundsException]("DoubleMatrix.row")(squareMatrix.row(2)),
@@ -3446,6 +3454,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     raises[IllegalArgumentException]("DoubleMatrix.combine")(
       squareMatrix.combine(flatMatrix, (first, second) => first * second))
       .alsoAssertedBy("DoubleMatrix element-wise arithmetic raises for matrices of different shapes"),
+    raises[IllegalArgumentException]("DoubleMatrix.copyOf")(
+      DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(3.0)))),
     raises[IllegalArgumentException]("DoubleMatrix.of")(DoubleMatrix.of(-1, 2)),
     raises[IllegalArgumentException]("DoubleMatrix.tabulate")(
       DoubleMatrix.tabulate(-1, 1)((row, column) => (row + column).toDouble)),
@@ -3459,17 +3469,13 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * The rows of the amount types.
    *
-   * These are the numeric domain edges of AAP 0.3.3 one layer up: an amount is admitted where it
-   * is infinite, as the original admitted it, so a sum of opposite infinities is the one input
-   * that produces a value no amount type holds, and an amount of eighteen digits is the one
-   * whose arithmetic overflows the decimal behind the money types. Both are reachable only from
-   * a value a caller chose to supply, which is why the port refuses them rather than reporting
-   * them - a refusal the construction half of the inventory owns in `SmartConstructorSpec`,
-   * where the accumulation and the messages are asserted; here each family is asserted once, so
-   * that the enumeration of the throwing surface is complete rather than representative.
+   * The same numeric domain edges one layer up: an infinite amount is admitted, so a sum of
+   * opposite infinities is the one input producing a value no amount type holds, and an amount of
+   * eighteen digits is the one whose arithmetic overflows the decimal behind the money types. Both
+   * are reachable only from a value a caller supplied, which is why they are refused rather than
+   * reported. Each family is asserted once, so the throwing surface is complete here.
    */
   private val amountThrowingRows: List[SurfaceRow] = List(
-    // BigMoney.scala
     raises[IllegalArgumentException]("BigMoney.plus(eighteen digits)")(
       hugeBigMoney.plus(hugeBigMoney)),
     raises[IllegalArgumentException]("BigMoney.minus(eighteen digits)")(
@@ -3479,7 +3485,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       gbpBigMoney.roundToScale(-18, RoundingMode.HALF_UP)),
     raises[IllegalArgumentException]("BigMoney.convertedTo(eighteen digits)")(
       hugeBigMoney.convertedTo(Currency.USD, new BigDecimal("2"))),
-    // CurrencyAmount.scala
     raises[IllegalArgumentException]("CurrencyAmount.plus(not a number)")(
       gbpInfinite.plus(gbpNegativeInfinite)),
     raises[IllegalArgumentException]("CurrencyAmount.minus(not a number)")(
@@ -3487,30 +3492,27 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     raises[IllegalArgumentException]("CurrencyAmount.multipliedBy")(gbpInfinite.multipliedBy(0d)),
     raises[IllegalArgumentException]("CurrencyAmount.mapAmount")(
       gbp100.mapAmount(_ => Double.NaN)),
-    // CurrencyAmountArray.scala
     raises[IndexOutOfBoundsException]("CurrencyAmountArray.get(index outside the array)")(
       gbpArray.get(3)),
-    raises[IllegalArgumentException]("CurrencyAmountArray.get(not a number)")(
-      notANumberArray.get(0)),
-    raises[IllegalArgumentException]("CurrencyAmountArray.iterator")(
-      notANumberArray.iterator.toList),
-    raises[IllegalArgumentException]("CurrencyAmountArray.toList")(notANumberArray.toList),
+    raises[IllegalArgumentException]("CurrencyAmountArray.of(a value that is not a number)")(
+      CurrencyAmountArray.of(Currency.GBP, DoubleArray.of(Double.NaN))),
+    raises[IllegalArgumentException]("CurrencyAmountArray.multipliedBy")(
+      infiniteArray.multipliedBy(0d)),
+    raises[IllegalArgumentException]("CurrencyAmountArray.mapAmounts")(
+      gbpArray.mapAmounts(_ => Double.NaN)),
     // FxRate.scala
     raises[IllegalArgumentException]("FxRate.inverse")(
       accepted(FxRate.of(Currency.GBP, Currency.USD, Double.PositiveInfinity)).inverse),
     raises[IllegalArgumentException]("FxRate.toConventional")(
       accepted(FxRate.of(Currency.USD, Currency.GBP, Double.PositiveInfinity)).toConventional),
-    // FxRateProvider.scala
     raises[IllegalArgumentException]("FxRateProvider.convert(eighteen digits)")(
       gbpUsdMatrix.convert(hugeDecimal, Currency.GBP, Currency.USD)),
-    // Money.scala
     raises[IllegalArgumentException]("Money.plus(eighteen digits)")(hugeMoney.plus(hugeMoney)),
     raises[IllegalArgumentException]("Money.minus(eighteen digits)")(
       hugeMoney.minus(hugeMoney.multipliedBy(-1L))),
     raises[IllegalArgumentException]("Money.multipliedBy")(hugeMoney.multipliedBy(2L)),
     raises[IllegalArgumentException]("Money.convertedTo(eighteen digits)")(
       hugeMoney.convertedTo(Currency.USD, new BigDecimal("2"))),
-    // MultiCurrencyAmount.scala
     raises[IllegalArgumentException]("MultiCurrencyAmount.plus(not a number)")(
       multiInfinite.plus(multiNegativeInfinite)),
     raises[IllegalArgumentException]("MultiCurrencyAmount.minus(not a number)")(
@@ -3524,11 +3526,14 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         obtained(CurrencyAmount.of(Currency.GBP, amount.amount)))),
     raises[IllegalArgumentException]("MultiCurrencyAmount.total")(
       MultiCurrencyAmount.total(List(gbpInfinite, gbpNegativeInfinite))),
-    // MultiCurrencyAmountArray.scala
     raises[IndexOutOfBoundsException]("MultiCurrencyAmountArray.get(3)")(gbpRun.get(3)),
     raises[IndexOutOfBoundsException]("MultiCurrencyAmountArray.get(-1)")(gbpRun.get(-1)),
     raises[IllegalArgumentException]("MultiCurrencyAmountArray.of(negative size)")(
       MultiCurrencyAmountArray.of(-1, _ => gbpMulti)),
+    raises[IllegalArgumentException]("MultiCurrencyAmountArray.multipliedBy")(
+      infiniteRun.multipliedBy(0d)),
+    raises[IllegalArgumentException]("MultiCurrencyAmountArray.mapAmounts")(
+      gbpRun.mapAmounts(_ => Double.NaN)),
     // Payment.scala
     raises[DateTimeException]("Payment.adjustDate")(
       obtained(Payment.of(Currency.GBP, 100d, JAN_15)).adjustDate(_.plusYears(1000000000L))))
@@ -3537,24 +3542,19 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
    * The rows of the date, schedule and value packages.
    *
    * A holiday calendar holds its holidays as an array of months from its first year, so a date
-   * whose year falls outside 0 to 9999 is a date no calendar could hold data for and the
-   * question cannot be asked at all - a property of where the argument falls on the time line
-   * rather than of the holidays supplied. The same goes for a pair of dates given in the wrong
-   * order, for an index outside a schedule, and for the schedule information a day count is
-   * defined in terms of: each is a property of the call.
+   * whose year falls outside 0 to 9999 is one no calendar could hold data for - a property of
+   * where the argument falls on the time line, not of the holidays supplied. The same goes for a
+   * reversed pair of dates, an index outside a schedule, and the schedule information a day count
+   * is defined in terms of.
    */
   private val dateThrowingRows: List[SurfaceRow] = List(
-    // date/BusinessDayConvention.scala
     raisesWith[IllegalArgumentException]("BusinessDayConvention.adjust", UnsupportedDateMessage)(
       BusinessDayConventions.FOLLOWING.adjust(LocalDate.of(12000, 1, 15), datedCalendar)),
-    // date/DateAdjuster.scala
     raises[DateTimeException]("DateAdjuster.adjust")(oneDayLater.adjust(LocalDate.MAX)),
     raises[DateTimeException]("DateAdjuster.adjustInto")(oneDayLater.adjustInto(LocalDate.MAX)),
-    // date/DateSequence.scala
     raises[IllegalArgumentException]("DateSequence.nth")(DateSequences.QUARTERLY_IMM.nth(JAN_15, 0)),
     raises[IllegalArgumentException]("DateSequence.nthOrSame")(
       DateSequences.QUARTERLY_IMM.nthOrSame(JAN_15, 0)),
-    // date/DayCount.scala
     raisesWith[IllegalArgumentException]("DayCount.yearFraction", "time-line order")(
       DayCounts.ACT_365F.yearFraction(APR_15, JAN_15))
       .alsoAssertedBy("DayCount.yearFraction raises for dates out of time-line order"),
@@ -3564,7 +3564,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     raisesWith[IllegalArgumentException]("DayCount.days", "time-line order")(
       DayCounts.ACT_360.days(APR_15, JAN_15))
       .alsoAssertedBy("DayCount.yearFraction raises for dates out of time-line order"),
-    // date/HolidayCalendar.scala
     raisesWith[IllegalArgumentException]("HolidayCalendar.isHoliday", UnsupportedDateMessage)(
       datedCalendar.isHoliday(LocalDate.MAX))
       .alsoAssertedBy("HolidayCalendar operations raise for a year outside zero to 9999"),
@@ -3598,35 +3597,68 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       datedCalendar.businessDays(OCT_15, JAN_15)),
     raises[IllegalArgumentException]("HolidayCalendar.holidays")(
       datedCalendar.holidays(OCT_15, JAN_15)),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.shift(magnitude)", ShiftMagnitudeMessage)(
+      datedCalendar.shift(JAN_15, Int.MaxValue))
+      .alsoAssertedBy("HolidayCalendar refuses a shift larger than any search can satisfy"),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.adjustBy", ShiftMagnitudeMessage)(
+      datedCalendar.adjustBy(Int.MinValue))
+      .alsoAssertedBy("HolidayCalendar refuses a shift larger than any search can satisfy"),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.nextOrSame(no business day)", NoBusinessDayMessage)(
+      alwaysClosedCalendar.nextOrSame(JAN_15))
+      .alsoAssertedBy("HolidayCalendar refuses a search of a calendar that has no business day"),
+    raisesWith[IllegalArgumentException](
+      "HolidayCalendar.previousOrSame(no business day)",
+      NoBusinessDayMessage)(alwaysClosedCalendar.previousOrSame(JAN_15))
+      .alsoAssertedBy("HolidayCalendar refuses a search of a calendar that has no business day"),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.combinedWith", CompositeDepthMessage)(
+      deepestCalendar.combinedWith(datedCalendar))
+      .alsoAssertedBy("HolidayCalendar refuses a composite deeper than the family allows"),
+    raisesWith[IllegalArgumentException]("HolidayCalendar.linkedWith", CompositeDepthMessage)(
+      deepestCalendar.linkedWith(datedCalendar))
+      .alsoAssertedBy("HolidayCalendar refuses a composite deeper than the family allows"),
     raises[IllegalArgumentException]("ImmutableHolidayCalendar.of")(
       ImmutableHolidayCalendar.of(
         HolidayCalendarId.of("TestFailableSurfaceOutOfRange"),
         List(LocalDate.MAX),
         List(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY),
         List.empty[LocalDate])),
+    raisesWith[IllegalArgumentException](
+      "ImmutableHolidayCalendar.of(all days closed)",
+      NoBusinessDayMessage)(
+      ImmutableHolidayCalendar.of(
+        HolidayCalendarId.of("TestFailableSurfaceAllClosed"),
+        List(LocalDate.of(2014, 1, 1)),
+        DayOfWeek.values().toList,
+        List.empty[LocalDate]))
+      .alsoAssertedBy("ImmutableHolidayCalendar refuses a weekend that closes every day"),
+    raisesWith[IllegalArgumentException](
+      "ImmutableHolidayCalendar.combined",
+      NoBusinessDayMessage)(
+      ImmutableHolidayCalendar.combined(weekdayClosedCalendar, weekendClosedCalendar))
+      .alsoAssertedBy("ImmutableHolidayCalendar refuses a weekend that closes every day"),
+    // date/DaysAdjustment.scala
+    raisesWith[IllegalArgumentException]("DaysAdjustment.ofBusinessDays", ShiftMagnitudeMessage)(
+      DaysAdjustment.ofBusinessDays(Int.MaxValue, HolidayCalendarIds.GBLO))
+      .alsoAssertedBy("DaysAdjustment.of reports a business day addition no calendar can walk"),
     // date/PeriodAdditionConvention.scala
     raisesWith[IllegalArgumentException]("PeriodAdditionConvention.adjust", UnsupportedDateMessage)(
       PeriodAdditionConventions.LAST_BUSINESS_DAY.adjust(
         LocalDate.of(12000, 1, 15),
         Period.ofMonths(1),
         datedCalendar)),
-    // schedule/Schedule.scala
     raises[IllegalArgumentException]("Schedule.period")(schedule.period(9)),
     raises[IllegalArgumentException]("Schedule.merge(dates out of order)")(
       schedule.merge(3, OCT_15, JAN_15)),
-    // schedule/SchedulePeriod.scala
     raises[IllegalArgumentException]("SchedulePeriod.yearFraction")(
       schedule.period(0).yearFraction(DayCounts.ACT_ACT_ICMA, DayCount.ScheduleInfo.simple)),
-    // value/Rounding.scala
     raises[ArithmeticException]("HalfUp.round")(
       accepted(HalfUp.ofFractionalDecimalPlaces(0, 3)).round(new BigDecimal("0.5"))),
-    // value/ValueDerivatives.scala
     raises[IndexOutOfBoundsException]("ValueDerivatives.getDerivative")(
       ValueDerivatives.of(1d, DoubleArray.of(1d, 2d)).getDerivative(5)))
 
-  /** Every row of the throwing side of the derived inventory. */
   private val throwingRows: List[SurfaceRow] =
-    argCheckThrowingRows ::: numericThrowingRows ::: amountThrowingRows ::: dateThrowingRows
+    argCheckThrowingRows ::: numericThrowingRows ::: amountThrowingRows :::
+      dateThrowingRows
 
   /** Every row of the registry, by label, which is what a covered row is resolved through. */
   private lazy val registry: Map[String, SurfaceRow] =
@@ -3635,10 +3667,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   //=========================================================================
   // THE GENERATED TESTS
   //
-  // One test per row, named by the row's label and its kind, registered here rather than
-  // written out: a row that carries no assertion is not expressible, and a row whose call stops
-  // behaving as its kind records fails on its own line rather than inside a table of a
-  // neighbouring member.
+  // One test per row, named by the row's label and its kind: a row that carries no assertion is
+  // not expressible, and a row whose call stops behaving as its kind records fails on its own line
+  // rather than inside a table of a neighbouring member.
   //=========================================================================
 
   failableRows.foreach { row =>
@@ -3656,42 +3687,31 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   //=========================================================================
   // THE PER-SIGNATURE CLAIMS
   //
-  // A row of the registry is written against an `Owner.method` family, and a family is one or
-  // more declarations: `ValueSchedule.of` is five of them. A row alone therefore says nothing
-  // about which of its overloads it reached, and an overload added, removed, or quietly turned
-  // total beside a failable sibling would leave the registry's own assertions passing.
+  // A row is written against an `Owner.method` family, and a family is one or more declarations:
+  // `ValueSchedule.of` is five of them. A row alone therefore says nothing about which overload it
+  // reached, and an overload added, removed or quietly turned total beside a failable sibling
+  // would leave the registry's own assertions passing.
   //
-  // The claims below close that gap. There is one for every public declaration the enumeration
-  // finds - keyed by owner, method and declared parameter types, so overloads are distinct - and
-  // each names the row of the registry that accounts for it. A generated test per claim asserts
-  // that the declaration is still in the enumerated surface and that its row is still in the
-  // registry establishing something, and the two coverage assertions below compare the claims
-  // with the enumeration in '''both''' directions at that granularity. So:
-  //
-  //   - a declaration added to either module is unclaimed, and fails the gate;
-  //   - a declaration whose channel is removed, or whose parameters change, leaves its claim
-  //     naming nothing, and fails the gate;
-  //   - a claim pointing at a row that is deleted or renamed fails the gate.
-  //
-  // A claim is not a second assertion of the failure itself - that is the row's, and a row makes
-  // it once for the family - it is the statement that this exact signature is accounted for by
-  // that row, which is what the inventory could not say while it was written a family at a time.
+  // The claims below close that gap. There is one per public declaration the enumeration finds -
+  // keyed by owner, method and declared parameter types, so overloads are distinct - each naming
+  // the row that accounts for it, and the two coverage assertions below compare the claims with
+  // the enumeration in '''both''' directions at that granularity. So a declaration added to either
+  // module is unclaimed, one whose channel or parameters change leaves its claim naming nothing,
+  // and a claim pointing at a deleted or renamed row names nothing - each a failure here. A claim
+  // is not a second assertion of the failure itself; a row makes that once for the family.
   //=========================================================================
 
-  /** How a claim names the side of the classification line its declaration sits on. */
   private val FailableSide: String = "failure-returning"
 
-  /** How a claim names the throwing side of the classification line. */
   private val ThrowingSide: String = "throw-documenting"
 
   /**
    * Every public declaration whose declared return type is a failure channel, each with the row
    * of the registry that accounts for it.
    *
-   * Twelve signatures appear here and among the throwing claims below as well, because they do
-   * both - `CurrencyAmount.plus(CurrencyAmount)` reports a currency mismatch as a value and
-   * documents the throw its numeric edge raises - and each side of such a member is accounted
-   * for by the row that establishes that side.
+   * Twelve signatures appear here and among the throwing claims below, because they do both -
+   * `CurrencyAmount.plus(CurrencyAmount)` reports a currency mismatch as a value and documents the
+   * throw its numeric edge raises - and each side is accounted for by the row establishing it.
    */
   private val failableClaims: List[DeclarationClaim] = List(
     DeclarationClaim("AdjustableDate.adjusted(ReferenceData)", "AdjustableDate.adjusted"),
@@ -4088,8 +4108,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     DeclarationClaim("CurrencyAmount.plus(CurrencyAmount)", "CurrencyAmount.plus(not a number)"),
     DeclarationClaim("CurrencyAmount.plus(Double)", "CurrencyAmount.plus(not a number)"),
     DeclarationClaim("CurrencyAmountArray.get(Int)", "CurrencyAmountArray.get(index outside the array)"),
-    DeclarationClaim("CurrencyAmountArray.iterator()", "CurrencyAmountArray.iterator"),
-    DeclarationClaim("CurrencyAmountArray.toList()", "CurrencyAmountArray.toList"),
+    DeclarationClaim("CurrencyAmountArray.mapAmounts(Double=>Double)", "CurrencyAmountArray.mapAmounts"),
+    DeclarationClaim("CurrencyAmountArray.multipliedBy(Double)", "CurrencyAmountArray.multipliedBy"),
+    DeclarationClaim("CurrencyAmountArray.of(Currency,DoubleArray)", "CurrencyAmountArray.of(a value that is not a number)"),
     DeclarationClaim("DateAdjuster.adjust(LocalDate)", "DateAdjuster.adjust"),
     DeclarationClaim("DateAdjuster.adjustInto(Temporal)", "DateAdjuster.adjustInto"),
     DeclarationClaim("DateSequence.nth(LocalDate,Int)", "DateSequence.nth"),
@@ -4149,6 +4170,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     DeclarationClaim("DoubleMatrix.column(Int)", "DoubleMatrix.column"),
     DeclarationClaim("DoubleMatrix.columnArray(Int)", "DoubleMatrix.columnArray"),
     DeclarationClaim("DoubleMatrix.combine(DoubleMatrix,(Double,Double)=>Double)", "DoubleMatrix.combine"),
+    DeclarationClaim("DoubleMatrix.copyOf(Array[Array[Double]])", "DoubleMatrix.copyOf"),
     DeclarationClaim("DoubleMatrix.filled(Int,Int)", "DoubleMatrix.filled"),
     DeclarationClaim("DoubleMatrix.filled(Int,Int,Double)", "DoubleMatrix.filled"),
     DeclarationClaim("DoubleMatrix.get(Int,Int)", "DoubleMatrix.get"),
@@ -4178,7 +4200,23 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     DeclarationClaim("HolidayCalendar.previous(LocalDate)", "HolidayCalendar.previous"),
     DeclarationClaim("HolidayCalendar.previousOrSame(LocalDate)", "HolidayCalendar.previousOrSame"),
     DeclarationClaim("HolidayCalendar.shift(LocalDate,Int)", "HolidayCalendar.shift"),
+    DeclarationClaim("HolidayCalendar.adjustBy(Int)", "HolidayCalendar.adjustBy"),
+    DeclarationClaim("HolidayCalendar.combinedWith(HolidayCalendar)", "HolidayCalendar.combinedWith"),
+    DeclarationClaim("HolidayCalendar.linkedWith(HolidayCalendar)", "HolidayCalendar.linkedWith"),
+    DeclarationClaim("DaysAdjustment.ofBusinessDays(Int,HolidayCalendarId)", "DaysAdjustment.ofBusinessDays"),
+    DeclarationClaim(
+      "DaysAdjustment.ofBusinessDays(Int,HolidayCalendarId,BusinessDayAdjustment)",
+      "DaysAdjustment.ofBusinessDays"),
+    DeclarationClaim(
+      "ImmutableHolidayCalendar.of(HolidayCalendarId,Iterable[LocalDate],DayOfWeek,DayOfWeek)",
+      "ImmutableHolidayCalendar.of"),
+    DeclarationClaim(
+      "ImmutableHolidayCalendar.of(HolidayCalendarId,Iterable[LocalDate],Iterable[DayOfWeek])",
+      "ImmutableHolidayCalendar.of"),
     DeclarationClaim("ImmutableHolidayCalendar.of(HolidayCalendarId,Iterable[LocalDate],Iterable[DayOfWeek],Iterable[LocalDate])", "ImmutableHolidayCalendar.of"),
+    DeclarationClaim(
+      "ImmutableHolidayCalendar.combined(ImmutableHolidayCalendar,ImmutableHolidayCalendar)",
+      "ImmutableHolidayCalendar.combined"),
     DeclarationClaim("Money.convertedTo(Currency,BigDecimal)", "Money.convertedTo(eighteen digits)"),
     DeclarationClaim("Money.convertedTo(Currency,Decimal)", "Money.convertedTo(eighteen digits)"),
     DeclarationClaim("Money.minus(Money)", "Money.minus(eighteen digits)"),
@@ -4195,6 +4233,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     DeclarationClaim("MultiCurrencyAmount.plus(MultiCurrencyAmount)", "MultiCurrencyAmount.plus(not a number)"),
     DeclarationClaim("MultiCurrencyAmount.total(Iterable[CurrencyAmount])", "MultiCurrencyAmount.total"),
     DeclarationClaim("MultiCurrencyAmountArray.get(Int)", "MultiCurrencyAmountArray.get(3)"),
+    DeclarationClaim("MultiCurrencyAmountArray.mapAmounts(Double=>Double)", "MultiCurrencyAmountArray.mapAmounts"),
+    DeclarationClaim("MultiCurrencyAmountArray.multipliedBy(Double)", "MultiCurrencyAmountArray.multipliedBy"),
     DeclarationClaim("MultiCurrencyAmountArray.of(Int,Int=>MultiCurrencyAmount)", "MultiCurrencyAmountArray.of(negative size)"),
     DeclarationClaim("Payment.adjustDate(LocalDate=>LocalDate)", "Payment.adjustDate"),
     DeclarationClaim("PeriodAdditionConvention.adjust(LocalDate,Period,HolidayCalendar)", "PeriodAdditionConvention.adjust"),
@@ -4204,7 +4244,6 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
     DeclarationClaim("ValueDerivatives.getDerivative(Int)", "ValueDerivatives.getDerivative")
   )
 
-  /** Every claim of either side, paired with the side it is written on. */
   private lazy val allClaims: List[(String, DeclarationClaim)] =
     failableClaims.map((FailableSide, _)) ::: throwingClaims.map((ThrowingSide, _))
 
@@ -4229,27 +4268,24 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   //=========================================================================
-  // THE AAP INVENTORY, AS THE PLAN WRITES IT
+  // THE DOCUMENTED INVENTORY
   //
-  // The lists below are the inventory of AAP section 0.3.3 transcribed, each entry paired with
-  // the hand-written test that covers it. They are kept because the plan is what this suite is
-  // held to and a reader of the gate has to be able to find a named entry of it, but they are no
-  // longer what makes the coverage exhaustive: the derived enumeration above is, and
-  // `aap_inventory_is_a_subset_of_the_derived_surface` asserts that every name the plan lists is
-  // a family that enumeration found. Two names are not, and are reconciled by name with the
-  // reason - the plan names a shorthand in one case and a member that is total by specification
-  // in the other - so the two lists together, 95 failure-reporting entries and 12 contract
-  // entries, account for every entry the plan's inventory holds.
+  // The three lists below transcribe the documented failable-surface inventory - AAP section
+  // 0.3.3, which the `aap` names of this section refer to - each entry paired with the
+  // hand-written test that covers it, so that a named entry can be found from either side.
+  // They are not what makes the coverage exhaustive - the derived enumeration above is - and
+  // `aap_inventory_is_a_subset_of_the_derived_surface` asserts that every name they hold is a
+  // family that enumeration found. The lists are the 95 failure-reporting entries that name a
+  // declaration, the 2 reconciled by name because they name none, and the 12 contract rows.
   //=========================================================================
 
   /**
-   * The failure-reporting entries of the inventory of AAP 0.3.3 that name a declaration.
+   * The failure-reporting entries of the inventory that name a declaration.
    *
    * Each is paired with the hand-written test that covers it, and
    * `aap_inventory_entries_name_an_existing_test` asserts that the test named still exists, so an
-   * entry whose test is renamed or removed fails the suite rather than passing unnoticed. Several
-   * entries share one test where they share one failure shape, which is why the test names
-   * repeat; each such test holds one table row per entry.
+   * entry whose test is renamed or removed fails the suite. Entries sharing one failure shape
+   * share one test, which is why the test names repeat; such a test holds one row per entry.
    */
   private val aapFailableEntries: List[(String, String)] = List(
     // FX and currency, 38 entries
@@ -4393,10 +4429,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   /**
    * The two entries of the inventory that name no failure-returning declaration.
    *
-   * Each is paired with the derived row, or the hand-written test, that stands in for it, and
-   * with the reason the plan's name has no declaration of its own.
-   * `aap_inventory_is_a_subset_of_the_derived_surface` asserts that the stand-in named exists, so
-   * neither entry can be reconciled away without something still asserting it.
+   * Each is paired with the derived row, or the hand-written test, that stands in for it and with
+   * the reason it names no declaration of its own.
+   * `aap_inventory_is_a_subset_of_the_derived_surface` asserts that the stand-in named exists.
    */
   private val aapReconciledEntries: List[(String, String, String)] = List(
     (
@@ -4413,7 +4448,16 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
         "seven days, seven conventions, no error channel - and the named test asserts every one " +
         "of the seven"))
 
-  /** The documented contract refusals of AAP 0.3.3, and the one member made more total than Java. */
+  /**
+   * The contract half of the inventory: twelve rows, nine refusals and three totality contracts.
+   *
+   * The nine refusals are the `DoubleArray` and `DoubleMatrix` index and dimension errors, the
+   * holiday calendar's year range, the dates-in-order precondition of `DayCount.yearFraction` and
+   * the schedule information `Act/Act ICMA`, `Act/365L` and `30E/360 ISDA` each read. The three
+   * totality contracts are members that carry the same shape and deliberately do not refuse:
+   * `DayCount.relativeYearFraction` for a reversed pair, `DayCount 30U/360` for the end-of-month
+   * flag, and `Schedule.periodEndDate` for a date outside every period.
+   */
   private val aapContractEntries: List[(String, String)] = List(
     "DoubleArray index" -> "DoubleArray.get raises for an index outside the array",
     "DoubleArray dimensions" -> "DoubleArray element-wise arithmetic raises for arrays of different sizes",
@@ -4436,17 +4480,17 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   //=========================================================================
   // THE COVERAGE ASSERTIONS
   //
-  // Six assertions, none of which can be satisfied by a count: the enumeration is read from the
-  // sources, the rows are matched against it in both directions, and every count this suite
-  // reports is computed from one of the two. There is deliberately no hard-coded total anywhere
-  // below - a number written here would be the transcription this section exists to replace.
+  // Nine tests: one reporting the sizes of the enumeration and the registry, and eight matching
+  // the rows, the claims and the plan's entries against the enumeration in both directions. No
+  // total is hard-coded below - a number written here would be the transcription these assertions
+  // exist to replace - so none of them can be satisfied by a count.
   //=========================================================================
 
   test("derived_inventory_counts") {
-    // The size of the surface, reported rather than asserted: a reviewer of the Rule 5 gate reads
-    // what was enumerated and what accounts for it, and the assertions below are what hold the
-    // two together. Both source roots have to contribute, which is what catches an enumeration
-    // taken from the wrong working directory.
+    // The size of the surface is reported rather than asserted: what was enumerated and what
+    // accounts for it are printed for a reader, and the assertions below are what hold the two
+    // together. Both source roots have to contribute, which catches an enumeration taken from the
+    // wrong working directory.
     SourceRoots.foreach { root =>
       withClue(s"source root '$root' relative to '${new File(".").getAbsolutePath}': ") {
         new File(root).isDirectory shouldBe true
@@ -4480,9 +4524,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("every_derived_failable_family_has_a_row") {
-    // The assertion that makes this inventory exhaustive rather than representative: a public
-    // member that reports a failure and has no row is a member nothing here asserts anything
-    // about, and it fails the gate naming the declaration and where to find it.
+    // What makes this inventory exhaustive rather than representative: a public member that
+    // reports a failure and has no row is one nothing here asserts anything about, and it fails
+    // naming the declaration and where to find it.
     val covered: Set[String] = failableRows.map(_.family).toSet
     val uncovered: List[String] =
       derivedFailableFamilies.toList
@@ -4509,10 +4553,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("every_derived_declaration_is_claimed") {
-    // The assertion that lifts this inventory from one row per family to one row per signature:
-    // a public declaration with no claim is an overload nothing here accounts for, whatever its
-    // siblings are classified as. The clue lists each one as its key and where to find it, which
-    // is also how the table above is written when the surface changes.
+    // What lifts the inventory from one row per family to one per signature: a public declaration
+    // with no claim is an overload nothing here accounts for, whatever its siblings are classified
+    // as. The clue lists each one as its key and where to find it, which is also how the table
+    // above is written when the surface changes.
     val unclaimed: List[String] =
       List(
         (FailableSide, derivedFailableDeclarations, failableClaims),
@@ -4538,7 +4582,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   test("every_claim_names_one_derived_declaration_once") {
     // The reverse direction, and the uniqueness that makes a claim a statement about one
     // signature: a claim naming a declaration the enumeration does not find is a claim about a
-    // surface the port no longer has, and two claims for one key would let one hide the other.
+    // surface that no longer exists, and two claims for one key would let one hide the other.
     val stale: List[String] =
       allClaims
         .filterNot { case (side, claim) => derivedDeclarationsByKey(side).contains(claim.key) }
@@ -4562,7 +4606,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   test("every_row_names_a_derived_family") {
     // The reverse direction, which is what keeps the registry from rotting: a row for a member
     // that no longer returns a failure channel, or no longer documents a throw, is a row that
-    // asserts something about a surface the port no longer has.
+    // asserts something about a surface that no longer exists.
     val staleFailable: List[String] =
       failableRows.map(_.label).filterNot(label => derivedFailableFamilies.contains(familyOf(label)))
     withClue("failable rows whose family the enumeration did not find: ") {
@@ -4577,8 +4621,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 
   test("every_row_is_named_once_and_carries_its_reason") {
     // A label is what a covered row is resolved through and what names the generated test, so a
-    // repeated one would hide a row behind another; a total or covered row with no reason is the
-    // claim this registry exists to make impossible.
+    // repeated one would hide a row behind another. A total or covered row states a claim about
+    // what cannot happen, so one carrying no reason fails here.
     val labels: List[String] = (failableRows ::: throwingRows).map(_.label)
     withClue(s"repeated row labels: ${labels.diff(labels.distinct).mkString(", ")}: ") {
       labels.distinct.size shouldBe labels.size
@@ -4593,8 +4637,8 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("aap_inventory_entries_name_an_existing_test") {
-    // The check the transcribed lists still earn their place: every entry of the plan names a
-    // hand-written test of this suite, and every row that references one names one too.
+    // Every entry of the plan names a hand-written test of this suite, and every row that
+    // references a test names one too.
     val declared: Set[String] = testNames
     val missing: List[String] =
       (aapFailableEntries ::: aapContractEntries).collect {
@@ -4612,7 +4656,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
       missingReferences shouldBe empty
     }
 
-    // every entry is named once, so neither list can be padded by repeating one
+    // every entry is named once across the three lists, so none can be padded by repeating one
     val entries: List[String] =
       (aapFailableEntries ::: aapContractEntries).map { case (entry, _) => entry } :::
         aapReconciledEntries.map { case (entry, _, _) => entry }
@@ -4620,9 +4664,9 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("aap_inventory_is_a_subset_of_the_derived_surface") {
-    // The plan and the enumeration are held together here. Every name AAP 0.3.3 lists is a family
-    // the enumeration found, with two reconciled exceptions, each of which has to name a row or a
-    // test that stands in for it - so an entry cannot be reconciled away into nothing.
+    // The plan and the enumeration are held together here: every name the plan lists is a family
+    // the enumeration found, bar the two reconciled entries, each of which has to name a row or a
+    // test that stands in for it.
     val declaredFamilies: Set[String] = derivedFailableFamilies.keySet
     val absent: List[String] =
       aapFailableEntries.map { case (entry, _) => familyOf(entry) }.distinct.filterNot(declaredFamilies)
@@ -4650,7 +4694,7 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
    *
    * Both are written with the argument list in brackets where one member is classified per
    * overload - `MultiCurrencyAmountArray.plus(MultiCurrencyAmount)` - and the enumeration keys
-   * families by owner and method alone, so the brackets are what is dropped here.
+   * families by owner and method alone, so the brackets are dropped here.
    *
    * @param label  the row label or inventory entry
    * @return the family it names
@@ -4698,11 +4742,10 @@ final class FailableSurfaceSpec extends AnyFunSuite with Matchers with TableDriv
 /**
  * The types the enumeration and the registry of [[FailableSurfaceSpec]] are built from.
  *
- * They live in the companion rather than in the suite because a case class nested in a class
- * carries a reference to the instance that declared it, which makes every pattern match over one
- * an unchecked type test - a warning, and therefore an error, under the compiler options of this
- * build. Declaring them here makes them ordinary values with no outer reference, and the suite
- * imports them as its own.
+ * They live in the companion because a case class nested in a class carries a reference to the
+ * instance that declared it, which makes every pattern match over one an unchecked type test - a
+ * warning, and so a compile error under this build's fatal warnings. Declared here they are
+ * ordinary values with no outer reference, and the suite imports them as its own.
  */
 private object FailableSurfaceSpec {
 
@@ -4713,8 +4756,8 @@ private object FailableSurfaceSpec {
    * @param owner  the name of the class, trait or object the declaration is a member of
    * @param method  the declared name of the method
    * @param parameters  the declared parameter types, as [[FailableSurfaceSpec.parametersOf]]
-   *   renders them: the types of each list, in order, whitespace removed, the lists separated by
-   *   `)(`, and empty for a member declared with no parameter list at all
+   *   renders them: the types of every list, in order, comma separated and with whitespace
+   *   removed, and empty for a member declared with no parameter list at all
    * @param line  the one-based line the declaration starts on
    */
   private final case class Declaration(
@@ -4730,10 +4773,9 @@ private object FailableSurfaceSpec {
     /**
      * The identity of this one declaration, which distinguishes it from its own overloads.
      *
-     * Two declarations share a key only where they are the same member: the owner, the method
-     * name and the declared parameter types all agree. It is what the per-signature claims are
-     * written against, so that a family classified as a whole still has to account for each of
-     * its overloads separately.
+     * Two declarations share a key only where the owner, the method name and the declared
+     * parameter types all agree, which is what lets a family classified as a whole still account
+     * for each of its overloads separately.
      */
     def key: String = s"$owner.$method($parameters)"
 
@@ -4745,9 +4787,8 @@ private object FailableSurfaceSpec {
    * One public declaration, and the row of the registry that accounts for it.
    *
    * A row is written against an `Owner.method` family and asserts its failure once; a claim is
-   * written against one signature of that family and says which row accounts for it. The pair is
-   * what makes the inventory exhaustive at the granularity of a declaration rather than of a
-   * method name.
+   * written against one signature of that family and names the row accounting for it. The pair is
+   * what makes the inventory exhaustive per declaration rather than per method name.
    *
    * @param key  the declaration, as [[Declaration.key]] renders it
    * @param row  the label of the registry row that accounts for it, which must be a row of the
@@ -4782,7 +4823,6 @@ private object FailableSurfaceSpec {
       failable: List[Declaration],
       throwing: List[Declaration])
 
-  /** The state a file is read from. */
   private val EmptyScan: ScanState =
     ScanState(Nil, Nil, inScaladoc = false, scaladocThrows = false, Nil, Nil)
 
@@ -4799,7 +4839,7 @@ private object FailableSurfaceSpec {
   /**
    * The call reports at least one failure.
    *
-   * @param reason  the reason AAP 0.3.3 fixes for this member, where it fixes one
+   * @param reason  the reason the inventory fixes for this member, where it fixes one
    */
   private final case class Rejects(reason: Option[FailureReason]) extends Establishment {
     override def kind: String = "rejects"

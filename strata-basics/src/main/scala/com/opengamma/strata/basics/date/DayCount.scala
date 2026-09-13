@@ -27,7 +27,9 @@ import io.circe.Json
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.schedule.Frequency
 import com.opengamma.strata.collect.ArgCheck
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
 
@@ -45,12 +47,12 @@ import com.opengamma.strata.collect.result.Failure
  *
  * The twenty-one standard conventions are declared in the companion of this type, and every
  * one of them is a `case object`: the type is `sealed`, its constructor is visible only inside
- * this package, and a `match` over a day count is therefore checked for exhaustiveness by the
- * compiler. They are reached in three ways, all of which yield the same objects:
+ * this package, and a `match` over a day count is therefore checked for exhaustiveness. They
+ * are reached in three ways, all of which yield the same objects:
  *
  * {{{
  * DayCount.ACT_365F              // the member itself
- * DayCounts.ACT_365F             // the identifier the ported library used
+ * DayCounts.ACT_365F             // the published constant of the same name
  * DayCount.parse("ACT/365")      // text, leniently resolved
  * }}}
  *
@@ -65,35 +67,42 @@ import com.opengamma.strata.collect.result.Failure
  * [[yearFraction]] and [[days]] require their dates in time-line order and refuse a pair that
  * is not, because a negative accrual is a mistake at the call site rather than a result. Where
  * the direction of a period is genuinely unknown, [[relativeYearFraction]] answers for either
- * order, negating its result when the second date precedes the first. This is the split the
- * implementation being ported made, and both halves of it are preserved here.
+ * order, negating its result when the second date precedes the first.
  *
  * ===Schedule information===
  *
- * Four of the twenty-one conventions cannot answer from two dates alone: `Act/Act ICMA` and
- * `Act/365L` need the schedule the period belongs to, `30U/360` needs to know whether the
- * end-of-month convention applies, and `30E/360 ISDA` needs the maturity date of the schedule.
- * Those facts are supplied by a [[DayCount.ScheduleInfo]], and the two-argument overloads pass
- * [[DayCount.ScheduleInfo.simple]], which carries none of them. Asking one of those four
- * conventions for a year fraction without the information it reads is a breach of this
- * contract and is refused, exactly as it was refused before; see
- * [[DayCount.ScheduleInfo]] for why that is a refusal rather than a reported failure.
- *
- * ===What this replaces===
- *
- * Four Java types fold into this file: the interface, its constants holder, the enum holding
- * the standard implementations and the name lookup that created `Bus/252` conventions on
- * demand. The registry that discovered implementations while the program ran is gone, together
- * with the configuration resource it read, the caches it held and the Java serialization and
- * string-conversion annotations the types carried. What that resource ''declared'' survives in
- * full: the two groups of external names and the ordered lenient rewrites are transcribed into
- * the companion as Scala data, so text that resolved before resolves now.
+ * Four of the twenty-one conventions cannot answer from two dates alone, and each reads its own
+ * facts from a [[DayCount.ScheduleInfo]]: `Act/Act ICMA` reads the end date of the schedule, the
+ * end date of the schedule period containing the first date and the frequency; `Act/365L` reads
+ * the period end date and the frequency; `30U/360` reads the end-of-month flag; and
+ * `30E/360 ISDA` reads the end date of the schedule. The two-argument overloads pass
+ * [[DayCount.ScheduleInfo.simple]], which carries none of those facts. Asking one of those four
+ * conventions for a year fraction without the information it reads is a breach of this contract
+ * and is refused rather than reported as a failure, because it is an error at the call site and
+ * not a property of the data; see [[DayCount.ScheduleInfo]].
  *
  * Every member is immutable and safe to share between threads.
  *
  * @param name  the unique name of the convention, which is its identity in text and on the wire
  */
-sealed abstract class DayCount private[date] (val name: String) extends Named {
+sealed abstract class DayCount private[date] (val name: String)
+    extends Named
+    with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to the package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be a convention outside the 21
+  // standard members and the calendar-bearing [[DayCount.Bus252]] this type publishes - is
+  // refused here instead. Every published member is declared inside the companion, including the
+  // hidden implementation class of `Bus252`, so all of them satisfy the check.
+  //
+  // No invariant accompanies the check at this level, and the reason is the shape of the family:
+  // the 21 standard members are `case object`s, and the class of a `case object` takes no
+  // argument, so a class file naming one of them directly has no field to supply and no state to
+  // disagree with its name. The one member built from a hidden implementation class is
+  // [[DayCount.Bus252]], whose field is the caller's to choose, and it states its own invariant in
+  // its own body.
+  JvmClosure.requireDeclaredMember(this, classOf[DayCount])
 
   /**
    * Gets the year fraction between the specified dates.
@@ -139,8 +148,9 @@ sealed abstract class DayCount private[date] (val name: String) extends Named {
    * Gets the relative year fraction between the specified dates.
    *
    * Given two dates, this returns the fraction of a year between them according to this
-   * convention. Unlike [[yearFraction]] the dates may be supplied in either order, and the
-   * result is negative when the first date is after the second.
+   * convention. Where [[yearFraction]] requires its dates in time-line order, this method
+   * accepts either order and answers with a negative fraction when the first date is after the
+   * second.
    *
    * This uses [[DayCount.ScheduleInfo.simple]], with the consequence described on
    * [[yearFraction]].
@@ -158,13 +168,14 @@ sealed abstract class DayCount private[date] (val name: String) extends Named {
    * Gets the relative year fraction between the specified dates.
    *
    * Given two dates, this returns the fraction of a year between them according to this
-   * convention. Unlike [[yearFraction]] the dates may be supplied in either order, and the
-   * result is negative when the first date is after the second.
+   * convention. Where [[yearFraction]] requires its dates in time-line order, this method
+   * accepts either order and answers with a negative fraction when the first date is after the
+   * second.
    *
    * Dates out of order are the point of this method, so the order check of [[yearFraction]] is
    * deliberately bypassed: the calculation is reached directly, with the arguments swapped and
-   * the result negated. This is what the implementation being ported did, and it is why
-   * `relativeYearFraction(second, first)` answers where `yearFraction(second, first)` refuses.
+   * the result negated. That is why `relativeYearFraction(second, first)` answers where
+   * `yearFraction(second, first)` refuses.
    *
    * @param firstDate  the first date
    * @param secondDate  the second date, which may be before the first date
@@ -212,8 +223,7 @@ sealed abstract class DayCount private[date] (val name: String) extends Named {
    * [[yearFraction]], which checks the order of the dates, or through
    * [[relativeYearFraction]], which establishes it by swapping them. Splitting the check from
    * the calculation this way is what lets the relative form answer for a reversed pair without
-   * the check rejecting it first - the same two-layer split the implementation being ported
-   * used.
+   * the check rejecting it first.
    *
    * Visible throughout this package rather than to the subtype alone, because `30U/360`
    * delegates to the calculation of '''another''' member of the family depending on the
@@ -257,11 +267,10 @@ sealed abstract class DayCount private[date] (val name: String) extends Named {
  * The twenty-one standard day counts, the `Bus/252` family, and the name lookup, typeclass
  * instances and JSON support of the whole family.
  *
- * The members are declared in the order the enum being ported declared them, and [[values]]
- * preserves that order. Each is a `case object` whose calculation is transcribed statement for
- * statement from the implementation being ported, because the numbers these conventions produce
- * are the contract: a rewritten formula that is algebraically equal can still differ in the last
- * bits of a `Double`, and those bits are compared against a captured Java baseline.
+ * The members are declared in the order [[values]] reports them. Each writes its arithmetic in
+ * the order the convention states it, because the numbers these conventions produce are the
+ * contract: a formula that is algebraically equal but evaluated in another order can differ in
+ * the last bits of a `Double`.
  */
 object DayCount {
 
@@ -274,19 +283,14 @@ object DayCount {
   /** The number of business days a `Bus/252` convention treats as a year. */
   private val Bus252DaysPerYear: Double = 252d
 
-  /** The message reporting dates that are not in time-line order. */
   private val DatesOutOfOrderMessage: String = "Dates must be in time-line order"
 
-  /** The message reporting that the end date of the schedule was needed and is absent. */
   private val ScheduleEndDateRequired: String = "The end date of the schedule is required"
 
-  /** The message reporting that the end date of the schedule period was needed and is absent. */
   private val PeriodEndDateRequired: String = "The end date of the schedule period is required"
 
-  /** The message reporting that the frequency of the schedule was needed and is absent. */
   private val FrequencyRequired: String = "The frequency of the schedule is required"
 
-  //-------------------------------------------------------------------------
   /**
    * Information about the schedule that some day counts need in order to calculate.
    *
@@ -298,20 +302,15 @@ object DayCount {
    *
    * ===Total accessors===
    *
-   * Every accessor here is '''total'''. The interface being ported declared four of them to throw
-   * `UnsupportedOperationException` by default, so that an implementation supplying only some of
-   * the facts could leave the rest to raise; here each of those four answers with an `Option` and
-   * the default is `None`, which is the same statement of "this schedule does not know" made as a
-   * value. An implementation therefore overrides only what it knows, and no implementation has to
-   * raise.
+   * Every accessor here is '''total'''. The four facts a schedule may not know are `Option`-valued
+   * and default to `None`, which states "this schedule does not know" as a value, so an
+   * implementation overrides only what it knows and none of them has to raise.
    *
-   * Note what this does '''not''' change. A day count that reads a fact which is absent still
-   * refuses to produce a number, and it refuses by raising `IllegalArgumentException` through
-   * `ArgCheck` rather than by returning a failure. The reason is the classification the port
-   * applies throughout: a failure that depends on the ''data'' of the arguments is reported as a
-   * value, while a caller handing a convention a schedule that cannot answer what that convention
-   * is defined in terms of has broken the contract of the call, which is what the original
-   * `UnsupportedOperationException` said as well. Keeping it a refusal is also what lets
+   * A day count that reads a fact which is absent still refuses to produce a number, and it
+   * refuses by raising `IllegalArgumentException` through `ArgCheck` rather than by returning a
+   * failure. A failure that depends on the ''data'' of the arguments is reported as a value, but a
+   * caller handing a convention a schedule that cannot answer what that convention is defined in
+   * terms of has broken the contract of the call. Keeping it a refusal is also what lets
    * [[DayCount.yearFraction]] return a plain `Double`, so that arithmetic over year fractions -
    * the overwhelmingly common case, and every case for seventeen of the members - needs no error
    * channel at all.
@@ -325,8 +324,8 @@ object DayCount {
      * Gets the start date of the schedule.
      *
      * The first date of the schedule, adjusted for business days where the schedule adjusts.
-     * No standard day count reads it; it is part of this contract because the interface being
-     * ported declared it and an implementation may be asked for it by code outside this library.
+     * No standard day count reads it; it is part of this contract because code outside this
+     * library may ask a schedule for it.
      *
      * @return the start date of the schedule, or `None` where the schedule is unknown
      */
@@ -348,9 +347,9 @@ object DayCount {
      * This is the next coupon date as seen from the date supplied. Read by `Act/Act ICMA` and by
      * `Act/365L`.
      *
-     * A schedule answers `None` for a date that lies in none of its periods, where the interface
-     * being ported raised: a date outside the schedule is data rather than a broken call, and the
-     * day count that reads this refuses on its own behalf if it cannot proceed.
+     * A schedule answers `None` for a date that lies in none of its periods, a date outside the
+     * schedule being data rather than a broken call; the day count that reads this refuses on its
+     * own behalf if it cannot proceed.
      *
      * @param date  the date to find the period end date for
      * @return the end date of the period containing the date, or `None` where there is none
@@ -373,8 +372,7 @@ object DayCount {
      * Read by `30U/360`, which chooses between two day-of-month rules by it, and by
      * `Act/Act ICMA`, which rolls its nominal periods to the end of the month when it holds.
      *
-     * This is the one accessor that is not optional, and it defaults to `true`, both of which
-     * follow the interface being ported.
+     * This is the one accessor that is not optional, and it defaults to `true`.
      *
      * @return true if the end-of-month convention is in use
      */
@@ -384,12 +382,10 @@ object DayCount {
   /**
    * The schedule information that carries nothing, used by the two-argument overloads.
    *
-   * Every optional accessor answers `None` and the end-of-month convention is in use, which is
-   * exactly the all-defaults instance the constants holder being ported published for the same
-   * purpose. Seventeen of the twenty-one conventions calculate against it without reading it at
-   * all; the four that read something refuse, which is what makes
-   * `DayCounts.ACT_ACT_ICMA.yearFraction(a, b)` a call that cannot succeed - as it could not
-   * before.
+   * Every optional accessor answers `None` and the end-of-month convention is in use. Seventeen
+   * of the twenty-one conventions calculate against it without reading it at all; the four that
+   * read something refuse, which is what makes `DayCounts.ACT_ACT_ICMA.yearFraction(a, b)` a call
+   * that cannot succeed.
    */
   object ScheduleInfo {
 
@@ -397,12 +393,10 @@ object DayCount {
     val simple: ScheduleInfo = new ScheduleInfo {}
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Checks that two dates are in time-line order, refusing the call when they are not.
    *
-   * Shared by [[DayCount.yearFraction]] and [[DayCount.days]], which is where the implementation
-   * being ported made the same check with the same message. Equal dates pass: a period of no
+   * Shared by [[DayCount.yearFraction]] and [[DayCount.days]]. Equal dates pass: a period of no
    * length has a year fraction, and it is zero for every convention but `1/1`.
    *
    * @param firstDate  the first date
@@ -421,8 +415,7 @@ object DayCount {
    * raises otherwise.
    *
    * @param value  the fact, where the schedule carries it
-   * @param message  the message naming what is missing, matching the text the ported interface
-   *   raised
+   * @param message  the message naming the schedule fact that is missing
    * @tparam A  the type of the fact
    * @return the fact
    * @throws IllegalArgumentException if the fact is absent
@@ -440,7 +433,7 @@ object DayCount {
    * fills a year with - is a schedule that cannot be accrued by this convention. The frequency
    * type reports that as a failure, because for its own callers it depends on data; here it is a
    * breach of this convention's contract, so it is raised with the message the frequency
-   * produced, which is what the ported implementation did.
+   * produced.
    *
    * @param freq  the frequency of the schedule
    * @return the number of events per year
@@ -455,9 +448,9 @@ object DayCount {
   /**
    * The actual number of days between two dates, which is the day count of every `Act/` rule.
    *
-   * Narrowed to an `Int` exactly, as the implementation being ported did: the difference of two
-   * dates this library can represent exceeds an `Int` only for dates millions of years apart,
-   * and an overflow is raised rather than silently truncated.
+   * Narrowed to an `Int` exactly: the difference of two dates this library can represent exceeds
+   * an `Int` only for dates millions of years apart, and an overflow is raised rather than
+   * silently truncated.
    *
    * @param firstDate  the first date
    * @param secondDate  the second date, on or after the first date
@@ -471,8 +464,8 @@ object DayCount {
    * adjusted by the rule of the particular convention.
    *
    * Months are thirty days and years are three hundred and sixty, so the count is
-   * `360 * deltaYear + 30 * deltaMonth + deltaDay`. This is the ported helper, which divides by
-   * nothing: the conventions that want a fraction divide the result themselves.
+   * `360 * deltaYear + 30 * deltaMonth + deltaDay`. This helper divides by nothing: the
+   * conventions that want a fraction divide the result themselves.
    *
    * @param y1  the year of the first date
    * @param m1  the month of the first date
@@ -501,8 +494,7 @@ object DayCount {
    *
    * The search walks from the first leap day after the first date to the first one after the
    * second, counting those that do not pass it; a leap day on the second date itself '''is'''
-   * counted, which is the comparison the ported loop made. Written as a tail-recursive function,
-   * so no mutable counter is needed.
+   * counted. Written as a tail-recursive function, so no mutable counter is needed.
    *
    * @param firstDate  the first date
    * @param secondDate  the second date, on or after the first date
@@ -517,7 +509,6 @@ object DayCount {
     count(DateAdjusters.nextLeapDay(firstDate), 0)
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The '1/1' day count, which always returns a day count of 1.
    *
@@ -579,9 +570,9 @@ object DayCount {
    * The result is calculated as follows. First, the underlying schedule period is obtained,
    * treating the first date as the start of the schedule period. Second, if the period is a stub
    * then nominal regular periods are created matching the schedule frequency, working forwards or
-   * backwards from the known regular schedule date, with an end-of-month flag used to handle
-   * month-ends; if the period is not a stub then the schedule period is treated as a nominal
-   * period. Third, the result is the sum of a calculation for each nominal period: the actual days
+   * backwards from the known regular schedule date, with an end-of-month flag handling month-ends;
+   * if the period is not a stub then the schedule period is treated as a nominal period. Third,
+   * the result is the sum of a calculation for each nominal period: the actual days
    * between the first and second date are allocated to the matching nominal period, and each
    * calculation divides the actual number of days in the nominal period - which can be zero in the
    * case of a long stub - by the length of the nominal period multiplied by the frequency. The
@@ -608,7 +599,7 @@ object DayCount {
       if (firstDate == secondDate) {
         0d
       } else {
-        // the calculation is based on the schedule period, the first date being assumed to be the
+        // the calculation is based on the schedule period, the first date being treated as the
         // start of that period
         val scheduleEndDate = required(scheduleInfo.endDate, ScheduleEndDateRequired)
         val nextCouponDate = required(scheduleInfo.periodEndDate(firstDate), PeriodEndDateRequired)
@@ -639,8 +630,8 @@ object DayCount {
      * The nominal periods are stepped back one frequency at a time until one begins on or before
      * the start date, and each step contributes the days of the requested period that fall inside
      * it. The accumulation is a parameter of a tail-recursive function rather than a mutable
-     * local, and the additions happen in the order the ported loop performed them, which keeps the
-     * result identical bit for bit.
+     * local, and the additions happen in the order the nominal periods are stepped through, which
+     * is what fixes the last bits of the result.
      *
      * @param startDate  the start of the period being measured
      * @param endDate  the end of the period being measured
@@ -676,8 +667,8 @@ object DayCount {
     /**
      * Sums the calculation over nominal periods counted forwards from the coupon date.
      *
-     * The mirror of [[initPeriod]], used when the period being measured is the final one of the
-     * schedule: the nominal periods step forward one frequency at a time until one ends on or
+     * The counterpart of [[initPeriod]], used when the period being measured is the final one of
+     * the schedule: the nominal periods step forward one frequency at a time until one ends on or
      * after the end date.
      *
      * @param couponDate  the known regular schedule date the nominal periods are counted from,
@@ -781,10 +772,10 @@ object DayCount {
    * Also known as 'Actual/Actual AFB' or 'Actual/Actual (Euro)'; defined by the Association
    * Francaise des Banques in September 1994 as 'Base Exact/Exact'.
    *
-   * This library implements the day count from the original French documentation rather than from
-   * the later ISDA clarification, whose roll-back rule gives one day two days of interest and the
-   * next none. The interpretation taken rolls a period ending on the ''29th'' of February back to
-   * the 28th, or to the 29th in a leap year, which gives:
+   * This library implements the day count from the French documentation of September 1994 rather
+   * than from the later ISDA clarification, whose roll-back rule gives one day two days of
+   * interest and the next none. The interpretation taken rolls a period ending on the ''29th'' of
+   * February back to the 28th, or to the 29th in a leap year, which gives:
    *
    * {{{
    * 2004-02-28 to 2008-02-27 = 3 + 365 / 366
@@ -1123,8 +1114,7 @@ object DayCount {
    * the convention applies and to [[THIRTY_360_ISDA]] when it does not, and it delegates to
    * whichever of the two applies rather than restating either rule.
    *
-   * Also known as '30/360 US', '30US/360' or '30/360 SIA'. The US 30/360 day count appears to have
-   * started with the two rules of '30/360 ISDA', the last day of February rules being added later.
+   * Also known as '30/360 US', '30US/360' or '30/360 SIA'.
    */
   case object THIRTY_U_360 extends DayCount("30U/360") {
 
@@ -1238,11 +1228,10 @@ object DayCount {
    * where the second date is the last day of February, because the maturity date of the schedule is
    * required in order to apply the last rule. Every other pair of dates - including any pair whose
    * second day-of-month is 31, which short-circuits the rule - needs no schedule information at
-   * all, and that is the behaviour of the implementation being ported rather than a relaxation of
-   * it.
+   * all.
    *
    * The day count, as opposed to the year fraction, applies the last rule unconditionally: it has
-   * no schedule to consult, exactly as before.
+   * no schedule to consult.
    *
    * Also known as '30E/360 German' or 'German'; defined by the 2006 ISDA definitions 4.16h.
    */
@@ -1257,8 +1246,8 @@ object DayCount {
       val dom2 = secondDate.getDayOfMonth
       val d1 = if (dom1 == 31 || lastDayOfFebruary(firstDate)) 30 else dom1
       // the end date of the schedule is read only where the second date is the last day of
-      // February and is not already being changed, which is the short-circuit the ported
-      // expression performed and the only case in which this convention needs a schedule
+      // February and is not already being changed, which is the only case in which this
+      // convention needs a schedule
       val d2 =
         if (dom2 == 31) {
           30
@@ -1391,7 +1380,6 @@ object DayCount {
     }
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The 'Bus/252' day count, which counts business days against a holiday calendar and divides by
    * 252.
@@ -1403,39 +1391,62 @@ object DayCount {
    *
    * ===One instance per calendar===
    *
-   * Unlike the twenty-one standard conventions this one is not a singleton: the calendar is part of
-   * the convention and appears in its name, so `Bus/252 BRBD` and `Bus/252 GBLO` are two day counts
-   * of the same kind. Instances are created only by [[DayCount.ofBus252]], and the representation is
-   * the one the port gives every validated type: a `sealed abstract case class` with a constructor
-   * visible to `DayCount` alone. An abstract case class has neither a synthesised `apply` nor a
-   * `copy`, so neither exists to bypass the factory with, and being sealed it cannot be instantiated
-   * as an anonymous subclass from anywhere but this file - which is where `ofBus252` does exactly
-   * that. What the `case` keyword is kept for is `unapply`: a caller that has a day count in hand
-   * can ask whether it is a `Bus/252` and take the calendar out of it in one pattern,
+   * This member, alone in the family, is not a singleton: the calendar is part of the convention
+   * and appears in its name, so `Bus/252 BRBD` and `Bus/252 GBLO` are two day counts of the same
+   * kind. Instances are created only by [[DayCount.ofBus252]], and the representation is that of a
+   * validated value type: a `sealed abstract case class` with a constructor visible to `DayCount`
+   * alone. An abstract case class has neither a synthesised `apply` nor a `copy`, so neither
+   * exists to bypass the factory with, and being sealed its one concrete subclass is the hidden
+   * [[DayCount.Bus252Impl]] that `ofBus252` instantiates, declared in this file because nowhere
+   * else can declare one. What the `case` keyword is kept for is `unapply`: a caller that has a
+   * day count in hand can ask whether it is a `Bus/252` and take the calendar out of it in one
+   * pattern,
    * `case DayCount.Bus252(calendar) => calendar.id`, which is how the codec of this family and any
    * caller that needs the calendar reads it.
    *
    * The calendar held here is '''resolved''': the convention carries the calendar itself rather than
    * an identifier to be looked up, which is what keeps [[DayCount.yearFraction]] and
-   * [[DayCount.days]] pure functions of their arguments. The implementation being ported resolved
-   * the identifier against the standard reference data from inside its own factory; this port
-   * requires the caller to supply the calendar or the reference data, and that removal of an
-   * ambient lookup is recorded as a deliberate divergence in `SCALA_MIGRATION.md`.
+   * [[DayCount.days]] pure functions of their arguments. The caller supplies either the calendar
+   * or the reference data an identifier is resolved against, so nothing is looked up from ambient
+   * state on the way to a year fraction.
    *
    * ===Equality===
    *
    * Two instances are equal when their names are equal, which is equality by the '''name''' of the
-   * calendar rather than by its holidays - the comparison the ported implementation made, and the
-   * one consistent with the `Order`, `Hash` and `Show` instances of this family, all of which are
-   * derived from the name. Two instances built over different calendars that share an identifier
-   * are therefore equal, as are the calendars themselves. `equals`, `hashCode` and `toString` are
-   * written out below for that reason: a case class would otherwise synthesise structural equality
-   * and a `Bus252(...)` rendering, and both would contradict the family this member belongs to.
+   * calendar rather than by its holidays - the comparison consistent with the `Order`, `Hash` and
+   * `Show` instances of this family, all of which are derived from the name. Two instances built
+   * over different calendars that share an identifier are therefore equal, as are the calendars
+   * themselves. `equals`, `hashCode` and `toString` are written out below for that reason: a case
+   * class would otherwise synthesise structural equality and a `Bus252(...)` rendering, and both
+   * would contradict the family this member belongs to.
    *
    * @param calendar  the resolved holiday calendar whose business days are counted
    */
   sealed abstract case class Bus252 private[DayCount] (calendar: HolidayCalendar)
       extends DayCount(Bus252Prefix + calendar.name) {
+
+    // The construction closure of this member, run for every instance of every subclass of it:
+    // the constructor visible to `DayCount` alone and the `sealed` modifier are enforced against
+    // Scala, and neither survives into the class file, so the only place a subtype compiled by
+    // other means - which would be a `Bus/252` convention holding a calendar `ofBus252` never
+    // saw - can be stopped is here. The single implementation is [[DayCount.Bus252Impl]], and the
+    // refusal of Java serialization is inherited from [[DayCount]] along with the family's own
+    // closure.
+    JvmClosure.requireSoleImplementation(this, classOf[DayCount.Bus252Impl])
+
+    // The invariant of this member, stated over the two things the instance holds - the calendar
+    // and the name it carries as a member of the family - because the class file of the
+    // implementation carries a public constructor whatever the source asked for, and because
+    // `name` is read through an accessor that a class file compiled outside this library could
+    // answer with something of its own. Either route would produce a `Bus/252` convention whose
+    // name does not say which calendar's business days it counts, which is the whole of its
+    // identity: the equality, the hashing, the ordering, the rendering and the JSON form of this
+    // family are all its name, so a name that disagreed with the calendar beside it would count
+    // one centre's business days while comparing and serializing as another's. The name is what
+    // [[DayCount.ofBus252]] builds, and it is built here in the `extends` clause above.
+    JvmClosure.requireInvariant(
+      "the name of a calendar-bearing day count is its prefix followed by its calendar's name",
+      name == Bus252Prefix + calendar.name)
 
     override protected[date] def calculateYearFraction(
         firstDate: LocalDate,
@@ -1467,11 +1478,7 @@ object DayCount {
    * The instances are the family's instances restated at the type of the member, which is what the
    * invariance of `cats.Hash` and `cats.Show` requires: `Hash[DayCount]` is not a `Hash[Bus252]`,
    * so a caller holding a value typed as this member - which is what a pattern match on the family
-   * and what a generator of this one convention both produce - could not summon one from
-   * [[DayCount.order]]. A calendar-bearing day count is a validated value type in its own right in
-   * the port's construction inventory, where every `[R]`, `[V]`, `[N]`, `[S]` and `[T]` type
-   * carries `Hash` and `Show`, and it is named there as a `[V]` type beside the `[R]` family
-   * itself.
+   * produces - could not summon one from [[DayCount.order]].
    *
    * Neither declaration is ambiguous with the family's: a summon at `DayCount` can only be
    * answered by [[DayCount.order]] and [[DayCount.show]], a summon at `DayCount.Bus252` only by
@@ -1486,8 +1493,7 @@ object DayCount {
      * Taken from the `equals` and `hashCode` of the class above, which compare and hash the
      * `name` - and the name of one of these carries the name of its calendar, so two instances
      * are equal exactly when they count the business days of calendars with the same identifier.
-     * That is the comparison the implementation being ported made, and it is the comparison
-     * [[DayCount.order]] makes for the family.
+     * That is the comparison [[DayCount.order]] makes for the family.
      *
      * @return the hashing of calendar-bearing day counts
      */
@@ -1506,6 +1512,24 @@ object DayCount {
   }
 
   /**
+   * The one implementation of a calendar-bearing day count.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[DayCount.Bus252]] refuse in its own constructor to be any other implementation.
+   *
+   * It is declared here, as a member of the family's companion rather than of `Bus252`'s own,
+   * because that is what the closure of the family requires: [[DayCount]] admits only members
+   * declared inside this object, and a `Bus/252` day count is one of them.
+   *
+   * @param calendar  the resolved holiday calendar whose business days are counted
+   */
+  private final class Bus252Impl(calendar: HolidayCalendar) extends Bus252(calendar)
+
+  /**
    * Obtains the 'Bus/252' day count for a resolved holiday calendar.
    *
    * The calendar is stored in the day count and named by it, so the result is named
@@ -1516,24 +1540,23 @@ object DayCount {
    * DayCount.ofBus252(StandardHolidayCalendars.BRBD).name == "Bus/252 BRBD"
    * }}}
    *
-   * [[DayCount.Bus252]] is a sealed abstract case class, so the instance is built here as an
-   * anonymous subclass with an empty body - the one route the representation leaves open, and it
-   * is open only inside this file. The body adds nothing: every member of the convention is
-   * declared on the class itself.
+   * [[DayCount.Bus252]] is a sealed abstract case class, so the instance is built here from the
+   * hidden [[DayCount.Bus252Impl]] - the one route the representation leaves open, and it is open
+   * only inside this file. That class adds nothing: every member of the convention is declared on
+   * the class it extends.
    *
    * @param calendar  the resolved holiday calendar
    * @return the day count counting the business days of that calendar
    */
-  def ofBus252(calendar: HolidayCalendar): DayCount = new Bus252(calendar) {}
+  def ofBus252(calendar: HolidayCalendar): DayCount = new Bus252Impl(calendar)
 
   /**
    * Obtains the 'Bus/252' day count for a calendar identifier, resolved against the reference data
    * supplied.
    *
-   * This is the explicit form of the factory the implementation being ported provided: there the
-   * identifier was resolved against the standard reference data reached from inside the factory,
-   * which made the result depend on ambient state; here the caller passes the reference data it is
-   * working with, so an application's own holidays are used where it has them.
+   * The identifier is resolved against the reference data the caller passes, so an application's
+   * own holidays are used where it has them, and the calendar the result carries is the resolved
+   * one.
    *
    * {{{
    * DayCount.ofBus252(HolidayCalendarIds.BRBD, ReferenceData.standard)
@@ -1541,23 +1564,23 @@ object DayCount {
    *
    * @param id  the identifier of the holiday calendar
    * @param refData  the reference data to resolve the identifier against
-   * @return the day count, or the failure explaining why the identifier could not be resolved
+   * @return the day count counting the business days of the resolved calendar, or the failure
+   *   reported when the reference data supplied holds no calendar under that identifier - or,
+   *   where the identifier is a composite such as `GBLO+USNY`, under one of its parts
    */
   def ofBus252(id: HolidayCalendarId, refData: ReferenceData): Either[Failure, DayCount] =
     id.resolve(refData).map(calendar => ofBus252(calendar))
 
-  //-------------------------------------------------------------------------
   /**
    * The twenty-one standard day counts, in declaration order.
    *
-   * The order is the declaration order of the enum being ported, which is also the order in which
-   * the members claim their lookup keys and the order a report over the family follows. It is not
-   * the order the `Order` instance below imposes, which is alphabetical by name.
+   * The order is the order the members are declared above, which is also the order in which they
+   * claim their lookup keys and the order a report over the family follows. It is not the order
+   * the `Order` instance below imposes, which is alphabetical by name.
    *
    * The `Bus/252` conventions are deliberately absent: there is one of them per holiday calendar
-   * rather than one per family, so the set is open and cannot be enumerated. The library being
-   * ported drew the same line, listing the standard constants from one provider and creating
-   * `Bus/252` conventions on demand from another.
+   * rather than one per family, so the set is open and cannot be enumerated. They are built by
+   * [[DayCount.ofBus252]] from the calendar they count.
    *
    * @return the twenty-one standard day counts, in declaration order
    */
@@ -1586,26 +1609,23 @@ object DayCount {
       THIRTY_E_365
     )
 
-  //-------------------------------------------------------------------------
   /** The label this family gives itself when it rejects text. */
   private val FamilyName: String = "DayCount"
 
   /**
    * The spellings this family publishes for the FpML protocol, each mapped to a canonical name.
    *
-   * These are the fourteen rows of the FpML group of external names that the configuration resource
-   * of the ported library declared, transcribed unchanged. They take part in no lookup - reading
-   * `ACT/360` as a day count is the business of the lenient patterns below, which happen to accept
-   * it - and exist so that a caller writing or reading that protocol can map between the two
-   * vocabularies explicitly, through `NamedEnum.externalNames`.
+   * These are the fourteen rows of the FpML group of external names, held here as data. They take
+   * part in no lookup - reading `ACT/360` as a day count is the business of the lenient patterns
+   * below, which happen to accept it - and exist so that a caller writing or reading that protocol
+   * can map between the two vocabularies explicitly, through `NamedEnum.externalNames`.
    *
    * Note the row for `BUS/252`, which names a day count that is not a member of [[values]]. The
    * resolved view of this group holds it all the same: the name lookup resolves an external row
    * through the resolution this family gives it, which is [[valueOf]] - the standard members and
    * the `Bus/252` conventions together - so `externalNames("FpML")("BUS/252")` is the day count
-   * named `Bus/252 BRBD`, exactly as the external lookup of the ported registry resolved that row
-   * by delegating the name to its second provider. `DayCount.parse("BUS/252")` reaches the same
-   * convention by the lenient route.
+   * named `Bus/252 BRBD`. `DayCount.parse("BUS/252")` reaches the same convention by the lenient
+   * route.
    */
   private lazy val FpMLNames: Map[String, String] =
     Map(
@@ -1629,11 +1649,10 @@ object DayCount {
    * The spellings this family publishes for the SWIFT message standard, each mapped to a canonical
    * name.
    *
-   * These are the eight rows of the SWIFT group of external names that the configuration resource
-   * of the ported library declared, transcribed unchanged. The group disagrees with the FpML one
-   * about two spellings - `30E/360` and `ACT/365` name different conventions in the two
-   * vocabularies - which is exactly why each group is published separately rather than merged into
-   * one table of aliases.
+   * These are the eight rows of the SWIFT group of external names, held here as data. The group
+   * disagrees with the FpML one about two spellings - `30E/360` and `ACT/365` name different
+   * conventions in the two vocabularies - which is exactly why each group is published separately
+   * rather than merged into one table of aliases.
    */
   private lazy val SwiftNames: Map[String, String] =
     Map(
@@ -1650,8 +1669,7 @@ object DayCount {
   /**
    * The lenient rewrites of this family, in the order they are applied.
    *
-   * These are the sixty-seven rows of the lenient patterns that the configuration resource of the
-   * ported library declared, in the order that resource listed them, and the order is part of the
+   * These are the sixty-seven lenient patterns, held here as data, and their order is part of that
    * data: [[parse]] folds its input to upper case and then applies every pattern in turn, a pattern
    * whose expression matches the whole of the current text replacing that text, so a later pattern
    * sees what an earlier one produced. Reordering these rows would change which text resolves and
@@ -1669,15 +1687,14 @@ object DayCount {
    * parse("Bus/252")               // Bus/252 BRBD - defaulted to the Brazilian calendar
    * }}}
    *
-   * Each expression is written here in the mixed case of the original row and matched insensitively
-   * to case, because [[parse]] has already folded its input to upper case by the time they are
-   * applied.
+   * Each expression is written in mixed case and matched insensitively to case, because [[parse]]
+   * has already folded its input to upper case by the time they are applied.
    *
-   * The rows are the '''source''' of each expression rather than a compiled expression, and are
-   * handed to the name lookup in that form. The lookup compiles each of them once, insensitively
-   * to case, when this family first parses a name; a compiled table here would be a second set of
-   * sixty-seven expressions, compiled the moment anything in this file is touched, for a caller
-   * that may only ever ask a day count for a year fraction.
+   * The rows are the '''source''' of each expression rather than a built expression, and are handed
+   * to the name lookup in that form. The lookup builds each of them once, insensitively to case,
+   * when this family first parses a name; a table of built expressions here would instead be a
+   * second set of sixty-seven, built the moment anything in this file is touched, for a caller that
+   * may only ever ask a day count for a year fraction.
    */
   private lazy val LenientSources: List[(String, String)] =
     List(
@@ -1762,26 +1779,22 @@ object DayCount {
   /**
    * The name lookup for the twenty-one standard day counts.
    *
-   * This instance is built from [[values]] and the three transcribed tables alone. The family
-   * declares no alternate spelling, because the resource of the ported library declared none for
-   * it: every spelling other than the twenty-one canonical names is reached through the lenient
-   * patterns, and the two external groups are published rather than looked up. Nothing is read from
-   * a class or from the class path, so the name space of the standard family is fixed when this
-   * file is compiled.
+   * This instance is built from [[values]] and the three tables above alone. The family declares no
+   * alternate spelling: every spelling other than the twenty-one canonical names is reached through
+   * the lenient patterns, and the two external groups are published rather than looked up. The name
+   * space of the standard family is therefore fixed by this file.
    *
    * Its `values` are the standard members only. [[valueOf]] and [[parse]] wrap it with the
-   * `Bus/252` lookup, which no closed family can express, in the two places the registry being
-   * replaced consulted its second provider - and the external tables are resolved through that
-   * same wider lookup, which is passed here as this family's own resolution of an external row.
-   * That is what lets the FpML spelling `BUS/252` resolve to the Brazilian convention, as the
-   * external lookup of the ported registry did by delegating the name it carries to the second
-   * provider, while `Bus/252` conventions stay outside the twenty-one fixed values.
+   * `Bus/252` lookup, which no closed family can express, and the external tables are resolved
+   * through that same wider lookup, which is passed here as this family's own resolution of an
+   * external row. That is what lets the FpML spelling `BUS/252` resolve to the Brazilian
+   * convention while `Bus/252` conventions stay outside the twenty-one fixed values.
    *
    * It and the three tables behind it are built on first use rather than when this object is
    * initialised: they serve the reading of a name, and a caller that only asks a day count for a
    * year fraction never reads one. Touching a member of this family therefore costs the members
-   * themselves and nothing else - no table, no lookup and, since the lookup compiles its rewrites
-   * on its own first use, no compiled expression either.
+   * themselves and nothing else - no table, no lookup and, since the lookup builds its rewrites on
+   * its own first use, no built expression either.
    *
    * @return the name lookup for the twenty-one standard day counts
    */
@@ -1794,7 +1807,6 @@ object DayCount {
       FamilyName,
       Some(name => valueOf(name)))
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains the day count with the specified canonical name, if one exists.
    *
@@ -1804,10 +1816,8 @@ object DayCount {
    * against the calendars built into this library - so `Bus/252 GBLO` and `BUS/252 GBLO` both name
    * a day count, and a name whose calendar this library does not define answers with `None`.
    *
-   * This is the exact lookup the registry being replaced performed over its two providers, with the
-   * one difference that a `Bus/252` name holding an unknown calendar is an empty answer here where
-   * the registry raised. Use [[parse]] to accept text whose shape is not known in advance, or to be
-   * told '''why''' a name did not resolve.
+   * Use [[parse]] to accept text whose shape is not known in advance, or to be told '''why''' a
+   * name did not resolve.
    *
    * @param name  the name to look up
    * @return the day count with that name, or `None` when no day count has it
@@ -1831,7 +1841,7 @@ object DayCount {
    * parse("Actual/Actual (ISDA)") // Right(ACT_ACT_ISDA) - brackets removed, then expanded
    * parse("Bus/252")              // Right(Bus/252 BRBD) - defaulted to the Brazilian calendar
    * parse("Bus/252 GBLO")         // Right(Bus/252 GBLO) - resolved against the built-in calendars
-   * parse("Rubbish")              // Left - text this family has never accepted
+   * parse("Rubbish")              // Left - no canonical name and no rewrite resolves it
    * }}}
    *
    * A `Bus/252` name is resolved against the calendars '''built into this library''', which are
@@ -1840,13 +1850,21 @@ object DayCount {
    * calendars. A name whose calendar cannot be resolved fails with the reason the calendar lookup
    * gave, rather than with the reason this family gives for text it does not recognise.
    *
-   * Where the type being ported raised an error for unrecognised text, this method reports it as a
-   * value: the result is `Left` of a chain holding one
-   * [[com.opengamma.strata.collect.result.Failure]] whose reason is `PARSING` and whose message
-   * names both this family and the text that could not be resolved.
+   * Unrecognised text is reported as a value rather than raised: the result is `Left` of a chain
+   * holding one [[com.opengamma.strata.collect.result.Failure]] whose reason is `PARSING` and
+   * whose message names both this family and the text that could not be resolved.
+   *
+   *
+   * The exact stage accepts text of any length - a `Bus/252` name may combine any number of
+   * calendars - while the lenient stage is bounded, for the reason and with the consequences set
+   * out at [[parseWith]]: text longer than this family's `NamedEnum.lenientLengthCeiling` is
+   * reported unresolved without being folded to upper case or offered to a rewrite.
    *
    * @param name  the text to parse
-   * @return the day count the text names, or the failure describing why it names none
+   * @return the day count the text names, or the failure naming this family and the text, reported
+   *   when no canonical name matches the text, no lenient rewrite of it matches one either, and it
+   *   carries no `Bus/252 ` prefix - or, where it does carry that prefix, the failure of the
+   *   calendar lookup for text the built-in calendars do not define
    */
   def parse(name: String): EitherNec[Failure, DayCount] =
     parseWith(name, calendarName => HolidayCalendars.of(calendarName))
@@ -1866,32 +1884,55 @@ object DayCount {
    * }}}
    *
    * @param name  the text to parse
-   * @param refData  the reference data used to resolve the calendar of a `Bus/252` name
-   * @return the day count the text names, or the failure describing why it names none
+   * @param refData  the reference data against which the calendar of a `Bus/252` name is resolved
+   * @return the day count the text names, or the failure naming this family and the text, reported
+   *   when no canonical name matches the text, no lenient rewrite of it matches one either, and it
+   *   carries no `Bus/252 ` prefix - or, where it does carry that prefix, the failure of resolving
+   *   the calendar identifier it names against the reference data supplied
    */
   def parse(name: String, refData: ReferenceData): EitherNec[Failure, DayCount] =
     parseWith(name, calendarName => HolidayCalendarId.of(calendarName).resolve(refData))
 
   /**
-   * The two-stage lookup the registry being replaced performed, given a way of resolving a calendar.
+   * The two-stage lookup behind both [[parse]] overloads, given a way of resolving a calendar.
    *
-   * Stage one is the exact lookup over both providers - the closed family and `Bus/252` - and stage
+   * Stage one is the exact lookup over both routes - the closed family and `Bus/252` - and stage
    * two folds the text to upper case, applies every lenient rewrite in order and repeats the exact
    * lookup. Text that survives both stages unresolved is reported with the failure this family
    * gives, unless a `Bus/252` name was recognised and its calendar was not, in which case the
-   * calendar's own failure is reported instead: that is the more specific answer, and it is the
-   * error the ported implementation raised from the same place.
+   * calendar's own failure is reported instead as the more specific answer.
    *
    * The chain of rewrites is the one the name lookup runs, asked for here rather than reproduced:
    * `NamedEnum.rewriteLeniently` applies this family's own sixty-seven rows in their declared
-   * order, compiled once, and bounds the work each row may do on text it cannot match. Only the
+   * order, built once, and bounds the work each row may do on text it cannot match. Only the
    * repeat lookup differs from `NamedEnum.parse`, which is the whole reason this method exists -
-   * the rewritten text has to be offered to the `Bus/252` provider as well as to the closed
-   * family, which is what makes `Bus/252` resolve from the bare prefix the table rewrites.
+   * the rewritten text has to be offered to the `Bus/252` route as well as to the closed family,
+   * which is what makes `Bus/252` resolve from the bare prefix the table rewrites.
+   *
+   * ===Where stage two stops===
+   *
+   * Because this method runs stage two itself, it applies stage two's bound itself as well, and it
+   * applies it '''before''' the fold to upper case. `NamedEnum.lenientLengthCeiling` is the length
+   * this family derives from its own data - its longest key, alternate spelling, alternate target
+   * and expression source, plus the margin the lookup adds - and text longer than that is answered
+   * with this family's not-found failure without being folded and without a rewrite being tried.
+   * The fold is a copy of the whole text, so leaving the bound to `rewriteLeniently` would pay for
+   * that copy on exactly the input the bound exists to refuse: text whose length is chosen by
+   * whoever supplied it, arriving from a document or a user.
+   *
+   * Nothing this family can resolve is refused by the bound, and the two providers are why. A
+   * `Bus/252` name is claimed by stage one, whose prefix test is insensitive to case and puts no
+   * limit on the calendar that follows it, so a name combining any number of calendars resolves at
+   * any length. What stage two can produce, on the other hand, is bounded by the rows themselves:
+   * each of them either leaves the text the length it was or shortens it by a character or two, and
+   * every name the repeat lookup accepts is one of the twenty-one canonical names or the fixed
+   * `Bus/252 BRBD` of the bare-prefix row - all of them shorter than the ceiling by a wide margin.
+   * Text longer than the ceiling therefore had no resolvable rewriting to reach.
    *
    * @param name  the text to parse
    * @param resolveCalendar  resolves the calendar part of a `Bus/252` name
-   * @return the day count the text names, or the failure describing why it names none
+   * @return the day count the text names, or the failure: this family's, for text that neither
+   *   stage resolves, or the calendar's, for a `Bus/252` name whose calendar does not resolve
    */
   private def parseWith(
       name: String,
@@ -1899,22 +1940,24 @@ object DayCount {
 
     exact(name, resolveCalendar) match {
       case Some(result) => result
+      case None if name.length > namedEnum.lenientLengthCeiling =>
+        Left(NonEmptyChain.one(nameNotFound(name)))
       case None =>
         exact(namedEnum.rewriteLeniently(name.toUpperCase(Locale.ENGLISH)), resolveCalendar)
           .getOrElse(Left(NonEmptyChain.one(nameNotFound(name))))
     }
 
   /**
-   * The exact lookup over the two providers, in the order the registry consulted them.
+   * The exact lookup over the two routes, the closed family first.
    *
-   * The closed family answers first, and only text it does not claim reaches the `Bus/252` lookup.
-   * An empty answer means no provider recognised the text at all, which is what sends [[parseWith]]
-   * on to the lenient stage; an answer that is present but failed means a provider recognised the
-   * text and could not complete it, which is reported as it stands.
+   * Only text the closed family does not claim reaches the `Bus/252` lookup. An empty answer means
+   * neither route recognised the text at all, which is what sends [[parseWith]] on to the lenient
+   * stage; an answer that is present but failed means a route recognised the text and could not
+   * complete it, which is reported as it stands.
    *
    * @param name  the text to look up
    * @param resolveCalendar  resolves the calendar part of a `Bus/252` name
-   * @return the outcome of the provider that claimed the text, or `None` where none did
+   * @return the outcome of the route that claimed the text, or `None` where neither did
    */
   private def exact(
       name: String,
@@ -1928,10 +1971,10 @@ object DayCount {
   /**
    * The `Bus/252` lookup: the prefix matched insensitively to case, the rest resolved as a calendar.
    *
-   * The prefix test is the one the ported lookup made - eight characters compared without regard to
-   * case - so `Bus/252 `, `BUS/252 ` and any mixture claim the text, and shorter text does not. The
-   * name of the resulting day count is rebuilt from the '''resolved''' calendar rather than copied
-   * from the input, so `BUS/252 EUTA` yields a day count named `Bus/252 EUTA`.
+   * The prefix test compares eight characters without regard to case, so `Bus/252 `, `BUS/252 ` and
+   * any mixture claim the text, and shorter text does not. The name of the resulting day count is
+   * rebuilt from the '''resolved''' calendar rather than copied from the input, so `BUS/252 EUTA`
+   * yields a day count named `Bus/252 EUTA`.
    *
    * @param name  the text to look up
    * @param resolveCalendar  resolves the calendar part of the name
@@ -1955,11 +1998,9 @@ object DayCount {
   /**
    * The failure reported for text that names no day count.
    *
-   * The text is quoted as it stands, so the failure names exactly what was rejected; bounding it
-   * and escaping what it may hold belong to the writing of a failure, which the text form of one
-   * and `Failure.show` perform for every part they write. The wording is that of the name lookup
-   * of this library, so a caller cannot tell whether the standard family or the wrapping in this
-   * file rejected the text.
+   * The text is quoted as it stands, so the failure names exactly what was rejected. The wording is
+   * that of the name lookup of this library, so a caller cannot tell whether the standard family or
+   * the wrapping in this file rejected the text.
    *
    * @param name  the text that was rejected, as it was supplied
    * @return the failure naming this family and the text
@@ -1967,7 +2008,6 @@ object DayCount {
   private def nameNotFound(name: String): Failure =
     Failure.Parsing(s"$FamilyName name not found: $name")
 
-  //-------------------------------------------------------------------------
   /**
    * The ordering and hashing of day counts.
    *
@@ -1992,32 +2032,24 @@ object DayCount {
    */
   implicit val show: Show[DayCount] = NamedEnum.showByName
 
-  //-------------------------------------------------------------------------
-  /** The single field naming the structural form of a calendar-bearing day count. */
   private val Bus252Key: String = "Bus252"
 
-  /** The field holding the name of a calendar-bearing day count. */
   private val NameField: String = "name"
 
-  /** The field holding the calendar of a calendar-bearing day count. */
   private val CalendarField: String = "calendar"
 
-  /** Separates the messages of accumulated failures in a single decoding failure. */
   private val FailureMessageSeparator: String = "; "
 
-  /** The message reporting a document that describes no day count. */
   private val UnknownShapeMessage: String =
     s"A day count is either the string of its name or an object of one field named '$Bus252Key'"
 
   /**
    * The JSON codec for day counts.
    *
-   * One of the two hand-written codecs of this port, and hand-written for the same reason as the
-   * other: the family mixes a name-based form with a structural one, and the structural form has no
-   * public constructor to derive from. Nothing here reads a class or a member by reflection.
+   * Hand-written, because the family mixes a name-based form with a structural one and the
+   * structural form has no public constructor to derive a codec from.
    *
-   * A standard day count is written as the bare string of its canonical name, which is the form the
-   * type being ported wrote through its string conversion:
+   * A standard day count is written as the bare string of its canonical name:
    *
    * {{{
    * "Act/365F"
@@ -2038,9 +2070,9 @@ object DayCount {
    * write - a canonical name, a lenient spelling, or a hand-written `Bus/252 GBLO` - is read, with
    * the calendar of a `Bus/252` name resolved against the calendars built into this library. An
    * object is read as a `Bus/252` day count whose calendar is taken from the document, and its
-   * declared name is '''checked''' against the calendar rather than trusted: a document naming one
-   * calendar and carrying another describes no day count this library can build, and is reported as
-   * a decoding failure.
+   * declared name is '''checked''' against the calendar rather than trusted: a document whose
+   * declared name is not the name the calendar it carries produces is rejected as a decoding
+   * failure.
    *
    * Two equal values encode to identical bytes: the choice between the two forms follows from the
    * type of the value, the two fields of the structural form are written in a fixed order, and the
@@ -2073,7 +2105,9 @@ object DayCount {
    * is that form. Anything else is rejected, as is an object holding no field or several.
    *
    * @param cursor  the position in the document
-   * @return the day count, or the failure explaining why the document describes none
+   * @return the day count, or the decoding failure: the document is neither a name string nor an
+   *   object of the single field `Bus252`, the name string resolves to no day count, or the
+   *   object's declared name is not the name the calendar it carries produces
    */
   private def decodeDayCount(cursor: HCursor): Decoder.Result[DayCount] =
     cursor.value.asString match {
@@ -2106,7 +2140,8 @@ object DayCount {
    * @param name  the name the document declares
    * @param calendar  the calendar the document carries
    * @param cursor  the position in the document, for the failure message
-   * @return the day count, or the failure explaining why the two fields disagree
+   * @return the day count, or the failure naming both the declared name and the name the calendar
+   *   carried with it produces, where the two differ
    */
   private def checkedBus252(name: String, calendar: HolidayCalendar, cursor: HCursor): Decoder.Result[DayCount] = {
     val expectedName = Bus252Prefix + calendar.id.name
@@ -2123,22 +2158,17 @@ object DayCount {
 }
 
 /**
- * Constants for the standard day count conventions, published under the identifiers the ported
- * library used.
+ * Constants for the standard day count conventions.
  *
  * The purpose of each convention is to define how to convert dates into numeric year fractions,
  * which is of use when calculating interest accrued over time.
  *
- * Every constant here is one of the members of [[DayCount]], exposed under the name the original
- * constants holder gave it so that a call site reading `DayCounts.ACT_365F` ports across
- * unchanged. The values are the same objects as the members of the companion, so a constant taken
- * from here and the matching member are indistinguishable - including by `eq`, by `==` and in a
- * pattern match.
+ * Every constant here names one of the members of [[DayCount]] directly. The values are the same
+ * objects as the members of the companion, so a constant taken from here and the matching member
+ * are indistinguishable - including by `eq`, by `==` and in a pattern match.
  *
- * Unlike the holder being ported, these constants are not indirected through a registry: each one
- * names its member directly, because the family is closed and no configuration can replace a
- * member of it. The `Bus/252` conventions have no constant here, as they had none there: they are
- * built by [[DayCount.ofBus252]] from the calendar they count.
+ * The `Bus/252` conventions have no constant here: there is one of them per holiday calendar, and
+ * they are built by [[DayCount.ofBus252]] from the calendar they count.
  */
 object DayCounts {
 
@@ -2171,8 +2201,8 @@ object DayCounts {
    * First, the underlying schedule period is obtained treating the first date as the start of the
    * schedule period. Second, if the period is a stub then nominal regular periods are created
    * matching the schedule frequency, working forwards or backwards from the known regular schedule
-   * date, an end-of-month flag being used to handle month-ends; if the period is not a stub then
-   * the schedule period is treated as a nominal period. Third, the result is the sum of a
+   * date, an end-of-month flag handling month-ends; if the period is not a stub then the schedule
+   * period is treated as a nominal period. Third, the result is the sum of a
    * calculation for each nominal period, each a division whose numerator is the actual number of
    * days in the nominal period - which could be zero in the case of a long stub - and whose
    * denominator is the length of the nominal period multiplied by the frequency. The first day in
@@ -2203,11 +2233,10 @@ object DayCounts {
    * Francaise des Banques in September 1994 as 'Base Exact/Exact' in 'Definitions Communes
    * plusieurs Additifs Techniques'.
    *
-   * This library implements the day count based on the original French documentation without the
-   * ISDA clarification, whose roll-back rule has the strange effect that one day receives two days
-   * of interest and the next receives none. The rule is interpreted here as rolling a period that
-   * ends on the ''29th'' of February back to the 28th, or to the 29th in a leap year, which can be
-   * argued to be closer to the original French than the ISDA "clarification".
+   * This library implements the day count from the French documentation of September 1994 without
+   * the ISDA clarification, whose roll-back rule has the effect that one day receives two days of
+   * interest and the next receives none. The rule is interpreted here as rolling a period that
+   * ends on the ''29th'' of February back to the 28th, or to the 29th in a leap year.
    */
   val ACT_ACT_AFB: DayCount = DayCount.ACT_ACT_AFB
 
@@ -2368,8 +2397,8 @@ object DayCounts {
    * day-of-month is 31, it is changed to 30.
    *
    * This day count is not dependent on the end-of-month flag of the schedule information. It is the
-   * same as '30U/360' when the end-of-month convention applies, and would typically be used to be
-   * explicit about that rule applying; in most cases '30U/360' should be used in preference.
+   * same as '30U/360' when the end-of-month convention applies, and is used to make that rule
+   * explicit; in most cases '30U/360' should be used in preference.
    *
    * @see [[THIRTY_U_360]]
    */

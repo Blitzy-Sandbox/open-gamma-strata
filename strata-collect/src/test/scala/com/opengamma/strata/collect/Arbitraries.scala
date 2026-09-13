@@ -1242,13 +1242,17 @@ object Arbitraries {
   /**
    * Whether every row of a matrix is as long as the column count its shape states.
    *
-   * Every generated matrix is rectangular, but `DoubleMatrix.copyOf` shapes a ragged array by
-   * its first row and clones every other row at its own length, exactly as the Java original
-   * does, so a value of this type can state a column count one of its rows does not reach.
-   * Reading such a position is an index failure, and a shrinking that walked the stated shape
-   * would replace a counterexample with an exception raised by the minimisation itself. Both
-   * matrix shrinkings therefore ask this question before they read anything, and offer no
-   * candidate when the answer is no.
+   * Every matrix these generators yield is rectangular: each one is built by
+   * [[DoubleMatrix.tabulate]] from a row count and a column count, so every row holds exactly
+   * as many elements as the shape states, and a ragged shape is drawn by none of them. A
+   * ragged value reaches this type by one route only - `DoubleMatrix.copyOf` shapes an array
+   * whose rows differ in length by its first row and clones every other row at its own length
+   * - so a value of this type can state a column count one of its rows does not reach. Reading
+   * such a position is an index failure, and a shrinking that walked the stated shape would
+   * replace a counterexample with an exception raised by the minimisation itself. Both matrix
+   * shrinkings therefore ask this question before they read anything, and offer no candidate
+   * when the answer is no, which is what lets the specs that draw from the generators state
+   * their properties over rectangular matrices alone.
    *
    * The rows are measured through `row`, which hands back each row at its own length, so the
    * question is answered without reading a position that may not exist. The empty matrix has

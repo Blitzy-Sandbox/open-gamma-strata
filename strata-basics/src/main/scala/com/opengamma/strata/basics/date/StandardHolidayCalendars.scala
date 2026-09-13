@@ -24,31 +24,23 @@ import scala.collection.immutable.Map
  * Thirty calendars are published, in three groups and from three different kinds of source:
  *
  *   - twenty-five national and exchange calendars derived from rules, produced by
- *     [[GlobalHolidayCalendars]] - `GBLO` through `CZPR` below;
+ *     [[GlobalHolidayCalendars]] - `GBLO` through `ZAJO` below;
  *   - one calendar whose dates are published rather than derived, the Thai bank calendar
  *     [[THBA]], built from the table in [[HolidayCalendarData]];
  *   - four calendars whose whole content follows from their names: [[NO_HOLIDAYS]],
  *     [[SAT_SUN]], [[FRI_SAT]] and [[THU_FRI]].
  *
- * ===What this replaces===
+ * ===The set and its names===
  *
- * The library being ported assembled the same thirty calendars at run time, from three
- * providers named in a configuration resource on the classpath and consulted in order, with
- * the first registration of a name winning: the four weekend and no-holiday constants, then a
- * loader that parsed published calendar data, then a loader that read the rule-generated
- * calendars back from a binary cache. Each provider registered every calendar twice, under its
- * name and under the English upper-case of its name, and the registry then offered the set
- * re-keyed by canonical name alone.
+ * The set is written down here as data, in the order the four name-derived calendars, then the
+ * published calendar, then the twenty-five generated ones, and a name is resolved to the first
+ * calendar of that order which claims it. Every calendar is reachable three ways that yield the
+ * same value: by the constant naming it below, by its identifier through [[all]], and by name
+ * through the two name views [[byName]] and [[byUpperName]]. Nothing here reads a file, a network
+ * or any source outside this build, so the built-in set cannot differ between two runs or two
+ * deployments of the same version.
  *
- * All of that is now data. The providers, the registry, the cache and the parsing are gone; the
- * behaviour that depended on them is not. The set and its order are reproduced here - the four
- * name-derived calendars, then the published calendar, then the generated ones, first name
- * winning - and the two name views the registry offered are reproduced by [[byName]] and
- * [[byUpperName]]. Nothing here reads the classpath, the file system or any other source
- * outside this build, so the built-in set cannot differ between two runs or two deployments of
- * the same version.
- *
- * ===Initialisation order (read before editing)===
+ * ===Initialisation order===
  *
  * Every member of this object is a `lazy val`, and that is load-bearing rather than merely an
  * optimisation. This object sits in a cycle the design intends: the JSON form of a calendar in
@@ -59,7 +51,8 @@ import scala.collection.immutable.Map
  * order in which these objects happen to be initialised load-bearing, and the value observed by
  * whichever member of the cycle ran first would depend on it. Deferring every member to first
  * use removes the question: each is computed when something asks for it, by which point every
- * object it needs is initialised. Anything added here must keep that property.
+ * object it needs is initialised. The requirement this places on the object is therefore that it
+ * hold no strict member.
  *
  * Laziness also matches what the calendars cost. Generating one means evaluating its rules
  * across a hundred and fifty years, so an application that adjusts dates against London alone
@@ -75,8 +68,8 @@ import scala.collection.immutable.Map
  */
 object StandardHolidayCalendars {
 
-  //-------------------------------------------------------------------------
-  // The calendars derived from rules. Each is generated on first use, and at most once.
+  // The calendars derived from rules. Each is generated on first use, and at most once, and
+  // every later use is given the calendar generated then.
 
   /** The London holiday calendar, `GBLO`, covering 1950 to 2099. */
   lazy val GBLO: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateLondon()
@@ -157,8 +150,7 @@ object StandardHolidayCalendars {
    *
    * The national calendar, observing the holidays common to the whole country rather than the
    * anniversary day of a single province. It is the one built-in calendar with no constant in
-   * [[HolidayCalendarIds]], exactly as in the library being ported, so its identifier is the
-   * one its own generator gives it.
+   * [[HolidayCalendarIds]], so its identifier is the one its own generator gives it.
    */
   lazy val NZBD: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateNewZealand()
 
@@ -171,7 +163,6 @@ object StandardHolidayCalendars {
   /** The Johannesburg holiday calendar, `ZAJO`, covering 1950 to 2099. */
   lazy val ZAJO: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateJohannesburg()
 
-  //-------------------------------------------------------------------------
   /**
    * The Thai bank calendar, `THBA`, covering the published years 2005 to 2079.
    *
@@ -189,7 +180,6 @@ object StandardHolidayCalendars {
       HolidayCalendarData.thbaHolidays,
       HolidayCalendarData.thbaWeekendDays)
 
-  //-------------------------------------------------------------------------
   // The calendars whose whole content follows from their names. These are the same values
   // `HolidayCalendars` publishes; they are named here as well so that this object is the
   // complete built-in set, and so that `all` and `minimal` are assembled from members of it.
@@ -210,15 +200,12 @@ object StandardHolidayCalendars {
   /** The calendar whose only holidays are Thursday and Friday, `Thu/Fri`. */
   lazy val THU_FRI: HolidayCalendar = ThuFri
 
-  //-------------------------------------------------------------------------
   /**
    * Every holiday calendar built into this library, each keyed by its own identifier.
    *
    * Thirty entries: the twenty-five generated calendars, the published Thai calendar, and the
    * four calendars whose content follows from their names. Every entry is keyed by the
-   * identifier its own calendar carries, so `all(id).id == id` holds throughout - the invariant
-   * the registry of the library being ported established by re-keying its providers' output by
-   * canonical name before publishing it.
+   * identifier its own calendar carries, so `all(id).id == id` holds throughout.
    *
    * This is the set `ReferenceData.standard` presents, and so it is what resolves an identifier
    * such as `GBLO` for code that was given no reference data of its own. It is a total map:
@@ -254,13 +241,11 @@ object StandardHolidayCalendars {
    */
   lazy val minimal: Map[HolidayCalendarId, HolidayCalendar] = generatedFrom(nameDerived)
 
-  //-------------------------------------------------------------------------
   /**
    * Finds a built-in calendar by its canonical name.
    *
    * The name is matched exactly, as the calendar itself spells it: `GBLO`, `Sat/Sun`,
-   * `NoHolidays`. This is the view the registry of the library being ported published as its
-   * normalised set, and the one to use where a name is already known to be canonical - a name
+   * `NoHolidays`. This is the view to use where a name is already known to be canonical - a name
    * this library itself wrote out, for instance, as it does in the JSON form of a calendar.
    *
    * Composite names such as `GBLO+USNY` are not built-in calendars and are not found here;
@@ -283,14 +268,12 @@ object StandardHolidayCalendars {
    * names of the built-in calendars, so `gblo`, `GBLO` and `Gblo` all find the London
    * calendar, and `sat/sun` finds `Sat/Sun`. The locale is named explicitly, and is English
    * rather than the default of the host, so that the built-in set cannot be found differently
-   * on two machines - the same choice, for the same reason, as the library being ported made
-   * when it registered each calendar under the English upper-case of its name alongside its
-   * canonical one.
+   * on two machines.
    *
    * This is the lenient view. It is what lets a day count written `Bus/252 gblo` name the same
-   * day count as `Bus/252 GBLO`, matching the case-insensitive treatment of such a name in the
-   * library being ported. Where a name is known to be canonical, prefer [[byName]]: it answers
-   * without folding case and so cannot accept a name this library would not have written.
+   * day count as `Bus/252 GBLO`. Where a name is known to be canonical, prefer [[byName]]: it
+   * answers without folding case and so cannot accept a name this library would not have
+   * written.
    *
    * As with [[byName]], only the calendar found is generated.
    *
@@ -301,20 +284,16 @@ object StandardHolidayCalendars {
     generate(byUpperCaseName.get(name.toUpperCase(Locale.ENGLISH)))
 
   /**
-   * Finds a built-in calendar by one of the names the registry being replaced registered it
-   * under.
+   * Finds a built-in calendar by either of the two names it answers to.
    *
    * Those names are two per calendar: the canonical name the calendar carries, and the English
-   * upper-case of that name, which every provider of the library being ported filed its
-   * calendars under as well - so `GBLO`, `Sat/Sun`, `SAT/SUN` and `NOHOLIDAYS` were all names of
-   * calendars there and are all names of calendars here. The canonical name is tried first, and
-   * the match is exact within the two key spaces: unlike [[byUpperName]] this does not fold the
-   * case of the name it is given, because the registry did not, and a name in some other case
-   * was unknown to it.
+   * upper-case of that name - so `GBLO`, `Sat/Sun`, `SAT/SUN` and `NOHOLIDAYS` are all names of
+   * built-in calendars. The canonical name is tried first, and the match is exact within the two
+   * key spaces: this does not fold the case of the name it is given, so a name in any other case
+   * - `Gblo`, `sat/sun` - is not found here, which is the difference from [[byUpperName]].
    *
-   * This is what `HolidayCalendars.of` resolves a simple name with, and it is the reason that
-   * method accepts exactly the names the library being ported accepted. Only the calendar found
-   * is generated.
+   * This is what `HolidayCalendars.of` resolves a simple name with, and that method reports a
+   * name outside the built-in set as a failure. Only the calendar found is generated.
    *
    * @param name  the name of the calendar, canonical or upper-case
    * @return the calendar of that name, or empty where this library defines no calendar of it
@@ -341,7 +320,6 @@ object StandardHolidayCalendars {
   private[date] def isBuiltIn(calendar: HolidayCalendar): Boolean =
     byCanonicalName.get(calendar.name).exists(builtInCalendar => builtInCalendar() eq calendar)
 
-  //-------------------------------------------------------------------------
   /**
    * A built-in calendar, as its identifier and a way of obtaining it.
    *
@@ -371,14 +349,13 @@ object StandardHolidayCalendars {
       HolidayCalendarIds.THU_FRI -> (() => THU_FRI))
 
   /**
-   * Every built-in calendar, in the order the calendars of the library being ported were
-   * registered: the four name-derived calendars, then the published calendar, then the
-   * generated ones.
+   * Every built-in calendar, in claim order: the four name-derived calendars, then the published
+   * calendar, then the generated ones.
    *
-   * The order is kept because the registry it reproduces resolved a name to the calendar that
-   * claimed it first. No two calendars here claim the same name, so the order changes nothing
-   * today; keeping it means that a calendar added in the future takes effect exactly where the
-   * original would have put it, rather than silently displacing one that was already there.
+   * The order is part of the contract of the two name views, which resolve a name to the calendar
+   * that claims it first. No two calendars in this list claim the same name, so no calendar here
+   * displaces another; holding the order means that a calendar added to the list takes effect at
+   * the position it is written rather than displacing one already there.
    */
   private lazy val builtIn: List[Registration] =
     nameDerived ::: (HolidayCalendarIds.THBA -> (() => THBA)) :: generated
@@ -387,10 +364,10 @@ object StandardHolidayCalendars {
    * The calendars derived from rules, in the order their identifiers sort.
    *
    * The identifier of each is its constant in [[HolidayCalendarIds]], except for the New Zealand
-   * bank calendar, which has no constant there - as it had none in the library being ported -
-   * and so names itself. `HolidayCalendarsSpec` holds every identifier registered here to the
-   * one its own calendar carries, which is what makes writing them down beside the calendars
-   * safe: the point of doing so is that a name can be looked up without generating anything.
+   * bank calendar, which has no constant there and so names itself. Each identifier written here
+   * is the one its own calendar carries, which is what makes writing them down beside the
+   * calendars safe: the point of doing so is that a name can be looked up without generating
+   * anything.
    */
   private lazy val generated: List[Registration] =
     List(
@@ -434,10 +411,10 @@ object StandardHolidayCalendars {
   /**
    * Keys the registrations of built-in calendars, letting the first claim of a key win.
    *
-   * Building the views this way rather than with a straight conversion to a map states the rule
-   * the registry being replaced followed: it registered each calendar only where the key was
-   * free, so the provider consulted first decided what a name meant. A straight conversion
-   * would silently give the key to the last claim instead.
+   * Building the views this way rather than with a straight conversion to a map is what makes the
+   * first claim of a key win: a key is taken only where it is free, so the earlier entry of the
+   * list decides what a name means, where a straight conversion would silently give the key to
+   * the last claim instead.
    *
    * The key is taken from the identifier of a registration, never from its calendar, so that
    * building a view generates nothing.

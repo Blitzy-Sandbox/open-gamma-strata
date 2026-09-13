@@ -21,6 +21,8 @@ import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.basics.schedule.SchedulePeriod
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.ValidatedFailures
@@ -46,9 +48,7 @@ import com.opengamma.strata.collect.result.Failure
  *   - a ''date'' positions it in absolute terms, and has to line up with a boundary of that
  *     schedule.
  *
- * Both positions are optional properties, so both are `Option`s here; the Java bean being ported
- * expressed the same pair as two fields that could each be absent, read back through
- * `OptionalInt` and `Optional`, which no signature of this port names.
+ * Both positions are declared as `Option`s, so the one a step does not hold holds nothing.
  *
  * ===Construction===
  *
@@ -63,12 +63,10 @@ import com.opengamma.strata.collect.result.Failure
  *
  * Equality and hashing are those of the three properties, and so are those of
  * [[ValueAdjustment]] where the modifying value is concerned: an adjustment compares its double
- * by bit pattern rather than by numeric comparison, which is what the bean equality of the Java
- * original did and what every double-bearing type of this port does. A step carries no double of
- * its own, so it inherits that behaviour whole rather than restating it - including the two
- * consequences the round-trip properties of the test suite rely on, that a value always equals
- * itself even when its adjustment carries a value that is not a number, and that a negative zero
- * is distinct from a positive zero.
+ * by bit pattern rather than by numeric comparison. A step carries no double of its own, so it
+ * inherits that behaviour whole rather than restating it, with both of its consequences: a step
+ * always equals itself even when its adjustment carries a value that is not a number, and a
+ * negative zero is distinct from a positive zero.
  *
  * ===Thread safety===
  *
@@ -82,8 +80,8 @@ import com.opengamma.strata.collect.result.Failure
  *   index must be one or greater, as a change is not permitted at the start of the first period.
  *   For example, consider a 5 year swap from 2012-02-01 to 2017-02-01 with 6 month frequency: a
  *   zero-based index of '2' would refer to the start of the 3rd period, which would be 2013-02-01
- * @param date  the date of the schedule period boundary at which the change occurs, used to
- *   define the date of the step in absolute terms. This must be one of the '''unadjusted''' dates
+ * @param date  the date of the schedule period boundary at which the change occurs, which
+ *   defines the date of the step in absolute terms. This must be one of the '''unadjusted''' dates
  *   in the schedule period schedule; it is an unadjusted date and calculation period business day
  *   adjustments will apply. For example, in the swap above, the date '2013-02-01' is an unadjusted
  *   schedule period boundary and so may be specified here
@@ -93,9 +91,32 @@ import com.opengamma.strata.collect.result.Failure
 sealed abstract case class ValueStep private (
     periodIndex: Option[Int],
     date: Option[LocalDate],
-    value: ValueAdjustment) {
+    value: ValueAdjustment)
+    extends NoJavaSerialization {
 
-  //-------------------------------------------------------------------------
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // could hold both positions at once or neither, the check `of` accumulates - can be stopped is
+  // here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[ValueStep.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the class file of the implementation carries a
+  // public constructor whatever the source asked for: a caller compiled outside this library can
+  // name that constructor directly, and the identity check above would admit a step holding both
+  // positions at once or neither. These are the two checks [[ValueStep.of]] accumulates, and the
+  // first of them is what makes a step a position: [[ValueStep.findIndex]] reads the index where
+  // there is one and the date otherwise, and [[ValueSchedule]] groups steps by that same choice,
+  // so a step with neither position would be a step at no position and one with both would be a
+  // step at two.
+  JvmClosure.requireInvariant(
+    "exactly one of its period index and its date is present",
+    periodIndex.isDefined != date.isDefined)
+  JvmClosure.requireInvariant(
+    "its period index, where present, is one or greater",
+    periodIndex.forall(index => index >= 1))
+
   /**
    * Finds the index of this value step in the specified schedule.
    *
@@ -107,20 +128,19 @@ sealed abstract case class ValueStep private (
    * order: first against the '''unadjusted''' start dates, and only if no period starts on that
    * date against the '''adjusted''' start dates. The order matters and the two passes are not one
    * pass over both dates, because a date that is the unadjusted start of a later period and the
-   * adjusted start of an earlier one resolves to the later period, exactly as in the Java
-   * original. A date matching no boundary at all is not an error here: it is answered with
-   * nothing, and the caller decides what to do with it - which is how a step whose date falls
-   * inside a period rather than on its edge reaches [[findPreviousIndex]].
+   * adjusted start of an earlier one resolves to the later period. A date matching no boundary at
+   * all is not an error here: it is answered with nothing, and the caller decides what to do with
+   * it - which is how a step whose date falls inside a period rather than on its edge reaches
+   * [[findPreviousIndex]].
    *
-   * The absence of a match is where this differs in shape from the method being ported, which
-   * returned `-1` in that case. The sentinel becomes `Right(None)`, so a caller cannot mistake it
-   * for an index, and the two things that can come back - an index, or no index - are
-   * distinguished by the type rather than by the value.
+   * An index and the absence of a match are distinguished by the type rather than by a sentinel
+   * value: no match is `Right(None)`, which a caller cannot mistake for a period index.
    *
    * @param periods  the periods of the schedule to resolve against, in schedule order
    * @return the index of the schedule period this step applies at, nothing if this step is
-   *   positioned by a date that matches no period boundary, or the failure describing why the
-   *   position cannot be resolved at all
+   *   positioned by a date that matches no period boundary, or the failure naming the condition
+   *   that is broken: a period index that is not less than the number of periods in the schedule,
+   *   or a step holding neither of the two positions
    */
   private[value] def findIndex(periods: NonEmptyList[SchedulePeriod]): FailureOr[Option[Int]] =
     findIndex(ValueStep.PeriodIndex.of(periods))
@@ -132,21 +152,21 @@ sealed abstract case class ValueStep private (
    * period list itself, and it is what a caller resolving '''many''' steps against '''one'''
    * schedule uses: the index is built once and every step is answered from it, where the list
    * form above rebuilds one per call. The two agree on every input by construction, the list form
-   * being written in terms of this one, and the randomised equivalence property of the test suite
-   * pins that against a linear search written independently.
+   * being written in terms of this one.
    *
    * The semantics are those documented above, unchanged and in the same order: an index-based
    * step at or beyond the end of the schedule is reported, a date-based step is matched against
    * the unadjusted start dates and only then against the adjusted ones, and a date matching
    * neither is answered with nothing. The two passes are two lookups here rather than two walks,
-   * and the second is only made where the first found nothing, which is what keeps the order of
-   * the passes - and so the period a date that is the unadjusted start of one period and the
-   * adjusted start of another resolves to - exactly as it was.
+   * and the second is only made where the first found nothing, which is what preserves the order
+   * of the passes - and so the period a date that is the unadjusted start of one period and the
+   * adjusted start of another resolves to.
    *
    * @param periods  the index over the periods of the schedule to resolve against
    * @return the index of the schedule period this step applies at, nothing if this step is
-   *   positioned by a date that matches no period boundary, or the failure describing why the
-   *   position cannot be resolved at all
+   *   positioned by a date that matches no period boundary, or the failure naming the condition
+   *   that is broken: a period index that is not less than the number of periods in the schedule,
+   *   or a step holding neither of the two positions
    */
   private[value] def findIndex(periods: ValueStep.PeriodIndex): FailureOr[Option[Int]] =
     periodIndex match {
@@ -177,11 +197,10 @@ sealed abstract case class ValueStep private (
    *
    * This is the counterpart of [[findIndex]] for a step whose date falls '''inside''' a period
    * rather than on one of its boundaries: it names the period whose value the step adjusts, which
-   * is the period the date falls in. It is only ever called on a date-based step, as it was in
-   * the Java original.
+   * is the period the date falls in. It is only ever called on a date-based step.
    *
-   * The answer is decided in the order the original decided it, which is the order these four
-   * possibilities are listed in and matters wherever more than one of them could apply:
+   * The answer is decided in the order these four possibilities are listed in, and the order
+   * matters wherever more than one of them could apply:
    *
    *   1. a date before the start of the schedule is reported - there is no preceding period;
    *   1. otherwise the period before the first one that starts after the date, so a date within
@@ -189,13 +208,15 @@ sealed abstract case class ValueStep private (
    *   1. otherwise, a date after the end of the schedule is reported - the step is off the end;
    *   1. otherwise the last period, which is the period a date on the final boundary falls in.
    *
-   * Taking the periods as a `cats.data.NonEmptyList` makes the "at least size 1" precondition the
-   * ported method documented a property of the argument type: a schedule of no periods has no
-   * preceding period to name under any of the four rules above, and cannot be passed here at all.
+   * Taking the periods as a `cats.data.NonEmptyList` makes the "at least size 1" precondition a
+   * property of the argument type: a schedule of no periods has no preceding period to name under
+   * any of the four rules above, and cannot be passed here at all.
    *
    * @param periods  the periods of the schedule to resolve against, in schedule order
-   * @return the index of the schedule period preceding this step, or the failure describing why
-   *   the date of this step lies outside the schedule
+   * @return the index of the schedule period preceding this step, or the failure naming the
+   *   condition that is broken: the date of this step is before the unadjusted start date of the
+   *   first period or after the unadjusted end date of the last one, or this step is positioned
+   *   by a period index and so holds no date to place
    */
   private[value] def findPreviousIndex(periods: NonEmptyList[SchedulePeriod]): FailureOr[Int] =
     findPreviousIndex(ValueStep.PeriodIndex.of(periods))
@@ -207,11 +228,13 @@ sealed abstract case class ValueStep private (
    * This is the operation above, answered from a [[ValueStep.PeriodIndex]] rather than from the
    * period list itself, and it stands to it exactly as the two [[findIndex]] members stand to
    * each other: one index serves every step, the list form is written in terms of this one, and
-   * the four ordered rules and both messages are those documented above, unchanged.
+   * the four ordered rules and both reports are those documented above, unchanged.
    *
    * @param periods  the index over the periods of the schedule to resolve against
-   * @return the index of the schedule period preceding this step, or the failure describing why
-   *   the date of this step lies outside the schedule
+   * @return the index of the schedule period preceding this step, or the failure naming the
+   *   condition that is broken: the date of this step is before the unadjusted start date of the
+   *   first period or after the unadjusted end date of the last one, or this step is positioned
+   *   by a period index and so holds no date to place
    */
   private[value] def findPreviousIndex(periods: ValueStep.PeriodIndex): FailureOr[Int] =
     date match {
@@ -219,24 +242,24 @@ sealed abstract case class ValueStep private (
       case None => Left(Failure.Invalid(ValueStep.NoDateHeld))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Finds the index of the period preceding the specified date, which [[findPreviousIndex]]
    * delegates to once it holds the date of this step.
    *
-   * Taking the date as a parameter is what keeps the caller total: the date of a step is an
+   * Taking the date as a parameter is what keeps this operation total: the date of a step is an
    * optional property, and reading it out of the option rather than pattern-matching on it would
-   * be a partial operation on a value this type does happen to guarantee, but guarantees by an
-   * invariant the compiler cannot see.
+   * be a partial operation on a value the type does guarantee, but guarantees by an invariant
+   * that is not visible in the type of the field.
    *
    * The middle of the four rules - the period before the first one that starts after the date -
-   * is the one the index answers, and it answers it without assuming the periods are sorted;
+   * is the one the index answers, and it answers it without requiring the periods to be sorted;
    * see [[ValueStep.PeriodIndex.indexBeforeFirstLaterStart]] for how, and why that matters.
    *
    * @param stepDate  the date of this step
    * @param periods  the index over the periods of the schedule to resolve against
-   * @return the index of the schedule period preceding the date, or the failure describing why
-   *   the date lies outside the schedule
+   * @return the index of the schedule period preceding the date, or the failure naming the bound
+   *   the date breaks: it is before the unadjusted start date of the first period, or after the
+   *   unadjusted end date of the last one
    */
   private def previousIndexOf(
       stepDate: LocalDate,
@@ -258,24 +281,20 @@ sealed abstract case class ValueStep private (
       }
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Renders this step as text.
    *
-   * The rendering is the property-by-property form of the Java bean being ported, naming the
-   * position this step holds and the adjustment it makes:
+   * The rendering names the position this step holds and the adjustment it makes, property by
+   * property:
    *
    * {{{
    * ValueStep{periodIndex=2, value=ValueAdjustment[result = input + -2000.0]}
    * ValueStep{date=2014-06-30, value=ValueAdjustment[result = input + -2000.0]}
    * }}}
    *
-   * One detail differs from the bean, deliberately and cosmetically: the bean named all three
-   * properties and rendered the absent one as an empty value, while this names only the position
-   * actually held. A step holds exactly one of the two positions, so the field set is decided by
-   * the invariant of the type rather than by the data, and a reader comparing two renderings
-   * still compares the same layout. Nothing a value holds is hidden by the omission, and no test
-   * of either implementation asserts the form.
+   * Only the position actually held is named. A step holds exactly one of the two, so the field
+   * set is decided by the invariant of the type rather than by the data, and two renderings of
+   * two steps are therefore still of the same layout.
    *
    * @return the text form of this step
    */
@@ -294,24 +313,21 @@ sealed abstract case class ValueStep private (
  * The three factories are the only way to obtain a step from outside this file, which is what
  * makes the invariant of the type - exactly one position held, and a period index of one or
  * greater where one is held - a property of every value that exists rather than a property a
- * caller is asked to respect. They replace the two factories and the builder of the bean being
- * ported: the builder had no counterpart here, and the third factory below is what a caller that
- * assembled a step field by field reaches for instead.
+ * caller is asked to respect. The third of them is the one a caller that assembled a step field
+ * by field reaches for.
  *
  * Two typeclass instances are published, and exactly two: a `Hash`, which is the single
  * equality-bearing instance of the type - `Hash` extends `Eq`, so declaring an `Eq` as well would
  * leave two instances that could disagree and one of them ambiguous - and a `Show`. There is
- * deliberately no `Order`: the Java type is not `Comparable`, and two steps positioned in
- * different terms, one by an index into a schedule and one by a date, have no ordering between
- * them worth inventing.
+ * deliberately no `Order`: two steps positioned in different terms, one by an index into a
+ * schedule and one by a date, have no ordering between them worth inventing.
  */
 object ValueStep {
 
-  //-------------------------------------------------------------------------
-  /** Reported when neither position is supplied, in the words of the bean being ported. */
+  /** Reported when neither position is supplied. */
   private val EitherPositionRequired: String = "Either the 'periodIndex' or 'date' must be set"
 
-  /** Reported when both positions are supplied, in the words of the bean being ported. */
+  /** Reported when both positions are supplied. */
   private val SinglePositionRequired: String =
     "Either the 'periodIndex' or 'date' must be set, not both"
 
@@ -326,8 +342,8 @@ object ValueStep {
    *
    * No value of this type is in that state - the factories below reject it - so this describes a
    * defect in this library rather than anything a caller did. It is reported rather than raised
-   * because this module raises nothing, and it names the type so that a report reaching a log is
-   * traceable to here.
+   * because every failure of this module is reported, and it names the type so that a report
+   * reaching a log is traceable to here.
    */
   private val NoPositionHeld: String = "ValueStep holds neither a period index nor a date"
 
@@ -340,32 +356,29 @@ object ValueStep {
    */
   private val NoDateHeld: String = "ValueStep is not date-based, so it has no preceding period"
 
-  //-------------------------------------------------------------------------
   /**
    * An index over the periods of one schedule, answering the questions a step asks of them.
    *
    * ===Why it exists===
    *
    * A step resolves by searching the periods of the schedule it is applied to: for the period
-   * that starts on its date, or for the period its date falls in. Searching the list itself
-   * answers each question in a walk, which is what the Java original did and what a direct
-   * transcription of it does; resolving a definition of `m` steps against a schedule of `n`
-   * periods then costs `m * n` walks, and a definition holding a sequence expanded into a step
-   * per period makes that quadratic in the size of the schedule alone. This index is built
-   * '''once''' per resolution and answers each question in constant time, or in logarithmic time
-   * for the one question that genuinely needs a search, so the same resolution costs `n + m log n`
-   * and allocates one index rather than one zipped list per step.
+   * that starts on its date, or for the period its date falls in. Searching the period list
+   * itself answers each question in a walk, so resolving a definition of `m` steps against a
+   * schedule of `n` periods would cost `m * n` walks, and a definition holding a sequence
+   * expanded into a step per period would make that quadratic in the size of the schedule alone.
+   * This index is built '''once''' per resolution and answers each question in constant time, or
+   * in logarithmic time for the one question that genuinely needs a search, so the same
+   * resolution costs `n + m log n` and allocates one index rather than one zipped list per step.
    *
    * ===What it holds, and why each part is shaped the way it is===
    *
    * The two date-to-index maps are '''first-hit''': where several periods share a start date, the
-   * map holds the earliest of them. That is not an arbitrary choice of tie-break but the
-   * behaviour being preserved - the search it replaces answered with the first matching period -
-   * and it is why the maps are folded rather than built from a list of pairs, which would keep
-   * the last duplicate instead of the first.
+   * map holds the earliest of them, which is the period a walk over the list in schedule order
+   * would match. That is why the maps are folded rather than built from a list of pairs, which
+   * would keep the last duplicate instead of the first.
    *
-   * The prefix maxima are what let the predecessor question be answered by a search rather than
-   * by a walk. That question is "the first period, after the first one, whose unadjusted start
+   * The prefix maxima are what let the preceding-period question be answered by a search rather
+   * than by a walk. That question is "the first period, after the first one, whose unadjusted start
    * date is after this date", and a binary search over the start dates themselves would be wrong:
    * a schedule is not required to hold its periods in order, and `Schedule.of` accepts any order
    * and explicitly allows periods that are not adjacent. But for any date `d`,
@@ -390,7 +403,7 @@ object ValueStep {
    * @param adjustedStartIndices  the index of the '''first''' period starting on each adjusted
    *   start date
    * @param lastUnadjustedEndDate  the unadjusted end date of the last period, which is the end of
-   *   the schedule as the predecessor question measures it
+   *   the schedule as the preceding-period question measures it
    * @param laterStartMaxima  the running maximum of the unadjusted start dates of the periods
    *   after the first, one entry per such period, in schedule order
    */
@@ -410,7 +423,7 @@ object ValueStep {
 
     /**
      * The unadjusted start date of the first period, which is the start of the schedule as the
-     * predecessor question measures it.
+     * preceding-period question measures it.
      *
      * @return the unadjusted start date of the first period
      */
@@ -454,9 +467,10 @@ object ValueStep {
      * This is the middle rule of [[ValueStep.findPreviousIndex]], and it is answered by a binary
      * search over the prefix maxima of the start dates rather than by a walk over the dates
      * themselves - see the documentation of this type for why the maxima are the searchable form
-     * of the question and why the dates are not. The answer is the index found '''minus one''',
-     * which is the position of the maximum in a vector that starts at period one and so needs no
-     * subtraction of its own.
+     * of the question and why the dates are not, and in particular why the answer does not
+     * require the periods of the schedule to be in date order. The answer is the index found
+     * '''minus one''', which is the position of the maximum in a vector that starts at period one
+     * and so needs no subtraction of its own.
      *
      * @param date  the date of the step being resolved
      * @return the index of the period before the first later-starting one, or nothing if no
@@ -536,11 +550,10 @@ object ValueStep {
     /**
      * Maps each of the specified dates to the '''first''' position it appears at.
      *
-     * A date appearing more than once keeps its earliest position, which is the behaviour the
-     * searches this index replaces had: each answered with the first period that matched. Folding
-     * is what achieves that - building the map from a list of pairs would keep the last duplicate
-     * instead - and a date is only entered where it is not already present, so the fold does no
-     * work per duplicate beyond the lookup.
+     * A date appearing more than once keeps its earliest position, which is the period a walk
+     * over the list in schedule order would match. Folding is what achieves that - building the
+     * map from a list of pairs would keep the last duplicate instead - and a date is only entered
+     * where it is not already present, so the fold does no work per duplicate beyond the lookup.
      *
      * @param dates  the dates to index, in schedule order
      * @return the first position of each distinct date
@@ -552,11 +565,10 @@ object ValueStep {
       }
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance that applies at the specified schedule period index.
    *
-   * This factory is used to define the date that the step occurs in relative terms. The date is
+   * This factory defines the date that the step occurs in relative terms. The date is
    * identified by specifying the zero-based index of the schedule period boundary. The change
    * will occur at the start of the specified period. Thus an index of zero is the start of the
    * first period or initial stub. The index must be one or greater, as a change is not permitted
@@ -574,7 +586,8 @@ object ValueStep {
    *
    * @param periodIndex  the index of the period of the value change
    * @param value  the adjustment to make to the value
-   * @return the varying step, or the failure describing why the index describes none
+   * @return the varying step, or the failure naming the bound the index breaks: it must be one or
+   *   greater
    */
   def of(periodIndex: Int, value: ValueAdjustment): ResultNec[ValueStep] =
     checkedPeriodIndex(periodIndex)
@@ -587,11 +600,11 @@ object ValueStep {
    * This factory obtains a step that causes the value to change at the specified date. The value
    * may be absolute or relative, as per [[ValueAdjustment]].
    *
-   * Construction is total, as it was in the Java original: a date is a date, and whether it lines
-   * up with a boundary of some schedule is a question about that schedule rather than about this
-   * step, decided where the step is resolved. So no outcome is reported here and callers building
-   * a run of steps - a [[ValueStepSequence]] walking its dates is the one inside this library -
-   * need no error handling around the construction of each one.
+   * Construction is total: a date is a date, and whether it lines up with a boundary of some
+   * schedule is a question about that schedule rather than about this step, decided where the
+   * step is resolved. So no outcome is reported here and callers building a run of steps - a
+   * [[ValueStepSequence]] walking its dates is the one inside this library - need no error
+   * handling around the construction of each one.
    *
    * @param date  the start date of the value change
    * @param value  the adjustment to make to the value
@@ -604,9 +617,8 @@ object ValueStep {
    *
    * This is the factory for a caller holding the fields of a step rather than one of the two
    * positions in particular - the decoder below is one, and code that read a step out of some
-   * external shape is another - and it is what replaces the builder of the bean being ported.
-   * It performs exactly the checks the bean's validator performed, and reports them in the
-   * bean's words:
+   * external shape is another. It applies both checks of the type, the one-position invariant and
+   * the range of the index:
    *
    * {{{
    * ValueStep.of(Some(2), None, adjustment)               // Right(the step at the 3rd period)
@@ -618,17 +630,17 @@ object ValueStep {
    * }}}
    *
    * The two checks are independent, so both are reported when both fail, which is the last line
-   * above and is more than the validator being ported said: it raised the first fault it found
-   * and stopped, so a caller correcting its input learned of the second only on the next attempt.
-   * Nothing is invented to accumulate, though - the range of the index is checked only where an
-   * index is present, because an index that is absent has no range to be wrong about, and that
-   * check simply passes.
+   * above: one call tells a caller everything it has to correct. The range of the index is
+   * checked only where an index is present, because an index that is absent has no range to be
+   * wrong about, and that check simply passes.
    *
    * @param periodIndex  the index of the period of the value change, if the step is positioned in
    *   relative terms
    * @param date  the start date of the value change, if the step is positioned in absolute terms
    * @param value  the adjustment to make to the value
-   * @return the varying step, or the failures describing why the fields describe none
+   * @return the varying step, or the failures naming the conditions that are broken: exactly one
+   *   of the period index and the date must be supplied, so a pair supplying both or neither is
+   *   refused, and a period index that is supplied must be one or greater
    */
   def of(
       periodIndex: Option[Int],
@@ -638,15 +650,14 @@ object ValueStep {
       .mapN((_, _) => create(periodIndex, date, value))
       .toEither
 
-  //-------------------------------------------------------------------------
   /**
    * Creates a value, which every route into the type funnels through.
    *
    * This is the only instantiation of the type and it is private, so the three factories above
    * are the whole of its construction. The type is an abstract case class with a private
-   * constructor, so it has neither a public `apply` nor a `copy` and this is written as an
-   * anonymous extension of it - the shape every validated type of this port uses to keep those
-   * two synthesised members from existing while `unapply` and pattern matching still do.
+   * constructor, so it has neither a public `apply` nor a `copy`, and this builds [[Impl]], the
+   * subclass declared and hidden here - the shape that keeps those two synthesised members from
+   * existing while `unapply` and pattern matching still do.
    *
    * @param periodIndex  the checked period index, if the step is positioned in relative terms
    * @param date  the date, if the step is positioned in absolute terms
@@ -657,7 +668,27 @@ object ValueStep {
       periodIndex: Option[Int],
       date: Option[LocalDate],
       value: ValueAdjustment): ValueStep =
-    new ValueStep(periodIndex, date, value) {}
+    new Impl(periodIndex, date, value)
+
+  /**
+   * The one implementation of a value step.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[ValueStep]] refuse in its own constructor to be any other implementation.
+   *
+   * @param periodIndex  the checked period index, if the step is positioned in relative terms
+   * @param date  the date, if the step is positioned in absolute terms
+   * @param value  the adjustment to make to the value
+   */
+  private final class Impl(
+      periodIndex: Option[Int],
+      date: Option[LocalDate],
+      value: ValueAdjustment)
+      extends ValueStep(periodIndex, date, value)
 
   /**
    * Checks that exactly one of the two positions is supplied.
@@ -698,14 +729,13 @@ object ValueStep {
       case None => Validate.valid(())
     }
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of steps.
    *
    * Taken from the `equals` and `hashCode` of the type, which are those synthesised for its three
    * properties and so are those of [[ValueAdjustment]] where its double is concerned - compared
-   * by bit pattern, as every double-bearing type of this port compares one. This is the type's
-   * only equality-bearing instance, and `Eq[ValueStep]` is obtained from it by subtyping.
+   * by bit pattern. This is the type's only equality-bearing instance, and `Eq[ValueStep]` is
+   * obtained from it by subtyping.
    *
    * @return the hashing of steps
    */
@@ -721,7 +751,6 @@ object ValueStep {
    */
   implicit val show: Show[ValueStep] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The raw field shape of a step, from which both halves of the codec below are derived.
    *
@@ -729,6 +758,10 @@ object ValueStep {
    * constructor of a product and this type has none - it is an abstract case class whose
    * constructor is private - so there is no public shape to derive from. Writing the three fields
    * out by hand instead would state the same contract a second time.
+   *
+   * The shape is `java.io.Serializable`, because the compiler makes every `case class` so, and it
+   * therefore mixes in [[NoJavaSerialization]] as every product of this port does: these fields
+   * reach the library as JSON through the codecs below and in no other form.
    *
    * @param periodIndex  the period index, if the step is positioned in relative terms
    * @param date  the date, carried as its ISO date string, if positioned in absolute terms
@@ -738,18 +771,17 @@ object ValueStep {
       periodIndex: Option[Int],
       date: Option[LocalDate],
       value: ValueAdjustment)
+      extends NoJavaSerialization
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
-  /** The derived decoder of the raw field shape, used by the validating decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
   /**
    * The JSON encoding of steps.
    *
    * A value is an object holding the position it actually has and its adjustment, under the names
-   * the Java bean declared and in declaration order:
+   * of the three properties and in declaration order:
    *
    * {{{
    * {"periodIndex":2,"value":{"modifyingValue":-2000.0,"type":"DeltaAmount"}}
@@ -757,10 +789,9 @@ object ValueStep {
    * }}}
    *
    * The position that is not held is dropped from the document rather than written as an
-   * explicitly empty field, which is the policy every product of this port follows; the derived
-   * decoder reads an absent field as holding nothing, so the round trip is exact either way. The
-   * adjustment is written by its own codec, the date as its ISO form, and the index as a JSON
-   * number.
+   * explicitly empty field; the derived decoder reads an absent field as holding nothing, so the
+   * round trip is exact either way. The adjustment is written by its own codec, the date as its
+   * ISO form, and the index as a JSON number.
    *
    * Both halves of the codec are assembled by the same compile-time derivation over the same raw
    * shape, which is what keeps them from drifting apart, and no part of the encoding inspects a

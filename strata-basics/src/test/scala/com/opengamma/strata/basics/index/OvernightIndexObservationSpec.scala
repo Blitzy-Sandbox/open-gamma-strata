@@ -71,8 +71,10 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * many types does not state. Two further module-wide duties are likewise not repeated here - the
  * sweep of every validated type's invalid inputs (`SmartConstructorSpec`) and the proof that no
  * validated type has a public `apply` and that no sealed family can be extended from outside its
- * file (`ApiSurfaceSpec`). [[IndexObservation]] is deliberately an open trait, so nothing here or
- * there asserts that it cannot be extended.
+ * file (`ApiSurfaceSpec`). [[IndexObservation]] is deliberately an open trait, so it is subject to
+ * neither sweep in that form; the open-contract row `ApiSurfaceSpec` carries for the trait asserts
+ * the converse instead, implementing it from outside `IndexObservation.scala` and compiling a
+ * second implementation, and that is where its extensibility is established rather than here.
  *
  * The expected dates below are derived by calling the index's own calculations, exactly as the
  * Java fixtures were, so this spec pins the derivation chain rather than a frozen calendar
@@ -331,12 +333,15 @@ final class OvernightIndexObservationSpec extends AnyFunSuite with Matchers {
     test2.yearFraction shouldBe 1.0 / 360.0
     test2.currency shouldBe OvernightIndices.EUR_EONIA.currency
 
-    // Two observations that differ are unequal and hash apart, by the equality of the type and by
-    // the single equality-bearing instance it publishes, which is taken from that equality.
+    // Two observations that differ are unequal, by the equality of the type and by the single
+    // equality-bearing instance it publishes, which is taken from that equality. Hashing is not
+    // asked to separate them: its contract runs one way only - equal values must hash alike,
+    // unequal values are permitted to collide - so of the differing subject the real property is
+    // asserted instead, that the instance answers with the value's own `hashCode`. The
+    // alike-in-hash direction is asserted of an equal pair below.
     (test == test2) shouldBe false
     Hash[OvernightIndexObservation].eqv(test, test2) shouldBe false
-    Hash[OvernightIndexObservation].hash(test) should not equal
-      Hash[OvernightIndexObservation].hash(test2)
+    Hash[OvernightIndexObservation].hash(test2) shouldBe test2.hashCode
 
     // `Show` renders what `toString` renders, so the two ways of putting an observation into a
     // message agree, and both forms are pinned as literals.
@@ -479,9 +484,9 @@ final class OvernightIndexObservationSpec extends AnyFunSuite with Matchers {
       refused.swap.toOption.fold("")(error => error.getMessage) should include(field)
     }
 
-    // A document naming an index whose fixing calendar the standard reference data can resolve is
-    // the only one that decodes at all, and a document naming no index does not: the two fields
-    // the factory needs are required rather than defaulted.
+    // A document naming no index does not decode: every field of the shape the reader reads is
+    // required rather than defaulted, so an incomplete document is refused before the index and
+    // the fixing date reach the factory at all.
     decode[OvernightIndexObservation]("""{"fixingDate":"2016-02-22"}""").isLeft shouldBe true
   }
 }

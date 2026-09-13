@@ -33,7 +33,9 @@ import com.opengamma.strata.collect.result.FailureOr
 import com.opengamma.strata.collect.result.ResultNec
 
 /**
- * The end-to-end demonstration of this port, runnable with `sbt "strata-basics/run"`.
+ * A runnable program that generates a periodic date schedule adjusted against a holiday
+ * calendar, converts a two-currency exposure into a single currency through an FX rate matrix,
+ * and prints both as JSON. It is started with `sbt "strata-basics/run"`.
  *
  * Four steps, in order, each printed under its own heading:
  *
@@ -44,23 +46,23 @@ import com.opengamma.strata.collect.result.ResultNec
  *     reference data anywhere in this library;
  *  1. '''convert''' a two-currency [[MultiCurrencyAmount]] into US dollars through an
  *     [[FxMatrix]] built from two quoted rates;
- *  1. '''serialize''' the schedule, the original exposure and the converted amount to JSON with
- *     the circe codecs the types carry, and print all three.
+ *  1. '''serialize''' the schedule, the exposure as it stood before conversion and the converted
+ *     amount to JSON with the circe codecs the types carry, and print all three.
  *
- * ===Why this file is shaped the way it is===
+ * ===Effects at the edge===
  *
- * This object is the '''only''' place in `strata-basics/src/main` that mentions `cats.effect`.
- * Every calculation in this library is a pure function returning `Either` (or `EitherNec`) over
- * [[Failure]]; effects exist only at the edges, and this demo is one of the two edges in the
- * repository - the parity harness in the test sources being the other. Consequently the two
- * lifts from the error channel into `IO` are declared privately below rather than shared: no
- * exception type is added to `strata-collect` or to any `strata-basics` package for the sake of
- * a demonstration, and no library type gains an `IO`-returning member.
+ * This object is the '''only''' place in the main sources of `strata-basics` that uses
+ * `cats.effect`. Every calculation in this library is a pure function returning `Either` (or
+ * `EitherNec`) over [[Failure]], and effects exist only where a program meets the outside world,
+ * which for this module is here. The two lifts from the error channel into `IO` are therefore
+ * declared privately below rather than shared: no exception type is added to `strata-collect` or
+ * to any `strata-basics` package for the sake of a demonstration, and no library type gains an
+ * `IO`-returning member.
  *
  * ===Determinism===
  *
  * Every input is a literal or a named constant: no clock, no random source, no environment
- * variable, no system property and no classpath resource is read. Two runs therefore print
+ * variable, no system property and no external file is read. Two runs therefore print
  * byte-identical output, which is what makes the output reviewable and diffable.
  *
  * The dates are also chosen so that the calendar visibly does work. The schedule rolls on the
@@ -72,10 +74,8 @@ import com.opengamma.strata.collect.result.ResultNec
  */
 object BasicsDemoApp extends IOApp.Simple {
 
-  //-------------------------------------------------------------------------
   // Step 1 inputs. Literals, so that the run is reproducible, and named so that the output can
   // state what was asked for beside what came back.
-  //-------------------------------------------------------------------------
 
   /** The start of the first schedule period, and the first unadjusted date. */
   private val StartDate: LocalDate = LocalDate.of(2024, 3, 25)
@@ -101,10 +101,8 @@ object BasicsDemoApp extends IOApp.Simple {
    */
   private val PreferEndOfMonth: Boolean = false
 
-  //-------------------------------------------------------------------------
   // Step 3 inputs. Rates are quoted in the market convention of the pair: a GBP/USD rate of
   // 1.27 means one pound buys 1.27 dollars, which is the same orientation the matrix stores.
-  //-------------------------------------------------------------------------
 
   /** The GBP/USD rate: one pound in dollars. */
   private val GbpUsdRate: Double = 1.27d
@@ -117,10 +115,6 @@ object BasicsDemoApp extends IOApp.Simple {
 
   /** The euro leg of the exposure being converted. */
   private val EurExposure: Double = 500000d
-
-  //-------------------------------------------------------------------------
-  // Output layout.
-  //-------------------------------------------------------------------------
 
   /** The width every label is padded to, so that the printed values line up in one column. */
   private val LabelWidth: Int = 26
@@ -144,7 +138,6 @@ object BasicsDemoApp extends IOApp.Simple {
   /** What is printed where an optional property is absent. */
   private val Absent: String = "none"
 
-  //-------------------------------------------------------------------------
   /**
    * Runs the four steps.
    *
@@ -189,7 +182,6 @@ object BasicsDemoApp extends IOApp.Simple {
         jsonLines(schedule, exposure, converted))
     } yield ()
 
-  //-------------------------------------------------------------------------
   /**
    * Lifts a result carrying one failure into `IO`.
    *
@@ -221,7 +213,6 @@ object BasicsDemoApp extends IOApp.Simple {
     IO.fromEither(
       result.left.map(failures => new IllegalStateException(Failure.collapse(failures).message)))
 
-  //-------------------------------------------------------------------------
   /**
    * Prints one titled section followed by a blank line.
    *
@@ -249,7 +240,6 @@ object BasicsDemoApp extends IOApp.Simple {
   private def field(label: String, value: String): String =
     s"  ${label.padTo(LabelWidth, ' ')}: $value"
 
-  //-------------------------------------------------------------------------
   /**
    * Renders the schedule definition: what was asked for, and the constant each convention came
    * from, so that a reader can find the same identifiers in the source.

@@ -10,19 +10,17 @@ import java.time.{LocalDate, Year}
 /**
  * Internal date arithmetic helpers for working with `LocalDate`.
  *
- * This is the Scala port of the Java `LocalDateUtils` helper. Like the original it is an
- * implementation detail of this module rather than part of its public API, so it is visible only
- * inside `com.opengamma.strata.basics`, where the `date`, `schedule` and `index` packages build
- * on it.
+ * This is an implementation detail of this module rather than part of its public API, so it is
+ * visible only inside `com.opengamma.strata.basics`, where the `date`, `schedule` and `index`
+ * packages build on it.
  *
  * Every member is a total, referentially transparent function of its arguments: there is no
  * state, no lookup of ambient data and no failure mode, so no error channel is needed. The
- * helpers deliberately keep the hand-written fast paths of the Java original rather than
- * delegating to the JDK equivalents, because they sit on the hot path of day-count year
- * fractions and holiday-calendar scans, where they are evaluated once per day of a schedule.
- * Each fast path is exact rather than approximate - a cheaper route to precisely the answer the
- * JDK would give - which matters because [[doy]] and [[daysBetween]] feed the day-count year
- * fractions that are pinned to the captured Java baseline to within 1e-9.
+ * helpers compute their answers directly rather than delegating to the JDK equivalents, because
+ * they sit on the hot path of day-count year fractions and holiday-calendar scans, where they
+ * are evaluated once per day of a schedule. Each fast path is exact rather than approximate - a
+ * cheaper route to precisely the answer the JDK would give - which matters because [[doy]] and
+ * [[daysBetween]] feed the day-count year fractions.
  */
 private[basics] object LocalDateUtils {
 
@@ -131,9 +129,9 @@ private[basics] object LocalDateUtils {
    * Returns the dates in a range, from the start date inclusive to the end date exclusive.
    *
    * The dates are produced in ascending order, one day apart, and the iterator is lazy: no date
-   * beyond the one being consumed is computed, and no collection is built. This replaces the
-   * stream-returning method of the Java original, so that callers filter and count with the
-   * Scala collection operations. An end date on or before the start date yields no dates at all.
+   * beyond the one being consumed is computed, and no collection is built, so a caller filters
+   * and counts the range with the ordinary collection operations. An end date on or before the
+   * start date yields no dates at all.
    *
    * The returned iterator is single-use, as every iterator is; call this method again for a
    * second traversal of the same range.

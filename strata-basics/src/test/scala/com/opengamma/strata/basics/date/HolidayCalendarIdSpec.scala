@@ -32,81 +32,32 @@ import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
- * Test [[HolidayCalendarId]], ported from the Java `HolidayCalendarIdTest`.
+ * Test [[HolidayCalendarId]].
  *
- * All twenty-one methods of the Java class are kept under the names they had, and this spec
- * publishes exactly those twenty-one tests and nothing else, so the method-level traceability
- * recorded in `manifest/java-test-mapping.csv` stays one-to-one and every name a row of that
- * manifest carries is a test that exists: `test_of_single`, `test_of_combined`,
- * `test_of_combined_NoHolidays`, `test_of_combined_resolve`, `test_of_linked`,
- * `test_of_linked_NoHolidays`, `test_of_linked_combined`, `test_of_linked_resolve`,
- * `test_defaultByCurrency`, `test_findDefaultByCurrency`, `test_defaultByCurrencyPair`,
- * `test_isCompositeCalendar`, `test_resolve_single`, `test_resolve_combined_direct`,
- * `test_resolve_combined_indirect`, `testImmutableReferenceDataWithMergedHolidays`,
- * `test_combinedWith`, `test_combinedWithSelf`, `test_equalsHashCode`, `coverage` and
- * `test_serialization`.
+ * An identifier is equal, hashed and ordered by its name alone, so identifiers of the same name
+ * are equal values without being the same object and nothing here asserts object identity - the
+ * structure an identifier carries for resolution is an implementation detail. Its type parameter
+ * carries the type of the value it resolves to, so pairing an identifier with a value is checked
+ * by the compiler.
  *
- * The Java `test_serialization` asserted a Java-serialization round trip, which is not ported;
- * what replaces it here is the '''concrete document''' an identifier serializes to - a bare
- * JSON string of its name, and never an object - because that is the statement the
- * property-based sweep in `json.JsonRoundTripSpec` cannot make. The two are complementary:
- * that sweep asserts `decode(encode(a)) == a` over generated identifiers, and this test asserts
- * the shape and the exact text.
+ * Resolution tries the whole name first - which lets a host supply `GBLO+USNY` as one
+ * pre-combined calendar - and only then the components, combining them with `combinedWith` for
+ * `'+'` and `linkedWith` for `'~'`. That assembly lives on `HolidayCalendarId.resolve` and not on
+ * the store: reference data is a plain map, so `refData.getValue(composite)` reports a composite
+ * as absent even where both its parts are held, and [[HolidaySafeReferenceData]] relies on that
+ * division when it leaves a composite unresolved so that its parts are defaulted one by one. A
+ * missing simple identifier and a missing component are both `Failure.MissingData`, the second
+ * naming the missing part and the composite being built as attributes. Where a component of a
+ * linked identifier is itself composite it resolves by its own whole name before its own parts,
+ * which `test_of_linked_resolve` states.
  *
- * Statements about the port that have no Java method of their own are folded into the test
- * whose subject they belong to rather than added as tests of their own, so that the count of
- * tests here stays the count of Java methods: normalisation edge cases sit in
- * `test_of_combined`, the algebra of `linkedWith` in `test_combinedWithSelf` and
- * `test_of_linked_combined`, the precedence of a whole composite name in
- * `test_resolve_combined_direct`, an unresolvable component in `test_resolve_combined_indirect`,
- * the resolution of the thirty-one conventional calendars in `test_defaultByCurrency`, and the
- * one behavioural divergence in `test_of_linked_resolve`.
- *
- * ===How the shape of the port changes the assertions===
- *
- *   - '''Identifiers are not interned.''' The Java factory kept a process-wide cache, so
- *     `of("GB+EU")` and `of("EU+GB")` were the ''same object'' and the Java methods asserted
- *     `isSameAs`. Equality here is by name and nothing needs interning, so every such assertion
- *     becomes an assertion of equality and of equal names. Nothing in this spec asserts object
- *     identity, for an identifier or for anything derived from one: the structure an identifier
- *     carries for resolution is an implementation detail that may be computed once or many
- *     times, and only the observable answer is a property of the type.
- *   - `getReferenceDataType` is not ported. It existed so that the reference data store could
- *     check a value's class at run time; here the identifier's type parameter does that at
- *     compile time, which `test_of_single` states with a pair of compilation assertions.
- *   - `resolve` returns `Either[Failure, HolidayCalendar]` where the Java method returned a
- *     calendar or threw `ReferenceDataNotFoundException`, which is not ported. A missing simple
- *     identifier and a missing component of a composite are both `Failure.MissingData`, and the
- *     second carries the message and the two attributes the Java exception carried in its text.
- *   - '''Composite assembly lives on `resolve`, not on the store.''' The Java store delegated
- *     every lookup to a low-level query primitive which this identifier overrode to resolve a
- *     composite's components, so `refData.getValue(composite)` assembled the calendar there. That
- *     primitive is not ported, so the store is a plain map: `test_resolve_combined_indirect`
- *     asserts the assembly through `resolve` and asserts that the store itself reports the
- *     composite as absent - which is the same fact `HolidaySafeReferenceData` relies on when it
- *     leaves a composite unresolved so that its parts are defaulted one by one.
- *   - `defaultByCurrency` threw for a currency with no conventional calendar and a second Java
- *     method, `findDefaultByCurrency`, returned an optional value. The two are merged here into
- *     one total lookup returning `Option`, so both ported tests drive that one member; the
- *     currency Java threw for is asserted to be `None`.
- *   - `coverage` called `coverPrivateConstructor(HolidayCalendarIds.class)`, which reflectively
- *     invoked the private constructor of a static holder. A Scala `object` has none, so what the
- *     call stood for is asserted directly over all twenty-nine constants the holder publishes.
- *
- * ===One deliberate behavioural divergence===
- *
- * A '''composite component inside a linked identifier''' resolves recursively here and succeeds
- * where the Java implementation failed; the closing part of `test_of_linked_resolve` records the
- * Java outcome alongside the port's. The divergence is strictly more permissive - it can only
- * turn a Java failure into a success - and is divergence 20 of `SCALA_MIGRATION.md`, discussed
- * there in section (c)-20.
- *
- * @see [[HolidayCalendarsSpec]] for the calendars an identifier resolves to
- * @see [[HolidaySafeReferenceDataSpec]] for resolution against data that defaults what it lacks
+ * `defaultByCurrency` is one total lookup returning `Option`, so a currency with no conventional
+ * calendar answers `None` rather than failing. The JSON document of an identifier is a bare
+ * string of its name and never an object, asserted as concrete text in `test_serialization`.
  */
 class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
-  /** The reference data the Java class used throughout, which holds every built-in calendar. */
+  /** The reference data used throughout, which holds every built-in calendar. */
   private val REF_DATA: ReferenceData = ReferenceData.standard
 
   /** The US Independence Day holiday of 2019, a business day in Prague and in London. */
@@ -119,21 +70,16 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
   private val NEW_YEAR_2019: LocalDate = LocalDate.of(2019, 1, 1)
 
   /**
-   * A value of another type, which is the `ANOTHER_TYPE` constant of the Java test.
-   *
-   * Typed as `Any` so that `equals` can be handed it: the method takes `Any`, and giving it a
-   * `String` directly would let the compiler decide the comparison can never hold.
+   * A value of another type, typed as `Any` so that `equals` can be handed it: a `String` given
+   * directly would let the compiler decide the comparison can never hold.
    */
   private val ANOTHER_TYPE: Any = ""
 
   /**
-   * The market-convention calendar of each currency, all thirty-one rows of the table the Java
-   * implementation loaded from its holiday-calendar default data.
-   *
-   * The rows are in the order that source lists them. Thirteen of them name calendars this
-   * library does not ship, which is why `test_defaultByCurrency` asserts the two halves of the
-   * table separately: the lookup answering is not the same statement as the identifier
-   * resolving.
+   * The market-convention calendar of each currency, transcribed from the holiday-calendar
+   * default data in the order that source lists the rows. Some rows name calendars this library
+   * does not ship, which is why `test_defaultByCurrency` asserts the two halves separately: the
+   * lookup answering is not the same statement as the identifier resolving.
    */
   private val dataDefaultByCurrency: TableFor2[Currency, HolidayCalendarId] = Table(
     ("currency", "calendarId"),
@@ -170,12 +116,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     (Currency.TWD, HolidayCalendarId.of("TWTA"))
   )
 
-  /**
-   * The names of the thirteen conventional calendars this library does not ship.
-   *
-   * They are returned by the lookup exactly as the Java implementation returned them, and they
-   * fail to resolve against `ReferenceData.standard` there as they do here.
-   */
+  /** Conventional calendars this library does not ship: named by the lookup, but unresolvable. */
   private val notShippedCalendarNames: Set[String] =
     Set(
       "CLSA",
@@ -192,7 +133,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
       "TRIS",
       "TWTA")
 
-  /** The twenty-nine constants of [[HolidayCalendarIds]], each with the name it carries. */
+  /** The constants of [[HolidayCalendarIds]], each with the name it carries. */
   private val dataConstants: TableFor2[HolidayCalendarId, String] = Table(
     ("constant", "name"),
     (HolidayCalendarIds.NO_HOLIDAYS, "NoHolidays"),
@@ -233,13 +174,8 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     test.toString shouldBe "GB"
     test.isComposite shouldBe false
 
-    // The Java method also asserted `getReferenceDataType() == HolidayCalendar.class`, a
-    // reflection token the store used to check a value's class while the program ran. It has no
-    // port, because this port performs no reflection at all; what it stood for - that resolving
-    // an identifier of this type yields a holiday calendar - is stated by the type system, and
-    // the binding below is that statement. It is annotated `HolidayCalendar` deliberately: the
-    // annotation is checked by the compiler, so the test would not build if resolution answered
-    // with anything else.
+    // The binding below is annotated `HolidayCalendar` deliberately: the test would not build if
+    // resolving an identifier of this type answered with anything else.
     val refData: ReferenceData = ImmutableReferenceData.of(test, HolidayCalendars.SAT_SUN)
     val cal: HolidayCalendar = test.resolve(refData) match {
       case Right(calendar) => calendar
@@ -247,14 +183,75 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     }
     cal shouldBe HolidayCalendars.SAT_SUN
 
-    // The same type safety on the way in: an entry pairing this identifier with a calendar
-    // compiles, and one pairing it with a value of any other type does not.
+    // The same typing on the way in: an entry pairing it with another type does not compile.
     assertCompiles("""ReferenceData.Entry(HolidayCalendarId.of("GB"), HolidayCalendars.SAT_SUN)""")
     assertDoesNotCompile("""ReferenceData.Entry(HolidayCalendarId.of("GB"), "GB")""")
 
-    // A name is taken as it stands - the factory is total, because a calendar's name is not this
-    // library's to judge - and reads back through `of`.
+    // The factory is total: a name is taken as it stands and reads back through `of`.
     HolidayCalendarId.of(test.name) shouldBe test
+
+    // That totality is the reason the two text forms of an identifier differ from its name for
+    // a name no application would file a calendar under. `of` accepts any text, a decoder reads
+    // an identifier straight out of a document, and the text form is what a log, a report or a
+    // line of a console receives - so the text form is bounded and single-line while the name,
+    // which is the identity of the identifier and the text it travels as, is answered with
+    // unchanged. Both statements are made on one identifier here, because it is their holding
+    // together that makes the port safe to write out and still faithful to what it was given.
+    val forgedName: String = "GBLO\nWARN  the calendar resolved\u2028and again\r"
+    val forged: HolidayCalendarId = HolidayCalendarId.of(forgedName)
+
+    // The name, the identity and the document are the text exactly, so nothing an application
+    // built on these identifiers can observe is altered by the rendering below.
+    forged.name shouldBe forgedName
+    HolidayCalendarId.of(forgedName) shouldBe forged
+    forged.asJson shouldBe Json.fromString(forgedName)
+    forged.asJson.asString shouldBe Some(forgedName)
+    decode[HolidayCalendarId](forged.asJson.noSpaces) shouldBe Right(forged)
+    decode[HolidayCalendarId](forged.asJson.noSpaces).map(id => id.name) shouldBe Right(forgedName)
+    KeyEncoder[HolidayCalendarId].apply(forged) shouldBe forgedName
+
+    // The two text forms, which agree with each other because the rendering is taken from the
+    // string conversion: the line feed, the carriage return and the Unicode line separator are
+    // escaped, so what a reader receives is one line that cannot claim anything this library did
+    // not report.
+    val rendered: String = "GBLO\\nWARN  the calendar resolved\\u2028and again\\r"
+    forged.toString shouldBe rendered
+    Show[HolidayCalendarId].show(forged) shouldBe rendered
+    forged.toString.linesIterator.size shouldBe 1
+    forged.toString should not include "\n"
+    forged.toString should not include "\u2028"
+
+    // And the bound, on a name of several thousand characters: the text form holds neither the
+    // whole name nor anything beyond the bound, carries the marker standing for what was left
+    // out and is shorter than the name, while `name` is still the whole of it.
+    val longName: String = "Z" * 4096
+    val longId: HolidayCalendarId = HolidayCalendarId.of(longName)
+    longId.name shouldBe longName
+    longId.name.length shouldBe 4096
+    longId.toString should not include longName
+    longId.toString should include("Z" * 256)
+    longId.toString should include("...")
+    longId.toString.length should be < longName.length
+    Show[HolidayCalendarId].show(longId) shouldBe longId.toString
+
+    // The identifier's text form is what the composite renderings that name a calendar hand a
+    // reader, so a forged identifier cannot forge a line through one of them either - while the
+    // rendering of an ordinary adjustment is the text it always was, character for character.
+    val forgedAdjustment: BusinessDayAdjustment =
+      BusinessDayAdjustment.of(BusinessDayConventions.FOLLOWING, forged)
+    forgedAdjustment.toString shouldBe s"Following using calendar $rendered"
+    forgedAdjustment.toString.linesIterator.size shouldBe 1
+    Show[BusinessDayAdjustment].show(forgedAdjustment) shouldBe forgedAdjustment.toString
+    val forgedDays: DaysAdjustment = DaysAdjustment.ofBusinessDays(3, forged)
+    forgedDays.toString shouldBe s"3 business days using calendar $rendered"
+    forgedDays.toString.linesIterator.size shouldBe 1
+    Show[DaysAdjustment].show(forgedDays) shouldBe forgedDays.toString
+
+    BusinessDayAdjustment
+      .of(BusinessDayConventions.MODIFIED_FOLLOWING, HolidayCalendarId.of("GBLO+USNY"))
+      .toString shouldBe "ModifiedFollowing using calendar GBLO+USNY"
+    DaysAdjustment.ofBusinessDays(3, HolidayCalendarIds.SAT_SUN).toString shouldBe
+      "3 business days using calendar Sat/Sun"
   }
 
   test("test_of_combined") {
@@ -263,33 +260,24 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     test.toString shouldBe "EU+GB"
     test.isComposite shouldBe true
 
-    // The Java method asserted `isSameAs` here, which held because the Java factory interned its
-    // identifiers. This port does not intern, so what is asserted is equality and the normalised
-    // name - which is the property the interning existed to support.
     val test2: HolidayCalendarId = HolidayCalendarId.of("EU+GB")
     test shouldBe test2
     test.name shouldBe test2.name
     test.hashCode shouldBe test2.hashCode
     Hash[HolidayCalendarId].eqv(test, test2) shouldBe true
 
-    // The edge cases of the normalisation this factory performs, each of them a value captured
-    // from the library being ported, so that normalisation cannot drift. They belong to this
-    // test because they are the same property it states - that a composite name and its
-    // rearrangements are one value - taken to the boundaries of the name space.
-    //
-    // Names are sorted and deduplicated, and a name containing no separator is taken as it is.
+    // Names are sorted and deduplicated; a name containing no separator is taken as it is.
     HolidayCalendarId.of("USNY+GBLO").name shouldBe "GBLO+USNY"
     HolidayCalendarId.of("GBLO+USNY").name shouldBe "GBLO+USNY"
     HolidayCalendarId.of("Anything At All").name shouldBe "Anything At All"
 
-    // An empty part is kept rather than discarded - the Java splitter kept it - and sorts before
-    // every name, which is why a trailing separator moves to the front.
+    // An empty part is kept rather than discarded, and sorts before every name, which is why a
+    // trailing separator moves to the front.
     HolidayCalendarId.of("GBLO+").name shouldBe "+GBLO"
     HolidayCalendarId.of("").name shouldBe ""
     HolidayCalendarId.of("").isComposite shouldBe false
 
-    // The equality that normalisation buys: differently written composites are one value, so one
-    // reference-data entry answers for either spelling, while the two separators stay distinct.
+    // One reference-data entry answers either spelling; the two separators stay distinct.
     HolidayCalendarId.of("USNY+GBLO") shouldBe HolidayCalendarId.of("GBLO+USNY")
     HolidayCalendarId.of("USNY~GBLO") shouldBe HolidayCalendarId.of("GBLO~USNY")
     HolidayCalendarId.of("USNY+GBLO") should not be HolidayCalendarId.of("GBLO~USNY")
@@ -309,8 +297,6 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
   }
 
   test("test_of_combined_resolve") {
-    // Transcribed from the Java method, including the three dates it named. A combined identifier
-    // observes the holidays of both centres, so each of the three is a non-business day.
     val holidayCalendarId: HolidayCalendarId = HolidayCalendarId.of("CZPR+USNY")
     val resolved = holidayCalendarId.resolve(REF_DATA)
 
@@ -320,8 +306,6 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     resolved.map(calendar => calendar.isBusinessDay(CZ_HOLIDAY_2019)) should haveValue(false)
     resolved.map(calendar => calendar.isBusinessDay(NEW_YEAR_2019)) should haveValue(false)
 
-    // The identifier the resolved calendar carries is the one that was asked for, so resolution
-    // does not quietly rename the data.
     resolved.map(calendar => calendar.id) should haveValue(holidayCalendarId)
   }
 
@@ -331,7 +315,6 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     test.toString shouldBe "EU~GB"
     test.isComposite shouldBe true
 
-    // As `test_of_combined`: equality replaces the Java `isSameAs`, the interning being gone.
     val test2: HolidayCalendarId = HolidayCalendarId.of("EU~GB")
     test shouldBe test2
     test.name shouldBe test2.name
@@ -340,8 +323,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
 
   test("test_of_linked_NoHolidays") {
     // Linking with a calendar in which every day is a business day leaves no day for the others
-    // to close, so the no-holidays identifier swallows a linked composite whole. This is the
-    // point at which the two separators differ in how they absorb it.
+    // to close, so the no-holidays identifier swallows a linked composite whole.
     val test: HolidayCalendarId = HolidayCalendarId.of("GB~NoHolidays~EU")
     test.name shouldBe "NoHolidays"
     test.toString shouldBe "NoHolidays"
@@ -358,17 +340,12 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     test.isComposite shouldBe true
     HolidayCalendarId.of("EU+Fri/Sat~GB") shouldBe test
 
-    // The same two levels reached through `linkedWith` rather than through a written name, which
-    // is the other way a caller builds one: a composite may be linked as a whole, and the name
-    // keeps the levels apart in the same order.
     HolidayCalendarId.of("GBLO+USNY").linkedWith(HolidayCalendarIds.JPTO).name shouldBe
       "GBLO+USNY~JPTO"
     HolidayCalendarId.of("GBLO+USNY~JPTO") shouldBe
       HolidayCalendarId.of("GBLO+USNY").linkedWith(HolidayCalendarIds.JPTO)
     HolidayCalendarId.of("GBLO+EUTA~USNY").name shouldBe "EUTA+GBLO~USNY"
 
-    // And a combination of three sorts by the whole name of each part, the combination binding
-    // more tightly than the link.
     HolidayCalendarIds.EUTA
       .combinedWith(HolidayCalendarIds.USNY)
       .combinedWith(HolidayCalendarIds.GBLO)
@@ -376,9 +353,8 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
   }
 
   test("test_of_linked_resolve") {
-    // Transcribed from the Java method. A linked identifier observes only the holidays both
-    // centres agree on, so the two national holidays are business days and only the shared New
-    // Year's Day remains a holiday.
+    // A linked identifier observes only the holidays both centres agree on, so the two national
+    // holidays are business days and only the shared New Year's Day remains a holiday.
     val holidayCalendarId: HolidayCalendarId = HolidayCalendarId.of("CZPR~USNY")
     val resolved = holidayCalendarId.resolve(REF_DATA)
 
@@ -389,20 +365,10 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     resolved.map(calendar => calendar.isBusinessDay(NEW_YEAR_2019)) should haveValue(false)
     resolved.map(calendar => calendar.id) should haveValue(holidayCalendarId)
 
-    // The one deliberate behavioural divergence of this type, asserted here so that it cannot be
-    // changed silently. Where a part of a linked identifier is itself '''composite''', the Java
-    // implementation split the linked name on `'~'` and then performed one raw lookup per part
-    // with no recursion, so the composite part `EUTA+GBLO` - which the standard reference data
-    // does not hold as a whole - failed, and
-    // `of("EUTA+GBLO~USNY").resolve(ReferenceData.standard())` threw
-    // `ReferenceDataNotFoundException: Reference data not found for 'EUTA+GBLO' of type
-    // 'HolidayCalendarId' when finding 'EUTA+GBLO~USNY'` (measured against the Java jar).
-    //
-    // This port resolves a composite part by asking it, so its own whole name is tried before
-    // its parts are and the resolution succeeds. The behaviour is strictly more permissive - it
-    // can only turn a Java failure into a success, never the reverse - it matches the resolution
-    // flow of AAP section 0.6.5, and it is divergence 20 of `SCALA_MIGRATION.md`, discussed
-    // there in section (c)-20.
+    // The one behavioural divergence this spec states: a part of a linked identifier that is
+    // itself '''composite''' resolves by asking that part, so the part's own whole name is tried
+    // before its own parts are. `EUTA+GBLO~USNY` therefore resolves against the standard
+    // reference data, which holds the three simple calendars and not the composite `EUTA+GBLO`.
     val insideLinked: HolidayCalendarId = HolidayCalendarId.of("EUTA+GBLO~USNY")
     insideLinked.name shouldBe "EUTA+GBLO~USNY"
 
@@ -411,16 +377,12 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     resolvedInsideLinked.map(calendar => calendar.name) should haveValue("EUTA+GBLO~USNY")
     resolvedInsideLinked.map(calendar => calendar.id) should haveValue(insideLinked)
 
-    // And what it answers: a day is a holiday only where the combination of the two European
-    // centres and New York are all closed, so New Year's Day is a holiday while US Independence
-    // Day - a business day in both European centres - is not.
     resolvedInsideLinked.map(calendar => calendar.isHoliday(NEW_YEAR_2019)) should haveValue(true)
     resolvedInsideLinked.map(calendar => calendar.isBusinessDay(US_HOLIDAY_2019)) should haveValue(true)
   }
 
   //-------------------------------------------------------------------------
   test("test_defaultByCurrency") {
-    // The three rows the Java method asserted, followed by the whole thirty-one-row table.
     HolidayCalendarId.defaultByCurrency(Currency.GBP) shouldBe Some(HolidayCalendarIds.GBLO)
     HolidayCalendarId.defaultByCurrency(Currency.CZK) shouldBe Some(HolidayCalendarIds.CZPR)
     HolidayCalendarId.defaultByCurrency(Currency.HKD) shouldBe Some(HolidayCalendarId.of("HKHK"))
@@ -433,22 +395,13 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     }
     dataDefaultByCurrency should have size 31
 
-    // Where the Java method asserted that the lookup '''threw''' for a currency with no
-    // conventional calendar, this port answers `None`. The Java class offered the lookup twice -
-    // one overload throwing `IllegalArgumentException`, one returning an optional value - and
-    // this port merges them into the single total `Option`-returning member, so the absent
-    // convention is an ordinary answer rather than a failure of the program. That is the
-    // functional-error-handling requirement of the plan, Rule 5: a result the caller can act on
-    // rather than an exception it must catch.
+    // The lookup is total: no conventional calendar is an ordinary `None`, not a failure.
     HolidayCalendarId.defaultByCurrency(Currency.XAG) shouldBe None
     HolidayCalendarId.defaultByCurrency(Currency.XAU) shouldBe None
     noException should be thrownBy HolidayCalendarId.defaultByCurrency(Currency.XAG)
 
-    // The sharpest statement about the thirteen rows that name calendars this library does not
-    // ship: the lookup answers for them, and the identifier it answers with fails to resolve
-    // against the standard reference data - exactly as in the library being ported, where those
-    // rows were also data without calendars behind them. The lookup answering and the identifier
-    // resolving are two different facts, so they are asserted separately.
+    // The lookup answering and the identifier resolving are two different facts: for the rows
+    // naming calendars this library does not ship, the first holds and the second does not.
     forAll(dataDefaultByCurrency) { (currency: Currency, calendarId: HolidayCalendarId) =>
       withClue(s"$currency -> ${calendarId.name}: ") {
         if (notShippedCalendarNames.contains(calendarId.name)) {
@@ -463,17 +416,12 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
   }
 
   test("test_findDefaultByCurrency") {
-    // The Java class had two lookups - one throwing, one optional - and this port has one, so
-    // this test and `test_defaultByCurrency` above drive the same member. Both names are kept
-    // because both Java methods are mapped in the migration manifest, and the rows asserted here
-    // are the rows that Java method asserted.
+    // This test and `test_defaultByCurrency` above drive the same merged lookup.
     HolidayCalendarId.defaultByCurrency(Currency.GBP) shouldBe Some(HolidayCalendarIds.GBLO)
     HolidayCalendarId.defaultByCurrency(Currency.CZK) shouldBe Some(HolidayCalendarIds.CZPR)
     HolidayCalendarId.defaultByCurrency(Currency.HKD) shouldBe Some(HolidayCalendarId.of("HKHK"))
     HolidayCalendarId.defaultByCurrency(Currency.XAG) shouldBe None
 
-    // The merged lookup is total over every currency: it answers for all of them, and answers
-    // the same way however often it is asked.
     Currency.values.toList.foreach { currency =>
       withClue(s"$currency: ") {
         noException should be thrownBy HolidayCalendarId.defaultByCurrency(currency)
@@ -484,8 +432,6 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
   }
 
   test("test_defaultByCurrencyPair") {
-    // The three rows the Java method asserted. The conventional calendars of the two currencies
-    // are combined, so a day is a business day for the pair only where it is one for both.
     HolidayCalendarId.defaultByCurrencyPair(CurrencyPair.of(Currency.USD, Currency.GBP)) shouldBe
       HolidayCalendarIds.USNY.combinedWith(HolidayCalendarIds.GBLO)
     HolidayCalendarId.defaultByCurrencyPair(CurrencyPair.of(Currency.GBP, Currency.CZK)) shouldBe
@@ -493,8 +439,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     HolidayCalendarId.defaultByCurrencyPair(CurrencyPair.of(Currency.USD, Currency.XAG)) shouldBe
       HolidayCalendarIds.USNY
 
-    // The names, which are normalised, so the answer does not depend on which currency is the
-    // base of the pair.
+    // The name is normalised, so the answer does not depend on which currency is the base.
     HolidayCalendarId
       .defaultByCurrencyPair(CurrencyPair.of(Currency.USD, Currency.GBP))
       .name shouldBe "GBLO+USNY"
@@ -505,16 +450,13 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
       .defaultByCurrencyPair(CurrencyPair.of(Currency.GBP, Currency.CZK))
       .name shouldBe "CZPR+GBLO"
 
-    // A currency with no conventional calendar contributes nothing, and where neither currency
-    // has one the answer is the no-holidays identifier - the identity of combination - so this
-    // lookup, unlike the one for a single currency, always answers with an identifier.
+    // A currency with no conventional calendar contributes nothing, and where neither has one the
+    // answer is the no-holidays identifier, so this lookup always answers with an identifier.
     HolidayCalendarId.defaultByCurrencyPair(CurrencyPair.of(Currency.USD, Currency.XAG)).name shouldBe
       "USNY"
     HolidayCalendarId.defaultByCurrencyPair(CurrencyPair.of(Currency.XAG, Currency.XAU)) shouldBe
       HolidayCalendarIds.NO_HOLIDAYS
 
-    // A pair of one currency with itself is that currency's calendar, the combination of an
-    // identifier with itself being itself.
     HolidayCalendarId.defaultByCurrencyPair(CurrencyPair.of(Currency.USD, Currency.USD)) shouldBe
       HolidayCalendarIds.USNY
   }
@@ -525,8 +467,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     HolidayCalendarId.isCompositeCalendar(HolidayCalendarId.of("GB~EU")) shouldBe true
     HolidayCalendarId.isCompositeCalendar(HolidayCalendarId.of("GB")) shouldBe false
 
-    // The static test of the Java class is the instance method here, kept under its old name so
-    // that call sites read unchanged; the two must agree for every identifier.
+    // `HolidayCalendarId.isCompositeCalendar` and `id.isComposite` agree for every identifier.
     List("GB+EU", "GB~EU", "GB", "EU+Fri/Sat~GB", "GB+NoHolidays", "GB~NoHolidays", "NoHolidays")
       .foreach { name =>
         val id = HolidayCalendarId.of(name)
@@ -535,8 +476,6 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
         }
       }
 
-    // A name that normalises to a single part reports itself as simple, which is the agreement
-    // between the test and the structure the identifier carries.
     HolidayCalendarId.of("GB+NoHolidays").isComposite shouldBe false
     HolidayCalendarId.of("GB~NoHolidays").isComposite shouldBe false
     HolidayCalendarId.of("GB+GB").isComposite shouldBe false
@@ -553,9 +492,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     gb.resolve(refData) should haveValue(gbCal)
     refData.getValue(gb) should haveValue(gbCal)
 
-    // Where the Java method asserted that resolving an absent identifier threw
-    // `ReferenceDataNotFoundException`, this port reports it as a value: the failure is the one
-    // the store itself reports, naming the identifier that could not be found.
+    // An absent identifier is a failure value naming it, reported by the store itself.
     eu.resolve(refData) should beFailureWith(FailureReason.MISSING_DATA)
     eu.resolve(refData) should haveFailureMessageMatching("Reference data not found for identifier 'EU'")
     eu.resolve(refData).swap.map(failure => failure.attributes.get("id")) shouldBe Right(Some("EU"))
@@ -567,8 +504,8 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
   }
 
   test("test_resolve_combined_direct") {
-    // Reference data that holds the whole composite identifier has it used as it stands, which
-    // is what lets a host supply a pre-combined calendar from a vendor feed.
+    // Reference data that holds the whole composite identifier has it used as it stands, which is
+    // what lets a host supply a calendar pre-combined from a vendor feed.
     val gb: HolidayCalendarId = HolidayCalendarId.of("GB")
     val gbCal: HolidayCalendar = HolidayCalendars.SAT_SUN
     val eu: HolidayCalendarId = HolidayCalendarId.of("EU")
@@ -581,13 +518,9 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     refData.getValue(combined) should haveValue(combinedCal)
     combined.name shouldBe "EU+GB"
 
-    // The rule AAP section 0.6.5 states - the whole name is looked up '''before''' the parts -
-    // asserted so that which of the two answered is observable. The marker calendar below is
-    // deliberately different from the combination of the two components: it holds a holiday
-    // neither component has, and neither of their holidays, so the dates alone say whether the
-    // whole name won. This is what lets a host supply a pre-combined calendar - one merged from
-    // a vendor feed - and have it used as it stands. The companion case, the same identifier
-    // resolving from its parts once that entry is gone, is in `test_resolve_combined_indirect`.
+    // The whole name is looked up '''before''' the parts, and the marker calendar below is what
+    // makes which of the two answered observable: it holds a holiday neither component has and
+    // neither of their holidays, so the dates alone say whether the whole name won.
     val gblo: HolidayCalendarId = HolidayCalendarId.of("GBLO")
     val usny: HolidayCalendarId = HolidayCalendarId.of("USNY")
     val whole: HolidayCalendarId = gblo.combinedWith(usny)
@@ -614,8 +547,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
   }
 
   test("test_resolve_combined_indirect") {
-    // Reference data that holds only the parts resolves each of them and combines the results in
-    // the order the normalised name gives.
+    // Only the parts held: each resolves and the results combine in the normalised name's order.
     val gb: HolidayCalendarId = HolidayCalendarId.of("GB")
     val gbCal: HolidayCalendar = HolidayCalendars.SAT_SUN
     val eu: HolidayCalendarId = HolidayCalendarId.of("EU")
@@ -628,31 +560,21 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     combined.resolve(refData) should haveValue(combinedCal)
     combined.toReader.run(refData) should haveValue(combinedCal)
 
-    // The Java method additionally asserted `refData.getValue(combined)`, which worked there
-    // because the Java store delegated every lookup to a low-level query primitive that the
-    // identifier overrode to perform this very assembly. That primitive is not ported - it
-    // signalled absence by returning a reference to nothing - so in this port the store is a
-    // plain map and the composite assembly lives on `HolidayCalendarId.resolve` alone. The
-    // store therefore reports the composite as absent, which is the same fact
-    // `HolidaySafeReferenceData` relies on when it leaves a composite unresolved so that its
-    // parts can be defaulted one by one. Resolution through the identifier, asserted above, is
-    // the path every adjustment and schedule of this library takes.
+    // The store is a plain map and the composite assembly lives on `HolidayCalendarId.resolve`
+    // alone, so the store reports the composite as absent even with both parts held - the same
+    // fact `HolidaySafeReferenceData` relies on when it leaves a composite unresolved so that its
+    // parts can be defaulted one by one.
     refData.getValue(combined) should beFailureWith(FailureReason.MISSING_DATA)
     refData.findValue(combined) shouldBe None
     refData.containsValue(combined) shouldBe false
 
-    // The combination observes the holidays of both parts, which is what the resolved value is
-    // for: Friday, Saturday and Sunday are all holidays under it.
     val resolved = combined.resolve(refData)
     resolved.map(calendar => calendar.isHoliday(LocalDate.of(2014, 7, 11))) should haveValue(true)
     resolved.map(calendar => calendar.isHoliday(LocalDate.of(2014, 7, 12))) should haveValue(true)
     resolved.map(calendar => calendar.isHoliday(LocalDate.of(2014, 7, 13))) should haveValue(true)
     resolved.map(calendar => calendar.isBusinessDay(LocalDate.of(2014, 7, 14))) should haveValue(true)
 
-    // The companion of the precedence case in `test_resolve_combined_direct`: with the entry for
-    // the whole name absent, the same identifier resolves from its parts instead, and the answer
-    // changes accordingly - both of their holidays, and not the marker's. The two halves together
-    // are the only executable proof that the whole name is tried first.
+    // With the whole name absent, the same identifier resolves from its parts instead.
     val gblo: HolidayCalendarId = HolidayCalendarId.of("GBLO")
     val usny: HolidayCalendarId = HolidayCalendarId.of("USNY")
     val whole: HolidayCalendarId = gblo.combinedWith(usny)
@@ -670,11 +592,9 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     resolvedParts.map(calendar => calendar.isHoliday(LocalDate.of(2015, 7, 6))) should haveValue(true)
     resolvedParts.map(calendar => calendar.isHoliday(LocalDate.of(2015, 7, 7))) should haveValue(false)
 
-    // A component that cannot be resolved at all, where the Java implementation threw. A
-    // composite identifier is all-or-nothing - a calendar assembled from some of its parts would
-    // silently declare business days that are holidays - and the failure names both the part that
-    // was missing and the identifier being built, as attributes and not only in its text, which
-    // is the context the caller needs.
+    // A composite identifier is all-or-nothing - a calendar assembled from some of its parts
+    // would silently declare business days that are holidays - and the failure names both the
+    // missing part and the identifier being built as attributes, not only in its text.
     val missingComponent: HolidayCalendarId = gblo.combinedWith(HolidayCalendarIds.USNY)
     val partial: ReferenceData = ImmutableReferenceData.of(gblo, gbloCal)
 
@@ -686,15 +606,120 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
       Right(Map("id" -> "USNY", "compositeId" -> "GBLO+USNY"))
     noException should be thrownBy missingComponent.resolve(partial)
 
-    // A linked identifier reports the same way, and the message names the linked identifier.
     gblo.linkedWith(HolidayCalendarIds.USNY).resolve(partial) should haveFailureMessageMatching(
       "Reference data not found for 'USNY' of type 'HolidayCalendarId' when finding 'GBLO~USNY'")
+
+    // How many parts a name may join. A composite identifier names its parts in its own text,
+    // and that text comes from outside the program - a document, a convention, a request - so a
+    // name joining two thousand calendars would have this method resolve two thousand of them
+    // and combine them into a calendar nested two thousand deep, which every later question
+    // about a date would recurse through until the stack ran out. The identifier is data, so
+    // the width is refused in the error channel rather than raised, and refused before any part
+    // is looked up; the calendar family states the same limit as a precondition of nesting that
+    // deep directly, which is the route this one would otherwise reach.
+    val partNames = (count: Int) => (1 to count).map(index => f"CAL$index%04d").toList
+    val partEntries = (names: List[String]) =>
+      names.map { name =>
+        val partId: HolidayCalendarId = HolidayCalendarId.of(name)
+        ReferenceData.Entry(partId, ImmutableHolidayCalendar.of(partId, Nil, SATURDAY, SUNDAY))
+      }
+
+    val atTheLimit: List[String] = partNames(HolidayCalendar.MaxCompositeDepth)
+    val beyondTheLimit: List[String] = partNames(HolidayCalendar.MaxCompositeDepth + 1)
+    val everyPart: ReferenceData = store(partEntries(beyondTheLimit): _*)
+
+    // The widest name that is read: every part resolved, combined in the order the normalised
+    // name gives, and answering as the combination of them all.
+    val widest: HolidayCalendarId = HolidayCalendarId.of(atTheLimit.mkString("+"))
+    val resolvedWidest = widest.resolve(everyPart)
+    resolvedWidest should beSuccess
+    resolvedWidest.map(calendar => calendar.name) should haveValue(widest.name)
+    resolvedWidest.map(calendar => calendar.isHoliday(LocalDate.of(2014, 7, 12))) should haveValue(true)
+    resolvedWidest.map(calendar => calendar.isBusinessDay(LocalDate.of(2014, 7, 14))) should haveValue(true)
+
+    // One part more is refused, and the failure says how many parts were named and how many may
+    // be - as attributes as well as in its text - so a caller can act on the number without
+    // reading the message.
+    val tooWide: HolidayCalendarId = HolidayCalendarId.of(beyondTheLimit.mkString("+"))
+    val refused = tooWide.resolve(everyPart)
+    refused should beFailureWith(FailureReason.INVALID)
+    refused should haveFailureMessageMatching(
+      s".*joins ${HolidayCalendar.MaxCompositeDepth + 1} calendars.*more than ${HolidayCalendar.MaxCompositeDepth}")
+    refused.swap.map(failure => failure.attributes.toMap.get("components")) shouldBe
+      Right(Some((HolidayCalendar.MaxCompositeDepth + 1).toString))
+    refused.swap.map(failure => failure.attributes.toMap.get("id")) shouldBe Right(Some(tooWide.name))
+    noException should be thrownBy tooWide.resolve(everyPart)
+
+    // The same name through the reader, which is this resolution expressed as a value awaiting
+    // reference data, and through a linked name of the same width: the limit is about how many
+    // calendars one name asks to be read through, not about which way they combine.
+    tooWide.toReader.run(everyPart) should beFailureWith(FailureReason.INVALID)
+    HolidayCalendarId.of(beyondTheLimit.mkString("~")).resolve(everyPart) should
+      beFailureWith(FailureReason.INVALID)
+
+    // Reference data holding the whole wide name is answered from that entry, as any other name
+    // is: what the limit refuses is reading through that many calendars, and an application that
+    // has already combined them has nothing left to read through.
+    val preCombined: ReferenceData =
+      store(ReferenceData.Entry(tooWide, ImmutableHolidayCalendar.of(tooWide, Nil, SATURDAY, SUNDAY)))
+    tooWide.resolve(preCombined).map(calendar => calendar.id) should haveValue(tooWide)
+
+    // How deep the calendars turn out to be, which the name cannot show. A name of two parts
+    // describes a calendar one deeper than its deeper part, so reference data mapping a part to
+    // a calendar that is already as deep as a calendar may be carries an ordinary two-part name
+    // past the limit. The width checked above cannot see that - the name joins two calendars -
+    // so the depth of what was resolved is checked before each part is read together with the
+    // ones before it, and reported in this method's failure channel. Resolution answers with a
+    // failure whatever the reference data holds; it never raises out of the result it returns.
+    val deepId: HolidayCalendarId = HolidayCalendarId.of("ADEEP")
+    val shallowId: HolidayCalendarId = HolidayCalendarId.of("BLEAF")
+    val leaf: HolidayCalendar = ImmutableHolidayCalendar.of(shallowId, Nil, SATURDAY, SUNDAY)
+    val nested = (depth: Int) =>
+      (1 to depth).foldLeft(leaf)((calendar, _) => calendar.combinedWith(HolidayCalendars.FRI_SAT))
+
+    val asDeepAsAllowed: HolidayCalendar = nested(HolidayCalendar.MaxCompositeDepth)
+    asDeepAsAllowed.compositeDepth shouldBe HolidayCalendar.MaxCompositeDepth
+    val pair: HolidayCalendarId = deepId.combinedWith(shallowId)
+    pair.name shouldBe "ADEEP+BLEAF"
+
+    val deepData: ReferenceData =
+      store(ReferenceData.Entry(deepId, asDeepAsAllowed), ReferenceData.Entry(shallowId, leaf))
+    val tooDeep = pair.resolve(deepData)
+    tooDeep should beFailureWith(FailureReason.INVALID)
+    tooDeep should haveFailureMessageMatching(
+      s".*read through ${HolidayCalendar.MaxCompositeDepth + 1} calendars together.*" +
+        s"more than ${HolidayCalendar.MaxCompositeDepth}")
+    tooDeep.swap.map(failure => failure.attributes.toMap.get("depth")) shouldBe
+      Right(Some((HolidayCalendar.MaxCompositeDepth + 1).toString))
+    tooDeep.swap.map(failure => failure.attributes.toMap.get("component")) shouldBe
+      Right(Some(shallowId.name))
+    tooDeep.swap.map(failure => failure.attributes.toMap.get("id")) shouldBe Right(Some(pair.name))
+    noException should be thrownBy pair.resolve(deepData)
+
+    // The same through the reader, and through the linked form of the name, neither of which
+    // takes a different route into the combination.
+    pair.toReader.run(deepData) should beFailureWith(FailureReason.INVALID)
+    noException should be thrownBy pair.toReader.run(deepData)
+    val linkedPair: HolidayCalendarId = deepId.linkedWith(shallowId)
+    linkedPair.resolve(deepData) should beFailureWith(FailureReason.INVALID)
+    noException should be thrownBy linkedPair.resolve(deepData)
+
+    // One calendar shallower and the same name resolves, reaching exactly the depth a calendar
+    // may have, and answers about a date - so what is refused above is the calendar that cannot
+    // exist rather than the shape of the request.
+    val deepEnoughData: ReferenceData = store(
+      ReferenceData.Entry(deepId, nested(HolidayCalendar.MaxCompositeDepth - 1)),
+      ReferenceData.Entry(shallowId, leaf))
+    val resolvedDeep = pair.resolve(deepEnoughData)
+    resolvedDeep should beSuccess
+    resolvedDeep.map(calendar => calendar.compositeDepth) should
+      haveValue(HolidayCalendar.MaxCompositeDepth)
+    resolvedDeep.map(calendar => calendar.isHoliday(LocalDate.of(2014, 7, 12))) should haveValue(true)
+    resolvedDeep.map(calendar => calendar.isBusinessDay(LocalDate.of(2014, 7, 14))) should haveValue(true)
   }
 
   test("testImmutableReferenceDataWithMergedHolidays") {
-    // Transcribed from the Java method: reference data holding a single pre-merged calendar,
-    // filed under the identifier that calendar carries, is enough to adjust a date - the
-    // identifier of a merged calendar resolves to the merged calendar itself.
+    // A single pre-merged calendar, filed under its own identifier, is enough to adjust a date.
     val hc: HolidayCalendar = HolidayCalendars.FRI_SAT.combinedWith(HolidayCalendars.SAT_SUN)
     hc.id.name shouldBe "Fri/Sat+Sat/Sun"
 
@@ -703,8 +728,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
       .of(BusinessDayConventions.PRECEDING, hc.id)
       .adjust(LocalDate.of(2016, 8, 20), referenceData)
 
-    // Saturday the 20th of August 2016 precedes to the Thursday, because Friday, Saturday and
-    // Sunday are all holidays of the merged calendar.
+    // Friday, Saturday and Sunday are all holidays of the merged calendar.
     date should haveValue(LocalDate.of(2016, 8, 18))
   }
 
@@ -725,9 +749,8 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     combined1 shouldBe combined2
     combined1.hashCode shouldBe combined2.hashCode
 
-    // The parts are deduplicated and sorted, which is what makes the result independent of the
-    // order the identifiers were combined in - `us` appears twice in `combined2` and once in the
-    // name.
+    // The parts are deduplicated and sorted, so the result does not depend on the order they were
+    // combined in - `us` appears twice in `combined2` and once in the name.
     combined1.isComposite shouldBe true
     HolidayCalendarId.of("US+GB+EU") shouldBe combined1
     HolidayCalendarId.of("EU+GB+US+GB") shouldBe combined1
@@ -741,16 +764,13 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     HolidayCalendarIds.NO_HOLIDAYS.combinedWith(HolidayCalendarIds.NO_HOLIDAYS) shouldBe
       HolidayCalendarIds.NO_HOLIDAYS
 
-    // None of the four builds a composite, which is observable in the name and in the test.
     gb.combinedWith(gb).name shouldBe "GB"
     gb.combinedWith(gb).isComposite shouldBe false
 
-    // The other half of the same algebra, which the Java class asserted only through `of`.
     // Linking an identifier with itself changes nothing, as combining does, but the no-holidays
-    // identifier behaves oppositely under the two operations: it is the '''identity''' of
-    // combination, since a calendar with no holidays removes nothing, and the '''absorbing
-    // element''' of linking, since a calendar in which every day is a business day leaves no day
-    // for the others to close.
+    // identifier behaves oppositely under the two: it is the '''identity''' of combination, a
+    // calendar with no holidays removing nothing, and the '''absorbing element''' of linking, a
+    // calendar in which every day is a business day leaving no day for the others to close.
     gb.linkedWith(gb) shouldBe gb
     gb.linkedWith(HolidayCalendarIds.NO_HOLIDAYS) shouldBe HolidayCalendarIds.NO_HOLIDAYS
     HolidayCalendarIds.NO_HOLIDAYS.linkedWith(gb) shouldBe HolidayCalendarIds.NO_HOLIDAYS
@@ -768,51 +788,66 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     a.equals(a) shouldBe true
     a.equals(a2) shouldBe true
     a.equals(b) shouldBe false
-    // the two hostile arguments of the Java method: the absent reference, and the object of
-    // another type its `ANOTHER_TYPE` constant held
+    // `equals` takes any reference, so the absent one and another type are answered, not rejected
     a.equals(null) shouldBe false
     a.equals(ANOTHER_TYPE) shouldBe false
 
-    // The hash is the name's, which is what the identifier being ported hashed and what makes the
-    // layout of a map keyed by an identifier repeatable between runs.
+    // The hash is the name's, so a map keyed by an identifier lays out alike between runs.
     a.hashCode shouldBe "GB".hashCode
     Hash[HolidayCalendarId].hash(a) shouldBe "GB".hashCode
 
-    // Two identifiers of the same name are equal without being the same object: this port does
-    // not intern identifiers, and nothing needs it to, since equality is the name.
     a shouldBe a2
     Hash[HolidayCalendarId].eqv(a, a2) shouldBe true
     Hash[HolidayCalendarId].eqv(a, b) shouldBe false
 
-    // The companion publishes one equality-bearing instance, an `Order` that is also a `Hash`,
-    // so the ordering cannot disagree with the equality above. It is the ordering of the names:
-    // `"EU"` precedes `"GB"`, and two identifiers compare equal exactly when they are equal.
+    // The companion publishes one equality-bearing instance, an `Order` that is also a `Hash`, so
+    // the ordering above and the equality come from the same value. It orders the names.
     (Order[HolidayCalendarId].compare(b, a) < 0) shouldBe true
     (Order[HolidayCalendarId].compare(a, b) > 0) shouldBe true
     Order[HolidayCalendarId].compare(a, a2) shouldBe 0
 
-    // An identifier works as a key of a map, which is the contract the reference data store
-    // requires of it.
+    // An identifier works as a map key, which the reference data store requires of it.
     Map(a -> "first").get(a2) shouldBe Some("first")
     Set(a, a2, b) should have size 2
   }
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // The Java method was `coverPrivateConstructor(HolidayCalendarIds.class)`: it reflectively
-    // invoked the private constructor of a static holder so that a coverage tool would not report
-    // the class as unexercised. A Scala `object` has no such constructor to reach, so what the
-    // call stood for is asserted directly - the holder publishes the twenty-nine identifiers the
-    // library being ported published, each carrying its own name.
     forAll(dataConstants) { (constant: HolidayCalendarId, name: String) =>
       withClue(s"$name: ") {
         constant.name shouldBe name
+        // Both text forms of a constant are its name, character for character: the rendering is
+        // bounded and single-line for an arbitrary name - `test_of_single` states that - and a
+        // name of this shape passes through it untouched, which is what keeps the text this
+        // library writes the text the library being ported wrote. Asserted on both forms, and
+        // on their agreement, for all twenty-nine constants rather than for a sample of them.
         constant.toString shouldBe name
+        Show[HolidayCalendarId].show(constant) shouldBe name
+        Show[HolidayCalendarId].show(constant) shouldBe constant.toString
         // each constant is the identifier its own name builds, equality being by name
         constant shouldBe HolidayCalendarId.of(name)
         constant.isComposite shouldBe false
-        Show[HolidayCalendarId].show(constant) shouldBe name
       }
+    }
+
+    // The same statement for a composite name, which is the one kind of name this library builds
+    // rather than transcribes: a combination and a link render exactly as the normalised name
+    // they carry, whichever way round the parts were written and whether the composite was
+    // written out or assembled.
+    forAll(
+      Table(
+        ("composite", "name"),
+        (HolidayCalendarId.of("GBLO+USNY"), "GBLO+USNY"),
+        (HolidayCalendarId.of("USNY+GBLO"), "GBLO+USNY"),
+        (HolidayCalendarIds.GBLO.combinedWith(HolidayCalendarIds.USNY), "GBLO+USNY"),
+        (HolidayCalendarId.of("GBLO~USNY"), "GBLO~USNY"),
+        (HolidayCalendarId.of("GB~EU+Fri/Sat"), "EU+Fri/Sat~GB"))) {
+      (composite: HolidayCalendarId, name: String) =>
+        withClue(s"$name: ") {
+          composite.name shouldBe name
+          composite.toString shouldBe name
+          Show[HolidayCalendarId].show(composite) shouldBe name
+        }
     }
 
     val constants: List[HolidayCalendarId] = dataConstants.map { case (constant, _) => constant }.toList
@@ -820,26 +855,24 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     constants.distinct should have size 29
     constants.map(id => id.name).distinct should have size 29
 
-    // The membership of the set is the membership the library being ported published, and the
-    // one name it is asked about most is the one that is '''not''' there: the Wellington
-    // anniversary calendar `NZBD` is generated by `StandardHolidayCalendars` and resolves from
-    // the standard reference data, yet the original never gave it a constant here, and this port
-    // does not add one. The absence is asserted over the names the holder does publish - which
-    // is a statement about this list, exhaustively enumerated above - rather than by reflecting
-    // over the object's members, which this port never does.
+    // One built-in calendar has no constant here: `NZBD`, the artificial New Zealand national
+    // bank calendar, which exists because the `NZD-BBR` index is published on both the Wellington
+    // (`NZWE`) and the Auckland (`NZAU`) anniversary days, so neither city's calendar describes
+    // it. `GlobalHolidayCalendars` generates it and `StandardHolidayCalendars` publishes it all
+    // the same, so it resolves from the standard reference data. Its absence is stated over the
+    // constants `dataConstants` enumerates, rather than by reflecting over the object's members.
     constants.map(id => id.name) should not contain "NZBD"
     HolidayCalendarId.of("NZBD").resolve(REF_DATA) should beSuccess
     assertDoesNotCompile("HolidayCalendarIds.NZBD")
 
-    // The four weekend and no-holiday identifiers are those the calendars themselves carry, so
-    // the holder is a set of names for existing data rather than a second source of names.
+    // The weekend and no-holiday identifiers are those the calendars themselves carry.
     HolidayCalendarIds.NO_HOLIDAYS shouldBe HolidayCalendars.NO_HOLIDAYS.id
     HolidayCalendarIds.SAT_SUN shouldBe HolidayCalendars.SAT_SUN.id
     HolidayCalendarIds.FRI_SAT shouldBe HolidayCalendars.FRI_SAT.id
     HolidayCalendarIds.THU_FRI shouldBe HolidayCalendars.THU_FRI.id
 
-    // Every constant other than the no-holidays one resolves against the standard reference data,
-    // which is what makes the holder usable without an application supplying calendars.
+    // Every constant resolves against the standard reference data, so the holder is usable
+    // without an application supplying calendars.
     constants.filterNot(id => id == HolidayCalendarIds.NO_HOLIDAYS).foreach { id =>
       withClue(s"${id.name}: ") {
         id.resolve(REF_DATA) should beSuccess
@@ -848,10 +881,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     }
     HolidayCalendarIds.NO_HOLIDAYS.resolve(REF_DATA) should haveValue(HolidayCalendars.NO_HOLIDAYS)
 
-    // The companion publishes one equality-bearing instance - an ordering that is also a hashing -
-    // so summoning the equality, the hashing or the ordering yields that one value and the three
-    // can never disagree. Asserted over every ordered pair of a sample that mixes simple and
-    // composite identifiers.
+    // The equality, the hashing and the ordering agree over simple and composite identifiers.
     val sample: List[HolidayCalendarId] =
       List(
         HolidayCalendarIds.GBLO,
@@ -872,49 +902,38 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
       }
     }
 
-    // The ordering is the ordering of the names, so a sorted collection reads alphabetically and
-    // agrees with the order the parts of a composite name are written in.
     sample.sorted(Order[HolidayCalendarId].toOrdering).map(id => id.name) shouldBe
       sample.map(id => id.name).sorted
     (Order[HolidayCalendarId].compare(HolidayCalendarIds.EUTA, HolidayCalendarIds.GBLO) < 0) shouldBe true
   }
 
   test("test_serialization") {
-    // The Java method was `assertSerialization(of("US"))`, a Java-serialization round trip.
-    // Neither Java serialization nor Joda-Beans wire compatibility is ported, so the round trip
-    // that replaces it is the one this port does support: the circe codec, which writes an
-    // identifier as the bare string of its name - never as an object - which is also the text
-    // the library being ported produced through its own string conversion. The identifier the
-    // Java method used is asserted first, so the ported method is recognisable.
+    // The circe codec writes an identifier as the bare string of its name, never as an object.
     HolidayCalendarId.of("US").asJson shouldBe Json.fromString("US")
     decode[HolidayCalendarId]("\"US\"") shouldBe Right(HolidayCalendarId.of("US"))
     decode[HolidayCalendarId](HolidayCalendarId.of("US").asJson.noSpaces) shouldBe
       Right(HolidayCalendarId.of("US"))
 
-    // A composite name round-trips the same way, which matters because the name is the whole
-    // content of a composite identifier: were it written structurally, the normalisation that
-    // makes `USNY+GBLO` and `GBLO+USNY` one value would have to be repeated by every reader.
+    // The name is the whole content of a composite identifier, so a reader compares two documents
+    // without repeating the normalisation.
     HolidayCalendarId.of("GBLO+USNY").asJson shouldBe Json.fromString("GBLO+USNY")
     decode[HolidayCalendarId]("\"GBLO+USNY\"") shouldBe Right(HolidayCalendarId.of("GBLO+USNY"))
     HolidayCalendarId.of("GBLO~USNY").asJson shouldBe Json.fromString("GBLO~USNY")
     decode[HolidayCalendarId]("\"GBLO~USNY\"") shouldBe Right(HolidayCalendarId.of("GBLO~USNY"))
 
-    // The shape, stated so that a future change to an object form fails here. The exhaustive
-    // property-based round trip over generated identifiers belongs to `json.JsonRoundTripSpec`;
-    // what that sweep cannot say is what the document looks like, which is asserted here.
+    // The shape and the exact text, which a generated `decode(encode(a)) == a` round trip does
+    // not state: it is asserted here so that a change to an object form fails in this test.
     HolidayCalendarIds.GBLO.asJson shouldBe Json.fromString("GBLO")
     HolidayCalendarId.of("GBLO+USNY").asJson shouldBe Json.fromString("GBLO+USNY")
     HolidayCalendarIds.GBLO.asJson.isString shouldBe true
 
-    // Reading goes through the factory, so a name is normalised on the way in and two
-    // differently written composites encode to identical bytes.
+    // Reading goes through the factory, so a name is normalised on the way in.
     decode[HolidayCalendarId]("\"GBLO\"") shouldBe Right(HolidayCalendarIds.GBLO)
     decode[HolidayCalendarId]("\"USNY+GBLO\"") shouldBe Right(HolidayCalendarId.of("GBLO+USNY"))
     HolidayCalendarId.of("USNY+GBLO").asJson.noSpaces shouldBe
       HolidayCalendarId.of("GBLO+USNY").asJson.noSpaces
 
-    // Any name is accepted, including one this library knows nothing about - a missing calendar
-    // is a fact about the reference data and is reported when the identifier is resolved.
+    // Any name is accepted: a missing calendar is reported when the identifier is resolved.
     decode[HolidayCalendarId]("\"XXXX\"") shouldBe Right(HolidayCalendarId.of("XXXX"))
 
     // A document of the wrong JSON type is rejected: the codec reads a string and nothing else.
@@ -922,8 +941,7 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     Json.obj("name" -> Json.fromString("GBLO")).as[HolidayCalendarId].isLeft shouldBe true
     Json.arr(Json.fromString("GBLO")).as[HolidayCalendarId].isLeft shouldBe true
 
-    // An identifier also keys a JSON object, which is what lets a set of calendars be written as
-    // an object keyed by the identifier each is held under. The key normalises as the value does.
+    // An identifier also keys a JSON object, and the key normalises as the value does.
     KeyEncoder[HolidayCalendarId].apply(HolidayCalendarId.of("USNY+GBLO")) shouldBe "GBLO+USNY"
     KeyDecoder[HolidayCalendarId].apply("USNY+GBLO") shouldBe Some(HolidayCalendarId.of("GBLO+USNY"))
     KeyDecoder[HolidayCalendarId].apply("GBLO") shouldBe Some(HolidayCalendarIds.GBLO)
@@ -936,10 +954,8 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
    * `ImmutableReferenceData.of` is used rather than `ReferenceData.of` because the latter layers
    * the four built-in weekend calendars underneath the caller's entries, and the assertions above
    * about a calendar that is '''absent''' depend on the store holding nothing it was not given.
-   *
    * That factory reports the one way it can fail - two entries filed under the same identifier -
-   * so there is an outcome to unwrap. A fixture that cannot be built is a defect in this spec
-   * rather than a property of the subject, so it is reported as a failed test naming the cause.
+   * so a fixture that cannot be built is reported as a failed test naming the cause.
    *
    * @param entries  the reference data entries, which must not repeat an identifier
    * @return the store holding exactly those entries

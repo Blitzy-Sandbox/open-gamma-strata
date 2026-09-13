@@ -14,17 +14,11 @@ import scala.collection.immutable.Set
 import scala.collection.immutable.SortedMap
 
 /**
- * Explicitly published holiday data for the calendars that Java holds as configuration
- * rather than as generated rules.
+ * The Thai bank holidays, held as explicit dates rather than derived from rules.
  *
- * The Java implementation loads this data at class-initialisation time from a
- * configuration resource on the classpath, parsing one section per calendar. Exactly one
- * such section exists in the standard configuration - the Thai bank calendar, section
- * `[THBA]` - and this object is the faithful Scala transcription of it. Moving the rows
- * into code removes the runtime resource lookup and the reflective loader along with it,
- * while keeping the published dates identical to the Java source of truth.
- *
- * The section is transcribed exactly as published:
+ * This object is the whole of the Thai holiday data of this library: the single built-in
+ * calendar whose holidays are published date by date, section `THBA`. Every row is
+ * recorded here exactly as published:
  *
  *  - 75 year rows, one for every year from 2005 to 2079 inclusive;
  *  - 1220 holiday dates in total, each recorded as the month-day pair given for its year;
@@ -32,10 +26,10 @@ import scala.collection.immutable.SortedMap
  *  - no working-day override is declared, so weekends are never reinstated as business days.
  *
  * Two aspects of the published data are deliberately preserved rather than tidied up.
- * First, the rows are '''not''' filtered against the weekend, unlike the rule-generated
- * calendars: a published holiday that happens to fall on a Saturday or Sunday stays in the
- * table, and exactly one does (2031-05-04, a Sunday). Second, the dates within each row
- * keep their published order, which is ascending, so [[thbaHolidays]] is ascending overall.
+ * First, the rows are '''not''' filtered against the weekend: a published holiday that
+ * happens to fall on a Saturday or Sunday stays in the table, and exactly one does
+ * (2031-05-04, a Sunday). Second, the dates within each row keep their published order,
+ * which is ascending, so [[thbaHolidays]] is ascending overall.
  *
  * This object is intentionally data only. It never builds a [[HolidayCalendar]], because
  * the built-in calendar values are assembled by `StandardHolidayCalendars`, which reads
@@ -50,9 +44,8 @@ object HolidayCalendarData {
   /**
    * Creates a month-day pair.
    *
-   * The published rows use a compact `MMMdd` form, such as `Jan03`. This helper keeps the
-   * transcribed rows narrow enough to stay readable, and line-for-line comparable with the
-   * Java source of truth.
+   * The rows below are written through this helper so that each year stays on a line or
+   * two of dates and remains readable.
    *
    * @param month  the month-of-year, from 1 (January) to 12 (December)
    * @param day  the day-of-month, valid for the month of the year it is recorded against

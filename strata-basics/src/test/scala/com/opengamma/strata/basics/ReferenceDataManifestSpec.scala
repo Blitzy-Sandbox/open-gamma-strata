@@ -69,129 +69,68 @@ import com.opengamma.strata.basics.schedule.RollConventions
 import com.opengamma.strata.basics.schedule.StubConvention
 
 /**
- * The transcription guard over the reference data of the port.
+ * The transcription guard over the reference data of this module.
  *
  * ===Why this suite exists===
  *
- * Every reference data table of this module used to be a class path resource that the Java
- * implementation parsed while it ran; in the port each one is a Scala literal fixed at compile
- * time. That exchange removes a whole class of run time failure and makes the data visible in the
- * source, and it introduces exactly one new risk: a row can be '''mistranscribed'''. A wrong minor
- * unit digit, a currency pair quoted the wrong way round, a lenient pattern moved one place up the
- * list - none of these is detectable by any check the data can make on itself, because a
- * mistranscribed table is perfectly self consistent. A round trip through JSON returns it
- * unchanged, its own derived views agree with it, and every unit spec written against it passes.
- *
- * So the port is measured here against data captured from the '''Java''' implementation it
- * replaces. `tools/parity-capture/capture-baseline.jsh` enumerated every table from the Java side -
- * from the very INI and CSV resources the Scala literals were transcribed from, read through the
- * Java loaders - asserting its counts as it went, and wrote
- * `strata-basics/src/test/resources/manifest/reference-data-manifest.json`. This suite reads that
- * document and asserts, table by table and row by row, that the Scala data equals it. That is the
- * independent check AAP section 0.6.1 calls for, "so a mistranscribed row fails independently of
- * any self-round-trip", and it is the spec AAP section 0.10.1 Gate 5 (the user's Rule 4) requires
- * green.
- *
- * ===The document is the authority===
- *
- * The manifest is a generated artefact and is read only here. This suite never edits it, never
- * "corrects" a captured value and never drops a key from its coverage. Where the port and the
- * manifest disagree, the port is wrong until the read only Java resource behind the manifest says
- * otherwise, and the disagreement is reported rather than smoothed over. The schema of record is
- * section 7 of `tools/parity-capture/README.md`; strict JSON admits no comments, so the shape each
- * test relies on is restated at that test.
+ * Every reference data table of this module is a Scala literal fixed at compile time, so a row can
+ * be '''mistranscribed''' - and no check the data makes on itself detects that, because a
+ * mistranscribed table is perfectly self consistent: a JSON round trip, its derived views and every
+ * unit spec written against it all pass. Only an independently captured document catches it.
+ * `tools/parity-capture/capture-baseline.jsh` enumerates every table from the '''Java'''
+ * implementation this module replaces, asserting its counts as it goes, and writes
+ * `strata-basics/src/test/resources/manifest/reference-data-manifest.json`; this suite compares the
+ * Scala data with it table by table and row by row, which is the data-fidelity half of the
+ * acceptance gate over closed families and reference data (Gate 5, the user's Rule 4). The document
+ * is a generated artefact, read only here and never edited: where this module and the manifest
+ * disagree, this module is wrong. Its schema of record is section 7 of
+ * `tools/parity-capture/README.md`, and since strict JSON admits no comments the shape each test
+ * relies on is restated at that test.
  *
  * ===A key nobody reads is a column nobody compares===
  *
- * A derived JSON decoder reads the fields its model declares and ignores every other key of the
- * object it is given, which for a transcription guard is the one failure mode that cannot be seen
- * from the outside: a field the capture starts emitting inside a table or a row - a new column, a
- * renamed one - would be dropped in silence, every table would still equal the manifest, and this
- * suite would report a pass over data it was no longer comparing in full. So every fixed-shape
- * object of the document is checked against its declared key set '''before''' it is decoded, in
- * the one place where the keys are still visible, through the same
- * [[com.opengamma.strata.basics.parity.ParityHarness.strictObject]] the parity suites beside this
- * file decode their fixtures with - one strictness rule for the whole module, with one message.
- * Each shape's key set is declared as a [[com.opengamma.strata.basics.parity.KeySchema]] beside
- * the model it describes, and `every declared object schema is the key set the committed manifest
- * carries` holds those declarations against the document itself, so a schema cannot drift from the
- * artefact it describes any more than a count can.
- *
- * The shapes whose keys are '''data''' are not records and are not treated as any: a row of an
- * index table is keyed by that table's own column headers, and the families of `externalNames`,
- * `lenientPatterns`, `alternateNames` and `floatingRateNames.sections` are keyed by the name of
- * the family. Each of those key sets is asserted where it belongs - against the table's header
- * list, or against the documented family set - by the count and coverage tests above.
+ * A derived decoder ignores every key its model has no field for, so a column a later capture adds
+ * would be dropped in silence while every comparison still passed over the columns it did read.
+ * Every fixed-shape object is therefore checked against a declared key set '''before''' it is
+ * decoded, through [[com.opengamma.strata.basics.parity.ParityHarness.strictObject]]; each set is a
+ * [[com.opengamma.strata.basics.parity.KeySchema]] beside the model it describes, and `every
+ * declared object schema is the key set the committed manifest carries` holds it against the
+ * document. The shapes whose keys are '''data''' - an index row keyed by its table's headers, and
+ * the families of `externalNames`, `lenientPatterns`, `alternateNames` and
+ * `floatingRateNames.sections` - are asserted as sets against the header list or the documented
+ * family set by the count and coverage tests.
  *
  * ===What is covered===
  *
- * '''All twenty nine top-level keys''', and every nested shape of each, are asserted against the
- * port: there is no sampled table, no key read only for its count and no exemption. The port
- * reached that point in slices, and while it was being built this suite carried a declaration of
- * the keys whose data object had not landed yet; [[ReferenceDataManifestSpec.PendingKeys]] and
- * [[ReferenceDataManifestSpec.PendingNestedShapes]] are now empty and the machinery that read them
- * is kept, because it is what will report the next gap rather than let it pass.
- *
- * The declaration is not a comment that can rot. `every top-level key of the manifest is either
- * asserted against the port or declared pending` compares the union of the covered set and the
- * pending set with the keys the document actually carries, and fails on a key that belongs to
- * neither; `every nested shape of a partially covered key is either asserted or declared pending`
- * does the same one level down for the three keys whose content is divided by family. A key or a
- * shape added to the manifest by a later capture, or one left declared pending after its data
- * object lands, therefore fails this suite instead of quietly going unchecked.
- *
- * Counts are asserted twice over, and the second is the one that matters. Every table's declared
- * count is reconciled with the length of the list it describes, which catches a truncated capture;
- * and `every table of the manifest carries the row count the schema of record documents` compares
- * each one with the '''literal''' figure section 7 of `tools/parity-capture/README.md` publishes,
- * which is what catches a re-capture that shrank a table and a port that shrank with it. A pair of
- * internally consistent tables that have both lost the same row would pass every other assertion
- * in this file.
+ * All twenty-nine top-level keys and every nested shape of each: no sampled table, no exemption.
+ * The coverage tests compare the union of the covered set with
+ * [[ReferenceDataManifestSpec.PendingKeys]] and [[ReferenceDataManifestSpec.PendingNestedShapes]],
+ * both empty, against the keys the document carries - at the top level and one level down for the
+ * four keys whose content divides by family - so a key or shape a later capture adds fails this
+ * suite rather than going unchecked. Counts are asserted twice: every declared count against the
+ * length of its own list, which catches a truncated capture, and every table against the
+ * '''literal''' figure the schema of record publishes, which catches a re-capture that shrank a
+ * table and a module that shrank with it.
  *
  * ===How the document is read===
  *
- * Once, for the whole suite, on first use, and without an effect type. The read is a bounded, total
- * class path lookup - `getResourceAsStream` under [[scala.util.Using]], capped at
- * [[ReferenceDataManifestSpec.ManifestByteCeiling]] bytes and decoded as UTF-8 explicitly - whose
- * result is an `Either` carrying either the document or the reason it could not be obtained. The
- * text is parsed and each key decoded into the typed view the tests assert from, so no test
- * re-reads or re-parses a quarter of a megabyte of JSON. The top level is kept as a
- * [[io.circe.JsonObject]] rather than decoded into a case class of twenty nine fields, because the
- * key set itself is something this suite asserts - at the top level and recursively - and a case
- * class would silently ignore a key it had no field for.
- *
- * No effect type appears here, deliberately. AAP section 0.3.3 confines the effect monad of the
- * port to `collect.io.Resources`, the parity harness and `BasicsDemoApp`, and this suite is none of
- * the three; discharging an effect in it would add a boundary outside that posture, which is what
- * the Rule 7 gate exists to prevent. Reading one committed resource is not an effect this suite
- * needs to sequence: it needs the bytes, and it needs the failure to be reportable.
- *
- * Reportable is the second half of it. Nothing is read while this class or its companion
- * initialises - the document sits behind a `lazy val` - so a resource that is absent, empty,
+ * Once, on first use, behind a `lazy val`: a bounded, total class path lookup capped at
+ * [[ReferenceDataManifestSpec.ManifestByteCeiling]] bytes and decoded as UTF-8 explicitly, whose
+ * result is an `Either` carrying the document or the reason it could not be obtained. Nothing is
+ * read while this class or its companion initialises, so a resource that is absent, empty,
  * unparseable or not an object fails `the manifest resource is present on the class path, is
- * non-empty and parses as a JSON object` with the reason, instead of aborting the suite with an
- * `ExceptionInInitializerError` before any test can report anything at all.
+ * non-empty and parses as a JSON object` with the reason instead of aborting the suite with an
+ * `ExceptionInInitializerError`. The top level stays a [[io.circe.JsonObject]] rather than a case
+ * class of twenty-nine fields, because the key set is itself asserted.
  *
  * ===Scope===
  *
- * This suite asserts '''data fidelity''', and beyond it only the THBA invariants recorded below.
- * That a family is closed and that every name round trips is `NamedEnumClosedSpec`; the behaviour
- * built on these tables - the conventional pair decision, the lenient rewrite chain, calendar
- * resolution - belongs to the spec of the type that owns it. Numerical parity is the business
- * of the `parity` package. None of that is repeated here.
- *
- * The one addition is the section `The THBA table's own invariants` below. The Thai bank
- * calendar is the only calendar of the port whose dates are published rather than derived from
- * rules, and [[com.opengamma.strata.basics.date.HolidayCalendarData]] is the only data object
- * whose subject has no spec of its own: the AAP's frozen test inventory (section 0.3.1) gives
- * the `date` package twenty-two specs, one per retained Java test class, and the Java
- * implementation's only test over this table tested the INI parser this port does not have. So
- * the invariants the manifest comparison cannot state - that every row is non-empty, ascending
- * and free of duplicates, that every month-day is valid for the year it is filed under, that the
- * one published holiday falling at a weekend is kept rather than filtered, and that this table
- * is the whole content of the built-in `THBA` calendar - are asserted here, next to the
- * comparison that establishes the rows themselves. The transcription of the rows is not restated
- * by them; that is the manifest's business, and the case the section sits beside is what does it.
+ * '''Data fidelity''', and beyond it only the THBA invariants below: that a family is closed and
+ * that every name round trips is `NamedEnumClosedSpec`, the behaviour built on these tables belongs
+ * to the type that owns it, and numerical parity to the `parity` package. The Thai bank calendar is
+ * the only calendar of this module whose dates are published rather than derived from rules, and
+ * [[com.opengamma.strata.basics.date.HolidayCalendarData]] has no spec of its own, so what the
+ * manifest comparison cannot state is asserted here, beside it.
  */
 final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
@@ -202,28 +141,19 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
 
   test("the manifest resource is present on the class path, is non-empty and parses as a JSON object") {
-    // The load of the document is a test rather than an initialiser. Every other test here reads
-    // the document, so a resource that is absent, truncated to nothing, not JSON or JSON that is
-    // not an object would fail all of them with the same message and no test would be reporting the
-    // thing that is actually wrong; read eagerly while the companion initialised, as this file once
-    // did, it would abort the suite before any test reported at all. The four failures are
-    // distinguished by the diagnostic, which names the resource and the script that writes it,
-    // because the next step differs: a resource absent from the class path is a build or a path
-    // problem, and a document that does not parse is a capture problem.
+    // The load is a test rather than an initialiser, and its four failures are distinguished by the
+    // diagnostic, which names the resource and the script that writes it: a resource absent from
+    // the class path is a build or path problem, one that does not parse is a capture problem.
     withClue(documentOrFailure.swap.getOrElse("the manifest loaded and is a JSON object")) {
       documentOrFailure.isRight shouldBe true
     }
-    // Reading the loaded document proves the accessor the rest of the suite goes through, and its
-    // key count is the shape every coverage assertion below is stated over.
     documentKeys should not be empty
-    // The four refusals of the load, asserted over input chosen for the purpose. Reading the
-    // committed resource exercises only the success path, so without these the guards that stand
-    // between a corrupt resource and a comparison stated over it would never have been observed
-    // to refuse anything.
+    // The four refusals of the load, over input chosen for the purpose: the committed resource
+    // exercises only the success path, so without these the guards between a corrupt resource and a
+    // comparison stated over it would never have been observed to refuse anything.
     withClue("strict UTF-8 decoding: ") {
-      // A lead byte of a two-byte sequence with its continuation byte missing. `new String(bytes,
-      // UTF_8)` answers "\uFFFD" for this; a strict decoder refuses it, which is what keeps a
-      // corrupted capture from reaching the JSON parser as text that differs from the bytes.
+      // A lead byte of a two-byte sequence with its continuation byte missing: `new String(bytes,
+      // UTF_8)` answers "\uFFFD", a strict decoder refuses it.
       decodeUtf8(Array[Byte](0xc3.toByte)).isLeft shouldBe true
       decodeUtf8(Array[Byte](0x41, 0xc3.toByte, 0xa9.toByte)) shouldBe Right("A\u00e9")
       decodeUtf8("{}".getBytes(StandardCharsets.UTF_8)) shouldBe Right("{}")
@@ -239,11 +169,9 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("the document under assertion is the manifest the pinned capture script writes") {
-    // These three keys are the document's identity. Asserting them is what stops another
-    // generator's output, or a hand-edited file, from being mistaken for the captured baseline:
-    // every other test in this suite treats the document as ground truth, so the document has to
-    // prove it is the one the capture wrote. The key order is asserted with them, because it is
-    // part of what makes the document byte-stable between captures.
+    // These three keys are the document's identity: they stop another generator's output, or a
+    // hand-edited file, from being taken for the captured baseline. The key order is asserted with
+    // them, being part of what makes the document byte-stable between captures.
     withClue(s"manifest resource '$ManifestResource': ") {
       schemaVersion shouldBe 1
       generator shouldBe "tools/parity-capture/capture-baseline.jsh"
@@ -254,9 +182,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("every top-level key of the manifest is either asserted against the port or declared pending") {
-    // The honesty check of this suite. It reads the keys the document actually carries, so it fails
-    // the day the capture emits a key nobody extended this suite for, and it fails equally if a
-    // key is declared pending and covered at once.
+    // Read from the keys the document actually carries, so it fails the day the capture emits a key
+    // nobody extended this suite for, and equally if a key is declared pending and covered at once.
     val pending = PendingKeys.keySet
     val declaration = PendingKeys.toVector.sorted
       .map { case (key, file) => s"$key -> $file" }
@@ -269,7 +196,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
   test("every nested shape of a partially covered key is either asserted or declared pending") {
     // Four keys divide their content by family rather than carrying one table, so coverage is
-    // stated one level deeper for them: a shape added, renamed or left behind inside one of them is
+    // stated one level deeper for them: a shape added to, renamed in or dropped from one of them is
     // reported rather than subsumed by the top-level key being "covered".
     PartiallyCoveredKeys.foreach {
       case (key, coveredShapes) =>
@@ -287,17 +214,10 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("the manifest declares no runtime provider anywhere in the document") {
-    // The registry the port replaces was extensible at run time: every configuration file carried a
-    // `[providers]` section naming the classes that contributed members, and the override chain of
-    // base, library and application files let a host add to any family. None of that is ported, so
-    // none of it belongs in the document either - a `providers` key would mean the capture had
-    // recorded a mechanism the port deliberately does not have, and the first thing a reader would
-    // do with it is look for the Scala counterpart that cannot exist.
-    //
-    // The scan is recursive rather than over the top level, because a provider declaration would
-    // arrive inside the family it belongs to. It reads key names only: a captured *value* may well
-    // mention a provider, and a row of the Ibor index table is keyed by a CSV column header, so the
-    // match is on the key text and is case-insensitive to catch any spelling of it.
+    // The families of this module are closed: no member is contributed at run time, so a
+    // `providers` key would mean the capture had recorded a mechanism with no counterpart here. The
+    // scan is recursive, because such a declaration would arrive inside its family, and reads key
+    // names only - a captured *value* may mention a provider - case-insensitively.
     withClue(s"manifest resource '$ManifestResource' carries ${documentKeyNames.size} distinct " +
       "key names: ") {
       documentKeyNames.filter(_.toLowerCase(Locale.ENGLISH).contains("provider")) shouldBe empty
@@ -305,17 +225,11 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("every table of the manifest carries the row count the schema of record documents") {
-    // The count assertions of this suite come in two kinds and this is the one that cannot be
-    // satisfied by a self-consistent document. Everywhere else a declared count is reconciled with
-    // the length of the list it describes and the list is compared with the port, which catches a
-    // truncated capture and a mistranscribed row; it does not catch a table that lost a row on both
-    // sides at once, because two tables that agree with each other agree just as well one row
-    // short. The figures below are the literals section 7 of `tools/parity-capture/README.md`
-    // publishes, transcribed from the document rather than derived from it, so that the size of
-    // every table is pinned to something outside both the manifest and the port.
-    //
-    // Each figure is asserted against the declared count *and* against the length of the list, so a
-    // document whose count field disagrees with its own rows fails here too.
+    // The count assertion a self-consistent document cannot satisfy: elsewhere a declared count is
+    // reconciled with its own list and the list compared with the module's own, which two tables
+    // that both lost the same row would still pass. The figures below are the literals section 7 of
+    // `tools/parity-capture/README.md` publishes, and each is asserted against the declared count
+    // *and* the list length.
     DocumentedNameGroupCounts.foreach {
       case (key, documentedCount) =>
         val group = nameGroup(key)
@@ -334,8 +248,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
           table.rows.size shouldBe documentedCount
           table.headers should not be empty
           table.headers.distinct.size shouldBe table.headers.size
-          // Every row of an index table has to carry every column: a row missing one would be
-          // decoded as an absent cell and compared against whatever the port happens to hold.
+          // Every row has to carry every column: a row missing one would decode as an absent cell.
           table.rows.zipWithIndex.foreach {
             case (row, index) =>
               withClue(s"row $index: ") {
@@ -436,22 +349,18 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   // The strict schema layer: no key of a decoded object goes unread.
   //
-  // These five tests are about the reading of the document rather than about the port, and they
-  // are here because everything below them is only as strong as the decoding underneath it. A
-  // derived decoder ignores a key its model has no field for, so without them a column the capture
-  // added would be dropped in silence and every comparison in this file would still pass over the
-  // columns it did read. Each test exercises every documented shape, and the specimen it works
-  // from is taken out of the committed document, so a schema that has drifted from the artefact
-  // fails the first of them rather than quietly admitting the wrong key set everywhere else.
+  // These five tests are about the reading of the document rather than the module's data, and
+  // everything below them is only as strong as the decoding underneath: a derived decoder ignores a
+  // key its model has no field for, so without them a column the capture added would be dropped in
+  // silence while every comparison still passed over the columns it did read. Each test exercises
+  // every documented shape, working from a specimen taken out of the committed document.
   //-------------------------------------------------------------------------
 
   test("every declared object schema is the key set the committed manifest carries") {
-    // The declaration cannot rot. Every schema is matched against a specimen of its own shape
-    // taken from the document, so a key the capture starts writing inside a table or a row is
-    // reported here - with the shape and the path the specimen came from - and not merely wherever
-    // that shape next happens to be decoded. Every schema is uniform, which is asserted rather
-    // than assumed: the captured document holds one key set per shape, so a documented shape is
-    // exact equality of key sets, with no variant to choose between and no optional key.
+    // Every schema is matched against a specimen of its own shape taken from the document, so a key
+    // the capture starts writing inside a table or a row is reported here, with the shape and the
+    // path it came from. That every schema is uniform is asserted rather than assumed: the captured
+    // document holds one key set per shape, so a documented shape is exact key-set equality.
     StrictShapes.foreach { shape =>
       withClue(
         s"${shape.schema.shape} at '${shape.path}', declared as ${shape.schema.describe}: ") {
@@ -470,9 +379,9 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("every declared object shape decodes the specimen the manifest carries") {
-    // The acceptance half of the strictness tests, and the reason the refusals below are evidence
-    // of anything: a check that refused every object would pass the three tests after this one
-    // while making the suite unable to read its own document.
+    // The acceptance half, and the reason the refusals below are evidence of anything: a check that
+    // refused every object would pass the next three tests and leave the suite unable to read its
+    // own document.
     StrictShapes.foreach { shape =>
       val outcome = shape.decode(Json.fromJsonObject(shape.specimen))
       val refusal = outcome.swap.toOption.map(_.getMessage).getOrElse("")
@@ -485,9 +394,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("an object shape carrying a key no schema knows is refused, naming the key") {
-    // The case the finding this layer answers describes: a later capture adds a field to a table
-    // or a row, the model has no counterpart for it, and the derived decoder would read the rest
-    // of the object and report a clean row - leaving whatever the new key carried uncompared.
+    // The case this layer exists for: a later capture adds a field, the model has no counterpart
+    // for it, and a derived decoder would report a clean row with the new key's value uncompared.
     StrictShapes.foreach { shape =>
       val perturbed =
         shape.specimen.add(UncapturedKey, Json.fromString("a value no comparison here reads"))
@@ -503,9 +411,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("an object shape missing a documented key is refused, naming the key") {
-    // Every documented key of every shape, one at a time, because a key set is only as enforced as
-    // its least enforced member: a model whose field was made optional, or a schema that named a
-    // key the objects do not have to carry, would leave exactly one of these unrefused.
+    // Every documented key of every shape, one at a time: a model whose field was made optional, or
+    // a schema naming a key the objects need not carry, leaves exactly one of these unrefused.
     StrictShapes.foreach { shape =>
       shape.schema.known.toVector.sorted.foreach { key =>
         val refusal =
@@ -523,11 +430,10 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("an object shape whose documented key is renamed is refused, naming both spellings") {
-    // A rename is the perturbation a key-set check has to catch in both directions at once, and it
-    // is the one a decoder of optional fields cannot catch at all: the old key is gone, so the
-    // field reads as absent, and the new key is unknown, so its value is dropped. The message has
-    // to name the spelling that arrived as well as the one that left, since a reader given only
-    // half of that learns that the document changed and not into what.
+    // A rename is the perturbation a decoder of optional fields cannot catch at all: the old key is
+    // gone, so the field reads as absent, and the new key is unknown, so its value is dropped. The
+    // message names the spelling that arrived as well as the one that left, since half of that
+    // tells a reader the document changed and not into what.
     StrictShapes.foreach { shape =>
       shape.schema.known.toVector.sorted.foreach { key =>
         val renamed = s"capturedAs${key.capitalize}"
@@ -551,8 +457,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   /**
    * Decodes a perturbed specimen that must be refused, and answers the refusal's message.
    *
-   * The decoder under test is the one this suite reads that shape with, not a copy of it, so a
-   * shape whose strictness was removed fails here rather than being tested in a form nothing uses.
+   * The decoder is the one this suite reads that shape with, not a copy of it, so a shape whose
+   * strictness was removed fails here rather than being tested in a form nothing uses.
    *
    * @param shape  the documented shape being perturbed
    * @param perturbed  the object the decoder must refuse
@@ -576,9 +482,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
   test("CurrencyData.rows equals the manifest currencies, row for row and in order") {
     // Shape: {count, historicCount, activeCount, rows[{code, minorUnitDigits,
-    // triangulationCurrency, historic}]}, the rows in the declaration order of the Java currency
-    // configuration. Order is asserted as well as content, because it is the order `Currency`
-    // creates its 74 instances in and the order any report over the family follows.
+    // triangulationCurrency, historic}]}, in the captured declaration order. Order is asserted as
+    // well as content: it is the order `Currency` creates its 74 instances in.
     val expected = currencies.rows.map(row =>
       (row.code, row.minorUnitDigits, row.triangulationCurrency, row.historic))
     val actual = CurrencyData.rows.map(row =>
@@ -593,15 +498,14 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       currencies.count shouldBe expectedCodes.size
       currencies.historicCount shouldBe currencies.rows.count(_.historic)
       currencies.activeCount shouldBe currencies.rows.count(row => !row.historic)
-      // The three published views of the table, and the family built from it, are each compared
-      // with the manifest rather than with one another: a derivation that agreed with a wrong table
-      // would agree with it consistently.
+      // Each published view is compared with the manifest rather than with the others: a derivation
+      // of a wrong table agrees with it consistently.
       CurrencyData.codes shouldBe expectedCodes
       CurrencyData.historicCodes shouldBe currencies.rows.filter(_.historic).map(_.code)
       CurrencyData.nonHistoricCodes shouldBe currencies.rows.filterNot(_.historic).map(_.code)
       Currency.values.toList.map(_.code) shouldBe expectedCodes.toList
       CurrencyData.byCode.keySet shouldBe expectedCodes.toSet
-      // Every triangulation currency has to be a currency of the table, which is what makes
+      // Every triangulation currency is a currency of the table, which is what makes
       // `Currency.triangulationCurrency` total.
       currencies.rows.map(_.triangulationCurrency).toSet.diff(expectedCodes.toSet) shouldBe empty
     }
@@ -609,12 +513,10 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
   test("CurrencyData.marketConventionPriority equals the manifest ordering, in order") {
     // The one key of the manifest that is a bare JSON array, and deliberately so: the order decides
-    // which currency of an unlisted pair becomes the base, so it is semantically load-bearing. It
-    // is compared as a sequence; comparing it as a set would pass on any permutation and so would
-    // assert nothing about the only property it has.
+    // which currency of an unlisted pair becomes the base. It is compared as a sequence; as a set
+    // it would pass on any permutation and so assert nothing about the only property it has.
     withClue(s"manifest key 'marketConventionPriority': ${marketConventionPriority.mkString(", ")}: ") {
       CurrencyData.marketConventionPriority shouldBe marketConventionPriority
-      // The derived index is what `CurrencyPair` reads, so it is held to the same ordering.
       CurrencyData.marketConventionPriorityIndex shouldBe marketConventionPriority.zipWithIndex.toMap
       marketConventionPriority.toSet.diff(CurrencyData.codes.toSet) shouldBe empty
     }
@@ -623,8 +525,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   test("CurrencyPairData.rows equals the manifest currency pairs, row for row and in order") {
     // Shape: {count, rows[{pair, rateDigits}]}, one row per '''conventional''' direction, the
     // inverse direction deliberately absent. The pair is rendered `BASE/COUNTER` from the two
-    // currencies of the port's row, so a pair transcribed the wrong way round fails here rather
-    // than turning into a silently inverted market convention.
+    // currencies of the row, so a pair transcribed the wrong way round fails here rather than
+    // becoming a silently inverted market convention.
     val expected = currencyPairs.rows.map(row => (row.pair, row.rateDigits))
     val actual = CurrencyPairData.rows.map {
       case (base, counter, rateDigits) => (s"${base.code}/${counter.code}", rateDigits)
@@ -633,8 +535,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
     withClue("manifest key 'currencyPairs': ") {
       currencyPairs.count shouldBe currencyPairs.rows.size
       CurrencyPairData.rateDigitsByCurrencies.size shouldBe currencyPairs.rows.size
-      // The derived lookup is keyed by the two currencies, so it is compared through the same
-      // rendering as the rows.
+      // The derived lookup is keyed by the two currencies, so it is rendered as the rows are.
       CurrencyPairData.rateDigitsByCurrencies.map {
         case ((base, counter), rateDigits) => (s"${base.code}/${counter.code}", rateDigits)
       }.toSet shouldBe expected.toSet
@@ -646,19 +547,16 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
 
   test("CountryData.alpha3ToAlpha2 equals the manifest countries, row for row") {
-    // Shape: {count, rows[{alpha3, alpha2}]}. The manifest emits the rows in the order of the Java
-    // properties file, which is alpha-2 order, while the port holds a map sorted by alpha-3; the
-    // captured rows are therefore sorted by alpha-3 before the comparison, and the key and value
-    // views are compared too so that neither an extra row in the port nor a missing one goes
-    // unseen.
+    // Shape: {count, rows[{alpha3, alpha2}]}. The captured rows are in alpha-2 order and this
+    // module holds a map sorted by alpha-3, so they are sorted by alpha-3 first; the key and value
+    // views are compared too, so neither an extra row nor a missing one goes unseen.
     val expected = countries.rows.map(row => (row.alpha3, row.alpha2)).sortBy(_._1)
     val actual = CountryData.alpha3ToAlpha2.toVector
     sameRows("country", actual, expected)
     withClue("manifest key 'countries': ") {
       countries.count shouldBe countries.rows.size
       CountryData.alpha3Codes.toVector shouldBe expected.map(_._1)
-      // The inverse view is only well defined because the relation is a bijection, which the
-      // captured rows have to agree with.
+      // The inverse view is well defined only because the relation is a bijection.
       CountryData.alpha2ToAlpha3.size shouldBe expected.size
       CountryData.alpha2Codes.toVector shouldBe expected.map(_._2).sorted
     }
@@ -669,14 +567,10 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
 
   test("the captured cell normalisations are the Java forms, transcribed rather than looked up") {
-    // The two index tables are compared through `dayCountCell` and `calendarCell`, which bring a
-    // captured cell to the form the Java parser held it in. Neither may call the production type
-    // whose behaviour the comparison judges - see the note in the Ibor index test - so each is
-    // transcribed from the Java source instead, and a transcription is only worth what a test of it
-    // is worth: a helper that quietly became the identity function would retire the normalisation
-    // and leave the two index tests reporting normalisations as differences, or worse, agreeing for
-    // the wrong reason. The expectations below are literals read off the two Java sources named in
-    // the scaladoc of the helpers, chosen to cover every branch of each.
+    // `dayCountCell` and `calendarCell` bring a captured cell to the form the Java parser held it
+    // in, transcribed rather than delegated - see the note in the Ibor index test - and a
+    // transcription is worth what a test of it is worth. The expectations are literals read off the
+    // two Java sources the helpers name, covering every branch of each.
     withClue(s"manifest key '$DayCountsKey' yields ${CapturedDayCountNames.size} spellings: ") {
       // Twenty-one canonical names and the ten upper case forms that differ from them.
       CapturedDayCountNames.size shouldBe 31
@@ -684,12 +578,11 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
         dayCountCell(name) shouldBe name
         ()
       }
-      // The Czech koruna spelling of the fixed leg day count, and the spelling of every other row.
       dayCountCell("ACT/360") shouldBe "Act/360"
       dayCountCell("Act/360") shouldBe "Act/360"
       dayCountCell("ACT/ACT ISDA") shouldBe "Act/Act ISDA"
-      // A day count that carries a calendar has no constant and so no captured spelling; it is
-      // passed through, which is the text the port's member renders. So is text that names nothing.
+      // A day count that carries a calendar has no captured spelling, so it passes through - as the
+      // this module's member renders it - and so does text that names nothing.
       dayCountCell("Bus/252 BRBD") shouldBe "Bus/252 BRBD"
       dayCountCell("Act/366") shouldBe "Act/366"
       // The fold is English, not the default locale of the host.
@@ -708,48 +601,30 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       calendarCell(s"$NoHolidaysCalendarName+GBLO") shouldBe "GBLO"
       calendarCell("USNY~GBLO") shouldBe "GBLO~USNY"
       calendarCell(s"GBLO~$NoHolidaysCalendarName") shouldBe NoHolidaysCalendarName
-      // `~` is tested before `+`, and the parts of a link are normalised by the same rule, so the
-      // combination inside this link is sorted before the link itself is.
+      // `~` is tested before `+`, so the combination inside this link is sorted before the link is.
       calendarCell("GBLO~USNY+EUTA") shouldBe "EUTA+USNY~GBLO"
     }
   }
 
   test("IborIndexData.rows equals the manifest Ibor indices, column by column and in order") {
     // Shape: {count, headers[], rows[{<header>: value}]}, every value the raw text of the CSV cell
-    // the Java loader read. This is the largest table of the port - 271 rows of thirteen columns -
-    // and it is compared cell by cell rather than row by row, so a failure names the row, the index
-    // and the column rather than printing two thirteen-element rows and leaving the reader to find
-    // the difference.
+    // the Java loader read. This is the largest table - 271 rows of thirteen columns - and it is
+    // compared cell by cell, so a failure names the row, the index and the column instead of
+    // printing two thirteen-element rows.
     //
-    // Three kinds of column are normalised before the comparison, and each normalisation is the
-    // one the Java parser itself performed on the column:
+    // Three columns are normalised first, each by the normalisation the Java parser performed on
+    // it: a day count column through the spellings the captured `dayCounts` names imply, because
+    // the fixed leg day count is spelled `ACT/360` on the Czech rows and `Act/360` on the rest; a
+    // calendar column through the composite rule, because the text `SGSI+GBLO` reaches this module
+    // as `GBLO+SGSI`; and the active column for case, which is not data. Everything else is
+    // compared as captured, including the tenor convention column, which names a business day
+    // convention on some rows and a period addition convention on others.
     //
-    //  - A day count column is mapped through the spellings the captured `dayCounts` names imply,
-    //    because the fixed leg day count is spelled `ACT/360` on the Czech rows and `Act/360` on
-    //    the rest, and the registry being ported held both keys for one convention. Text no
-    //    captured spelling covers is left as it stands so that the comparison reports it against
-    //    the port's canonical name.
-    //  - A calendar column is put through the composite normalisation the Java factory performs,
-    //    because a composite name is normalised by deduplicating and sorting its parts: the column
-    //    text `SGSI+GBLO` reaches the port as `GBLO+SGSI`, which is a normalisation rather than a
-    //    mistranscription.
-    //  - The active column is a boolean spelled in upper case here and in lower case in the price
-    //    index table, and the case of a boolean literal is not data.
-    //
-    // None of the three consults a production type, and that is deliberate rather than incidental.
-    // The expected side of a comparison may not be computed by the subject the comparison judges:
-    // a lookup or a normalisation applied to the captured text as well as to the port's value
-    // cancels out of the comparison, so a wrong lookup would rewrite both sides identically and
-    // the rows would still agree - which is exactly the self-round-trip AAP section 0.6.1 requires
-    // this suite to be independent of. `dayCountCell` therefore reads an index built from the
-    // manifest's own names and the registration rule of `ExtendedEnum.java:225-236`, and
-    // `calendarCell` applies the normalisation transcribed from `HolidayCalendarId.java:87-120`;
-    // both are local to this file and are pinned by `the captured cell normalisations are the Java
-    // forms, transcribed rather than looked up`.
-    //
-    // Everything else is compared as text exactly as captured, including the tenor convention
-    // column, which the port carries verbatim because it names a business day convention on some
-    // rows and a period addition convention on others.
+    // None of the three consults a production type, deliberately: a lookup applied to the captured
+    // text as well as to this module's value cancels out of the comparison, so a wrong lookup would
+    // rewrite both sides identically and the rows would still agree - the self-round-trip this
+    // suite exists to be independent of. `dayCountCell` and `calendarCell` are therefore local to
+    // this file, built from the manifest's own names and the Java rules they cite.
     withClue("manifest key 'iborIndices': ") {
       iborIndices.headers shouldBe IborIndexHeaders
       iborIndices.count shouldBe iborIndices.rows.size
@@ -766,13 +641,10 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("OvernightIndexData.rows equals the manifest overnight indices, column by column") {
-    // The same shape and the same three normalisations as the Ibor table; this table has eight
-    // columns and two of them are day counts, one of which is `Bus/252 BRBD` - a day count that
-    // carries a calendar and so is not one of the twenty-one standard members. No captured spelling
-    // covers it, so `dayCountCell` passes it through unchanged and it is compared against the text
-    // the port's member renders, which is the same text: the cell is comparable without anything
-    // resolving it, and nothing here resolves it, because the family whose lookup would do so is a
-    // subject of this suite rather than an authority for it.
+    // The same shape and normalisations as the Ibor table; this one has eight columns, two of them
+    // day counts, one of which is `Bus/252 BRBD` - a day count that carries a calendar and so is
+    // not one of the twenty-one standard members. No captured spelling covers it, so it passes
+    // through and is compared against the same text this module's member renders, unresolved.
     withClue("manifest key 'overnightIndices': ") {
       overnightIndices.headers shouldBe OvernightIndexHeaders
       overnightIndices.count shouldBe overnightIndices.rows.size
@@ -791,8 +663,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
   test("PriceIndexData.rows equals the manifest price indices, row for row and in order") {
     // Shape: {count, headers[], rows[{<header>: value}]} with every value the raw CSV text. The
-    // header list is asserted first, because the comparison below reads columns by name: a renamed
-    // column would otherwise turn into a missing key and a far less obvious failure.
+    // header list is asserted first, because the comparison reads columns by name and a renamed
+    // column would otherwise become a missing key.
     withClue("manifest key 'priceIndices': ") {
       priceIndices.headers shouldBe PriceIndexHeaders
       priceIndices.count shouldBe priceIndices.rows.size
@@ -816,19 +688,11 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("FxIndexData.rows equals the manifest FX indices, row for row and in order") {
-    // Same shape as the price index table. Two columns need a word. `Maturity Days` is CSV text and
-    // is compared as the text of the port's integer. And a calendar column holds the text the CSV
-    // declared - `EUTA+CHZU` - while a composite identifier is normalised by deduplicating and
-    // sorting its parts, so the same column reaches the port as `CHZU+EUTA`. The captured text is
-    // therefore brought to that normal form by `calendarCell` before it is compared; comparing the
-    // raw text would report a normalisation as a mistranscription.
-    //
-    // That normalisation is transcribed from the Java factory and computed here, not obtained by
-    // calling `HolidayCalendarId.of` on the captured text. The identifier's normalisation is itself
-    // part of what this suite checks, and a factory applied to both sides of a comparison cancels
-    // out of it: a port that sorted composite parts wrongly would rewrite the expectation in the
-    // same wrong way and the rows would still be equal. The expected side of every comparison in
-    // this suite is therefore built from the manifest and from code local to this file only.
+    // Same shape as the price index table. Two columns need a word: `Maturity Days` is CSV text and
+    // is compared as the text of this module's integer, and a calendar column holds the text the
+    // CSV declared - `EUTA+CHZU` - which reaches this module as the normalised `CHZU+EUTA`, so the
+    // captured text is brought to that form by `calendarCell` first. That normalisation is
+    // transcribed rather than taken from `HolidayCalendarId.of`, which is a subject of this suite.
     withClue("manifest key 'fxIndices': ") {
       fxIndices.headers shouldBe FxIndexHeaders
       fxIndices.count shouldBe fxIndices.rows.size
@@ -856,13 +720,11 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
 
   test("IborIndices' constants equal the manifest iborIndexConstants") {
-    // Shape: {count, names[]}, the names of the public constants of the Java `IborIndices` holder,
-    // emitted in name order. A constants holder is a selection from its family rather than the
-    // family itself - 113 of the 271 published Ibor indices have a constant - so two things are
-    // asserted: the names of the port's constants equal the captured names, and every constant is
-    // the very member the family publishes under that name rather than a second instance built
-    // beside it. The constants are named one by one below rather than discovered reflectively, so a
-    // constant that disappeared is a compile error in this file.
+    // Shape: {count, names[]}, the captured constant names in name order. A constants holder is a
+    // selection from its family - 113 of the 271 published Ibor indices have a constant - so two
+    // things are asserted: this module's constant names equal the captured names, and every
+    // constant is the member the family publishes under that name rather than a second instance
+    // beside it.
     sameNamedConstants("Ibor index", IborIndexConstantsKey, IborIndexConstants.map(_.name))
     withClue("every Ibor index constant is the published member of that name: ") {
       IborIndexConstants.filterNot(index =>
@@ -872,11 +734,10 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("OvernightIndices' constants equal the manifest overnightIndexConstants") {
-    // The captured names hold `EUR-ESTR` twice, and that is the point of comparing the names as a
-    // sequence rather than as a set: the Java holder published both `EUR_ESTR` and the retired
-    // `EUR_ESTER`, and both name the same index because the retired spelling is an alternate name
-    // of it. The port reproduces that - its two constants are one instance - so the comparison of
-    // twenty-one names holding twenty distinct ones is what proves it.
+    // The captured names hold `EUR-ESTR` twice, which is why they are compared as a sequence rather
+    // than a set: both `EUR_ESTR` and the retired `EUR_ESTER` name the same index, so twenty-one
+    // names holding twenty distinct ones is what proves this module's two constants are one
+    // instance.
     sameNamedConstants(
       "overnight index",
       OvernightIndexConstantsKey,
@@ -889,9 +750,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("PriceIndices' constants equal the manifest priceIndexConstants") {
-    // Nine constants for nine published rows, so the constants and the family coincide here and
-    // both are asserted: a family member without a constant, or a constant naming a member the
-    // family does not publish, is reported.
+    // Nine constants for nine published rows, so the constants and the family coincide and both
+    // directions are asserted.
     sameNamedConstants("price index", PriceIndexConstantsKey, PriceIndexConstants.map(_.name))
     withClue("the price index constants are exactly the members of the family: ") {
       PriceIndexConstants.filterNot(index =>
@@ -901,9 +761,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("FxIndices' constants equal the manifest fxIndexConstants") {
-    // Eight constants over sixteen published rows: the Java holder named the European Central Bank
-    // and WM/Reuters fixings and left the eight Asian and Latin American ones to be reached by
-    // name, which the port reproduces rather than completing.
+    // Eight constants over sixteen published rows: the four European Central Bank and four
+    // WM/Reuters fixings are named, the eight Asian and Latin American ones reached by name.
     sameNamedConstants("FX index", FxIndexConstantsKey, FxIndexConstants.map(_.name))
     withClue("every FX index constant is the published member of that name: ") {
       FxIndexConstants.filterNot(index =>
@@ -914,18 +773,14 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
   test("the index families' alternate names equal the manifest alternateNames tables") {
     // Shape: {<family>{iniRowCount, iniRows[{alternateName, standardName}], apiExpandedRowCount,
-    // apiExpandedRows[]}}. Two tables are captured per family on purpose. The INI rows are what a
-    // port transcribes; the runtime view additionally registers the upper-case spelling of every
-    // mixed-case alternate, so that the same table serves the exact lookup and the lenient one,
-    // which folds case before it looks anything up. Ten INI rows become thirteen entries for the
-    // overnight family.
+    // apiExpandedRows[]}}. Two tables are captured per family on purpose: the INI rows are what is
+    // transcribed, while the runtime view additionally registers the upper-case spelling of every
+    // mixed-case alternate, so ten INI rows become thirteen entries for the overnight family.
     //
-    // The port publishes the expanded view - the transcribed table itself is private to the family,
-    // as it should be - so the comparison runs the other way: the expanded map is compared with the
-    // captured expanded rows, and the captured expanded rows are compared with the expansion of the
-    // captured INI rows. Together those pin the transcribed table, because the expansion only ever
-    // adds an upper-case key: a missing INI row cannot be reinstated by it, and a row transcribed
-    // in the wrong case expands to a different set of keys.
+    // This module publishes the expanded view and keeps the transcribed table private, so the
+    // comparison runs the other way: the expanded map against the captured expanded rows, and those
+    // against the expansion of the captured INI rows. Together they pin the transcribed table,
+    // because the expansion only ever adds an upper-case key.
     DocumentedAlternateNameCounts.keySet.foreach { family =>
       val table = alternateNames(family)
       val capturedIni = table.iniRows.map(row => row.alternateName -> row.standardName).toMap
@@ -934,8 +789,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       withClue(s"manifest alternateNames.$family: ") {
         capturedIni.size shouldBe table.iniRows.size
         capturedExpanded.size shouldBe table.apiExpandedRows.size
-        // An alternate spelling that resolves to nothing would be a lookup that silently fails, so
-        // every canonical name a row names has to be a member of the family.
+        // An alternate spelling naming no member would be a lookup that silently fails.
         capturedExpanded.values.filterNot(canonicalNamesOf(family).contains).toVector shouldBe empty
         ()
       }
@@ -947,8 +801,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       ()
     }
     withClue("only the three families the capture recorded declare alternate spellings: ") {
-      // The other named families of the port declare none, and the capture recorded none for them;
-      // an alternate table appearing on one of them would be an addition to the reference data.
+      // An alternate table on one of the other families would be an addition to the reference data.
       FamiliesWithoutAlternateNames.filter {
         case (_, alternates) => alternates.nonEmpty
       } shouldBe empty
@@ -961,9 +814,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
   test("the manifest floating rate name sections account for every transcribed row") {
     // Shape: {constants{count, names[]}, aliasRowCount, sections{<section>{count, rows[{key,
-    // value}]}}}. The seven sections and their sizes are the division the port keeps, so the
-    // section names are asserted before any of them is compared and the declared alias row count
-    // is reconciled with the sections it totals.
+    // value}]}}}. The seven sections and their sizes are the division this module keeps, so the
+    // section names are asserted first and the declared alias row count reconciled with them.
     val sections = floatingRateNames.sections
     withClue(s"manifest key 'floatingRateNames': ${sections.keys.toVector.sorted.mkString(", ")}: ") {
       sections.keySet shouldBe DocumentedFloatingRateSectionCounts.keySet
@@ -982,12 +834,10 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("FloatingRateNames' constants equal the manifest floatingRateNames constants") {
-    // Shape: {constants{count, names[]}}, the names of the public constants of the Java
-    // `FloatingRateNames` holder in name order. These forty-one are a selection from the 351 rows
-    // of the four name sections - the published name space is every alias a counterparty may write,
-    // while a constant is one of the names a caller writes in code - so the constants are compared
-    // with the captured names and each one is then required to be the member the family publishes
-    // under that name, which is what ties the two together.
+    // Shape: {constants{count, names[]}}, the captured constant names in name order. These
+    // forty-one are a selection from the 351 rows of the four name sections - a published name is
+    // any alias a counterparty may write, a constant one of the names a caller writes in code - so
+    // each is also required to be the member the family publishes under that name.
     sameConstantNames(
       "floating rate name",
       s"$FloatingRateNamesKey.constants",
@@ -997,18 +847,16 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       FloatingRateNameConstants.filterNot(rate =>
         FloatingRateName.valueOf(rate.name).contains(rate)) shouldBe empty
       FloatingRateNameConstants.toSet.subsetOf(FloatingRateName.values.toList.toSet) shouldBe true
-      // The constants name distinct rates: unlike the overnight index holder, no two of them are
-      // the same value under two spellings, which the captured names agree with.
+      // Unlike the overnight index holder, no two of these are one value under two spellings.
       FloatingRateNameConstants.map(_.name).distinct.size shouldBe FloatingRateNameConstants.size
     }
   }
 
   test("FloatingRateNameData's Ibor rows equal the manifest ibor section, in published order") {
-    // The published value of an Ibor row is the '''stem''' of an index name, and the Java loader
-    // appended a `-` to it because an Ibor index name is completed by a tenor: `GBP-LIBOR-` plus
-    // `3M`. The port carries the appended form, so the manifest value is completed the same way
-    // before the comparison - which is also what pins the appending itself, since a row that
-    // forgot it would fail here.
+    // The published value of an Ibor row is the '''stem''' of an index name, to which a `-` is
+    // appended because an Ibor index name is completed by a tenor: `GBP-LIBOR-` plus `3M`. The
+    // manifest value is completed the same way, which also pins the appending: a row that forgot it
+    // fails here.
     val expected = floatingRateSection(IborSection).map(row => (row.key, s"${row.value}-"))
     val actual = FloatingRateNameData.iborRows.map(row => (row.externalName, row.indexName))
     sameRows("floating rate name (ibor)", actual, expected)
@@ -1018,10 +866,9 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("FloatingRateNameData.iborFixingDateOffsets equals the manifest iborFixingDateOffset section") {
-    // Three rows, published as a section of their own and consumed twice by the port: once as the
-    // table itself and once as the `fixingDateOffsetDays` of the three Ibor rows they name. Both
-    // are compared, because a table that agreed with the manifest while the rows it feeds did not
-    // would leave the offsets missing from every consumer that reads a row.
+    // Three rows, consumed twice: as the table itself, and as the `fixingDateOffsetDays` of the
+    // three Ibor rows they name. Both are compared, because a table that agreed with the manifest
+    // while the rows it feeds did not would leave the offsets missing from every row consumer.
     val expected = floatingRateSection(IborFixingDateOffsetSection).map(row => (row.key, row.value))
     val actual = FloatingRateNameData.iborFixingDateOffsets.toVector.map {
       case (externalName, days) => (externalName, days.toString)
@@ -1037,9 +884,9 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("FloatingRateNameData's overnight and price rows equal the manifest sections, in published order") {
-    // The published value of a row of these three sections is a complete index name and is
-    // transcribed unchanged, so no completion step applies here. Each section also fixes the rate
-    // type of the rows it produces, which is what decides the kind of index a name converts to.
+    // The published value of a row of these three sections is a complete index name, transcribed
+    // unchanged, so no completion step applies. Each section also fixes the rate type of the rows
+    // it produces, which decides the kind of index a name converts to.
     sameRows(
       "floating rate name (overnight compounded)",
       FloatingRateNameData.overnightCompoundedRows.map(row => (row.externalName, row.indexName)),
@@ -1058,8 +905,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       FloatingRateNameData.overnightAveragedRows.map(_.rateType).distinct shouldBe
         Vector(FloatingRateType.OvernightAveraged)
       FloatingRateNameData.priceRows.map(_.rateType).distinct shouldBe Vector(FloatingRateType.Price)
-      // The four name sections together are the published name space, in the order the Java loader
-      // processed them, and `rows` is that concatenation.
+      // The four name sections in order are the published name space, and `rows` is that
+      // concatenation.
       FloatingRateNameData.rows.map(_.externalName) shouldBe
         (floatingRateSection(IborSection) ++
           floatingRateSection(OvernightCompoundedSection) ++
@@ -1071,10 +918,9 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
   test("FloatingRateNameData's currency default tables equal the manifest sections, in published order") {
     // Two sections keyed by currency code, whose values are '''external names''' rather than index
-    // names - `CNY` defaults to `CNY-REPO` - which is why they are resolved through
-    // `byExternalName` and not read as index names. That every value names a row of the table is
-    // asserted too, since a default resolving to nothing would be a lookup failure no count could
-    // reveal.
+    // names - `CNY` defaults to `CNY-REPO` - which is why they resolve through `byExternalName`.
+    // That every value names a row is asserted too: a default resolving to nothing would be a
+    // lookup failure no count could reveal.
     val iborExpected =
       floatingRateSection(CurrencyDefaultIborSection).map(row => (row.key, row.value))
     val iborActual = FloatingRateNameData.currencyDefaultIbor.toVector.map {
@@ -1100,10 +946,9 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
 
   test("DayCount's members equal the manifest dayCounts constants") {
-    // Shape: {count, names[]}, the names of the public constants of the Java `DayCounts` holder in
-    // name order. Twenty-one standard members, and the family has exactly twenty-one: `Bus/252` is
-    // not among them because it carries a calendar and so is a member per calendar rather than a
-    // constant, which is why the captured group holds twenty-one names and not twenty-two.
+    // Shape: {count, names[]}, the captured constant names in name order. Twenty-one standard
+    // members, and the family has exactly twenty-one: `Bus/252` is not among them because it
+    // carries a calendar and so is a member per calendar rather than a constant.
     val expected = nameGroup(DayCountsKey)
     withClue(s"manifest key '$DayCountsKey': ") {
       expected.count shouldBe expected.names.size
@@ -1116,9 +961,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   test("DayCount's external name groups equal the manifest externalNames rows") {
     // The FpML group is the one place in the document where an external row names a member the
     // family does not publish: `BUS/252` maps to `Bus/252 BRBD`, a day count that carries a
-    // calendar. The raw table is therefore what is compared - the rows as the reference data
-    // supplied them, unresolved - which is exactly how the port holds them and how the
-    // implementation being ported used them.
+    // calendar. The raw, unresolved table is therefore what is compared, as this module holds it.
     sameExternalNameGroups(DayCountFamily, DayCount.namedEnum.externalNameGroups, group =>
       DayCount.namedEnum.externalNamesRaw(group))
   }
@@ -1126,16 +969,14 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   test("DayCount's lenient patterns equal the manifest rows, in file order") {
     // Sixty-seven rows, the longest lenient table of the reference data, and the order is
     // behaviour: the rewrite is sequential, so `ACTUAL/ACTUAL` is rewritten by the first row and
-    // the result offered to the second. Comparing these as a set would accept a reordering that
-    // silently changes what a given piece of text resolves to.
+    // the result offered to the second.
     sameLenientPatterns(DayCountFamily, DayCount.namedEnum.lenientPatterns)
   }
 
   test("BusinessDayConvention's members equal the manifest businessDayConventions constants") {
-    // Shape: {count, names[]}, the names being those of the public constants of the Java
-    // `BusinessDayConventions` holder, emitted in name order. The port's members are compared in
-    // that order, and the constants holder is compared with the members, so a constant naming the
-    // wrong member or a member with no constant is reported.
+    // Shape: {count, names[]}, the captured constant names in name order. The members are compared
+    // in that order and the constants holder with the members, so a constant naming the wrong
+    // member, or a member with no constant, is reported.
     val expected = nameGroup(BusinessDayConventionsKey)
     withClue(s"manifest key '$BusinessDayConventionsKey': ") {
       expected.count shouldBe expected.names.size
@@ -1148,7 +989,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   test("BusinessDayConvention's external name groups equal the manifest externalNames rows") {
     // Shape: {<family>{<group>{count, rows[{externalName, standardName}]}}}, sorted so the bytes
     // are stable. These groups take part in no lookup - they are read through `externalNames` - so
-    // nothing but a comparison with the captured rows pins them.
+    // a comparison with the captured rows is the only thing that pins them.
     val groups = externalNames(BusinessDayConventionFamily)
     val documented = DocumentedExternalGroups(BusinessDayConventionFamily)
     withClue(s"manifest externalNames.$BusinessDayConventionFamily: ") {
@@ -1171,9 +1012,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
   test("BusinessDayConvention's lenient patterns equal the manifest rows, in file order") {
     // The lenient rewrite is '''sequential''' - each matching pattern rewrites the string before
-    // the next is tried - so the manifest preserves the file order of the rows and the port holds
-    // an ordered list. Comparing these as sets would accept a reordering that changes which text
-    // resolves and to what, so they are compared as sequences.
+    // the next is tried - so the manifest preserves the file order of the rows, this module holds
+    // an ordered list, and the two are compared as sequences.
     val expected = lenientPatternRows(BusinessDayConventionFamily).map(row => (row.key, row.value))
     val actual = BusinessDayConvention.namedEnum.lenientPatterns.toVector.map {
       case (pattern, replacement) => (pattern.regex, replacement)
@@ -1185,27 +1025,24 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("RollConvention's members equal the manifest rollConventions constants") {
-    // Forty-five names: the eight standard conventions and the thirty-seven day-of-month and
-    // day-of-week members the Java implementation pre-built. All forty-five have a constant in the
-    // holder, so the constants and the family coincide and both directions are asserted - a member
-    // without a constant and a constant naming no member are each reported.
+    // Forty-five names: the eight standard conventions plus thirty day-of-month and seven
+    // day-of-week members. All forty-five have a constant, so the constants and the family coincide
+    // and both directions are asserted.
     val expected = nameGroup(RollConventionsKey)
     withClue(s"manifest key '$RollConventionsKey': ") {
       expected.count shouldBe expected.names.size
       RollConvention.values.toList.map(_.name).sorted shouldBe expected.names.toList
       RollConventionConstants.map(_.name).sorted shouldBe expected.names
       RollConventionConstants.toSet shouldBe RollConvention.values.toList.toSet
-      // `Day31` is deliberately absent: the thirty-first of the month is the end of it, so the
-      // reference data maps that text onto `EOM` rather than publishing a member for it.
+      // `Day31` is absent: the thirty-first is the end of the month, so that text maps onto `EOM`.
       expected.names should not contain "Day31"
     }
   }
 
   test("RollConvention's external name groups equal the manifest externalNames rows") {
-    // Forty-four rows in one group, which is the largest external table of the reference data: the
-    // numbers one to thirty-one, the seven day-of-week abbreviations and the six standard
-    // conventions that FpML names. The row `31 -> EOM` is the same substitution the lenient table
-    // makes and is asserted here as data rather than as behaviour.
+    // Forty-four rows in one group, the largest external table of the reference data: the numbers
+    // one to thirty-one, the seven day-of-week abbreviations and the six standard conventions FpML
+    // names. The row `31 -> EOM` is asserted here as data rather than as behaviour.
     sameExternalNameGroups(
       RollConventionFamily,
       RollConvention.namedEnum.externalNameGroups,
@@ -1215,7 +1052,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   test("RollConvention's lenient patterns equal the manifest rows, in file order") {
     // Eleven rows whose order is load-bearing in a way no other lenient table's is: `(Day_?)?31`
     // has to be tried before `(Day_?)?([1-2]?[0-9])`, and `(Day_?)?30` before it too, or `31` would
-    // be rewritten to `Day3` by the third row. Comparing the rows as a sequence is what pins that.
+    // be rewritten to `Day3`. Comparing the rows as a sequence is what pins that.
     sameLenientPatterns(RollConventionFamily, RollConvention.namedEnum.lenientPatterns)
   }
 
@@ -1235,8 +1072,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
     sameRows(s"lenient pattern ($PeriodAdditionConventionFamily)", actualPatterns, expectedPatterns)
     withClue(s"manifest lenientPatterns.$PeriodAdditionConventionFamily: ") {
       lenientPatterns(PeriodAdditionConventionFamily).count shouldBe expectedPatterns.size
-      // This family publishes no external names, and the capture recorded none for it, so the
-      // absence is asserted rather than assumed.
+      // The capture recorded no external names for this family, so the absence is asserted.
       PeriodAdditionConvention.namedEnum.externalNameGroups shouldBe empty
       externalNames.keySet should not contain PeriodAdditionConventionFamily
     }
@@ -1249,8 +1085,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       DateSequence.values.toList.map(_.name).sorted shouldBe expected.names.toList
       DateSequenceConstants.map(_.name).sorted shouldBe expected.names
       DateSequenceConstants.toSet shouldBe DateSequence.values.toList.toSet
-      // The Java configuration declared no alternate, lenient or external table for this family and
-      // the capture recorded none, so the port declares none either.
+      // The capture recorded no alternate, lenient or external table for this family, so this
+      // module declares none either.
       DateSequence.namedEnum.lenientPatterns shouldBe empty
       DateSequence.namedEnum.alternateNames shouldBe empty
       DateSequence.namedEnum.externalNameGroups shouldBe empty
@@ -1258,22 +1094,18 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("StubConvention's members equal the manifest stubConventions, in declaration order") {
-    // The one named-constant group the capture did '''not''' sort. The Java type is an enumeration
-    // rather than a registry-backed family, so the capture read its declared values and emitted
-    // them in that order - initial stubs, then final stubs, then both - and that order is the one
-    // the port declares its members in. It is compared as a sequence, which asserts the order as
-    // well as the membership; the sorted comparison the other five families use would pass on any
-    // permutation of it.
+    // The one named-constant group the capture did '''not''' sort: the captured type is an
+    // enumeration, so its values were emitted in declaration order - initial stubs, then final
+    // stubs, then both - which is the order this module declares its members in. The comparison is
+    // therefore of sequences, asserting the order as well as the membership.
     val expected = nameGroup(StubConventionsKey)
     withClue(s"manifest key '$StubConventionsKey': ") {
       expected.count shouldBe expected.names.size
       StubConvention.values.toList.map(_.name) shouldBe expected.names.toList
       StubConventionConstants.map(_.name) shouldBe expected.names
       StubConventionConstants.toSet shouldBe StubConvention.values.toList.toSet
-      // The reference data declared no external, lenient or alternate table for an enumeration -
-      // the name helper it used accepted the constant identifier and case-folded spellings, which
-      // is the port's alternate table and is a property of the type rather than captured data - so
-      // the capture recorded none and none is expected here.
+      // No external, lenient or alternate table is captured for an enumeration: its accepted
+      // spellings are the constant identifier and its case folds, a property of the type.
       externalNames.keySet should not contain StubConventionFamily
       lenientPatterns.keySet should not contain StubConventionFamily
       alternateNames.keySet should not contain StubConventionFamily
@@ -1285,10 +1117,9 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
 
   test("HolidayCalendarIds' constants equal the manifest holidayCalendarIds") {
-    // Shape: {count, names[]}, the names of the public constants of the Java `HolidayCalendarIds`
-    // holder in name order. The port's constants are named one by one in the companion below rather
-    // than discovered reflectively, so a constant that disappeared is a compile error here and a
-    // constant that was added is a failure of this comparison.
+    // Shape: {count, names[]}, the captured constant names in name order. This module's constants
+    // are named one by one in the companion, so one that disappeared is a compile error here and
+    // one that was added is a failure of this comparison.
     val expected = nameGroup(HolidayCalendarIdsKey)
     withClue(s"manifest key '$HolidayCalendarIdsKey': ") {
       expected.count shouldBe expected.names.size
@@ -1299,11 +1130,11 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 
   test("HolidayCalendarId.defaultByCurrency equals the manifest defaults, including resolvability") {
     // Shape: {count, resolvableCount, unresolvableCount, rows[{currency, calendarId,
-    // resolvableAgainstStandardReferenceData}]}. Thirteen of the captured rows name calendars the
-    // Java library did not ship either, so the capture recorded the mapping '''and''' whether it
-    // resolves; both are asserted, because a port that quietly invented the missing thirteen would
-    // otherwise pass. The lookup is also compared over the whole currency family, so a default the
-    // port added for a currency the capture recorded no convention for is reported.
+    // resolvableAgainstStandardReferenceData}]}. Thirteen of the thirty-one captured rows name
+    // calendars no built-in calendar answers, so the capture recorded the mapping '''and''' whether
+    // it resolves, and both are asserted: a module that invented the missing thirteen would
+    // otherwise pass. The lookup is compared over the whole currency family, so an added default is
+    // reported.
     val rows = holidayCalendarDefaultByCurrency.rows
     withClue(s"manifest key '$HolidayCalendarDefaultKey': ") {
       holidayCalendarDefaultByCurrency.count shouldBe rows.size
@@ -1332,35 +1163,34 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("StandardHolidayCalendars.all equals the manifest builtInHolidayCalendars") {
-    // Shape: {count, names[]}, captured from the normalised registry of the Java library: the four
-    // weekend and no-holiday calendars plus twenty-six dated ones. Each entry of the port's map is
-    // keyed by the identifier its own calendar carries, so the key names are what the set is
-    // compared through.
+    // Shape: {count, names[]}: the four weekend and no-holiday calendars plus twenty-six dated
+    // ones. Each entry of this module's map is keyed by the identifier its own calendar carries, so
+    // the key names are what the set is compared through.
+    //
+    // A built-in calendar is what `ReferenceData.standard` answers with, so every captured name has
+    // to resolve there as well as be present in the map.
     val expected = nameGroup(BuiltInHolidayCalendarsKey)
     withClue(s"manifest key '$BuiltInHolidayCalendarsKey': ") {
       expected.count shouldBe expected.names.size
       StandardHolidayCalendars.all.keys.toVector.map(_.name).sorted shouldBe expected.names
-      // A built-in calendar is what `ReferenceData.standard` answers with, so every captured name
-      // has to resolve there as well as be present in the map.
       expected.names.filterNot(name =>
         HolidayCalendarId.of(name).resolve(ReferenceData.standard).isRight) shouldBe empty
     }
   }
 
   test("HolidayCalendarData.thba equals the manifest THBA year rows and weekend") {
-    // Shape: {THBA{yearRowCount, weekend, rows[{year, dates}]}}. The dates of a row are the text
-    // the Java configuration carried - `Jan03,Feb23,…` - and are parsed into month-days here rather
-    // than the port's month-days being formatted into text, so the comparison cannot be affected by
-    // the locale or the calendar data of the host. The weekend is emitted separately by the
-    // capture, since counting it as a year row would report 76 rows instead of 75.
+    // Shape: {THBA{yearRowCount, weekend, rows[{year, dates}]}}. The dates of a row are captured as
+    // text - `Jan03,Feb23,…` - and are parsed into month-days here rather than this module's
+    // month-days being formatted into text, so the comparison cannot depend on the locale or the
+    // calendar data of the host. The weekend is captured apart from the year rows, so the
+    // seventy-five rows are seventy-five years.
     val expected = thbaRows
     val actual = HolidayCalendarData.thba.toVector
     sameRows("THBA year", actual, expected)
     withClue(s"manifest key '$HolidayCalendarDataKey': ") {
       holidayCalendarDataThba.yearRowCount shouldBe expected.size
       HolidayCalendarData.thbaWeekendDays shouldBe thbaWeekend
-      // The published rows are not filtered against the weekend, so the resolved dates are the rows
-      // exactly as captured - one date per captured month-day.
+      // The rows are not filtered against the weekend: one resolved date per captured month-day.
       HolidayCalendarData.thbaHolidays.size shouldBe expected.map(_._2.size).sum
     }
   }
@@ -1368,15 +1198,10 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   //-------------------------------------------------------------------------
   // The THBA table's own invariants.
   //
-  // The rows themselves are established by the manifest comparison above, and nothing here
-  // restates them. What follows is what a row-for-row comparison cannot state and a consumer of
-  // the table nevertheless relies on - the shape of every row, the resolution of a month-day
-  // against the year it is filed under, the weekend, and the fact that this table is the whole
-  // content of the built-in calendar assembled from it. It is asserted in this suite because the
-  // AAP's frozen test inventory (section 0.3.1) gives the `date` package one spec per retained
-  // Java test class and the only Java test over this data tested the INI parser the port does not
-  // have, so the table's subject has no spec of its own; the reasoning behind folding it here is
-  // recorded in the scaladoc of this suite.
+  // The rows themselves are established by the manifest comparison above and are not restated. What
+  // follows is what a row-for-row comparison cannot state and a consumer of the table relies on:
+  // the shape of every row, the resolution of a month-day against the year it is filed under, the
+  // weekend, and that this table is the whole content of the calendar assembled from it.
   //-------------------------------------------------------------------------
 
   test("every THBA year row is non-empty, strictly ascending and free of duplicates") {
@@ -1385,8 +1210,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
         withClue(s"$year: ") {
           monthDays should not be empty
           monthDays.distinct.size shouldBe monthDays.size
-          // Strictly ascending within the row, which is the order the captured section
-          // publishes and the reason the resolved dates need no sorting on the way out.
+          // Ascending is the captured order, and why the resolved dates need no sorting.
           monthDays.sliding(2).foreach {
             case List(earlier, later) => earlier.isBefore(later) shouldBe true
             case _ => succeed
@@ -1406,8 +1230,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
     HolidayCalendarData.thbaHolidays.size shouldBe DocumentedThbaDateCount
     HolidayCalendarData.thbaHolidays.distinct.size shouldBe DocumentedThbaDateCount
 
-    // Strictly ascending overall, which follows from the map being sorted by year and every row
-    // being ascending - and is asserted directly, because it is the property a consumer relies on
+    // Strictly ascending overall, asserted directly because it is the property a consumer relies on
     // when it builds a calendar from the list without sorting it.
     HolidayCalendarData.thbaHolidays.sliding(2).foreach {
       case List(earlier, later) =>
@@ -1415,10 +1238,8 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       case _ => succeed
     }
 
-    // Consistent with the table it is derived from: the same number of dates, each one the
-    // month-day of its row resolved against the year that row is filed under, in that order. The
-    // years the resolved dates fall in are compared with the years the capture recorded, so the
-    // accessor is held to the same rows as the table.
+    // Consistent with the table it derives from: the same dates, each the month-day of its row
+    // resolved against that row's year, in order, and the years compared with the captured years.
     val resolved: List[LocalDate] =
       HolidayCalendarData.thba.toList.flatMap {
         case (year, monthDays) => monthDays.map(monthDay => monthDay.atYear(year))
@@ -1432,10 +1253,10 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   test("every THBA month-day is valid for the year it is filed under") {
-    // A month-day is resolved against its year on the way out, and that resolution '''adjusts'''
-    // the 29th of February in a year that is not a leap year rather than failing. One published
-    // row holds a leap day - 2056 - so this assertion is what distinguishes correct data from a
-    // leap day filed under the wrong year, which would otherwise become the 28th in silence.
+    // Resolving a month-day against its year '''adjusts''' the 29th of February in a non-leap year
+    // rather than failing. One published row holds a leap day - 2056 - so this is what
+    // distinguishes correct data from a leap day filed under the wrong year, which would become the
+    // 28th.
     HolidayCalendarData.thba.foreach {
       case (year, monthDays) =>
         monthDays.foreach { monthDay =>
@@ -1456,8 +1277,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   test("the published THBA holiday that falls at a weekend is kept, with the Sat,Sun weekend") {
     // The published rows are not filtered against the weekend, unlike the rule-generated calendars,
     // and exactly one row exercises that: the 4th of May 2031 is a Sunday and stays in the table.
-    // Asserted as an exhaustive scan rather than as a single date, so that filtering the table - or
-    // adding a second such date - fails here.
+    // Scanned exhaustively, so filtering the table - or adding a second such date - fails here.
     val weekendHolidays: List[LocalDate] =
       HolidayCalendarData.thbaHolidays.filter(date =>
         HolidayCalendarData.thbaWeekendDays.contains(date.getDayOfWeek))
@@ -1465,17 +1285,16 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
     weekendHolidays shouldBe List(LocalDate.of(2031, 5, 4))
     LocalDate.of(2031, 5, 4).getDayOfWeek shouldBe DayOfWeek.SUNDAY
 
-    // The captured weekend and the port's are compared by the manifest case above; the two days
-    // are named here as well, because outside the published years the calendar applies its
-    // weekend alone and nothing else in this suite states which days those are.
+    // The two days are named here as well as compared above, because outside the published years
+    // the calendar applies its weekend alone and nothing else here states which days those are.
     HolidayCalendarData.thbaWeekendDays shouldBe Set(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
   }
 
   test("HolidayCalendarData.thba is the data the built-in THBA calendar is assembled from") {
-    // The purpose of this table: it is the whole content of the built-in Thai bank calendar, so
-    // every published date is a holiday of that calendar and the weekend it declares is the one
-    // the calendar applies. `StandardHolidayCalendars` is the assembler - the data object never
-    // builds a calendar itself, which is what keeps the two free of an initialisation cycle.
+    // This table is the whole content of the built-in Thai bank calendar, so every published date
+    // is a holiday of it and the weekend it declares is the one the calendar applies.
+    // `StandardHolidayCalendars` is the assembler; the data object never builds a calendar itself,
+    // which keeps the two free of an initialisation cycle.
     val calendar = StandardHolidayCalendars.THBA
     calendar.id shouldBe HolidayCalendarIds.THBA
     calendar.weekendDays shouldBe HolidayCalendarData.thbaWeekendDays
@@ -1484,8 +1303,7 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
       withClue(s"$date: ")(calendar.isHoliday(date) shouldBe true)
     }
 
-    // And a year outside the published range is answered by the weekend rule alone, which is the
-    // documented fallback of a calendar asked about a date its data does not cover.
+    // Outside the published range the weekend rule alone answers, which is the documented fallback.
     calendar.isHoliday(LocalDate.of(2004, 1, 1)) shouldBe false
     calendar.isBusinessDay(LocalDate.of(2004, 1, 1)) shouldBe true
     calendar.isHoliday(LocalDate.of(2080, 12, 31)) shouldBe false
@@ -1500,14 +1318,13 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
    * Asserts two row sequences are equal, reporting the '''first''' difference with its index and
    * both values.
    *
-   * A single comparison of two vectors of 404 rows reports both vectors in full and leaves the
-   * reader to find the difference, which for a table this size is the difference between a
-   * diagnosable failure and an unreadable one. Sizes are compared first, so that a truncated or
-   * extended table is reported as such rather than as a difference in whichever row happens to fall
-   * off the end.
+   * A single comparison of two vectors of 251 country rows reports both in full, which at that size
+   * is the difference between a diagnosable failure and an unreadable one. Sizes are compared
+   * first, so a truncated or extended table is reported as such rather than as a difference in
+   * whichever row falls off the end.
    *
    * @param what  how a row of this table is named in the failure message
-   * @param actual  the rows the port holds
+   * @param actual  the rows this module holds
    * @param expected  the rows captured from the Java implementation
    */
   private def sameRows[A](what: String, actual: Vector[A], expected: Vector[A]): Unit = {
@@ -1529,18 +1346,15 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
    * Asserts two tables of rendered cells are equal, reporting the '''first''' difference with the
    * row it sits in, the name that row carries and the column it belongs to.
    *
-   * This is [[sameRows]] one dimension further in, for the two tables wide enough that a row-level
-   * failure would be unreadable: a thirteen-column row printed twice tells the reader that
-   * something differs and nothing about what. Every cell is a rendered string, both sides
-   * normalised the same way by the callers, and the first cell of each row is taken as its name for
-   * the message - which holds for both index tables, whose first column is `Name`.
-   *
-   * The column count of every row is checked against the header list before any cell is read, so a
-   * short row is reported as such rather than as a missing cell.
+   * [[sameRows]] one dimension further in, for the two tables wide enough that a row-level failure
+   * would be unreadable. Every cell is a rendered string, both sides normalised the same way by the
+   * callers, and the first cell of a row is its name in the message - both index tables begin with
+   * `Name`. A row's column count is checked against the header list first, so a short row is
+   * reported as such rather than as a missing cell.
    *
    * @param what  how a row of this table is named in the failure message
    * @param headers  the column names, in the order the cells are rendered in
-   * @param actual  the rendered rows the port holds
+   * @param actual  the rendered rows this module holds
    * @param expected  the rendered rows captured from the Java implementation
    */
   private def sameTable(
@@ -1576,15 +1390,14 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
    * Asserts two keyed tables are equal, reporting the '''symmetric difference''' rather than the
    * two tables.
    *
-   * A map has no order, so there is no row index to report and a plain comparison prints both maps
-   * in full and leaves the reader to find the entry that differs - over forty-four external
-   * spellings that is a failure nobody reads. The two differences are computed and named instead:
-   * the entries the manifest has that the port does not hold with that value, and the entries the
-   * port declares that the manifest does not. An entry present on both sides with different values
-   * appears in both lists, which is what identifies it.
+   * A map has no order, so a plain comparison prints both maps in full - over the forty-four
+   * external spellings of the largest group, a failure nobody reads. The two differences are named
+   * instead: the entries the manifest has that this module does not hold with that value, and the
+   * entries this module declares that the manifest does not. An entry with different values on the
+   * two sides appears in both lists.
    *
    * @param what  how this table is named in the failure message
-   * @param actual  the table the port holds
+   * @param actual  the table this module holds
    * @param expected  the table captured from the Java implementation
    */
   private def sameEntries(
@@ -1610,17 +1423,16 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   /**
-   * Asserts the named constants of the port equal a captured constant group, in name order.
+   * Asserts the named constants of this module equal a captured constant group, in name order.
    *
-   * The captured group's own count is reconciled with the length of its name list first, so that a
-   * document disagreeing with itself is reported as that rather than as a difference against the
-   * port. The names are then compared as a '''sequence''' of sorted names rather than as a set,
-   * because a repeated name is data: the overnight index holder publishes two constants for one
-   * index, and a set comparison would accept a port that published only one of them.
+   * The captured group's own count is reconciled with its name list first, so a document
+   * disagreeing with itself is reported as that rather than as a difference against this module.
+   * The names are then compared as a '''sequence''' of sorted names, not as a set, because a
+   * repeated name is data: the overnight index holder publishes two constants for one index.
    *
    * @param what  how a constant of this family is named in the failure message
    * @param where  how the captured group is named in the failure message
-   * @param actual  the names of the constants the port declares
+   * @param actual  the names of the constants this module declares
    * @param captured  the captured constant group
    */
   private def sameConstantNames(
@@ -1636,11 +1448,11 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   }
 
   /**
-   * Asserts the named constants of the port equal the constant group under a top-level key.
+   * Asserts the named constants of this module equal the constant group under a top-level key.
    *
    * @param what  how a constant of this family is named in the failure message
    * @param key  the top-level key of the document carrying the group
-   * @param actual  the names of the constants the port declares
+   * @param actual  the names of the constants this module declares
    */
   private def sameNamedConstants(what: String, key: String, actual: Vector[String]): Unit =
     sameConstantNames(what, s"key '$key'", actual, nameGroup(key))
@@ -1648,15 +1460,14 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
   /**
    * Asserts the external spelling groups of one family equal the captured rows.
    *
-   * The comparison is against the '''raw''' table - the rows as the reference data supplied them,
-   * external spelling to canonical name as text - and not against the resolved view, for two
-   * reasons. A row may name a member the family does not publish, which the resolved view drops and
-   * the transcription must keep; and resolving both sides through the same lookup would let a
-   * mistranscribed canonical name agree with itself.
+   * The comparison is against the '''raw''' table - external spelling to canonical name as text -
+   * rather than the resolved view, for two reasons: a row may name a member the family does not
+   * publish, which the resolved view drops and the transcription must keep, and resolving both
+   * sides through the same lookup would let a mistranscribed canonical name agree with itself.
    *
    * @param family  the family name the document keys the groups under
-   * @param groups  the group names the port publishes for the family
-   * @param rawOf  the port's raw table for a group, by group name
+   * @param groups  the group names this module publishes for the family
+   * @param rawOf  this module's raw table for a group, by group name
    */
   private def sameExternalNameGroups(
       family: String,
@@ -1689,13 +1500,12 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
    * Asserts the lenient rewrites of one family equal the captured rows, in file order.
    *
    * The rewrite is sequential - each matching expression rewrites the text before the next is
-   * tried - so the order of the rows is behaviour and the comparison is of sequences. The
-   * expression is compared through its source text, which is what the reference data held and what
-   * the port transcribes; the compiled expressions are copies made insensitive to case, so
-   * comparing those would compare a derivation instead of the data.
+   * tried - so the order of the rows is behaviour and the comparison is of sequences. Each
+   * expression is compared through its source text, which is what the reference data held; the
+   * compiled expressions are copies made insensitive to case, a derivation rather than the data.
    *
    * @param family  the family name the document keys the table under
-   * @param patterns  the lenient rewrites the port declares, in the order they are applied
+   * @param patterns  the lenient rewrites this module declares, in the order they are applied
    */
   private def sameLenientPatterns(family: String, patterns: List[(Regex, String)]): Unit = {
     val expected = lenientPatternRows(family).map(row => (row.key, row.value))
@@ -1714,19 +1524,12 @@ final class ReferenceDataManifestSpec extends AnyFunSuite with Matchers {
 /**
  * The manifest document, read and decoded once, and the declaration of what this suite covers.
  *
- * '''Nothing here runs while this object initialises.''' The resource is read on first use, behind a
- * `lazy val`, and the read answers with an `Either` rather than throwing, so a resource that is
- * missing, empty, unparseable or not an object is reported by the test whose subject that is and
- * through the diagnostic of every accessor that cannot proceed without it - never as an
- * `ExceptionInInitializerError` that aborts the suite before it reports anything. Each key is then
- * decoded into the typed view the tests read, and those views are lazy for the same reason:
- * decoding still happens once, but it happens inside the test that reads the view, so a document
- * whose shape has changed under one key fails the tests of that key, naming the key and the JSON
- * path, and leaves the remaining twenty-eight still asserted.
- *
- * Members are declared in dependency order - the key names first, then the document, then the typed
- * views derived from both - which is how the file reads even though everything derived from the
- * document being lazy means the order no longer decides whether one of them sees another as `null`.
+ * '''Nothing here runs while this object initialises.''' The resource is read on first use, behind
+ * a `lazy val`, and the read answers with an `Either` rather than throwing, so a resource that is
+ * missing, empty, unparseable or not an object is reported by the test whose subject that is rather
+ * than by an `ExceptionInInitializerError`. Each key is then decoded into the typed view the tests
+ * read, and those views are lazy for the same reason: a document whose shape has changed under one
+ * key fails the tests of that key and leaves the remaining twenty-eight still asserted.
  */
 private object ReferenceDataManifestSpec {
 
@@ -1879,10 +1682,9 @@ private object ReferenceDataManifestSpec {
    * The documented `THBA` date figures: the total number of published dates, and the sizes of the
    * shortest and the longest year row.
    *
-   * The manifest comparison establishes that the port holds the rows the capture recorded; these are
-   * the published totals of the section those rows were captured from
-   * (`HolidayCalendarData.ini:32-106`), and they are what reports a row that lost or gained a date
-   * en bloc on both sides of that comparison at once.
+   * These are the published totals of the section the rows were captured from
+   * (`HolidayCalendarData.ini:32-106`), so they report a row that lost or gained a date en bloc on
+   * both sides of the manifest comparison at once.
    */
   val DocumentedThbaDateCount: Int = 1220
   val DocumentedThbaShortestYearRowSize: Int = 13
@@ -1891,9 +1693,9 @@ private object ReferenceDataManifestSpec {
   /**
    * The documented size of every named-constant group of the document.
    *
-   * Eleven of the twenty nine keys are `{count, names[]}` groups, and every one of them is here:
-   * the four index constant holders, the six convention families and the holiday calendar
-   * identifiers, plus the built-in calendar set. The figures are those section 7 of
+   * Twelve of the twenty-nine keys are `{count, names[]}` groups, and every one of them is here:
+   * the four index constant holders, the six convention families, the holiday calendar identifiers
+   * and the built-in calendar set. The figures are the literals section 7 of
    * `tools/parity-capture/README.md` publishes.
    */
   val DocumentedNameGroupCounts: Map[String, Int] =
@@ -1923,8 +1725,8 @@ private object ReferenceDataManifestSpec {
    * The external name groups of every family that publishes any, and their documented sizes.
    *
    * Three families do: the day count, roll convention and business day convention families. The
-   * other named families of the port publish none, which the tests of those families assert
-   * directly rather than through this table.
+   * other named families publish none, which the tests of those families assert directly rather
+   * than through this table.
    */
   val DocumentedExternalGroups: Map[String, Map[String, Int]] =
     Map(
@@ -1952,7 +1754,7 @@ private object ReferenceDataManifestSpec {
    * capture writes them.
    *
    * Held as a sequence because the order is part of what makes the document byte-stable between
-   * captures, and a reordering is a change to the artefact the later slices will read.
+   * captures.
    */
   val DocumentedKeyOrder: Vector[String] =
     Vector(
@@ -1987,11 +1789,11 @@ private object ReferenceDataManifestSpec {
       "alternateNames")
 
   //-------------------------------------------------------------------------
-  // What this suite covers. Nothing is exempt, and the declaration is asserted, not asserted of.
+  // What this suite covers. Nothing is exempt, and the declaration is itself asserted.
   //-------------------------------------------------------------------------
 
   /**
-   * The keys asserted against the port by the tests of this suite, which is all of them.
+   * The keys asserted against this module by the tests of this suite, which is all of them.
    *
    * Four of them - `floatingRateNames`, `externalNames`, `lenientPatterns` and `alternateNames` -
    * divide their content by family rather than carrying one table, so coverage is stated one level
@@ -2032,38 +1834,28 @@ private object ReferenceDataManifestSpec {
   /**
    * The keys whose Scala counterpart does not exist yet, each naming the file that will carry it.
    *
-   * Empty, because every table of the manifest now has one. The map is kept rather than deleted,
-   * because it is the mechanism by which the '''next''' gap is reported: the port was built in
-   * slices, and while the index tables, the day count, roll convention and stub convention families
-   * and the index alternate names were outstanding this map named the file each was waiting for and
-   * the coverage test held that declaration against the document. A later capture that adds a key
-   * this suite has no comparison for is declared here for exactly as long as that is true, and
-   * appears in the failure message of the coverage test until it is not - which is the opposite of
-   * a key silently going unchecked.
-   *
-   * The value of an entry is the path of the file that will carry the port's counterpart, so a
-   * reader of the failure learns where the work is and not merely that work remains.
+   * Empty, because every table of the manifest has one. The map is how the '''next''' gap is
+   * reported: a key this suite has no comparison for is declared here and appears in the failure
+   * message of the coverage test until it is covered, with the path of the file that will carry the
+   * counterpart, so a reader learns where the work is and not merely that work remains.
    */
   val PendingKeys: Map[String, String] = Map.empty
 
   /**
    * The nested shapes of a covered key that have no Scala counterpart yet, keyed `<key>.<shape>`.
    *
-   * Empty, for the same reason and with the same purpose as [[PendingKeys]]: the day count and roll
-   * convention families own their external name groups and their lenient patterns, and those four
-   * shapes were declared here until those two files landed.
+   * Empty, with the same purpose as [[PendingKeys]] one level down: a shape of a family-divided key
+   * has its own owner in this module, so it is declared and reported on its own.
    */
   val PendingNestedShapes: Map[String, String] = Map.empty
 
   /**
    * The covered nested shapes of each key whose content is divided by family.
    *
-   * Coverage is stated one level deeper for these four because a shape of one of them is a separate
-   * table with a separate owner in the port - `lenientPatterns.DayCount` is transcribed in
-   * `date/DayCount.scala` and `lenientPatterns.RollConvention` in `schedule/RollConvention.scala` -
-   * so "the key is covered" is not a statement about any one of them. The nested coverage test
-   * compares these sets with the shapes the document actually carries, which is what reports a
-   * family added to, renamed in or dropped from the capture.
+   * A shape of one of these four is a separate table with a separate owner - `lenientPatterns`
+   * `.DayCount` is transcribed in `date/DayCount.scala` and `lenientPatterns.RollConvention` in
+   * `schedule/RollConvention.scala` - so "the key is covered" is not a statement about any one of
+   * them. The nested coverage test compares these sets with the shapes the document carries.
    */
   val PartiallyCoveredKeys: Map[String, Set[String]] =
     Map(
@@ -2078,14 +1870,12 @@ private object ReferenceDataManifestSpec {
 
   //-------------------------------------------------------------------------
   // Row models, each with the key set of the object it decodes. Every field name is the JSON key
-  // the capture writes, and every key set here is `uniform` - one documented shape, no optional
-  // key - because the captured manifest is a uniform document: a table carries the same keys in
-  // every one of its rows, present rather than omitted. A uniform schema is therefore exact
-  // equality of key sets, and `ParityHarness.strictObject` applies it to the object before the
+  // the capture writes, and every key set is `uniform` - one shape, no optional key - because the
+  // captured manifest is uniform: a table carries the same keys in every one of its rows, present
+  // rather than omitted. `ParityHarness.strictObject` applies the set to the object before the
   // derived decoder reads it, so an unknown, a missing or a renamed key is refused with the key
-  // named rather than ignored. Each schema's key set is held against the committed document by
-  // `every declared object schema is the key set the committed manifest carries`, so none of them
-  // can drift from the artefact it describes.
+  // named, and `every declared object schema is the key set the committed manifest carries` holds
+  // each set against the document.
   //-------------------------------------------------------------------------
 
   /** One currency row: `{code, minorUnitDigits, triangulationCurrency, historic}`. */
@@ -2095,7 +1885,6 @@ private object ReferenceDataManifestSpec {
       triangulationCurrency: String,
       historic: Boolean)
 
-  /** The key set of one row of `currencies.rows`. */
   val CurrencyRowSchema: KeySchema =
     KeySchema.uniform(
       "manifest currency row",
@@ -2108,7 +1897,6 @@ private object ReferenceDataManifestSpec {
       activeCount: Int,
       rows: Vector[CurrencyManifestRow])
 
-  /** The key set of the `currencies` table. */
   val CurrencyTableSchema: KeySchema =
     KeySchema.uniform(
       "manifest currency table",
@@ -2117,28 +1905,24 @@ private object ReferenceDataManifestSpec {
   /** One conventional currency pair: `{pair, rateDigits}`. */
   final case class CurrencyPairManifestRow(pair: String, rateDigits: Int)
 
-  /** The key set of one row of `currencyPairs.rows`. */
   val CurrencyPairRowSchema: KeySchema =
     KeySchema.uniform("manifest currency pair row", Set("pair", "rateDigits"))
 
   /** The currency pair table: `{count, rows[]}`. */
   final case class CurrencyPairManifestTable(count: Int, rows: Vector[CurrencyPairManifestRow])
 
-  /** The key set of the `currencyPairs` table. */
   val CurrencyPairTableSchema: KeySchema =
     KeySchema.uniform("manifest currency pair table", Set("count", "rows"))
 
   /** One country row: `{alpha3, alpha2}`. */
   final case class CountryManifestRow(alpha3: String, alpha2: String)
 
-  /** The key set of one row of `countries.rows`. */
   val CountryRowSchema: KeySchema =
     KeySchema.uniform("manifest country row", Set("alpha3", "alpha2"))
 
   /** The country table: `{count, rows[]}`. */
   final case class CountryManifestTable(count: Int, rows: Vector[CountryManifestRow])
 
-  /** The key set of the `countries` table. */
   val CountryTableSchema: KeySchema =
     KeySchema.uniform("manifest country table", Set("count", "rows"))
 
@@ -2146,12 +1930,8 @@ private object ReferenceDataManifestSpec {
   final case class NameGroup(count: Int, names: Vector[String])
 
   /**
-   * The key set of a named-constant group.
-   *
-   * The shape of the twelve constant-holder keys of the document - `iborIndexConstants`,
-   * `overnightIndexConstants`, `priceIndexConstants`, `fxIndexConstants`, `dayCounts`,
-   * `businessDayConventions`, `rollConventions`, `periodAdditionConventions`, `dateSequences`,
-   * `stubConventions`, `holidayCalendarIds` and `builtInHolidayCalendars` - and of
+   * The key set of a named-constant group: the shape of the twelve constant-holder keys of the
+   * document, which are the keys of [[DocumentedNameGroupCounts]], and of
    * `floatingRateNames.constants`.
    */
   val NameGroupSchema: KeySchema =
@@ -2161,10 +1941,8 @@ private object ReferenceDataManifestSpec {
   final case class KeyValueRow(key: String, value: String)
 
   /**
-   * The key set of one key/value row.
-   *
-   * The shape of a row of every `floatingRateNames.sections.<section>.rows` and of every
-   * `lenientPatterns.<family>.rows`.
+   * The key set of one key/value row: the shape of a row of every
+   * `floatingRateNames.sections.<section>.rows` and of every `lenientPatterns.<family>.rows`.
    */
   val KeyValueRowSchema: KeySchema =
     KeySchema.uniform("manifest key/value row", Set("key", "value"))
@@ -2173,10 +1951,8 @@ private object ReferenceDataManifestSpec {
   final case class KeyValueSection(count: Int, rows: Vector[KeyValueRow])
 
   /**
-   * The key set of one configuration section.
-   *
-   * The shape of every `floatingRateNames.sections.<section>` and of every
-   * `lenientPatterns.<family>`.
+   * The key set of one configuration section: the shape of every
+   * `floatingRateNames.sections.<section>` and of every `lenientPatterns.<family>`.
    */
   val KeyValueSectionSchema: KeySchema =
     KeySchema.uniform("manifest key/value section", Set("count", "rows"))
@@ -2184,14 +1960,12 @@ private object ReferenceDataManifestSpec {
   /** One external name row: `{externalName, standardName}`. */
   final case class ExternalNameRow(externalName: String, standardName: String)
 
-  /** The key set of one row of `externalNames.<family>.<group>.rows`. */
   val ExternalNameRowSchema: KeySchema =
     KeySchema.uniform("manifest external name row", Set("externalName", "standardName"))
 
   /** One external name group: `{count, rows[]}`. */
   final case class ExternalNameGroup(count: Int, rows: Vector[ExternalNameRow])
 
-  /** The key set of one `externalNames.<family>.<group>` group. */
   val ExternalNameGroupSchema: KeySchema =
     KeySchema.uniform("manifest external name group", Set("count", "rows"))
 
@@ -2199,10 +1973,8 @@ private object ReferenceDataManifestSpec {
   final case class AlternateNameRow(alternateName: String, standardName: String)
 
   /**
-   * The key set of one alternate name row.
-   *
-   * The shape of a row of every `alternateNames.<family>.iniRows` and of every
-   * `alternateNames.<family>.apiExpandedRows`, which the capture writes in the same shape.
+   * The key set of one alternate name row: the shape of a row of every
+   * `alternateNames.<family>.iniRows` and of every `alternateNames.<family>.apiExpandedRows`.
    */
   val AlternateNameRowSchema: KeySchema =
     KeySchema.uniform("manifest alternate name row", Set("alternateName", "standardName"))
@@ -2214,7 +1986,6 @@ private object ReferenceDataManifestSpec {
       apiExpandedRowCount: Int,
       apiExpandedRows: Vector[AlternateNameRow])
 
-  /** The key set of one `alternateNames.<family>` table. */
   val AlternateNameTableSchema: KeySchema =
     KeySchema.uniform(
       "manifest alternate name table",
@@ -2227,15 +1998,13 @@ private object ReferenceDataManifestSpec {
       rows: Vector[Map[String, String]])
 
   /**
-   * The key set of an index table.
+   * The key set of an index table: the shape of `iborIndices`, `overnightIndices`, `priceIndices`
+   * and `fxIndices`.
    *
-   * The shape of `iborIndices`, `overnightIndices`, `priceIndices` and `fxIndices`. The schema
-   * governs the three keys of the table itself and stops there: a '''row''' of one of these tables
-   * is keyed by the table's own column headers, so its keys are data rather than a record shape,
-   * and they are asserted against `headers` - for every row of every index table - by `every table
-   * of the manifest carries the row count the schema of record documents`. Turning a row into a
-   * fixed record would pin four wide tables to one spelling of thirteen, eight, five and six
-   * column names apiece and would still say nothing the header comparison does not already say.
+   * The schema governs the three keys of the table itself and stops there: a '''row''' of one of
+   * these tables is keyed by the table's own column headers, so its keys are data rather than a
+   * record shape, and they are asserted against `headers`, for every row of every index table, by
+   * `every table of the manifest carries the row count the schema of record documents`.
    */
   val IndexTableSchema: KeySchema =
     KeySchema.uniform("manifest index table", Set("count", "headers", "rows"))
@@ -2251,9 +2020,8 @@ private object ReferenceDataManifestSpec {
    *
    * The `sections` key holds a map from section name to section, not a record: the seven section
    * names are the division of the published alias space and are asserted as a set by `the manifest
-   * floating rate name sections account for every transcribed row`, which is also where the
-   * declared alias row count is reconciled with the sections it totals. Each section itself is a
-   * fixed shape and is decoded through [[KeyValueSectionSchema]].
+   * floating rate name sections account for every transcribed row`. Each section is itself a fixed
+   * shape, decoded through [[KeyValueSectionSchema]].
    */
   val FloatingRateNameTableSchema: KeySchema =
     KeySchema.uniform(
@@ -2266,7 +2034,6 @@ private object ReferenceDataManifestSpec {
       calendarId: String,
       resolvableAgainstStandardReferenceData: Boolean)
 
-  /** The key set of one row of `holidayCalendarDefaultByCurrency.rows`. */
   val HolidayCalendarDefaultRowSchema: KeySchema =
     KeySchema.uniform(
       "manifest default calendar row",
@@ -2279,7 +2046,6 @@ private object ReferenceDataManifestSpec {
       unresolvableCount: Int,
       rows: Vector[HolidayCalendarDefaultRow])
 
-  /** The key set of the `holidayCalendarDefaultByCurrency` table. */
   val HolidayCalendarDefaultTableSchema: KeySchema =
     KeySchema.uniform(
       "manifest default calendar table",
@@ -2288,7 +2054,6 @@ private object ReferenceDataManifestSpec {
   /** One THBA year row: `{year, dates}`, the dates as `MMMdd` text separated by commas. */
   final case class ThbaYearRow(year: String, dates: String)
 
-  /** The key set of one row of `holidayCalendarData.THBA.rows`. */
   val ThbaYearRowSchema: KeySchema =
     KeySchema.uniform("manifest THBA year row", Set("year", "dates"))
 
@@ -2298,26 +2063,21 @@ private object ReferenceDataManifestSpec {
   /**
    * The key set of one table of `holidayCalendarData`, of which the document carries one: `THBA`.
    *
-   * The schema is of the table, not of the key it hangs under; the object that holds the keys has
-   * a schema of its own, immediately below.
+   * The schema is of the table, not of the key it hangs under; the object that holds the keys has a
+   * schema of its own, immediately below.
    */
   val ThbaTableSchema: KeySchema =
     KeySchema.uniform("manifest THBA table", Set("yearRowCount", "weekend", "rows"))
 
   /**
-   * The key set of `holidayCalendarData` itself: the one calendar the capture emits table data
-   * for.
+   * The key set of `holidayCalendarData` itself: the one calendar the capture emits table data for.
    *
-   * This object looks like the map-shaped parts of the manifest, whose keys are '''data''' and
-   * are therefore asserted as sets rather than declared, but it is not one of them: only `THBA`
-   * is read out of it and compared with the port, so a second calendar added by a later capture
-   * would decode into the map, sit there unread, and leave that whole table unmeasured while
-   * every other check of this suite still passed. Declaring the key set is what refuses it
-   * instead - a calendar the capture starts emitting has to be read here before this suite can
-   * report on the manifest again, which is precisely the intent.
-   *
-   * `Map[String, ThbaTable]` remains the decoded type: the name is still the key of a table, and
-   * nothing about the shape of a table changes. What is declared is which keys may appear.
+   * This object looks like the map-shaped parts of the manifest, whose keys are '''data''' and are
+   * asserted as sets rather than declared, but it is not one of them: only `THBA` is read out of
+   * it, so a second calendar added by a later capture would sit in the map unread and leave that
+   * whole table unmeasured. Declaring the key set refuses it instead. `Map[String, ThbaTable]`
+   * remains the decoded type - the name is still the key of a table - and what is declared is which
+   * keys may appear.
    */
   val HolidayCalendarDataSchema: KeySchema =
     KeySchema.uniform("manifest holiday calendar data", Set(ThbaCalendarName))
@@ -2325,8 +2085,7 @@ private object ReferenceDataManifestSpec {
   // Declared in dependency order: a table's decoder captures the row decoder it needs while it is
   // itself initialised, so a row decoder below its table would be read as `null`. Each one is the
   // derived decoder of its model behind the key check of its schema, so the keys of an object are
-  // settled before any field of it is read; wrapping does not change what a field decodes to, and
-  // it leaves the order above exactly as load-bearing as it was.
+  // settled before any field of it is read.
   implicit val currencyRowDecoder: Decoder[CurrencyManifestRow] =
     ParityHarness.strictObject(CurrencyRowSchema)(deriveDecoder[CurrencyManifestRow])
 
@@ -2388,8 +2147,8 @@ private object ReferenceDataManifestSpec {
     ParityHarness.strictObject(ThbaTableSchema)(deriveDecoder[ThbaTable])
 
   /**
-   * The decoder of `holidayCalendarData`: a map of calendar name to table, behind the key check
-   * of [[HolidayCalendarDataSchema]].
+   * The decoder of `holidayCalendarData`: a map of calendar name to table, behind the key check of
+   * [[HolidayCalendarDataSchema]].
    *
    * Declared implicitly so that the one place the document reads that key picks it up rather than
    * the library's own map decoder, which would accept a calendar this suite never reads.
@@ -2405,52 +2164,28 @@ private object ReferenceDataManifestSpec {
   /**
    * The largest manifest this suite will read, in bytes.
    *
-   * The committed document is a quarter of a megabyte, so eight megabytes is four orders of
-   * magnitude of room for a table to grow in and still a ceiling: the read below is given a bound
-   * so that a resource which is not the manifest at all - a truncated stream that never ends, an
-   * archive that resolved under the same name - is reported as being too large rather than
-   * exhausting the heap of the forked test JVM. A capture that genuinely outgrew this ceiling fails
-   * the load test with a message naming the figure.
+   * Eight mebibytes is roughly thirty times the committed document, which is a quarter of a
+   * megabyte (254,640 bytes): room for a table to grow in and still a ceiling. The read below is
+   * bounded so that a resource which is not the manifest at all is reported as too large rather
+   * than exhausting the heap of the forked test JVM, and a capture that genuinely outgrew the bound
+   * fails the load test with a message naming the figure.
    */
   val ManifestByteCeiling: Int = 8 * 1024 * 1024
 
   /**
-   * Reads the committed manifest resource as UTF-8 text, without an effect and without throwing.
+   * Reads the committed manifest resource as UTF-8 text, without throwing.
    *
-   * '''Why this is not the module's effectful reader.''' AAP section 0.3.3 confines the effect monad
-   * of the port to `collect.io.Resources`, the parity harness and `BasicsDemoApp`, and this suite is
-   * none of the three: discharging that reader's effect here would add a boundary the Rule 7 posture
-   * does not have, and discharging it in an eagerly initialised `val`, as this file once did, turned
-   * a missing or malformed resource into an `ExceptionInInitializerError` that aborted the suite
-   * before a single test could report anything. Reading one committed class path resource needs no
-   * effect type at all: it is done here with the class loader, bounded, total, and decoded
-   * explicitly, and the outcome is a value that the load test asserts and every other accessor
-   * reports through.
-   *
-   * '''The alternative, and why it is not taken here.''' The other way to keep this suite free of an
-   * effect boundary is for the read to happen in one of the three places that may hold one - the
-   * natural candidate being the parity harness beside this file, which already loads classpath
-   * fixtures through `Resources.readClasspathText` - and for an `Either` to be handed to this suite
-   * already read. That is a better home for it if the module ever wants one reader and one only,
-   * and it is a small change: a method there returning `Either[String, String]` and this file
-   * calling it in place of [[readManifestText]]. It is not done here because the harness is not
-   * this file's concern to change, and because the guarantees that make the choice matter - a
-   * ceiling, a close on every outcome, and strict UTF-8 - are each stated and asserted below rather
-   * than assumed.
-   *
-   * The read carries the same three guarantees as the reader it stands in for, because a weaker
-   * read of this document would be a defect of this suite rather than a convenience: it is bounded
-   * by [[ManifestByteCeiling]] - one byte beyond it is requested, so a document at the ceiling is
-   * distinguishable from one over it - it is closed by [[scala.util.Using]] whether it completes or
-   * fails, and it is decoded as '''strict''' UTF-8 by [[decodeUtf8]], which refuses a malformed
-   * byte sequence instead of substituting a replacement character for it. That last one is the one
-   * worth stating: this suite exists to prove a captured document was transcribed faithfully, so a
-   * decoder that silently rewrote a byte before the JSON was parsed could turn a corrupt capture
-   * into a passing comparison.
+   * The module's effectful class path reader is not used: this suite holds no effect boundary, and
+   * one committed resource needs none. The read carries the same three guarantees, because a weaker
+   * read of this document would be a defect of this suite: bounded by [[ManifestByteCeiling]] - one
+   * byte beyond it is requested, so a document at the ceiling is distinguishable from one over it -
+   * closed by [[scala.util.Using]] whether it completes or fails, and decoded as '''strict''' UTF-8
+   * by [[decodeUtf8]], so a corrupt capture cannot be rewritten into a passing comparison before
+   * the JSON is parsed. The outcome is a value the load test asserts and every other accessor
+   * reports through, so nothing throws here.
    *
    * A leading `/` on the resource name is tolerated because `ClassLoader.getResourceAsStream`
-   * rejects it where `Class.getResourceAsStream` requires it, and the constant is written in the
-   * class loader's form.
+   * rejects it where `Class.getResourceAsStream` requires it.
    *
    * @return the text of the resource, or the reason it could not be read, naming the resource
    */
@@ -2485,18 +2220,13 @@ private object ReferenceDataManifestSpec {
   /**
    * Decodes bytes as strict UTF-8, refusing a sequence that is not valid UTF-8.
    *
-   * `new String(bytes, UTF_8)` is not this: its decoder is configured to '''replace''' a malformed
-   * or unmappable sequence with `U+FFFD` and carry on, so a corrupted capture would reach the JSON
-   * parser as text that differs from the bytes on disk. A decoder obtained from the charset and set
-   * to [[java.nio.charset.CodingErrorAction#REPORT]] raises
-   * [[java.nio.charset.CharacterCodingException]] instead, which is what the module's own class
-   * path reader does with the same input and what this suite needs: the document it reads is the
-   * evidence every other test in the file is stated against, so the bytes must survive the read
-   * unaltered or the read must say so.
-   *
-   * Kept separate from [[readManifestText]], and visible to the suite, so that the guarantee is
-   * asserted by a test over bytes chosen for the purpose rather than inferred from a document that
-   * happens to be well formed.
+   * `new String(bytes, UTF_8)` is not this: its decoder '''replaces''' a malformed sequence with
+   * `U+FFFD` and carries on, so a corrupted capture would reach the JSON parser as text that
+   * differs from the bytes on disk. A decoder set to [[java.nio.charset.CodingErrorAction#REPORT]]
+   * raises [[java.nio.charset.CharacterCodingException]] instead, which is what this suite needs:
+   * the document is the evidence every other test is stated against. Kept separate from
+   * [[readManifestText]], and visible to the suite, so the guarantee is asserted by a test over
+   * bytes chosen for the purpose.
    *
    * @param bytes  the bytes read from the resource
    * @return the decoded text, or the reason the bytes are not UTF-8, naming the resource
@@ -2517,16 +2247,10 @@ private object ReferenceDataManifestSpec {
   /**
    * The top level of the manifest, or the reason the document could not be obtained.
    *
-   * Held as an `Either` rather than read into a member that throws, so that the one test whose
-   * subject is the resource itself can assert the outcome and print the reason, and so that nothing
-   * at all happens while this object initialises. The four distinguishable failures - the resource
-   * is absent, it read as empty text, it is not JSON, it is JSON but not an object - each name the
-   * resource and the script that writes it, because the useful next step differs in each case.
-   *
-   * The top level is kept as a [[io.circe.JsonObject]] rather than decoded into a case class of
-   * twenty nine fields: the key set itself is something this suite asserts, at the top level and
-   * recursively, and a case class would silently ignore a key it had no field for - precisely the
-   * change those assertions exist to catch.
+   * Held as an `Either` rather than read into a member that throws, so the test whose subject is
+   * the resource can assert the outcome and print the reason, and nothing happens while this object
+   * initialises. The four distinguishable failures - absent, empty text, not JSON, JSON but not an
+   * object - each name the resource and the script that writes it.
    */
   lazy val documentOrFailure: Either[String, JsonObject] =
     readManifestText().flatMap(documentOf)
@@ -2536,10 +2260,8 @@ private object ReferenceDataManifestSpec {
    * one.
    *
    * Separated from the read, and visible to the suite, for the same reason [[decodeUtf8]] is: the
-   * three ways a document can be text and still not be the manifest are each asserted by a test
-   * over text chosen for the purpose. Reading the committed resource exercises the success path
-   * only, and a guard whose failure path has never been observed is a guard that may not report
-   * what it claims to.
+   * three ways text can still not be the manifest are each asserted over text chosen for the
+   * purpose, the committed resource exercising the success path only.
    *
    * @param text  the text read from the resource
    * @return the top level of the document, or the reason the text is not a JSON object
@@ -2567,10 +2289,7 @@ private object ReferenceDataManifestSpec {
    *
    * A document that could not be obtained is reported as a '''failed test''' carrying the
    * diagnostic, through [[org.scalatest.Assertions#fail]], rather than as an exception out of an
-   * initialiser: the accessor is reached from inside a test, so the test that reads the manifest is
-   * the test that reports the manifest being unreadable. `the manifest resource is present on the
-   * class path, is non-empty and parses as a JSON object` asserts the same outcome on its own, so
-   * the reason is reported once by a test whose subject it is rather than repeated by all of them.
+   * initialiser: the test that reads the manifest is the one that reports it unreadable.
    */
   private lazy val document: JsonObject =
     documentOrFailure.fold(diagnostic => Assertions.fail(diagnostic), identity)
@@ -2581,10 +2300,8 @@ private object ReferenceDataManifestSpec {
   /**
    * Collects the key names of a JSON value and of everything nested inside it.
    *
-   * Written as a fold over the JSON algebra rather than as a cast-and-test, so that every shape a
-   * value can take is accounted for and a future shape cannot be missed: the four scalar shapes
-   * contribute nothing, an array contributes the names of its elements, and an object contributes
-   * its own keys and the names of its values.
+   * A fold over the JSON algebra rather than a cast-and-test, so every shape a value can take is
+   * accounted for.
    *
    * @param json  the value to collect from
    * @return every key name occurring at or below this value
@@ -2605,10 +2322,9 @@ private object ReferenceDataManifestSpec {
   /**
    * Every key name that occurs anywhere in the document, at any depth.
    *
-   * Read for one purpose: to assert that no part of the document declares a runtime provider, which
-   * would be a mechanism the port does not have. Key '''names''' only - the values a key holds are
-   * compared by the tests that own them - and a name is recorded once however many times it occurs,
-   * since the question asked of this set is whether a name is present at all.
+   * Read for one purpose: to assert that no part of the document declares a runtime provider. Key
+   * '''names''' only, each recorded once, since the question asked of this set is only whether a
+   * name is present.
    */
   lazy val documentKeyNames: Set[String] = keyNamesOf(Json.fromJsonObject(document))
 
@@ -2643,13 +2359,10 @@ private object ReferenceDataManifestSpec {
   //-------------------------------------------------------------------------
   // The typed views the tests assert from, each decoded on first use and then held.
   //
-  // Lazy on purpose. Decoding is done once - a `lazy val` memoises, so no test re-decodes a view -
-  // but it is done inside the test that reads the view rather than while this object initialises,
-  // so a section whose shape has changed fails the tests that read that section, naming the key and
-  // the JSON path, and leaves every other section still asserted. Decoding all of them eagerly
-  // would turn one malformed section into an initialiser error that aborts the whole suite and
-  // reports nothing else. Laziness also removes the textual-order hazard of a view reading a key
-  // name declared below it.
+  // Lazy on purpose: a `lazy val` memoises, so decoding happens once, but inside the test that
+  // reads the view rather than while this object initialises. A section whose shape has changed
+  // therefore fails the tests that read it, naming the key and the JSON path, and leaves every
+  // other section still asserted, where eager decoding would abort the whole suite.
   //-------------------------------------------------------------------------
 
   lazy val schemaVersion: Int = keyAs[Int]("schemaVersion")
@@ -2700,20 +2413,18 @@ private object ReferenceDataManifestSpec {
   //-------------------------------------------------------------------------
   // The documented object shapes, each with a specimen of it taken from the document.
   //
-  // This is the inventory the strictness tests read. It exists so that the key sets declared
-  // beside the row models are statements about the committed artefact rather than about what
-  // somebody believed the capture wrote: every schema is matched against a real object of its
-  // shape, and the accept-and-refuse tests perturb that same object rather than a hand-written
-  // stand-in that could agree with the schema and disagree with the document.
+  // The inventory the strictness tests read, and what makes the key sets declared beside the row
+  // models statements about the committed artefact: every schema is matched against a real object
+  // of its shape, and the accept-and-refuse tests perturb that same object.
   //-------------------------------------------------------------------------
 
   /**
    * One fixed-shape object of the manifest: its declared key set, where the document carries an
    * instance of it, and the decoder this suite reads that shape through.
    *
-   * `decode` answers `Decoder.Result[Any]` because the two questions the strictness tests ask of
-   * it - whether it accepted the object, and what it said when it refused - are the same for every
-   * shape and neither depends on the type the shape decodes to.
+   * `decode` answers `Decoder.Result[Any]` because the two questions the strictness tests ask of it
+   * - whether it accepted the object, and what it said when it refused - do not depend on the type
+   * the shape decodes to.
    *
    * @param schema  the declared key set of the shape
    * @param path  where the document carries an instance, as [[specimenAt]] reads a path
@@ -2734,12 +2445,11 @@ private object ReferenceDataManifestSpec {
   /**
    * The instance of an object shape the document carries at a path.
    *
-   * The path is read left to right, each step naming a key of the object reached so far, and a
-   * step suffixed `[]` meaning the '''first''' element of the array that key holds - so
-   * `currencies.rows[]` is the first row of the currency table. Each step is checked as it is
-   * taken and one that cannot be taken throws, naming the whole path and the step that failed: a
-   * path into this document that no longer resolves is a change in the capture, and reporting it
-   * as a missing specimen says so, where a decode failure somewhere else would not.
+   * The path is read left to right, each step naming a key of the object reached so far, and a step
+   * suffixed `[]` meaning the '''first''' element of the array that key holds - so
+   * `currencies.rows[]` is the first row of the currency table. A step that cannot be taken throws,
+   * naming the whole path and that step: a path that no longer resolves is a change in the capture,
+   * which a decode failure somewhere else would not say.
    *
    * @param path  the dotted path, any step of which may end `[]`
    * @return the object the path names
@@ -2778,9 +2488,8 @@ private object ReferenceDataManifestSpec {
   /**
    * The number of fixed-shape objects the document carries, one per row model of this suite.
    *
-   * Asserted against [[StrictShapes]] so that the inventory cannot lose an entry: a shape dropped
-   * from that vector would take its schema out of the drift check and its decoder out of the
-   * accept-and-refuse tests while every remaining shape still passed them.
+   * Asserted against [[StrictShapes]], so a shape dropped from that vector - and so out of the
+   * drift check and the accept-and-refuse tests - is reported.
    */
   val DocumentedObjectShapeCount: Int = 20
 
@@ -2791,22 +2500,13 @@ private object ReferenceDataManifestSpec {
    * Every fixed-shape object of the manifest, each with a specimen of it.
    *
    * Twenty: one per row model, plus `holidayCalendarData`, whose keys name calendars but of which
-   * only `THBA` is ever read - so its key set is declared rather than asserted as data, because a
-   * calendar a later capture added would otherwise sit in the map unmeasured. That is every object
-   * shape of the document except the two kinds whose keys are genuinely '''data''' and whose whole
-   * content is asserted elsewhere, each of which is checked where it belongs instead:
+   * only `THBA` is ever read. That is every object shape of the document except the two kinds whose
+   * keys are genuinely '''data''' - the top level, and the maps keyed by a name - each asserted as
+   * a set by the coverage, identity and count tests instead.
    *
-   *  - the top level, whose twenty-nine keys are compared with the covered and pending sets by
-   *    `every top-level key of the manifest is either asserted against the port or declared
-   *    pending`, and whose order is asserted by the identity test;
-   *  - the maps keyed by a name - a row of an index table, keyed by that table's column headers,
-   *    and the families of `externalNames`, `lenientPatterns`, `alternateNames` and
-   *    `floatingRateNames.sections` - whose key sets are asserted as sets against the headers
-   *    list and against the documented family sets by the count and coverage tests.
-   *
-   * A shape carried at more than one path is listed once, at the path of the first instance the
-   * document holds of it: the shape of a key/value section does not depend on whether it is a
-   * lenient pattern table or an alias section, and asserting it twice would assert nothing twice.
+   * A shape carried at more than one path is listed once, at the first instance the document holds
+   * of it: the shape of a key/value section does not depend on whether it is a lenient pattern
+   * table or an alias section.
    */
   val StrictShapes: Vector[StrictShape] =
     Vector(
@@ -2889,10 +2589,9 @@ private object ReferenceDataManifestSpec {
   /**
    * Parses one `MMMdd` date of a captured THBA row, such as `Jan03`.
    *
-   * The month abbreviation is resolved through the table above rather than through a date time
-   * formatter, so the parse is independent of the locale and of the calendar data of the host: the
-   * captured text is ASCII English by construction, and a formatter would make the outcome of this
-   * comparison depend on the machine it ran on.
+   * The month abbreviation is resolved through the table above rather than a date time formatter,
+   * so the parse does not depend on the locale or the calendar data of the host; the captured text
+   * is ASCII English by construction.
    *
    * @param year  the year the row is recorded under, for the failure message
    * @param token  the captured date
@@ -2909,12 +2608,12 @@ private object ReferenceDataManifestSpec {
     MonthDay.of(month, day.toInt)
   }
 
-  /** The captured THBA year rows, in the form the port holds them in. */
+  /** The captured THBA year rows, in the form this module holds them in. */
   lazy val thbaRows: Vector[(Int, List[MonthDay])] =
     holidayCalendarDataThba.rows.map(row =>
       (row.year.toInt, row.dates.split(",").toList.map(token => monthDayOf(row.year, token))))
 
-  /** The captured THBA weekend, in the form the port holds it in. */
+  /** The captured THBA weekend, in the form this module holds it in. */
   lazy val thbaWeekend: Set[DayOfWeek] =
     holidayCalendarDataThba.weekend
       .split(",")
@@ -2933,12 +2632,10 @@ private object ReferenceDataManifestSpec {
   /**
    * Renders a captured boolean cell.
    *
-   * The column is spelled `TRUE`/`FALSE` in the Ibor and overnight index data and `true`/`false`
-   * in the price index data, because the two came from files maintained by different hands; the
-   * case of a boolean literal is not data, so both spellings render to the same cell. Text that is
-   * neither is returned unchanged rather than rejected here, so that the comparison reports it
-   * against the port's value with the row and column named - which is a better failure than an
-   * exception thrown out of a cell renderer.
+   * The column is spelled `TRUE`/`FALSE` in the Ibor and overnight index data and `true`/`false` in
+   * the price index data, and the case of a boolean literal is not data. Text that is neither is
+   * returned unchanged, so the comparison reports it with the row and column named rather than an
+   * exception being thrown out of a cell renderer.
    *
    * @param captured  the captured cell text
    * @return the normal form of the cell
@@ -2950,7 +2647,7 @@ private object ReferenceDataManifestSpec {
       case other => other
     }
 
-  /** Renders a boolean the port holds, in the same normal form as [[booleanCell]]. */
+  /** Renders a boolean this module holds, in the same normal form as [[booleanCell]]. */
   def booleanCell(value: Boolean): String = if (value) "TRUE" else "FALSE"
 
   /**
@@ -2958,28 +2655,27 @@ private object ReferenceDataManifestSpec {
    *
    * The reference data spelled a day count in two ways in the same column - `ACT/360` on the Czech
    * koruna rows and `Act/360` everywhere else - so the captured text has to be brought to one
-   * spelling before it can be compared. The index that does it is built from the '''manifest's own'''
-   * `dayCounts` names and from the registration rule of the registry being ported, and from nothing
-   * else: [[com.opengamma.strata.basics.date.DayCount]] is a subject of this suite, so resolving a
-   * captured cell through it would let a wrong lookup rewrite the expectation and the port's answer
-   * in the same wrong way and still compare equal.
+   * spelling before it can be compared. The index is built from the '''manifest's own'''
+   * `dayCounts` names and the registration rule of the Java registry the capture read, and from
+   * nothing else: [[com.opengamma.strata.basics.date.DayCount]] is a subject of this suite, so
+   * resolving a cell through it would rewrite expectation and answer the same wrong way and still
+   * compare equal.
    *
-   * The rule is transcribed from `modules/collect/src/main/java/com/opengamma/strata/collect/named/`
-   * `ExtendedEnum.java:225-236`, which registers every constant twice - under its canonical name and
-   * under the English upper case of that name - with the first registration of a key winning:
+   * The rule is transcribed from
+   * `modules/collect/src/main/java/com/opengamma/strata/collect/named/`
+   * `ExtendedEnum.java:225-236`, which registers every constant twice - under its canonical
+   * name and under the English upper case of it - with the first registration of a key winning:
    *
    * {{{
    * instances.putIfAbsent(instance.getName(), instance);
    * instances.putIfAbsent(instance.getName().toUpperCase(Locale.ENGLISH), instance);
    * }}}
    *
-   * The canonical names are registered here before the upper case forms, because Java iterates the
-   * declared fields of the constants holder in an order the reflection API does not define: an upper
-   * case form that collided with the canonical name of a '''different''' member would make the Java
-   * outcome depend on that order, and the twenty-one captured names contain no such collision - ten
-   * of them differ from their upper case form, giving an index of thirty-one keys. The case fold is
-   * [[java.util.Locale#ENGLISH]] rather than the default locale, so the index does not depend on the
-   * host that runs the suite.
+   * The canonical names are registered first because Java iterates a holder's declared fields in an
+   * undefined order, which would matter if an upper case form collided with the canonical name of a
+   * '''different''' member; the twenty-one captured names hold no such collision, and ten differ
+   * from their upper case form, giving an index of thirty-one keys. The fold is
+   * [[java.util.Locale#ENGLISH]], so the index does not depend on the host that runs the suite.
    */
   lazy val CapturedDayCountNames: Map[String, String] = {
     val canonical = nameGroup(DayCountsKey).names
@@ -2992,12 +2688,11 @@ private object ReferenceDataManifestSpec {
   /**
    * Renders a captured day count cell as the canonical name of the convention it names.
    *
-   * The captured text is mapped through [[CapturedDayCountNames]], which is the manifest's own name
-   * list read through the registration rule of the registry being ported - no production type is
+   * The captured text is mapped through [[CapturedDayCountNames]], the manifest's own name list
+   * read through the registration rule of the Java registry the capture read; no production type is
    * consulted. Text the index does not hold is returned unchanged, so the comparison reports it
-   * against the name the port renders: that is what happens to `Bus/252 BRBD`, a day count that
-   * carries a calendar and so is not one of the twenty-one standard names, and the port renders it
-   * with exactly that text.
+   * against the name this module renders: that is what happens to `Bus/252 BRBD`, a day count that
+   * carries a calendar and so is not one of the twenty-one standard names.
    *
    * @param captured  the captured cell text
    * @return the canonical name of the day count, or the text when the captured names hold no
@@ -3011,10 +2706,9 @@ private object ReferenceDataManifestSpec {
   /**
    * Splits a composite calendar name on one separator, keeping empty parts.
    *
-   * Guava's `Splitter.on(char)` neither trims nor omits empty results, and the Java code this
-   * normalisation is transcribed from uses it bare, so `split` is given a limit of `-1`: Scala's
-   * one-argument `split` drops trailing empty strings, which would quietly make `GBLO+` normalise to
-   * `GBLO` here and to the empty-part composite there.
+   * The Java code this is transcribed from neither trims nor omits empty results, so `split` is
+   * given a limit of `-1`: Scala's one-argument `split` drops trailing empty strings, which would
+   * make `GBLO+` normalise to `GBLO` here and to the empty-part composite there.
    *
    * @param name  the composite name
    * @param separator  the separator to split on
@@ -3028,24 +2722,22 @@ private object ReferenceDataManifestSpec {
    *
    * This is the expected side of the comparison, so it may not call
    * [[com.opengamma.strata.basics.date.HolidayCalendarId]]: the identifier's normalisation is part
-   * of what the manifest exists to check, and putting the captured text through the port's factory
-   * would report a wrong normalisation as agreement, because the same wrong normalisation would be
-   * applied to the port's own name as well. The rule is therefore transcribed from
+   * of what the manifest exists to check, and this module's factory would rewrite both sides the
+   * same wrong way. The rule is transcribed from
    * `modules/basics/src/main/java/com/opengamma/strata/basics/date/HolidayCalendarId.java:87-120`
-   * (`of` and `create`), which is the code that produced the names the Java parser held:
+   * (`of` and `create`), the code that produced the names the Java parser held:
    *
    *  - a name containing `~` is a linked identifier: its parts are normalised by this same rule,
    *    deduplicated, sorted by name and rejoined with `~`, and a part naming `NoHolidays` absorbs
-   *    the whole identifier, because a link with a calendar that has no holidays has none either.
-   *    The absorption is decided on the normalised parts, as in Java;
-   *  - a name containing `+` is a combined identifier: parts whose '''raw''' text is `NoHolidays` are
-   *    dropped before anything else - Java filters on the raw text, so a part that only normalises
-   *    to `NoHolidays` survives the filter and is kept - and the rest are normalised, deduplicated,
-   *    sorted by name and rejoined with `+`;
+   *    the whole identifier, the absorption being decided on the normalised parts as in Java;
+   *  - a name containing `+` is a combined identifier: parts whose '''raw''' text is `NoHolidays`
+   * are dropped before anything else - Java filters on the raw text, so a part that only normalises
+   *    to `NoHolidays` survives the filter - and the rest are normalised, deduplicated, sorted by
+   *    name and rejoined with `+`;
    *  - any other name is its own normal form.
    *
-   * The sort is the plain lexicographic order of [[java.lang.String]], which is what Java's
-   * `comparing(HolidayCalendarId::getName)` compares with. `~` is tested before `+` here because
+   * The sort is the lexicographic order of [[java.lang.String]], which is what Java's
+   * `comparing(HolidayCalendarId::getName)` compares with, and `~` is tested before `+` because
    * `create` tests it first.
    *
    * @param name  the captured composite or simple name
@@ -3070,10 +2762,10 @@ private object ReferenceDataManifestSpec {
    * Renders a captured calendar cell as the name of the identifier it denotes.
    *
    * A composite identifier is normalised by deduplicating and sorting its parts, so the column text
-   * `SGSI+GBLO` denotes the identifier named `GBLO+SGSI`; comparing the raw text would report that
-   * normalisation as a difference. The normalisation applied here is [[normalisedCalendarName]],
-   * transcribed from the Java factory rather than obtained by calling the port's, so a port that
-   * normalised a composite name wrongly fails this comparison instead of surviving it.
+   * `SGSI+GBLO` denotes the identifier named `GBLO+SGSI` and comparing the raw text would report
+   * that normalisation as a difference. The normalisation is [[normalisedCalendarName]],
+   * transcribed from the Java factory rather than obtained by calling this module's, so a factory
+   * that normalised a composite name wrongly fails this comparison instead of surviving it.
    *
    * @param captured  the captured cell text
    * @return the name of the identifier the text denotes
@@ -3103,7 +2795,7 @@ private object ReferenceDataManifestSpec {
       dayCountCell(captured("Fixed Leg Day Count")))
 
   /**
-   * Renders one Ibor index row of the port as cells, in [[IborIndexHeaders]] order.
+   * Renders one Ibor index row of this module as cells, in [[IborIndexHeaders]] order.
    *
    * The time and the zone render through their own textual forms, which are the ISO forms the
    * reference data was written in: `11:55` and `Europe/London`.
@@ -3145,7 +2837,7 @@ private object ReferenceDataManifestSpec {
       dayCountCell(captured("Fixed Leg Day Count")))
 
   /**
-   * Renders one overnight index row of the port as cells, in [[OvernightIndexHeaders]] order.
+   * Renders one overnight index row of this module as cells, in [[OvernightIndexHeaders]] order.
    *
    * @param row  the transcribed row
    * @return the cells of the row
@@ -3168,16 +2860,12 @@ private object ReferenceDataManifestSpec {
   /**
    * Expands a transcribed alternate name table the way a named family does.
    *
-   * The rule reproduced here is the one the lookup applies and the one the implementation being
-   * ported applied before it: alongside each supplied spelling the table holds that spelling folded
-   * to upper case, unless the table already holds a spelling identical to it, so that an alternate
-   * name is reachable both from the exact lookup and from the lenient one, which folds case before
-   * it looks anything up. The supplied spellings are therefore never displaced.
-   *
-   * Written here so that the captured INI rows and the captured expanded rows can be held to each
-   * other: the expansion only ever adds an upper-case key, so a row missing from the transcription
-   * cannot be reinstated by it and a row transcribed in the wrong case expands to a different set
-   * of keys.
+   * Alongside each supplied spelling the table holds that spelling folded to upper case, unless it
+   * already holds one identical to it, so an alternate name is reachable both from the exact lookup
+   * and from the lenient one; a supplied spelling is never displaced. Written here so the captured
+   * INI rows and the captured expanded rows can be held to each other: the expansion only ever adds
+   * an upper-case key, so a missing INI row cannot be reinstated by it and one transcribed in the
+   * wrong case expands to a different set of keys.
    *
    * @param supplied  the transcribed table, alternate spelling to canonical name
    * @return the table as the family publishes it
@@ -3190,7 +2878,8 @@ private object ReferenceDataManifestSpec {
     }
 
   /**
-   * The alternate spellings the port publishes for one index family, as the family publishes them.
+   * The alternate spellings this module publishes for one index family, as the family publishes
+   * them.
    *
    * @param family  the family name the document keys the table under
    * @return the alternate spellings mapped to canonical names
@@ -3226,18 +2915,12 @@ private object ReferenceDataManifestSpec {
     }
 
   /**
-   * The named families of the port that declare no alternate spelling, each with its table.
+   * The named families of this module that declare no alternate spelling, each with its table.
    *
-   * The capture recorded alternate names for three families, and the reference data declared them
-   * for exactly those three. Holding the remaining families here, with their tables rather than
-   * with their names alone, is what lets the absence be asserted instead of assumed: a table
-   * appearing on one of them would be an addition to the reference data, which the user's
-   * instruction not to add a convention forbids.
-   *
-   * The price index family is among them, and so is every convention family of the module bar the
-   * stub convention, whose alternate table is a property of an enumeration rather than captured
-   * data - the name helper of the type being ported accepted the constant identifier and the
-   * case-folded spellings of every member - and is asserted by the test of that family.
+   * The capture recorded alternate names for three families and none for the rest. Holding the
+   * others here with their tables, rather than their names alone, is what lets the absence be
+   * asserted instead of assumed. The stub convention is not among them: its accepted spellings are
+   * a property of an enumeration rather than captured data, asserted by the test of that family.
    */
   val FamiliesWithoutAlternateNames: Map[String, Map[String, String]] =
     Map(
@@ -3251,15 +2934,14 @@ private object ReferenceDataManifestSpec {
       "Currency" -> Currency.namedEnum.alternateNames)
 
   //-------------------------------------------------------------------------
-  // The constant holders of the port, named one by one.
+  // The constant holders of this module, named one by one.
   //-------------------------------------------------------------------------
 
   /**
    * The constants of `BusinessDayConventions`, named rather than discovered.
    *
-   * The capture read the public constants of the Java holder reflectively; nothing here reflects
-   * over anything, so the counterpart is this list. Naming each constant is what makes a constant
-   * that disappeared a compile error in this file rather than a count that quietly fell by one.
+   * The capture read its holder reflectively; nothing here reflects over anything, so the
+   * counterpart is this list, and a constant that disappeared is a compile error in this file.
    */
   val BusinessDayConventionConstants: Vector[BusinessDayConvention] =
     Vector(
@@ -3325,10 +3007,8 @@ private object ReferenceDataManifestSpec {
    * The constants of `IborIndices`, named rather than discovered.
    *
    * One hundred and thirteen of the two hundred and seventy-one published Ibor indices have a
-   * constant: the Java holder named the benchmark families a caller writes in code and left the
-   * rest to be reached by name. Naming each one here rather than reflecting over the holder is what
-   * makes a constant that disappeared a compile error in this file and a constant that was added a
-   * failure of the comparison against the captured names.
+   * constant: the benchmark families a caller writes in code are named and the rest are reached by
+   * name.
    */
   val IborIndexConstants: Vector[IborIndex] =
     Vector(
@@ -3400,8 +3080,8 @@ private object ReferenceDataManifestSpec {
   /**
    * The constants of `FxIndices`, named rather than discovered.
    *
-   * Eight constants over sixteen published rows: the European Central Bank and WM/Reuters fixings
-   * are named and the eight Asian and Latin American ones are reached by name.
+   * Eight constants over sixteen published rows: the four European Central Bank and four WM/Reuters
+   * fixings are named, and the eight Asian and Latin American ones are reached by name.
    */
   val FxIndexConstants: Vector[FxIndex] =
     Vector(
@@ -3450,11 +3130,9 @@ private object ReferenceDataManifestSpec {
   /**
    * The members of `StubConvention`, named rather than discovered, '''in declaration order'''.
    *
-   * The order matters here and nowhere else among the constant holders: the captured group for this
-   * family is the one the capture did not sort, because the Java type is an enumeration and the
-   * capture read its declared values. The comparison is therefore of sequences, so this list is
-   * written in the order the type declares its members - initial stubs, then final stubs, then
-   * both - rather than in name order.
+   * The order matters here and nowhere else among the constant holders: this is the one captured
+   * group the capture did not sort, so the comparison is of sequences and this list is written in
+   * declaration order - initial stubs, then final stubs, then both - rather than by name.
    */
   val StubConventionConstants: Vector[StubConvention] =
     Vector(
@@ -3466,8 +3144,7 @@ private object ReferenceDataManifestSpec {
    * The constants of `FloatingRateNames`, named rather than discovered.
    *
    * Forty-one constants selected from the three hundred and fifty-one published names: a published
-   * name is any spelling a counterparty may write, while a constant is one of the names a caller
-   * writes in code. Unlike the overnight index holder, no two of these name the same rate.
+   * name is any spelling a counterparty may write, a constant one a caller writes in code.
    */
   val FloatingRateNameConstants: Vector[FloatingRateName] =
     Vector(

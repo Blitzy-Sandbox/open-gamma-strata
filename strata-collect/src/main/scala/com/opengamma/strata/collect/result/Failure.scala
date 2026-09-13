@@ -18,25 +18,24 @@ import io.circe.Encoder
 import io.circe.generic.semiauto.deriveDecoder
 import io.circe.generic.semiauto.deriveEncoder
 
+import com.opengamma.strata.collect.NoJavaSerialization
+
 /**
  * A single failure, describing why an operation did not produce a value.
  *
  * A failure carries a [[FailureReason]] that classifies it, a message written for a person
  * reading a log or a report, and a map of attributes holding the data the message refers to
  * in machine-readable form. Nothing else: a failure is a value, not an event, so it holds
- * no stack trace, no cause and no exception type, and it is never thrown. Where the Java
- * original modelled the same information as a bean that could be wrapped in an exception,
- * this port keeps the failure on the left of an `Either` and leaves the decision of what to
- * do about it to the caller.
+ * no stack trace, no cause and no exception type, and it is never thrown. A failure sits on
+ * the left of an `Either`, and the decision of what to do about it belongs to the caller.
  *
- * That is the convention of this package, carried over from the package it is ported from:
- * code here is written in a functional style, and an operation that cannot produce a result
- * returns a failure describing why instead of abandoning the call stack. A failure is
+ * Code in this package is written in a functional style: an operation that cannot produce a
+ * result returns a failure describing why instead of abandoning the call stack. A failure is
  * therefore constructed, returned, matched on, combined and serialized like any other
  * value, and building one never fails - it is the type in which every other failure of the
  * library is expressed, so it has no validation of its own to fail. A message is expected
- * to be non-empty by the code that reads it, as it was in the type being ported, but that
- * expectation is a convention of the caller and is not enforced here.
+ * to be non-empty by the code that reads it, but that expectation is a convention of the
+ * caller and is not enforced here.
  *
  * ===The closed set of failures===
  *
@@ -65,10 +64,10 @@ import io.circe.generic.semiauto.deriveEncoder
  * ===Messages quote what was rejected; the rendering neutralises it===
  *
  * A message names the value it is about as that value stands - the whole of the currency
- * code, identifier, name, numeral or definition that was rejected - which is what the
- * library being ported did and what makes a failure worth acting on: the caller correcting
- * its input is handed back exactly what the library refused, and code that has to compare,
- * re-report or serialize a failure reads it from `message` and `attributes` unchanged.
+ * code, identifier, name, numeral or definition that was rejected - which is what makes a
+ * failure worth acting on: the caller correcting its input is handed back exactly what the
+ * library refused, and code that has to compare, re-report or serialize a failure reads it
+ * from `message` and `attributes` unchanged.
  *
  * Text that reached the library from outside it is therefore inside the model, and making it
  * safe to write out is the act of writing it out. That happens in one place, [[Failure.show]]
@@ -80,7 +79,7 @@ import io.circe.generic.semiauto.deriveEncoder
  *
  * ===Choosing a member===
  *
- * The member is chosen by what went wrong, and the port keeps to one convention so that a
+ * The member is chosen by what went wrong, and the library keeps to one convention so that a
  * caller can act on a failure it did not itself report. A definition that does not describe
  * a consistent schedule is `Invalid`, carrying the definition it rejected under the
  * `definition` attribute; a holiday calendar that the reference data cannot resolve is
@@ -96,9 +95,17 @@ import io.circe.generic.semiauto.deriveEncoder
  * is there for the places that have to present such a chain as a single failure, and it is
  * the only thing that produces `Multiple`.
  *
+ * ===Serialization===
+ *
+ * A failure is written as JSON through the codec this file publishes and in no other form. The
+ * ten members are `case class`es, which the compiler makes `java.io.Serializable` whether or not
+ * the library wants it, so the root mixes in [[NoJavaSerialization]]: every member refuses to be
+ * written to or read from an object stream, and a message-and-attributes pair assembled by a
+ * stream rather than by `Failure.of` cannot be presented as a failure of this library.
+ *
  * @see [[FailureReason]] for the ten reasons a failure can carry
  */
-sealed trait Failure {
+sealed trait Failure extends NoJavaSerialization {
 
   /**
    * Returns the reason classifying this failure.
@@ -467,8 +474,9 @@ object Failure {
   private val MaxRenderedPart: Int = 512
 
   /**
-   * Renders one part of a failure - its message, or an attribute key or value - for a reader,
-   * bounded in length and free of anything that could forge a line.
+   * Renders one part of a diagnostic - the message of a failure, an attribute key or value,
+   * or any other text on its way to a reader - bounded in length and free of anything that
+   * could forge a line.
    *
    * The places a failure is read - a log, a report, a line of a console - are line-oriented
    * and of finite size, and a failure quotes the values it is about, some of which reached
@@ -478,7 +486,7 @@ object Failure {
    * method. Two properties hold of what it returns, whatever it was given:
    *
    *  - '''The rendering is bounded.''' Units of the part are taken while the rendered text
-   *    stays within [[MaxRenderedPart]] characters, and the three characters `...` are
+   *    stays within `MaxRenderedPart` characters, and the three characters `...` are
    *    appended when any of it is left over, so the result is at most `MaxRenderedPart + 3`
    *    characters long. A rendered failure can consequently not be made large by handing a
    *    large value to the operation that reported it - a ten-thousand character input renders
@@ -499,23 +507,32 @@ object Failure {
    * exactly - which is why the rendering of every ordinary failure reads as the message its
    * reporter wrote, character for character.
    *
-   * The method is private because rendering is what this type does with a failure at the
-   * point of writing one out, not something a caller performs on the values it reports: a
-   * message is built with the value it rejected interpolated as it stands, exactly as in the
+   * This method is the one renderer the two modules hold for any text on its way to a
+   * line-oriented diagnostic sink, and everything that writes such text reaches for it rather
+   * than for a rendering of its own, so the two properties above hold of every diagnostic the
+   * port produces and no two of them can drift apart. Its consumers are [[Failure.show]] and
+   * therefore the text form of every member; the bridge in `Codecs` that turns accumulated
+   * failures into a decoding failure of the JSON layer; the source names the resource reader
+   * quotes when it cannot read something; and the text form of a holiday calendar identifier
+   * and of a typed string, both of which carry a name a caller supplied.
+   *
+   * Rendering stays an act of writing text out and is not performed when a failure is built:
+   * a message is built with the value it rejected interpolated as it stands, exactly as in the
    * library being ported, and [[Failure.message]] and [[Failure.attributes]] hand that value
-   * back whole to code that means to act on it rather than read it.
+   * back whole to code that means to act on it rather than read it, as the JSON form does when
+   * it encodes the raw text.
    *
    * @param text  the part to render, as the failure carries it
    * @return the bounded, single-line rendering of that part
    */
-  private def renderPart(text: String): String = {
+  def renderDiagnostic(text: String): String = {
     // The rendering is assembled a unit at a time - a surrogate pair counting as one - and
     // stops as soon as the next unit would carry it past the bound, which is what keeps a
     // pair whole and an escape entire. Threading the text rendered so far through a
     // tail-recursive step rather than accumulating into a mutable local keeps the method
-    // free of assignment; both the intermediate and the final strings are bounded by
-    // `MaxRenderedPart`, so the concatenation costs no more than assembling the result in
-    // one pass would.
+    // free of assignment; each step copies the text rendered so far, and every intermediate
+    // string, like the result, is bounded by `MaxRenderedPart`, so that copying is bounded
+    // too - the work is bounded by the cap rather than by the length of the text handed in.
     @tailrec
     def rendering(index: Int, rendered: String): String =
       if (index >= text.length) {
@@ -586,9 +603,8 @@ object Failure {
   /**
    * The rendering of failures as text.
    *
-   * A failure renders as its reason, then its message - the form the type being ported
-   * rendered, less the trace that this port does not hold - followed by its attributes when
-   * it has any, so that a log line holding failures of several kinds stays readable:
+   * A failure renders as its reason, then its message, followed by its attributes when it
+   * has any, so that a log line holding failures of several kinds stays readable:
    *
    * {{{
    * MISSING_DATA: No holiday calendar
@@ -602,7 +618,7 @@ object Failure {
    *
    * This is the boundary at which a failure becomes text, and it is where the library
    * neutralises what it is about to write: the message and the key and the value of every
-   * attribute each go through [[renderPart]], so each is at most `MaxRenderedPart + 3`
+   * attribute each go through [[renderDiagnostic]], so each is at most `MaxRenderedPart + 3`
    * characters long and holds no character a line-oriented reader could act on. A failure
    * quoting a currency code, an identifier, a name or a definition that a caller supplied -
    * text nothing bounds and nothing constrains - therefore cannot forge a line of a log that
@@ -619,12 +635,12 @@ object Failure {
    * @return the rendering of a failure
    */
   implicit val show: Show[Failure] = Show.show { failure =>
-    val rendered = s"${failure.reason.name}: ${renderPart(failure.message)}"
+    val rendered = s"${failure.reason.name}: ${renderDiagnostic(failure.message)}"
     if (failure.attributes.isEmpty) {
       rendered
     } else {
       val attributes = failure.attributes.iterator.map { case (key, value) =>
-        s"${renderPart(key)}=${renderPart(value)}"
+        s"${renderDiagnostic(key)}=${renderDiagnostic(value)}"
       }
       s"$rendered [${attributes.mkString(", ")}]"
     }

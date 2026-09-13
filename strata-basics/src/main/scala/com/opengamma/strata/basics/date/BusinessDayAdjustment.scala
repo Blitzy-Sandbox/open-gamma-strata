@@ -17,6 +17,7 @@ import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.Resolvable
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -78,24 +79,22 @@ import com.opengamma.strata.collect.result.Failure
  *
  * ===Failure is returned, not thrown===
  *
- * The Java original returned a bare date and threw `ReferenceDataNotFoundException` where the
- * calendar was absent from the reference data. Here both methods answer with
- * `Either[Failure, _]`, reporting `Failure.MissingData` naming the identifier that could not be
- * found, which is the failure [[HolidayCalendarId.resolve]] produces. Adjustment itself cannot
- * fail once the calendar is in hand: every convention answers for every date the calendar can
- * answer for.
+ * Both methods answer with `Either[Failure, _]`. Where the reference data supplies no calendar
+ * for the identifier this adjustment names, the result is the `Left` that
+ * [[HolidayCalendarId.resolve]] produces, naming the identifier that could not be resolved.
+ * Adjustment itself cannot fail once the calendar is in hand: every convention answers for every
+ * date the calendar can answer for.
  *
  * ===Construction===
  *
  * Construction is total. Both fields are required and neither can be absent, which the types
- * state on their own, so the Java bean's non-nullness checks have nothing left to check and the
- * ordinary case-class constructor is the whole of the validation. `apply`, `copy` and the
- * factory [[BusinessDayAdjustment.of]] are therefore all public and all equivalent; `of` is kept
- * because it is the name the library being ported used, so ported call sites read unchanged.
+ * state on their own, so the ordinary case-class constructor is the whole of the validation.
+ * `apply`, `copy` and the factory [[BusinessDayAdjustment.of]] are therefore all public and all
+ * equivalent.
  *
  * This type is immutable and thread-safe.
  *
- * @param convention  the convention used to adjust the date if it does not fall on a business
+ * @param convention  the convention that adjusts the date where it does not fall on a business
  *   day, which determines whether to move forwards or backwards when it is a holiday
  * @param calendar  the identifier of the calendar that defines holidays and business days, which
  *   is resolved from reference data when the adjustment is applied
@@ -105,7 +104,8 @@ import com.opengamma.strata.collect.result.Failure
 final case class BusinessDayAdjustment(
     convention: BusinessDayConvention,
     calendar: HolidayCalendarId)
-    extends Resolvable[DateAdjuster] {
+    extends Resolvable[DateAdjuster]
+    with NoJavaSerialization {
 
   /**
    * Adjusts the date as necessary if it is not a business day.
@@ -115,9 +115,9 @@ final case class BusinessDayAdjustment(
    * the reference data supplied.
    *
    * @param date  the date to adjust
-   * @param refData  the reference data, used to find the holiday calendar
-   * @return the adjusted date, or `Left(Failure.MissingData)` where the reference data does not
-   *   supply the calendar this adjustment names
+   * @param refData  the reference data from which the holiday calendar is resolved
+   * @return the adjusted date, or the failure naming the calendar identifier this adjustment
+   *   holds where the reference data supplies no calendar for it
    */
   def adjust(date: LocalDate, refData: ReferenceData): Either[Failure, LocalDate] =
     calendar.resolve(refData).map(holCal => convention.adjust(date, holCal))
@@ -135,9 +135,9 @@ final case class BusinessDayAdjustment(
    * persistence layer. The unresolved adjustment has no such caveat, which is why both forms
    * exist.
    *
-   * @param refData  the reference data, used to find the holiday calendar
-   * @return the adjuster bound to a specific holiday calendar, or `Left(Failure.MissingData)`
-   *   where the reference data does not supply the calendar this adjustment names
+   * @param refData  the reference data from which the holiday calendar is resolved
+   * @return the adjuster bound to a specific holiday calendar, or the failure naming the
+   *   calendar identifier the reference data supplies no calendar for
    */
   override def resolve(refData: ReferenceData): Either[Failure, DateAdjuster] =
     calendar.resolve(refData).map(holCal => DateAdjuster(date => convention.adjust(date, holCal)))
@@ -147,13 +147,20 @@ final case class BusinessDayAdjustment(
    *
    * The adjustment that makes no adjustment at all renders as its convention alone - `NoAdjust` -
    * because naming a calendar that is never consulted would say something untrue about it. Every
-   * other adjustment renders as its convention and the name of its calendar, as in
-   * `ModifiedFollowing using calendar GBLO+USNY`. Both forms are those of the library being
-   * ported, character for character, and they are what the `Show` instance renders.
+   * other adjustment renders as its convention and its calendar, as in
+   * `ModifiedFollowing using calendar GBLO+USNY`. Both forms are what the `Show` instance
+   * renders.
+   *
+   * The calendar is rendered by asking the identifier for its own text form rather than by
+   * taking its name, which is what keeps this rendering bounded and on a single line: an
+   * identifier accepts any text, including text that reached the library from outside it, and
+   * [[HolidayCalendarId.toString]] is where that text is made safe to write out. For every
+   * identifier of a realistic shape the two are the same characters, so the rendering above is
+   * unchanged.
    *
    * Note that an adjustment carrying the no-adjust convention and some other calendar renders
-   * with that calendar, as the original did: it is not [[BusinessDayAdjustment.NONE]], since a
-   * caller may later replace the convention and expect the calendar to still be there.
+   * with that calendar: it is not [[BusinessDayAdjustment.NONE]], and a caller may later change
+   * the convention and expect the calendar to still be there.
    *
    * @return the descriptive string
    */
@@ -161,7 +168,7 @@ final case class BusinessDayAdjustment(
     if (this == BusinessDayAdjustment.NONE) {
       convention.toString
     } else {
-      s"$convention using calendar ${calendar.name}"
+      s"$convention using calendar $calendar"
     }
 }
 
@@ -186,25 +193,22 @@ object BusinessDayAdjustment {
   val NONE: BusinessDayAdjustment =
     BusinessDayAdjustment(BusinessDayConventions.NO_ADJUST, HolidayCalendarIds.NO_HOLIDAYS)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance using the specified convention and calendar.
    *
    * When adjusting a date, the convention's rule is applied using the calendar named here.
    *
-   * This is the factory of the library being ported and is exactly the constructor of the type,
-   * which construction being total leaves nothing for it to add. It is kept so that ported call
-   * sites and the conventions built on them read as they did.
+   * This factory is exactly the constructor of the type, which construction being total leaves
+   * nothing for it to add.
    *
-   * @param convention  the convention used to adjust the date if it does not fall on a business
-   *   day
+   * @param convention  the convention that adjusts the date where it does not fall on a
+   *   business day
    * @param calendar  the identifier of the calendar that defines holidays and business days
    * @return the adjustment
    */
   def of(convention: BusinessDayConvention, calendar: HolidayCalendarId): BusinessDayAdjustment =
     BusinessDayAdjustment(convention, calendar)
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of adjustments.
    *
@@ -212,8 +216,8 @@ object BusinessDayAdjustment {
    * their own equality - the identity of a convention and the name of a calendar identifier.
    * Neither field holds a `Double`, so there is no bit-pattern comparison to arrange. This is the
    * type's only equality-bearing instance, and `Eq[BusinessDayAdjustment]` is obtained from it by
-   * subtyping rather than declared separately. There is no `Order`: the bean being ported is not
-   * `Comparable`, and an ordering of conventions and calendars would be this port's invention.
+   * subtyping rather than declared separately. There is no `Order`, because an ordering of
+   * conventions and calendars would rank adjustments by nothing the domain states.
    *
    * @return the hashing of adjustments
    */
@@ -222,33 +226,32 @@ object BusinessDayAdjustment {
   /**
    * The rendering of adjustments as text.
    *
-   * Renders what `toString` renders, which is the form of the Java original, so the two ways of
-   * putting an adjustment into a message agree.
+   * Renders what `toString` renders, so the two ways of putting an adjustment into a message
+   * agree.
    *
    * @return the rendering of an adjustment
    */
   implicit val show: Show[BusinessDayAdjustment] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The JSON encoding of adjustments.
    *
-   * The encoding is derived when this file is compiled, so no part of it inspects a class while
-   * the program runs. An instance encodes as an object holding its two fields under the names the
-   * Java bean declared, in declaration order:
+   * The encoding is derived in this file, so no part of it inspects a class while the program
+   * runs. An instance encodes as an object holding its two fields under their own names, in
+   * declaration order:
    *
    * {{{
    * {"convention":"ModifiedFollowing","calendar":"GBLO+USNY"}
    * }}}
    *
    * Both fields are written as bare strings by the codecs their own types publish - the canonical
-   * name of the convention and the normalised name of the calendar identifier - so the document
-   * is the one the library being ported wrote, and two adjustments that are equal encode to
-   * identical bytes whatever order their composite calendar was built in.
+   * name of the convention and the normalised name of the calendar identifier - so two
+   * adjustments that are equal encode to identical bytes whatever order their composite calendar
+   * was built in.
    *
    * Neither field is optional, so there is no absent value to drop; the encoder is wrapped in the
-   * single policy of this port for products all the same, so that the rule holds of every product
-   * encoder without a reader having to check which products have optional fields today.
+   * rule every product encoder of this library follows all the same, so that the rule holds
+   * without a reader having to check which products carry an optional field.
    *
    * @return the JSON encoding of an adjustment
    */
@@ -258,8 +261,8 @@ object BusinessDayAdjustment {
   /**
    * The JSON decoding of adjustments.
    *
-   * This is the inverse of the encoding above and is likewise derived at compile time. Both fields
-   * have to be present. The convention is resolved by the name lookup of its own closed family,
+   * This is the inverse of the encoding above and is derived the same way. Both fields have to be
+   * present. The convention is resolved by the name lookup of its own closed family,
    * which accepts every spelling that family accepts and rejects anything else; the calendar
    * identifier accepts any name, including a composite one and one this library knows nothing
    * about, and fails - if at all - when it is resolved, which is where a missing calendar belongs.

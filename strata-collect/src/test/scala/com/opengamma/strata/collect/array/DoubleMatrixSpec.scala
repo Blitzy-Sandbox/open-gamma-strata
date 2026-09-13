@@ -7,14 +7,15 @@
 // This file declares two top-level packages, which is why it is written with package blocks
 // rather than with a leading package clause. The suite belongs in the package of its subject,
 // `com.opengamma.strata.collect.array`; the access probe at the foot of the file must sit
-// *outside* `com.opengamma.strata.collect`, because what it proves is that the two escape
-// hatches of the matrix type are unreachable from there, and a compile-time access check is
-// answered in the package of the code that asks. A block nested inside a package clause would
+// *outside* `com.opengamma.strata.collect`, because what it proves is that the two names the
+// Java original used for its escape hatches resolve to nothing from there, and a compile-time
+// name check is answered in the package of the code that asks. A block nested inside a package clause would
 // nest under that clause and stay inside `collect`, which is exactly the arrangement that could
 // not prove anything, so the two blocks are siblings at the root. The spec of the array type,
 // written immediately before this one, is laid out the same way.
 package com.opengamma.strata.collect.array {
 
+  import java.lang.reflect.Modifier
   import java.util.Arrays
 
   import scala.annotation.tailrec
@@ -53,7 +54,9 @@ package com.opengamma.strata.collect.array {
    *    which is the named factory that replaces the shape-and-function overload of the original
    *  - `test_ofArrayObjects` -> `test_ofArrayObjects`, ported
    *  - `test_ofArrays` -> `test_ofArrays`, ported
-   *  - `test_ofUnsafe` -> `test_ofUnsafe`, ported
+   *  - `test_ofUnsafe` -> `test_ofUnsafe`, answered by what replaces the member rather than by
+   *    the member: the adopting factory of the original is not ported, and the test holds the
+   *    construction that replaces it to the copy it makes
    *  - `test_copyOf_array` -> `test_copyOf_array`, ported
    *  - `test_filled` -> `test_filled`, ported
    *  - `test_filled_withValue` -> `test_filled_withValue`, ported
@@ -85,13 +88,17 @@ package com.opengamma.strata.collect.array {
    *    target here and whose machinery this port does without entirely
    *
    * The remaining tests answer requirements of this port rather than of the Java original: the
-   * copy-safety and deliberate-aliasing tests (`copy_safety_*`, `aliasing_*`), the proof that the
-   * two escape hatches cannot be reached from outside this module
-   * (`unsafe_members_are_inaccessible_outside_collect`), the bit-level equality cases (`ieee_*`),
+   * copy-safety tests (`copy_safety_*`), the proof that the type hands out none of the rows it
+   * holds - asserted against the compiled class itself, and from outside this module
+   * (`no_member_hands_out_the_stored_rows`, `the_public_constructor_copies_what_it_is_handed`,
+   * `unsafe_members_resolve_to_nothing`), the bit-level equality cases (`ieee_*`),
    * the oracles for hashing and rendering (`hashCode_*`, `toString_*`), the shape invariants
-   * (`shape_*`), the inventory of failure types (`exception_types_*`), the rejection of a negative
-   * dimension before any work is done (`negative_dimensions_*`), the two branches only the empty
-   * matrix reaches (`the_empty_matrix_*`) and the property section (`property_*`).
+   * (`shape_*`, and `every_value_of_this_type_is_rectangular_whatever_route_built_it` for the one
+   * the constructor enforces), the refusal of an array whose rows disagree
+   * (`copyOf_refuses_rows_that_differ_in_length_where_the_original_shaped_them_by_the_first`), the
+   * inventory of failure types (`exception_types_*`), the rejection of a negative dimension before
+   * any work is done (`negative_dimensions_*`), the two branches only the empty matrix reaches
+   * (`the_empty_matrix_*`) and the property section (`property_*`).
    *
    * ===Divergences from the Java original that this spec asserts===
    *
@@ -115,6 +122,15 @@ package com.opengamma.strata.collect.array {
    *  - values that do not fill the requested shape, and a function that returns a row of the wrong
    *    length, fail with `IllegalArgumentException` exactly as in the original, and the message of
    *    the original is preserved word for word, which this spec asserts rather than assumes;
+   *  - an array whose rows differ in length is refused by `copyOf`, where the original shaped such
+   *    an array by its first row and produced a matrix that misstated its own shape. This is the
+   *    one argument the port rejects that the original accepted, and it is a shape violation like
+   *    any other - an `IllegalArgumentException` through `ArgCheck`, naming the offending row and
+   *    both lengths. The refusal is made at the constructor every factory passes through, so
+   *    every value of this type is rectangular, which this spec asserts over every route into
+   *    one. The order of `copyOf`'s two decisions is asserted with it: the rows are measured
+   *    before the empty short circuit, so `[[], [1.0]]` is refused rather than collapsing onto
+   *    the empty matrix;
    *  - a negative row count, column count or size fails with `IllegalArgumentException` naming the
    *    argument and its value, where the original let the allocation it had already begun raise a
    *    negative-size error of the platform's. Every factory checks its dimensions before it
@@ -126,9 +142,13 @@ package com.opengamma.strata.collect.array {
    *    so a shape whose product overflows the integer range - `65536` by `65536`, for one - is
    *    reported as the count violation it is instead of passing a count test against a wrapped
    *    product and proceeding to allocate;
-   *  - `ofUnsafe` and `toArrayUnsafe` are visible only inside this module, where the original
-   *    exposed both to every caller. This spec is inside the module and exercises both positively;
-   *    the prohibition outside it is proved from a probe object in a sibling package;
+   *  - `ofUnsafe` and `toArrayUnsafe` are not ported, where the original exposed both to every
+   *    caller. Restricting them to this module would not have been enough: such a restriction
+   *    holds in the source only, and the compiler emits the member as a public method either way,
+   *    so what this spec asserts instead is that the two names resolve nowhere, that no declared
+   *    member of the compiled class returns the rows an instance holds, and that the one public
+   *    constructor copies what it is handed. The first of those is asserted here and again from a
+   *    probe object in a sibling package, the other two against the class itself;
    *  - the port has no meta-bean, no ordering and no JSON codec of its own for this type, and no
    *    product of two matrices - which the original does not have either. The absence of each is
    *    asserted, next to a positive control proving the same assertion shape succeeds where the
@@ -268,12 +288,14 @@ package com.opengamma.strata.collect.array {
      * With no expected value the matrix must be the canonical empty instance, which is asserted by
      * reference: every factory of the port answers with that one instance for each of the three
      * degenerate shapes rather than with a fresh empty matrix, so identity is a stronger and
-     * equally true statement than emptiness. Otherwise the size is checked, then the copy handed
-     * out by `toArray` is compared against the rows the matrix holds - checking both is what the
-     * original did, and it is what makes the copy and the stored rows provably agree - then every
-     * element is compared through both of them against the expectation for its position, and
-     * finally the three invariants every matrix of this type reports: two dimensions,
-     * non-emptiness, and squareness exactly when the two counts agree.
+     * equally true statement than emptiness. Otherwise the size is checked, then two copies
+     * handed out by `toArray` are compared against each other - the original compared its copy
+     * against the stored rows and required the two to agree, and with no member handing out the
+     * stored rows the two reads that can be made are two calls of that accessor, which must agree
+     * and must share neither their outer array nor any row - then every element is compared
+     * through one of them and through the element accessor against the expectation for its
+     * position, and finally the three invariants every matrix of this type reports: two
+     * dimensions, non-emptiness, and squareness exactly when the two counts agree.
      *
      * The expectations are supplied flattened in row-major order and indexed by
      * `row * columnCount + column`, which is the convention of the original, so its expected-value
@@ -291,37 +313,39 @@ package com.opengamma.strata.collect.array {
         matrix.isEmpty shouldBe true
       } else {
         matrix.size shouldBe expected.length
-        val stored = matrix.toArrayUnsafe
         val copied = matrix.toArray
+        val again = matrix.toArray
         // the deep comparison of the original, expressed by handing both to it wrapped, so that it
         // recurses into the rows rather than comparing two references
-        Arrays.deepEquals(Array[AnyRef](stored), Array[AnyRef](copied)) shouldBe true
-        assertElementsFrom(matrix, stored, expected, 0, 0)
+        Arrays.deepEquals(Array[AnyRef](copied), Array[AnyRef](again)) shouldBe true
+        (copied eq again) shouldBe false
+        (copied(0) eq again(0)) shouldBe false
+        assertElementsFrom(matrix, copied, expected, 0, 0)
         matrix.dimensions shouldBe 2
         matrix.isEmpty shouldBe false
         matrix.isSquare shouldBe (matrix.rowCount == matrix.columnCount)
       }
 
     // compares the elements from the position upwards, in row-major order, one clue per element,
-    // through the accessor and through the stored rows alike
+    // through the element accessor and through a copy of the rows alike
     @tailrec
     private def assertElementsFrom(
         matrix: DoubleMatrix,
-        stored: Array[Array[Double]],
+        rows: Array[Array[Double]],
         expected: Seq[Double],
         row: Int,
         column: Int): Unit =
 
       if (row < matrix.rowCount) {
         if (column >= matrix.columnCount) {
-          assertElementsFrom(matrix, stored, expected, row + 1, 0)
+          assertElementsFrom(matrix, rows, expected, row + 1, 0)
         } else {
           withClue(s"Unexpected value at row $row, column $column, ") {
             val required = expected(row * matrix.columnCount + column)
             matrix.get(row, column) shouldBe required
-            stored(row)(column) shouldBe required
+            rows(row)(column) shouldBe required
           }
-          assertElementsFrom(matrix, stored, expected, row, column + 1)
+          assertElementsFrom(matrix, rows, expected, row, column + 1)
         }
       }
 
@@ -499,21 +523,24 @@ package com.opengamma.strata.collect.array {
     }
 
     test("test_ofUnsafe") {
-      // `ofUnsafe` adopts the rows it is given instead of copying them, which is why it is visible
-      // only inside this module - a caller outside it cannot reach it at all, as
-      // `unsafe_members_are_inaccessible_outside_collect` proves. Adopting is exactly what is
-      // asserted here: the value observes a later change to the rows it was built from, which is
-      // why nothing outside this module is allowed to build one this way
+      // The original's adopting factory took over the array of rows it was given, so a value built
+      // that way observed every later change to any of them. The port has no such member, and this
+      // is the test that answers for the Java method: the same call written against what replaces
+      // it - the copying factory, which is the only route from an array of rows to a matrix - and
+      // the assertion the original could not have made, that the value is unaffected by what
+      // happens to the rows afterwards.
       val base = Array(Array(1.0, 2.0), Array(3.0, 4.0))
-      val test = DoubleMatrix.ofUnsafe(base)
+      val test = DoubleMatrix.copyOf(base)
       assertMatrix(test, 1.0, 2.0, 3.0, 4.0)
       base(0)(0) = 7.0
-      assertMatrix(test, 7.0, 2.0, 3.0, 4.0)
+      base(1) = Array(9.0, 9.0)
+      assertMatrix(test, 1.0, 2.0, 3.0, 4.0)
 
-      // all three degenerate shapes, adopted rather than copied, are still the empty matrix
-      assertMatrix(DoubleMatrix.ofUnsafe(Array.ofDim[Double](0, 0)))
-      assertMatrix(DoubleMatrix.ofUnsafe(Array.ofDim[Double](0, 2)))
-      assertMatrix(DoubleMatrix.ofUnsafe(Array.ofDim[Double](2, 0)))
+      // both degenerate shapes an array can describe are still the empty matrix, and by identity,
+      // so no fresh empty value can be brought into existence by this route either
+      assertMatrix(DoubleMatrix.copyOf(Array.ofDim[Double](0, 0)))
+      assertMatrix(DoubleMatrix.copyOf(Array.ofDim[Double](0, 2)))
+      assertMatrix(DoubleMatrix.copyOf(Array.ofDim[Double](2, 0)))
     }
 
     test("test_copyOf_array") {
@@ -529,87 +556,106 @@ package com.opengamma.strata.collect.array {
       assertMatrix(DoubleMatrix.copyOf(Array.ofDim[Double](2, 0)))
     }
 
-    test("copyOf_copies_rows_that_differ_in_length_as_the_original_does") {
-      // `copyOf` is a total factory and stays total for an array whose rows differ in length,
-      // which is what the Java original did with one: the shape comes from the first row, every
-      // row is cloned at its own length, and nothing is rejected, padded or truncated. Both
-      // orientations are asserted, because a row shorter than the first and a row longer than it
-      // are observed differently - a short row leaves the shape promising an element the row does
-      // not hold, and a long row keeps elements the shape does not reach
+    test("copyOf_refuses_rows_that_differ_in_length_where_the_original_shaped_them_by_the_first") {
+      // The Java original read the column count off the first row and copied the remaining rows
+      // as they stood, so an array whose rows differed in length produced a matrix that misstated
+      // its own shape. The port refuses such an array instead, at the constructor every factory
+      // passes through, and this is the test of that refusal - the one place the port rejects
+      // input the original accepted.
+      //
+      // Both orientations are asserted, because they were observed differently before: a row
+      // shorter than the first left the shape promising an element the row did not hold, and a
+      // row longer than it kept elements the shape could not reach. Each message names the row
+      // and both lengths, which is what says which row to correct.
       val shortSecondRow = Array(Array(1.0, 2.0), Array(3.0))
-      val fromShort = DoubleMatrix.copyOf(shortSecondRow)
-      fromShort.rowCount shouldBe 2
-      fromShort.columnCount shouldBe 2
-      fromShort.size shouldBe 4
+      val fromShort = intercept[IllegalArgumentException](DoubleMatrix.copyOf(shortSecondRow))
+      fromShort.getMessage shouldBe
+        "Expected every row of the matrix to hold 2 elements, but row 1 holds 1"
 
-      // every position inside the shape that the rows do hold reads back
-      fromShort.get(0, 0) shouldBe 1.0
-      fromShort.get(0, 1) shouldBe 2.0
-      fromShort.get(1, 0) shouldBe 3.0
-
-      // and the one position the shape promises that the short row does not hold is read from
-      // that row, so it fails as an index error exactly as reading past the end of any array
-      // does. The type asserted is the one the runtime actually raises here
-      val beyondShortRow = intercept[ArrayIndexOutOfBoundsException](fromShort.get(1, 1))
-      beyondShortRow.getMessage shouldBe "Index 1 out of bounds for length 1"
-
-      // the rows are cloned verbatim, so the copy holds rows of the same two lengths the input
-      // had, and rendering walks each at its own length
-      val fromShortRows = fromShort.toArray
-      fromShortRows(0).length shouldBe 2
-      fromShortRows(1).length shouldBe 1
-      fromShort.toString shouldBe "1.0 2.0\n3.0\n"
-
-      // the other orientation: a row longer than the first keeps its extra elements, which
-      // `toArray` hands back and which rendering shows, even though the column count does not
-      // reach them
       val longSecondRow = Array(Array(1.0), Array(2.0, 3.0))
-      val fromLong = DoubleMatrix.copyOf(longSecondRow)
-      fromLong.rowCount shouldBe 2
-      fromLong.columnCount shouldBe 1
-      fromLong.size shouldBe 2
-      fromLong.get(0, 0) shouldBe 1.0
-      fromLong.get(1, 0) shouldBe 2.0
-      val fromLongRows = fromLong.toArray
-      fromLongRows(0).length shouldBe 1
-      fromLongRows(1).length shouldBe 2
-      fromLongRows(1)(1) shouldBe 3.0
-      fromLong.toString shouldBe "1.0\n2.0 3.0\n"
+      val fromLong = intercept[IllegalArgumentException](DoubleMatrix.copyOf(longSecondRow))
+      fromLong.getMessage shouldBe
+        "Expected every row of the matrix to hold 1 elements, but row 1 holds 2"
 
-      // neither input array is modified, and neither copy can be reached through its input
+      // the first row that disagrees is the one reported, so a message names one row however many
+      // of them are wrong
+      val severalWrong = Array(Array(1.0, 2.0), Array(3.0), Array(4.0, 5.0, 6.0))
+      intercept[IllegalArgumentException](DoubleMatrix.copyOf(severalWrong)).getMessage shouldBe
+        "Expected every row of the matrix to hold 2 elements, but row 1 holds 1"
+
+      // neither input array is modified by the refusal, so a caller may inspect what it handed
+      // over and correct it
       shortSecondRow(0)(0) shouldBe 1.0
       shortSecondRow(0).length shouldBe 2
       shortSecondRow(1).length shouldBe 1
       longSecondRow(1)(1) shouldBe 3.0
       longSecondRow(1).length shouldBe 2
-      longSecondRow(0)(0) = 9.0
-      fromLong.get(0, 0) shouldBe 1.0
 
-      // a first row with no elements is still the empty matrix, whatever follows it, because
-      // every factory funnels a zero dimension to the empty instance before any question of
-      // shape arises
-      assertMatrix(DoubleMatrix.copyOf(Array(Array.emptyDoubleArray, Array(1.0))))
+      // The order of the two decisions this factory makes, which is the case worth writing down:
+      // an array whose rows are all empty states a column count of zero and is the empty matrix,
+      // while one whose first row is empty and whose second is not states the same column count
+      // and is refused. The measurement comes before the empty short circuit, so the element the
+      // second array holds cannot be lost silently.
+      assertMatrix(DoubleMatrix.copyOf(Array(Array.emptyDoubleArray, Array.emptyDoubleArray)))
+      intercept[IllegalArgumentException](
+        DoubleMatrix.copyOf(Array(Array.emptyDoubleArray, Array(1.0)))).getMessage shouldBe
+        "Expected every row of the matrix to hold 0 elements, but row 1 holds 1"
 
       // and rectangular input of every shape is copied as before
       assertMatrix(DoubleMatrix.copyOf(Array(Array(1.0, 2.0, 3.0))), 1.0, 2.0, 3.0)
       assertMatrix(DoubleMatrix.copyOf(Array(Array(1.0), Array(2.0), Array(3.0))), 1.0, 2.0, 3.0)
+      assertMatrix(DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(3.0, 4.0))), 1.0, 2.0, 3.0, 4.0)
     }
 
-    test("toString_renders_every_value_including_one_whose_rows_differ_in_length") {
-      // Rendering is total: it walks each row at that row's own length, so no value can make it
-      // fail or hide an element. That is observable through either of the two factories which
-      // take their shape from the array they are given - the copying one and the module-private
-      // adopting one - since neither measures the rows that follow the first. The expected text
-      // is that of the Java original, which also rendered each row at its own length
-      DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(1.0))).toString shouldBe "1.0 2.0\n1.0\n"
-      DoubleMatrix.ofUnsafe(Array(Array(1.0, 2.0), Array(1.0))).toString shouldBe "1.0 2.0\n1.0\n"
-      DoubleMatrix.ofUnsafe(Array(Array(1.0), Array(1.0, 2.0))).toString shouldBe "1.0\n1.0 2.0\n"
-      DoubleMatrix.ofUnsafe(Array(Array(1.0), Array.emptyDoubleArray, Array(2.0))).toString shouldBe
-        "1.0\n2.0\n"
+    test("every_value_of_this_type_is_rectangular_whatever_route_built_it") {
+      // The refusal above is one factory's; this is the property it exists for, asserted of the
+      // type. The check is made by the constructor, so it covers every route into a value - the
+      // factories given a shape, the factories given rows, and every operation that derives one
+      // value from another - and what it buys is that a position the shape names is a position
+      // the rows hold. That is asserted here the only way it can be asserted from outside the
+      // class: every position of the shape is read, through the element accessor and through the
+      // rows the copying accessor hands back, and every row is measured against the column count.
+      val values =
+        List(
+          DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(3.0, 4.0))),
+          DoubleMatrix.of(2, 3, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+          DoubleMatrix.tabulate(3, 2)((row, column) => (row + column).toDouble),
+          DoubleMatrix.ofArrays(2, 2)(row => Array(row.toDouble, row.toDouble)),
+          DoubleMatrix.ofArrayObjects(2, 2)(row => DoubleArray.of(row.toDouble, row.toDouble)),
+          DoubleMatrix.filled(2, 2, 1.5),
+          DoubleMatrix.identity(3),
+          DoubleMatrix.diagonal(DoubleArray.of(1.0, 2.0)),
+          DoubleMatrix.of(2, 2, 1.0, 2.0, 3.0, 4.0).transpose,
+          DoubleMatrix.of(2, 2, 1.0, 2.0, 3.0, 4.0).`with`(1, 1, 9.0),
+          DoubleMatrix.of(2, 2, 1.0, 2.0, 3.0, 4.0).multipliedBy(2.0),
+          DoubleMatrix.of(2, 2, 1.0, 2.0, 3.0, 4.0).map(value => value + 1.0),
+          DoubleMatrix.EMPTY)
+      values.foreach { value =>
+        withClue(s"the rows of ${value.toString} against a shape of ${value.rowCount} x ${value.columnCount}: ") {
+          val rows = value.toArray
+          rows.length shouldBe value.rowCount
+          rows.map(row => row.length).distinct.filterNot(_ == value.columnCount) shouldBe empty
+          positionsOf(value).filterNot { case (row, column) =>
+            bitsOf(value.get(row, column)) == bitsOf(rows(row)(column))
+          } shouldBe empty
+        }
+      }
+    }
 
-      // and the rectangular renderings are unchanged
+    test("toString_renders_every_shape_a_value_of_this_type_can_have") {
+      // Rendering walks each row to that row's own length, which for every value of this type is
+      // the column count the shape states, because the constructor measures the two against each
+      // other. The expected text is that of the Java original, which rendered each row at its own
+      // length for the same reason this does - the row is what the rendering is handed.
+      //
+      // The shapes below are every shape there is: several rows and several columns, one row, one
+      // column, and no elements at all. The rows that differ in length which the original could
+      // render are not among them, because no value of this type has them any more - that is
+      // asserted where it belongs, at the factory that used to accept them.
       DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(3.0, 4.0))).toString shouldBe "1.0 2.0\n3.0 4.0\n"
+      DoubleMatrix.copyOf(Array(Array(1.0), Array(2.0), Array(3.0))).toString shouldBe "1.0\n2.0\n3.0\n"
       DoubleMatrix.of(1, 3, 1.0, 2.0, 3.0).toString shouldBe "1.0 2.0 3.0\n"
+      DoubleMatrix.of(1, 1, 1.0).toString shouldBe "1.0\n"
       DoubleMatrix.EMPTY.toString shouldBe ""
     }
 
@@ -666,11 +712,12 @@ package com.opengamma.strata.collect.array {
 
       // The port copies the row rather than wrapping the stored one, which the original did. The
       // array type is itself immutable, so the difference is invisible through its own surface and
-      // has to be shown one level down: the array a returned row is built on is not the array the
-      // matrix holds, and `copy_safety_of_row_and_column` shows that writing to the array handed
-      // out alongside it changes nothing either
-      (test.row(0).toArrayUnsafe eq test.toArrayUnsafe(0)) shouldBe false
-      (test.row(0).toArrayUnsafe eq test.row(0).toArrayUnsafe) shouldBe false
+      // has to be shown one level down, through the copying accessors of both types: the run of
+      // values a returned row answers with is not the row the matrix hands out a copy of, and two
+      // reads of the same row are two distinct runs. `copy_safety_of_row_and_column` shows that
+      // writing to either changes nothing
+      (test.row(0).toArray eq test.toArray(0)) shouldBe false
+      (test.row(0).toArray eq test.row(0).toArray) shouldBe false
     }
 
     test("test_rowArray") {
@@ -969,9 +1016,9 @@ package com.opengamma.strata.collect.array {
       val first = test.toArray
       val second = test.toArray
       (first eq second) shouldBe false
-      (first eq test.toArrayUnsafe) shouldBe false
+      (first eq test.toArray) shouldBe false
       (first(0) eq second(0)) shouldBe false
-      (first(0) eq test.toArrayUnsafe(0)) shouldBe false
+      (first(0) eq test.toArray(0)) shouldBe false
 
       first(0)(0) = 9.0
       first(2) = Array(0.0, 0.0)
@@ -1040,40 +1087,102 @@ package com.opengamma.strata.collect.array {
       assertMatrix(tabulated, 9.0, 2.0, 3.0, 4.0, 5.0, 6.0)
     }
 
-    test("aliasing_of_the_unsafe_escape_hatches") {
-      // These two members are the deliberate exceptions to the copying above: one adopts the rows
-      // it is given and the other hands back the rows the value holds, so both alias. They are
-      // visible only inside this module - `private[collect]`, not `private[array]`, because the
-      // codec object of the module consumes them - which is why this spec can call them at all and
-      // why no caller outside the module can. Their aliasing is asserted rather than merely
-      // documented, because it is the reason the scope exists.
-      val base = Array(Array(1.0, 2.0), Array(3.0, 4.0))
-      val adopted = DoubleMatrix.ofUnsafe(base)
-      (adopted.toArrayUnsafe eq base) shouldBe true
-      (adopted.toArrayUnsafe(0) eq base(0)) shouldBe true
-      base(1)(1) = 9.0
-      adopted.get(1, 1) shouldBe 9.0
+    test("no_member_hands_out_the_stored_rows") {
+      // The copy safety above is asserted through the source, which is the right level for what
+      // each member does and the wrong level for the claim that no member does otherwise: a
+      // source file can only be read for the members it happens to mention. This test reads the
+      // compiled class instead, so a member added later is covered by it whether anyone thought
+      // to test that member or not.
+      //
+      // Two statements, and the second is the one that matters. No declared name carries the word
+      // the original's escape hatches were named for - that is the cheap check, and it is here
+      // because those two names are what a reader looks for. Then: of every member the class
+      // publishes, exactly three answer with a run of values and one with an array of rows, and
+      // all four are the copying accessors. That is the statement immutability rests on, because
+      // a member of any other name that returned a stored row would defeat it just as thoroughly.
+      //
+      // The deep copy of the rows lives on the companion, where the constructor and `toArray`
+      // both reach it, and the compiler emits it under a name of its own devising. It answers
+      // with an array of rows and is therefore named here as what it is: a copier of the argument
+      // it is handed, which reads no field of any instance, so it is no route into a matrix.
+      val declared = classOf[DoubleMatrix].getDeclaredMethods.toList
+      val companion = DoubleMatrix.getClass.getDeclaredMethods.toList
+      withClue("members whose name carries the word the original's escape hatches were named for: ") {
+        (declared ::: companion).map(method => method.getName).filter(name =>
+          name.contains("Unsafe")) shouldBe empty
+      }
 
-      val stored = adopted.toArrayUnsafe
-      stored(0)(1) = 8.0
-      adopted.get(0, 1) shouldBe 8.0
-      assertMatrix(adopted, 1.0, 8.0, 3.0, 9.0)
+      val publicArrayReturns =
+        (declared ::: companion)
+          .filter(method => Modifier.isPublic(method.getModifiers))
+          .filter(method =>
+            method.getReturnType == classOf[Array[Double]] ||
+              method.getReturnType == classOf[Array[Array[Double]]])
+          .map(method => method.getName)
+          .distinct
+          .sorted
+      withClue(s"public members answering with rows or with a run of values: $publicArrayReturns: ") {
+        publicArrayReturns shouldBe
+          List("columnArray", "com$opengamma$strata$collect$array$DoubleMatrix$$deepClone",
+            "rowArray", "toArray")
+      }
 
-      // an empty matrix is answered by the canonical instance even here, so no fresh empty value
-      // can be adopted into existence through any of the three degenerate shapes
-      DoubleMatrix.ofUnsafe(Array.ofDim[Double](0, 0)) should be theSameInstanceAs DoubleMatrix.EMPTY
-      DoubleMatrix.ofUnsafe(Array.ofDim[Double](0, 2)) should be theSameInstanceAs DoubleMatrix.EMPTY
-      DoubleMatrix.ofUnsafe(Array.ofDim[Double](2, 0)) should be theSameInstanceAs DoubleMatrix.EMPTY
+      // and each of those accessors answers with fresh data on every call, so holding the result
+      // of one call is not a way to observe or change what a later call sees
+      val test = matrix3x2
+      val rows = test.toArray
+      val again = test.toArray
+      (rows eq again) shouldBe false
+      (rows(0) eq again(0)) shouldBe false
+      (test.rowArray(0) eq test.rowArray(0)) shouldBe false
+      (test.columnArray(0) eq test.columnArray(0)) shouldBe false
+      rows(0)(0) = 9.0
+      again(1)(1) = 8.0
+      test.rowArray(2)(0) = 7.0
+      test.columnArray(1)(0) = 6.0
+      assertMatrix(test, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
     }
 
-    test("unsafe_members_are_inaccessible_outside_collect") {
-      // The two calls compile here, inside `com.opengamma.strata.collect`, which is the positive
-      // control: the expressions are well formed and the members exist. The same two expressions
-      // are then offered to a probe object in a sibling package outside `collect`, where the
-      // compile-time access check denies them - which is the whole of the guarantee, since a scope
-      // that is merely documented is a convention and one the compiler keeps is a rule.
-      assertCompiles("com.opengamma.strata.collect.array.DoubleMatrix.ofUnsafe(Array(Array(1.0)))")
-      assertCompiles("com.opengamma.strata.collect.array.DoubleMatrix.of(1, 1, 1.0).toArrayUnsafe")
+    test("the_public_constructor_copies_what_it_is_handed") {
+      // The constructor is declared private and is emitted public regardless, because the
+      // companion that every factory lives in has to reach it. That is not a defect to be hidden
+      // - it cannot be hidden, in this language, on this platform - so it is the path this test
+      // takes deliberately: the rows are handed to the constructor itself, reflectively, exactly
+      // as a caller outside this language would hand them over, and then changed, outer array and
+      // row alike. The value does not move, because the copy is made by the constructor rather
+      // than by the factory in front of it. There is exactly one such constructor, which is
+      // asserted too: a second one would be a second construction path to hold to the same
+      // contract.
+      val constructors = classOf[DoubleMatrix].getConstructors.toList
+      constructors should have size 1
+
+      val source = Array(Array(1.0, 2.0), Array(3.0, 4.0))
+      val built = constructors.head
+        .newInstance(source.asInstanceOf[AnyRef], Integer.valueOf(2), Integer.valueOf(2))
+        .asInstanceOf[DoubleMatrix]
+      assertMatrix(built, 1.0, 2.0, 3.0, 4.0)
+      source(0)(0) = 9.0
+      source(1) = Array(7.0, 7.0)
+      assertMatrix(built, 1.0, 2.0, 3.0, 4.0)
+
+      // and nothing the value hands back afterwards reaches the rows that built it
+      (built.toArray eq source) shouldBe false
+      (built.toArray(0) eq source(0)) shouldBe false
+    }
+
+    test("unsafe_members_resolve_to_nothing") {
+      // The two names the Java original published are offered to the compiler here, inside
+      // `com.opengamma.strata.collect`, where a member restricted to this module would have been
+      // visible - so this is the assertion that neither exists at all rather than that neither is
+      // reachable. The same two expressions are then offered to a probe object in a sibling
+      // package, which is what shows the answer does not depend on where the question is asked.
+      //
+      // The positive control is the line above each rejection: the same expression with a member
+      // that does exist compiles, so a rejection cannot be the reward for a malformed expression.
+      assertCompiles("com.opengamma.strata.collect.array.DoubleMatrix.copyOf(Array(Array(1.0)))")
+      assertDoesNotCompile("com.opengamma.strata.collect.array.DoubleMatrix.ofUnsafe(Array(Array(1.0)))")
+      assertCompiles("com.opengamma.strata.collect.array.DoubleMatrix.of(1, 1, 1.0).toArray")
+      assertDoesNotCompile("com.opengamma.strata.collect.array.DoubleMatrix.of(1, 1, 1.0).toArrayUnsafe")
       com.opengamma.strata.audit.DoubleMatrixUnsafeAccessProbe.ofUnsafeIsInaccessible
       com.opengamma.strata.audit.DoubleMatrixUnsafeAccessProbe.toArrayUnsafeIsInaccessible
     }
@@ -1235,8 +1344,11 @@ package com.opengamma.strata.collect.array {
         }
       }
 
-      // a shape violation is checked by this library and raised as an illegal argument, carrying
-      // the message of the Java original word for word
+      // A shape violation is checked by this library and raised as an illegal argument, carrying
+      // the message of the Java original word for word wherever the original raised one. The two
+      // `copyOf` rows are the exception on both counts: that factory shaped an array whose rows
+      // differed in length by its first row and raised nothing, so the message is the port's own
+      // and names the offending row and both lengths.
       val shapeFailures = Table[String, () => Any, String](
         ("member", "operation", "message"),
         (
@@ -1263,6 +1375,14 @@ package com.opengamma.strata.collect.array {
           "ofArrayObjects, short row",
           () => DoubleMatrix.ofArrayObjects(1, 2)(_ => DoubleArray.of(1.0)),
           "Function returned array of incorrect length 1, expected 2"),
+        (
+          "copyOf, short row",
+          () => DoubleMatrix.copyOf(Array(Array(1.0, 2.0), Array(3.0))),
+          "Expected every row of the matrix to hold 2 elements, but row 1 holds 1"),
+        (
+          "copyOf, long row",
+          () => DoubleMatrix.copyOf(Array(Array(1.0), Array(2.0, 3.0))),
+          "Expected every row of the matrix to hold 1 elements, but row 1 holds 2"),
         (
           "plus, different shape",
           () => test.plus(DoubleMatrix.EMPTY),
@@ -1560,9 +1680,9 @@ package com.opengamma.strata.collect.array {
         val first = matrix.toArray
         val second = matrix.toArray
         (first eq second) shouldBe false
-        (first eq matrix.toArrayUnsafe) shouldBe false
+        (first eq matrix.toArray) shouldBe false
         (first(0) eq second(0)) shouldBe false
-        (first(0) eq matrix.toArrayUnsafe(0)) shouldBe false
+        (first(0) eq matrix.toArray(0)) shouldBe false
         first(0)(0) = 123456.5
         first(matrix.rowCount - 1) = new Array[Double](matrix.columnCount)
         matrixHash.eqv(DoubleMatrix.copyOf(second), matrix) shouldBe true
@@ -1825,49 +1945,68 @@ package com.opengamma.strata.collect.array {
     }
 
     //-------------------------------------------------------------------------
-    // The shared shrinkings of this type, over a value only `copyOf` can produce.
+    // The shared shrinkings of this type, and the shape they used to have to allow for.
     //
-    // `copyOf` shapes an array whose rows differ in length by its first row, as the Java
-    // original does, so a matrix can state a column count that one of its rows does not reach.
-    // The shrinkings of `Arbitraries` walk the stated shape to build their candidates, so they
-    // are asserted here to be total over such a value: were they to read a position that is not
-    // there, a property that failed on a ragged matrix would report an index failure raised by
-    // the minimisation instead of the counterexample it found. The generators of that file
-    // produce only rectangular matrices, so no property reaches this on its own - which is
-    // exactly why it is asserted directly.
+    // `Arbitraries` builds its shrinking candidates by walking the stated shape of the value it
+    // is minimising, and it guards that walk with a rectangularity check, because `copyOf` once
+    // shaped an array whose rows differed in length by its first row - so a matrix could state a
+    // column count one of its rows did not reach, and reading such a position would have raised
+    // from the minimisation rather than reporting the counterexample that was found.
+    //
+    // No value of this type can be shaped that way any more: the constructor measures the rows
+    // against the shape, so the guard is now satisfied by construction. That is what the first
+    // test below asserts - the shape those candidates had to allow for cannot be built at all -
+    // and the two after it assert that the shrinkings themselves still produce candidates for the
+    // shapes that do exist, which is what the guard must not have cost.
     //-------------------------------------------------------------------------
-    test("the shared matrix shrinking is total over a matrix whose rows differ in length") {
-      // a row shorter than the first: the shape promises an element row 1 does not hold
-      val shortSecondRow = DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5)))
-      shortSecondRow.rowCount shouldBe 2
-      shortSecondRow.columnCount shouldBe 2
-      Shrink.shrink(shortSecondRow)(Arbitraries.shrinkDoubleMatrix).toList shouldBe Nil
+    test("the shape the shared shrinkings guard against can no longer be built") {
+      // the two orientations the guard was written for, refused at the factory that used to
+      // produce them, so the walk the shrinkings make cannot meet a row it would read past
+      intercept[IllegalArgumentException](DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5))))
+      intercept[IllegalArgumentException](DoubleMatrix.copyOf(Array(Array(1.5), Array(2.5, 3.5))))
 
-      // a row longer than the first: the shape does not reach every element row 1 holds
-      val longSecondRow = DoubleMatrix.copyOf(Array(Array(1.5), Array(2.5, 3.5)))
-      Shrink.shrink(longSecondRow)(Arbitraries.shrinkDoubleMatrix).toList shouldBe Nil
-
-      // a rectangular matrix still shrinks, so the check above narrows the shrinking to the
-      // shape it cannot read rather than switching it off
-      val rectangular = DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5, 4.5)))
-      Shrink.shrink(rectangular)(Arbitraries.shrinkDoubleMatrix).toList should not be empty
+      // and every value that can be built agrees with its own shape, which is the condition the
+      // guard tests for, read here the way the guard reads it - through `row`, at its own length
+      val values =
+        List(
+          DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5, 4.5))),
+          DoubleMatrix.of(2, 3, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0),
+          DoubleMatrix.tabulate(3, 1)((row, _) => row.toDouble),
+          DoubleMatrix.EMPTY)
+      values.foreach { value =>
+        withClue(s"the rows of a ${value.rowCount} x ${value.columnCount} value: ") {
+          (0 until value.rowCount).filterNot(row => value.row(row).size == value.columnCount) shouldBe
+            empty
+        }
+      }
     }
 
-    test("the shared matrix-pair shrinking is total when either side has rows that differ in length") {
-      val ragged = DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5)))
+    test("the shared matrix shrinking produces candidates for every shape that exists") {
+      // a rectangular matrix shrinks, which is what the guard must not have cost, and the
+      // candidates it offers are rectangular in their turn
       val rectangular = DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5, 4.5)))
+      val candidates = Shrink.shrink(rectangular)(Arbitraries.shrinkDoubleMatrix).toList
+      candidates should not be empty
+      candidates.filterNot(candidate =>
+        (0 until candidate.rowCount).forall(row => candidate.row(row).size == candidate.columnCount)
+      ) shouldBe empty
 
-      // either side being the value the shape cannot be read from is enough to reach the floor
-      Shrink.shrink((ragged, rectangular))(Arbitraries.shrinkDoubleMatrixPair).toList shouldBe Nil
-      Shrink.shrink((rectangular, ragged))(Arbitraries.shrinkDoubleMatrixPair).toList shouldBe Nil
-      Shrink.shrink((ragged, ragged))(Arbitraries.shrinkDoubleMatrixPair).toList shouldBe Nil
+      // and the empty matrix, which has nothing to reduce, is the floor it already is
+      Shrink.shrink(DoubleMatrix.EMPTY)(Arbitraries.shrinkDoubleMatrix).toList shouldBe Nil
+    }
 
-      // and a pair of rectangular matrices still shrinks in lockstep
+    test("the shared matrix-pair shrinking reduces both sides in lockstep") {
+      val rectangular = DoubleMatrix.copyOf(Array(Array(1.5, 2.5), Array(3.5, 4.5)))
       val candidates = Shrink.shrink((rectangular, rectangular))(Arbitraries.shrinkDoubleMatrixPair).toList
       candidates should not be empty
       candidates.filterNot { case (left, right) =>
         left.rowCount == right.rowCount && left.columnCount == right.columnCount
       } shouldBe empty
+
+      // a pair with nothing to reduce is the floor it already is, which is the other branch of
+      // that shrinking
+      Shrink.shrink((DoubleMatrix.EMPTY, DoubleMatrix.EMPTY))(
+        Arbitraries.shrinkDoubleMatrixPair).toList shouldBe Nil
     }
 
   }
@@ -1876,47 +2015,52 @@ package com.opengamma.strata.collect.array {
 package com.opengamma.strata.audit {
 
   /**
-   * The proof that the two unsafe members of the matrix type cannot be reached from outside the
-   * `strata-collect` module.
+   * The proof that the two aliasing members of the Java matrix type are absent from the port, put
+   * from outside the `strata-collect` module.
    *
-   * Those members - the factory that adopts an array of rows without copying it, and the accessor
-   * that hands back the rows a value holds - are scoped to the whole of
-   * `com.opengamma.strata.collect` rather than to the package of the type itself, because the
-   * codec object of the module consumes both. That scope is what makes the copying of the public
-   * surface complete rather than conventional, and a scope is worth asserting only from a place
-   * the scope excludes: the spec of the matrix type lives inside `collect`, where both members are
-   * visible and where a check that they are not would fail.
+   * Those members - the factory that adopted an array of rows without copying it, and the accessor
+   * that handed back the rows a value held - are not ported under any name or any visibility. The
+   * spec of the matrix type asserts that from inside `com.opengamma.strata.collect`, which is the
+   * sharper place to assert it from, since a member merely restricted to that module would still
+   * be visible there. This object asserts it from a place no such restriction could ever have
+   * reached, so that the two answers together say the names resolve to nothing wherever the
+   * question is asked - and it is the place the assertion would have to be made from if either
+   * member were ever reintroduced behind a module scope.
    *
-   * So the two checks are made from here. This object is a sibling of `com.opengamma.strata` at
-   * the root rather than a member of `collect`, its package name says what it is for, and the
-   * compile-time check that rejects each expression below is answered in this package because that
-   * is where the code asking the question sits. Each reference is written out in full, so that
-   * nothing an import brought into the spec can change the outcome, and each method answers with
-   * the assertion it made so that the spec can state it as its own result.
+   * This object is a sibling of `com.opengamma.strata` at the root rather than a member of
+   * `collect`, its package name says what it is for, and the compile-time check that rejects each
+   * expression below is answered in this package because that is where the code asking the
+   * question sits. Each reference is written out in full, so that nothing an import brought into
+   * the spec can change the outcome, and each method answers with the assertion it made so that
+   * the spec can state it as its own result. The array type of this module has a probe of its own
+   * in this package, which is why this one is named for the type it serves.
    *
-   * The corresponding positive controls - the same two expressions compiling inside `collect` -
-   * are in the spec, which is the only place they can be. The array type of this module has a
-   * probe of its own in this package, which is why this one is named for the type it serves.
+   * The corresponding positive controls - the copying members of the same type, in the same
+   * expression shape, compiling from here - are the first line of each method, so a rejection
+   * below cannot be the reward for an expression that was malformed.
    */
   object DoubleMatrixUnsafeAccessProbe extends org.scalatest.Assertions {
 
     /**
-     * Asserts that the adopting factory cannot be called from outside the module.
+     * Asserts that the name of the original's adopting factory resolves to nothing here.
      *
      * @return the assertion that the call does not compile here
      */
-    def ofUnsafeIsInaccessible: org.scalatest.Assertion =
+    def ofUnsafeIsInaccessible: org.scalatest.Assertion = {
+      assertCompiles("com.opengamma.strata.collect.array.DoubleMatrix.copyOf(Array(Array(1.0)))")
       assertDoesNotCompile(
         "com.opengamma.strata.collect.array.DoubleMatrix.ofUnsafe(Array(Array(1.0)))")
+    }
 
     /**
-     * Asserts that the accessor handing back the stored rows cannot be called from outside the
-     * module.
+     * Asserts that the name of the original's aliasing accessor resolves to nothing here.
      *
      * @return the assertion that the call does not compile here
      */
-    def toArrayUnsafeIsInaccessible: org.scalatest.Assertion =
+    def toArrayUnsafeIsInaccessible: org.scalatest.Assertion = {
+      assertCompiles("com.opengamma.strata.collect.array.DoubleMatrix.of(1, 1, 1.0).toArray")
       assertDoesNotCompile(
         "com.opengamma.strata.collect.array.DoubleMatrix.of(1, 1, 1.0).toArrayUnsafe")
+    }
   }
 }

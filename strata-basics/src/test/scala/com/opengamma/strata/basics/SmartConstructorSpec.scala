@@ -5,10 +5,16 @@
  */
 package com.opengamma.strata.basics
 
+import java.io.ByteArrayOutputStream
+import java.io.ObjectOutputStream
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Modifier
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.Period
 import java.time.YearMonth
+
+import scala.util.Using
 
 import cats.data.NonEmptyList
 
@@ -18,6 +24,7 @@ import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 
 import com.opengamma.strata.collect.Decimal
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.FixedScaleDecimal
 import com.opengamma.strata.collect.array.DoubleArray
 import com.opengamma.strata.collect.array.DoubleMatrix
@@ -77,51 +84,50 @@ import com.opengamma.strata.basics.value.ValueStepSequence
 
 /**
  * Holds the '''construction''' of every validated and normalising type of both modules to the
- * policy of AAP section 0.3.3, which is one half of the explicit-error-handling gate (AAP Rule 5
- * / Gate 5). Its sibling `FailableSurfaceSpec` holds the other half - the '''methods''' that
- * return an outcome - and the two are deliberately independent: either can fail without the
- * other, and neither repeats the other's cases.
+ * explicit-error-handling policy, which is the half of Rule 5 / Gate 5 this suite serves. Its
+ * sibling `FailableSurfaceSpec` holds the other half - the '''methods''' that return an outcome
+ * - and neither repeats the other's cases.
  *
  * ===What construction has to prove===
  *
- * A validated type of this port is a `sealed abstract case class X private (...)`, a form that
- * generates neither `apply` nor `copy`, so its factory is the only way a value of it comes into
- * existence. That makes the factory the whole of the type's guarantee, and three things about it
- * are worth asserting:
+ * A validated type is a `sealed abstract case class X private (...)`, a form that generates
+ * neither `apply` nor `copy`, so its factory is the only way a value of it comes into existence.
+ * That makes the factory the whole of the type's guarantee, and three things about it are worth
+ * asserting:
  *
  *  1. '''Every distinct invalid input is rejected, and rejected as the right kind of failure.'''
- *     A spec that asserted only `isLeft` would pass even if every cause collapsed onto one
- *     reason, so each case below asserts the [[FailureReason]] by value through `beFailureWith`,
- *     and asserts the attribute where the AAP fixes one.
+ *     A spec asserting only `isLeft` would pass even if every cause collapsed onto one reason, so
+ *     each case below asserts the [[FailureReason]] by value through `beFailureWith`, and the
+ *     attribute where one is fixed - the `definition` key a rejected schedule definition carries.
  *  1. '''Independent causes accumulate.''' The accumulating channel of `Validate` is the reason
  *     these factories return `EitherNec` rather than `Either`, and it is invisible unless a test
- *     supplies an input that is wrong in two ways at once and counts the chain. That is what the
- *     third group below does, for nine factories.
+ *     supplies an input that is wrong in two ways at once and counts the chain. The third group
+ *     below does that, for nine factories.
  *  1. '''Normalisation is what it says it is, and is idempotent.''' A normalising factory may
  *     rewrite its input - sort it, deduplicate it, round it, canonicalise a period, turn `-0.0`
  *     into `0.0` - and a value that has been through it must survive being put through it again
- *     unchanged, or no caller could rebuild a value from its own accessors. The fourth group
- *     asserts each documented rewrite and then its idempotence, by property.
+ *     unchanged, or no caller could rebuild a value from its own accessors.
  *
- * The compile-level half of the policy - that `X(...)` and `.copy` do '''not''' exist, and that a
- * sealed family cannot be extended - belongs to `ApiSurfaceSpec` and is not repeated here. Every
- * value below is therefore built through `of` or `parse`, which is the only way to build one.
+ * That `X(...)` and `.copy` do '''not''' exist, and that a sealed family cannot be extended,
+ * belongs to `ApiSurfaceSpec`. Every value below comes from a factory or a constant of its type.
  *
  * ===Where a throw is still correct===
  *
- * AAP section 0.3.3 keeps two numeric-domain edges as `ArgCheck` throws rather than converting
- * them to failures, because the arithmetic they sit behind stays total in signature exactly as it
- * was in the library being ported. The last group of this file owns those two, and they are the
- * '''only''' `intercept` in the file: a data-dependent rejection anywhere else would be a
- * regression, and the Rule 5 gate greps this file for exactly that.
+ * Three numeric-domain edges stay `ArgCheck` throws rather than failures, because the routes
+ * they sit behind are total in signature. Group five of this file owns all three, in twelve
+ * `intercept` calls: four where `CurrencyAmount` arithmetic would produce a value that is not a
+ * number, three where `Decimal` arithmetic passes eighteen digits, and five where a run of
+ * amounts would be built with, or transformed into, an element no amount holds. Those twelve are
+ * every `intercept` of this file that stands for a rejection of data; everywhere else a
+ * data-dependent rejection is asserted as a reported failure rather than as a throw. The three
+ * further `intercept` calls of the closure group at the end of the file stand for the guards a
+ * caller reaches only from another language, which reject no data at all.
  *
- * ===Coverage against AAP section 0.3.3===
+ * ===Coverage===
  *
- * The lists below are transcribed from the construction-kind tables of the AAP, and every entry
- * has a test in this file. A reviewer can compare the two at a glance; the suite also prints the
- * two lists when it runs, from [[SmartConstructorSpec.ValidatedTypes]] and
- * [[SmartConstructorSpec.NormalisingTypes]], so the coverage claim is checked against a count
- * rather than taken on trust.
+ * Every entry of the two lists below has a test in this file. The suite prints both lists from
+ * [[SmartConstructorSpec.ValidatedTypes]] and [[SmartConstructorSpec.NormalisingTypes]], and its
+ * first two tests count them and tie each name to a test registered against it.
  *
  * Validated `[V]` - `of` returns `EitherNec[Failure, X]`, or `Either[Failure, X]` where a single
  * cause is all there is to report:
@@ -141,26 +147,10 @@ import com.opengamma.strata.basics.value.ValueStepSequence
  * SequenceDate  HolidayCalendarId  ImmutableHolidayCalendar  RollConvention.ofDayOfMonth
  * }}}
  *
- * Three of the validated entries carry a condition that the shape of their fields cannot state,
- * so it is worth naming what each of their factories refuses and where this file asserts it:
- *
- *  - `DaysAdjustment.of` refuses a day count of zero paired with an addition calendar other than
- *    the no-holidays identifier, because a business-day addition of zero days names no day. Its
- *    four '''named''' factories are total, and they are total because each of them lands inside
- *    the field space `of` accepts - `ofCalendarDays` fixes the addition calendar, and both
- *    `ofBusinessDays` forms drop it for a zero day count - which this file proves by running
- *    every value they build back through `of` rather than assuming it.
- *  - `Schedule.of` refuses a list of periods that does not run from earliest to latest, reporting
- *    the unadjusted and the adjusted date pair of each misplaced pair separately. A gap between
- *    one period and the next is allowed, as is one period ending on the day the next begins, so
- *    the positive controls below assert those two as well as the rejections.
- *  - `ValueSchedule.of` refuses two steps that name one position (one period index, or one date)
- *    with different adjustments, once per position so named. Two steps naming a position with the
- *    '''same''' adjustment agree rather than contradict, and are accepted.
- *
- * The data-dependent failures those three types report from their '''methods''' - resolving a
- * calendar identifier, merging or adjusting a schedule, resolving a definition against a schedule
- * of periods - belong to `FailableSurfaceSpec` and are not repeated here.
+ * `DaysAdjustment`, `Schedule` and `ValueSchedule` are the three entries whose condition is a
+ * relation between fields rather than a property of one; each test states the relation its
+ * factory enforces, and the failures those types report from their '''methods''' belong to
+ * `FailableSurfaceSpec`.
  */
 final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
 
@@ -169,21 +159,17 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   /**
    * The number of draws each idempotence property is checked against.
    *
-   * Every property in the last group is seed-independent - it claims that re-applying a factory
-   * to the accessors of a value that factory produced yields an equal value, which holds of
-   * every value of the type - so the verdict does not depend on which values are drawn and two
-   * runs of the suite agree whatever seed each is given. The count is therefore chosen for
-   * coverage and for runtime rather than to make a flaky claim pass: fifty draws per property
-   * across a dozen properties exercise each generator's corners several times over while leaving
-   * this file, which touches nearly every type of the module, inside a couple of seconds.
+   * Every property of group four holds of every value of its type - it claims that re-applying a
+   * factory to the accessors of a value that factory produced yields an equal value - so the
+   * verdict does not depend on which values are drawn and two runs agree whatever seed each is
+   * given. The count is chosen for coverage and for runtime: fifty draws across the eleven
+   * properties exercise each generator's corners several times over.
    */
   implicit override val generatorDrivenConfig: PropertyCheckConfiguration =
     PropertyCheckConfiguration(minSuccessful = 50)
 
   //-------------------------------------------------------------------------
-  // Shared values. Everything here is built through a factory, because there is no other way to
-  // build one, and each is unwrapped through a helper that fails the suite rather than
-  // substituting a fallback - a fixture that stopped being valid must break loudly.
+  // Shared values, each reached through a factory or a constant of its type.
   //-------------------------------------------------------------------------
   private val gbp: Currency = Currency.GBP
   private val usd: Currency = Currency.USD
@@ -198,11 +184,11 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   private val gbp100: CurrencyAmount = amount(gbp, 100d)
   private val usd50: CurrencyAmount = amount(usd, 50d)
 
-  /** The two dates of the Java `SchedulePeriodTest`, in the order it held them. */
+  /** A fortnight: the pair of dates most of the date and schedule cases are built from. */
   private val jul04: LocalDate = date(2014, 7, 4)
   private val jul18: LocalDate = date(2014, 7, 18)
 
-  /** The working-day-override fixture of the Java `ImmutableHolidayCalendarTest`. */
+  /** Four days of one week - two holidays, a Saturday declared working, and a weekend Sunday. */
   private val wed20140709: LocalDate = date(2014, 7, 9)
   private val thu20140710: LocalDate = date(2014, 7, 10)
   private val sat20140712: LocalDate = date(2014, 7, 12)
@@ -223,9 +209,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
 
   //-------------------------------------------------------------------------
   // Unwrapping helpers. A factory of a validated type answers an outcome, so a fixture has to
-  // take a value out of one; doing that here rather than with `getOrElse` and a fabricated
-  // fallback keeps a fixture that has stopped being valid visible - the suite fails naming the
-  // reasons it was rejected for, instead of quietly testing some other value.
+  // take a value out of one; these fail the suite naming the reasons it was rejected for.
   //-------------------------------------------------------------------------
   private def accepted[A](result: ResultNec[A]): A =
     result.fold(
@@ -258,9 +242,8 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   /**
    * The messages of every failure of an accumulating outcome, in order.
    *
-   * The accumulation tests compare these rather than the reasons, because every failure that
-   * `Validate` produces carries the reason `INVALID` and a comparison of reasons could therefore
-   * not tell one cause from another.
+   * The accumulation tests compare these rather than the reasons: every failure `Validate`
+   * produces carries the reason `INVALID`, so reasons cannot tell one cause from another.
    */
   private def messagesOf[A](result: ResultNec[A]): List[String] =
     failuresOf(result).map(failure => failure.message)
@@ -268,10 +251,9 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   /**
    * Rebuilds a calendar from its own accessors, which is what its idempotence is a claim about.
    *
-   * The four arguments are exactly the four things the factory decides - the holidays it sorts
-   * and deduplicates, the weekend it applies, the overrides it applies last, and the range of
-   * years it derives from the holidays - so a calendar that survives this unchanged is one a
-   * decoder or a document can reproduce.
+   * The arguments are the identifier and the three inputs the factory rewrites: the holidays it
+   * sorts and deduplicates, the weekend it applies, and the overrides it applies last. A
+   * calendar that survives this unchanged is one a decoder or a document can reproduce.
    */
   private def rebuilt(calendar: ImmutableHolidayCalendar): ImmutableHolidayCalendar =
     ImmutableHolidayCalendar.of(
@@ -288,9 +270,8 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   private def decimal(text: String): Decimal = produced(Decimal.of(text))
 
   //-------------------------------------------------------------------------
-  // The coverage claim of the header, checked rather than asserted in prose. The two lists name
-  // the types of the AAP's construction-kind tables, and the suite prints them so that a
-  // reviewer comparing this file with section 0.3.3 reads the same names from both.
+  // The coverage claim of the header, checked rather than asserted in prose: the two lists are
+  // counted, and every name they hold is tied to a test of this suite.
   //-------------------------------------------------------------------------
   test("every validated and normalising type of AAP 0.3.3 is covered by this suite") {
     ValidatedTypes should have size 23
@@ -303,17 +284,12 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("every type the coverage lists name has a test of this suite registered against it") {
-    // What the counts above cannot say. The two lists are names, and the tests that exercise
-    // those names are written separately, so a test deleted or renamed leaves the counts intact
-    // and the list still claiming coverage of a type nothing exercises. This ties the two
-    // together the only way a heterogeneous suite can be tied together without rewriting it:
-    // the names ScalaTest actually holds are compared with the names the lists claim.
-    //
-    // A type is claimed by a test whose name begins with it - the convention every test of the
-    // groups below follows - or, for a member of a type, by a test of that type naming the
-    // member, which is how `DayCount.Bus252` is claimed by `DayCount.ofBus252 ...`. The three
-    // derived observations share one test, since they share the one failure they can report, and
-    // that test is required by name so that deleting it fails here rather than going unnoticed.
+    // What the counts above cannot say: the lists are names, and the tests that exercise them
+    // are written separately, so a test renamed or deleted would leave the counts intact and a
+    // list still claiming coverage of a type nothing exercises. A type is claimed by a test whose
+    // name begins with it, or - for a member - by a test of its type naming it, which is how
+    // `DayCount.Bus252` is claimed. The three derived observations share one test, required here
+    // by name.
     val sharedObservationTest = "the three derived observations"
     val sharedObservationTypes =
       Set("IborIndexObservation", "OvernightIndexObservation", "FxIndexObservation")
@@ -339,19 +315,15 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
 
   //-------------------------------------------------------------------------
   // Group one: the validated types. One test per type, one case per distinct invalid input, and
-  // the reason of each asserted by value so that two different faults cannot quietly become the
-  // same failure. Each test also builds one acceptable value, which is what gives the rejections
-  // their meaning: the factory is discriminating, not merely refusing.
+  // one acceptable value, which is what gives the rejections their meaning.
   //-------------------------------------------------------------------------
   test("StandardId.of rejects a scheme and a value that do not match their permitted shapes") {
-    // accumulating: the scheme and the value are two arguments a caller supplied, so both are
-    // described - see the accumulation group for the count
+    // accumulating: the scheme and the value are described separately, counted in group three
     StandardId.of("", "AAPL") should beFailureWith(FailureReason.INVALID)
     StandardId.of("OG~Ticker", "AAPL") should beFailureWith(FailureReason.INVALID)
     StandardId.of("OG-Ticker", "") should beFailureWith(FailureReason.INVALID)
     StandardId.of("OG-Ticker", " AAPL") should beFailureWith(FailureReason.INVALID)
     StandardId.of("OG-Ticker", "AA~PL") should beFailureWith(FailureReason.INVALID)
-    // text naming no identifier is a parse failure rather than an invalid argument
     StandardId.parse("no-separator-here") should beFailureWith(FailureReason.PARSING)
     StandardId.of("OG-Ticker", "AAPL") should beSuccess
   }
@@ -362,13 +334,11 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     Country.of("GBR") should beFailureWith(FailureReason.INVALID)
     Country.of("gb") should beFailureWith(FailureReason.INVALID)
     Country.of("G1") should beFailureWith(FailureReason.INVALID)
-    // the code space is open, as it was in the library being ported, so an unassigned but
-    // well-shaped code is accepted rather than rejected
+    // the code space is open, so an unassigned but well-shaped code is accepted
     Country.of("ZZ") should beSuccess
     Country.of("GB") should beSuccess
 
-    // single-cause: of3Char reports the shape of the code or the absence of a translation for
-    // it, and the two are different reasons rather than two spellings of one
+    // single-cause: of3Char reports the code's shape or a missing translation, different reasons
     Country.of3Char("GB") should beFailureWith(FailureReason.INVALID)
     Country.of3Char("QQQ") should beFailureWith(FailureReason.PARSING)
     Country.of3Char("GBR") should beSuccess
@@ -380,7 +350,6 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     FxRate.of(gbpGbp, 2d) should beFailureWith(FailureReason.INVALID)
     FxRate.of(gbp, usd, -1.5d) should beFailureWith(FailureReason.INVALID)
     FxRate.of(gbp, gbp, 2d) should beFailureWith(FailureReason.INVALID)
-    // text naming no rate is a parse failure
     FxRate.parse("GBP/USD") should beFailureWith(FailureReason.PARSING)
     FxRate.of(gbpUsd, 1.25d) should beSuccess
     FxRate.of(gbpGbp, 1d) should beSuccess
@@ -390,8 +359,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     val gbpUsdRate: FxRate = accepted(FxRate.of(gbpUsd, 1.25d))
     val eurJpyRate: FxRate = accepted(FxRate.of(eurJpy, 130d))
 
-    // single-cause: a set of rates is folded into the matrix one at a time, so the first set
-    // that cannot be joined to what has been placed is the one failure there is to report
+    // single-cause: the rates are folded in one at a time, so only the first misfit is reported
     val disjoint: FailureOr[FxMatrix] = FxMatrix.of(List(gbpUsdRate, eurJpyRate))
     disjoint should beFailureWith(FailureReason.CURRENCY_CONVERSION)
     FxMatrix.of(List(gbpUsdRate)) should beSuccess
@@ -409,10 +377,9 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("FxMatrix accepts a rate of zero, because reciprocity and triangulation are not checked") {
-    // What is deliberately NOT validated is as much a part of the contract as what is: the
-    // builder being ported placed whatever rate it was given, so a rate of zero is a matrix
-    // whose opposite direction is infinite, and a decoder that rejected it would reject a matrix
-    // that can be built. AAP section 0.6.4 states this for the codec and 0.3.3 for the factory.
+    // What is not validated is as much a part of the contract as what is: a rate is placed as
+    // given, so zero makes a matrix whose opposite direction is infinite, and a decoder that
+    // rejected zero would reject a matrix that can be built
     val zeroRate: FxMatrix = FxMatrix.of(gbpUsd, 0d)
     zeroRate.fxRate(gbp, usd) should haveValue(0d)
     produced(zeroRate.fxRate(usd, gbp)) shouldBe Double.PositiveInfinity
@@ -420,9 +387,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("CurrencyAmountArray.of rejects an empty collection and a collection of several currencies") {
-    // single failure per call, and deliberately so: the two conditions are combined rather than
-    // sequenced, but a collection holding no amount names no currency to disagree about, so the
-    // two are mutually exclusive in practice
+    // one failure per call: a collection holding no amount names no currency to disagree about
     val empty: ResultNec[CurrencyAmountArray] = CurrencyAmountArray.of(List.empty[CurrencyAmount])
     empty should beFailureWith(FailureReason.INVALID)
     failuresOf(empty) should have size 1
@@ -439,7 +404,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     CurrencyAmountArray.of(gbp, DoubleArray.of(1d, 2d)).values shouldBe DoubleArray.of(1d, 2d)
   }
 
-  test("MultiCurrencyAmountArray.of rejects arrays whose lengths disagree across currencies") {
+  test("MultiCurrencyAmountArray.of rejects disagreeing lengths and a value that is not a number") {
     val unequal: ResultNec[MultiCurrencyAmountArray] =
       MultiCurrencyAmountArray.of(Map(gbp -> DoubleArray.of(1d, 2d), usd -> DoubleArray.of(3d)))
     unequal should beFailureWith(FailureReason.INVALID)
@@ -451,18 +416,39 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
           CurrencyAmountArray.of(usd, DoubleArray.of(3d))))
     totalled should beFailureWith(FailureReason.INVALID)
 
+    // The second invalid input is an element rather than a shape. A run of amounts is a run of
+    // amounts, and this module's amount refuses a value that is not a number, so a run holding
+    // one describes nothing: reading it in and letting a later read fail is what admitting it
+    // would amount to. The factory that takes values per currency therefore examines them, and
+    // names the currency and the index it found rather than only that something was wrong.
+    val notANumber: ResultNec[MultiCurrencyAmountArray] =
+      MultiCurrencyAmountArray.of(Map(gbp -> DoubleArray.of(1d, Double.NaN)))
+    notANumber should beFailureWith(FailureReason.INVALID)
+    messagesOf(notANumber) shouldBe List("Argument 'values' for GBP must not be NaN at index 1")
+
+    // and the same of the factory that adds runs up, where the value is produced by the addition
+    // rather than supplied: two runs of one currency carrying opposed infinities sum to one
+    val opposed: ResultNec[MultiCurrencyAmountArray] =
+      MultiCurrencyAmountArray.total(
+        List(
+          CurrencyAmountArray.of(gbp, DoubleArray.of(Double.PositiveInfinity)),
+          CurrencyAmountArray.of(gbp, DoubleArray.of(Double.NegativeInfinity))))
+    messagesOf(opposed) shouldBe List("Argument 'values' for GBP must not be NaN at index 0")
+
+    // the infinities themselves are values this module holds, exactly as its amount holds them,
+    // so the rejections above are of the one value that has no amount and not of a large one
     MultiCurrencyAmountArray.of(
       Map(gbp -> DoubleArray.of(1d, 2d), usd -> DoubleArray.of(3d, 4d))) should beSuccess
+    MultiCurrencyAmountArray.of(
+      Map(gbp -> DoubleArray.of(Double.PositiveInfinity, 2d))) should beSuccess
   }
 
   test("MarketTenor construction rejects a count that is not a tenor and text that names none") {
-    // single-cause: the reasons a count was rejected are joined into the one failure this type
-    // reports, which is why its factories answer Either rather than EitherNec
+    // single-cause: the reasons are joined into one failure, hence Either rather than EitherNec
     MarketTenor.ofSpotDays(0) should beFailureWith(FailureReason.INVALID)
     MarketTenor.ofSpotDays(-1) should beFailureWith(FailureReason.INVALID)
     MarketTenor.ofSpotMonths(0) should beFailureWith(FailureReason.INVALID)
     MarketTenor.ofSpotYears(-1) should beFailureWith(FailureReason.INVALID)
-    // empty text is reported as the argument check it is, other unreadable text as a parse
     MarketTenor.parse("") should beFailureWith(FailureReason.INVALID)
     MarketTenor.parse("QQ") should beFailureWith(FailureReason.PARSING)
     MarketTenor.ofSpot(Tenor.TENOR_3M) should beSuccess
@@ -470,35 +456,27 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("DaysAdjustment.of rejects a day count of zero paired with an addition calendar") {
-    // The one thing about the three fields of an adjustment that can be wrong, and the condition
-    // the class being ported stated in the same words: the addition calendar is what makes the
-    // days business days, so a count of zero paired with one asks for a walk of zero business
-    // days, which names no day at all. The identifier is a name rather than a resolved calendar,
-    // so whether it resolves is a question for the reference data and belongs to a method.
+    // The one thing about the three fields of an adjustment that can be wrong: the addition
+    // calendar is what makes the days business days, so a count of zero paired with one asks for
+    // a walk of zero business days, which names no day. Whether it resolves belongs to a method.
     val zeroAgainstACalendar: ResultNec[DaysAdjustment] =
       DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)
     zeroAgainstACalendar should beFailureWith(FailureReason.INVALID)
-    // one cause and one only: nothing else about the fields can be wrong - a count is any
-    // integer and either calendar may be composite - so there is no second cause to accumulate
+    // one cause and one only: a count is any integer and either calendar may be composite
     failuresOf(zeroAgainstACalendar) should have size 1
     failuresOf(zeroAgainstACalendar).head shouldBe a[Failure.Invalid]
     messagesOf(zeroAgainstACalendar).head should include(HolidayCalendarIds.GBLO.name)
     DaysAdjustment.of(0, HolidayCalendarId.of("GBLO+USNY"), BusinessDayAdjustment.NONE) should
       beFailureWith(FailureReason.INVALID)
 
-    // the positive controls: the same pairing with a count that is not zero is an addition that
-    // walks business days, and a count of zero against the no-holidays identifier is the
-    // adjustment that moves nothing - so the factory is discriminating rather than refusing
+    // the positive controls: a non-zero count walks business days, a zero count moves nothing
     DaysAdjustment.of(2, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE) should beSuccess
     DaysAdjustment.of(-2, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE) should beSuccess
     DaysAdjustment.of(0, HolidayCalendarIds.NO_HOLIDAYS, BusinessDayAdjustment.NONE) should
       haveValue(DaysAdjustment.NONE)
 
-    // The four named factories are total, and what makes that correct is that each of them lands
-    // inside the field space `of` accepts: `ofCalendarDays` fixes the addition calendar to the
-    // no-holidays identifier, and both `ofBusinessDays` forms drop it for a count of zero. That
-    // is asserted rather than assumed - every value they build is run back through `of` and has
-    // to be accepted unchanged, so the two construction routes cannot drift apart.
+    // The four named factories are total because each lands inside the field space `of` accepts,
+    // asserted rather than assumed: every value they build is run back through `of` unchanged.
     val follow: BusinessDayAdjustment =
       BusinessDayAdjustment.of(BusinessDayConventions.FOLLOWING, HolidayCalendarIds.USNY)
     val built: List[DaysAdjustment] =
@@ -515,9 +493,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
       built.map(value => Right(value))
 
     // and the rejected pairing is reachable through none of them: every zero-day value names the
-    // no-holidays identifier as its addition calendar. The two-argument business-day form is
-    // where the calendar a caller named survives the rewrite - it becomes the trailing
-    // adjustment, which is the interpretable reading of the request `of` refuses.
+    // no-holidays identifier, the calendar a caller named surviving as the trailing adjustment
     built.filter(value => value.days == 0).map(value => value.calendar).distinct shouldBe
       List(HolidayCalendarIds.NO_HOLIDAYS)
     DaysAdjustment.ofBusinessDays(0, HolidayCalendarIds.GBLO).adjustment.calendar shouldBe
@@ -540,7 +516,6 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
       beFailureWith(FailureReason.INVALID)
     PeriodAdjustment.ofLastBusinessDay(Period.ofDays(3), BusinessDayAdjustment.NONE) should
       beFailureWith(FailureReason.INVALID)
-    // a period of days is acceptable where the convention is not month-based
     PeriodAdjustment.of(
       Period.ofDays(3),
       PeriodAdditionConventions.NONE,
@@ -591,20 +566,16 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("Schedule.of rejects periods that do not run from earliest to latest, and allows gaps") {
-    // The bean being ported validated that its list of periods was not empty - which is the type
-    // of the field here - and documented, without checking, that the periods ran from earliest to
-    // latest. This factory checks it, because every member that reads the periods reads them as a
-    // time line: the schedule is the ScheduleInfo a day count accrues against, periodEndDate
-    // answers with the first period containing a date, stub classification reads the first and
-    // last period, and a value schedule resolves a step by finding the period whose boundary it
-    // names. A list that is not a time line makes all of those answer wrongly rather than fail.
+    // Every member that reads the periods reads them as a time line: the schedule is the
+    // ScheduleInfo a day count accrues against, periodEndDate answers with the first period
+    // containing a date, a value schedule resolves a step by a period boundary - and a list that
+    // is not a time line makes all of those answer wrongly rather than fail.
     val july: SchedulePeriod = accepted(SchedulePeriod.of(jul04, jul18))
     val august: SchedulePeriod = accepted(SchedulePeriod.of(date(2014, 8, 1), date(2014, 8, 15)))
     val september: SchedulePeriod = accepted(SchedulePeriod.of(date(2014, 9, 1), date(2014, 9, 15)))
 
-    // accumulating: a misplaced pair is wrong under both pairs of dates and both are reported,
-    // because they are two statements about one list and a caller correcting the unadjusted dates
-    // is helped by knowing whether the adjusted dates are wrong too
+    // accumulating: a misplaced pair is wrong under both pairs of dates and both are reported, a
+    // caller correcting the unadjusted dates being helped by knowing of the adjusted ones
     val reversedPair: ResultNec[Schedule] =
       Schedule.of(NonEmptyList.of(august, july), Frequency.P1M, RollConventions.DAY_15)
     reversedPair should beFailureWith(FailureReason.INVALID)
@@ -613,15 +584,13 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     val pairMessages: List[String] = messagesOf(reversedPair)
     pairMessages.count(message => message.contains("the unadjusted end date")) shouldBe 1
     pairMessages.count(message => message.contains("the adjusted end date")) shouldBe 1
-    // each failure names the pair it rejected, by position in the list and by date
     val reported: String = pairMessages.mkString("; ")
     reported should include("2014-08-15")
     reported should include("2014-07-04")
     reported should include("index 0")
     reported should include("index 1")
 
-    // every misplaced pair is reported rather than only the first, so a list held backwards
-    // reports each of its consecutive pairs under each pair of dates
+    // every misplaced pair is reported, not only the first, under each pair of dates
     val reversedRun: ResultNec[Schedule] =
       Schedule.of(NonEmptyList.of(september, august, july), Frequency.P1M, RollConventions.DAY_15)
     failuresOf(reversedRun) should have size 4
@@ -631,10 +600,9 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     runMessages.count(message => message.contains("the unadjusted end date")) shouldBe 2
     runMessages.count(message => message.contains("the adjusted end date")) shouldBe 2
 
-    // the two pairs of dates are checked independently, so a list whose unadjusted dates are in
-    // order and whose adjusted dates overlap reports the one statement that is false of it. Only
-    // a business day adjustment can produce such a list, which is why the adjusted pair is
-    // checked at all.
+    // the two pairs of dates are checked independently, so a list ordered unadjusted and
+    // overlapping adjusted reports only that - and only an adjustment can produce such a list,
+    // which is why the adjusted pair is checked at all
     val adjustedOverlap: ResultNec[Schedule] =
       Schedule.of(
         NonEmptyList.of(
@@ -646,10 +614,9 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     failuresOf(adjustedOverlap) should have size 1
     messagesOf(adjustedOverlap).head should include("the adjusted end date")
 
-    // the positive controls. One period is a time line whatever its dates, there being no pair to
-    // compare; a gap between one period and the next is allowed exactly as the bean allowed it,
-    // since a schedule may describe accrual that pauses; and one period ending on the day the
-    // next begins is the ordinary case, which is why the check is order rather than strict order.
+    // the positive controls. One period is a time line whatever its dates; a gap is allowed,
+    // since accrual may pause; and one period ending as the next begins is why the check is
+    // order rather than strict order
     val one: ResultNec[Schedule] =
       Schedule.of(NonEmptyList.one(july), Frequency.P2W, RollConventions.DAY_4)
     one should beSuccess
@@ -693,11 +660,9 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("a rejected schedule definition carries the definition it rejected as an attribute") {
-    // AAP section 0.3.3 fixes one attribute name for this module - the `definition` key a
-    // schedule failure carries, which replaces the field the ported exception held - so the
-    // attribute is asserted here rather than only the reason. The definition below is accepted
-    // by the factory and rejected by generation, because whether a stub is allowed cannot be
-    // decided until the schedule is rolled out.
+    // One attribute name is fixed for this module - the `definition` key a schedule failure
+    // carries - so it is asserted as well as the reason. The definition below is accepted by `of`
+    // and rejected by generation: whether a stub is allowed needs the schedule rolled out.
     val definition: PeriodicSchedule =
       accepted(
         PeriodicSchedule.of(
@@ -727,12 +692,9 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("ValueSchedule.of rejects two steps naming one position with different adjustments") {
-    // The half of the contradiction the bean being ported reported only on resolution that needs
-    // no schedule to see: a position is a period index or a date, whichever the step carries, and
-    // two steps carrying the same one ask a single point of the time line for two different
-    // values whatever schedule they are later resolved against. The other half - a step named by
-    // an index and a step named by the boundary date of that period - is a question about the
-    // periods and stays with resolveValues, which is FailableSurfaceSpec's.
+    // The half of the contradiction that needs no schedule to see: two steps carrying the same
+    // position - a period index, or a date - ask one point of the time line for two values. The
+    // other half, an index and that period's boundary date, stays with resolveValues.
     val replace300: ValueAdjustment = ValueAdjustment.ofReplace(300d)
     val replace400: ValueAdjustment = ValueAdjustment.ofReplace(400d)
     val atIndex1: ValueStep = accepted(ValueStep.of(1, replace300))
@@ -751,8 +713,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     failuresOf(dated) should have size 1
     messagesOf(dated).head should include("date 2014-07-04")
 
-    // accumulating: each doubly named position is a cause of its own, so a definition that
-    // contradicts itself at an index and at a date reports both rather than the first of them
+    // accumulating: each doubly named position is a cause of its own, index and date alike
     val both: ResultNec[ValueSchedule] =
       ValueSchedule.of(200d, List(atIndex1, alsoAtIndex1, atJul04, alsoAtJul04), None)
     failuresOf(both) should have size 2
@@ -762,17 +723,14 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     messagesOf(both).distinct should have size 2
 
     // The positive controls. Two steps at one position asking for the same adjustment agree
-    // rather than contradict, and are accepted exactly as the bean being ported accepted them:
-    // the value changes once, to the value both steps ask for. An index and a date are different
-    // positions here, so a definition naming one of each is built and judged on resolution.
+    // rather than contradict. An index and a date are different positions, so a definition
+    // naming one of each is judged on resolution.
     val twice: ResultNec[ValueSchedule] = ValueSchedule.of(200d, List(atIndex1, atIndex1))
     twice should beSuccess
     accepted(twice).steps shouldBe List(atIndex1, atIndex1)
     ValueSchedule.of(200d, List(atIndex1, atJul04), None) should beSuccess
 
-    // the remaining overloads: one naming no step, and one naming a single step, name no position
-    // twice and so cannot reach the check. They report through the same channel all the same,
-    // because a caller of a validated factory of this port reads one shape at every type.
+    // the remaining overloads name no position twice, so they cannot reach the check at all
     val sequence: ValueStepSequence =
       accepted(
         ValueStepSequence.of(jul04, jul18, Frequency.P1M, ValueAdjustment.ofDeltaAmount(-100d)))
@@ -781,8 +739,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     accepted(ValueSchedule.of(100d, List(atIndex1))).steps shouldBe List(atIndex1)
     accepted(ValueSchedule.of(100d, sequence)).stepSequence shouldBe Some(sequence)
 
-    // the two `with` operations re-validate, which is what the [V] policy of AAP section 0.3.3
-    // requires of a field-wise modification: the steps they are given are the caller's, so they
+    // the two `with` operations re-validate: the steps they are given are the caller's, so they
     // route through the factory and answer with its outcome rather than with a schedule
     val base: ValueSchedule = accepted(ValueSchedule.of(200d, List(atIndex1)))
     base.withSteps(List(atIndex1, alsoAtIndex1)) should beFailureWith(FailureReason.INVALID)
@@ -800,7 +757,6 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     ValueStepSequence.of(jul04, jul18, Frequency.P1M, replace) should
       beFailureWith(FailureReason.INVALID)
     ValueStepSequence.of(jul04, jul18, Frequency.P1M, delta) should beSuccess
-    // equal dates are permitted, since the check is order-or-equal
     ValueStepSequence.of(jul04, jul04, Frequency.P1M, delta) should beSuccess
   }
 
@@ -819,9 +775,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("DayCount.ofBus252 reports a calendar identifier the reference data cannot resolve") {
-    // single-cause: the identifier either resolves or it does not, and the failure is the one
-    // the resolution reports. This is also where the port stopped consulting ambient reference
-    // data - the Java factory resolved against ReferenceData.standard() from inside itself.
+    // single-cause: the identifier resolves against the data it is given, or it does not
     DayCount.ofBus252(HolidayCalendarIds.BRBD, emptyData) should
       beFailureWith(FailureReason.MISSING_DATA)
     DayCount.ofBus252(testCalendarId, standardData) should beFailureWith(FailureReason.MISSING_DATA)
@@ -834,10 +788,8 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("FixedScaleDecimal.of rejects a scale below the decimal's own and a scale above eighteen") {
-    // The two causes are combined rather than sequenced, but they cannot both hold: a scale
-    // below a decimal's own scale is at most seventeen, since eighteen is the largest scale a
-    // decimal has. Each call therefore reports one failure, and the test says so rather than
-    // demanding an accumulation the arithmetic makes impossible.
+    // The two causes are combined rather than sequenced, but cannot both hold: a scale below a
+    // decimal's own is at most seventeen, eighteen being the largest a decimal has
     val below: ResultNec[FixedScaleDecimal] = FixedScaleDecimal.of(decimal("12.345"), 2)
     below should beFailureWith(FailureReason.INVALID)
     failuresOf(below) should have size 1
@@ -852,9 +804,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("the three derived observations report a fixing calendar the reference data cannot resolve") {
-    // single-cause each: the observation is built only through the factory that resolves the
-    // fixing calendar and computes the dependent dates from it, so a calendar that cannot be
-    // resolved is the one thing that can go wrong and there is no consistent value to return.
+    // single-cause each: an unresolvable fixing calendar is the one thing that can go wrong
     IborIndexObservation.of(IborIndices.GBP_LIBOR_3M, fixingDate, emptyData) should
       beFailureWith(FailureReason.MISSING_DATA)
     OvernightIndexObservation.of(OvernightIndices.GBP_SONIA, fixingDate, emptyData) should
@@ -870,22 +820,19 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
 
   //-------------------------------------------------------------------------
   // Group two: the normalising types. Each test states what the factory rejects and what it
-  // rewrites, because for these types the rewrite is as much a part of the contract as the
-  // rejection - a caller reading a value back gets the canonical form, not the form it supplied.
-  // The idempotence of each rewrite is asserted by property in group four.
+  // rewrites, the rewrite being as much a part of the contract as the rejection.
   //-------------------------------------------------------------------------
   test("CurrencyAmount.of rejects a non-number, keeps the infinities, and normalises negative zero") {
     // single-cause: there is one condition on an amount, so the outcome carries one failure
     CurrencyAmount.of(gbp, Double.NaN) should beFailureWith(FailureReason.INVALID)
     failureOf(CurrencyAmount.of(gbp, Double.NaN)) shouldBe a[Failure.Invalid]
 
-    // the infinities are numbers for this purpose and are accepted, as they were in the library
-    // being ported - only a not-a-number value is rejected
+    // the infinities are numbers for this purpose and are accepted; only a not-a-number is not
     produced(CurrencyAmount.of(gbp, Double.PositiveInfinity)).amount shouldBe Double.PositiveInfinity
     produced(CurrencyAmount.of(gbp, Double.NegativeInfinity)).amount shouldBe Double.NegativeInfinity
 
     // negative zero is normalised to positive zero, which `==` cannot see: the assertion is on
-    // the bit pattern, because AAP section 0.3.3 gives this type doubleToLongBits equality
+    // the bit pattern, this type's equality being doubleToLongBits equality
     val normalised: CurrencyAmount = produced(CurrencyAmount.of(gbp, -0.0d))
     java.lang.Double.compare(normalised.amount, 0.0d) shouldBe 0
     java.lang.Double.doubleToLongBits(normalised.amount) shouldBe
@@ -895,15 +842,14 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     normalised.isNegative shouldBe false
     normalised shouldBe CurrencyAmount.zero(gbp)
 
-    // a currency code outside the closed family names no amount, which is a parse failure
     CurrencyAmount.of("QQQ", 1d) should beFailureWith(FailureReason.PARSING)
     CurrencyAmount.parse("GBP") should beFailureWith(FailureReason.PARSING)
     CurrencyAmount.parse("GBP 100") should beSuccess
   }
 
   test("Money.of rounds its amount to the minor units of its currency, half up") {
-    // one case per distinct minorUnitDigits among the seventy-four currencies of the family:
-    // two for the ordinary currencies, nought for the unit currencies, three for BHD and OMR
+    // one case per distinct minorUnitDigits in the family: two for most of its currencies,
+    // nought for the twelve that have no minor unit, three for BHD and OMR alone
     produced(Money.of(gbp, 100.1249d)).amount shouldBe decimal("100.12")
     produced(Money.of(gbp, 100.125d)).amount shouldBe decimal("100.13")
     produced(Money.of(bhd, 100.1249d)).amount shouldBe decimal("100.125")
@@ -921,7 +867,6 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   test("BigMoney.of rounds its amount to twelve decimal places, half up") {
     BigMoney.of(gbp, decimal("1.0000000000005")).amount shouldBe decimal("1.000000000001")
     BigMoney.of(gbp, decimal("1.0000000000015")).amount shouldBe decimal("1.000000000002")
-    // the half-way case rounds away from zero, and a thirteenth digit below the half stays down
     BigMoney.of(gbp, decimal("1.0000000000004")).amount shouldBe decimal("1")
     BigMoney.of(gbp, decimal("0.1234567890123456")).amount shouldBe decimal("0.123456789012")
     // an amount already within twelve places is carried through as it stands, whatever the
@@ -935,8 +880,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("MultiCurrencyAmount.of rejects a duplicated currency, while total merges and the map is sorted") {
-    // single-cause: the amounts are read until the first currency that repeats, so the failure
-    // names that currency and there is no second cause to accumulate
+    // single-cause: the amounts are read until the first currency that repeats
     MultiCurrencyAmount.of(gbp100, amount(gbp, 200d)) should beFailureWith(FailureReason.INVALID)
     MultiCurrencyAmount.of(List(gbp100, amount(gbp, 200d))) should
       beFailureWith(FailureReason.INVALID)
@@ -960,10 +904,8 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     Decimal.of(Double.NaN) should beFailureWith(FailureReason.INVALID)
     Decimal.of(Double.PositiveInfinity) should beFailureWith(FailureReason.INVALID)
     Decimal.of(Double.NegativeInfinity) should beFailureWith(FailureReason.INVALID)
-    // text that names no decimal is a parse failure rather than an invalid argument
     Decimal.of("") should beFailureWith(FailureReason.PARSING)
     Decimal.parse("not a number") should beFailureWith(FailureReason.PARSING)
-    // a value needing more than eighteen digits at scale zero is beyond the type
     Decimal.of("1000000000000000000") should beFailureWith(FailureReason.INVALID)
 
     // a trailing zero of the fraction is not part of the value, so the scale is reduced to the
@@ -981,7 +923,6 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     Tenor.ofDays(0) should beFailureWith(FailureReason.INVALID)
     Tenor.ofWeeks(-1) should beFailureWith(FailureReason.INVALID)
 
-    // the canonical name is the Java form, which is the ISO period without its `P`
     accepted(Tenor.of(Period.ofMonths(3))).name shouldBe "3M"
     accepted(Tenor.of(Period.ofYears(1))).name shouldBe "1Y"
     accepted(Tenor.ofDays(7)).name shouldBe "1W"
@@ -991,7 +932,6 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     accepted(Tenor.ofMonths(12)).name shouldBe "12M"
     accepted(Tenor.ofMonths(12)) should not be accepted(Tenor.ofYears(1))
 
-    // parsing accepts the canonical form and the ISO form it was derived from
     produced(Tenor.parse("3M")) shouldBe accepted(Tenor.of(Period.ofMonths(3)))
     produced(Tenor.parse("P3M")) shouldBe produced(Tenor.parse("3M"))
     Tenor.parse("QQ") should beFailureWith(FailureReason.PARSING)
@@ -1002,9 +942,8 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     Frequency.of(Period.ofMonths(-1)) should beFailureWith(FailureReason.INVALID)
     Frequency.ofMonths(0) should beFailureWith(FailureReason.INVALID)
     Frequency.ofDays(0) should beFailureWith(FailureReason.INVALID)
-    // a period beyond the thousand years the factory admits, which is the bound the library
-    // being ported applied in the same place - and which is why `Frequency.TERM`, whose period
-    // is ten thousand years, is reachable as a constant and through `parse` but not through `of`
+    // a period beyond the thousand years the factory admits - which is why `Frequency.TERM`,
+    // ten thousand years long, is reachable as a constant and through `parse` but not through `of`
     Frequency.of(Period.ofYears(1001)) should beFailureWith(FailureReason.INVALID)
     Frequency.of(Frequency.TERM.period) should beFailureWith(FailureReason.INVALID)
 
@@ -1035,8 +974,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     SequenceDate.base(0) should beFailureWith(FailureReason.INVALID)
     SequenceDate.full(0) should beFailureWith(FailureReason.INVALID)
 
-    // a minimum period of zero passes the checks and is then normalised away, which is what
-    // makes the factory idempotent over the fields of its own output
+    // a minimum period of zero passes the checks and is then normalised away
     accepted(SequenceDate.of(None, Some(Period.ZERO), 1, false)).minimumPeriod shouldBe None
     accepted(SequenceDate.base(Period.ZERO, 1)).minimumPeriod shouldBe None
     accepted(SequenceDate.base(march2020)).yearMonth shouldBe Some(march2020)
@@ -1055,8 +993,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     HolidayCalendarId.of("USNY~GBLO") shouldBe HolidayCalendarId.of("GBLO~USNY")
     HolidayCalendarId.of("USNY~GBLO").name shouldBe "GBLO~USNY"
 
-    // a repeated part is dropped, and a part naming no holidays is absorbed by each operator in
-    // the way that operator's meaning requires
+    // a repeated part is dropped, and a part naming no holidays is absorbed by each operator
     HolidayCalendarId.of("GBLO+GBLO").name shouldBe "GBLO"
     HolidayCalendarId.of("GBLO+USNY+GBLO").name shouldBe "GBLO+USNY"
     HolidayCalendarId.of("GBLO+NoHolidays") shouldBe HolidayCalendarIds.GBLO
@@ -1085,8 +1022,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     spanning.endYearExclusive shouldBe 2017
 
     // clause three: the working days are applied last and override both the holidays and the
-    // weekend. The fixture is the one the Java test used - a Friday/Saturday weekend with a
-    // Saturday declared working - extended with a holiday that is overridden as well.
+    // weekend - here a Friday/Saturday weekend with a Saturday declared working
     val overridden: ImmutableHolidayCalendar =
       ImmutableHolidayCalendar.of(
         testCalendarId,
@@ -1111,15 +1047,13 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     holidayOverridden.isHoliday(thu20140710) shouldBe true
     holidayOverridden.holidays.toList shouldBe List(thu20140710)
 
-    // clause four: a working day outside the range the holidays span is ignored, because outside
-    // that range the calendar holds no data for an override to apply to
+    // clause four: a working day outside the range the holidays span has no data to override
     val outsideRange: ImmutableHolidayCalendar =
       ImmutableHolidayCalendar.of(testCalendarId, List(wed20140709), weekend, List(sat20130713))
     outsideRange.isHoliday(sat20130713) shouldBe true
     outsideRange.workingDays shouldBe empty
 
-    // equality is by identifier alone, as in the library being ported, which is why every clause
-    // above compares holiday sets rather than comparing calendars
+    // equality is by identifier alone, which is why each clause compares holiday sets
     deduplicated shouldBe overridden
     deduplicated.holidays should not be overridden.workingDays
   }
@@ -1140,17 +1074,12 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   //-------------------------------------------------------------------------
-  // Group three: accumulation. This is the behaviour that distinguishes the accumulating channel
-  // of `Validate` from the fail-fast channel of `ArgCheck`, and it is invisible unless a test
-  // supplies an input that is wrong in two ways at once and counts what comes back.
+  // Group three: accumulation, over the nine factories given an input wrong in two ways at once.
   //
-  // Every failure of `Validate` carries the reason INVALID, so counting reasons would not show
-  // that both expected causes are present. Each test below therefore compares the chain of the
-  // multi-cause call with the chains of the calls that have one cause each: when the messages of
-  // the single-cause outcomes are all present in the multi-cause outcome, and the count matches,
-  // no cause has been dropped and none has been substituted. The fixtures are chosen so that
-  // each single-cause call reports the same values as the multi-cause one, since the wording of
-  // an order or range failure names the values it rejected.
+  // Each compares the chain of the multi-cause call with the chains of the calls that have one
+  // cause each: when every single-cause message is present and the count matches, no cause has
+  // been dropped and none substituted. The fixtures report the same values either way, since the
+  // wording of an order or range failure names the values it rejected.
   //-------------------------------------------------------------------------
   test("StandardId.of accumulates the failure of its scheme and the failure of its value") {
     val both: ResultNec[StandardId] = StandardId.of("", "")
@@ -1168,6 +1097,35 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
     messagesOf(both) should contain allElementsOf messagesOf(FxRate.of(gbpUsd, -1.5d))
     messagesOf(both) should contain allElementsOf messagesOf(FxRate.of(gbpGbp, 2d))
     messagesOf(both).distinct should have size 2
+  }
+
+  test("MultiCurrencyAmountArray.of accumulates one element failure per offending currency") {
+    // Two currencies, each holding a value that is not a number at a different index. The map is
+    // written counter-first so that the order of the reasons cannot come from the order of the
+    // input: what comes back is ordered by currency code, which is the order the run itself
+    // holds its currencies in, so a caller comparing two reports - or a document decoded twice -
+    // reads the same reasons in the same order however the map reached the factory.
+    val both: ResultNec[MultiCurrencyAmountArray] =
+      MultiCurrencyAmountArray.of(
+        Map(usd -> DoubleArray.of(1d, Double.NaN), gbp -> DoubleArray.of(Double.NaN, 2d)))
+    failuresOf(both) should have size 2
+    reasonsOf(both) shouldBe List(FailureReason.INVALID, FailureReason.INVALID)
+    messagesOf(both) shouldBe List(
+      "Argument 'values' for GBP must not be NaN at index 0",
+      "Argument 'values' for USD must not be NaN at index 1")
+
+    // and an element failure accumulates beside the structural one rather than displacing it,
+    // which is what says the examination is a check of this factory and not a gate before it
+    val withLengths: ResultNec[MultiCurrencyAmountArray] =
+      MultiCurrencyAmountArray.of(
+        Map(gbp -> DoubleArray.of(Double.NaN), usd -> DoubleArray.of(1d, 2d)))
+    failuresOf(withLengths) should have size 2
+    messagesOf(withLengths) should contain("Argument 'values' for GBP must not be NaN at index 0")
+    messagesOf(withLengths) should contain allElementsOf
+      messagesOf(
+        MultiCurrencyAmountArray.of(
+          Map(gbp -> DoubleArray.of(1d), usd -> DoubleArray.of(1d, 2d))))
+    messagesOf(withLengths).distinct should have size 2
   }
 
   test("FxMatrix.fromMatrix accumulates all three of its structural failures") {
@@ -1286,17 +1244,11 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   //-------------------------------------------------------------------------
-  // Group four: the idempotence of normalisation, one property per normalising type.
-  //
-  // Each property re-applies the factory to the accessors of a value that factory produced and
-  // claims the result equals it. That is the guarantee a caller needs in order to rebuild a
-  // value from its own parts - a decoder, a builder-style `with*` method and the JSON round trip
-  // all depend on it - and it is what makes a rewrite safe rather than lossy.
-  //
-  // Every property here holds of every value of its type, so its verdict does not depend on
-  // which values are drawn and two runs of this suite agree whatever seed each is given. The
-  // generators are those of the module's `Arbitraries`, which build through the same factories
-  // and therefore produce only values that are already normalised.
+  // Group four: the idempotence of normalisation, one property for each of the eleven entries of
+  // the `[N]` list. Each puts a value a factory produced back through that factory - through its
+  // accessors, or through its canonical name where the factory takes a number - and claims the
+  // result equals it: the guarantee a decoder, a `with*` method and the JSON round trip all rest
+  // on. The values are drawn from the module's `Arbitraries`, which build through these factories.
   //-------------------------------------------------------------------------
   test("normalisation is idempotent: CurrencyAmount") {
     forAll { (value: CurrencyAmount) =>
@@ -1337,11 +1289,9 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   test("normalisation is idempotent: Frequency") {
     forAll { (value: Frequency) =>
       if (value.isTerm) {
-        // The one frequency outside the range of its own period-taking factory. 'Term' holds a
-        // period of ten thousand years, and `of` admits a thousand - which is exactly the
-        // library being ported, where the constant was built by the private constructor and
-        // `of` rejected its period. Its idempotence therefore runs through its name, which is
-        // the route `parse` and the JSON codec take, rather than through its period.
+        // The one frequency outside the range of its own period-taking factory: 'Term' is ten
+        // thousand years long and `of` admits a thousand, so its idempotence runs through its
+        // name, the route `parse` and the JSON codec take, rather than through its period.
         Frequency.of(value.period) should beFailureWith(FailureReason.INVALID)
         Frequency.parse(value.name) should haveValue(value)
       } else {
@@ -1369,8 +1319,7 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
 
   test("normalisation is idempotent: ImmutableHolidayCalendar") {
     // Equality of a calendar is by identifier alone, so comparing calendars would prove nothing
-    // here: the claim is about content, and it is made over the four things construction decides
-    // - the holidays, the weekend, the overrides, and the range of years the holidays span.
+    // here: the claim is about content - holidays, weekend, overrides and the year range spanned
     forAll { (value: ImmutableHolidayCalendar) =>
       val once: ImmutableHolidayCalendar = rebuilt(value)
       val twice: ImmutableHolidayCalendar = rebuilt(once)
@@ -1386,35 +1335,44 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   test("normalisation is idempotent: RollConvention.ofDayOfMonth") {
     forAll(Gen.choose(1, 31)) { (dayOfMonth: Int) =>
       val convention: RollConvention = produced(RollConvention.ofDayOfMonth(dayOfMonth))
-      // the convention a day-of-month names round-trips through its own canonical name, which is
-      // the idempotence available to a type whose factory takes a number rather than its output
+      // a factory taking a number rather than its own output round-trips through its name
       RollConvention.parse(convention.name) should haveValue(convention)
     }
   }
 
   //-------------------------------------------------------------------------
-  // Group five: the two numeric-domain edges that stay throws.
+  // Group five: the numeric-domain edges that stay throws.
   //
   // AAP section 0.3.3 records a deliberate narrowing here, and `SCALA_MIGRATION.md` lists it as
-  // a divergence: the arithmetic of the domain types stays total in signature, exactly as it was
-  // in the library being ported, so the two places where a numeric domain has no answer raise a
-  // broken precondition through `ArgCheck` rather than returning a failure. They are the ONLY
-  // `intercept` in this file, and they are deliberate. A data-dependent rejection anywhere else
-  // in this module must be an `Either`, which is what the rest of this file asserts.
+  // a divergence: the arithmetic of the domain types stays total in signature, so the places
+  // where a numeric domain has no answer raise a broken precondition through `ArgCheck` rather
+  // than returning a failure. The `intercept` calls of this group are the only ones in this file
+  // that stand for a rejection of data, and they are deliberate. A data-dependent rejection
+  // anywhere else in this module must be an `Either`, which is what the rest of this file
+  // asserts; the closure group at the end of the file intercepts guards a caller reaches only
+  // from another language, which reject no data at all.
   //
-  // Do not "fix" either of these into an outcome: a caller adding two ordinary amounts, or two
+  // Do not "fix" any of these into an outcome: a caller adding two ordinary amounts, or two
   // ordinary decimals, cannot reach the check, and giving the operator a failure channel would
   // cost every such caller an unwrapping for a case its values cannot produce.
+  //
+  // The third test of the group is the same rule applied to the element of a run rather than to
+  // the result of an operator. The two amount arrays hold a value per position, each of which is
+  // an amount of the module's own amount type, and that type has no value that is not a number -
+  // so a run holding one describes nothing, and admitting it only moves the failure to whichever
+  // later read happens to touch that position. The check therefore belongs at the one point that
+  // builds a run, and what it does there is decided by the signature AAP section 0.4.1 fixed for
+  // the route reaching it: the routes named total raise, and every route that already answers
+  // with an outcome reports, which the groups above assert.
   //-------------------------------------------------------------------------
   test("CurrencyAmount arithmetic that produces a value that is not a number raises its invariant") {
     val positive: CurrencyAmount = produced(CurrencyAmount.of(gbp, Double.PositiveInfinity))
     val negative: CurrencyAmount = produced(CurrencyAmount.of(gbp, Double.NegativeInfinity))
 
-    // the case AAP section 0.3.3 names explicitly: positive infinity plus negative infinity
-    intercept[IllegalArgumentException](positive.plus(negative)) // documented ArgCheck throw
-    intercept[IllegalArgumentException](positive.plus(Double.NegativeInfinity)) // documented
-    intercept[IllegalArgumentException](positive.minus(Double.PositiveInfinity)) // documented
-    intercept[IllegalArgumentException](positive.multipliedBy(0d)) // documented ArgCheck throw
+    intercept[IllegalArgumentException](positive.plus(negative))
+    intercept[IllegalArgumentException](positive.plus(Double.NegativeInfinity))
+    intercept[IllegalArgumentException](positive.minus(Double.PositiveInfinity))
+    intercept[IllegalArgumentException](positive.multipliedBy(0d))
 
     // everything short of that domain edge is ordinary arithmetic, and stays a value
     positive.plus(1d).amount shouldBe Double.PositiveInfinity
@@ -1424,24 +1382,296 @@ final class SmartConstructorSpec extends AnyFunSuite with Matchers with ScalaChe
   }
 
   test("Decimal arithmetic beyond eighteen digits of precision raises its invariant") {
-    intercept[IllegalArgumentException](Decimal.MAX_VALUE.plus(Decimal.MAX_VALUE)) // documented
-    intercept[IllegalArgumentException](Decimal.MIN_VALUE.minus(Decimal.MAX_VALUE)) // documented
-    intercept[IllegalArgumentException](Decimal.MAX_VALUE.multipliedBy(10L)) // documented
+    intercept[IllegalArgumentException](Decimal.MAX_VALUE.plus(Decimal.MAX_VALUE))
+    intercept[IllegalArgumentException](Decimal.MIN_VALUE.minus(Decimal.MAX_VALUE))
+    intercept[IllegalArgumentException](Decimal.MAX_VALUE.multipliedBy(10L))
 
     // the factory, by contrast, reports a value beyond the precision of the type as a failure,
     // because there the value came from outside rather than from the type's own arithmetic
     Decimal.of("1000000000000000000") should beFailureWith(FailureReason.INVALID)
     Decimal.MAX_VALUE.plus(Decimal.ZERO) shouldBe Decimal.MAX_VALUE
   }
+
+  test("the two amount arrays raise their element invariant where their route is a total one") {
+    // A run holding an infinity, which is a value both types hold: it is the fixture the three
+    // total routes are driven with, because an operator applied to it can produce the one value
+    // they do not hold without anything invalid having been supplied.
+    val infinite: CurrencyAmountArray =
+      CurrencyAmountArray.of(gbp, DoubleArray.of(Double.PositiveInfinity))
+
+    // the factory that states a run, and the two transforms, are total in AAP section 0.4.1, so
+    // each names the index it refused rather than answering with a run that has no amount there
+    intercept[IllegalArgumentException](
+      CurrencyAmountArray.of(gbp, DoubleArray.of(1d, Double.NaN))
+    ).getMessage should include("Argument 'values' must not be NaN at index 1")
+    intercept[IllegalArgumentException](infinite.multipliedBy(0d)) // documented ArgCheck throw
+      .getMessage should include("Argument 'values' must not be NaN at index 0")
+    intercept[IllegalArgumentException](infinite.mapAmounts(_ => Double.NaN)) // documented
+      .getMessage should include("Argument 'values' must not be NaN at index 0")
+
+    // the run of several currencies says which currency as well as which index, because a run of
+    // a dozen currencies says nothing about which of them carries the value that was refused
+    val infiniteRun: MultiCurrencyAmountArray =
+      accepted(MultiCurrencyAmountArray.of(Map(gbp -> DoubleArray.of(Double.PositiveInfinity))))
+    intercept[IllegalArgumentException](infiniteRun.multipliedBy(0d)) // documented
+      .getMessage should include("Argument 'values' for GBP must not be NaN at index 0")
+    intercept[IllegalArgumentException](infiniteRun.mapAmounts(_ => Double.NaN)) // documented
+      .getMessage should include("Argument 'values' for GBP must not be NaN at index 0")
+
+    // and the counterpart, which is what makes the raises above a choice rather than the only
+    // thing available: converting a run collapses its currencies into a run of the other type,
+    // and opposed infinities in two of them produce the value neither type holds - reported,
+    // because that member answers with an outcome, and reported by the type that would hold it
+    val opposedRun: MultiCurrencyAmountArray = accepted(
+      MultiCurrencyAmountArray.of(
+        Map(
+          gbp -> DoubleArray.of(Double.PositiveInfinity),
+          usd -> DoubleArray.of(Double.NegativeInfinity))))
+    val converted: FailureOr[CurrencyAmountArray] =
+      opposedRun.convertedTo(gbp, accepted(FxRate.of(gbpUsd, 1d)))
+    converted should beFailureWith(FailureReason.INVALID)
+    failureOf(converted).message shouldBe "Argument 'values' must not be NaN at index 0"
+
+    // ordinary values pass through every one of those routes untouched
+    infinite.multipliedBy(2d).values shouldBe DoubleArray.of(Double.PositiveInfinity)
+    CurrencyAmountArray.of(gbp, DoubleArray.of(1d, 2d)).multipliedBy(3d).values shouldBe
+      DoubleArray.of(3d, 6d)
+    accepted(MultiCurrencyAmountArray.of(Map(gbp -> DoubleArray.of(1d, 2d))))
+      .mapAmounts(value => value + 1d)
+      .getValues(gbp) shouldBe Right(DoubleArray.of(2d, 3d))
+  }
+
+  //-------------------------------------------------------------------------
+  // Group six: what the text factories decide before they transform their input.
+  //
+  // Every factory above is given values; these are given text, and text arrives from outside the
+  // process - a document, a request, a file - at whatever length its sender chose. A factory that
+  // transforms first and checks afterwards therefore does work proportional to its input before
+  // it has any reason to believe the input is of its grammar at all: splitting on every separator
+  // of a million-separator string, case-folding a ten-megabyte blob, or decomposing a composite
+  // identifier into a hundred thousand parts, in every case only to discard the result at the
+  // very next comparison (CWE-400/CWE-770). This group asserts the opposite order of work, and
+  // does so for the types of the two lists above together with the four whose text is currency
+  // text: the concern is a property of the text factories rather than of one construction kind,
+  // and asserting it type by type would scatter one rule across six tests that share it.
+  //
+  // Two things are asserted, and the second is what keeps the first honest:
+  //
+  //  - The bound, by the message it reports. Three of these grammars have a longest spelling, so
+  //    text beyond it is refused naming the bound and quoting nothing - the wording of `Decimal`,
+  //    which has had a bound of the same kind from the start. The fixed-shape grammars have no
+  //    bound to name: their whole decision is a comparison of a length or the position of one
+  //    separator, so they refuse the text they were given and quote it as they always have, which
+  //    is what the specs of those types pin and what this group leaves alone.
+  //  - That the bound is a bound on WORK and not a narrowing of the grammar. Upper-casing text
+  //    can lengthen it - a sweep of every code point of this runtime finds seventy-two characters
+  //    whose upper case is longer than themselves, and none whose upper case is shorter or
+  //    introduces a separator - so a fixed-shape factory that tested its length for EQUALITY
+  //    before folding would refuse text whose folded form is exactly of its grammar. That is not
+  //    hypothetical: `FIM` is one of this module's currencies and `\ufb01M` is two characters that
+  //    fold to it. Each of these factories therefore tests an upper bound, folds, and matches -
+  //    and the second test below is the guard that stops the cheaper-looking equality from coming
+  //    back, since every other test of the module spells its input in the alphabet of its grammar
+  //    and would not notice.
+  //-------------------------------------------------------------------------
+  test("the text factories bound the work their input can cause before they do any of it") {
+    // the three grammars with a longest spelling: beyond it the bound is named and nothing is
+    // quoted, so a rejection cannot be made to carry the text that caused it
+    val overLong: String = "P" * (MaxPeriodTextLength + 1)
+    Tenor.parse(overLong) should beFailureWith(FailureReason.PARSING)
+    failureOf(Tenor.parse(overLong)).message shouldBe
+      s"Tenor string must not exceed $MaxPeriodTextLength characters"
+    failureOf(Frequency.parse(overLong)).message shouldBe
+      s"Frequency string must not exceed $MaxPeriodTextLength characters"
+    failureOf(MarketTenor.parse(overLong)).message shouldBe
+      s"Market tenor string must not exceed $MaxPeriodTextLength characters"
+
+    // at the bound the text reaches the grammar and is refused by the grammar, which is what
+    // says the bound is above every spelling the grammar has rather than inside it
+    val atBound: String = "P" * MaxPeriodTextLength
+    failureOf(Tenor.parse(atBound)).message should not include "must not exceed"
+    failureOf(Frequency.parse(atBound)).message should not include "must not exceed"
+    failureOf(MarketTenor.parse(atBound)).message should not include "must not exceed"
+
+    // the two parts of an identifier, each bounded on its own and both reported at once
+    val overLongPart: String = "A" * (MaxIdentifierPartLength + 1)
+    messagesOf(StandardId.of(overLongPart, "AAPL")) shouldBe
+      List(s"Argument 'scheme' must not exceed $MaxIdentifierPartLength characters")
+    messagesOf(StandardId.of("OG-Ticker", overLongPart)) shouldBe
+      List(s"Argument 'value' must not exceed $MaxIdentifierPartLength characters")
+    messagesOf(StandardId.of(overLongPart, overLongPart)) should have size 2
+
+    // and the whole text, whose ceiling is derived from the part ceiling rather than equal to
+    // it: an identifier renders as `scheme~value`, so the longest text the factories can produce
+    // is two parts and their separator, and `parse` has to read every one of them back
+    val overLongText: String = "A" * (MaxIdentifierTextLength + 1)
+    failureOf(StandardId.parse(overLongText)).message shouldBe
+      s"Identifier string must not exceed $MaxIdentifierTextLength characters"
+    val maximalPart: String = "A" * MaxIdentifierPartLength
+    val maximal: StandardId = accepted(StandardId.of(maximalPart, maximalPart))
+    maximal.toString.length shouldBe MaxIdentifierTextLength
+    StandardId.parse(maximal.toString) shouldBe Right(maximal)
+
+    // the amount of a currency amount, bounded before the text is cut in two or read as a
+    // number: a well-formed prefix followed by a tail of a sender's choosing is decided from the
+    // length and the separator alone, and reaches the wording a text that names no amount has
+    // always reached rather than a wording of its own
+    val longAmount: String = s"GBP 0.${"0" * MaxAmountTextLength}"
+    failureOf(CurrencyAmount.parse(longAmount)).message should startWith("Unable to parse amount:")
+    failureOf(CurrencyAmount.parse(s"GBP ${"H" * 4096} ")).message should
+      startWith("Unable to parse amount, invalid format:")
+    // at the bound the amount is read exactly as it always was, zeroes and all
+    produced(CurrencyAmount.parse(s"GBP 0.${"0" * (MaxAmountTextLength - 2)}")).amount shouldBe 0d
+    produced(CurrencyAmount.parse("GBP 12.34")).amount shouldBe 12.34d
+
+    // the same of the rate of an exchange rate, whose group the expression lets run to any
+    // length, and which is therefore measured before the text is folded at all
+    val longRate: String = s"EUR/GBP 1.${"0" * MaxAmountTextLength}"
+    failureOf(FxRate.parse(longRate)).message should startWith("Unable to parse rate:")
+    produced(FxRate.parse(s"EUR/GBP 1.${"0" * (MaxAmountTextLength - 2)}")).toString shouldBe
+      "EUR/GBP 1"
+
+    // the two money parsers decide their shape from the position of the first separator and the
+    // absence of a second, so text made of separators is refused without a part being built
+    failureOf(Money.parse("GBP 12.34 56")).message should include("invalid format")
+    failureOf(Money.parse(" " * 4096)).message should include("invalid format")
+    failureOf(BigMoney.parse(" " * 4096)).message should include("invalid format")
+    // and the trailing separator the ported splitter kept is still two parts, so it is refused
+    // for the decimal it does not name rather than for the shape it does have
+    failureOf(Money.parse("GBP ")).message should not include "invalid format"
+    produced(Money.parse("GBP 12.34")).toString shouldBe "GBP 12.34"
+
+    // their numeral is bounded at the ceiling their decimal already applies, moved ahead of the
+    // copy rather than left behind it, so what is accepted is unchanged and the tail of a
+    // hostile text is no longer copied in order to be measured
+    val longDecimal: String = s"GBP 0.${"0" * (MaxDecimalTextLength - 1)}"
+    failureOf(Money.parse(longDecimal)).message should startWith("Unable to parse amount:")
+    failureOf(BigMoney.parse(longDecimal)).message should startWith("Unable to parse amount:")
+    produced(Money.parse(s"GBP 0.${"0" * (MaxDecimalTextLength - 2)}")).toString shouldBe "GBP 0.00"
+    produced(BigMoney.parse(s"GBP 0.${"0" * (MaxDecimalTextLength - 2)}")).toString shouldBe
+      "GBP 0.00"
+
+    // the composite identifier caps the work rather than the input, because its factory is total
+    // in AAP section 0.4.1 and both the codec and the key decoder of this module depend on that:
+    // a name beyond either cap is kept whole, which is a name that resolves against no data
+    val overLongComposite: String = "GBLO+" * 20000
+    val capped: HolidayCalendarId = HolidayCalendarId.of(overLongComposite)
+    capped.isComposite shouldBe false
+    capped.name shouldBe overLongComposite
+    capped.resolve(standardData) should beFailureWith(FailureReason.MISSING_DATA)
+    // while a composite within the caps decomposes and normalises exactly as it always has
+    HolidayCalendarId.of("USNY+GBLO").name shouldBe "GBLO+USNY"
+    HolidayCalendarId.of(("GBLO+" * 2000) + "USNY").name shouldBe "GBLO+USNY"
+    produced(HolidayCalendarIds.GBLO.combinedWith(HolidayCalendarIds.USNY).resolve(standardData))
+      .id shouldBe HolidayCalendarId.of("GBLO+USNY")
+  }
+
+  test("the text factories fold their input before they match it, so folding that lengthens parses") {
+    // "\ufb01" is one character that upper-cases to "FI", so "\ufb01M" is two characters whose
+    // folded form is the three-letter code of a currency this module defines. An equality test on
+    // the length before the fold refuses it; an upper bound admits it, and the grammar decides.
+    Currency.parse("\ufb01M").map(currency => currency.code) shouldBe Right("FIM")
+    CurrencyPair.parse("\ufb01M/USD").map(pair => pair.toString) shouldBe Right("FIM/USD")
+    FxRate.parse("\ufb01M/USD 1.25").map(rate => rate.toString) shouldBe Right("FIM/USD 1.25")
+    // the same of the two-letter grammar, where three separate characters reach a defined country
+    Country.parse("\u00df").map(country => country.code) shouldBe Right("SS")
+    Country.parse("\ufb01").map(country => country.code) shouldBe Right("FI")
+    Country.parse("\ufb05").map(country => country.code) shouldBe Right("ST")
+
+    // the ordinary spellings are untouched, in both cases of either alphabet
+    Currency.parse("eur").map(currency => currency.code) shouldBe Right("EUR")
+    Currency.parse("EUR").map(currency => currency.code) shouldBe Right("EUR")
+    CurrencyPair.parse("eur/usd").map(pair => pair.toString) shouldBe Right("EUR/USD")
+    FxRate.parse("eur/usd 1.25").map(rate => rate.toString) shouldBe Right("EUR/USD 1.25")
+    Country.parse("gb").map(country => country.code) shouldBe Right("GB")
+
+    // and the grammar still decides everything it decided before: text of the right length that
+    // is not a code, and text whose separator is in the wrong place, are refused as they were
+    Currency.parse("ZYX") should beFailureWith(FailureReason.PARSING)
+    CurrencyPair.parse("EURUSD") should beFailureWith(FailureReason.PARSING)
+    FxRate.parse("EUR/USD1.25") should beFailureWith(FailureReason.PARSING)
+    Country.parse("A1") should beFailureWith(FailureReason.INVALID)
+  }
+
+  //-------------------------------------------------------------------------
+  // Group seven: the closure of the construction paths every group above asserts over.
+  //
+  // A rejection by a factory is a statement about the values that can exist only while the factory
+  // is the only way in. In the source it is: a validated or normalising type is represented as
+  // `sealed abstract case class X private (...)`, which generates no `apply` and no `copy` and
+  // cannot be extended from another file, and `ApiSurfaceSpec` holds each of those against the
+  // compiler.
+  //
+  // None of that survives into the class file. `sealed` has no bytecode form in this language
+  // version and a `private` constructor is emitted public, so a class compiled against these class
+  // files by another language could extend the type and carry whatever fields it liked; and the
+  // compiler's product encoding gives every one of these types a `java.io.Serializable` supertype,
+  // so `java.io.ObjectInputStream` could populate those fields from a stream. Either route
+  // produces a value of the type holding exactly the input the groups above assert is refused -
+  // an amount that is not a number, a period that is not positive, a scale beyond the precision
+  // of its decimal.
+  //
+  // Both routes are closed, and this group asserts the mechanism that closes them over values the
+  // factories above built: the base class of each type runs a guard admitting only the one
+  // implementation its companion declares, and the type refuses Java serialization on the way out
+  // and on the way back in. The exhaustive halves are elsewhere and named here so that a reader
+  // can find them: `ApiSurfaceSpec` audits all 33 validated and normalising types and every
+  // product both modules compile to, `NamedEnumClosedSpec` audits every member of every closed
+  // family, and the acceptance gate compiles the attack in Java and runs it.
+  //-------------------------------------------------------------------------
+  test("the values these factories build are the only instances of their types that can exist") {
+    val built: List[(String, AnyRef)] =
+      List(
+        "CurrencyAmount" -> gbp100,
+        "Money" -> produced(Money.of(gbp, 12.34)),
+        "FxRate" -> accepted(FxRate.of(gbpUsd, 1.25)),
+        "Decimal" -> decimal("12.345"),
+        "FixedScaleDecimal" -> accepted(FixedScaleDecimal.of(decimal("12.3"), 3)),
+        "Tenor" -> accepted(Tenor.of(Period.ofMonths(3))),
+        "Frequency" -> accepted(Frequency.of(Period.ofMonths(3))),
+        "HolidayCalendarId" -> testCalendarId,
+        "SchedulePeriod" -> accepted(SchedulePeriod.of(jul04, jul18)),
+        "HalfUp" -> accepted(HalfUp.ofDecimalPlaces(4)))
+    built.map { case (subject, _) => subject }.distinct should have size built.size.toLong
+
+    built.foreach {
+      case (subject, value) =>
+        val implementation: Class[_] = value.getClass
+        val foreign: IllegalArgumentException =
+          intercept[IllegalArgumentException](
+            JvmClosure.requireSoleImplementation(new AnyRef, implementation))
+        val written: IllegalArgumentException =
+          intercept[IllegalArgumentException] {
+            Using.resource(new ObjectOutputStream(new ByteArrayOutputStream()))(stream =>
+              stream.writeObject(value))
+          }
+        val read: InvocationTargetException =
+          intercept[InvocationTargetException](implementation.getMethod("readResolve").invoke(value))
+
+        withClue(s"$subject admits no implementation other than the one it publishes: ")(
+          foreign.getMessage should include("admits only the implementation it publishes"))
+        withClue(s"$subject refuses to be written by java.io.ObjectOutputStream: ")(
+          written.getMessage should include("Java serialization is not supported by this library"))
+        withClue(s"$subject refuses the read hook java.io.ObjectInputStream would call: ")(
+          read.getCause.getMessage should include(
+            "Java serialization is not supported by this library"))
+        withClue(s"$subject is the one hidden implementation its companion declares: ") {
+          Modifier.isPrivate(implementation.getModifiers) shouldBe true
+          Modifier.isFinal(implementation.getModifiers) shouldBe true
+          // and the guard the type's own constructor ran for this value admits it, which is why
+          // the factory above could answer with it at all
+          JvmClosure.requireSoleImplementation(value, implementation)
+        }
+    }
+  }
 }
+
 
 /**
  * The two coverage lists of [[SmartConstructorSpec]] and the one attribute name it asserts.
  *
- * The lists are transcribed from the construction-kind tables of AAP section 0.3.3 and are what
- * the first test of the suite counts and prints. They live in the companion rather than in the
- * suite so that the names are stated once, next to the doc comment that explains what each kind
- * means, and so that a reader comparing this file with the AAP has one place to look.
+ * The lists are what the suite's first two tests count, print and tie to its tests; they live in
+ * the companion so that the names are stated once.
  */
 object SmartConstructorSpec {
 
@@ -1450,19 +1680,76 @@ object SmartConstructorSpec {
    *
    * The production code holds this name privately - it is the `definition` key of
    * [[com.opengamma.strata.basics.schedule.PeriodicSchedule]] - so the spec states it
-   * independently. Were the two to drift apart the assertion would fail, which is the point.
+   * independently, and the two drifting apart fails the assertion that reads it.
    */
   private val DefinitionAttribute: String = "definition"
 
   /**
-   * The validated types of AAP section 0.3.3, in the order that section lists them.
+   * The longest text the three period grammars accept, stated independently of them.
    *
-   * Each has a test in the suite naming the inputs its factory refuses. The three whose condition
-   * is a relation between fields rather than a property of one - `DaysAdjustment`, whose day count
-   * has to agree with its addition calendar; `Schedule`, whose periods have to run from earliest
-   * to latest; and `ValueSchedule`, whose steps must not name one position twice with different
-   * adjustments - are no different in kind: each is checked by its `of`, and the class-level
-   * documentation of the suite says what each of the three refuses.
+   * `Tenor`, `Frequency` and `MarketTenor` each hold this bound privately, and each names it in
+   * the failure it reports, so the suite states it here and compares the whole wording rather
+   * than looking for a fragment of it. A bound changed on one side alone therefore fails, which
+   * is the point: the number is part of what those factories promise a caller, not an internal
+   * detail - a document holding a spelling of a tenor is either inside it or refused.
+   *
+   * The value is far above every spelling the grammars have. The longest tenor this module names
+   * is five characters and the longest period a caller can write is a dozen, so the bound is not
+   * a limit anything legitimate meets; it is a ceiling on the work a sender can ask for.
+   */
+  private val MaxPeriodTextLength: Int = 256
+
+  /**
+   * The longest scheme, value, or whole identifier that [[StandardId]] accepts.
+   *
+   * Stated here for the same reason as the bound above, and separate from it because the two
+   * bound different things: a period grammar has a longest spelling and this one does not - an
+   * identifier's value is whatever the scheme that issued it says - so this ceiling is set where
+   * no identifier in use can reach it while a sender still cannot ask for unbounded work.
+   */
+  private val MaxIdentifierPartLength: Int = 65536
+
+  /**
+   * The longest text [[com.opengamma.strata.basics.StandardId.parse]] reads.
+   *
+   * Derived from the bound above the way the type derives it, and stated as the computation
+   * rather than as a number so that the relation is what the suite asserts: an identifier renders
+   * as `scheme~value`, so the longest text the factories can produce is two parts at their
+   * ceiling and the separator between them. A text ceiling lower than this would refuse the
+   * rendering of a value the factories admit, breaking the inverse the type documents and the
+   * codec round trip AAP section 0.6.4 requires rather than bounding them.
+   */
+  private val MaxIdentifierTextLength: Int = 2 * MaxIdentifierPartLength + 1
+
+  /**
+   * The longest the numeral of an amount, or of an exchange rate, may be as text.
+   *
+   * Both types read their number as a double, which has no longest spelling, so each states this
+   * bound and tests it before copying the numeral out of the text or reading it. The value is
+   * what it takes to write a double exactly - the smallest subnormal needs 767 significant
+   * digits and every other value fewer - so nothing that names a number exactly is refused for
+   * its size.
+   */
+  private val MaxAmountTextLength: Int = 1024
+
+  /**
+   * The longest numeral [[com.opengamma.strata.collect.Decimal]] reads, which
+   * [[com.opengamma.strata.basics.currency.Money]] and
+   * [[com.opengamma.strata.basics.currency.BigMoney]] restate ahead of their own copy.
+   *
+   * Lower than the bound above because those two types hold a decimal of eighteen digits rather
+   * than a double, so the text that can name one of their values is shorter. Applying it before
+   * the numeral is copied changes nothing about what they accept - the decimal refused the same
+   * text, one copy later - which is what the assertions in the group above check from both sides
+   * of the bound.
+   */
+  private val MaxDecimalTextLength: Int = 256
+
+  /**
+   * The twenty-three validated types, in the order the suite's header lists them.
+   *
+   * Each has a test naming the inputs its factory refuses, including the three whose condition
+   * is a relation between fields rather than a property of one.
    */
   private val ValidatedTypes: List[String] =
     List(
@@ -1491,10 +1778,10 @@ object SmartConstructorSpec {
       "FxIndexObservation")
 
   /**
-   * The normalising types of AAP section 0.3.3, in the order that section lists them.
+   * The eleven normalising types, in the order the suite's header lists them.
    *
-   * Each has a test asserting its documented rewrite and a property asserting the idempotence of
-   * that rewrite.
+   * Each has a test of group two asserting its rewrite and a property of group four asserting
+   * the idempotence of that rewrite.
    */
   private val NormalisingTypes: List[String] =
     List(

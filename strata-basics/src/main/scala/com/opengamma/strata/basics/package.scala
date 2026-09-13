@@ -57,11 +57,10 @@ import com.opengamma.strata.collect.FailureOr
  * ===The shape of the alias===
  *
  * A reader is a `Kleisli` over `FailureOr`: a function from reference data to either the value
- * or the single failure explaining its absence. `FailureOr` is the one-parameter alias the
- * `collect` module publishes for exactly this position, with the failure type already applied.
- * That is what makes this declaration compile: `Kleisli` requires a type constructor of one
- * parameter, this build carries no compiler plugin supplying type-lambda syntax, and so a
- * failure type applied at the use site could not be written here at all.
+ * or the single failure explaining its absence. `Kleisli` requires a type constructor of one
+ * parameter in that position, and `FailureOr[A]` is `Either[Failure, A]` - the alias the
+ * `collect` module publishes with the failure type already applied - so it is what can be
+ * named there.
  *
  * Failures do not accumulate in a reader, and that is deliberate rather than an omission. A
  * reader fails because a piece of reference data is missing, and the lookups are sequential -

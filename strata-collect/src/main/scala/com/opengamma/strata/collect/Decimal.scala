@@ -74,7 +74,28 @@ import com.opengamma.strata.collect.result.Failure
  * @param unscaled  the unscaled value, whose fractional part carries no trailing zero
  * @param scale  the scale, from 0 to 18
  */
-sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
+sealed abstract case class Decimal private (unscaled: Long, scale: Int) extends NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means can be
+  // stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[Decimal.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the class file of the implementation carries
+  // a public constructor whatever the source asked for: a class compiled outside this library can
+  // call it directly, and identity alone would then admit a decimal with a scale this type cannot
+  // represent or an unscaled value that is not normalised. Both are what `of` establishes.
+  JvmClosure.requireInvariant(
+    s"its scale is between 0 and ${Decimal.MAX_SCALE}",
+    scale >= 0 && scale <= Decimal.MAX_SCALE)
+  JvmClosure.requireInvariant(
+    "its unscaled value carries no trailing zero that its scale could absorb",
+    scale == 0 || unscaled % 10L != 0L)
+  JvmClosure.requireInvariant(
+    "its unscaled value is within the precision of this type",
+    unscaled >= -Decimal.MAX_UNSCALED && unscaled <= Decimal.MAX_UNSCALED)
 
   //-------------------------------------------------------------------------
   /**
@@ -132,7 +153,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the decimal to add
    * @return the sum
-   * @throws IllegalArgumentException if the sum needs more than 18 digits at scale zero
+   * @throws java.lang.IllegalArgumentException if the sum needs more than 18 digits at scale zero
    */
   def plus(other: Decimal): Decimal =
     if (unscaled == 0L) {
@@ -148,7 +169,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the value to add
    * @return the sum
-   * @throws IllegalArgumentException if the sum needs more than 18 digits at scale zero
+   * @throws java.lang.IllegalArgumentException if the sum needs more than 18 digits at scale zero
    */
   def plus(other: Long): Decimal =
     if (other == 0L) {
@@ -177,7 +198,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the value to add
    * @return the sum
-   * @throws IllegalArgumentException if the value is not finite, or if the sum needs more than
+   * @throws java.lang.IllegalArgumentException if the value is not finite, or if the sum needs more than
    *   18 digits at scale zero
    */
   def plus(other: Double): Decimal =
@@ -198,7 +219,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the decimal to subtract
    * @return the difference
-   * @throws IllegalArgumentException if the difference needs more than 18 digits at scale zero
+   * @throws java.lang.IllegalArgumentException if the difference needs more than 18 digits at scale zero
    */
   def minus(other: Decimal): Decimal =
     if (other.unscaled == 0L) {
@@ -212,7 +233,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the value to subtract
    * @return the difference
-   * @throws IllegalArgumentException if the difference needs more than 18 digits at scale zero
+   * @throws java.lang.IllegalArgumentException if the difference needs more than 18 digits at scale zero
    */
   def minus(other: Long): Decimal =
     if (other == 0L) {
@@ -239,7 +260,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the value to subtract
    * @return the difference
-   * @throws IllegalArgumentException if the value is not finite, or if the difference needs
+   * @throws java.lang.IllegalArgumentException if the value is not finite, or if the difference needs
    *   more than 18 digits at scale zero
    */
   def minus(other: Double): Decimal =
@@ -260,7 +281,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the decimal to multiply by
    * @return the product
-   * @throws IllegalArgumentException if the product needs more than 18 digits at scale zero
+   * @throws java.lang.IllegalArgumentException if the product needs more than 18 digits at scale zero
    */
   def multipliedBy(other: Decimal): Decimal =
     if (other.scale == 0) {
@@ -274,7 +295,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the value to multiply by
    * @return the product
-   * @throws IllegalArgumentException if the product needs more than 18 digits at scale zero
+   * @throws java.lang.IllegalArgumentException if the product needs more than 18 digits at scale zero
    */
   def multipliedBy(other: Long): Decimal =
     if (other == 0L) {
@@ -298,7 +319,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the value to multiply by
    * @return the product
-   * @throws IllegalArgumentException if the value is not finite, or if the product needs more
+   * @throws java.lang.IllegalArgumentException if the value is not finite, or if the product needs more
    *   than 18 digits at scale zero
    */
   def multipliedBy(other: Double): Decimal =
@@ -328,7 +349,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param movement  the number of places to move by, positive to multiply, negative to divide
    * @return the decimal with the point moved
-   * @throws IllegalArgumentException if the result needs more than 18 digits at scale zero
+   * @throws java.lang.IllegalArgumentException if the result needs more than 18 digits at scale zero
    */
   def movePoint(movement: Int): Decimal =
     if (movement == 0) {
@@ -355,8 +376,8 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the decimal to divide by
    * @return the quotient
-   * @throws ArithmeticException if the divisor is zero
-   * @throws IllegalArgumentException if the quotient needs more than 18 digits at scale zero
+   * @throws java.lang.ArithmeticException if the divisor is zero
+   * @throws java.lang.IllegalArgumentException if the quotient needs more than 18 digits at scale zero
    */
   def dividedBy(other: Decimal): Decimal =
     Decimal.orFail(Decimal.ofRounded(toBigDecimal.divide(other.toBigDecimal, Decimal.MATH_CONTEXT)))
@@ -367,8 +388,8 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    * @param other  the decimal to divide by
    * @param roundingMode  the rounding to apply to the eighteenth significant digit
    * @return the quotient
-   * @throws ArithmeticException if the divisor is zero
-   * @throws IllegalArgumentException if the quotient needs more than 18 digits at scale zero
+   * @throws java.lang.ArithmeticException if the divisor is zero
+   * @throws java.lang.IllegalArgumentException if the quotient needs more than 18 digits at scale zero
    */
   def dividedBy(other: Decimal, roundingMode: RoundingMode): Decimal =
     Decimal.orFail(
@@ -382,8 +403,8 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the value to divide by
    * @return the quotient
-   * @throws ArithmeticException if the divisor is zero
-   * @throws IllegalArgumentException if the quotient needs more than 18 digits at scale zero
+   * @throws java.lang.ArithmeticException if the divisor is zero
+   * @throws java.lang.IllegalArgumentException if the quotient needs more than 18 digits at scale zero
    */
   def dividedBy(other: Long): Decimal =
     if (other == 1L) {
@@ -406,8 +427,8 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the value to divide by
    * @return the quotient
-   * @throws ArithmeticException if the divisor is zero
-   * @throws IllegalArgumentException if the value is not finite, or if the quotient needs more
+   * @throws java.lang.ArithmeticException if the divisor is zero
+   * @throws java.lang.IllegalArgumentException if the value is not finite, or if the quotient needs more
    *   than 18 digits at scale zero
    */
   def dividedBy(other: Double): Decimal =
@@ -423,8 +444,8 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param other  the decimal to divide by
    * @return the remainder
-   * @throws ArithmeticException if the divisor is zero
-   * @throws IllegalArgumentException if the remainder needs more than 18 digits at scale zero
+   * @throws java.lang.ArithmeticException if the divisor is zero
+   * @throws java.lang.IllegalArgumentException if the remainder needs more than 18 digits at scale zero
    */
   def remainder(other: Decimal): Decimal =
     Decimal.orFail(Decimal.ofRounded(toBigDecimal.remainder(other.toBigDecimal, Decimal.MATH_CONTEXT)))
@@ -452,9 +473,9 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *   the whole part, and greater than -18
    * @param roundingMode  the rounding to apply
    * @return the rounded decimal
-   * @throws IllegalArgumentException if the scale is -18 or less, where the edge cases of the
+   * @throws java.lang.IllegalArgumentException if the scale is -18 or less, where the edge cases of the
    *   representation make the answer ambiguous
-   * @throws ArithmeticException if the mode is `UNNECESSARY` and rounding is required
+   * @throws java.lang.ArithmeticException if the mode is `UNNECESSARY` and rounding is required
    */
   def roundToScale(desiredScale: Int, roundingMode: RoundingMode): Decimal =
     if (desiredScale >= scale) {
@@ -531,8 +552,8 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    * @param precision  the number of significant digits to keep, not negative
    * @param roundingMode  the rounding to apply
    * @return the rounded decimal
-   * @throws IllegalArgumentException if the precision is negative
-   * @throws ArithmeticException if the mode is `UNNECESSARY` and rounding is required
+   * @throws java.lang.IllegalArgumentException if the precision is negative
+   * @throws java.lang.ArithmeticException if the mode is `UNNECESSARY` and rounding is required
    */
   def roundToPrecision(precision: Int, roundingMode: RoundingMode): Decimal = {
     ArgCheck.notNegative(precision, "precision")
@@ -628,7 +649,7 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    *
    * @param minDecimalPlaces  the minimum number of decimal places, from 0 to 18 inclusive
    * @return the formatted decimal
-   * @throws IllegalArgumentException if the number of decimal places is outside 0 to 18
+   * @throws java.lang.IllegalArgumentException if the number of decimal places is outside 0 to 18
    */
   def formatAtLeast(minDecimalPlaces: Int): String = {
     ArgCheck.isTrue(
@@ -647,8 +668,8 @@ sealed abstract case class Decimal private (unscaled: Long, scale: Int) {
    * @param decimalPlaces  the number of decimal places, from 0 to 18 inclusive
    * @param roundingMode  the rounding to apply where this decimal has more decimal places
    * @return the formatted decimal
-   * @throws IllegalArgumentException if the number of decimal places is outside 0 to 18
-   * @throws ArithmeticException if the mode is `UNNECESSARY` and rounding is required
+   * @throws java.lang.IllegalArgumentException if the number of decimal places is outside 0 to 18
+   * @throws java.lang.ArithmeticException if the mode is `UNNECESSARY` and rounding is required
    */
   def format(decimalPlaces: Int, roundingMode: RoundingMode): String = {
     ArgCheck.isTrue(
@@ -891,14 +912,13 @@ object Decimal {
    *
    * The text is read with the semantics of `BigDecimal` - a leading sign, an exponent and any
    * number of decimal places are all accepted - and the value read is then converted as
-   * `of(BigDecimal)` converts it, which is the documented contract of the type being ported:
-   * its hand-written scanner exists to save the intermediate object and is specified to agree
-   * digit for digit with this route. Text naming no number, text longer than the type accepts,
-   * and a number too large to hold are each reported as a failure.
+   * `of(BigDecimal)` converts it. That is the contract of this factory: whatever route the
+   * text takes inside it, the value answered is the one those two steps define. Text naming
+   * no number, text longer than the type accepts, and a number too large to hold are each
+   * reported as a failure.
    *
    * Agreeing with that route does not require taking it. After the two guards on the text
-   * itself, one pass over the characters - the pre-filter the ported type carries for the same
-   * reason - classifies the text into exactly three outcomes:
+   * itself, one pass over the characters classifies the text into exactly three outcomes:
    *
    *   - a plain numeral, being an optional leading sign, at least one ASCII digit, at most one
    *     decimal point, no more than eighteen significant digits and a scale of no more than
@@ -915,13 +935,13 @@ object Decimal {
    *     an optional sign followed by digits, or no digit at all - is reported as a failure by
    *     the pass itself. Nothing is thrown and nothing is caught on this path: a malformed
    *     numeral is input rather than an exceptional condition, and building an exception to
-   *     catch it cost more than reading the text does.
+   *     catch it costs more than reading the text does.
    *
-   * An unreadable-numeral failure quotes the text back as it was given, so the wording is the
-   * one the ported type reported, character for character, and the caller is handed exactly
-   * the numeral that was refused. The length of such a message is bounded by the guard above,
-   * which rejects text longer than the type reads before any numeral is quoted; escaping what
-   * the text may hold belongs to the writing of a failure, which the text form of one and
+   * An unreadable-numeral failure quotes the text back as it was given, character for
+   * character, so the caller is handed exactly the numeral that was refused. The length of
+   * such a message is bounded by the guard above, which rejects text longer than the type
+   * reads before any numeral is quoted; escaping what the text may hold belongs to the
+   * writing of a failure, which the text form of one and
    * [[com.opengamma.strata.collect.result.Failure.show]] perform for every part they write.
    *
    * @param str  the text to read
@@ -985,16 +1005,15 @@ object Decimal {
   //-------------------------------------------------------------------------
   // the character pass of of(String), and the two endings it does not evaluate itself.
   //
-  // The pass exists for the two reasons the scanner of the ported type exists: the numeral of
-  // a quote or of a market data file is evaluated without building a `BigDecimal` that is then
-  // thrown away, and text that names no number is reported without constructing an exception
-  // to catch. It decides only the shapes whose outcome provably agrees with
-  // `new BigDecimal(str)` followed by `of(BigDecimal)` - a numeral within the precision and the
-  // scale of the type, which both routes read as the same unscaled value and scale - and hands
-  // every other shape to exactly that route, so `of(String)` carries one set of semantics
-  // however the text is spelled.
+  // The pass exists for two reasons: the numeral of a quote or of a market data record is
+  // evaluated without building a `BigDecimal` that is then thrown away, and text that names no
+  // number is reported without constructing an exception to catch. It decides only the shapes
+  // whose outcome provably agrees with `new BigDecimal(str)` followed by `of(BigDecimal)` - a
+  // numeral within the precision and the scale of the type, which both routes read as the same
+  // unscaled value and scale - and hands every other shape to exactly that route, so
+  // `of(String)` carries one set of semantics however the text is spelled.
   //
-  // The counting mirrors the loop of the ported scanner: a leading zero contributes no
+  // The counting is by place rather than by character: a leading zero contributes no
   // significant digit but a zero after the point still occupies a place, so `0.001` is 1 at
   // scale 3, `1.10` is 110 at scale 2 before `ofScaled` normalises it, `1.` is 1 at scale 0
   // and `.5` is 5 at scale 1.
@@ -1106,9 +1125,9 @@ object Decimal {
     }
 
   // reports text that names no number, in the one wording every unreadable text is reported
-  // by; the text is quoted as it stands, which is the wording of the ported type, and the
-  // length of the message is bounded here already - `of(String)` rejects text longer than
-  // `MAX_TEXT_LENGTH` before this branch is reachable
+  // by; the text is quoted as it stands, so the caller is handed the numeral that was refused,
+  // and the length of the message is bounded here already - `of(String)` rejects text longer
+  // than `MAX_TEXT_LENGTH` before this branch is reachable
   private def invalidText(str: String): Either[Failure, Decimal] =
     Left(Failure.Parsing(s"Decimal string is invalid: '$str'"))
 
@@ -1134,11 +1153,11 @@ object Decimal {
   // done in `Long` because the scale reaches `Int.MinValue` for text such as `1e2147483648`,
   // where negating it in `Int` would overflow and admit the very value being excluded.
   //
-  // Zero is answered before the arithmetic and not through it. `stripTrailingZeros` already
-  // brings a zero to scale zero whatever scale it arrived with, so the branch is not reached
-  // by any zero today; it is written because the precision of a zero is one while its scale
-  // may be anything, and a zero that did arrive with a large negative scale must be the value
-  // zero rather than a rejection.
+  // Zero is answered before the arithmetic and not through it. `stripTrailingZeros` brings a
+  // zero to scale zero whatever scale it arrived with, so a zero never reaches the digit-count
+  // guard; the branch exists because the precision of a zero is one while its scale may be
+  // anything, and a zero that arrived with a large negative scale is the value zero rather
+  // than a rejection.
   private def ofRounded(value: BigDecimal): Either[Failure, Decimal] = {
     val stripped = value.stripTrailingZeros
     if (stripped.signum == 0) {
@@ -1252,7 +1271,22 @@ object Decimal {
     }
 
   // the one place a decimal is instantiated, reached only from a factory of this companion
-  private def newDecimal(unscaled: Long, scale: Int): Decimal = new Decimal(unscaled, scale) {}
+  private def newDecimal(unscaled: Long, scale: Int): Decimal = new Impl(unscaled, scale)
+
+  /**
+   * The one implementation of a decimal.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[Decimal]] refuse in its own constructor to be any other implementation.
+   *
+   * @param unscaled  the unscaled value, already normalised by `create`
+   * @param scale  the scale, within the range the factories enforce
+   */
+  private final class Impl(unscaled: Long, scale: Int) extends Decimal(unscaled, scale)
 
   //-------------------------------------------------------------------------
   // the arithmetic edge: a result too large is a broken precondition rather than a value, so

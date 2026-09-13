@@ -48,9 +48,8 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
  *
  * ===Three concerns the original conflated===
  *
- * The type being ported mixed up three things that the port keeps apart, and a large part
- * of the mapping at the foot of this file is the record of which of the three each case
- * fell into.
+ * The type being ported mixed up three things that the port keeps apart, and every case
+ * below falls into one of the three.
  *
  *   - '''The value channel.''' One failure, fail-fast. `FailureOr[A]` says so in its type,
  *     and combining two failures on this channel keeps the first and discards the second.
@@ -774,21 +773,18 @@ final class ResultSpec
   }
 
   //-------------------------------------------------------------------------
-  // The replacement for the capturing factories.
+  // A step that can fail returns an outcome.
   //
-  // Two further factories of the original ran a supplied block and turned
-  // whatever it threw into a failure, one of them also flattening a block that
-  // returned an outcome of its own. Nothing in this port throws in order to
-  // report a failure, so neither factory has a counterpart in the module and
-  // neither is replaced by one.
+  // Nothing in this module throws in order to report a failure, so there is no
+  // factory here that runs a supplied block and turns what it threw into a
+  // failure. The contract sits on the step rather than on a member: a step that
+  // can fail is *written* to return an outcome, so its failure arrives on the
+  // value channel as `Left(Failure...)` and there is nothing to catch.
   //
-  // What replaces them is a contract on the step rather than a member: a step
-  // that can fail is *written* to return an outcome, so its failure arrives on
-  // the value channel as `Left(Failure...)` and there is nothing to catch. The
-  // five cases below are the five cases of the original, restated against that
-  // contract and asserted through the members of this package alone - the
-  // bridges, the aggregations and the predicates - so that what each one
-  // exercises is production code and not a helper of this file.
+  // The five cases below state that contract, and each is asserted through the
+  // members of this package alone - the bridges, the aggregations and the
+  // predicates - so that what it exercises is production code and not a helper
+  // of this file.
 
   test("a fallible step written to return an outcome gives a success holding its value") {
     // The step says in its type that it can fail. This run of it does not, so the value is
@@ -801,16 +797,16 @@ final class ResultSpec
     outcome.isLeft shouldBe false
     outcome shouldBe Right("success")
 
-    // The value survives the members a caller reaches for next, which is the whole of what
-    // the factory being ported was used for: getting a value onto this channel.
+    // The value survives the members a caller reaches for next, which is the whole point of
+    // getting a value onto this channel.
     sequence(List(toNec(outcome))) should haveValue(List("success"))
     combine(List(toNec(outcome)))(values => values.mkString) should haveValue("success")
   }
 
   test("a fallible step that cannot produce a value gives an ERROR failure carrying its message") {
-    // The step reports what stopped it by returning it. The message is the one the case
-    // being ported raised, and the reason is the general error the port's own vocabulary
-    // uses for a step that simply could not go on.
+    // The step reports what stopped it by returning it. The message is the step's own, and
+    // the reason is the general error this module's vocabulary uses for a step that simply
+    // could not go on.
     val step: String => FailureOr[String] = _ => Failure.Error("Big bad error").asLeft[String]
     val outcome: FailureOr[String] = step("success")
 
@@ -819,16 +815,16 @@ final class ResultSpec
     outcome should haveFailureMessageMatching("Big bad error")
     outcome.toOption shouldBe None
 
-    // Reading the value of a failure threw in the original; here the failure is visible to
-    // the predicates of this package, which is how a caller asks the same question.
+    // A failure is a value, so there is nothing to catch in order to see it: it is visible
+    // to the predicates of this package, which is how a caller asks whether a step failed.
     anyFailures(List(outcome)) shouldBe true
     countFailures(List(outcome)) shouldBe 1
   }
 
   test("an outcome nested in an outcome flattens to that success") {
-    // The factory being ported took a block that produced an outcome of its own, so the two
-    // channels had to be flattened into one. A step returning an outcome nested in an
-    // outcome is flattened the same way, by the chaining the standard algebra already has.
+    // A step that itself returns an outcome, reached from a step that already returns one,
+    // leaves two channels to be flattened into one. The chaining the standard algebra
+    // already has does that, so no member of this package is needed for it.
     val nested: FailureOr[FailureOr[String]] = "success".asRight[Failure].asRight[Failure]
     val outcome: FailureOr[String] = nested.flatMap(identity)
 
@@ -848,9 +844,9 @@ final class ResultSpec
   }
 
   test("a step that reports its own failure hands its caller one channel rather than two") {
-    // The case being ported ran a block that threw where an outcome was expected, leaving a
-    // caller with two ways a step could fail. A step that reports its own failure by
-    // returning it has one: the failure it reports arrives where its inputs' failures do.
+    // A step that reports its own failure by returning it leaves its caller one way for a
+    // step to fail rather than two: the failure it reports arrives on the channel, and in
+    // the shape, its inputs' failures arrive on.
     val step: List[String] => FailureOr[String] =
       _ => Failure.Error("Big bad error").asLeft[String]
     val nested: FailureOr[FailureOr[String]] = step(List("success")).asRight[Failure]
@@ -1697,23 +1693,18 @@ final class ResultSpec
   //-------------------------------------------------------------------------
   // The matchers.
   //
-  // Seven cases of the original existed to exercise its assertion helpers
-  // rather than the type under test, and those helpers survive the port as the
-  // matcher vocabulary of this module's test kit - `testkit/ResultMatchers.scala`
-  // and the `Outcome` type class it reads an outcome through. The seven are kept
-  // here, each exercising the matcher that replaced the assertion it used,
-  // against this file's fixtures.
+  // The matcher vocabulary of this module's test kit -
+  // `testkit/ResultMatchers.scala` and the `Outcome` type class it reads an
+  // outcome through - is what the cases of this section assert, each against
+  // this file's fixtures.
   //
-  // This section is also where that vocabulary is itself asserted, which is what
-  // the cases after those seven do. The test kit is planned as machinery rather
-  // than as a subject - the file layout of this port lists
-  // `testkit/ResultMatchers.scala` among the test-scope helpers of this module
-  // and plans no spec of its own for it - so the contract of the matchers has to
-  // be carried by a spec that is planned, and this is the one: every case above,
-  // and almost every case in the rest of this file, asserts something about the
-  // error channel *through* these matchers, which makes this the file whose
-  // conclusions depend on them most heavily and the place where their own
-  // negative controls belong.
+  // The test kit is machinery rather than a subject: it belongs to the
+  // test-scope helpers of this module, which carry no spec of their own, so the
+  // contract of the matchers has to be carried by a spec that does, and this is
+  // the one. Every case above, and almost every case in the rest of this file,
+  // asserts something about the error channel *through* these matchers, which
+  // makes this the file whose conclusions depend on them most heavily and the
+  // place where their own negative controls belong.
   //
   // Those negative controls are the point. A matcher that silently agreed with
   // everything - a `beFailureWith` that ignored the reason it was given, an
@@ -1813,29 +1804,32 @@ final class ResultSpec
   //
   // Four failures with four distinct reasons, so that a case can ask for a
   // reason that is genuinely absent from an outcome, and a chain of three of
-  // them in a fixed order, so that a diagnostic can be asserted to report that
-  // order rather than any order. They are kept apart from the fixtures at the
-  // head of this file, which carry the messages of the class being ported, and
-  // no failure here holds an apostrophe, a brace or a comma in any message or
-  // attribute value. That is not stylistic: a diagnostic assembled from several
-  // failures joins them with a comma, so a comma inside a message would make an
-  // assertion about their order ambiguous, and the framework routes a raw
-  // message through a format step when it carries arguments, which braces and
-  // apostrophes are the syntax of.
+  // them - the general error, then the parsing failure, then the missing-data
+  // failure - in that fixed order, so that a diagnostic can be asserted to
+  // report that order rather than any order. Two further failures carry
+  // attributes, one and two of them, for the attribute clause of a
+  // single-failure phrase and for the key order that clause lists them in; a
+  // whole number is the value every successful and partially successful outcome
+  // of this section carries; and the closed family of ten reasons, with one
+  // message given to every failure built from it, is what the matrix case
+  // enumerates.
+  //
+  // These fixtures are kept apart from the fixtures at the head of this file,
+  // and no failure here holds an apostrophe, a brace or a comma in any message
+  // or attribute value. That is not stylistic: a diagnostic assembled from
+  // several failures joins them with a comma, so a comma inside a message would
+  // make an assertion about their order ambiguous, and the framework routes a
+  // raw message through a format step when it carries arguments, which braces
+  // and apostrophes are the syntax of.
 
-  /** A general error, the first failure of the chain below. */
   private val ErrorFailure: Failure = Failure.Error("Rate lookup failed")
 
-  /** A parsing failure, the second failure of the chain below. */
   private val ParsingFailure: Failure = Failure.Parsing("Text does not name a tenor")
 
-  /** A missing-data failure, the third failure of the chain below. */
   private val MissingFailure: Failure = Failure.MissingData("No holiday calendar for GBLO")
 
-  /** A failure whose reason belongs to none of the three above, so it is always absent. */
   private val InvalidFailure: Failure = Failure.Invalid("Schedule is invalid")
 
-  /** A failure carrying one attribute, for the attribute clause of a single-failure phrase. */
   private val AttributedFailure: Failure =
     Failure.MissingData("No holiday calendar").withAttribute("id", "GBLO")
 
@@ -1862,13 +1856,10 @@ final class ResultSpec
   private val ThreeFailures: NonEmptyChain[Failure] =
     NonEmptyChain.of(ErrorFailure, ParsingFailure, MissingFailure)
 
-  /** The value the successful and partially successful outcomes of this section carry. */
   private val Answer: Int = 7
 
-  /** The reasons the matrix case enumerates, which is the whole closed family of ten. */
   private val AllReasons: List[FailureReason] = FailureReason.values.toList
 
-  /** The message the matrix case gives every failure it builds. */
   private val MatrixMessage: String = "Reason matrix fixture"
 
   //-------------------------------------------------------------------------
@@ -1880,13 +1871,10 @@ final class ResultSpec
   // followed by the rendering the failure type publishes for itself, in the
   // order the outcome holds them.
 
-  /** The phrase describing the single general error. */
   private val ErrorPhrase: String = "reason: <ERROR> and message: <Rate lookup failed>"
 
-  /** The phrase describing the single invalid-input failure. */
   private val InvalidPhrase: String = "reason: <INVALID> and message: <Schedule is invalid>"
 
-  /** The phrase describing the three failures of the chain, in the order the chain holds them. */
   private val ThreeFailuresPhrase: String =
     "3 failures: <ERROR: Rate lookup failed>, <PARSING: Text does not name a tenor>, " +
       "<MISSING_DATA: No holiday calendar for GBLO>"
@@ -1909,34 +1897,25 @@ final class ResultSpec
   // for which no instance is found, so every outcome in this section is built
   // through one of these and arrives at its declared type.
 
-  /** Returns the single-failure outcome holding the specified failure. */
   private def singleFailure(failure: Failure): FailureOr[Int] = Left(failure)
 
-  /** Returns the single-failure outcome holding the specified value. */
   private def singleSuccess(value: Int): FailureOr[Int] = Right(value)
 
-  /** Returns the accumulating-channel outcome holding the specified chain of failures. */
   private def chainFailure(failures: NonEmptyChain[Failure]): ResultNec[Int] = Left(failures)
 
-  /** Returns the accumulating-channel outcome holding the specified value. */
   private def chainSuccess(value: Int): ResultNec[Int] = Right(value)
 
-  /** Returns the validating outcome holding the specified chain of failures. */
   private def validatedFailure(failures: NonEmptyChain[Failure]): ValidatedFailures[Int] =
     Validated.invalid(failures)
 
-  /** Returns the validating outcome holding the specified value. */
   private def validatedSuccess(value: Int): ValidatedFailures[Int] = Validated.valid(value)
 
-  /** Returns the partial-success outcome holding both the specified failures and value. */
   private def partial(failures: NonEmptyChain[Failure], value: Int): ValueWithFailures[Int] =
     Ior.both(failures, value)
 
-  /** Returns the partial-success outcome holding failures and no value at all. */
   private def failuresOnly(failures: NonEmptyChain[Failure]): ValueWithFailures[Int] =
     Ior.left(failures)
 
-  /** Returns the partial-success outcome holding a value and no failures. */
   private def valueOnly(value: Int): ValueWithFailures[Int] = Ior.right(value)
 
   /**
@@ -1996,11 +1975,6 @@ final class ResultSpec
    */
   private final class Lookup(val answer: Option[Int], val problems: List[Failure])
 
-  /**
-   * Provides the [[Outcome]] instance for [[Lookup]], in the companion of the type it
-   * describes, which is where an instance is found without an import, together with the
-   * factory that stands in for the one a case class would have generated.
-   */
   private object Lookup {
 
     /**
@@ -2740,402 +2714,3 @@ final class ResultSpec
     """)
   }
 }
-
-// ---------------------------------------------------------------------------
-// Traceability.
-//
-// Every one of the 85 test methods of the class this file is ported from is
-// listed below against the case here that carries it. The Scala names are
-// reproduced verbatim, because they are what appears in the test report the
-// migration's coverage gate reads.
-//
-// Three kinds of entry appear:
-//
-//   - a plain entry, where the case asserts what the original asserted;
-//   - "replaces", where the subject of the original is machinery this port
-//     does not have, so the case asserts the contract that takes its place.
-//     The reason is given on each such entry;
-//   - "consolidated", where another file carries the primary assertion and
-//     this case reaches the same outcome through this channel's own API. The
-//     owning file is named.
-//
-// No entry is dropped and none is partial: every method of the original is
-// accounted for by a named case here. Eight further cases, listed at the foot of
-// this block, have no counterpart in the original because they assert laws the
-// original never stated, and twenty-seven more carry the contract of the matcher
-// vocabulary itself, folded into "The matchers" section of this file because the
-// file layout of this port plans no spec for the test kit that declares it; the
-// 120 cases of this file together contribute to this module's test-count floor
-// of 491.
-//
-// ---- A success, and what can be read from one ----------------------------
-//
-// success
-//   -> "a success holds its value and yields it from every total accessor"
-//      Also absorbs the original's two accessors that took a fallback and
-//      rejected one naming no value: neither has a target, because the
-//      fallback of `getOrElse` is a value of the same type and cannot be
-//      absent, and the recovering form is `fold` over a total function.
-// ifSuccess
-//   -> "foreach runs on a success and sees its value"
-// ifFailure
-//   -> "the left projection runs on a failure and sees its reason and message"
-// success_getFailure
-//   -> "a success has no failure to read"
-//      replaces: reading the failure of a success threw; here the absence is a
-//      value, and there is no partial accessor to reach for.
-//
-// ---- Mapping and chaining over a success ---------------------------------
-//
-// success_map
-//   -> "map applies the mapping function to the value of a success"
-// success_mapFailure
-//   -> "mapping the failure of a success leaves it untouched"
-// success_mapFailureItems
-//   -> "rebuilding the failure of a success is the identity however the rebuild is written"
-//      replaces: the original's second mapping member reached into the items a
-//      failure was made of; there is no item type, so both arrive at `leftMap`.
-// success_flatMap
-//   -> "flatMap applies a result-returning function to the value of a success"
-//
-// ---- Combining two outcomes ----------------------------------------------
-//
-// success_combineWith_success
-//   -> "two successes combine into the merged value"
-// success_combineWith_failure
-//   -> "combining a success with a failure yields that failure"
-// failure_combineWith_success
-//   -> "combining a failure with a success yields the failure and never calls the combiner"
-// failure_combineWith_failure
-//   -> "combining two failures short-circuits on the value channel and accumulates on the chain channel"
-//      Both channels are pinned, the original having conflated them.
-// success_stream
-//   -> "a success iterates over its single value"
-// failure_stream
-//   -> "a failure iterates over nothing"
-//
-// ---- A failure, and what can be read from one -----------------------------
-//
-// failure
-//   -> "a failure carries the reason and message chosen at its construction site"
-//      replaces: the original built this from something thrown and asserted the
-//      captured type and rendered trace; a failure here holds a reason, a
-//      message and attributes and nothing else.
-// failure_error
-//   -> "a failure recovers a value through getOrElse and through fold"
-//      replaces: as above, for the unchecked-throwable form.
-// failure_mapFailure
-//   -> "mapping the failure of a failure replaces it"
-// failure_mapFailureItems
-//   -> "rebuilding the failure of a failure preserves its class and therefore its reason"
-//      replaces: no item type; a rebuild is a copy, so the class - and with it
-//      the reason - cannot change.
-// failure_map_flatMap_ifSuccess
-//   -> "map, flatMap and foreach are all skipped on a failure and the failure is preserved"
-// failure_getValue
-//   -> "a failure has no value to read"
-//      replaces: reading the value of a failure threw; here the absence is a value.
-//
-// ---- The replacement for exception capture --------------------------------
-//
-// The five entries below share one reason. The original ran a supplied function,
-// caught whatever it threw and turned it into a failure carrying the exception's
-// type and stack trace. Nothing in this port catches anything. The contract that
-// replaces it is that a step which can fail says so in its type, returning an
-// outcome whose failure travels on the value channel.
-//
-// success_combineWith_success_throws
-//   -> "a combining step that can fail returns its failure on the value channel"
-// success_map_throwing
-//   -> "map takes a total function, so a mapping step that can fail is written to return a result"
-// success_flatMap_throwing
-//   -> "a chained step that can fail reports its failure on the accumulating channel too"
-// failure_map_throwing
-//   -> "a mapping step is never reached once an outcome has failed"
-// failure_flatMap_throwing
-//   -> "a chained step is never reached once an outcome has failed"
-//
-// ---- Composing the message of a failure -----------------------------------
-//
-// The original resolved a template carrying markers against a variable number of
-// arguments when the failure was built. That helper has no target: a message is
-// an interpolated string, resolved while this file is compiled. The first two
-// entries reproduce the original's result character for character. The other
-// four described what the helper did when markers and arguments disagreed in
-// number, and neither outcome is reachable here, so each asserts the positive
-// consequence and the mismatch is shown to be a compile error.
-//
-// failure_fromStatusMessageArgs_placeholdersMatchArgs1
-//   -> "an interpolated message with one value reads as the original formatted message"
-// failure_fromStatusMessageArgs_placeholdersMatchArgs2
-//   -> "an interpolated message with two values reads as the original formatted message"
-// failure_fromStatusMessageArgs_placeholdersExceedArgs
-//   -> "an interpolated message never leaves a placeholder unfilled"
-//      replaces: unreachable by construction - a marker and the value filling it
-//      are one piece of syntax, and an under-supplied template does not compile.
-// failure_fromStatusMessageArgs_placeholdersLessThanArgs1
-//   -> "an interpolated message never appends one surplus argument"
-//      replaces: unreachable by construction, as above.
-// failure_fromStatusMessageArgs_placeholdersLessThanArgs2
-//   -> "an interpolated message never appends several surplus arguments"
-//      replaces: unreachable by construction, as above.
-// failure_fromStatusMessageArgs_placeholdersLessThanArgs3
-//   -> "a message with no placeholders never gains an appended argument list"
-//      replaces: unreachable by construction, as above.
-//
-// ---- Moving a failure between outcomes, and the three bridges -------------
-//
-// failure_fromResult_failure
-//   -> "the failure of one outcome is carried into an outcome of another value type"
-// failure_fromResult_success
-//   -> "a success has no failure to re-channel, and every bridge passes it through unchanged"
-//      replaces: the original threw when asked for the failure of a success.
-// failure_fromFailure
-//   -> "a failure value builds a failed outcome, and toNec lifts it into a chain of one"
-// failure_fromFailureItem
-//   -> "a failure needs no item wrapper, and the accumulating bridges round-trip both ways"
-//      replaces: there is no item type - a chain holds several failures, and a
-//      failure is itself the unit rather than a container of one.
-// failure_fromFailureItemException
-//   -> "a failure travels on the value channel with no exception carrier"
-//      replaces: the original had an exception type whose purpose was to carry a
-//      failure across a boundary that could not return one, and a factory for
-//      unwrapping it. A failure here is not throwable.
-//
-// ---- An absent value ------------------------------------------------------
-//
-// ofNullable_nonNull
-//   -> "toRight keeps the value of a present option"
-// ofNullable_null
-//   -> "the vocabulary of the absent-reference failure is retained, and the state it guarded is unrepresentable"
-//      replaces: the state the original factory guarded against cannot arise, an
-//      absence having its own type. The message of the original is kept verbatim.
-// ofOptional_nonEmpty
-//   -> "toRight keeps the value of a non-empty option and composes with the bridge"
-// ofOptional_empty
-//   -> "toRight turns an empty option into a missing-data failure carrying the retained message"
-//
-// ---- The replacement for the capturing factories --------------------------
-//
-// The five entries below share one reason: the original's factories ran a block
-// and converted whatever it threw into a failure. Nothing in this port throws to
-// report a failure and nothing in it catches, so those factories have no
-// counterpart and none is supplied. What replaces them is a contract on the step
-// itself - a step that can fail is written to return an outcome, so its failure
-// arrives on the value channel as `Left(Failure...)` - and each case below states
-// that contract over the members of this package: the bridges, the aggregations
-// and the predicates. The message and the value of each Java case are kept.
-//
-// of_with_success
-//   -> "a fallible step written to return an outcome gives a success holding its value"
-// of_with_exception
-//   -> "a fallible step that cannot produce a value gives an ERROR failure carrying its message"
-// wrap_with_success
-//   -> "an outcome nested in an outcome flattens to that success"
-// wrap_with_failure
-//   -> "an outcome nested in an outcome flattens to that failure"
-// wrap_with_exception
-//   -> "a step that reports its own failure hands its caller one channel rather than two"
-//
-// ---- The three predicates over a collection of outcomes -------------------
-//
-// The original offered each predicate twice, once variadic and once over a
-// collection. The port offers the collection form alone, a collection literal
-// being as short at a call site and the two overloads being unable to coexist
-// once their element types erase to the same thing. Both cases of each pair are
-// kept and both call that one member; the first builds its collection where the
-// original wrote its argument list.
-//
-// anyFailures_varargs
-//   -> "anyFailures answers over outcomes listed at the call site"
-// anyFailures_collection
-//   -> "anyFailures answers over a collection of outcomes"
-// countFailures_varargs
-//   -> "countFailures counts the failures among outcomes listed at the call site"
-// countFailures_collection
-//   -> "countFailures counts the failures in a collection of outcomes"
-// allSuccess_varargs
-//   -> "allSuccessful holds only when every outcome listed at the call site succeeded"
-// allSuccess_collection
-//   -> "allSuccessful holds only when every outcome in a collection succeeded"
-//
-// ---- Aggregating a collection of outcomes ---------------------------------
-//
-// combine_iterableWithFailures
-//   -> "aggregating a mixed collection accumulates every failure and presents them as MULTIPLE"
-// combine_iterableWithSuccesses
-//   -> "combining a collection of successes applies the function to every value"
-// combine_iterableWithSuccesses_throws
-//   -> "combine takes a total function, so a combiner that can fail is handed to flatCombine"
-//      replaces: the original caught what the combining function threw. A total
-//      function cannot fail, and a fallible one returns an outcome instead.
-// flatCombine_iterableWithFailures
-//   -> "flat-combining a mixed collection accumulates every failure and presents them as MULTIPLE"
-// flatCombine_iterableWithSuccesses_combineFails
-//   -> "a combiner that fails surfaces its own failure with its own reason"
-// flatCombine_iterableWithSuccesses_combineSucceeds
-//   -> "a combiner that succeeds produces its value"
-// flatCombine_iterableWithSuccesses_combineThrows
-//   -> "the failures of the inputs and the failure of the combiner never mix"
-//      replaces: as for the combining case above, with the added assertion that
-//      the two sets of failures are never merged.
-// toCombinedResult_allSuccesses
-//   -> "sequence turns a collection of successes into a success holding the values in order"
-//      replaces: the original expressed this as a collector object handed to a
-//      stream, a shape belonging to a collection library this port does not use.
-// toCombinedResult_withFailures
-//   -> "sequence over a mixed collection accumulates the failures and joins their messages"
-//      replaces: as above. The single failure the original produced from the
-//      accumulated items is reached here by collapsing the chain, which gives
-//      the same reason and the same joined message.
-//
-// ---- Gathering the failures reported by several outcomes ------------------
-//
-// failure_fromResults_varargs1
-//   -> "the failures of a mixed collection are extracted independently of their positions"
-// failure_fromResults_varargs2
-//   -> "a different interleaving of the same outcomes extracts the same failures"
-// failure_fromResults_varargs_allSuccess
-//   -> "extracting the failures of outcomes listed at the call site that all succeeded yields no chain"
-//      replaces: the original threw, there being no failure to build from. Here a
-//      chain cannot be empty, so the answer is the absent one and the caller
-//      decides what it means.
-// failure_fromResults_collection
-//   -> "the failures of an explicit collection are extracted in the order they were given"
-//      The order of the chain is asserted, where the original compared unordered sets.
-// failure_fromResults_collection_allSuccess
-//   -> "extracting the failures of a collection that all succeeded yields no chain"
-//      replaces: a throw became a representable absence, as above.
-//
-// ---- Where a failure's reason and message come from -----------------------
-//
-// The four entries below share one reason: the original derived a failure from a
-// thrown exception in the four combinations of a supplied reason and a supplied
-// message. This port derives nothing - the reason is fixed by the class of
-// failure chosen and the message is written at the site that reports it - so each
-// case asserts that construction instead. The two that supplied a reason do so
-// across all ten reasons rather than the one the original happened to pick.
-//
-// generateFailureFromException
-//   -> "a failure carries the message chosen where it is reported"
-// generateFailureFromExceptionWithMessage
-//   -> "the reporting site supplies its own message rather than inheriting one"
-// generateFailureFromExceptionWithCustomStatus
-//   -> "every one of the ten reasons is reachable through Failure.of"
-// generateFailureFromExceptionWithCustomStatusAndMessage
-//   -> "a reason and a message are chosen together at the reporting site"
-//
-// ---- Presenting several failures as one -----------------------------------
-//
-// The three entries below are properties of `Failure.collapse`.
-//
-// failureDeduplicateFailure
-//   -> "collapsing the same failure reported twice describes it once"
-//      consolidated: result/FailureSpec.scala carries the primary assertions;
-//      this case reaches the same outcome through this channel's own API, so the
-//      route from a collection of outcomes to one reported failure is covered too.
-// failureSameType
-//   -> "collapsing failures that agree on a reason keeps that reason"
-//      consolidated: result/FailureSpec.scala, as above.
-// failureDifferentTypes
-//   -> "collapsing failures that disagree on a reason gives MULTIPLE"
-//      consolidated: result/FailureSpec.scala, as above.
-//
-// ---- The two states that cannot be built ----------------------------------
-//
-// createByBuilder_neitherValueNorFailure
-//   -> "an outcome with neither a value nor a failure cannot be built"
-//      replaces: the reflective builder of the original could be left holding
-//      neither, and had to reject that when the bean was assembled. The outcome
-//      type here has exactly two cases and is sealed, so the state is unreachable.
-// createByBuilder_bothValueAndFailure
-//   -> "an outcome holding both a value and a failure cannot be built"
-//      replaces: as above. The type that can hold both is a different type on
-//      purpose, and it is the one the fourth alias of this module names.
-//
-// ---- What a failure does not hold -----------------------------------------
-//
-// generatedStackTrace
-//   -> "a failure holds a reason, a message and attributes and nothing else"
-//      replaces: the original captured and exposed the stack of the call that
-//      reported a failure, and the type of any throwable behind it. A failure is
-//      a value here, not an event, and holds neither.
-// generatedStackTrace_Failure
-//   -> "a failure renders as its reason and message, with no trace"
-//      replaces: as above. The rendering asserted is the one the original
-//      produced for the part of a failure this port keeps.
-//
-// ---- Equality -------------------------------------------------------------
-//
-// equalsHashCode
-//   -> "equality and hashing of outcomes follow the value or the failure they hold"
-//
-// ---- The matchers ---------------------------------------------------------
-//
-// The seven entries below exercised the assertion helpers of the original rather
-// than the type under test. Those helpers are ported into this module's test kit
-// as `testkit/ResultMatchers.scala`, for which the file layout of this port plans
-// no spec of its own, so the contract of the vocabulary is asserted by the
-// twenty-seven cases that follow the seven in "The matchers" section above. Each
-// of the seven entries here exercises the matcher that replaced the assertion it
-// used, against this file's fixtures.
-//
-// assert_success
-//   -> "beSuccess and haveValue describe a success"
-//      consolidated: testkit/ResultMatchers.scala owns the matcher implementations.
-// assert_success_getFailure
-//   -> "beFailure does not describe a success"
-//      consolidated: testkit/ResultMatchers.scala. The original caught the
-//      assertion error it provoked; this case intercepts the framework's own
-//      report, which is not the same thing as catching a failure of the code
-//      under test - a failure here is a value and is never thrown.
-// assert_success_map
-//   -> "the matchers describe the outcome of a mapping step"
-//      consolidated: testkit/ResultMatchers.scala.
-// assert_success_flatMap
-//   -> "the matchers describe the outcome of a chained step"
-//      consolidated: testkit/ResultMatchers.scala.
-// assert_success_combineWith_success
-//   -> "the matchers describe the outcome of a combining step"
-//      consolidated: testkit/ResultMatchers.scala.
-// assert_success_combineWith_failure
-//   -> "beFailureWith names the reason a combined outcome failed for"
-//      consolidated: testkit/ResultMatchers.scala.
-// assert_failure
-//   -> "beFailureWith and haveFailureMessageMatching describe a failure"
-//      consolidated: testkit/ResultMatchers.scala.
-//
-// ---- The surface of the error channel -------------------------------------
-//
-// coverage
-//   -> "the aliases of the error channel describe the same outcome and convert between one another"
-//      replaces: the original closed with a reflective sweep over its own bean
-//      properties. There is no bean to walk, and the property worth asserting in
-//      its place is the one the design rests on - the four names are aliases for
-//      types that already exist, so the conversions between them lose nothing.
-//
-// ---- Cases with no counterpart in the class being ported ------------------
-//
-// The eight cases below are not mapped to a method of the original, because the
-// original had no method whose subject they are. Seven of them state the
-// equality laws of an outcome over values drawn from this module's generators,
-// where the original asserted equality by walking the properties of a bean it
-// had built, a route that says nothing about a value it never built. The eighth
-// asserts the module root's re-export of these four names, which the original
-// had no equivalent of: its names lived in one place.
-//
-// "equality over arbitrary outcomes is reflexive, symmetric and transitive"
-// "equal arbitrary outcomes hash alike and the published instances agree with equality"
-// "a failed outcome is never equal to a successful one, whatever each of them carries"
-// "taking an arbitrary outcome apart and rebuilding it from its parts yields an equal outcome"
-// "the conversions between the channels preserve the value and the ordered failures of any outcome"
-// "equality and hashing on the accumulating channel follow the ordered chain an outcome holds"
-// "equality and hashing of the accumulating form follow the value or the chain it holds"
-// "the module root's re-export names the same four outcome types as this package"
-//
-// ---------------------------------------------------------------------------
-// One member of the package object is deliberately absent from this file:
-// `withAdditionalFailures` takes and returns a partial success, the fourth of
-// the four shapes, and has no form over the two channels tested here. It is
-// covered with the rest of that type's operations, in the spec for it.
-// ---------------------------------------------------------------------------

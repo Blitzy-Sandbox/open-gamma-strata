@@ -21,7 +21,9 @@ import io.circe.Codec
 import com.opengamma.strata.basics.date.HolidayCalendar
 import com.opengamma.strata.basics.date.StandardHolidayCalendars
 import com.opengamma.strata.collect.ArgCheck
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
@@ -30,7 +32,7 @@ import com.opengamma.strata.collect.result.Failure
  * A convention defining how to roll dates.
  *
  * A [[PeriodicSchedule periodic schedule]] is determined using a periodic frequency. When
- * applying the frequency, the roll convention is used to fine tune the dates. This might involve
+ * applying the frequency, the roll convention fine tunes the dates. This might involve
  * selecting the last day of the month, or the third Wednesday.
  *
  * To get the next date in the schedule, take the base date and the [[Frequency periodic
@@ -39,7 +41,7 @@ import com.opengamma.strata.collect.result.Failure
  *
  * A convention is pure: [[adjust]] is a function of the date it is given and of the fixed data
  * the convention carries, so the same date always produces the same result. Nothing is read from
- * reference data, from configuration or from the class path.
+ * reference data or from configuration.
  *
  * ===A closed family===
  *
@@ -52,61 +54,55 @@ import com.opengamma.strata.collect.result.Failure
  *
  * The type is `sealed`, its constructor is not visible outside this package, the two
  * parameterised implementations are private to the companion, and the name lookup is built from
- * those 45 members alone, so nothing can add a forty-sixth. A `match` over a convention is
- * therefore checked for exhaustiveness by the compiler.
+ * those 45 members alone, so nothing can add a forty-sixth. A `match` that covers those 45
+ * members is therefore exhaustive.
  *
  * The members are reached in three ways, all of which yield the same objects:
  *
  * {{{
  * RollConvention.EOM                  // the member itself
- * RollConventions.DAY_15              // the identifier the ported library used
+ * RollConventions.DAY_15              // the published constant
  * RollConvention.parse("Day_31")      // text, leniently resolved - to EOM
  * }}}
  *
- * ===What this replaces===
+ * ===Fixed calendars===
  *
- * The type being ported was an interface whose implementations were discovered while the program
- * ran: a registry read the constants of an enum reflectively, merged in the day-based members
- * supplied by a second lookup class, and merged in whatever external spellings and lenient
- * rewrites it found declared in a configuration resource on the class path. The public constants
- * were indirected through that registry so that configuration could replace them. None of that
- * machinery survives. What the configuration ''declared'' does survive in full: the 44 rows of
- * the FpML group of external names and the 11 ordered lenient rewrites are transcribed into this
- * file as Scala data and handed to the shared name lookup, so text that resolved before resolves
- * now.
+ * Three conventions carry a holiday calendar of their own, and each holds a built-in calendar
+ * value of [[com.opengamma.strata.basics.date.StandardHolidayCalendars]] as data: [[IMMCAD]]
+ * holds the London calendar `GBLO` together with the combination of the two Canadian calendars
+ * `CATO` and `CAMO`, [[IMMAUD]] holds the Sydney calendar `AUSY`, and [[TBILL]] holds the New
+ * York calendar `USNY`. Because those calendars are constants rather than a lookup, [[adjust]]
+ * takes a date and answers a date: it has no reference data parameter and no error channel, and
+ * no reference data appears in this file. [[SFE]], which selects the second Friday, and
+ * [[IMMNZD]] consult no calendar at all.
  *
- * ===Divergences from the ported type===
+ * ===Names and rejection===
  *
- * These are the deliberate differences, recorded here because they belong in the migration note:
+ * The member whose canonical name is `None` is declared as `NONE`, because a member named `None`
+ * inside the companion would shadow `scala.None` throughout it. The name itself is unaffected:
+ * `RollConvention.NONE.name` is `"None"`, and that is the text the codec writes and
+ * [[RollConvention.parse]] reads.
  *
- *  - '''Fixed calendars instead of an ambient lookup.''' The ported `IMMCAD`, `IMMAUD` and
- *    `TBILL` captured their holiday calendars from standard reference data while their class
- *    initialised, falling back to a Saturday/Sunday calendar if the lookup missed. The members
- *    here hold the built-in calendar values of
- *    [[com.opengamma.strata.basics.date.StandardHolidayCalendars]] directly - `GBLO`, `CATO`
- *    combined with `CAMO`, `AUSY` and `USNY`. They are the same fixed calendars, reached as data
- *    rather than through a lookup, so no fallback is needed and no reference data appears in this
- *    file. [[adjust]] keeps the signature it had: a date in, a date out, with no reference data
- *    parameter and no error channel.
- *  - '''`NONE` carries the name `None`.''' The member whose canonical name is `None` is declared
- *    as `NONE`, because a member named `None` inside the companion would shadow `scala.None`
- *    throughout it. `NONE` is also the identifier the ported constants holder used, so the
- *    rename is only of the Scala member, never of the name: `RollConvention.NONE.name` is
- *    `"None"` and that is the text the codec writes and [[RollConvention.parse]] reads.
- *  - '''Rejection is reported rather than raised.''' The ported `of` and `ofDayOfMonth` raised an
- *    error for text or a number they did not accept. [[RollConvention.parse]] and
- *    [[RollConvention.ofDayOfMonth]] report it instead, as a
- *    [[com.opengamma.strata.collect.result.Failure]] on the left of an `Either`.
- *  - '''Accessors are renamed to Scala form.''' `getName` is [[name]] and `getDayOfMonth` is
- *    [[dayOfMonth]]. The values they answer with are unchanged.
- *  - '''Java serialization is gone.''' No member is serializable, and the resolution hooks that
- *    served it are not ported. JSON is the wire form, through the codec on the companion.
+ * Text and a day-of-month this family does not accept are reported rather than raised:
+ * [[RollConvention.parse]] and [[RollConvention.ofDayOfMonth]] answer with a
+ * [[com.opengamma.strata.collect.result.Failure]] on the left of an `Either`. JSON is the wire
+ * form of a convention, through the codec on the companion.
  *
  * Every member is immutable and safe to share between threads.
  *
  * @param name  the unique name of the convention, which is its identity in text and on the wire
  */
-sealed abstract class RollConvention private[schedule] (val name: String) extends Named {
+sealed abstract class RollConvention private[schedule] (val name: String)
+    extends Named
+    with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to the package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be a convention outside the ones
+  // `values` publishes, rolling schedule dates by a rule this port never measured - is refused
+  // here instead. Every member is declared inside the companion below, as a `case object` or as
+  // an instance of the hidden `Dom` or `Dow` class, which is what this admits.
+  JvmClosure.requireDeclaredMember(this, classOf[RollConvention])
 
   /**
    * Adjusts the date according to the rules of this roll convention.
@@ -136,7 +132,6 @@ sealed abstract class RollConvention private[schedule] (val name: String) extend
    */
   def matches(date: LocalDate): Boolean = date == adjust(date)
 
-  //-------------------------------------------------------------------------
   /**
    * Calculates the next date in the sequence after the specified date.
    *
@@ -162,7 +157,7 @@ sealed abstract class RollConvention private[schedule] (val name: String) extend
   /**
    * Calculates the previous date in the sequence before the specified date.
    *
-   * This is the mirror of [[next]]: the periodic frequency is subtracted and the result adjusted,
+   * This is [[next]] in reverse: the periodic frequency is subtracted and the result adjusted,
    * and where that lands on or after the date supplied a month is subtracted from the date
    * instead, so the result is always before the date supplied.
    *
@@ -175,15 +170,12 @@ sealed abstract class RollConvention private[schedule] (val name: String) extend
     if (calculated.isBefore(date)) calculated else adjust(date.minusMonths(1L))
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The day-of-month that this roll convention implies, zero where it implies none.
    *
    * A day-of-month convention answers with its own day, `EOM` answers with 31 - the two agree in
    * every month, because the conventions for 29, 30 and 31 all roll to the end of February - and
    * every other convention answers with zero.
-   *
-   * This is the accessor the ported type called `getDayOfMonth`.
    *
    * @return the day-of-month implied, zero if not applicable
    */
@@ -212,15 +204,14 @@ sealed abstract class RollConvention private[schedule] (val name: String) extend
  */
 object RollConvention {
 
-  /** The first day-of-month a convention can name. */
   private val FirstDayOfMonth: Int = 1
 
   /**
    * The highest day-of-month with a convention of its own, the 31st being `EOM`.
    *
    * The conventions for 29, 30 and 31 all roll to the end of February, so a convention for the
-   * 31st would differ from `EOM` in no month, which is why the family stops at 30 and the ported
-   * library mapped 31 to `EOM` - in its FpML table as well as in its factory.
+   * 31st would differ from `EOM` in no month, which is why the family stops at 30 and 31 names
+   * `EOM` - in the FpML table of this companion as well as in [[ofDayOfMonth]].
    */
   private val HighestDayOfMonthMember: Int = 30
 
@@ -248,24 +239,19 @@ object RollConvention {
    */
   private val ImmCadLondonBankingDays: Int = -2
 
-  //-------------------------------------------------------------------------
   /** The third Wednesday of the month of the date, the date the IMM conventions are built on. */
   private val ThirdWednesday: TemporalAdjuster =
     TemporalAdjusters.dayOfWeekInMonth(3, DayOfWeek.WEDNESDAY)
 
-  /** The second Friday of the month of the date. */
   private val SecondFriday: TemporalAdjuster =
     TemporalAdjusters.dayOfWeekInMonth(2, DayOfWeek.FRIDAY)
 
-  /** The date itself when it is a Wednesday, otherwise the Wednesday after it. */
   private val NextOrSameWednesday: TemporalAdjuster =
     TemporalAdjusters.nextOrSame(DayOfWeek.WEDNESDAY)
 
-  /** The date itself when it is a Monday, otherwise the Monday after it. */
   private val NextOrSameMonday: TemporalAdjuster =
     TemporalAdjusters.nextOrSame(DayOfWeek.MONDAY)
 
-  //-------------------------------------------------------------------------
   /**
    * The 'None' roll convention, which makes no adjustment.
    *
@@ -274,8 +260,7 @@ object RollConvention {
    * only where a month is too short to hold it.
    *
    * The canonical name of this member is `None`; the Scala member is `NONE` so that it cannot
-   * shadow `scala.None` inside this object, and `NONE` is also the identifier the ported
-   * constants holder published it under.
+   * shadow `scala.None` inside this object.
    */
   case object NONE extends RollConvention("None") {
     override def adjust(date: LocalDate): LocalDate = date
@@ -320,22 +305,17 @@ object RollConvention {
    * use with periods that are a multiple of months.
    *
    * The two calendars are the built-in `GBLO` calendar and the built-in `CATO` and `CAMO`
-   * calendars combined, held as `lazy val`s: the built-in calendars are themselves generated
-   * lazily, so deferring these keeps the cost of generating three calendars off the
-   * initialisation of this family and leaves the order in which the two files initialise
-   * immaterial. Where the ported convention resolved the same three calendar identifiers against
-   * standard reference data as its class initialised, this one names the calendar values
-   * themselves - the same fixed calendars, without a lookup.
-   *
-   * Note that no `GBLO`, `CATO` or `CAMO` holiday currently falls where it would change the
-   * result of this rule.
+   * calendars combined, named as values rather than resolved from reference data, and held as
+   * `lazy val`s: the built-in calendars are themselves generated lazily, so deferring these
+   * keeps the cost of generating three calendars off the initialisation of this family and
+   * leaves the order in which the two files initialise immaterial.
    */
   case object IMMCAD extends RollConvention("IMMCAD") {
 
     /** The London calendar, through which the two banking days are counted back. */
     private lazy val london: HolidayCalendar = StandardHolidayCalendars.GBLO
 
-    /** The Toronto and Montreal calendars combined, as the ported convention combined them. */
+    /** The Toronto and Montreal calendars combined, to which the shifted date is rolled back. */
     private lazy val canada: HolidayCalendar =
       StandardHolidayCalendars.CATO.combinedWith(StandardHolidayCalendars.CAMO)
 
@@ -353,9 +333,8 @@ object RollConvention {
    * the result are those of the date supplied. This convention is intended for use with periods
    * that are a multiple of months.
    *
-   * The Sydney calendar is the built-in `AUSY` calendar, held as a `lazy val` for the reason
-   * given on [[IMMCAD]]. Note that no `AUSY` holiday currently falls where it would change the
-   * result of this rule.
+   * The Sydney calendar is the built-in `AUSY` calendar, named as a value rather than resolved
+   * from reference data, and held as a `lazy val` for the reason given on [[IMMCAD]].
    */
   case object IMMAUD extends RollConvention("IMMAUD") {
 
@@ -396,11 +375,11 @@ object RollConvention {
    *
    * The date is moved forward to a Monday, and then forward again to a New York business day
    * where that Monday is a New York holiday - so a week whose Monday is a public holiday rolls
-   * to the Tuesday. Unlike the month-based conventions, the result may fall in the month after
-   * the date supplied.
+   * to the Tuesday. The result may fall in the month after the date supplied, which no
+   * month-based convention of this family does.
    *
-   * The New York calendar is the built-in `USNY` calendar, held as a `lazy val` for the reason
-   * given on [[IMMCAD]].
+   * The New York calendar is the built-in `USNY` calendar, named as a value rather than resolved
+   * from reference data, and held as a `lazy val` for the reason given on [[IMMCAD]].
    */
   case object TBILL extends RollConvention("TBILL") {
 
@@ -411,20 +390,31 @@ object RollConvention {
       newYork.nextOrSame(date.`with`(NextOrSameMonday))
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The implementation of the day-of-month conventions, `Day1` to `Day30`.
    *
    * The class is private to this object, so no code outside this file can name it or construct
    * one: the thirty instances the family has are built once into [[DomValues]] and reached only
    * through [[values]], [[ofDayOfMonth]] and the constants of [[RollConventions]]. That makes
-   * every day-of-month convention a singleton, which is what the ported implementation relied on
-   * for its equality - it defined none - and what keeps reference equality, `==` and equality by
-   * name in agreement here.
+   * every day-of-month convention a singleton, which keeps reference equality, `==` and equality
+   * by name in agreement here.
    *
    * @param dayOfMonth  the day-of-month this convention selects, from 1 to 30
    */
   private final class Dom(override val dayOfMonth: Int) extends RollConvention(s"Day$dayOfMonth") {
+
+    // The invariant of this member, stated over the day-of-month it actually holds. The closure of
+    // the family, run in the constructor of [[RollConvention]] above, admits the classes declared
+    // inside this companion, and this is one of them - but a class file written outside this
+    // library can name it directly, because the compiler emits a private member class `ACC_PUBLIC`
+    // with a public constructor whatever the source asked for, and would then carry whatever
+    // day-of-month it was passed. The range is the one [[ofDayOfMonth]] accepts for a member of
+    // its own: the 31st is `EOM` rather than a day-of-month convention, and [[adjust]] and
+    // [[matches]] are written for a day a month can hold. The `case object` members need no
+    // invariant of this kind, a case object's class taking no argument to forge.
+    JvmClosure.requireInvariant(
+      "its day-of-month is one this family has a convention for, from 1 to 30",
+      dayOfMonth >= FirstDayOfMonth && dayOfMonth <= HighestDayOfMonthMember)
 
     /**
      * Adjusts the date to this day-of-month, or to the end of February where February is too
@@ -478,10 +468,22 @@ object RollConvention {
   private final class Dow(dayOfWeek: DayOfWeek, conventionName: String)
       extends RollConvention(conventionName) {
 
-    /** The date itself when it falls on this day of the week, otherwise the next such day. */
+    // The invariant of this member, stated over the two fields it actually holds, for the reason
+    // given on [[Dom]]: this class is nameable from a class file written outside this library, so
+    // the closure of the family alone would admit an instance pairing any day of the week with any
+    // name. [[DowValues]] builds the seven by index, which is what makes the name a function of
+    // the day - the name is the identity of a convention in text, on the wire and in every lookup
+    // of this family, so a member whose name did not describe its day would resolve under one
+    // name and roll to another day.
+    JvmClosure.requireInvariant(
+      "its day-of-week is one of the seven",
+      dayOfWeek.getValue >= 1 && dayOfWeek.getValue <= DowNames.size)
+    JvmClosure.requireInvariant(
+      "its name is the one this family gives that day of the week",
+      conventionName == DowNames(dayOfWeek.getValue - 1))
+
     private val nextOrSame: TemporalAdjuster = TemporalAdjusters.nextOrSame(dayOfWeek)
 
-    /** The date itself when it falls on this day of the week, otherwise the previous such day. */
     private val previousOrSame: TemporalAdjuster = TemporalAdjusters.previousOrSame(dayOfWeek)
 
     /**
@@ -523,12 +525,10 @@ object RollConvention {
       periodicFrequency.subtractFrom(date).`with`(previousOrSame)
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The thirty day-of-month conventions, indexed by day-of-month less one.
    *
-   * Built once, by tabulating the days rather than by filling an array in a loop as the ported
-   * implementation did, so the table holds no mutable state at any point in its construction.
+   * Built once by tabulating the days, so no mutable state takes part in constructing the table.
    */
   private val DomValues: Vector[RollConvention] =
     Vector.tabulate(HighestDayOfMonthMember)(index => new Dom(index + FirstDayOfMonth))
@@ -536,9 +536,8 @@ object RollConvention {
   /**
    * The unique names of the seven day-of-week conventions, in the order of `java.time.DayOfWeek`.
    *
-   * The ported implementation sliced these names out of one string in six-character chunks; they
-   * are written out here, so that the name of each convention is legible at the point it is
-   * declared.
+   * Each name is written out in full, so that the name of every convention is legible at the
+   * point it is declared.
    */
   private val DowNames: Vector[String] =
     Vector("DayMon", "DayTue", "DayWed", "DayThu", "DayFri", "DaySat", "DaySun")
@@ -554,15 +553,13 @@ object RollConvention {
       case (conventionName, index) => new Dow(DayOfWeek.of(index + 1), conventionName)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * The complete set of roll conventions, in declaration order.
    *
    * The order is the eight rule-based conventions, then `Day1` to `Day30`, then `DayMon` to
-   * `DaySun` - the order in which the ported library's two providers contributed them, which is
-   * also the order in which the members claim their lookup keys and the order a report over the
-   * family follows. It is not the order the `Order` instance below imposes, which is alphabetical
-   * by name. The list is non-empty by construction and holds exactly 45 members.
+   * `DaySun`, which is the order in which the members claim their lookup keys and the order a
+   * report over the family follows. It is not the order the `Order` instance below imposes, which
+   * is alphabetical by name. The list is non-empty by construction and holds exactly 45 members.
    *
    * @return the 45 conventions, in declaration order
    */
@@ -570,18 +567,16 @@ object RollConvention {
     NonEmptyList.of(NONE, EOM, IMM, IMMCAD, IMMAUD, IMMNZD, SFE, TBILL) ++
       DomValues.toList ++ DowValues.toList
 
-  //-------------------------------------------------------------------------
   /**
    * The spellings this family publishes for the FpML protocol, each mapped to a canonical name.
    *
-   * These are the 44 rows of the FpML group of external names that the configuration resource of
-   * the ported library declared, transcribed unchanged: the six rule-based conventions FpML
-   * names, the day-of-month numbers 1 to 30, the number 31 mapped to `EOM` - FpML has no
-   * end-of-month spelling of its own - and the three-letter days of the week.
+   * These are the 44 published external names of the family, held as data in this companion: the
+   * six rule-based conventions FpML names, the day-of-month numbers 1 to 30, the number 31 mapped
+   * to `EOM` - FpML has no end-of-month spelling of its own - and the three-letter days of the
+   * week.
    *
-   * Two conventions of this family are deliberately absent, because the resource did not declare
-   * them: `IMMCAD` and `TBILL`, neither of which FpML defines. Comparing the size of this table
-   * against the captured reference-data manifest is what holds that count to 44.
+   * Two conventions of this family are deliberately absent, FpML defining neither: `IMMCAD` and
+   * `TBILL`.
    *
    * The rows take part in no lookup - `MON` and `31` are resolved by the lenient patterns below,
    * which happen to accept them - and exist so that a caller writing or reading that protocol can
@@ -638,19 +633,18 @@ object RollConvention {
   /**
    * The lenient rewrites of this family, in the order they are applied.
    *
-   * These are the 11 rows of the lenient patterns that the configuration resource of the ported
-   * library declared, in the order that resource listed them, and the order is part of the data:
-   * [[parse]] folds its input to upper case and then applies every pattern in turn, a pattern
-   * whose expression matches the whole of the current text replacing that text, so a later
-   * pattern sees what an earlier one produced.
+   * These are the 11 lenient patterns of the family, held as data in this companion, and their
+   * order is part of the data: [[parse]] folds its input to upper case and then applies every
+   * pattern in turn, a pattern whose expression matches the whole of the current text replacing
+   * that text, so a later pattern sees what an earlier one produced.
    *
-   * Here the order is load-bearing rather than incidental. The row for 31 is declared before the
-   * row for 30 and both before the row that captures a one- or two-digit day, so text naming the
+   * The order is load-bearing rather than incidental. The row for 31 is declared before the row
+   * for 30 and both before the row that captures a one- or two-digit day, so text naming the
    * 31st reaches `EOM` and is never rewritten to a `Day31` that no member carries. Reordering
    * these rows would change which text resolves and to what.
    *
    * The chain is what lets a bare number, a name with or without an underscore, and the
-   * screaming-snake spellings of the constant identifiers all reach the same member:
+   * screaming-snake spellings of the published constants all reach the same member:
    *
    * {{{
    * parse("31")      // EOM    - by number
@@ -662,12 +656,12 @@ object RollConvention {
    *
    * The replacement of the third row refers back to the group its expression captured, which is
    * the digits of the day, and the replacements of the others are literal names. Each expression
-   * is matched insensitively to case by the name lookup, which is why they are written here in
-   * the mixed case of the original rows rather than folded by hand.
+   * is matched insensitively to case by the name lookup, which is why the rows are written in
+   * mixed case rather than folded by hand.
    *
-   * The rows are the source of each expression rather than a compiled expression, and are handed
-   * to the name lookup in that form, which compiles each of them once - insensitively to case,
-   * and only when this family first parses a name.
+   * Each row carries the source text of an expression rather than an expression object, and is
+   * handed to the name lookup in that form; the lookup builds each expression once, insensitively
+   * to case, and only when this family first parses a name.
    */
   private val LenientSources: List[(String, String)] =
     List(
@@ -688,23 +682,21 @@ object RollConvention {
    * The name lookup for this family.
    *
    * This instance is the single route from text to a convention, and it is built from [[values]]
-   * and the two transcribed tables alone. The family declares no alternate spelling: the ported
-   * library registered every day-based convention under its name and under that name folded to
-   * upper case, and the shared lookup derives both keys from [[values]] for every member, so
-   * `Day15` and `DAY15` resolve without a table and a table would only repeat what is already
-   * derived. Nothing is read from a class or from the class path, so the name space of the family
-   * is fixed when this file is compiled.
+   * and the two tables above alone. The family declares no alternate spelling: the shared lookup
+   * derives both the canonical key and its upper-case form from [[values]] for every member, so
+   * `Day15` and `DAY15` resolve without a table of their own, and a table would only repeat what
+   * is already derived. Nothing is read while the program runs, so the name space of the family
+   * is exactly the 45 canonical names and the two tables held here.
    *
    * The instance also carries the tables themselves - `lenientSources` and `externalNamesRaw` -
-   * which is how a caller or a specification reads the transcribed data back without this object
-   * having to publish it twice.
+   * which is how a caller reads the published data back without this object having to publish it
+   * twice.
    *
    * @return the name lookup for the 45 conventions
    */
   implicit val namedEnum: NamedEnum[RollConvention] =
     NamedEnum.ofSources(values, Map.empty, LenientSources, Map("FpML" -> FpMLNames), "RollConvention")
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains the convention with the specified canonical name, if one exists.
    *
@@ -732,17 +724,16 @@ object RollConvention {
    * parse("Rubbish") // Left - text this family has never accepted
    * }}}
    *
-   * Where the type being ported signalled unrecognised text by raising an error, this method
-   * reports it as a value: the result is `Left` of a chain holding one
-   * [[com.opengamma.strata.collect.result.Failure]] whose reason is `PARSING` and whose message
-   * names both this family and the text that could not be resolved.
+   * Unrecognised text is reported as a value rather than raised: the result is `Left` of a chain
+   * holding one [[com.opengamma.strata.collect.result.Failure]] naming both this family and the
+   * text that could not be resolved.
    *
    * @param name  the text to parse
-   * @return the convention the text names, or the failure describing why it names none
+   * @return the convention the text names, or the failure reporting text that neither a canonical
+   *   name nor a lenient rewrite of this family resolves
    */
   def parse(name: String): EitherNec[Failure, RollConvention] = namedEnum.parse(name)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains the convention for the specified day-of-month.
    *
@@ -750,9 +741,8 @@ object RollConvention {
    * month is shorter than the day requested the last day of the month is chosen, which is why
    * passing 31 yields [[EOM]] rather than a convention of its own.
    *
-   * The ported factory raised an error for a day outside 1 to 31; this one reports it, as a
-   * [[com.opengamma.strata.collect.result.Failure]] whose reason is `INVALID` and whose message
-   * is the one the ported factory used.
+   * A day-of-month outside 1 to 31 is reported rather than raised, as a
+   * [[com.opengamma.strata.collect.result.Failure]] naming the day that has no convention.
    *
    * {{{
    * ofDayOfMonth(15) // Right(Day15)
@@ -761,7 +751,8 @@ object RollConvention {
    * }}}
    *
    * @param dayOfMonth  the day-of-month, from 1 to 31
-   * @return the convention for that day-of-month, or the failure describing why there is none
+   * @return the convention for that day-of-month, or the failure reporting a day-of-month outside
+   *   1 to 31
    */
   def ofDayOfMonth(dayOfMonth: Int): Either[Failure, RollConvention] =
     if (dayOfMonth == EndOfMonthDayOfMonth) {
@@ -784,7 +775,7 @@ object RollConvention {
    * The contract is nonetheless checked rather than assumed, through
    * [[com.opengamma.strata.collect.ArgCheck]]: a number outside 1 to 31 is a programming error in
    * this package, and it fails immediately and loudly rather than silently selecting the wrong
-   * convention. Because the check belongs to `ArgCheck`, this file raises nothing itself.
+   * convention.
    *
    * It is not part of the public surface of this family; public callers use [[ofDayOfMonth]].
    *
@@ -814,7 +805,6 @@ object RollConvention {
    */
   def ofDayOfWeek(dayOfWeek: DayOfWeek): RollConvention = DowValues(dayOfWeek.getValue - 1)
 
-  //-------------------------------------------------------------------------
   /**
    * The ordering and hashing of conventions.
    *
@@ -843,10 +833,8 @@ object RollConvention {
    * The JSON codec for conventions.
    *
    * A convention is written as the bare string of its canonical name - `"EOM"`, `"Day15"`,
-   * `"DayMon"` - and never as an object, which is the single-string form the type being ported
-   * wrote through its string conversion, so a document written by either side names the same
-   * convention. Decoding goes through [[parse]], so the leniency of the two is identical and
-   * unresolvable text is reported as a decoding failure rather than raised.
+   * `"DayMon"` - and never as an object. Decoding goes through [[parse]], so the leniency of the
+   * two is identical and unresolvable text is reported as a decoding failure rather than raised.
    *
    * @return the codec reading and writing a convention as its canonical name
    */
@@ -854,8 +842,7 @@ object RollConvention {
 }
 
 /**
- * Constants for the standard roll conventions, published under the identifiers the ported
- * library used.
+ * Constants for the standard roll conventions.
  *
  * The purpose of a roll convention is to define how to roll dates when building a schedule. The
  * standard approach to building a schedule is based on unadjusted dates, which do not have a
@@ -867,15 +854,10 @@ object RollConvention {
  * periodic frequency will naturally select the same day-of-month as the input date, thus the
  * day-of-month does not need to be additionally specified.
  *
- * Every one of these 45 constants is a member of [[RollConvention]], exposed under the name the
- * original constants holder gave it so that a call site reading `RollConventions.DAY_15` ports
- * across unchanged. The values are the same objects as the members of the companion, so a
- * constant taken from here and the matching member are indistinguishable - including by `eq`, by
- * `==` and in a pattern match.
- *
- * Unlike the holder being ported, these constants are not indirected through a registry: each
- * one names its member directly, because the family is closed and no configuration can replace a
- * member of it.
+ * Every one of these 45 constants is a member of [[RollConvention]]. The values are the same
+ * objects as the members of the companion, so a constant taken from here and the matching member
+ * are indistinguishable - including by `eq`, by `==` and in a pattern match. Each constant names
+ * its member directly, the family being closed.
  */
 object RollConventions {
 
@@ -914,10 +896,8 @@ object RollConventions {
    *
    * The input date will be adjusted to ensure it is two GBLO business days before the third
    * Wednesday of the month. The date is further adjusted earlier by a combination of the CATO
-   * and CAMO calendars. The built-in calendars are used directly, rather than resolved from
-   * reference data as the ported convention did. (Note that all current GBLO, CATO and CAMO
-   * holiday dates will not impact the result.) The year and month of the result date will be the
-   * same as the input date.
+   * and CAMO calendars. The built-in GBLO, CATO and CAMO calendars are used directly. The year
+   * and month of the result date will be the same as the input date.
    *
    * This convention is intended for use with periods that are a multiple of months.
    */
@@ -928,10 +908,8 @@ object RollConventions {
    * Friday.
    *
    * The input date will be adjusted to ensure it is the Thursday before the second Friday of the
-   * month. The built-in AUSY calendar is used to subtract the day, rather than resolved from
-   * reference data as the ported convention did. (Note that all current AUSY holiday dates will
-   * not impact the result.) The year and month of the result date will be the same as the input
-   * date.
+   * month. The built-in AUSY calendar subtracts the day. The year and month of the result date
+   * will be the same as the input date.
    *
    * This convention is intended for use with periods that are a multiple of months.
    */
@@ -963,8 +941,7 @@ object RollConventions {
    * The 'TBILL' roll convention which adjusts the date to next Monday.
    *
    * The input date will be adjusted to ensure it is the next Monday. The built-in USNY calendar
-   * is used in case the Monday is a holiday, rather than resolved from reference data as the
-   * ported convention did.
+   * is used in case the Monday is a holiday.
    */
   val TBILL: RollConvention = RollConvention.TBILL
 

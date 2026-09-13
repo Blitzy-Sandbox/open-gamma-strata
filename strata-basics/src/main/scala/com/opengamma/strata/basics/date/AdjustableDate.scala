@@ -19,6 +19,7 @@ import io.circe.generic.semiauto.deriveEncoder
 import com.opengamma.strata.basics.RefDataReader
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -52,7 +53,7 @@ import com.opengamma.strata.collect.result.Failure
  * val settles = payment.adjusted(ReferenceData.standard)
  * }}}
  *
- * Where the data is not yet in hand, [[toReader]] expresses the same adjustment as a value
+ * Where the data has not arrived, [[toReader]] expresses the same adjustment as a value
  * awaiting it. Such a value composes with `map`, `flatMap` and `mapN` while the data is still
  * unknown, and is run once against the data actually available:
  *
@@ -73,10 +74,9 @@ import com.opengamma.strata.collect.result.Failure
  *
  * ===Failure is returned, not thrown===
  *
- * The Java original returned a bare date and threw `ReferenceDataNotFoundException` where the
- * calendar was absent from the reference data. Here [[adjusted]] answers with
- * `Either[Failure, LocalDate]`, reporting the `Failure.MissingData` that
- * [[HolidayCalendarId.resolve]] produces and naming the identifier that could not be found.
+ * [[adjusted]] answers with `Either[Failure, LocalDate]`. Where the reference data supplies no
+ * calendar for the identifier the adjustment names, the result is the `Left` that
+ * [[HolidayCalendarId.resolve]] produces, naming the identifier that could not be resolved.
  *
  * That is the only way adjusting can fail. The date held here is unconstrained - any date the
  * calendar system can express is a legitimate unadjusted date, including a weekend, a holiday
@@ -86,11 +86,8 @@ import com.opengamma.strata.collect.result.Failure
  * ===Construction===
  *
  * Construction is total. Both parts are required and neither can be absent, which the types
- * state on their own, so the Java bean's non-nullness checks have nothing left to check and the
- * ordinary case-class constructor is the whole of the validation. `apply`, `copy` and both
- * `AdjustableDate.of` factories are therefore public and equivalent; the factories are kept
- * because they are the names the library being ported used, so ported call sites read
- * unchanged.
+ * state on their own, so the ordinary case-class constructor is the whole of the validation.
+ * `apply`, `copy` and both `AdjustableDate.of` factories are therefore public and equivalent.
  *
  * This type is immutable and thread-safe.
  *
@@ -103,7 +100,8 @@ import com.opengamma.strata.collect.result.Failure
  */
 final case class AdjustableDate(
     unadjusted: LocalDate,
-    adjustment: BusinessDayAdjustment) {
+    adjustment: BusinessDayAdjustment)
+    extends NoJavaSerialization {
 
   /**
    * Adjusts the date using the business day adjustment.
@@ -119,8 +117,8 @@ final case class AdjustableDate(
    *
    * @param refData  the reference data to use, which supplies the holiday calendar the
    *   adjustment names
-   * @return the adjusted date, or `Left(Failure.MissingData)` where the reference data does not
-   *   supply the calendar the adjustment names
+   * @return the adjusted date, or the failure naming the calendar identifier the reference data
+   *   supplies no calendar for
    */
   def adjusted(refData: ReferenceData): Either[Failure, LocalDate] =
     adjustment.adjust(unadjusted, refData)
@@ -146,9 +144,8 @@ final case class AdjustableDate(
    * time the reader is run, not once when it is built.
    *
    * The `Kleisli` type arguments are spelled out rather than inferred, over the
-   * single-parameter `FailureOr` alias. That alias exists for this position: the build carries
-   * no compiler plugin supplying type-lambda syntax, so a failure type applied at the use site
-   * could not be written here at all.
+   * single-parameter `FailureOr` alias, because `Kleisli` takes a type constructor of one
+   * parameter in that position and the alias is what gives the failure type that shape.
    *
    * @return the adjustment of this date as a function from reference data to the adjusted date
    */
@@ -162,12 +159,11 @@ final case class AdjustableDate(
    * because naming an adjustment that adjusts nothing would say something untrue about it.
    * Every other adjustable date renders as its date, the words ` adjusted by ` and its
    * adjustment, as in `2014-07-11 adjusted by Following using calendar Sat/Sun`. Both forms are
-   * those of the library being ported, character for character, and they are what the `Show`
-   * instance renders.
+   * what the `Show` instance renders.
    *
    * The test is on the value of the adjustment rather than on how this date was built, so a
    * date built with the two-argument factory and the no-adjustment constant renders in the
-   * short form, exactly as the original did.
+   * short form.
    *
    * @return the descriptive string
    */
@@ -191,9 +187,8 @@ object AdjustableDate {
    * applies, so [[AdjustableDate.adjusted]] returns the date given here whatever reference
    * data it is run against and whether or not that date is a business day anywhere.
    *
-   * This is the factory of the library being ported. It is kept so that ported call sites read
-   * as they did, and because the intent it states - a date that is to be taken as it stands -
-   * reads better than the constructor paired with the no-adjustment constant.
+   * This factory states the intent - a date that is to be taken as it stands - more directly
+   * than the constructor paired with the no-adjustment constant.
    *
    * @param date  the date, which is taken as both the unadjusted and the adjusted date
    * @return the adjustable date
@@ -209,9 +204,8 @@ object AdjustableDate {
    * needs reference data because the adjustment names its holiday calendar rather than holding
    * it.
    *
-   * This is the factory of the library being ported and is exactly the constructor of the type,
-   * which construction being total leaves nothing for it to add. It is kept so that ported call
-   * sites read as they did.
+   * This factory is exactly the constructor of the type, which construction being total leaves
+   * nothing for it to add.
    *
    * @param unadjusted  the unadjusted date, which may be a non-business day
    * @param adjustment  the business day adjustment to apply to the unadjusted date
@@ -220,24 +214,22 @@ object AdjustableDate {
   def of(unadjusted: LocalDate, adjustment: BusinessDayAdjustment): AdjustableDate =
     AdjustableDate(unadjusted, adjustment)
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of adjustable dates.
    *
    * Taken from the `equals` and `hashCode` of the case class, which compare the two fields by
    * their own equality - the value of a date and the convention and calendar name of an
    * adjustment. Neither field holds a `Double`, so there is no bit-pattern comparison to
-   * arrange, and the structural equality the compiler writes is exactly the equality of the
-   * bean being ported.
+   * arrange.
    *
    * Two dates that differ only in their adjustment are therefore unequal even where both adjust
-   * to the same day, as they were in the original: what is held is the agreement, and two
-   * different agreements that happen to agree today are still two agreements.
+   * to the same day: what is held is the agreement, and two different agreements that happen to
+   * reach one date against one body of reference data are still two agreements.
    *
    * This is the type's only equality-bearing instance, and `Eq[AdjustableDate]` is obtained
-   * from it by subtyping rather than declared separately. There is no `Order`: the bean being
-   * ported is not `Comparable`, and ordering by the unadjusted date alone - the only ordering
-   * that could be meant - would rank two dates equal that are not.
+   * from it by subtyping rather than declared separately. There is no `Order`, because ordering
+   * by the unadjusted date alone - the only ordering that could be meant - would rank two dates
+   * equal that are not.
    *
    * @return the hashing of adjustable dates
    */
@@ -246,20 +238,19 @@ object AdjustableDate {
   /**
    * The rendering of adjustable dates as text.
    *
-   * Renders what [[AdjustableDate.toString]] renders, which is the form of the Java original,
-   * so the two ways of putting an adjustable date into a message agree.
+   * Renders what [[AdjustableDate.toString]] renders, so the two ways of putting an adjustable
+   * date into a message agree.
    *
    * @return the rendering of an adjustable date
    */
   implicit val show: Show[AdjustableDate] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The JSON encoding of adjustable dates.
    *
-   * The encoding is derived when this file is compiled, so no part of it inspects a class while
-   * the program runs. An instance encodes as an object holding its two fields under the names
-   * the Java bean declared, in declaration order:
+   * The encoding is derived in this file, so no part of it inspects a class while the program
+   * runs. An instance encodes as an object holding its two fields under their own names, in
+   * declaration order:
    *
    * {{{
    * {"unadjusted":"2024-01-31","adjustment":{"convention":"Following","calendar":"GBLO"}}
@@ -268,9 +259,9 @@ object AdjustableDate {
    * The date is an ISO-8601 string, written by the codec `circe` itself publishes for
    * `java.time.LocalDate`; the adjustment is the object its own codec writes, whose two fields
    * are in turn bare strings. Nothing here is optional, so no absent value falls out; the
-   * encoder is wrapped in the single policy of this port for products all the same, so that the
-   * rule holds of every product encoder without a reader having to check which products have
-   * optional fields today.
+   * encoder is wrapped in the rule every product encoder of this library follows all the same,
+   * so that the rule holds without a reader having to check which products carry an optional
+   * field.
    *
    * Two adjustable dates that are equal encode to identical bytes, since neither field has a
    * representation that depends on how it was built.
@@ -283,8 +274,8 @@ object AdjustableDate {
   /**
    * The JSON decoding of adjustable dates.
    *
-   * This is the inverse of the encoding above and is likewise derived at compile time. Both
-   * fields have to be present, and each is read by the decoder its own type publishes: any date
+   * This is the inverse of the encoding above and is derived the same way. Both fields have to
+   * be present, and each is read by the decoder its own type publishes: any date
    * the ISO-8601 calendar date form can express is accepted, as is any adjustment whose
    * convention is a member of that closed family. A calendar this library knows nothing about
    * is accepted here and fails - if at all - when the date is adjusted, which is where a

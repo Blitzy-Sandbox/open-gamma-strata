@@ -24,69 +24,33 @@ import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.result.ResultNec
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
-/**
- * Test [[StandardId]], ported from the Java `StandardIdTest`.
- *
- * ===What the four tables are for===
- *
- * The Java original drove six of its sixteen methods from four data providers, and those
- * providers carry the whole of the character-set contract: which characters a scheme may
- * hold, which characters a value may hold, and where the boundaries of those two sets fall.
- * They are transcribed here row for row, because each row sits deliberately on one side of
- * a boundary and a single altered character would turn a boundary test into a test of the
- * middle of the range. The three that are easy to mistake for typing errors are
- * intentional:
- *
- *   - `"! !\"$%%^&*()123abcxyzABCXYZ"` is a plain string, not a format string, so the two
- *     percent signs are two literal percent signs and the escape is a literal double quote;
- *   - `"12}3"` is rejected because the closing brace is one of the four printable ASCII
- *     characters above lower-case `z` that a value may not hold, the fourth being the tilde
- *     that separates the two parts of the text form;
- *   - `"12\u00003"` embeds a NUL, which is rejected because it falls below the space at the
- *     bottom of the permitted range.
- *
- * A fifth table sits inside `test_encodeScheme` rather than alongside these four, because it
- * transcribes no provider: it holds the four inputs that make the encoder's guarantee worth
- * asserting, being three characters a scheme may not hold and the percent that every escape
- * begins with.
- *
- * ===How the shape of the port changes the assertions===
- *
- * Three differences from the original are structural rather than a matter of taste, and each
- * is noted again at the test it affects:
- *
- *   - Both factories report their failures rather than throwing, so every assertion that was
- *     `assertThatIllegalArgumentException` is now an assertion that the outcome is a `Left`.
- *     `of` accumulates, so an input at fault in both of its parts reports both.
- *   - There is no null anywhere in this API, so the two tests that passed one keep their
- *     names and assert the nearest input that can actually be written.
- *   - The reflective bean sweep and Java serialization have no counterpart, so `coverage`
- *     and `test_serialization` assert the properties those two stood for: that equality,
- *     hashing, rendering and ordering agree with one another, and that an identifier
- *     survives a round trip through its JSON form.
- *
- * Sixteen of the seventeen tests keep the name of the Java method they come from, and each of the
- * four table-driven groups is one test that runs its whole table, which is what keeps the
- * method-level traceability of the migration exact. The seventeenth is this port's own and
- * answers to no Java method: it asserts that both factories name rejected text in full while the
- * rendering of their failures stays bounded and on one line, which is a promise the Java class -
- * whose factories threw - could not make.
- */
+/** Test [[StandardId]]. */
 class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
-  /** The scheme used by most of the tests, as in the Java original. */
   private val SCHEME: String = "Scheme"
 
-  /** A second scheme, ordered before [[SCHEME]], used by the comparison tests. */
+  /**
+   * The longest a scheme or a value may be, stated here independently of the type.
+   *
+   * The type holds this privately and names it in the failures it reports, and the text ceiling
+   * of `parse` is derived from it, so the suite states the one number and computes the other the
+   * same way the type does. A bound changed on one side alone therefore fails here, which is the
+   * point: both numbers are part of what the factories promise a caller.
+   */
+  private val PartCeiling: Int = 65536
+
   private val OTHER_SCHEME: String = "Other"
 
   //-------------------------------------------------------------------------
   /**
-   * Schemes and values that together name an identifier, transcribed from the Java provider.
+   * Schemes and values the two-part factory accepts: the two ASCII alphabets, the digits with
+   * seven of the eight punctuation characters a scheme admits - the percent sign, which a scheme
+   * also admits, is covered by the escaping cases instead - and a value spanning the printable
+   * ASCII a value admits. A value is accepted in the language `[!-z][ -z]*`, so one character is
+   * enough; the `+` the failure messages quote is message text rather than the language applied.
    *
-   * The four rows are the upper-case alphabet, the lower-case alphabet, the digits together
-   * with every permitted punctuation character of a scheme, and a value exercising the
-   * printable ASCII characters a value may hold.
+   * Every row of this table and of the three below it sits deliberately on one side of a
+   * character-set boundary, so a single altered character silently weakens the check it makes.
    */
   private val data_factoryValid: TableFor2[String, String] = Table(
     ("scheme", "value"),
@@ -96,11 +60,10 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     ("ABC", "! !\"$%%^&*()123abcxyzABCXYZ"))
 
   /**
-   * Schemes and values that name no identifier, transcribed from the Java provider.
-   *
-   * The rows cover, in order: both parts absent; a scheme of one character that is not
-   * permitted; a scheme holding a character above the permitted set; a value beginning with
-   * a space; a value holding a closing brace; and a value holding a NUL.
+   * Schemes and values the factory refuses, one row just past each boundary: neither part may
+   * be empty, a scheme admits only `[A-Za-z0-9:/+.=_%-]` so it holds neither a space nor a
+   * brace, and a value may neither begin with a space nor hold anything outside `[ -z]`, which
+   * rules out the closing brace above that range and the NUL below it.
    */
   private val data_factoryInvalid: TableFor2[String, String] = Table(
     ("scheme", "value"),
@@ -112,12 +75,10 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     ("ABC", "12\u00003"))
 
   /**
-   * Values and the text they render as, transcribed from the Java provider.
+   * Values and the `scheme~value` text they render as, read by two tests that run in opposite
+   * directions, so the table pins rendering and parsing as inverses of one another.
    *
-   * Both of the tests that use this table read both columns: one renders the value and
-   * compares the text, the other parses the text and compares the value, so the table asserts
-   * that rendering and parsing are inverse over these rows. The second row matters because a
-   * plus sign is permitted in both parts, so it cannot be treated as a separator or as an
+   * A plus sign is permitted in both parts, which is why it is neither a separator nor an
    * encoded space.
    */
   private val data_formats: TableFor2[String, String] = Table(
@@ -126,12 +87,11 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     ("a+b", "A~a+b"))
 
   /**
-   * Text that names no identifier, transcribed from the Java provider.
+   * The text shapes `parse` refuses: no separator, nothing after the separator, nothing before
+   * it, the wrong separator, and two separators.
    *
-   * The rows cover text with no separator at all, a separator with nothing after it, a
-   * separator with nothing before it, the wrong separator, and two separators - the last
-   * being the row that fixes the rule that a value may not hold a tilde, so that the first
-   * tilde of the text is always the one that separates the two parts.
+   * The last row fixes the rule that a value may not hold a tilde, so the first tilde of the
+   * text is always the one that separates the two parts.
    */
   private val data_parseInvalidFormat: TableFor1[String] = Table(
     "text",
@@ -142,34 +102,12 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     "a~b~c")
 
   //-------------------------------------------------------------------------
-  /**
-   * Builds an identifier, asserting that the factory accepted the two parts.
-   *
-   * The factory reports its failures rather than throwing, so a spec that wants the value
-   * has to say what should happen when there is none. Asserting success here rather than at
-   * every call site keeps the sixteen tests reading like the Java ones, and routing the
-   * assertion through `beSuccess` means an unexpected rejection is reported with the reason
-   * and message of every failure rather than as a failed pattern match.
-   *
-   * @param scheme  the scheme of the identifier
-   * @param value  the value of the identifier
-   * @return the identifier the two parts name
-   */
   private def identifier(scheme: String, value: String): StandardId = {
     val outcome = StandardId.of(scheme, value)
     outcome should beSuccess
     outcome.getOrElse(fail(s"StandardId.of('$scheme', '$value') was expected to name an identifier"))
   }
 
-  /**
-   * Parses an identifier, asserting that the text named one.
-   *
-   * The counterpart of [[identifier]] for the other factory, which reports a single failure
-   * rather than a chain of them.
-   *
-   * @param text  the text to parse
-   * @return the identifier the text names
-   */
   private def parsed(text: String): StandardId = {
     val outcome = StandardId.parse(text)
     outcome should beSuccess
@@ -177,47 +115,21 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
   }
 
   /**
-   * Counts the failures an outcome of the two-part factory reports.
+   * Counts the failures the two-part factory reports, which is how its accumulation is
+   * observed: one failure per rejected part, and both parts reported together when both are
+   * wrong.
    *
-   * This is how the accumulation of the factory is observed: the count is the length of the
-   * chain, so a value of two says that the scheme and the value were each described rather
-   * than the first fault ending the checks.
-   *
-   * @param scheme  the scheme to check
-   * @param value  the value to check
-   * @return the number of failures reported, or `None` if the two parts named an identifier
+   * The two checks over a value - its characters, then its leading character - run in
+   * sequence, so a value at fault contributes one failure however many of them it would fail.
    */
   private def failureCount(scheme: String, value: String): Option[Int] =
     StandardId.of(scheme, value).swap.toOption.map(failures => failures.toNonEmptyList.size)
 
-  /**
-   * Reads the messages an outcome of the two-part factory reports, in the order they
-   * accumulated.
-   *
-   * The counterpart of [[failureCount]] for the tests that assert the wording of a rejection
-   * rather than its arity, and it asserts the arity as well by being compared against a list:
-   * a message list of one says that exactly one failure was reported.
-   *
-   * @param outcome  the outcome expected to carry failures
-   * @return the message of each failure, in order, or nothing when the parts named an
-   *   identifier
-   */
   private def messagesOf(outcome: ResultNec[StandardId]): List[String] =
     outcome.swap.toOption
       .map(failures => failures.toNonEmptyList.toList.map(failure => failure.message))
       .getOrElse(List.empty[String])
 
-  /**
-   * The rendering of each failure of an outcome, in order.
-   *
-   * This is the text a log or a report receives, as against the message the failure carries:
-   * the two agree for every rejection of a realistic size, and differ exactly where the
-   * rendering has to bound or escape what a caller supplied.
-   *
-   * @param outcome  the outcome expected to carry failures
-   * @return the rendering of each failure, in order, or nothing when the parts named an
-   *   identifier
-   */
   private def renderingsOf(outcome: ResultNec[StandardId]): List[String] =
     outcome.swap.toOption
       .map(failures => failures.toNonEmptyList.toList.map(failure => Show[Failure].show(failure)))
@@ -232,15 +144,6 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
   }
 
   test("test_factory_String_String_nullScheme") {
-    // The Java test passed `null` as the scheme and asserted an IllegalArgumentException.
-    // That case cannot be written against this API: the `notNull` family of checks was
-    // dropped in the port because an absent argument is modelled by `Option`, not by a null
-    // reference, and no factory of either module accepts one. Passing a null in regardless -
-    // which the language would permit for a `String` - would assert the behaviour of the
-    // platform rather than of this type, so the assertion instead names the nearest input a
-    // caller can actually supply: a scheme holding no characters. It is rejected, and the
-    // failure names the scheme, so a caller who supplied nothing for that part is told which
-    // of the two parts was at fault.
     val outcome = StandardId.of("", "value")
     outcome should beFailure
     outcome should haveFailureMessageMatching(".*'scheme'.*")
@@ -248,8 +151,6 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
   }
 
   test("test_factory_String_String_nullValue") {
-    // As above, for the other argument: `null` is not expressible here, so the assertion is
-    // made against a value holding no characters, and the failure names the value.
     val outcome = StandardId.of(SCHEME, "")
     outcome should beFailure
     outcome should haveFailureMessageMatching(".*'value'.*")
@@ -264,23 +165,12 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
 
   test("test_factory_String_String_valid") {
     forAll(data_factoryValid) { (scheme: String, value: String) =>
-      // The Java body called the factory and discarded the result, which asserted only that
-      // no exception was thrown. Here the outcome is a value, so it is asserted: the factory
-      // accepted the two parts, and the identifier it built holds exactly the parts given and
-      // renders as the two of them separated by a tilde.
       val test = identifier(scheme, value)
       test.scheme shouldBe scheme
       test.value shouldBe value
       test.toString shouldBe s"$scheme~$value"
     }
 
-    // The language a value is accepted in is `[!-z][ -z]*` and not `[!-z][ -z]+`: one
-    // character is enough, here as in the Java original, and such a value round trips
-    // through the text form like any other. The `+` the failure messages quote is the
-    // original's message text, which this port reproduces word for word, so only an
-    // assertion can settle which of the two the factory actually applies. The boundary is
-    // real rather than absent: the one single-character value that is rejected is a space,
-    // because a value may not begin with one.
     val single = identifier("A", "1")
     single.value shouldBe "1"
     single.toString shouldBe "A~1"
@@ -292,11 +182,6 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
       StandardId.of(scheme, value) should beFailure
     }
 
-    // The scheme and the value are checked independently and their failures accumulate, so
-    // an input at fault in both parts is described twice rather than once: the caller can
-    // correct both in one pass. The two parts of a value - its characters and its leading
-    // character - are checked in sequence, which is why a value at fault contributes exactly
-    // one failure however many of those two checks it would fail.
     failureCount("", "") shouldBe Some(2)
     failureCount(" ", "123") shouldBe Some(1)
     failureCount("ABC", " 123") shouldBe Some(1)
@@ -305,22 +190,17 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
 
   //-------------------------------------------------------------------------
   test("test_encodeScheme") {
+    // Every character a scheme may not hold is percent-escaped, one group of three characters
+    // per byte of its UTF-8 form, and the percent is escaped as well although a scheme may
+    // hold it, since every escape begins with one. Text of at least one character therefore
+    // encodes to a scheme the factory accepts unchanged; empty text encodes to empty, which
+    // is no scheme at all.
     val testScheme = StandardId.encodeScheme("https://opengamma.com/foo/../~bar#test")
     val expectedScheme = "https://opengamma.com/foo/../%7Ebar%23test"
 
     testScheme shouldBe expectedScheme
-    // Test use of the encoded scheme. This is the half of the Java test that gives the first
-    // half its point: percent is itself a permitted scheme character, so text holding at
-    // least one character is encoded into a scheme the factory accepts unchanged.
     identifier(testScheme, "value").scheme shouldBe expectedScheme
 
-    // The rows are the inputs that make that qualified guarantee worth stating: the space
-    // and the tilde, which a scheme may not hold at all - the tilde being the separator of
-    // the text form - a character outside ASCII, which becomes one escape group per byte of
-    // its UTF-8 form, and the percent, which a scheme may hold but which the encoder escapes
-    // regardless, since it is the character every escape begins with. The encoded text is
-    // asserted as well as its acceptance, so that a change of escaping is a failure here
-    // rather than a silently different scheme.
     val encodings: TableFor2[String, String] = Table(
       ("text", "encoded"),
       (" ", "%20"),
@@ -333,10 +213,6 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
       identifier(encoded, "value").scheme shouldBe encoded
     }
 
-    // Empty text is the one input the guarantee does not cover, and it is a legal argument:
-    // there is nothing to escape, so the encoded form is empty too, and a scheme may not be
-    // empty. The encoder stays text to text - as the escaper it replaces is - so ruling this
-    // case out belongs to the caller, which is what the method's documentation states.
     StandardId.encodeScheme("") shouldBe ""
     StandardId.of("", "value") should beFailure
   }
@@ -370,46 +246,29 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
       StandardId.parse(text) should beFailure
     }
 
-    // Text holding no tilde at all names no identifier and is reported as text that could
-    // not be read, distinctly from text whose two parts were read but were unacceptable.
     StandardId.parse("Scheme") should beFailureWith(FailureReason.PARSING)
     StandardId.parse("Scheme:value") should beFailureWith(FailureReason.PARSING)
-    // Text holding two tildes is split at the first one, which leaves a value holding the
-    // second: a value may not hold a tilde, so the text is rejected rather than being read
-    // as an identifier whose rendering would differ from the text it came from.
     StandardId.parse("a~b~c") should beFailure
     StandardId.parse("a~b~c") should haveFailureMessageMatching(".*'b~c'.*")
   }
 
-  /**
-   * Asserts that rejected text is named in full and rendered bounded and on one line.
-   *
-   * No counterpart in the Java test class: the original interpolated the text it was handed
-   * into the exception it threw, as it stood, and this port names it the same way in the
-   * failure it returns, so a caller correcting its input is handed back exactly what was
-   * refused. What the port adds is the boundary at which such a failure is written out - its
-   * rendering bounds every part and escapes anything that could forge a line of a log holding
-   * it. Three messages quote caller text here and all three are asserted: the no-separator
-   * wording of `parse`, the two part checks `of` performs, and the leading-space check that
-   * follows the character check of a value.
-   */
   test("both factories name rejected text in full, and their failures render bounded and on one line") {
-    // The parse wording, over text holding no separator at all.
+    // A failure names the whole of the text it refused, so a caller is handed back exactly
+    // what it has to correct, while the rendering of that failure is bounded, marks what it
+    // left out, and escapes anything that could forge a line of a log. All three wordings
+    // that quote caller text are asserted: the no-separator wording of `parse`, the part
+    // check of `of` over each of the two parts, and the leading-space check that follows the
+    // character check of a value.
     val payload = "H" * 10000
     val bounded = StandardId.parse(payload)
     bounded should beFailureWith(FailureReason.PARSING)
     val failure = bounded.left.toOption.getOrElse(fail("expected a failure"))
     failure.message shouldBe s"Invalid identifier format: $payload"
-    // The rendering is where the size stops: the ten thousand characters reach a log as a few
-    // hundred, marked to say that there was more.
     val rendered = Show[Failure].show(failure)
     rendered.length should be < 1000
     rendered should startWith("PARSING: Invalid identifier format: HHH")
     rendered should endWith("...")
 
-    // The two part checks of the other factory, reached with a part of the same size built from
-    // a character neither part admits, since ten thousand letters are a perfectly good scheme
-    // and a perfectly good value.
     val rejectedPart = "{" * 10000
     val badScheme = StandardId.of(rejectedPart, "value")
     badScheme should beFailure
@@ -422,16 +281,12 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     renderingsOf(badScheme).head.length should be < 1000
     renderingsOf(badValue).head.length should be < 1000
 
-    // And the leading-space check, which quotes the value it was handed as well.
     val leadingSpace = StandardId.of(SCHEME, " " + payload)
     leadingSpace should beFailure
     messagesOf(leadingSpace) shouldBe
       List(s"Invalid initial space in value ' $payload' must match regex '[!-z][ -z]+'")
     renderingsOf(leadingSpace).head.length should be < 1000
 
-    // Text holding a line break is named as it stands and rendered on one line, so a
-    // line-oriented consumer of a rendering cannot be made to record a line the library did
-    // not report.
     val injected = StandardId.parse("Scheme\nvalue")
     injected should beFailureWith(FailureReason.PARSING)
     val injectedFailure = injected.left.toOption.getOrElse(fail("expected a failure"))
@@ -447,14 +302,119 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     renderingsOf(injectedValue) shouldBe
       List("INVALID: Argument 'value' with value 'va\\nlue' must match pattern: [!-z][ -z]+")
 
-    // And the messages for ordinary rejected text are unchanged, character for character, which
-    // is what makes the bound invisible to every caller but the adversarial one.
     StandardId.parse("Scheme").left.toOption.map(failure => failure.message) shouldBe
       Some("Invalid identifier format: Scheme")
     messagesOf(StandardId.of("{", "value")) shouldBe
       List("Argument 'scheme' with value '{' must match pattern: [A-Za-z0-9:/+.=_%-]+")
     messagesOf(StandardId.of(SCHEME, " 123")) shouldBe
       List("Invalid initial space in value ' 123' must match regex '[!-z][ -z]+'")
+  }
+
+  /**
+   * Asserts the ceiling both factories put on the size of an identifier.
+   *
+   * No counterpart in the Java test class, and none in this port until now: neither part of an
+   * identifier has a length the grammar fixes, so both were admitted at any size, walked
+   * character by character, stored on the instance and quoted into every failure that named them
+   * (CWE-400/CWE-770). Both factories now refuse a part beyond sixty-five thousand five hundred
+   * and thirty-six characters, before the walk and before anything is quoted, and `parse`
+   * refuses text beyond the longest text an identifier renders to.
+   *
+   * Those are two ceilings and not one, and the second is derived from the first rather than
+   * equal to it. An identifier renders as `scheme~value`, so the longest text any value the
+   * factories admit can render to is two parts and the separator between them - and the class
+   * documentation of the type promises that `toString` and `parse` are inverses. A text ceiling
+   * set at the part ceiling would have broken that promise rather than bounded it: two parts of
+   * forty thousand characters are admitted, and their rendering of eighty thousand would have
+   * been refused by the very parse that is supposed to read it back, in JSON as well as in text.
+   * The boundary is therefore asserted from both directions below - the largest identifier the
+   * factories admit reads back, and one character more than its rendering does not - because a
+   * generator drawing short parts cannot reach it.
+   *
+   * The ceiling is far above anything an identifier is used for, which is the property that
+   * matters and is asserted first: the ten-thousand-character identifier the suites of this
+   * module treat as legal is still legal, and the ten-thousand-character rejections of the test
+   * above still read as they always did. What the ceiling changes is only reachable by a payload
+   * written to be one, and there the failure names the bound rather than the text - the input is
+   * refused for its size, so writing it out is the very thing the refusal exists to avoid, which
+   * is how `Decimal` reports the same condition on the numeral it reads.
+   */
+  test("both factories refuse a part beyond the ceiling, naming the ceiling rather than the part") {
+    // Below the ceiling nothing has changed: a long identifier is an identifier.
+    val legal: String = "H" * 10000
+    val large: StandardId = identifier(SCHEME, legal)
+    large.value shouldBe legal
+    large.toString shouldBe s"$SCHEME~$legal"
+    StandardId.parse(large.toString) shouldBe Right(large)
+    identifier(legal, legal).scheme shouldBe legal
+
+    // Past it, each part is refused on its own terms, with the ceiling named and the part absent
+    // from both the message and its rendering.
+    val oversized: String = "H" * (PartCeiling + 1)
+    val schemeMessage: String = s"Argument 'scheme' must not exceed $PartCeiling characters"
+    val valueMessage: String = s"Argument 'value' must not exceed $PartCeiling characters"
+    val badScheme = StandardId.of(oversized, "value")
+    badScheme should beFailureWith(FailureReason.INVALID)
+    messagesOf(badScheme) shouldBe List(schemeMessage)
+    renderingsOf(badScheme) shouldBe List(s"INVALID: $schemeMessage")
+    val badValue = StandardId.of(SCHEME, oversized)
+    badValue should beFailureWith(FailureReason.INVALID)
+    messagesOf(badValue) shouldBe List(valueMessage)
+    renderingsOf(badValue) shouldBe List(s"INVALID: $valueMessage")
+
+    // Both parts past the ceiling accumulate, as the two part checks always did, and neither
+    // failure quotes what it refused.
+    val bothParts = StandardId.of(oversized, oversized)
+    messagesOf(bothParts) shouldBe List(schemeMessage, valueMessage)
+
+    // A part past the ceiling is described by the ceiling alone: the character check that would
+    // have quoted it is not reached, so text that is both too long and malformed reads as too
+    // long.
+    messagesOf(StandardId.of("{" * (PartCeiling + 1), "value")) shouldBe List(schemeMessage)
+
+    // `parse` applies its own ceiling to the whole of its text, before the separator is looked
+    // for and before either substring is taken, and reports it as a parsing failure naming that
+    // ceiling. The number is the longest text an identifier renders to - two parts at the part
+    // ceiling and the separator between them - so no rendering of any value the factories admit
+    // meets it.
+    val textCeiling: Int = 2 * PartCeiling + 1
+    val parseMessage: String = s"Identifier string must not exceed $textCeiling characters"
+    val overLongText: String = "H" * (textCeiling + 1)
+    val refusedText = StandardId.parse(overLongText)
+    refusedText should beFailureWith(FailureReason.PARSING)
+    refusedText.left.toOption.map(failure => failure.message) shouldBe Some(parseMessage)
+    Show[Failure].show(refusedText.left.toOption.getOrElse(fail("expected a failure"))) shouldBe
+      s"PARSING: $parseMessage"
+
+    // Inside that ceiling, a part past the part ceiling is refused as that part: the text is
+    // short enough to read, and what it reads out is held to the same bound `of` holds it to.
+    StandardId
+      .parse(s"$SCHEME~${"H" * (PartCeiling + 1)}")
+      .left
+      .toOption
+      .map(failure => failure.message) shouldBe Some(valueMessage)
+
+    // Text at the part ceiling with no separator still reaches the ordinary wording, quoted in
+    // full, because it is text this parse is willing to read rather than text it refuses to.
+    val atCeiling: String = "H" * PartCeiling
+    StandardId.parse(atCeiling).left.toOption.map(failure => failure.message) shouldBe
+      Some(s"Invalid identifier format: $atCeiling")
+
+    // Both directions of the boundary the two ceilings meet at. The largest identifier the
+    // factories admit renders to text of exactly the text ceiling and reads back as itself -
+    // which is the inverse the class documentation promises, at the one size a generator of
+    // short parts never draws - while one character beyond that rendering is refused.
+    val maximumPart: String = "H" * PartCeiling
+    val maximum: StandardId = identifier(maximumPart, maximumPart)
+    maximum.toString.length shouldBe textCeiling
+    StandardId.parse(maximum.toString) shouldBe Right(maximum)
+    StandardId.parse(maximum.toString + "H") should beFailureWith(FailureReason.PARSING)
+
+    // and the same of a large identifier well inside the part ceiling whose rendering is past
+    // the part ceiling, which is the case the two-ceiling arrangement exists for
+    val wide: StandardId = identifier("A" * 40000, "B" * 40000)
+    wide.toString.length shouldBe 80001
+    StandardId.parse(wide.toString) shouldBe Right(wide)
   }
 
   //-------------------------------------------------------------------------
@@ -467,10 +427,6 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     d1a shouldBe d1b
     d1a should not be d2
     d1a should not be d3
-    // The Java test also asserted inequality against the empty string and against null. The
-    // first is kept, through the universal equality that assertion used; the second is
-    // dropped because no identifier this port produces is ever a null reference and the API
-    // offers no way to obtain one, so the clause has nothing to assert.
     d1a should not equal ""
     d1a.hashCode shouldBe d1b.hashCode
   }
@@ -478,7 +434,6 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
   test("test_comparisonByScheme") {
     val id1 = identifier(SCHEME, "123")
     val id2 = identifier(OTHER_SCHEME, "234")
-    // as schemes are different, will compare by scheme
     Order[StandardId].compare(id1, id2) should be > 0
     Order[StandardId].compare(id2, id1) should be < 0
   }
@@ -486,19 +441,12 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
   test("test_comparisonWithSchemeSame") {
     val id1 = identifier(SCHEME, "123")
     val id2 = identifier(SCHEME, "234")
-    // as schemes are same, will compare by id
     Order[StandardId].compare(id1, id2) should be < 0
     Order[StandardId].compare(id2, id1) should be > 0
   }
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // The Java test swept the immutable bean reflectively. There is no bean and no such
-    // helper here, so the properties that sweep stood for are asserted directly: that two
-    // identifiers built separately from the same parts are one value, that identifiers
-    // differing in either part are not, that rendering agrees with the string form, and that
-    // ordering agrees with equality - the last being the invariant of publishing a single
-    // equality-bearing instance, which cannot be checked by looking at the instance alone.
     val sample = identifier(SCHEME, "123")
     val same = identifier(SCHEME, "123")
     val otherValue = identifier(SCHEME, "124")
@@ -518,18 +466,12 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
       instances.flatMap(left => instances.map(right => (left, right))): _*)
 
     forAll(pairs) { (left: StandardId, right: StandardId) =>
-      // compare is zero exactly when the two are equal, in both directions of the biconditional
       (Order[StandardId].compare(left, right) == 0) shouldBe Order[StandardId].eqv(left, right)
       Order[StandardId].eqv(left, right) shouldBe (left == right)
     }
   }
 
   test("test_serialization") {
-    // The Java test asserted Java serialization, which this port does not support. The
-    // serialized form of an identifier here is its JSON form, which is the same text
-    // `toString` writes and `parse` reads - a bare string, not an object of two fields - so
-    // that a document holding an identifier stays readable and stays comparable with one
-    // written by the library this type is ported from.
     val sample = identifier(SCHEME, "123")
 
     val encoded: Json = Encoder[StandardId].apply(sample)
@@ -539,9 +481,6 @@ class StandardIdSpec extends AnyFunSuite with Matchers with TableDrivenPropertyC
     val decoded: Either[DecodingFailure, StandardId] = Decoder[StandardId].decodeJson(encoded)
     decoded shouldBe Right(sample)
 
-    // Text that names no identifier is rejected as a decoding failure carrying the message
-    // of the parse failure, rather than decoded into an identifier that could not have been
-    // built by the factory.
     val rejected: Either[DecodingFailure, StandardId] =
       Decoder[StandardId].decodeJson(Json.fromString("Scheme"))
     rejected.isLeft shouldBe true

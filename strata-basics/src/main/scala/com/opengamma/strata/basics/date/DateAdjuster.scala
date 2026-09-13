@@ -81,10 +81,10 @@ object DateAdjuster {
  *
  * This is a utility object; the adjusters it returns are immutable and thread-safe.
  *
- * Each adjuster is paired with the pure function it delegates to, following the Java
- * original: the no-argument methods yield a reusable [[DateAdjuster]], while the
- * single-argument methods of the same name apply the rule directly to a date and can
- * therefore be composed like any other function.
+ * Each adjuster is paired with the pure function it delegates to: the no-argument methods
+ * yield a reusable [[DateAdjuster]] to hand to code that takes one, while the single-argument
+ * methods of the same name apply the rule directly to a date and can therefore be composed
+ * like any other function.
  */
 object DateAdjusters {
 
@@ -96,12 +96,8 @@ object DateAdjusters {
    */
   private val NextLeapDayAdjuster: DateAdjuster = DateAdjuster(input => nextLeapDay(input))
 
-  /**
-   * The shared adjuster returned by the no-argument `nextOrSameLeapDay`.
-   */
   private val NextOrSameLeapDayAdjuster: DateAdjuster = DateAdjuster(input => nextOrSameLeapDay(input))
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance that finds the next leap day after the input date.
    *
@@ -133,7 +129,6 @@ object DateAdjusters {
       ensureLeapDay(((input.getYear / 4) * 4) + 4)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains a date adjuster that finds the next leap day on or after the input date.
    *
@@ -165,7 +160,6 @@ object DateAdjusters {
       ensureLeapDay(((input.getYear / 4) * 4) + 4)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Converts a candidate year into the leap day at or after it.
    *

@@ -26,45 +26,23 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 /**
  * Test [[ValueAdjustmentType]].
  *
- * The Java original held ten test methods, four of which were parameterised from a single
- * data provider, `data_name`. That shape is preserved exactly: the provider becomes one
- * shared table, declared once, and each of the ten methods keeps a test of its own under
- * its own name, with the table iterated inside it. Collapsing the four parameterised
- * methods into one test - or expanding one of them into a test per row - would break the
- * method-level traceability of the migration, which joins each ported Java method to the
- * test case this suite emits.
+ * A type is a member of a closed family of four, each of which is a name and an `adjust`
+ * operation over a base value and a modifying value. The tests read that arithmetic, the
+ * canonical name in each of the forms it takes, the two lookups from text back to a member,
+ * and the published inventory of the family.
  *
- * ===The three methods whose Java form has no target===
- *
- * Three of the ten asserted things about machinery this port removes, so each keeps its
- * name and asserts the fact that replaced it:
- *
- *  - `test_of_lookup_null` asserted that the throwing factory rejected an absent reference.
- *    The port has neither a throwing factory nor an absent reference to hand one, so the
- *    test proves both absences instead.
- *  - `coverage` called a reflective helper over the Java enum class. Nothing is derived
- *    reflectively here, so the properties the helper stood in for - a complete, ordered,
- *    duplicate-free family whose names round-trip, with one consistent notion of equality -
- *    are asserted directly.
- *  - `test_serialization` and `test_jodaConvert` asserted Java serialization and
- *    Joda-Convert round-trips. Neither library is on the class path of this port; the JSON
- *    codec and the name lookup are what carry a type out of the process and back, so those
- *    are what the two tests assert.
- *
- * The four canonical names are a single contract, not three: `name`, `toString`, `Show` and
- * the JSON form all produce the same string, and the lookup accepts exactly that string
- * back. `test_toString`, `test_serialization` and `test_jodaConvert` are therefore three
- * views of one fact, and they are written over the same table so that they cannot drift.
+ * The canonical name is a single contract rather than several: `name`, `toString`, `Show`
+ * and the JSON form all produce the same string, and the lookup accepts exactly that string
+ * back. Several tests below are therefore views of that one fact, written over the same
+ * table of members and names.
  */
 final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
   /**
-   * The shared provider, transcribed row for row from the Java data provider.
+   * The four members paired with the canonical name each renders as and parses from.
    *
-   * Each row is a type together with the canonical name it renders as and parses from. The
-   * rows are in the order the Java provider listed them, which is alphabetical by name
-   * rather than the declaration order of the members; the declaration order is asserted
-   * separately, in `coverage`, over `values`.
+   * The rows are alphabetical by name rather than in the declaration order of the members;
+   * the declaration order is asserted separately, in `coverage`, over `values`.
    */
   private val dataName: TableFor2[ValueAdjustmentType, String] = Table(
     ("type", "name"),
@@ -75,18 +53,18 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
   )
 
   /**
-   * The four members, in the declaration order of the enum being ported.
+   * The four members, in the declaration order `values` publishes them in.
    *
-   * Held once so that the closure assertions of `coverage` and the pairwise equality
+   * Held once so that the inventory assertions of `coverage` and the pairwise equality
    * assertions read from the same list the production companion publishes.
    */
   private val allTypes: List[ValueAdjustmentType] = ValueAdjustmentType.values.toList
 
   //-------------------------------------------------------------------------
   test("test_adjust") {
-    // the four arithmetic shapes, with the operands and expectations of the Java test.
-    // Every literal carries an explicit `d`: the build compiles with numeric widening
-    // treated as an error, so an `Int` literal in a `Double` position would not compile
+    // the four arithmetic shapes, one per member. Every literal carries an explicit `d`: the
+    // build compiles with numeric widening treated as an error, so an `Int` literal in a
+    // `Double` position would not compile
     ValueAdjustmentType.DeltaAmount.adjust(2.0d, 3.0d) shouldBe 5.0d
     ValueAdjustmentType.DeltaMultiplier.adjust(2.0d, 1.5d) shouldBe 5.0d
     ValueAdjustmentType.Multiplier.adjust(2.0d, 1.5d) shouldBe 3.0d
@@ -97,9 +75,8 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
   test("test_toString") {
     forAll(dataName) { (adjustmentType: ValueAdjustmentType, name: String) =>
       adjustmentType.toString shouldBe name
-      // `name` and `Show` are the same contract as `toString` in this port: the Java
-      // rendering was produced by a name helper, here it is the canonical name itself,
-      // and the three ways of putting a type into a message have to agree
+      // `name` and `Show` are the same contract as `toString`: all three render the
+      // canonical name, so the three ways of putting a type into a message agree
       adjustmentType.name shouldBe name
       Show[ValueAdjustmentType].show(adjustmentType) shouldBe name
     }
@@ -108,18 +85,16 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
   //-------------------------------------------------------------------------
   test("test_of_lookup") {
     forAll(dataName) { (adjustmentType: ValueAdjustmentType, name: String) =>
-      // the Java factory threw on an unknown name; the port splits that into an exact
-      // lookup answering `Option` and a lenient one answering the failure as a value,
-      // and the canonical name resolves through both
+      // two lookups carry text back to a member: an exact one answering `Option` and a
+      // lenient one answering a failure as a value. The canonical name resolves through both
       ValueAdjustmentType.valueOf(name) shouldBe Some(adjustmentType)
       ValueAdjustmentType.parse(name) should haveValue(adjustmentType)
     }
 
-    // The members of this family are named after their canonical names, not after the
-    // SCREAMING_SNAKE constants of the Java enum, so the constant spellings survive only as
-    // alternate names of the lookup. That is where compatibility with text written against the
-    // original now lives, and it is asserted here so that removing a row of the alternate table
-    // fails rather than silently narrowing the set of spellings a stored document may use.
+    // No member is spelled in SCREAMING_SNAKE; those spellings are alternate names of the
+    // lookup, so a stored document written against them still resolves. They are asserted here
+    // so that removing a row of the alternate table fails rather than silently narrowing the
+    // set of spellings such a document may use.
     ValueAdjustmentType.valueOf("DELTA_AMOUNT") shouldBe Some(ValueAdjustmentType.DeltaAmount)
     ValueAdjustmentType.valueOf("delta_amount") shouldBe Some(ValueAdjustmentType.DeltaAmount)
     ValueAdjustmentType.valueOf("DELTA_MULTIPLIER") shouldBe Some(ValueAdjustmentType.DeltaMultiplier)
@@ -130,8 +105,8 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
 
   test("test_of_lookupUpperCase") {
     forAll(dataName) { (adjustmentType: ValueAdjustmentType, name: String) =>
-      // the English locale is named explicitly, as the Java test named it: the no-argument
-      // fold is locale sensitive and would not be the same operation everywhere
+      // the English locale is named deliberately: the no-argument fold is locale sensitive
+      // and would not be the same operation everywhere
       val upperCase = name.toUpperCase(Locale.ENGLISH)
       // every member is registered under its canonical name folded to upper case, so the
       // upper-case spelling resolves through the exact lookup and not only through `parse`
@@ -152,22 +127,19 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
 
   //-------------------------------------------------------------------------
   test("test_of_lookup_notFound") {
-    // where the Java factory raised an illegal-argument error, the port reports the
-    // rejection as a value. The reason is compared as a member of the closed family of
-    // reasons rather than as its text, so a renamed reason fails to compile here
+    // text naming no member is rejected as a value rather than by raising: `parse` reports a
+    // parsing failure and `valueOf` answers `None`. The reason is compared as a member of the
+    // closed family of reasons rather than as its text, so a renamed reason fails to compile
     ValueAdjustmentType.parse("Rubbish") should beFailureWith(FailureReason.PARSING)
     ValueAdjustmentType.valueOf("Rubbish") shouldBe None
   }
 
   test("test_of_lookup_null") {
-    // The Java case asserted that the factory rejected an absent reference - the argument
-    // it passed denoted nothing at all. That failure mode is not expressible in this port:
-    // there is no throwing factory to call, and no operation of this family either accepts
-    // an absent reference or produces one, because the exact lookup answers `Option` and
-    // the lenient one answers a failure as a value. The test therefore proves the two facts
-    // that replaced it: that no throwing lookup survives, and that text naming no member is
-    // rejected as a value. Text that is present but empty is the nearest input this port can
-    // express, and it is rejected for the same reason as any other unknown name
+    // There is no throwing `of` lookup on this family at all: the snippet below names one and
+    // does not compile, which is what the refusal states. Text naming no member resolves to
+    // nothing instead - `valueOf` answers `None` and `parse` reports a parsing failure - and
+    // empty text is such text, rejected on exactly those terms rather than by a rule of its
+    // own
     assertDoesNotCompile("""ValueAdjustmentType.of("Replace")""")
     ValueAdjustmentType.parse("") should beFailureWith(FailureReason.PARSING)
     ValueAdjustmentType.valueOf("") shouldBe None
@@ -175,10 +147,9 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // The Java test swept the enum class reflectively. Nothing here is derived from a
-    // class or from the class path, so the properties that sweep stood in for are asserted
-    // over the published family directly - which is also what makes the family closed:
-    // `values` is the whole of it, in declaration order
+    // The family is closed because the class is `sealed` and its four members are the four
+    // `case object`s declared beside it in that one file, which the compiler enforces.
+    // `values` publishes that inventory, in declaration order, and these assertions read it
     allTypes shouldBe List(
       ValueAdjustmentType.Replace,
       ValueAdjustmentType.DeltaAmount,
@@ -195,9 +166,9 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
       ValueAdjustmentType.parse(adjustmentType.name) should haveValue(adjustmentType)
     }
 
-    // the companion publishes one equality-bearing instance, an `Order` that is also a
-    // `Hash`, so equality, hashing and comparison cannot disagree: a member equals itself
-    // and nothing else, and hashing follows equality
+    // the companion publishes one equality-bearing instance, an `Order` that is also a `Hash`,
+    // and its comparison, equality and hashing all read the name, so a member equals itself and
+    // nothing else and hashing follows equality
     allTypes.foreach { adjustmentType =>
       Hash[ValueAdjustmentType].eqv(adjustmentType, adjustmentType) shouldBe true
       Order[ValueAdjustmentType].compare(adjustmentType, adjustmentType) shouldBe 0
@@ -205,7 +176,8 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
     }
     // the pairs are formed by identity rather than by name, so that the assertions below
     // prove what names alone could not: that no two members share a name, and therefore
-    // that equality by name separates the members as their identity does
+    // that equality by name separates the members as their identity does. Four members yield
+    // twelve ordered pairs of distinct members, three for each left member
     val distinctPairs =
       for {
         left <- allTypes
@@ -218,24 +190,23 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
       Order[ValueAdjustmentType].compare(left, right) should not be 0
     }
 
-    // the ordering is by name, which is alphabetical, and deliberately not the declaration
-    // order the Java enum compared by; both orders stay available because `values` keeps
-    // the declaration one
+    // the ordering is by name and therefore alphabetical, while `values` keeps the
+    // declaration order, so both orders stay available and neither implies the other
     allTypes.sorted(Order[ValueAdjustmentType].toOrdering) shouldBe allTypes.sortBy(_.name)
   }
 
   //-------------------------------------------------------------------------
   test("test_serialization") {
-    // Java serialization has no target in this port; the JSON codec is what carries a type
-    // out of the process and back. The type is ascribed because the encoder is invariant in
-    // its type and the singleton type of a member is not the type the family publishes
+    // the JSON codec is what carries a type out of the process and back. The type is ascribed
+    // because the encoder is invariant in its type and the singleton type of a member is not
+    // the type the family publishes
     val deltaAmount: ValueAdjustmentType = ValueAdjustmentType.DeltaAmount
     deltaAmount.asJson shouldBe Json.fromString("DeltaAmount")
     decode[ValueAdjustmentType]("\"DeltaAmount\"") shouldBe Right(ValueAdjustmentType.DeltaAmount)
 
     forAll(dataName) { (adjustmentType: ValueAdjustmentType, name: String) =>
       // a bare string, never a wrapper object, so a serialized adjustment carries its type
-      // as one readable word - the single-string form the type being ported wrote
+      // as one readable word
       adjustmentType.asJson shouldBe Json.fromString(name)
       adjustmentType.asJson.isString shouldBe true
       decode[ValueAdjustmentType](Json.fromString(name).noSpaces) shouldBe Right(adjustmentType)
@@ -250,10 +221,9 @@ final class ValueAdjustmentTypeSpec extends AnyFunSuite with Matchers with Table
   }
 
   test("test_jodaConvert") {
-    // Joda-Convert itself has no target: the port depends on neither Joda library. What its
-    // string conversion annotations expressed - a canonical string form that the type
-    // renders and the companion parses back - is the identity contract of a named family,
-    // and that is what is asserted here, for every member
+    // the canonical name is the one string form of a type: every member renders it through
+    // `name` and through `Show`, and both lookups take that same string back to the member it
+    // came from. Asserted here for each of the four
     forAll(dataName) { (adjustmentType: ValueAdjustmentType, name: String) =>
       adjustmentType.name shouldBe name
       Show[ValueAdjustmentType].show(adjustmentType) shouldBe name

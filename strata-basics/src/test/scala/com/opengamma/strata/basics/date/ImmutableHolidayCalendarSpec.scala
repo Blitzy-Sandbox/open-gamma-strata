@@ -5,6 +5,8 @@
  */
 package com.opengamma.strata.basics.date
 
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Modifier
 import java.time.DayOfWeek
 import java.time.DayOfWeek.FRIDAY
 import java.time.DayOfWeek.SATURDAY
@@ -12,6 +14,7 @@ import java.time.DayOfWeek.SUNDAY
 import java.time.DayOfWeek.THURSDAY
 import java.time.LocalDate
 
+import scala.collection.immutable.SortedSet
 import scala.util.Random
 
 import cats.Eq
@@ -34,67 +37,32 @@ import com.opengamma.strata.collect.testkit.TestHelper._
 /**
  * Test [[ImmutableHolidayCalendar]].
  *
- * The Java original ran forty-eight annotated methods - twenty-seven plain tests and
- * twenty-one parameterised ones fed by fifteen data providers. All forty-eight are ported
- * here, one test each, under the name the Java method had, and every provider is transcribed
- * row for row into a table that its tests drive. Several providers feed two methods, which is
- * why a table is declared once as a private value and read by each test that used it: the
- * method-level mapping of the migration stays one-to-one rather than collapsing a pair of
- * methods into a single test.
+ * '''Equality is the identifier alone.''' A calendar compares equal on its identifier and nothing
+ * else, which `test_equals` records by asserting that two calendars with different holidays and
+ * the same identifier '''are''' equal. Every assertion about the content of a calendar therefore
+ * goes through [[ImmutableHolidayCalendar.holidays]], [[ImmutableHolidayCalendar.workingDays]] or
+ * [[HolidayCalendar.isHoliday]], never through `==`.
  *
- * Java `ImmutableHolidayCalendarTest.test_readOldJodaFormat` read a calendar out of a classpath
- * fixture written by the previous serialization library, and AAP section 0.2.2 places that
- * fixture and all wire compatibility with that library out of scope. What survives the exclusion
- * is this port's own position on such a document, which is a behaviour rather than an absence: a
- * document in the legacy shape is refused, and the same calendar in the shape this port
- * publishes decodes. The method is ported as those assertions - `test_readOldJodaFormat`, the
- * last test of this spec - with both documents transcribed inline, so the fixture is not read
- * and this spec still loads no resource of any kind. The JSON form asserted by
- * `test_serialization` is likewise this port's own structural form rather than the serialized
- * form of the library being ported.
+ * '''What a calendar holds.''' Holidays are sorted and deduplicated, the year range runs from the
+ * earliest to the latest holiday, working days are applied last and override both holidays and
+ * weekend days, and a working day outside that range is ignored. The dates are stored as one bit
+ * mask per month of the range: a date outside the range is answered from the weekend alone, and
+ * the holiday and working-day sets are recovered by scanning the stored months.
  *
- * ===Equality is the identifier alone===
- *
- * [[ImmutableHolidayCalendar]] compares equal on its identifier and nothing else, exactly as
- * the Java original did, which `test_equals` proves by asserting that two calendars with
- * different holidays and the same identifier '''are''' equal. Every assertion in this spec that
- * is about the content of a calendar therefore goes through [[ImmutableHolidayCalendar.holidays]],
- * [[ImmutableHolidayCalendar.workingDays]] or [[HolidayCalendar.isHoliday]], never through `==`:
- * an `==` between two calendars would pass however wrong their holidays were.
- *
- * ===Where an exception is still the right answer===
- *
- * The factories of this type are total - a list of dates and a weekend always describe a
- * calendar - so no construction in this spec has an error channel to assert, and nothing here
- * expects a `Left`. What the Java original asserted as `IllegalArgumentException` in nineteen
- * places is the precondition a calendar keeps about the years it deals in: it can neither answer
- * for, nor hold data for, a date whose year lies outside 0 to 9999. That is a fault in the
- * calling code rather than a property of market data, so it fails fast through `ArgCheck`, as
- * AAP section 0.3.3 sanctions, and [[rejectsUnsupportedDate]] asserts both the exception and the
- * message that names the precondition. The same rule reaches construction, where it also bounds
- * what building a calendar costs - see `test_of_unsupportedYears` - and reaches a JSON document,
- * where it is a decoding failure rather than a throw because a document is data; see
- * `test_serialization_hostileDocument`. The two `null` tests lose their subject entirely and
- * become compile-time proofs; see them for the reasoning.
- *
- * Numerical parity of the built-in national calendars against the Java implementation is a
- * separate concern owned by the holiday parity fixture and its spec. What is asserted here is
- * what the Java test asserted, transcribed row for row, over calendars this spec builds itself.
+ * '''The one precondition.''' A calendar can neither answer for, nor hold data for, a date whose
+ * year lies outside 0 to 9999. That is a fault in the calling code rather than a property of
+ * market data, so it fails fast through `ArgCheck` - see [[rejectsUnsupportedDate]] - while in a
+ * JSON document the same rule is a decoding failure, a document being data.
  *
  * @see [[HolidayCalendar]] for the sealed family and its composites
  * @see [[HolidayCalendarId]] for the identifiers, whose composition this spec relies on
  */
 final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
-  /** The identifier of most of the calendars built here. */
   private val TEST_ID: HolidayCalendarId = HolidayCalendarId.of("Test1")
 
-  /** A second identifier, for the calendars that are combined with the first. */
   private val TEST_ID2: HolidayCalendarId = HolidayCalendarId.of("Test2")
 
-  // The dates of the Java original, named by their day of the week so that a weekend
-  // expectation can be read without consulting a calendar. Only the dates this spec asserts on
-  // are declared, because an unused value is a compile error under the build's warning settings.
   private val MON_2014_06_30: LocalDate = LocalDate.of(2014, 6, 30)
   private val TUE_2014_07_08: LocalDate = LocalDate.of(2014, 7, 8)
   private val WED_2014_07_09: LocalDate = LocalDate.of(2014, 7, 9)
@@ -137,11 +105,10 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   private val TUE_2018_07_17: LocalDate = LocalDate.of(2018, 7, 17)
   private val WED_2018_07_18: LocalDate = LocalDate.of(2018, 7, 18)
 
-  /** A calendar whose holidays are a Monday and the Wednesday of the following week. */
   private val HOLCAL_MON_WED: ImmutableHolidayCalendar =
     ImmutableHolidayCalendar.of(TEST_ID, List(MON_2014_07_14, WED_2014_07_16), SATURDAY, SUNDAY)
 
-  /** A calendar whose holidays straddle a year end, which is what exercises the month array. */
+  /** A calendar whose holidays straddle a year end, exercising a step across stored years. */
   private val HOLCAL_YEAR_END: ImmutableHolidayCalendar =
     ImmutableHolidayCalendar.of(
       HolidayCalendarId.of("TestYearEnd"),
@@ -149,7 +116,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
       SATURDAY,
       SUNDAY)
 
-  /** A calendar with no holidays of its own, so that only its weekend applies. */
+  /** A calendar with no holidays, so it stores no months and only its weekend applies. */
   private val HOLCAL_SAT_SUN: ImmutableHolidayCalendar =
     ImmutableHolidayCalendar.of(
       HolidayCalendarId.of("TestSatSun"),
@@ -157,7 +124,6 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
       SATURDAY,
       SUNDAY)
 
-  /** A calendar whose holidays fall at the end of two consecutive months. */
   private val HOLCAL_END_MONTH: ImmutableHolidayCalendar =
     ImmutableHolidayCalendar.of(
       HolidayCalendarId.of("TestEndOfMonth"),
@@ -168,46 +134,30 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   /** The part of the `ArgCheck` message that names the precondition on the year of a date. */
   private val UnsupportedDateMessage: String = "outside the accepted range"
 
-  //-------------------------------------------------------------------------
   /**
-   * Returns the weekend days of a calendar in ascending order of day of the week.
+   * The part of the refusal that names the precondition on the weekend of a calendar.
    *
-   * The accessor answers with a set, whose iteration order is not part of its contract, and the
-   * Java original asserted its weekend days in ascending order. Sorting here gives an ordered
-   * comparison that is both faithful to the original and independent of how a set happens to be
-   * laid out.
-   *
-   * @param calendar  the calendar to read
-   * @return the weekend days, from Monday towards Sunday
+   * One string serves both routes the precondition is stated on - the raised refusal a caller
+   * of a factory gets and the decoding failure a document gets - because both name the
+   * condition in the same words, and asserting the words rather than only the type keeps a
+   * refusal raised for some other reason from satisfying the assertion.
    */
+  private val EveryDayClosedMessage: String = "leave at least one day of the week open"
+
+  //-------------------------------------------------------------------------
+  /** Returns the weekend days sorted, the accessor's set carrying no order in its contract. */
   private def weekendDaysOf(calendar: ImmutableHolidayCalendar): List[DayOfWeek] =
     calendar.weekendDays.toList.sortBy(day => day.getValue)
 
-  /**
-   * Returns the days of a range, one at a time and in ascending order.
-   *
-   * Used where a calendar has to be compared with another over every day it holds data for,
-   * which is the only way to compare the content of two calendars: equality compares their
-   * identifiers alone.
-   *
-   * @param startInclusive  the first day to visit
-   * @param endExclusive  the day to stop before
-   * @return the days of the range, in ascending order
-   */
+  /** The days of a range in ascending order, for comparing two calendars day by day. */
   private def datesFrom(startInclusive: LocalDate, endExclusive: LocalDate): Iterator[LocalDate] =
     Iterator.iterate(startInclusive)(date => date.plusDays(1L)).takeWhile(date => date.isBefore(endExclusive))
 
   /**
-   * Asserts that an operation rejects a date whose year lies outside 0 to 9999.
-   *
-   * This is the calendar's one caller-contract precondition, sanctioned as a fail-fast
-   * `ArgCheck` throw by AAP section 0.3.3: a calendar holds its holidays as an array of months
-   * and cannot answer for a date no calendar could hold data for. The message is asserted as
-   * well as the exception, so that a different `IllegalArgumentException` - one raised for some
-   * other reason - cannot satisfy the assertion.
-   *
-   * @param operation  the calendar operation to invoke
-   * @return the assertion that the operation rejected the date
+   * Asserts that an operation rejects a date whose year lies outside 0 to 9999: a caller-contract
+   * precondition rather than a data failure, so a fail-fast `ArgCheck` throw. The message is
+   * asserted as well as the exception, so an `IllegalArgumentException` raised for another reason
+   * cannot satisfy the assertion.
    */
   private def rejectsUnsupportedDate(operation: => Any): Assertion =
     intercept[IllegalArgumentException](operation).getMessage should include(UnsupportedDateMessage)
@@ -215,12 +165,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   //-------------------------------------------------------------------------
   test("test_of_IterableDayOfWeekDayOfWeek_null") {
     val holidays = List(MON_2014_07_14, FRI_2014_07_18)
-    // The Java original asserted that each of the four arguments rejects null. Scala's types
-    // make those cases unrepresentable rather than checked: `ArgCheck` has no `notNull` family
-    // (AAP section 0.4.1), because a caller cannot reach a factory without supplying every
-    // argument and no argument of this factory is optional. What remains to prove is the
-    // compile-time requirement itself, one line for each of the four arguments the Java test
-    // passed as null, followed by the complete call that does build a calendar.
+    // No argument of this factory is optional and each has its own type, so a missing or
+    // misplaced argument is a compile error rather than something a `null` check could report.
     assertDoesNotCompile("ImmutableHolidayCalendar.of(holidays, SATURDAY, SUNDAY)") // the id
     assertDoesNotCompile("ImmutableHolidayCalendar.of(TEST_ID, SATURDAY, SUNDAY)") // the holidays
     assertDoesNotCompile("ImmutableHolidayCalendar.of(TEST_ID, holidays, holidays, SUNDAY)") // first weekend day
@@ -233,35 +179,20 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   test("test_of_IterableIterable_null") {
     val holidays = List(MON_2014_07_14, FRI_2014_07_18)
     val weekendDays = List(THURSDAY, FRIDAY)
-    // As above: the three null cases of the Java original are unrepresentable, and what is
-    // proved instead is that none of the three arguments can be left out or filled with a value
-    // of another kind - one line for each argument the Java test passed as null.
     assertDoesNotCompile("ImmutableHolidayCalendar.of(holidays, weekendDays)") // the id
     assertDoesNotCompile("ImmutableHolidayCalendar.of(TEST_ID, weekendDays, weekendDays)") // the holidays
     assertDoesNotCompile("ImmutableHolidayCalendar.of(TEST_ID, holidays)") // the weekend days
     val test = ImmutableHolidayCalendar.of(TEST_ID, holidays, weekendDays)
     test.id shouldBe TEST_ID
     weekendDaysOf(test) shouldBe List(THURSDAY, FRIDAY)
-    // both declared dates are holidays, one as a declared holiday and one because it is also a
-    // weekend day of this calendar
     test.isHoliday(MON_2014_07_14) shouldBe true
     test.isHoliday(FRI_2014_07_18) shouldBe true
-    // the accessor reports the declared holiday alone, because a date that is a holiday and a
-    // weekend day of the same calendar is carried by the weekend: the stored months record a
-    // day as a business day or not, so the two reasons for closing are indistinguishable once
-    // stored. This is the behaviour of the Java original, whose own accessor skips a date
-    // falling on a weekend day in exactly the same way.
+    // The accessor reports the declared holiday alone: the stored months record a day as a
+    // business day or not, so a date the weekend already closes leaves no mark there.
     test.holidays.toList shouldBe List(MON_2014_07_14)
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The Saturday/Sunday provider of the Java original, transcribed row for row.
-   *
-   * The calendar the two tests build holds a Monday and the Friday of the following week as
-   * holidays, so the rows walk a fortnight in which every kind of day appears: an ordinary
-   * business day, each of the two weekend days, and a holiday that falls on a weekday.
-   */
   private val data_createSatSunWeekend: TableFor2[LocalDate, Boolean] = Table(
     ("date", "isBusinessDay"),
     (FRI_2014_07_11, true),
@@ -304,16 +235,14 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     test.holidays.toList shouldBe holidays
     weekendDaysOf(test) shouldBe List(SATURDAY, SUNDAY)
 
-    // The factory normalises what it is given, which is what makes this a construction of kind
-    // [N] in AAP section 0.3.3: the same holidays supplied out of order and duplicated describe
-    // the same calendar, and the set it reports back is sorted and deduplicated.
+    // The factory normalises what it is given: the same holidays supplied out of order and
+    // duplicated describe the same calendar, and the set reported back is sorted and deduplicated.
     val unordered =
       ImmutableHolidayCalendar.of(TEST_ID, List(FRI_2014_07_18, MON_2014_07_14, FRI_2014_07_18), weekendDays)
     unordered.holidays.toList shouldBe holidays
     unordered.startYear shouldBe 2014
     unordered.endYearExclusive shouldBe 2015
-    // ... and the two calendars answer alike on every day they hold data for. Compared day by
-    // day rather than by equality, which would compare their identifiers and pass regardless.
+    // ... and the two answer alike on every day they hold data for, compared day by day
     datesFrom(LocalDate.of(2014, 1, 1), LocalDate.of(2015, 1, 1)).foreach { date =>
       withClue(s"$date: ") {
         unordered.isHoliday(date) shouldBe test.isHoliday(date)
@@ -323,12 +252,6 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The Thursday/Friday provider of the Java original, transcribed row for row.
-   *
-   * The calendar holds a Monday and a Saturday as holidays, the Saturday being a holiday that
-   * falls outside this calendar's weekend, so that a holiday and a weekend day are told apart.
-   */
   private val data_createThuFriWeekend: TableFor2[LocalDate, Boolean] = Table(
     ("date", "isBusinessDay"),
     (FRI_2014_07_11, false),
@@ -373,12 +296,6 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The single-day weekend provider of the Java original, transcribed row for row.
-   *
-   * The calendar is built by naming Sunday twice, which is how a one-day weekend is described
-   * through the two-day factory, and it holds a Monday and a Thursday as holidays.
-   */
   private val data_createSunWeekend: TableFor2[LocalDate, Boolean] = Table(
     ("date", "isBusinessDay"),
     (FRI_2014_07_11, true),
@@ -424,12 +341,6 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The three-day weekend provider of the Java original, transcribed row for row.
-   *
-   * A weekend of Thursday, Friday and Saturday leaves Sunday to Wednesday as the working week,
-   * and the calendar holds the Monday and Tuesday of one of those weeks as holidays.
-   */
   private val data_createThuFriSatWeekend: TableFor2[LocalDate, Boolean] = Table(
     ("date", "isBusinessDay"),
     (FRI_2014_07_11, false),
@@ -461,13 +372,6 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The no-weekend provider of the Java original, transcribed row for row.
-   *
-   * A calendar with an empty weekend has to name every non-business day as a holiday, which is
-   * how a centre that works a seven-day week is described; only the two declared holidays are
-   * not business days.
-   */
   private val data_createNoWeekends: TableFor2[LocalDate, Boolean] = Table(
     ("date", "isBusinessDay"),
     (FRI_2014_07_11, true),
@@ -499,12 +403,6 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The no-holiday provider of the Java original, transcribed row for row.
-   *
-   * A calendar with a Friday/Saturday weekend and no holidays at all holds no month data, so
-   * every answer comes from the weekend alone - the path this provider exercises.
-   */
   private val data_createNoHolidays: TableFor2[LocalDate, Boolean] = Table(
     ("date", "isBusinessDay"),
     (FRI_2014_07_11, false),
@@ -537,13 +435,9 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   //-------------------------------------------------------------------------
   /**
-   * The working-day override provider of the Java original, transcribed row for row.
-   *
-   * The calendar the two tests build holds the Wednesday and Thursday of one week as holidays,
-   * takes Friday and Saturday as its weekend, and names the Saturday a working day. Each row
-   * therefore reads one of the four ways a day can be decided: an ordinary business day, a
-   * declared holiday, a weekend day, and a weekend day overridden into a business day. The
-   * Sunday is a business day because Sunday is not part of this calendar's weekend.
+   * Each row reads one of the four ways a day is decided: business day, declared holiday, weekend
+   * day, and weekend day overridden into a business day. The Sunday is a business day because it
+   * is not part of this calendar's weekend.
    */
   private val data_createWorkingDayOverrides: TableFor2[LocalDate, Boolean] = Table(
     ("date", "isBusinessDay"),
@@ -572,19 +466,16 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     test.toString shouldBe s"HolidayCalendar[${TEST_ID.name}]"
 
     // Working days are applied last and override a declared holiday as well as a weekend: the
-    // Thursday is named as both a holiday and a working day, and is a business day. It is not
-    // reported as a working day, because that accessor reports the weekend days a calendar
-    // treats as business days, and the Thursday is not part of this calendar's weekend.
+    // Thursday, named as both, is a business day. It is not reported as a working day, that
+    // accessor reporting the weekend days a calendar treats as business days.
     val overridesHoliday =
       ImmutableHolidayCalendar.of(TEST_ID, holidays, weekendDays, List(THU_2014_07_10))
     overridesHoliday.isBusinessDay(THU_2014_07_10) shouldBe true
     overridesHoliday.holidays.toList shouldBe List(WED_2014_07_09)
     overridesHoliday.workingDays.toList shouldBe List.empty[LocalDate]
 
-    // A working day outside the years the holidays span is ignored, because outside that range
-    // the calendar applies its weekend and holds no data an override could apply to. The
-    // Saturday of January 2015 is therefore still a holiday, and is not reported as a working
-    // day, while the Saturday inside the range is both.
+    // A working day outside the years the holidays span is ignored, there being no data there for
+    // it to override: the Saturday of January 2015 stays a holiday, the one inside takes effect.
     val outsideRange =
       ImmutableHolidayCalendar.of(TEST_ID, holidays, weekendDays, List(SAT_2014_07_12, SAT_2015_01_03))
     outsideRange.startYear shouldBe 2014
@@ -607,8 +498,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
         test.isHoliday(date) shouldBe !isBusinessDay
       }
     }
-    // the two calendars cover ranges four years apart, so the merged calendar is rebuilt from
-    // the dates both declare and now starts in 2010, carrying the working-day override with it
+    // the ranges are four years apart, so the merged calendar is rebuilt from the dates both
+    // declare, and carries the working-day override
     test.holidays.toList shouldBe List(date(2010, 6, 1), WED_2014_07_09, THU_2014_07_10)
     weekendDaysOf(test) shouldBe List(FRIDAY, SATURDAY)
     test.workingDays.toList shouldBe workingDays
@@ -639,9 +530,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   test("test_combined_differentStartYear1") {
-    // the first calendar starts a year after the second, so the merge has to align the two
-    // arrays of months before intersecting them - an off-by-one here would move a holiday by a
-    // month, which is what the two dates in March and April 2015 detect
+    // the merge aligns the two arrays of months before intersecting them: an off-by-one would
+    // move a holiday by a month, which the dates in March and April 2015 detect
     val base1 = ImmutableHolidayCalendar.of(TEST_ID, List(WED_2015_04_01), SATURDAY, SUNDAY)
     val base2 = ImmutableHolidayCalendar.of(TEST_ID2, List(MON_2014_07_14, TUE_2015_03_31), SATURDAY, SUNDAY)
     val test: HolidayCalendar = ImmutableHolidayCalendar.combined(base1, base2)
@@ -661,8 +551,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   test("test_combined_differentStartYear2") {
-    // the same pair of calendars the other way round, which has to give the same answers: the
-    // merge chooses the earlier start as its base rather than the calendar it was handed first
+    // the same pair the other way round: the merge takes the earlier start as its base
     val base1 = ImmutableHolidayCalendar.of(TEST_ID, List(MON_2014_07_14, TUE_2015_03_31), SATURDAY, SUNDAY)
     val base2 = ImmutableHolidayCalendar.of(TEST_ID2, List(WED_2015_04_01), SATURDAY, SUNDAY)
     val test: HolidayCalendar = ImmutableHolidayCalendar.combined(base1, base2)
@@ -682,9 +571,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   test("test_combined_splitYears") {
-    // the two ranges do not meet at all - 2018 against 2015 - so the merged calendar is rebuilt
-    // from the dates both declare and covers the years in between; the 2014 dates fall outside
-    // even the merged range and are answered by the weekend alone
+    // the ranges do not meet - 2018 against 2015 - so the merge covers the years between
     val base1 = ImmutableHolidayCalendar.of(TEST_ID, List(TUE_2018_07_17), SATURDAY, SUNDAY)
     val base2 = ImmutableHolidayCalendar.of(TEST_ID2, List(WED_2015_04_01), SATURDAY, SUNDAY)
     val test: HolidayCalendar = ImmutableHolidayCalendar.combined(base1, base2)
@@ -710,23 +597,17 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   //-------------------------------------------------------------------------
   test("test_isBusinessDay_outOfRange") {
     val test = ImmutableHolidayCalendar.of(TEST_ID, List(MON_2014_07_14, TUE_2014_07_15), SATURDAY, SUNDAY)
-    // outside the years its holidays span the calendar applies its weekend alone, rather than
-    // declaring those years free of holidays
+    // outside the years its holidays span, the calendar applies its weekend alone
     test.isBusinessDay(LocalDate.of(2013, 12, 31)) shouldBe true
     test.isBusinessDay(LocalDate.of(2015, 1, 1)) shouldBe true
-    // precondition: a calendar cannot answer for a date whose year lies outside 0 to 9999
     rejectsUnsupportedDate(test.isBusinessDay(LocalDate.MIN))
     rejectsUnsupportedDate(test.isBusinessDay(LocalDate.MAX))
   }
 
   //-------------------------------------------------------------------------
   /**
-   * The shift provider of the Java original, transcribed row for row.
-   *
-   * Every row shifts a date against [[HOLCAL_MON_WED]] by one, two, zero, minus one or minus two
-   * business days, and the twelve dates of each block walk a fortnight containing two holidays
-   * and two weekends. A shift of zero returns the date given, business day or not, which is the
-   * behaviour the third block pins.
+   * Shifts over a fortnight containing two holidays and two weekends. A shift of zero returns the
+   * date given, business day or not, which the third block pins.
    */
   private val data_shift: TableFor3[LocalDate, Int, LocalDate] = Table(
     ("date", "amount", "expected"),
@@ -801,15 +682,12 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   test("test_shift_SatSun") {
-    // a calendar that holds no month data shifts through its weekend alone
     HOLCAL_SAT_SUN.shift(SAT_2014_07_12, -2) shouldBe THU_2014_07_10
     HOLCAL_SAT_SUN.shift(SAT_2014_07_12, 2) shouldBe TUE_2014_07_15
   }
 
   test("test_shift_range") {
-    // a year the calendar holds no holidays for is shifted through its weekend alone
     HOLCAL_MON_WED.shift(date(2010, 1, 1), 1) shouldBe date(2010, 1, 4)
-    // precondition: a calendar cannot answer for a date whose year lies outside 0 to 9999
     rejectsUnsupportedDate(HOLCAL_MON_WED.shift(LocalDate.MIN, 1))
     rejectsUnsupportedDate(HOLCAL_MON_WED.shift(LocalDate.MAX.minusDays(1L), 1))
   }
@@ -817,9 +695,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   test("test_adjustBy") {
     forAll(data_shift) { (date: LocalDate, amount: Int, expected: LocalDate) =>
       withClue(s"$date adjusted by $amount: ") {
-        // the adjuster applies the same shift, whether it is called directly or handed to a
-        // date as the `java.time` temporal adjuster it also is - the second form is the one the
-        // Java original used
+        // the same shift, called directly or handed to a date as the temporal adjuster it is
         HOLCAL_MON_WED.adjustBy(amount).adjust(date) shouldBe expected
         date.`with`(HOLCAL_MON_WED.adjustBy(amount)) shouldBe expected
       }
@@ -828,12 +704,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   //-------------------------------------------------------------------------
   /**
-   * The `next` provider of the Java original, transcribed row for row.
-   *
-   * The first block walks a fortnight of [[HOLCAL_MON_WED]]; the second crosses the end of 2014
-   * with [[HOLCAL_YEAR_END]], whose holidays straddle the year boundary, so that a step from one
-   * stored year into the next is exercised; the last two rows step out of the stored months
-   * altogether and into a calendar that holds none.
+   * The second block steps from one stored year into the next; the last row uses a calendar that
+   * stores no months at all.
    */
   private val data_next: TableFor3[LocalDate, LocalDate, ImmutableHolidayCalendar] = Table(
     ("date", "expectedNext", "calendar"),
@@ -869,18 +741,11 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   test("test_next_range") {
     HOLCAL_MON_WED.next(date(2010, 1, 1)) shouldBe date(2010, 1, 4)
-    // precondition: a calendar cannot answer for a date whose year lies outside 0 to 9999
     rejectsUnsupportedDate(HOLCAL_MON_WED.next(LocalDate.MIN))
     rejectsUnsupportedDate(HOLCAL_MON_WED.next(LocalDate.MAX.minusDays(1L)))
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The `nextOrSame` provider of the Java original, transcribed row for row.
-   *
-   * The same walks as the `next` provider, with the expectations of a method that returns the
-   * date itself where it is already a business day - the whole of what "or same" adds.
-   */
   private val data_nextOrSame: TableFor3[LocalDate, LocalDate, ImmutableHolidayCalendar] = Table(
     ("date", "expectedNext", "calendar"),
     (THU_2014_07_10, THU_2014_07_10, HOLCAL_MON_WED),
@@ -916,18 +781,11 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   test("test_nextOrSame_range") {
     HOLCAL_MON_WED.nextOrSame(date(2010, 1, 1)) shouldBe date(2010, 1, 1)
-    // precondition: a calendar cannot answer for a date whose year lies outside 0 to 9999
     rejectsUnsupportedDate(HOLCAL_MON_WED.nextOrSame(LocalDate.MIN))
     rejectsUnsupportedDate(HOLCAL_MON_WED.nextOrSame(LocalDate.MAX))
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The `previous` provider of the Java original, transcribed row for row.
-   *
-   * The mirror of the `next` provider: the same fortnight and the same year end, read backwards,
-   * so that the search towards earlier months is exercised as thoroughly as the search forwards.
-   */
   private val data_previous: TableFor3[LocalDate, LocalDate, ImmutableHolidayCalendar] = Table(
     ("date", "expectedPrevious", "calendar"),
     (FRI_2014_07_11, THU_2014_07_10, HOLCAL_MON_WED),
@@ -962,15 +820,11 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   test("test_previous_range") {
     HOLCAL_MON_WED.previous(date(2010, 1, 1)) shouldBe date(2009, 12, 31)
-    // precondition: a calendar cannot answer for a date whose year lies outside 0 to 9999
     rejectsUnsupportedDate(HOLCAL_MON_WED.previous(LocalDate.MIN.plusDays(1L)))
     rejectsUnsupportedDate(HOLCAL_MON_WED.previous(LocalDate.MAX))
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The `previousOrSame` provider of the Java original, transcribed row for row.
-   */
   private val data_previousOrSame: TableFor3[LocalDate, LocalDate, ImmutableHolidayCalendar] = Table(
     ("date", "expectedPrevious", "calendar"),
     (FRI_2014_07_11, FRI_2014_07_11, HOLCAL_MON_WED),
@@ -1007,18 +861,15 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   test("test_previousOrSame_range") {
     HOLCAL_MON_WED.previousOrSame(date(2010, 1, 1)) shouldBe date(2010, 1, 1)
-    // precondition: a calendar cannot answer for a date whose year lies outside 0 to 9999
     rejectsUnsupportedDate(HOLCAL_MON_WED.previousOrSame(LocalDate.MIN))
     rejectsUnsupportedDate(HOLCAL_MON_WED.previousOrSame(LocalDate.MAX))
   }
 
   //-------------------------------------------------------------------------
   /**
-   * The `nextSameOrLastInMonth` provider of the Java original, transcribed row for row.
-   *
-   * This is the adjustment the modified-following convention makes, so the answer can be earlier
-   * than the date given: the last two blocks are the rows where the next business day would fall
-   * in the following month and the last business day of this one is returned instead.
+   * The adjustment the modified-following convention makes, so the answer can be earlier than the
+   * date given: where the next business day would fall in the following month, the last business
+   * day of this one is returned.
    */
   private val data_nextSameOrLastInMonth: TableFor3[LocalDate, LocalDate, ImmutableHolidayCalendar] = Table(
     ("date", "expectedNext", "calendar"),
@@ -1059,20 +910,11 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   test("test_nextSameOrLastInMonth_range") {
     HOLCAL_MON_WED.nextSameOrLastInMonth(date(2010, 1, 1)) shouldBe date(2010, 1, 1)
-    // precondition: a calendar cannot answer for a date whose year lies outside 0 to 9999
     rejectsUnsupportedDate(HOLCAL_MON_WED.nextSameOrLastInMonth(LocalDate.MIN))
     rejectsUnsupportedDate(HOLCAL_MON_WED.nextSameOrLastInMonth(LocalDate.MAX))
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The last-business-day-of-month provider of the Java original, transcribed row for row
-   * including its comments.
-   *
-   * Read against [[HOLCAL_END_MONTH]], the four months cover the four ways a month can end: on a
-   * declared holiday that is a weekday, on a holiday that is the last day of the month, at a
-   * weekend, and on an ordinary business day.
-   */
   private val data_lastBusinessDayOfMonth: TableFor2[LocalDate, LocalDate] = Table(
     ("date", "expectedEom"),
     // June 30th is Monday holiday, June 28/29 is weekend
@@ -1107,42 +949,32 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   test("test_isLastBusinessDayOfMonth") {
     forAll(data_lastBusinessDayOfMonth) { (date: LocalDate, expectedEom: LocalDate) =>
       withClue(s"$date: ") {
-        // only the date that is the last business day of its month answers true
         HOLCAL_END_MONTH.isLastBusinessDayOfMonth(date) shouldBe (date == expectedEom)
       }
     }
   }
 
   test("test_lastBusinessDayOfMonth_satSun") {
-    // a calendar that holds no month data answers from its weekend alone, and the Monday that
-    // ends June 2014 is the last business day of that month
     HOLCAL_SAT_SUN.isLastBusinessDayOfMonth(MON_2014_06_30) shouldBe true
     HOLCAL_SAT_SUN.lastBusinessDayOfMonth(MON_2014_06_30) shouldBe MON_2014_06_30
   }
 
   test("test_lastBusinessDayOfMonth_range") {
-    // a year the calendar holds no holidays for is answered from its weekend alone
     HOLCAL_END_MONTH.lastBusinessDayOfMonth(date(2010, 1, 1)) shouldBe date(2010, 1, 29)
-    // precondition: a calendar cannot answer for a date whose year lies outside 0 to 9999
     rejectsUnsupportedDate(HOLCAL_END_MONTH.lastBusinessDayOfMonth(LocalDate.MIN))
     rejectsUnsupportedDate(HOLCAL_END_MONTH.lastBusinessDayOfMonth(LocalDate.MAX))
   }
 
   test("test_isLastBusinessDayOfMonth_range") {
     HOLCAL_END_MONTH.isLastBusinessDayOfMonth(date(2010, 1, 1)) shouldBe false
-    // precondition: a calendar cannot answer for a date whose year lies outside 0 to 9999
     rejectsUnsupportedDate(HOLCAL_END_MONTH.isLastBusinessDayOfMonth(LocalDate.MIN))
     rejectsUnsupportedDate(HOLCAL_END_MONTH.isLastBusinessDayOfMonth(LocalDate.MAX))
   }
 
   //-------------------------------------------------------------------------
   /**
-   * The business-day counting provider of the Java original, transcribed row for row.
-   *
-   * Every row counts from the same Friday, so the expected counts grow by one for each business
-   * day crossed and stay level across the weekend and the two holidays of [[HOLCAL_MON_WED]].
-   * The start date is included in the count and the end date is not, which is why a range whose
-   * ends are equal counts zero.
+   * Counted from the same Friday: the start date is included and the end date is not, which is why
+   * a range whose ends are equal counts zero.
    */
   private val data_daysBetween: TableFor3[LocalDate, LocalDate, Int] = Table(
     ("start", "end", "expected"),
@@ -1170,8 +1002,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   //-------------------------------------------------------------------------
   test("test_combinedWith") {
-    // `combinedWith` reads both calendars on every query rather than merging their data, so the
-    // holidays of both and the weekends of both close a day
+    // `combinedWith` reads both calendars on every query rather than merging their data
     val base1 = ImmutableHolidayCalendar.of(TEST_ID, List(WED_2014_07_16), SATURDAY, SUNDAY)
     val base2 = ImmutableHolidayCalendar.of(TEST_ID2, List(MON_2014_07_14), FRIDAY, SATURDAY)
     val test = base1.combinedWith(base2)
@@ -1229,19 +1060,14 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   //-------------------------------------------------------------------------
   test("test_broadCheck") {
-    // Ten calendars of pseudo-random holidays over a decade, each checked day by day against
-    // the simple algorithm the Java original used: a day is a holiday where it falls at the
-    // weekend or belongs to the set of dates the calendar was built from. This is what exercises
-    // the array of monthly bit masks over thousands of dates rather than the dozens the tables
-    // above cover. The generator is seeded with the seed of the Java original and
-    // `scala.util.Random` wraps the same algorithm, so the ten sets of dates are the sets the
-    // Java test built and the sweep is deterministic, as the AAP requires of every test here.
+    // Calendars of pseudo-random holidays over a decade, checked day by day against the rule that
+    // a day is a holiday where it falls at the weekend or belongs to the dates the calendar was
+    // built from. This exercises the monthly bit masks over thousands of dates, deterministically:
+    // the generator is seeded with a fixed value.
     val start = LocalDate.of(2010, 1, 1)
     val end = LocalDate.of(2020, 1, 1)
     val random = new Random(547698L)
     (0 until 10).foreach { index =>
-      // the holidays of this calendar: the start date, then a step of one to ten days at a time
-      // until the end of the decade, which is the loop of the Java original
       val holidaySet = Iterator
         .iterate(start)(current => current.plusDays((random.nextInt(10) + 1).toLong))
         .takeWhile(current => current.isBefore(end))
@@ -1269,21 +1095,15 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     (a1 == a2) shouldBe true
     (a1 == b) shouldBe false
     (a1 == c) shouldBe true // only the id is compared
-    // The last assertion is the reason no content is ever asserted through equality in this
-    // spec: two calendars claiming to be the same calendar are equal however far apart their
-    // holidays are, as the Java original also held, because a calendar is identified by what it
-    // claims to be rather than by the dates one set of reference data happened to supply. The
-    // content of a calendar is therefore compared through `holidays` or `isHoliday` throughout.
+    // the last assertion is why no content is asserted through equality here: only the id counts
     a1.holidays.toList should not be c.holidays.toList
     a1.hashCode shouldBe c.hashCode
   }
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // The Java original swept the bean reflectively. Nothing reflective is ported, so what is
-    // asserted here is the contract that sweep stood for: the one equality-bearing type class
-    // instance of the family agrees with `equals`, equal values hash alike, calendars of
-    // different identifiers are unequal, and the rendering is the `toString` of the original.
+    // the family's one equality-bearing instance agrees with `equals`, hashes alike, shows the
+    // calendar's `toString`
     val sameIdOtherHolidays = ImmutableHolidayCalendar.of(TEST_ID, List(THU_2014_07_10), SATURDAY, SUNDAY)
     val otherId = ImmutableHolidayCalendar.of(TEST_ID2, List(MON_2014_07_14, WED_2014_07_16), SATURDAY, SUNDAY)
     val calendarHash = Hash[HolidayCalendar]
@@ -1303,16 +1123,13 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     HOLCAL_MON_WED.name shouldBe TEST_ID.name
     HOLCAL_MON_WED.id shouldBe TEST_ID
 
-    // a calendar is equal to nothing that is not a calendar; the value is typed as `Any` so that
-    // the comparison is the `equals` contract rather than a comparison of unrelated types
+    // typed as `Any` so the comparison is the `equals` contract, not one of unrelated types
     val unrelated: Any = TEST_ID.name
     HOLCAL_MON_WED.equals(unrelated) shouldBe false
   }
 
   test("test_serialization") {
-    // The Java original round-tripped the calendar through Java serialization, which is not
-    // supported by any type of this port. The equivalent here is the JSON form of AAP section
-    // 0.6.4: a calendar that is not one of the built-in set is written as an object under the
+    // A calendar that is not one of the built-in set is written as an object under the
     // `Immutable` key carrying the dates it declares, never the array of bit masks it holds.
     val json = HOLCAL_MON_WED.asJson
     val expected = parse(
@@ -1325,9 +1142,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
       decode[ImmutableHolidayCalendar](json.noSpaces)
         .getOrElse(fail(s"the calendar did not survive the round trip: ${json.noSpaces}"))
 
-    // Asserted both ways, as AAP section 0.6.2 requires. Equality compares identifiers alone, so
-    // on its own it would accept a calendar whose holidays had been lost; the holiday set and a
-    // day-by-day sweep of the years the calendar covers are what prove the dates survived.
+    // Equality compares identifiers alone, so on its own it would accept a calendar whose
+    // holidays had been lost; the holiday set and the day-by-day sweep show the dates survived.
     roundTripped shouldBe HOLCAL_MON_WED
     Eq[HolidayCalendar].eqv(roundTripped, HOLCAL_MON_WED) shouldBe true
     roundTripped.holidays.toList shouldBe HOLCAL_MON_WED.holidays.toList
@@ -1343,11 +1159,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
       }
     }
 
-    // ... and this is why: a document that has lost its holidays decodes to a calendar that is
-    // equal to the original, so only the two content assertions above can tell them apart. The
-    // first year is omitted here rather than kept at 2014, because a calendar with no holidays
-    // starts at year zero and a document whose declared start year sits after its earliest
-    // holiday is rejected - see `test_serialization_hostileDocument`.
+    // ... and this is why: a document that lost its holidays decodes to a calendar equal to this
+    // one, so only the content assertions above tell them apart
     val withoutHolidays = decode[ImmutableHolidayCalendar](
       """{"Immutable":{"id":"Test1","weekendDays":["SATURDAY","SUNDAY"],""" +
         """"holidays":[],"workingWeekendDays":[]}}"""
@@ -1358,14 +1171,10 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   test("test_serialization_overriddenBuiltInId") {
-    // A calendar an application supplies under a standard identifier must survive a round trip
-    // with its own dates. Nothing but identity can decide that: this calendar is `==` to the
-    // library's London calendar, because a calendar carrying holiday data compares on its
-    // identifier alone, so a document written from equality with the built-in set would hold the
-    // bare name `GBLO` and read back as the library's calendar - silently replacing every
-    // holiday and working day the application declared. The same would happen to the
-    // weekend-only calendar `HolidayCalendars.defaultingReferenceData` supplies under a standard
-    // identifier.
+    // A calendar an application supplies under a standard identifier keeps its own dates across a
+    // round trip. The calendar below is `==` to the library's London calendar, so an encoder
+    // choosing the string form by equality with the built-in set would write the bare name `GBLO`
+    // and read back the library's calendar, replacing the dates the application declared.
     val ownLondon = ImmutableHolidayCalendar.of(
       HolidayCalendarIds.GBLO,
       List(MON_2014_07_14, WED_2014_07_16),
@@ -1376,13 +1185,11 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     (ownLondon == library) shouldBe true
     ownLondon.holidays.toList should not be library.holidays.toList
 
-    // The library's own calendar is written as its name, and read back as that very instance.
     library.asJson shouldBe parse("\"GBLO\"").getOrElse(fail("the expected JSON is not valid JSON"))
     decode[HolidayCalendar]("\"GBLO\"") shouldBe Right(library)
     decode[HolidayCalendar]("\"GBLO\"").getOrElse(fail("GBLO did not decode")) should
       be theSameInstanceAs library
 
-    // The application's calendar of the same identifier is written structurally instead ...
     val json = ownLondon.asJson
     json.isString shouldBe false
     json shouldBe parse(
@@ -1390,7 +1197,6 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
         """"holidays":["2014-07-14","2014-07-16"],"workingWeekendDays":["2014-07-12"]}}"""
     ).getOrElse(fail("the expected JSON of this test is not valid JSON"))
 
-    // ... and reads back carrying its own dates, which is the whole point of the distinction.
     val roundTripped = decode[ImmutableHolidayCalendar](json.noSpaces)
       .getOrElse(fail(s"the calendar did not survive the round trip: ${json.noSpaces}"))
     roundTripped.id shouldBe HolidayCalendarIds.GBLO
@@ -1398,20 +1204,17 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     roundTripped.workingDays.toList shouldBe List(SAT_2014_07_12)
     roundTripped.isHoliday(MON_2014_07_14) shouldBe true
     roundTripped.isBusinessDay(SAT_2014_07_12) shouldBe true
-    // the dates it kept are its own, not London's: 26 December 2014 is a holiday in London and a
-    // business day here
+    // the dates it kept are its own: 26 December 2014 is a holiday in London, a business day here
     val boxingDay2014 = date(2014, 12, 26)
     library.isHoliday(boxingDay2014) shouldBe true
     roundTripped.isHoliday(boxingDay2014) shouldBe false
   }
 
   test("test_of_unsupportedYears") {
-    // A calendar holds one machine word per month from its earliest holiday to its latest, so
-    // the years its holidays span decide what building it allocates. The years a calendar can be
-    // asked about - 0 to 9999 - are therefore also the years it can be built from, which caps
-    // that array at 120,000 months whoever supplied the dates. Without the cap a pair of dates a
-    // million years apart would ask for an array of tens of millions of months, and a year far
-    // enough out would overflow its length.
+    // A calendar holds one machine word per month from its earliest holiday to its latest, so the
+    // years its holidays span decide what building it allocates. The years it can be asked about -
+    // 0 to 9999 - are therefore the years it can be built from: a caller contract, refused fast,
+    // that caps the array at 120,000 months whoever supplied the dates.
     val weekend = List(SATURDAY, SUNDAY)
     val rejectsUnsupportedHoliday = (holidays: List[LocalDate]) =>
       intercept[IllegalArgumentException](
@@ -1422,12 +1225,10 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     rejectsUnsupportedHoliday(List(LocalDate.MIN))
     rejectsUnsupportedHoliday(List(date(10000, 1, 1)))
     rejectsUnsupportedHoliday(List(date(-1, 12, 31)))
-    // one end in range and the other not, in both directions: both ends are checked because both
-    // are needed to work out how many months lie between them
+    // one end in range and the other not, in both directions: both ends size the array
     rejectsUnsupportedHoliday(List(MON_2014_07_14, LocalDate.MAX))
     rejectsUnsupportedHoliday(List(LocalDate.MIN, MON_2014_07_14))
 
-    // The ends of the supported range are accepted, and a calendar built at them behaves.
     val earliest = ImmutableHolidayCalendar.of(TEST_ID, List(date(0, 1, 3)), weekend)
     earliest.startYear shouldBe 0
     earliest.isHoliday(date(0, 1, 3)) shouldBe true
@@ -1435,9 +1236,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     latest.endYearExclusive shouldBe 10000
     latest.isHoliday(date(9999, 12, 31)) shouldBe true
 
-    // A working day outside the years the holidays span is ignored rather than rejected, which is
-    // the behaviour of the library being ported and is unchanged: it names a date in a range the
-    // calendar holds no data for, so there is nothing there for it to override.
+    // A working day outside the years the holidays span is ignored rather than rejected: it names
+    // a date in a range the calendar holds no data for, so there is nothing there to override.
     val ignoredWorkingDay =
       ImmutableHolidayCalendar.of(TEST_ID, List(MON_2014_07_14), weekend, List(date(9999, 12, 25)))
     ignoredWorkingDay.workingDays shouldBe empty
@@ -1445,14 +1245,10 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   test("test_unsupportedYears_optimizedPaths") {
-    // Every operation that reads the stored months rejects a date in a year the calendar cannot
-    // hold data for, and does so whatever arithmetic the date implies. The date below is the case
-    // that makes this worth a test of its own: with 2014 as the first year stored, the month
-    // index of January 357915956 is (357915956 - 2014) * 12, which is 4,294,967,304 - eight more
-    // than two to the thirty-two. Computed in `Int` arithmetic that wraps to 8, an index the
-    // twelve stored months of 2014 contain, so the calendar would have answered for a date
-    // 355,900 years away from its data using the bits of September 2014. Measured exactly, the
-    // month is outside the stored months and the date is refused.
+    // The month index of a date is measured in `Long` arithmetic. With 2014 as the first year
+    // stored, the index of January 357915956 is (357915956 - 2014) * 12 = 4,294,967,304, eight
+    // more than two to the thirty-two, so in `Int` arithmetic it wraps to 8 - an index the stored
+    // months of 2014 contain, and the date would have been answered from September 2014.
     val overflowed = date(357915956, 1, 1)
     HOLCAL_MON_WED.startYear shouldBe 2014
     HOLCAL_MON_WED.endYearExclusive shouldBe 2015
@@ -1472,17 +1268,15 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     rejectsUnsupportedDate(HOLCAL_MON_WED.daysBetween(MON_2014_07_14, overflowed))
     rejectsUnsupportedDate(HOLCAL_MON_WED.daysBetween(LocalDate.MIN, MON_2014_07_14))
 
-    // A date inside the stored months is unaffected, so the check has not swallowed the fast path
-    // it guards: this Monday is one of the two holidays the calendar declares.
+    // a date inside the stored months is unaffected, so the check has not swallowed what it guards
     HOLCAL_MON_WED.isHoliday(MON_2014_07_14) shouldBe true
     HOLCAL_MON_WED.next(MON_2014_07_14) shouldBe TUE_2014_07_15
     HOLCAL_MON_WED.previous(MON_2014_07_14) shouldBe FRI_2014_07_11
   }
 
   test("test_serialization_hostileDocument") {
-    // A document is data, so a document that describes a calendar no calendar could be is a
-    // decoding failure rather than a throw - and the failure comes before anything is built from
-    // it, because building is what allocates from the years the dates span.
+    // A document is data, so a document describing a calendar no calendar could be is a decoding
+    // failure rather than a throw, and it fails before anything is built - building allocates.
     val weekend = """"weekendDays":["SATURDAY","SUNDAY"]"""
     val rejects = (document: String) =>
       decode[ImmutableHolidayCalendar](document) match {
@@ -1497,15 +1291,13 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     rejects(s"""{"Immutable":{"id":"Test1",$weekend,"holidays":["2014-07-14","+999999999-12-31"]}}""")
     rejects(s"""{"Immutable":{"id":"Test1",$weekend,"holidays":["0000-01-01","10000-01-01"]}}""")
 
-    // a working day a calendar cannot hold: ignored once built, but still not a date a document
-    // may name, so it is refused rather than quietly dropped
+    // a working day a calendar cannot hold: ignored once built, but refused in a document
     rejects(
       s"""{"Immutable":{"id":"Test1",$weekend,"holidays":["2014-07-14"],""" +
         """"workingWeekendDays":["+999999999-12-31"]}}""")
 
-    // the first year the document declares: it must be a year a calendar can cover, and it cannot
-    // be later than the earliest date the document names, since a range cannot begin after the
-    // dates inside it
+    // the first year the document declares must be a year a calendar can cover, and cannot be
+    // later than the earliest date the document names: a range cannot begin after the dates in it
     rejects(s"""{"Immutable":{"id":"Test1",$weekend,"startYear":1000000,"holidays":["2014-07-14"]}}""")
     rejects(s"""{"Immutable":{"id":"Test1",$weekend,"startYear":-1,"holidays":["2014-07-14"]}}""")
     rejects(s"""{"Immutable":{"id":"Test1",$weekend,"startYear":2015,"holidays":["2014-07-14"]}}""")
@@ -1514,10 +1306,9 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
       s"""{"Immutable":{"id":"Test1",$weekend,"startYear":2015,"holidays":["2015-07-14"],""" +
         """"workingWeekendDays":["2014-07-12"]}}""")
 
-    // and what is accepted: the year of the earliest holiday, an earlier year - which is
-    // informational and does not widen the range, the range of a decoded calendar following from
-    // its holidays as it does for every calendar this library builds - no year at all, and any
-    // supported year where the document names no date to compare with
+    // and what is accepted: the year of the earliest holiday, an earlier year - informational
+    // only, the range following from the holidays - no year at all, and a year with no date to
+    // compare against
     decode[ImmutableHolidayCalendar](
       s"""{"Immutable":{"id":"Test1",$weekend,"startYear":2014,"holidays":["2014-07-14"]}}""")
       .map(calendar => calendar.holidays.toList) shouldBe Right(List(MON_2014_07_14))
@@ -1533,11 +1324,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   test("test_serialization_rangeBeganBeforeEveryHoliday") {
-    // A calendar whose range begins before every holiday it reports, and what its document can
-    // and cannot carry. This calendar covers 2013 and 2014: its range begins at a holiday that
-    // fell on a Saturday, which the stored months cannot tell from the weekend and which it
-    // therefore no longer reports, and that same Saturday is declared a working day - so the
-    // calendar's earliest '''reported''' holiday is in 2014 while its range begins in 2013.
+    // A calendar whose range begins before every holiday it reports: its range begins at a holiday
+    // that fell on a Saturday, which the stored months cannot tell from the weekend.
     val weekend = List(SATURDAY, SUNDAY)
     val sat2013 = date(2013, 7, 13)
     val test = ImmutableHolidayCalendar.of(TEST_ID, List(sat2013, MON_2014_07_14), weekend, List(sat2013))
@@ -1547,23 +1335,17 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     test.workingDays.toList shouldBe List(sat2013)
     test.isBusinessDay(sat2013) shouldBe true
 
-    // Its document records where its range began, and the year recorded is earlier than every
-    // holiday the document lists.
+    // Its document records where its range began, earlier than every holiday it lists.
     val json = test.asJson
     json shouldBe parse(
       """{"Immutable":{"id":"Test1","weekendDays":["SATURDAY","SUNDAY"],"startYear":2013,""" +
         """"holidays":["2014-07-14"],"workingWeekendDays":["2013-07-13"]}}"""
     ).getOrElse(fail("the expected JSON of this test is not valid JSON"))
 
-    // Read back, the range follows from the holidays the document lists - 2014 alone - because a
-    // document is decoded through the same normalising factory a caller builds with, as AAP
-    // section 0.6.4 requires. The first year the document declares is informational, so the 2013
-    // override names a year the rebuilt calendar holds no data for and is ignored. That is the
-    // documented consequence of routing the decoder through that factory, and it is the same rule
-    // that makes construction ignore a working day outside the range its holidays span - see
-    // `test_of_unsupportedYears`. The alternative, letting the declared year or the override
-    // widen the range, would let a document reach a calendar no factory of this library can
-    // build and decide there that a weekend date is a business day.
+    // Read back, the range follows from the holidays the document lists - 2014 alone - the
+    // document being decoded through the same normalising factory a caller builds with. The 2013
+    // override therefore names a year the rebuilt calendar holds no data for and is ignored, just
+    // as construction ignores a working day outside the range its holidays span.
     val roundTripped = decode[ImmutableHolidayCalendar](json.noSpaces)
       .getOrElse(fail(s"the calendar did not survive the round trip: ${json.noSpaces}"))
     roundTripped.startYear shouldBe 2014
@@ -1573,10 +1355,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     roundTripped.isBusinessDay(sat2013) shouldBe false
     roundTripped.isHoliday(sat2013) shouldBe true
 
-    // The two calendars therefore answer alike on every day of the years the document's holidays
-    // span, and differ in 2013 at exactly one date: the Saturday the original overrode and the
-    // rebuilt calendar holds no data for, where its weekend alone applies. Asserted day by day
-    // because equality cannot make either statement - it compares identifiers alone.
+    // the two agree over the years the document lists holidays for, and differ in 2013 at one
+    // date: the Saturday the original overrode
     datesFrom(date(2014, 1, 1), date(2015, 1, 1)).foreach { current =>
       withClue(s"$current: ")(roundTripped.isHoliday(current) shouldBe test.isHoliday(current))
     }
@@ -1586,11 +1366,8 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
       }
     }
 
-    // A second shape of the same case, with no holiday left to report at all: the only date the
-    // calendar was built from fell at its weekend, so the document lists no holiday. Decoded
-    // through the factory, a calendar with no holidays holds no months at all and applies its
-    // weekend alone - which is what the original has to say about the year it covers too, that
-    // Saturday having left no mark on its stored months.
+    // A second shape of the same case: the only date the calendar was built from fell at its
+    // weekend, so the document lists no holiday and the rebuilt calendar stores no months.
     val weekendHolidayOnly = ImmutableHolidayCalendar.of(TEST_ID, List(SAT_2014_07_12), weekend)
     weekendHolidayOnly.startYear shouldBe 2014
     weekendHolidayOnly.holidays shouldBe empty
@@ -1604,8 +1381,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
       withClue(s"$current: ")(rebuilt.isHoliday(current) shouldBe weekendHolidayOnly.isHoliday(current))
     }
 
-    // The declared year cannot be used to ask for an unbounded range - it does not size anything
-    // - and it is still checked against the years a calendar may cover before anything is built.
+    // the declared year sizes nothing, and is still checked before anything is built
     decode[ImmutableHolidayCalendar](
       s"""{"Immutable":{"id":"Test1","weekendDays":["SATURDAY","SUNDAY"],"startYear":0,""" +
         s""""holidays":["9999-12-31"]}}""")
@@ -1617,13 +1393,9 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
   }
 
   test("test_serialization_workingDayOutsideHolidayRange") {
-    // The control on the range semantics of a decoded calendar: a document whose only holiday is
-    // in 2020 and which declares a Saturday of 2021 to be a business day. The range follows from
-    // the holiday, so it covers 2020 alone, the 2021 override names a year the calendar holds no
-    // data for and is ignored, and that Saturday is still a weekend holiday. A decoder that let
-    // the override - or the declared first year - widen the range would make it a business day
-    // instead, in a calendar no public factory of this library can produce, and that calendar
-    // would go on to answer for date adjustments, schedules, index observations and `Bus/252`.
+    // A document whose only holiday is in 2020 and which declares a Saturday of 2021 to be a
+    // business day: the range covers 2020 alone, so the override is ignored and that Saturday is
+    // still a weekend holiday. Letting it widen the range would build a calendar no factory can.
     val weekendField = """"weekendDays":["SATURDAY","SUNDAY"]"""
     val weekend = List(SATURDAY, SUNDAY)
     val fri2020Christmas = date(2020, 12, 25)
@@ -1641,8 +1413,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     outside.isHoliday(sat2021) shouldBe true
     outside.isBusinessDay(sat2021) shouldBe false
 
-    // ... which is exactly what the factory does with the same dates, that being the point: the
-    // document is held to the semantics of construction rather than to any of its own.
+    // ... which is what the factory does with the same dates, construction setting the semantics
     val built = ImmutableHolidayCalendar.of(TEST_ID, List(fri2020Christmas), weekend, List(sat2021))
     built.startYear shouldBe outside.startYear
     built.endYearExclusive shouldBe outside.endYearExclusive
@@ -1650,8 +1421,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     built.workingDays shouldBe outside.workingDays
     built.isHoliday(sat2021) shouldBe outside.isHoliday(sat2021)
 
-    // The positive control: a working day '''inside''' the range the holidays span still takes
-    // effect, so the field has not been neutered along with the widening it used to cause.
+    // the positive control: a working day '''inside''' the range still takes effect
     val sat2020 = date(2020, 3, 7)
     sat2020.getDayOfWeek shouldBe SATURDAY
     val inside = decode[ImmutableHolidayCalendar](
@@ -1667,16 +1437,11 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   //-------------------------------------------------------------------------
   test("test_holidays_workingDays_recoveredFromStoredMonths") {
-    // The two bulk accessors and the pair they are read from recover their dates from the stored
-    // months, so what they answer with has to be what the calendar itself says about every day of
-    // the years it covers - a holiday it holds is a date it calls a holiday and does not call a
-    // weekend, and a working day is a date it calls a business day and does call a weekend. That
-    // is the definition, and it is asserted here day by day rather than against a list of expected
-    // dates, so the recovery cannot agree with a list while disagreeing with the calendar.
-    //
-    // It is worth asserting over a range of some size because the recovery walks the months and
-    // the days within them: this calendar covers four years, one holiday of which falls at the
-    // weekend - so it is not reported - and two weekend days of which are declared working days.
+    // The two bulk accessors and the pair they are read from recover their dates by scanning the
+    // stored months, so they have to agree with what the calendar says about every day it covers:
+    // a holiday is a date it calls a holiday and not a weekend day, a working day is a date it
+    // calls a business day and does call a weekend day. Asserted day by day rather than against a
+    // list, so the scan cannot agree with a list while disagreeing with the calendar.
     val newYears = (2012 to 2015).map(year => date(year, 1, 1)).toList
     val christmases = (2012 to 2015).map(year => date(year, 12, 25)).toList
     val workingSaturdays = List(date(2013, 3, 2), date(2014, 11, 29))
@@ -1693,10 +1458,9 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     test.holidays.toList shouldBe expectedHolidays
     test.workingDays.toList shouldBe expectedWorkingDays
 
-    // The dates the calendar was built from, read back. New Year 2012 fell on a Sunday, so it is
-    // absent: a date the weekend already closes leaves no mark on the stored months and is not a
-    // holiday the calendar reports. The two Saturdays supplied as both holidays and working days
-    // are working days, the overrides being applied last.
+    // New Year 2012 fell on a Sunday, so it is absent: a date the weekend already closes leaves no
+    // mark on the stored months. The two Saturdays supplied as holidays and as working days are
+    // working days, the overrides being applied last.
     test.holidays.toList shouldBe List(
       date(2012, 12, 25),
       date(2013, 1, 1),
@@ -1711,22 +1475,17 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
     test.startYear shouldBe 2012
     test.endYearExclusive shouldBe 2016
 
-    // Both sets from one reading agree with the two accessors, which is what lets a caller that
-    // needs both - writing a calendar out, or merging two whose years do not meet - read once.
     val (holidays, workingDays) = test.holidaysAndWorkingDays
     holidays shouldBe test.holidays
     workingDays shouldBe test.workingDays
 
-    // Reading is repeatable and does not consume anything: the second reading is the first.
+    // Scanning is repeatable and consumes nothing: the second reading equals the first.
     test.holidays shouldBe test.holidays
     test.workingDays shouldBe test.workingDays
     test.holidaysAndWorkingDays._1 shouldBe holidays
 
-    // A weekend that is not Saturday and Sunday is recovered the same way, which matters because
-    // the recovery tests each day against the weekend of the calendar rather than against a fixed
-    // pair of days. Here the Saturday holiday is reported, Saturday being an ordinary business day
-    // for this calendar, while the Thursday holiday is not, its weekend having closed that day
-    // already; the Friday, supplied as both a holiday and a working day, is a working day.
+    // The scan tests each day against the weekend of the calendar rather than a fixed pair of
+    // days: the Saturday holiday is reported, the Thursday holiday closed by this weekend is not.
     val thuFri = ImmutableHolidayCalendar.of(
       HolidayCalendarId.of("TestRecoveryThuFri"),
       List(THU_2014_07_17, FRI_2014_07_18, SAT_2014_07_19),
@@ -1745,8 +1504,7 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
       }
     }
 
-    // A calendar holding no months at all has nothing to recover, and answers with two empty sets
-    // rather than failing to walk them.
+    // A calendar storing no months has nothing to scan, and answers with two empty sets.
     HOLCAL_SAT_SUN.holidays shouldBe empty
     HOLCAL_SAT_SUN.workingDays shouldBe empty
     HOLCAL_SAT_SUN.holidaysAndWorkingDays._1 shouldBe empty
@@ -1755,21 +1513,14 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
 
   //-------------------------------------------------------------------------
   test("test_readOldJodaFormat") {
-    // The Java method of this name read a calendar out of a classpath fixture written by the
-    // previous serialization library and asserted its identifier. AAP section 0.2.2 places that
-    // fixture and all wire compatibility with that library out of scope, and this class is not
-    // one of the five Java test classes the migration is allowed to drop - so what is ported is
-    // the exclusion itself, stated as the behaviour it implies: a document in the legacy shape is
-    // refused, and the calendar that document described is reachable through the shape this port
-    // publishes. Both documents are transcribed inline; the fixture is not read, and this spec
-    // reads no resource of any kind.
+    // A calendar carrying its own dates decodes only from an object under the `Immutable` key, so
+    // a document listing the same fields at its top level is refused while the same calendar in
+    // the current structural form decodes with the dates it declares.
     val weekendDays = """"weekendDays":["SATURDAY","SUNDAY"]"""
     val holidays = """"holidays":["1950-01-02","1950-01-03","1950-12-25","1951-01-01"]"""
     val expectedHolidays = List(date(1950, 1, 2), date(1950, 1, 3), date(1950, 12, 25), date(1951, 1, 1))
 
-    // The legacy shape: the calendar's fields at the top level of the document, under the
-    // bean-name key that library wrote its type into. Both documents below are well-formed JSON,
-    // so the refusal is about the shape of the document and not about malformed text.
+    // Both documents below are well-formed JSON, so the refusal is about shape, not bad text.
     val legacyDocument =
       s"""{"@bean":"com.opengamma.strata.basics.date.ImmutableHolidayCalendar","id":"NZAU",""" +
         s"""$holidays,$weekendDays}"""
@@ -1784,21 +1535,266 @@ final class ImmutableHolidayCalendarSpec extends AnyFunSuite with Matchers with 
           fail(s"the document should have been rejected but decoded to: ${calendar.id.name}")
       }
 
-    // A calendar carrying its own dates is an object under the `Immutable` key, which the legacy
-    // document does not have; the failure names the wrapper this port requires.
+    // The failure names the wrapper the decoder requires.
     decode[ImmutableHolidayCalendar](legacyDocument).isLeft shouldBe true
     refusalOf(legacyDocument) should include("Immutable")
 
-    // ... and the same object with the bean-name key removed is refused just the same, so the
-    // refusal is the missing wrapper rather than the one key this port does not know.
+    // ... and refused just the same without the type-name key, so it is the wrapper that is missing
     decode[ImmutableHolidayCalendar](withoutBeanName).isLeft shouldBe true
     refusalOf(withoutBeanName) should include("Immutable")
 
-    // The fact the Java case actually asserted - that calendar, obtained from a document - is
-    // available in the shape this port publishes, with the dates it declared.
     val ported = decode[ImmutableHolidayCalendar](s"""{"Immutable":{"id":"NZAU",$weekendDays,$holidays}}""")
       .getOrElse(fail("the calendar in this port's own form did not decode"))
     ported.id shouldBe HolidayCalendarId.of("NZAU")
     ported.holidays.toList shouldBe expectedHolidays
+  }
+  test("test_of_weekendClosingEveryDay") {
+    // A weekend that closes all seven days leaves a calendar with no business day anywhere: no
+    // next or previous business day to answer with, and therefore no shift, adjustment, schedule
+    // or index observation that could be built on it. That is not a calendar, so no factory of
+    // this type builds one. The refusal is a caller-contract `ArgCheck`, as the year-range
+    // precondition beside it is, and it is stated at the one place a calendar comes into being,
+    // so no factory and no normalising route goes round it.
+    val everyDay: List[DayOfWeek] = DayOfWeek.values().toList
+    val holidays = List(MON_2014_07_14, WED_2014_07_16)
+    val refuses = (weekendDays: List[DayOfWeek], workingDays: List[LocalDate]) =>
+      intercept[IllegalArgumentException](
+        ImmutableHolidayCalendar.of(TEST_ID, holidays, weekendDays, workingDays))
+        .getMessage should include(EveryDayClosedMessage)
+
+    refuses(everyDay, Nil)
+    // the order the days arrive in does not matter, and neither does naming one of them twice
+    refuses(everyDay.reverse, Nil)
+    refuses(everyDay ::: everyDay, Nil)
+    // the working days a calendar may declare do not rescue it: they name individual dates
+    // inside the years its holidays cover, while a calendar is asked about any year at all
+    refuses(everyDay, List(MON_2014_07_14, TUE_2014_07_15, WED_2014_07_16))
+    // the three-argument factory and the pre-sorted route this module builds its own calendars
+    // through reach the same gate
+    intercept[IllegalArgumentException](ImmutableHolidayCalendar.of(TEST_ID, holidays, everyDay))
+      .getMessage should include(EveryDayClosedMessage)
+    intercept[IllegalArgumentException](
+      ImmutableHolidayCalendar.ofNormalized(TEST_ID, SortedSet(holidays: _*), everyDay, Nil))
+      .getMessage should include(EveryDayClosedMessage)
+
+    // Six closed days is a different thing and is accepted: such a calendar has one business
+    // day a week, which every search of it can reach.
+    val thursdaysOnly =
+      ImmutableHolidayCalendar.of(TEST_ID, Nil, everyDay.filterNot(day => day == THURSDAY))
+    thursdaysOnly.isBusinessDay(THU_2014_07_17) shouldBe true
+    thursdaysOnly.isBusinessDay(FRI_2014_07_18) shouldBe false
+    thursdaysOnly.next(THU_2014_07_17) shouldBe LocalDate.of(2014, 7, 24)
+    thursdaysOnly.previous(THU_2014_07_17) shouldBe LocalDate.of(2014, 7, 10)
+
+    // A document describing a calendar closed on every day is data rather than a mistake in
+    // calling code, so the reader of this family refuses it in its error channel instead of
+    // raising out of it - and refuses it before building anything from it.
+    val everyDayNames = everyDay.map(day => s""""${day.name()}"""").mkString(",")
+    decode[ImmutableHolidayCalendar](
+      s"""{"Immutable":{"id":"Test1","weekendDays":[$everyDayNames],"holidays":[]}}""") match {
+      case Left(failure) =>
+        Option(failure.getMessage).getOrElse("") should include(EveryDayClosedMessage)
+      case Right(calendar) =>
+        fail(s"the document should have been rejected but decoded to: ${calendar.id.name}")
+    }
+
+    // ... while the same document with one day left open is read, so the refusal is the weekend
+    // that closes everything and not the field it arrived in.
+    val sixDayNames = everyDay.filterNot(day => day == THURSDAY).map(day => s""""${day.name()}"""").mkString(",")
+    decode[ImmutableHolidayCalendar](
+      s"""{"Immutable":{"id":"Test1","weekendDays":[$sixDayNames],"holidays":[]}}""")
+      .map(calendar => weekendDaysOf(calendar).size) shouldBe Right(6)
+  }
+
+  test("test_packedMonthsAreOwned") {
+    // The holiday data of a calendar is an array of packed months, and an array is mutable. A
+    // caller able to reach the one a calendar reads could turn a holiday into a business day -
+    // or a whole month of them - inside a calendar other code already holds; a caller able to
+    // supply one could describe a range of years no factory would accept, or a month layout the
+    // indexing arithmetic would misread. Neither is reachable: the array is a private field
+    // with no accessor of any kind, and the one constructor that takes an array copies it and
+    // judges it before the calendar exists.
+    //
+    // This test reads the compiled class rather than the source, because what a caller in
+    // another language can reach is decided by the class file and not by the source: the
+    // visibility Scala spells `private[date]` compiles to public, and the anonymous subclass a
+    // `sealed abstract case class` is instantiated through carries a constructor the machine
+    // publishes however this file spells it. Reflection is used here for that reason, and only
+    // here - it reads the shape of the compiled class, which is the thing being asserted.
+    val packedType = classOf[Array[Int]]
+    val declaring = classOf[ImmutableHolidayCalendar]
+    val runtime = HOLCAL_MON_WED.getClass
+
+    // No published member hands the array out, on the class or on the subclass an instance is.
+    withClue("published methods returning the packed months: ") {
+      declaring.getMethods.filter(method => method.getReturnType == packedType)
+        .map(method => method.getName).toList shouldBe Nil
+      runtime.getMethods.filter(method => method.getReturnType == packedType)
+        .map(method => method.getName).toList shouldBe Nil
+    }
+    // ... which follows from the field being private, so that no accessor is generated for it.
+    val packedFields = declaring.getDeclaredFields.filter(field => field.getType == packedType).toList
+    packedFields.size shouldBe 1
+    packedFields.foreach(field => Modifier.isPrivate(field.getModifiers) shouldBe true)
+    packedFields.foreach(field => Modifier.isFinal(field.getModifiers) shouldBe true)
+
+    // The constructor the machine publishes is reached below as a caller in another language
+    // would reach it, and it makes every check a factory makes.
+    val constructor = runtime.getDeclaredConstructors
+      .find(candidate =>
+        candidate.getParameterTypes.toList ==
+          List(classOf[HolidayCalendarId], classOf[Int], classOf[Int], packedType))
+      .getOrElse(fail("the compiled subclass no longer has the four-argument constructor this test reads"))
+    val storedField = packedFields.head
+    storedField.setAccessible(true)
+    val stored = storedField.get(HOLCAL_MON_WED).asInstanceOf[Array[Int]]
+    stored.length shouldBe 12
+    val forge = (weekends: Int, firstYear: Int, months: Array[Int]) =>
+      constructor
+        .newInstance(Array[AnyRef](TEST_ID, Int.box(weekends), Int.box(firstYear), months): _*)
+        .asInstanceOf[ImmutableHolidayCalendar]
+    val refusalOfForge = (weekends: Int, firstYear: Int, months: Array[Int]) =>
+      Option(intercept[InvocationTargetException](forge(weekends, firstYear, months)).getCause)
+        .getOrElse(fail("the constructor refused the representation without saying why"))
+
+    // A representation the factories do produce: the forged calendar answers as the calendar
+    // whose data it was built from does, so the route itself is sound.
+    val copied = forge(HOLCAL_MON_WED.weekends, HOLCAL_MON_WED.startYear, stored.clone())
+    copied.isHoliday(MON_2014_07_14) shouldBe true
+    copied.isBusinessDay(TUE_2014_07_15) shouldBe true
+    copied.holidays.toList shouldBe List(MON_2014_07_14, WED_2014_07_16)
+
+    // ... and the array it was handed is not the array it reads: writing every day of every
+    // stored month to 'business day' after construction changes nothing it answers.
+    val supplied = stored.clone()
+    val forged = forge(HOLCAL_MON_WED.weekends, HOLCAL_MON_WED.startYear, supplied)
+    forged.isHoliday(MON_2014_07_14) shouldBe true
+    supplied.indices.foreach(month => supplied(month) = -1)
+    forged.isHoliday(MON_2014_07_14) shouldBe true
+    forged.isHoliday(WED_2014_07_16) shouldBe true
+    forged.holidays.toList shouldBe List(MON_2014_07_14, WED_2014_07_16)
+
+    // The representations no factory of this library could produce, each refused where it
+    // cannot be gone round. A weekend closing every day of the week ...
+    refusalOfForge((1 << 7) - 1, HOLCAL_MON_WED.startYear, stored.clone())
+      .getMessage should include(EveryDayClosedMessage)
+    // ... a weekend naming something that is not a day of the week, which nothing would read
+    // but equality would carry ...
+    refusalOfForge(HOLCAL_MON_WED.weekends | (1 << 7), HOLCAL_MON_WED.startYear, stored.clone())
+      .getMessage should include("nothing else")
+    refusalOfForge(Int.MinValue, HOLCAL_MON_WED.startYear, stored.clone())
+      .getMessage should include("nothing else")
+    // ... data that is not whole years of months, which the indexing arithmetic assumes ...
+    refusalOfForge(HOLCAL_MON_WED.weekends, HOLCAL_MON_WED.startYear, Array.fill(13)(0))
+      .getMessage should include("whole years of months")
+    refusalOfForge(HOLCAL_MON_WED.weekends, HOLCAL_MON_WED.startYear, Array.fill(1)(0))
+      .getMessage should include("whole years of months")
+    // ... and a range of years outside the ones a calendar answers about, at either end and
+    // where the first year is inside the range but the months run past the end of it.
+    refusalOfForge(HOLCAL_MON_WED.weekends, -1, stored.clone())
+      .getMessage should include(UnsupportedDateMessage)
+    refusalOfForge(HOLCAL_MON_WED.weekends, 10000, stored.clone())
+      .getMessage should include(UnsupportedDateMessage)
+    refusalOfForge(HOLCAL_MON_WED.weekends, 9999, Array.fill(24)(0))
+      .getMessage should include(UnsupportedDateMessage)
+    refusalOfForge(HOLCAL_MON_WED.weekends, Int.MaxValue, Array.fill(12)(0))
+      .getMessage should include(UnsupportedDateMessage)
+
+    // ... a month naming a day that month does not have, which no factory can express - each
+    // month of a built calendar starts from its own length - and which is not inert: the search
+    // of the stored months would answer with the day the bit sits at, and the date would be
+    // constructed, and fail, in a caller that asked an ordinary question. The 32nd of January,
+    // which is the one bit a 31-day month leaves over ...
+    val januaryDay32 = stored.clone()
+    januaryDay32(0) = januaryDay32(0) | (1 << 31)
+    withClue("a 32nd day of January: ") {
+      val refusal = refusalOfForge(HOLCAL_MON_WED.weekends, HOLCAL_MON_WED.startYear, januaryDay32)
+      refusal.getMessage should include("cannot name a day its month does not have")
+      refusal.getMessage should include("2014-01")
+    }
+    // ... the 29th of February in a year that has 28, which is why the check is against the
+    // month of its own year and not against a month of some nominal one ...
+    val februaryDay29 = stored.clone()
+    februaryDay29(1) = februaryDay29(1) | (1 << 28)
+    withClue("a 29th day of February 2014: ") {
+      val refusal = refusalOfForge(HOLCAL_MON_WED.weekends, HOLCAL_MON_WED.startYear, februaryDay29)
+      refusal.getMessage should include("cannot name a day its month does not have")
+      refusal.getMessage should include("2014-02")
+    }
+    // ... and the 31st of a 30-day month.
+    val aprilDay31 = stored.clone()
+    aprilDay31(3) = aprilDay31(3) | (1 << 30)
+    withClue("a 31st day of April: ") {
+      val refusal = refusalOfForge(HOLCAL_MON_WED.weekends, HOLCAL_MON_WED.startYear, aprilDay31)
+      refusal.getMessage should include("cannot name a day its month does not have")
+      refusal.getMessage should include("2014-04")
+    }
+    // The same bit in a leap year names a day that exists, and is accepted and answered with,
+    // so the check refuses what is impossible rather than what is merely unusual.
+    val leapFebruary = Array.fill(12)(0)
+    leapFebruary(1) = 1 << 28
+    val leapDayOnly = forge(HOLCAL_MON_WED.weekends, 2016, leapFebruary)
+    leapDayOnly.isBusinessDay(LocalDate.of(2016, 2, 29)) shouldBe true
+    leapDayOnly.isHoliday(LocalDate.of(2016, 2, 26)) shouldBe true
+    leapDayOnly.holidays.toList should contain(LocalDate.of(2016, 2, 26))
+
+    // An empty range is accepted, a calendar with no holidays of its own being an ordinary
+    // thing, and it answers from its weekend ...
+    val weekendOnly = forge(HOLCAL_MON_WED.weekends, 0, Array.emptyIntArray)
+    weekendOnly.isHoliday(SAT_2014_07_12) shouldBe true
+    weekendOnly.isBusinessDay(MON_2014_07_14) shouldBe true
+    weekendOnly.holidays.toList shouldBe Nil
+    // ... at the one year an empty range is written with. There is no first year of a range
+    // that holds nothing, every factory writes zero there, and two calendars that hold nothing
+    // are therefore one value rather than ten thousand.
+    refusalOfForge(HOLCAL_MON_WED.weekends, 2014, Array.emptyIntArray)
+      .getMessage should include("must start at year 0")
+  }
+
+  test("test_shift_beyondTheLimit_withinStoredMonths") {
+    // A calendar walks a day at a time to shift by business days, so the number of days it may
+    // be asked to shift by is bounded - see the limit on `HolidayCalendar.shift`. This calendar
+    // holds data for seven thousand years, which is what makes the case worth stating on its
+    // own: `ImmutableHolidayCalendar` answers a shift from its stored months without reaching
+    // the inherited method at all, so a calendar holding a long range would walk millions of
+    // days inside its own data before any check written only in the inherited method was
+    // reached. The limit would then hold for exactly the calendars holding the least data.
+    val longRange = ImmutableHolidayCalendar.of(
+      HolidayCalendarId.of("TestLongRange"),
+      List(LocalDate.of(2000, 1, 1), LocalDate.of(9000, 1, 1)),
+      SATURDAY,
+      SUNDAY)
+    longRange.monthCount shouldBe (9000 - 2000 + 1) * 12
+
+    // At the limit the search stays inside the stored months and answers, which is what makes
+    // the refusal below a refusal by the limit rather than by the fallback: the fallback is
+    // never reached on either side of it.
+    val start = LocalDate.of(2000, 1, 3)
+    val atTheLimit = longRange.shift(start, HolidayCalendar.MaxBusinessDayShift)
+    atTheLimit.getYear should be > 2300
+    atTheLimit.getYear should be < 9000
+    longRange.isBusinessDay(atTheLimit) shouldBe true
+    val backAgain = longRange.shift(atTheLimit, -HolidayCalendar.MaxBusinessDayShift)
+    backAgain shouldBe start
+
+    // One day past it is refused, in both directions, before any day is walked.
+    val beyond = s"A shift of more than ${HolidayCalendar.MaxBusinessDayShift} business days"
+    intercept[IllegalArgumentException] {
+      longRange.shift(start, HolidayCalendar.MaxBusinessDayShift + 1)
+    }.getMessage should include(beyond)
+    intercept[IllegalArgumentException] {
+      longRange.shift(atTheLimit, -(HolidayCalendar.MaxBusinessDayShift + 1))
+    }.getMessage should include(beyond)
+    // ... including the two magnitudes that would overrun a machine word, the smaller of which
+    // is its own negation and so passes a check made in `Int` arithmetic.
+    intercept[IllegalArgumentException](longRange.shift(start, Int.MaxValue))
+      .getMessage should include(beyond)
+    intercept[IllegalArgumentException](longRange.shift(atTheLimit, Int.MinValue))
+      .getMessage should include(beyond)
+
+    // The one calendar that answers a shift without walking anything is unaffected, its answer
+    // being arithmetic on the date rather than a search: every day is a business day, so the
+    // shift is the number of days.
+    HolidayCalendars.NO_HOLIDAYS.shift(start, Int.MaxValue).getYear should be > 5000000
   }
 }

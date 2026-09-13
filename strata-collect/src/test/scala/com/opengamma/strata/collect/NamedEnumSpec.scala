@@ -32,72 +32,65 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 /**
  * Tests the name lookup of a closed family of named values.
  *
- * This one spec carries the whole of what four test classes of the port's source covered:
- * the registry that resolved a name at run time, the formatter that resolved the name of a
- * plain enumeration, the name-keyed factory carried by the named interface itself, and the
- * registry that resolved a name across several families at once. All four collapse onto the
- * single typeclass under test here, so all four sets of cases are expressed against it.
+ * The typeclass under test carries, for one family, its members in declaration order and
+ * three tables over them - the alternate spellings, the ordered lenient rewrites and the
+ * opt-in groups of external spellings - and answers two operations: the exact lookup, which is
+ * alias-aware and folds nothing, and the parse, which is the exact lookup, then the fold of
+ * the input to upper case with every rewrite applied in the order the family declared them,
+ * then the exact lookup again.
+ *
+ * The sections below take the whole of that surface in turn: the member list and the
+ * two name-keyed views, the exact lookup, the reporting of text that names no member, the
+ * groups of external spellings, the lenient lookup and the chain of rewrites behind it, the
+ * length of the text either stage accepts, the smallest family there can be, the states a
+ * family cannot be in, the name-keyed resolution a family publishes, the union of several
+ * families, the formatted names of a plain enumeration, closedness, the views a key can be
+ * missing from, and the instances a family publishes. Each test covers one rule, so a
+ * regression names the behaviour it broke.
  *
  * ===The fixtures are code, not configuration===
  *
- * The families the original tests resolved were assembled at run time from configuration
- * files found on the class path, one per family, declaring the classes that provided the
- * members together with three tables over them. This port has no such mechanism: a family
- * hands its members and its tables to the typeclass in its own companion, and what it can
- * resolve is fixed when it is compiled. Every fixture of this spec is therefore a sealed
- * family declared in [[NamedEnumFixtures]] below, and the tables are transcribed from the
- * configuration of the original fixture exactly - the same five members, the same single
- * alternate spelling, the same two groups of external spellings, and the same three lenient
- * rewrites in the same order. Nothing here reads a resource, a class or a class path, which
- * is the property that makes each family closed and is asserted directly further down.
+ * A family hands its members and its tables to the typeclass in its own companion, so what it
+ * can resolve is fixed when it is compiled. Every fixture of this spec is therefore a sealed
+ * family declared in [[NamedEnumFixtures]] below: five members, one alternate spelling, two
+ * groups of external spellings and three lenient rewrites whose order is load-bearing for the
+ * sample family, and a narrower family - or the same five members under a table varied one row
+ * at a time - for each remaining case. Nothing here reads a resource, a class or a class path,
+ * which is the property that makes each family closed and is asserted directly further down.
  *
- * ===What changed, and is asserted as changed===
+ * ===Text that names no member is reported, not raised===
  *
- * Three differences from the original are deliberate, and each is pinned by a test rather
- * than left to be discovered:
+ * Every operation that can fail answers `None`, or a `Failure.Parsing` on the left of an
+ * `EitherNec`, and reports the text as it was supplied rather than as a rewrite left it: the
+ * exact lookup, the lookup of a group of external spellings the family does not publish, the
+ * reverse direction of a group for a member it does not name, and the parse of an unknown
+ * name. Nothing in this spec expects an exception.
  *
- *  - '''text that names no member is reported, not raised'''. Every operation of the
- *    original that could fail threw: the strict lookup, the lookup of an unknown group of
- *    external spellings, the reverse lookup of a member absent from a group, and the parse
- *    of an unknown name. Here they answer `None` or a `Failure.Parsing` on the left of an
- *    `EitherNec`, and nothing in this spec expects an exception.
- *  - '''a family cannot be empty, and cannot be misconfigured'''. The original had a test
- *    for a family whose configuration declared no provider, which resolved nothing, and one
- *    for seven separately misconfigured families, each of which logged a warning and
- *    resolved nothing. Neither state is reachable now - the members arrive as a
- *    `NonEmptyList` of a type bounded by [[Named]] - so both cases are re-expressed as the
- *    smallest family that can exist and as compile-time proofs that the unreachable states
- *    do not compile.
- *  - '''there is no combined family and no reflective factory'''. The union of several
- *    families is a function that tries each of their exact lookups in a fixed order, and
- *    the name-keyed factory that searched a type for a factory method at run time is gone.
- *    Both are covered by the cases that stood behind them.
+ * ===A family can be neither empty nor misconfigured===
  *
- * One difference is worth stating at more length, because it is a case the original fixture
- * had and this one cannot. In the original, a member could be registered under one lookup
- * key rather than two: a provider declared as `constants` or as `instance` registered each
- * member under its canonical name and under that name folded to upper case, while a
- * provider declared as a lookup function registered whatever its own map held, and the
- * fixture's lookup function held only the exact name `Other`. `OTHER` therefore resolved to
- * nothing while `Other` resolved to a member. Provider kinds are exactly what this port
- * removes, and the algorithm it keeps registers every member under both of its keys: its
- * canonical name, claimed unconditionally, and that name folded to upper case, added only
- * where the name space still has room for it. The asymmetry is consequently unreachable -
- * a key can only be missing from a view by having been claimed by another member, which
- * resolves it to that member rather than to nothing - so this spec asserts the uniform
- * registration that replaced it, and covers the two ways a key view can still be narrower
- * than the member list: a member whose canonical name is already upper case offers one key
- * rather than two, and two members whose names differ in case alone share one folded key,
- * which belongs to the member whose canonical name it is. Both are asserted below, the
- * first against a real family of this module. The canonical view is never narrower, every
- * member holding the name it publishes.
+ * The members arrive as a `NonEmptyList` of a type bounded by [[Named]], so a family always
+ * has a first member, and the states that would leave a family resolving nothing - no member
+ * at all, a member that is not a named value, a table of the wrong shape - are rejected by the
+ * compiler. Those cases are therefore asserted as compile-time proofs, alongside the smallest
+ * family that can exist: one member and no table at all. A union of several families is
+ * likewise not a type but a function that tries the exact lookup of each family in the order
+ * the code names them and answers the first member it finds, so the order is written down; and
+ * a name is resolved through the lookup its family publishes rather than by searching the
+ * family's type for a factory.
  *
- * ===Traceability===
+ * ===Every member is registered under both of its keys===
  *
- * Each test names the method of the original test class whose cases it carries, so that the
- * mapping from the original suite to this one can be read off the test names. The original
- * packed many assertions into few methods; this spec splits them so that a regression names
- * the behaviour it broke.
+ * A member claims its canonical name unconditionally and that name folded to upper case in the
+ * English locale only where the name space still has room for it, and the expansion of the
+ * alternate spellings fills free keys the same way without displacing a spelling the family
+ * supplied. Every member is consequently resolvable by the name it publishes, and a key can
+ * only be missing from a view by having been claimed by another member, which resolves it to
+ * that member rather than to nothing. Two arrangements can still leave a key view narrower
+ * than the member list, and both are asserted below: a member whose canonical name is already
+ * upper case offers one key rather than two, and two members whose names differ in case alone
+ * share one folded key, which belongs to the member whose canonical name it is. The first is
+ * asserted against a real family of this module as well as against a fixture. The canonical
+ * view is never narrower, every member holding the name it publishes.
  */
 final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks with TimeLimits {
 
@@ -525,16 +518,15 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
   }
 
   //-------------------------------------------------------------------------
-  // the length of the text the lenient stage is applied to, which is any length
+  // the length of text the lenient stage accepts
   //-------------------------------------------------------------------------
 
-  test("every spelling a family resolves is resolved whatever the length of the text") {
-    // No text is refused for its size, at either stage: the lenient lookup of the type being
-    // ported applied every one of its rewrites to whatever text arrived, and so does this
-    // one. Every route into a family - a canonical name, its upper-case form, a folded
-    // spelling, an alternate spelling and a spelling only a rewrite reaches - is therefore
-    // reached by the text that names it and by nothing else. They are asserted together
-    // here because all of them run through the one operation.
+  test("every spelling a family resolves is still resolved once the lenient stage is bounded") {
+    // The ceiling applies to the lenient stage alone and is derived from the family's own
+    // data, so every route into a family - a canonical name, its upper-case form, a folded
+    // spelling, an alternate spelling and a spelling only a rewrite reaches - is unaffected
+    // by it. They are asserted together here because the ceiling is the one change that could
+    // break any of them at once.
     sample.parse("Standard") should haveValue(SampleNamed.STANDARD)
     sample.parse("STANDARD") should haveValue(SampleNamed.STANDARD)
     sample.parse("standard") should haveValue(SampleNamed.STANDARD)
@@ -547,25 +539,30 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
     mock.parse("twenty_one") should haveValue(MockEnum.TWENTY_ONE)
   }
 
-  test("a spelling longer than every key of its family resolves, exactly and folded") {
-    // Neither stage counts the characters of the text it is handed, so a family reached
-    // through an alternate spelling far longer than any of its names resolves that spelling
-    // and its upper-case form exactly, and its lower-case form through the fold of the
-    // lenient stage.
+  test("the ceiling counts the alternate spellings of a family, so a long spelling still folds") {
+    // The exact lookup is bounded by nothing, and the ceiling of the lenient stage counts the
+    // alternate spellings of a family as well as the keys of its members - this one being
+    // longer than the keys of this family and their margin together, so a ceiling that counted
+    // the keys alone would refuse it. The spelling and its upper-case form therefore resolve
+    // exactly, and its lower-case form resolves through the fold of the lenient stage, which
+    // is the step the ceiling has to admit for an alternate spelling to be reachable in any
+    // case at all.
     LongAliasSpelling.length should be > sample.values.toList.map(_.name.length).max
+    LongAliasSpelling.length should be > LongestSampleKey + LenientMargin
+    longAlias.lenientLengthCeiling shouldBe LongAliasSpelling.length + LenientMargin
     longAlias.valueOf(LongAliasSpelling) shouldBe Some(SampleNamed.MORE)
     longAlias.parse(LongAliasSpelling) should haveValue(SampleNamed.MORE)
     longAlias.parse(LongAliasSpelling.toUpperCase(Locale.ENGLISH)) should haveValue(SampleNamed.MORE)
     longAlias.parse(LongAliasSpelling.toLowerCase(Locale.ENGLISH)) should haveValue(SampleNamed.MORE)
   }
 
-  test("a name far longer than every name of the sample family resolves exactly and in lower case") {
-    // The fold of the input to upper case is the whole of the leniency a family that declares
-    // no rewrite has, and it is applied to text of every length, so the lower-case spelling
-    // of a name written out at this length resolves through it while the exact lookup, which
-    // folds nothing, refuses it.
+  test("a name far longer than the margin resolves exactly and in lower case, so the ceiling is no constant") {
+    // Were the ceiling a fixed number of characters rather than the family's own data plus a
+    // margin, the fold of this name - which is the whole of the leniency a family without a
+    // rewrite has - would be beyond it and the lower-case spelling would be reported.
     val spelling = LongNameNamed.SPELLED_OUT.name
     spelling.length should be > sample.values.toList.map(_.name.length).max
+    spelling.length should be > LenientMargin
     LongNameNamed.lookup.lenientPatterns shouldBe empty
     LongNameNamed.lookup.valueOf(spelling) shouldBe Some(LongNameNamed.SPELLED_OUT)
     LongNameNamed.lookup.valueOf(spelling.toUpperCase(Locale.ENGLISH)) shouldBe
@@ -576,25 +573,32 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
       haveValue(LongNameNamed.SPELLED_OUT)
   }
 
-  test("a rewrite that can consume text of any length is applied to text of any length") {
-    // The single rewrite of this family turns any text ending in `X` into the name of a
-    // member, so a resolution is proof that the rewrite ran over the whole of the text. It
-    // runs over a hundred thousand characters as readily as over one: there is no length at
-    // which the stage stops being applied, which is the lenient lookup of the type being
-    // ported and what the specification of this port requires of it.
+  test("a rewrite that consumes text of any length resolves up to the ceiling and reports beyond it") {
+    // The deliberate narrowing, asserted rather than left implicit. The single rewrite of this
+    // family turns any text ending in `X` into the name of a member, so a resolution is proof
+    // that the rewrite ran over the whole of the text: it resolves text of whatever length the
+    // family is willing to rewrite - its longest key plus the margin, this family declaring no
+    // table longer - and reports, as text naming no member, text one character beyond that.
     greedyRewrite.parse("X") should haveValue(SampleNamed.STANDARD)
     greedyRewrite.parse("anything at all, ending in x") should haveValue(SampleNamed.STANDARD)
-    greedyRewrite.parse("A" * 100000 + "X") should haveValue(SampleNamed.STANDARD)
-    greedyRewrite.parse("A" * 100000 + "x") should haveValue(SampleNamed.STANDARD)
-    // And text the rewrite cannot match is named in full in the failure it reports, as every
-    // rejected name is: the message names what was refused, and bounding it for a reader is the
-    // business of writing the failure out. The length of the text decides neither the answer nor
-    // the wording.
-    val refused = "A" * 100000 + "Y"
-    val parsed: ResultNec[SampleNamed] = greedyRewrite.parse(refused)
+    greedyRewrite.lenientLengthCeiling shouldBe LongestSampleKey + LenientMargin
+    val atTheCeiling = "A" * (greedyRewrite.lenientLengthCeiling - 1) + "X"
+    atTheCeiling.length shouldBe greedyRewrite.lenientLengthCeiling
+    greedyRewrite.parse(atTheCeiling) should haveValue(SampleNamed.STANDARD)
+    greedyRewrite.parse(atTheCeiling.dropRight(1) + "x") should haveValue(SampleNamed.STANDARD)
+    val beyondTheCeiling = "A" * greedyRewrite.lenientLengthCeiling + "X"
+    beyondTheCeiling.length shouldBe greedyRewrite.lenientLengthCeiling + 1
+    val parsed: ResultNec[SampleNamed] = greedyRewrite.parse(beyondTheCeiling)
     parsed should beFailureWith(FailureReason.PARSING)
-    failuresOf(parsed) shouldBe List(Failure.Parsing(s"GreedyRewrite name not found: $refused"))
+    // Text refused for its length is reported with the family's ordinary not-found failure,
+    // naming the text as it stands: the ceiling decides whether the rewrites run and decides
+    // nothing about the wording, so a caller reading the message cannot tell the two refusals
+    // apart, and neither can a caller comparing two failures.
+    failuresOf(parsed) shouldBe List(Failure.Parsing(s"GreedyRewrite name not found: $beyondTheCeiling"))
     failuresOf(parsed).head.attributes shouldBe empty
+    val unmatched = "A" * (greedyRewrite.lenientLengthCeiling - 1) + "Y"
+    failuresOf(greedyRewrite.parse(unmatched)) shouldBe
+      List(Failure.Parsing(s"GreedyRewrite name not found: $unmatched"))
   }
 
   test("a rewrite is not applied to text that could not match it, which changes no answer") {
@@ -605,11 +609,15 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
     // declined rather than attempted.
     //
     // The property that makes the requirement invisible is asserted by result rather than by
-    // timing, in both directions: text the expression could match resolves however long it
-    // is, and text it could not is answered exactly as it would have been had the expression
-    // been applied and failed to match.
-    greedyRewrite.parse("A" * 100000 + "X") should haveValue(SampleNamed.STANDARD)
-    greedyRewrite.parse("A" * 100000 + "Y") should beFailure
+    // timing, in both directions: text the expression could match resolves, up to the ceiling
+    // the family's data sets, and text it could not is answered exactly as it would have been
+    // had the expression been applied and failed to match. The two bounds are independent -
+    // this one decides which expressions are worth attempting, the ceiling decides how much
+    // text they may be attempted over - so each of these inputs is within the ceiling and
+    // only the requirement decides them.
+    greedyRewrite.parse("A" * (greedyRewrite.lenientLengthCeiling - 1) + "X") should
+      haveValue(SampleNamed.STANDARD)
+    greedyRewrite.parse("A" * (greedyRewrite.lenientLengthCeiling - 1) + "Y") should beFailure
     greedyRewrite.parse("XA") should beFailure
     // A declined expression leaves the text as the expressions before it left it, so every
     // other route into the family is reached exactly as it is when no expression is declared:
@@ -622,9 +630,12 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
   test("an expression closing with a class of one character requires that character of the text") {
     // The second shape the requirement is read from, and the shape the tables of the library
     // actually carry: a class holding exactly one character, which is how a literal bracket
-    // is spelled in them. The rule resolves the text it was written for, of any length ...
+    // is spelled in them. The rule resolves the text it was written for, up to the ceiling of
+    // the family - which this family's expression source sets, being longer than its keys ...
     bracketRewrite.parse("FOO(BAR)") should haveValue(SampleNamed.STANDARD)
-    bracketRewrite.parse("(" * 1000 + ")") should haveValue(SampleNamed.STANDARD)
+    bracketRewrite.lenientLengthCeiling shouldBe BracketSource.length + LenientMargin
+    bracketRewrite.parse("(" * (bracketRewrite.lenientLengthCeiling - 1) + ")") should
+      haveValue(SampleNamed.STANDARD)
     // ... and text not ending in the bracket it requires is answered without it, which is
     // the same answer the expression itself would have given.
     bracketRewrite.parse("FOO(BAR") should beFailure
@@ -647,62 +658,126 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
     commentedRewrite.parse("A # X") should beFailure
   }
 
-  test("hostile text that no expression of a family could match is answered in one pass") {
-    // The regression guard for the shape above, and the only test here that measures time.
-    // The expression is the one row of the transcribed day-count table that can consume text
-    // of unbounded length, and two hundred thousand opening brackets is the text crafted to
-    // make it backtrack: every position of that text is a position its first group could end
-    // at. Applied to the text the expression costs minutes; declined on the last character of
-    // the text it costs milliseconds. The limit is generous because what it has to separate
-    // is milliseconds from minutes, and a loaded host must not be able to make it flake.
+  test("hostile text beyond the ceiling of a family is answered without touching the text") {
+    // The regression guard for the ceiling, and the only test here that measures time. The
+    // expression is the one row of the transcribed day-count table that can consume text of
+    // unbounded length, and two hundred thousand brackets is the text crafted to make it
+    // backtrack: every position of that text is a position its first group could end at.
+    // Applied to the text the expression costs minutes; refused for its length it costs the
+    // reading of one integer, the text being neither folded nor scanned. The limit is
+    // generous because what it has to separate is milliseconds from minutes, and a loaded
+    // host must not be able to make it flake.
+    //
+    // Both spellings of the hostile text are asserted, and the second is the one only the
+    // ceiling answers: text ending in the closing bracket the expression requires passes the
+    // requirement each rule reads from its own source, so it is the ceiling and nothing else
+    // that stops the expression being applied to it.
     val hostile = "(" * HostileInputLength
+    val hostileEndingInTheRequiredBracket = hostile.dropRight(1) + ")"
+    hostileEndingInTheRequiredBracket.length shouldBe HostileInputLength
     failAfter(Span(60, Seconds)) {
       bracketRewrite.parse(hostile) should beFailure
-      // Text of exactly the same size, ending in the bracket the expression requires, is
-      // rewritten and resolves. What decides is the last character of the text and never the
-      // size of it, which is why nothing here is a bound on the length of an input.
-      bracketRewrite.parse(hostile.dropRight(1) + ")") should haveValue(SampleNamed.STANDARD)
+      bracketRewrite.parse(hostileEndingInTheRequiredBracket) should beFailure
     }
   }
 
-  test("the chain of rewrites is applied to text of every length") {
-    // The single rewrite of this family matches every text there is and turns it into the
-    // name of a member, so a resolution is proof that the chain ran over the text. Forty
-    // thousand characters and two hundred thousand characters both resolve, which is the
-    // absence of a cutoff stated as plainly as this typeclass allows it to be stated.
+  test("text beyond the ceiling is reported without the chain of rewrites running over it") {
+    // Asserted by construction rather than by timing: the single rewrite of this family
+    // matches every text there is and turns it into the name of a member, so a resolution is
+    // proof that the chain ran over the text and a failure is proof that it did not. This
+    // family declares no table longer than its keys, so its ceiling is the longest of those
+    // plus the margin, and the boundary is asserted on both sides of that one character.
     rewritesAnything.parse("literally anything") should haveValue(SampleNamed.STANDARD)
-    rewritesAnything.parse("A" * 40000) should haveValue(SampleNamed.STANDARD)
-    rewritesAnything.parse("A" * HostileInputLength) should haveValue(SampleNamed.STANDARD)
+    rewritesAnything.lenientLengthCeiling shouldBe LongestSampleKey + LenientMargin
+    rewritesAnything.parse("A" * rewritesAnything.lenientLengthCeiling) should
+      haveValue(SampleNamed.STANDARD)
+    rewritesAnything.parse("A" * (rewritesAnything.lenientLengthCeiling + 1)) should beFailure
+    rewritesAnything.parse("A" * HostileInputLength) should beFailure
+    // And the failure is the family's ordinary one, naming the text it was handed: bounding
+    // that text for a reader is the business of writing the failure out, which the test
+    // further down asserts, so the ceiling changes neither the reason nor the wording.
+    val refused = "A" * (rewritesAnything.lenientLengthCeiling + 1)
+    val parsed: ResultNec[SampleNamed] = rewritesAnything.parse(refused)
+    parsed should beFailureWith(FailureReason.PARSING)
+    failuresOf(parsed) shouldBe List(Failure.Parsing(s"RewritesAnything name not found: $refused"))
   }
 
-  test("the names a family declares decide nothing about the text its rewrites accept") {
-    // The same rewrite over two families whose names differ greatly in length accepts the
-    // same text. Were the stage bounded by the data of a family, the family of short names
-    // would report text that the family of long names resolved, and this pair of
-    // measurements is what makes that impossible to introduce unnoticed.
-    val text = "A" * 5000
-    sample.values.toList.map(_.name.length).max should be < LongNameNamed.SPELLED_OUT.name.length
-    rewritesAnything.parse(text) should haveValue(SampleNamed.STANDARD)
-    longNameRewritesAnything.parse(text) should haveValue(LongNameNamed.SPELLED_OUT)
+  test("rewriteLeniently applies the ceiling itself, so text beyond it comes back unchanged") {
+    // The chain published on its own is where the ceiling has to be applied a second time,
+    // and this is the path of the day-count family: it holds sixty-seven rules and runs the
+    // chain itself, between its own exact lookup and its own repeat lookup, so it reaches the
+    // rewrites without passing through `parse` and would be unbounded were the ceiling only
+    // applied there. Within the ceiling the chain runs as it always did; beyond it the text
+    // comes back exactly as it was handed over, no rule having been applied to it - and
+    // unfolded, this operation never folding anything itself.
+    val ceiling = rewritesAnything.lenientLengthCeiling
+    rewritesAnything.rewriteLeniently("A" * ceiling) shouldBe "Standard"
+    val beyond = "A" * (ceiling + 1)
+    rewritesAnything.rewriteLeniently(beyond) shouldBe beyond
+    rewritesAnything.rewriteLeniently("a" * (ceiling + 1)) shouldBe "a" * (ceiling + 1)
+    rewritesAnything.rewriteLeniently("A" * HostileInputLength) shouldBe "A" * HostileInputLength
+    // The family whose ceiling is longer rewrites the text the shorter one hands back, which
+    // is the same ceiling read through this operation rather than through `parse`.
+    longNameRewritesAnything.rewriteLeniently(beyond) shouldBe LongNameNamed.SPELLED_OUT.name
   }
 
-  test("a rewrite accepts the text its expression admits, however the source is written") {
-    // The length of a source decides nothing either. This one is longer than every key of
-    // its family and admits a name followed by any number of underscores, and any number is
-    // what the family accepts - while text the source does not admit still resolves to
-    // nothing, so the leniency is that of the expression rather than of its length.
-    val sourceLength = longSourceRewrite.lenientPatterns.map { case (expression, _) =>
-      expression.pattern.pattern().length
+  test("the ceiling counts the keys of a family, so a family of longer names rewrites longer text") {
+    // The same rewrite over two families whose names differ in length accepts text of two
+    // different lengths, which is the whole of what it means for the ceiling to be derived
+    // from the data of a family rather than fixed by this typeclass.
+    val shortCeiling = LongestSampleKey + LenientMargin
+    val longCeiling = LongNameNamed.SPELLED_OUT.name.length + LenientMargin
+    longCeiling should be > shortCeiling
+    rewritesAnything.lenientLengthCeiling shouldBe shortCeiling
+    longNameRewritesAnything.lenientLengthCeiling shouldBe longCeiling
+    rewritesAnything.parse("A" * shortCeiling) should haveValue(SampleNamed.STANDARD)
+    rewritesAnything.parse("A" * (shortCeiling + 1)) should beFailure
+    longNameRewritesAnything.parse("A" * longCeiling) should haveValue(LongNameNamed.SPELLED_OUT)
+    longNameRewritesAnything.parse("A" * (longCeiling + 1)) should beFailure
+    // The text the shorter family reports is text the longer family still rewrites.
+    longNameRewritesAnything.parse("A" * (shortCeiling + 1)) should
+      haveValue(LongNameNamed.SPELLED_OUT)
+  }
+
+  test("the ceiling counts the targets of the alternate-name table as well as its spellings") {
+    // The fourth source the ceiling is derived from, and the one that is not a spelling
+    // anything is looked up by: the text that survives the rewrites is looked up through the
+    // alternate-name table as well, so a row naming a value the family's own members do not
+    // hold - a name a second provider resolves, or one the family has retired - has a target
+    // longer than any key of it. Here the spellings of the table are short and the target is
+    // what the ceiling is built from, so the rewrite of this family receives text that a
+    // ceiling reading the spellings alone would refuse.
+    val spellings = longAliasTarget.alternateNames.keySet.map(_.length)
+    spellings.max should be < LongAliasTarget.length
+    LongAliasTarget.length should be > LongestSampleKey + LenientMargin
+    longAliasTarget.lenientLengthCeiling shouldBe LongAliasTarget.length + LenientMargin
+    longAliasTarget.parse("A" * longAliasTarget.lenientLengthCeiling) should
+      haveValue(SampleNamed.STANDARD)
+    longAliasTarget.parse("A" * (longAliasTarget.lenientLengthCeiling + 1)) should beFailure
+    longAliasTarget.parse("A" * (LongestSampleKey + LenientMargin + 1)) should
+      haveValue(SampleNamed.STANDARD)
+  }
+
+  test("the longest expression source a family declares is counted in its ceiling") {
+    // A family whose expression source is longer than any of its keys is bounded by that
+    // source, so a rewrite written out at length still receives the text it was written for.
+    // This one admits a name followed by any number of underscores, and the number the family
+    // accepts is what its own source leaves room for - while text the source does not admit
+    // resolves to nothing whatever its length, the leniency being that of the expression.
+    val sourceLength = longSourceRewrite.lenientSources.map { case (source, _) =>
+      source.length
     }.max
-    sourceLength should be > sample.values.toList.map(_.name.length).max
-    longSourceRewrite.parse("MORE" + "_" * (sourceLength + 1)) should haveValue(SampleNamed.MORE)
-    longSourceRewrite.parse("MORE" + "_" * 5000) should haveValue(SampleNamed.MORE)
+    sourceLength should be > LongestSampleKey
+    longSourceRewrite.lenientLengthCeiling shouldBe sourceLength + LenientMargin
+    longSourceRewrite.parse("MORE" + "_" * (sourceLength + LenientMargin - 4)) should
+      haveValue(SampleNamed.MORE)
+    longSourceRewrite.parse("MORE" + "_" * (sourceLength + LenientMargin - 3)) should beFailure
     longSourceRewrite.parse("MORE" + "-" * 5000) should beFailure
   }
 
   test("parsing names the text it rejected in full, and the failure renders bounded and on one line") {
-    // The message is the one the lookup being ported raised - the family, then the text as it
-    // was supplied - so a caller correcting its input is handed back exactly what was refused.
+    // The message names the family and then the text as it was supplied, so a caller
+    // correcting its input is handed back exactly what was refused.
     // This operation is the one every family parses through, so the wording is asserted here
     // once for all of them, together with the property that makes it safe to write out: the
     // rendering of the failure bounds every part it writes and escapes anything that could
@@ -1011,16 +1086,14 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
 
   test("when two members fold to one key each keeps the name it publishes") {
     // A member's own canonical name is claimed unconditionally and the folded spellings fill
-    // only the slots still free, which is the precedence of the loader the port took its
-    // registration from: that loader put each row under its own name unconditionally and
-    // under the folded spelling only where the spelling was free. It is what keeps every
-    // member of every family resolvable by the name it publishes - here the later member is
-    // named `DUP`, which is also the folded spelling of the earlier member's `Dup`, and it
-    // reaches itself through that name rather than reaching the member declared before it.
+    // only the slots still free. That precedence is what keeps every member of every family
+    // resolvable by the name it publishes - here the later member is named `DUP`, which is
+    // also the folded spelling of the earlier member's `Dup`, and it reaches itself through
+    // that name rather than reaching the member declared before it.
     //
     // So the only view that can be narrower than the member list is the folded one: the two
     // members genuinely share one folded key, and it belongs to the member whose canonical
-    // name it is. This is where the single-key member of the fixture of the original went.
+    // name it is.
     CollidingNamed.lookup.values.toList shouldBe
       List(CollidingNamed.MIXED, CollidingNamed.UPPER, CollidingNamed.PLAIN)
     CollidingNamed.lookup.valueOf("Dup") shouldBe Some(CollidingNamed.MIXED)
@@ -1206,9 +1279,13 @@ final class NamedEnumSpec extends AnyFunSuite with Matchers with TableDrivenProp
  * spelling, the three rewrites of the fixture in an order that breaks the chain they form,
  * two rewrites spelled so that the fold of the input and the case-insensitive copy of a
  * source are each observable on their own, three rewrites whose shape decides what a rule
- * requires of the last character of the text, and the whole of the fixture declared through
- * the sources of its rewrites rather than through compiled expressions. Varying one table at
- * a time is what lets each test name the single rule it covers.
+ * requires of the last character of the text, a table whose alternate spelling and a table
+ * whose alternate target are each longer than every key of the family, and the whole of the
+ * fixture declared through the sources of its rewrites rather than through compiled
+ * expressions. Varying one table at a time is what lets each test name the single rule it
+ * covers, and it is what makes the four data a family's lenient ceiling is derived from
+ * separable: the keys of its members, the two sides of its alternate-name table and the
+ * sources of its rewrites each set that ceiling in a family of their own.
  *
  * ===Why a lookup is published implicitly here and not there===
  *
@@ -1261,7 +1338,7 @@ private[collect] object NamedEnumFixtures {
     val Alternates: Map[String, String] = Map("Alternate" -> "Standard")
 
     /**
-     * The three lenient rewrites the ported fixture declared, in its order, as text.
+     * The three lenient rewrites of the sample family, in declaration order, as text.
      *
      * The order is load-bearing: the first rewrite turns `A1` into `B1`, which the second
      * turns into `Standard`, and the exact lookup runs only once the whole table has been
@@ -1275,7 +1352,6 @@ private[collect] object NamedEnumFixtures {
     val LenientSources: List[(String, String)] =
       List("A([1-2])" -> "B$1", "B1" -> "Standard", "B2" -> "More")
 
-    /** The three lenient rewrites as compiled expressions, for a family declaring them so. */
     val LenientPatterns: List[(Regex, String)] =
       LenientSources.map { case (source, replacement) => source.r -> replacement }
 
@@ -1425,14 +1501,44 @@ private[collect] object NamedEnumFixtures {
       externals = Map("Foo" -> Map("Foo1" -> "Alternate")),
       familyName = "AliasedExternal")
 
+  /**
+   * The room the typeclass allows above the longest text a family knows.
+   *
+   * The lenient stage of a family is applied to text no longer than the longest key,
+   * alternate spelling, alternate target or expression source the family holds, plus this
+   * margin; text beyond that is reported as text naming no member, without being folded to
+   * upper case and without an expression being applied to it. The number is held privately by
+   * the typeclass, so it is written out again here: the families below are sized against it,
+   * and the tests over them assert the boundary itself, so a change to the margin that was
+   * not meant fails them rather than passing unnoticed.
+   */
+  val LenientMargin: Int = 32
+
+  /**
+   * The longest key any member of the sample family is registered under.
+   *
+   * Derived from the members rather than written down, since it is what the ceiling of every
+   * lookup over those members is built from - four of the families below declare no table
+   * longer than this, so their ceiling is this length plus
+   * [[NamedEnumFixtures.LenientMargin]].
+   */
+  val LongestSampleKey: Int =
+    SampleNamed.values.toList
+      .flatMap(member => List(member.name, member.name.toUpperCase(Locale.ENGLISH)))
+      .map(_.length)
+      .max
+
   /** An alternate spelling far longer than any name of the family it resolves in. */
   val LongAliasSpelling: String = "AnAlternateSpellingLongerThanEveryKeyOfThisFamily"
 
   /**
    * A lookup reached through an alternate spelling longer than every key of its family.
    *
-   * Neither stage counts the characters of the text it is handed, so this spelling resolves
-   * exactly and its folded forms resolve through the fold the lenient stage performs.
+   * The exact lookup is bounded by nothing, and the ceiling of the lenient stage counts the
+   * alternate spellings of a family as well as the keys of its members, so this spelling
+   * resolves exactly and its folded forms resolve through the fold the lenient stage performs.
+   * The spelling is longer than the keys of this family and the margin together, which is what
+   * makes it able to tell a ceiling that counts the spellings from one that does not.
    */
   val longAlias: NamedEnum[SampleNamed] =
     NamedEnum.of(
@@ -1441,15 +1547,55 @@ private[collect] object NamedEnumFixtures {
       familyName = "LongAlias")
 
   /**
+   * The source of a rewrite that matches every text there is.
+   *
+   * Held as a value because three families declare it - over the sample members, over the
+   * long-named member and over the members of the family whose alternate target sets its
+   * ceiling - and the tests over them compare what those families accept. The comparison only
+   * means something while the rewrite is the same one, and this is what makes it the same one.
+   * The source is shorter than every key of each of those families, so it never sets a ceiling
+   * itself. It is declared here, ahead of the first family that uses it, because these
+   * fixtures are initialized in the order they are written.
+   */
+  val RewritesAnythingSource: String = "^.*$"
+
+  /** An alternate target naming a value this family does not hold, longer than every key. */
+  val LongAliasTarget: String = "ARetiredCanonicalNameNoMemberOfThisFamilyCarriesNow"
+
+  /**
+   * A lookup whose alternate-name table points at a target longer than every key of it.
+   *
+   * Both sides of that table are counted in the ceiling, because the text surviving the
+   * rewrites is looked up through the table as well as against the keys: a row may name a
+   * value the closed members do not hold - a name a second provider resolves, or one the
+   * family has retired - and such a target is longer than any key. The spellings here are
+   * short so that the target is the only datum that can set the ceiling, and the rewrite is
+   * the one that matches every text there is, so the length the family accepts is observable
+   * as a resolution rather than only as a number.
+   */
+  val longAliasTarget: NamedEnum[SampleNamed] =
+    NamedEnum.of(
+      SampleNamed.values,
+      Map("Retired" -> LongAliasTarget),
+      lenient = List(RewritesAnythingSource.r -> "Standard"),
+      familyName = "LongAliasTarget")
+
+  /**
    * A lookup whose single rewrite consumes text of any length before a literal.
    *
    * A greedy group matches text of whatever length it is given, so this is the shape of
-   * expression whose cost of matching grows with the text rather than with the family, and
-   * the shape the requirement a rule derives from its own source exists for: the source ends
-   * in the plain literal `X`, so every full match of it ends in `X` and text ending in
-   * anything else is declined rather than matched. The source carries no anchor - a rewrite
-   * is applied through a match of the whole of the text, which makes an anchor redundant -
-   * so its last character is the literal the requirement is read from.
+   * expression whose cost of matching grows with the text rather than with the family. It is
+   * therefore the shape both bounds of the lenient stage exist for. The source ends in the
+   * plain literal `X`, so every full match of it ends in `X` and text ending in anything else
+   * is declined by the requirement a rule reads from its own source rather than matched; and
+   * the rewrite turns text that no member names into the name of a member, so the ceiling of
+   * the family is observable through it as the length at which a resolution becomes a report.
+   * The source carries no anchor - a rewrite is applied through a match of the whole of the
+   * text, which makes an anchor redundant - so its last character is the literal the
+   * requirement is read from. No table of the library declares an expression of this shape:
+   * every one of them is anchored to a literal shape of a fixed size, which is why the
+   * narrowing the ceiling introduces is observable only through a family declared for it,
+   * which is what this one is.
    */
   val greedyRewrite: NamedEnum[SampleNamed] =
     NamedEnum.of(
@@ -1472,11 +1618,12 @@ private[collect] object NamedEnumFixtures {
   /**
    * The number of characters of hostile text the timing guard hands to that expression.
    *
-   * Two hundred thousand opening brackets is text crafted for the expression above: every
-   * position of it is a position the first group could end at, so applying the expression to
-   * it costs minutes, while declining it on the last character of the text costs
-   * milliseconds. The same number is used for the text that every rewrite of a family does
-   * match, so that the two are the same size and only the expressions differ.
+   * Two hundred thousand brackets is text crafted for the expression above: every position of
+   * it is a position the first group could end at, so applying the expression to it costs
+   * minutes, while refusing the text for its length costs the reading of one integer. The
+   * same number is used for the text handed to the family that rewrites everything and to the
+   * chain called on its own, so that every input of that size is the same size and only the
+   * family and the operation differ.
    */
   val HostileInputLength: Int = 200000
 
@@ -1491,18 +1638,12 @@ private[collect] object NamedEnumFixtures {
    */
   val CommentedSource: String = "(?x)A # X"
 
-  /**
-   * A lookup declaring that rewrite, so the reading of its source can be asserted.
-   */
   val commentedRewrite: NamedEnum[SampleNamed] =
     NamedEnum.ofSources(
       SampleNamed.values,
       lenient = List(CommentedSource -> "Standard"),
       familyName = "CommentedRewrite")
 
-  /**
-   * The same rewrite handed over already compiled, to assert both constructors alike.
-   */
   val commentedRewriteFromPatterns: NamedEnum[SampleNamed] =
     NamedEnum.of(
       SampleNamed.values,
@@ -1525,22 +1666,24 @@ private[collect] object NamedEnumFixtures {
   /**
    * A lookup whose single rewrite turns every text there is into the name of a member.
    *
-   * With this family a resolution is proof that the chain of rewrites ran over the text, which
-   * is how the tests above assert that the chain is applied to text of every length -
-   * cheaply and deterministically, rather than by timing a call.
+   * With this family a resolution is proof that the chain of rewrites ran over the text and a
+   * failure is proof that it did not, which is how the tests above assert that text beyond the
+   * ceiling is reported without the chain running - cheaply and deterministically, rather than
+   * by timing a call.
    */
   val rewritesAnything: NamedEnum[SampleNamed] =
     NamedEnum.of(
       SampleNamed.values,
-      lenient = List("^.*$".r -> "Standard"),
+      lenient = List(RewritesAnythingSource.r -> "Standard"),
       familyName = "RewritesAnything")
 
   /**
    * A lookup whose expression source is longer than every key of its family.
    *
-   * The length of a source decides nothing about the text the family accepts: this source
-   * admits a name followed by any number of underscores, and any number is what the family
-   * accepts, the source being longer than every key of it either way.
+   * The ceiling counts the sources of the expressions a family declares, so a family whose
+   * rewrites are written out at length receives text of the length those rewrites were written
+   * for. Here the source admits a name followed by any number of underscores, and the source
+   * itself is what sets the ceiling.
    */
   val longSourceRewrite: NamedEnum[SampleNamed] =
     NamedEnum.of(
@@ -1552,23 +1695,21 @@ private[collect] object NamedEnumFixtures {
    * A family whose single member is named at far greater length than any other fixture here.
    *
    * The leniency of a family that declares no rewrite is the fold of its input to upper case,
-   * and that fold is applied to text of every length, so the lower-case spelling of this name
-   * resolves through it. The family is also the second subject of the pair of measurements
-   * showing that the length of a family's own names decides nothing about the text its
-   * rewrites accept.
+   * and that fold is inside the bounded stage, so this family is what shows the ceiling to be
+   * the family's own data plus the margin rather than a number this typeclass fixes: a ceiling
+   * of the margin alone would report the lower-case spelling of this name. The family is also
+   * the second subject of the pair of measurements showing that a family of longer names is
+   * given a longer ceiling.
    *
    * @param name  the canonical name of the member
    */
   sealed abstract class LongNameNamed private (val name: String) extends Named
 
-  /** The single long-named member, and the lookup over it. */
   object LongNameNamed {
 
-    /** The member whose name is written out at far greater length than any other here. */
     case object SPELLED_OUT
         extends LongNameNamed("AVeryLongCanonicalNameOfAMemberOfAFamilyDeclaringNoRewrite")
 
-    /** The lookup of the long-named family, declaring no table at all. */
     val lookup: NamedEnum[LongNameNamed] =
       NamedEnum.of(NonEmptyList.one(SPELLED_OUT), familyName = "LongNameNamed")
   }
@@ -1576,14 +1717,14 @@ private[collect] object NamedEnumFixtures {
   /**
    * The rewrite of [[NamedEnumFixtures.rewritesAnything]] over the long-named family.
    *
-   * The same expression over a family whose longest key is far longer accepts the same text,
-   * which is the pair of measurements that shows the lenient stage to depend on the rules a
-   * family declares and not on the length of the names it holds.
+   * The same expression over a family whose longest key is far longer accepts correspondingly
+   * longer text, which is the pair of measurements that shows the ceiling of the lenient stage
+   * to be derived from the data of a family rather than fixed by the typeclass.
    */
   val longNameRewritesAnything: NamedEnum[LongNameNamed] =
     NamedEnum.of(
       NonEmptyList.one(LongNameNamed.SPELLED_OUT),
-      lenient = List("^.*$".r -> LongNameNamed.SPELLED_OUT.name),
+      lenient = List(RewritesAnythingSource.r -> LongNameNamed.SPELLED_OUT.name),
       familyName = "LongNameRewritesAnything")
 
   /**
@@ -1601,23 +1742,17 @@ private[collect] object NamedEnumFixtures {
    */
   sealed abstract class WiderNamed private (val name: String) extends Named
 
-  /** The closed member, the value beyond it, and the two lookups over them. */
   object WiderNamed {
 
-    /** The closed member, which the exact lookup of the family resolves. */
     case object INSIDE extends WiderNamed("Inside")
 
-    /** The value outside the member list, reachable only through the wider resolution. */
     case object OUTSIDE extends WiderNamed("Outside")
 
-    /** The members of the family, deliberately excluding the value above. */
     val values: NonEmptyList[WiderNamed] = NonEmptyList.one(INSIDE)
 
-    /** A group naming the member and the value outside the member list. */
     val Externals: Map[String, Map[String, String]] =
       Map("Foo" -> Map("In" -> "Inside", "Out" -> "Outside"))
 
-    /** The lookup a family with no wider resolution gets, which drops the second row. */
     val withoutResolution: NamedEnum[WiderNamed] =
       NamedEnum.ofSources(values, externals = Externals, familyName = "WiderNamedClosed")
 
@@ -1838,20 +1973,18 @@ private[collect] object NamedEnumFixtures {
    * claimed unconditionally and a folded spelling only fills a slot still free, so each
    * member keeps the name it publishes and the folded key belongs to the member whose
    * canonical name it is. This is the one way a key view of a family is narrower than its
-   * member list - the folded view has one entry fewer - and it is where the single-key member
-   * of the ported fixture went. Its lookup is deliberately not published implicitly.
+   * member list - the folded view has one entry fewer. The members are declared in the order
+   * they claim their keys, which is what makes that precedence observable. The lookup of this
+   * family is deliberately not published implicitly.
    *
    * @param name  the canonical name of the member
    */
   sealed abstract class CollidingNamed private (val name: String) extends Named
 
-  /** The colliding members, in the order they claim their keys. */
   object CollidingNamed {
 
-    /** The earlier member, which claims `Dup` and offers `DUP` as its folded spelling. */
     case object MIXED extends CollidingNamed("Dup")
 
-    /** The later member, whose canonical name is the folded spelling of the earlier one. */
     case object UPPER extends CollidingNamed("DUP")
 
     /** A member that collides with nothing, to show the rest of the family is unaffected. */

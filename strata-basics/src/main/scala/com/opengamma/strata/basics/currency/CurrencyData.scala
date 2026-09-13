@@ -5,69 +5,70 @@
  */
 package com.opengamma.strata.basics.currency
 
+import com.opengamma.strata.collect.NoJavaSerialization
+
 /**
- * A single row of transcribed currency reference data.
+ * A single row of currency reference data.
  *
- * Each row corresponds to one ISO-4217 currency entry of the Java currency configuration that this
- * module replaces, and carries exactly the three properties that configuration defined:
- * the number of minor unit digits, the triangulation currency and the historic flag.
+ * Each row is one ISO-4217 currency, identified by its code and carrying the three properties the
+ * module holds for a currency: the number of minor unit digits, the triangulation currency and
+ * the historic flag.
  *
  * The triangulation currency is held as a plain three letter `String` code rather than as a
  * [[Currency]]. This is deliberate and load bearing: `Currency` builds its instances *from* this
  * table, so storing a `Currency` here would make the two objects mutually dependent at
- * construction time. The Java implementation hit the same problem and documented it: its
- * `triangulationCurrency` field is a `String` because the load order of USD and EUR cannot be
- * guaranteed. `Currency` resolves the code to a `Currency` instance lazily instead.
+ * construction time, and the order in which USD and EUR become available would decide whether a
+ * row could be built at all. `Currency` resolves the code to a `Currency` instance lazily
+ * instead.
  *
  * @param code                       the ISO-4217 three letter currency code, upper case
  * @param minorUnitDigits            the number of digits of minor units, such as 2 for cents in the dollar
  * @param triangulationCurrencyCode  the three letter code of the currency to triangulate quotes through
- * @param historic                   whether the currency is no longer in active use
+ * @param historic                   whether the currency is historic rather than in active use
  */
 private[basics] final case class CurrencyRow(
     code: String,
     minorUnitDigits: Int,
     triangulationCurrencyCode: String,
     historic: Boolean)
+    extends NoJavaSerialization
 
 /**
  * The currency reference data of the module, expressed as immutable Scala data.
  *
- * This object carries the currency table transcribed verbatim from the Java currency
- * configuration, together with the market convention priority ordering transcribed from the Java
- * currency priority data. Both were runtime classpath resources in the Java implementation; they
- * are compiled data here, so there is no registry to populate, no resource to locate and no load
- * failure to recover from.
+ * This object is the currency table itself, compiled into the module, together with the market
+ * convention priority ordering. The table has 74 rows, one per ISO-4217 currency, each holding
+ * the four fields of [[CurrencyRow]]: the code, the minor unit digits, the triangulation currency
+ * code and the historic flag. Nothing is read at run time, so the table is complete once this
+ * object initialises and cannot be absent or partial.
  *
  * It holds data only and no behaviour. [[Currency]] builds its 74 instances from [[rows]] and
  * [[byCode]], exposes the [[nonHistoricCodes]] subset as its configured currencies, and
  * `CurrencyPair` reads [[marketConventionPriority]] to decide the base currency of a conventional
  * pair. Those member names are the published contract of this object and are kept stable.
  *
- * Invariants, all asserted row for row against the Java captured reference data manifest by
- * `ReferenceDataManifestSpec`, so a self consistent but mistranscribed row cannot pass:
+ * Invariants, which hold row for row and which a consumer may rely on:
  *
- *  - [[rows]] holds exactly 74 entries with distinct codes, in the order the Java configuration
- *    declared them: the active currencies alphabetically, then the metal and unapplicable
- *    currencies, then the legacy currencies replaced by the euro.
+ *  - [[rows]] holds exactly 74 entries with distinct codes, in the published order: the active
+ *    currencies alphabetically, then the metal and unapplicable currencies, then the legacy
+ *    currencies of the states that adopted the euro.
  *  - 55 rows are active and 19 are historic. The active subset is exactly the set of currencies
- *    that the Java implementation exposed as named constants and returned from
- *    `getAvailableCurrencies`. All 74 remain resolvable, so a historic currency resolves with its
- *    real minor units and triangulation currency.
+ *    [[Currency]] publishes as named constants. All 74 remain resolvable, so a historic currency
+ *    resolves with its real minor units and triangulation currency.
  *  - `minorUnitDigits` is 0 for 12 rows, 2 for 60 rows and 3 for 2 rows.
  *  - Every `triangulationCurrencyCode` is `EUR` or `USD`, and is itself one of the 74 codes.
  *
- * No currency may be added to, removed from or edited in this table: it is a transcription of
- * existing reference data, and introducing a new currency is outside the scope of the port.
+ * No currency may be added to, removed from or edited in this table: it is published reference
+ * data, and a new currency is not established here.
  */
 private[basics] object CurrencyData {
 
   /**
-   * The 74 transcribed currency rows, in the declaration order of the Java currency configuration.
+   * The 74 currency rows, in the published order.
    *
-   * The order is observable through any iteration a consumer performs, so it is kept stable and
-   * deterministic rather than re-sorted. The trailing comment on each row is the description the
-   * Java configuration carried for that currency.
+   * The order is part of the meaning of the table and is observable through any iteration a
+   * consumer performs, so it is kept exactly as published rather than re-sorted. The trailing
+   * comment on each row is the published description of that currency.
    */
   val rows: Vector[CurrencyRow] = Vector(
     // active currencies
@@ -125,7 +126,7 @@ private[basics] object CurrencyData {
     CurrencyRow("XXX", 0, "USD", historic = false),          // No applicable currency
     CurrencyRow("XAG", 2, "USD", historic = false),          // Silver (troy ounce)
     CurrencyRow("XAU", 0, "USD", historic = false),          // Gold (troy ounce)
-    CurrencyRow("XPD", 0, "USD", historic = false),          // Paladium (troy ounce)
+    CurrencyRow("XPD", 0, "USD", historic = false),          // Palladium (troy ounce)
     CurrencyRow("XPT", 0, "USD", historic = false),          // Platinum (troy ounce)
     // historic EUR currencies
     CurrencyRow("ATS", 2, "EUR", historic = true),           // Austria
@@ -149,7 +150,7 @@ private[basics] object CurrencyData {
     CurrencyRow("SKK", 2, "EUR", historic = true))           // Slovakia
 
   /**
-   * The transcribed rows keyed by their ISO-4217 code.
+   * The rows keyed by their ISO-4217 code.
    *
    * Derived from [[rows]], so the two can never disagree. Codes are distinct, so the map holds the
    * same 74 entries.
@@ -164,17 +165,17 @@ private[basics] object CurrencyData {
   /**
    * The 55 codes of currencies that are in active use.
    *
-   * These are the currencies that the Java implementation defined as named constants and returned
-   * from `getAvailableCurrencies`. Derived from [[rows]] and therefore in the same order.
+   * These are the currencies [[Currency]] publishes as named constants and offers as its
+   * configured set. Derived from [[rows]] and therefore in the same order.
    */
   val nonHistoricCodes: Vector[String] = rows.filterNot(_.historic).map(_.code)
 
   /**
-   * The 19 codes of currencies that are no longer in active use.
+   * The 19 codes of the historic currencies.
    *
-   * These remain resolvable with their real minor units and triangulation currency, matching the
-   * Java implementation, where they were pre-seeded rather than treated as unknown codes. Derived
-   * from [[rows]] and therefore in the same order.
+   * These are held in the table rather than treated as unknown codes, so each resolves with its
+   * real minor unit digits and triangulation currency. Derived from [[rows]] and therefore in the
+   * same order.
    */
   val historicCodes: Vector[String] = rows.filter(_.historic).map(_.code)
 
@@ -195,8 +196,8 @@ private[basics] object CurrencyData {
    * value means a higher priority.
    *
    * Derived from [[marketConventionPriority]] by position, so the vector and this map can never
-   * disagree. The Java implementation numbered the same ordering from one; only the relative order
-   * is observable, so the base of the index is immaterial.
+   * disagree. Only the relative order of two indices is ever compared, so the base the index
+   * counts from is immaterial.
    */
   val marketConventionPriorityIndex: Map[String, Int] = marketConventionPriority.zipWithIndex.toMap
 }

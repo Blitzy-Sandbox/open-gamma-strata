@@ -7,14 +7,19 @@ package com.opengamma.strata.collect.json
 
 import java.time.DayOfWeek
 
+import scala.annotation.tailrec
+import scala.util.control.NonFatal
+
 import cats.data.EitherNec
 import cats.data.NonEmptyChain
+import cats.data.Validated
 
 import io.circe.Codec
 import io.circe.CursorOp
 import io.circe.Decoder
 import io.circe.DecodingFailure
 import io.circe.Encoder
+import io.circe.HCursor
 import io.circe.Json
 import io.circe.KeyDecoder
 import io.circe.KeyEncoder
@@ -68,6 +73,23 @@ import com.opengamma.strata.collect.result.Failure
  *    rather than written out as an explicitly empty field;
  *  - a '''numeric value''' uses `taggedDouble`, `doubleArrayCodec` or `doubleMatrixCodec`.
  *
+ * ===How much a document may ask for===
+ *
+ * A decoder is the one place in this port where the size of what gets allocated is stated from
+ * outside it, so the sizes a document may state are bounded here rather than taken on trust.
+ * The numeric codecs carry their own ceilings - `MaximumArrayElements` for the length of an
+ * array, and `MaximumMatrixRows`, `MaximumMatrixColumns` and `MaximumMatrixElements` for the
+ * shape of a matrix - and every one of them is compared with the JSON as it already stands,
+ * before an element is read, since a refusal issued after the reading has already paid for it.
+ * A type whose wire form holds a collection bounds it the same way by wrapping its decoder in
+ * `boundedElements`, when the collection is the whole of that wire form, or in `boundedFields`,
+ * when the collections are named fields of an object; both apply `MaximumCollectionElements`.
+ *
+ * Every ceiling is set above anything this port can itself produce, for the reasons recorded at
+ * each of them, so `decode(encode(x))` holds for every value the library can build. What a
+ * ceiling refuses is a document asking for more than this port has any use for, never a
+ * document this port wrote.
+ *
  * ===Why the helpers are not implicit===
  *
  * Every member here is declared without `implicit`, and a type's companion assigns the one
@@ -88,6 +110,19 @@ object Codecs {
   /** Separates the messages of accumulated failures in a single decoding failure. */
   private val FailureMessageSeparator: String = "; "
 
+  /**
+   * The greatest number of accumulated failures whose messages one decoding failure holds,
+   * before the marker that states how many were left out.
+   *
+   * A factory of this port reports one cause per broken invariant, and the types it is used
+   * by declare a handful of them each, so this is set above what any of them can accumulate
+   * and every decoding failure the library itself produces therefore names every cause. The
+   * bound exists for the payload that drives a factory to accumulate a cause per element -
+   * a document holding thousands of amounts, each rejected - where the report would
+   * otherwise grow with the payload rather than describe it.
+   */
+  private val MaxReportedFailures: Int = 10
+
   /** The wire form of a value that is not a number. */
   private val NaNTag: String = "NaN"
 
@@ -107,10 +142,32 @@ object Codecs {
    * failure model of the JSON layer, and every helper that can reject a payload on the
    * strength of a type's own factory routes through it. Having exactly one bridge is what
    * makes the message uniform: the messages of the failures appear in the order they were
-   * accumulated, separated by a semicolon and a space, and a single failure therefore
-   * yields exactly its own message. The position within the document is taken from the
-   * cursor that was being decoded, so a failure deep inside a payload still reports where
-   * it happened.
+   * accumulated, separated by a semicolon and a space. The position within the document is
+   * taken from the cursor that was being decoded, so a failure deep inside a payload still
+   * reports where it happened.
+   *
+   * ===It is also where rejected text is neutralised===
+   *
+   * A payload is written by whoever sends it, and a factory that rejects one quotes what it
+   * refused: the message of the failure carries that text as it arrived. A decoding failure
+   * is read where a failure is read - a log, a report, a line of a console - so this is the
+   * boundary at which such text has to be made safe, and it is made safe here rather than
+   * when the failure is built, because [[Failure.message]] hands back what was refused to
+   * the code that acts on it. Two bounds hold of the message this method produces, whatever
+   * the payload was:
+   *
+   *  - every message is rendered through `Failure.renderDiagnostic`, so each is a single
+   *    line, holds no character a line-oriented reader could act on, and is bounded in
+   *    length however large the rejected value was (CWE-117, CWE-400);
+   *  - at most `MaxReportedFailures` of them are reported, in the order they were
+   *    accumulated, followed by one marker naming how many were left out, so a payload that
+   *    drives a factory to accumulate a cause per element cannot make the report grow with
+   *    the payload.
+   *
+   * Neither bound changes what an ordinary failure reads as: text within the bound holding
+   * none of the escaped characters renders to itself, character for character, so a single
+   * failure still yields exactly its own message and a handful of them still read as the
+   * messages their factory wrote, joined by the separator.
    *
    * @param failures  the failures to report, at least one
    * @param history  the position within the document, taken from the decoding cursor
@@ -118,11 +175,209 @@ object Codecs {
    */
   private def decodingFailure(
       failures: NonEmptyChain[Failure],
-      history: List[CursorOp]): DecodingFailure =
+      history: List[CursorOp]): DecodingFailure = {
 
-    DecodingFailure(
-      failures.toNonEmptyList.toList.map(_.message).mkString(FailureMessageSeparator),
+    val causes = failures.toNonEmptyList.toList
+    val reported = causes.take(MaxReportedFailures).map(cause => Failure.renderDiagnostic(cause.message))
+    val omitted = causes.length - reported.length
+    val parts = if (omitted > 0) reported :+ s"and $omitted more" else reported
+    DecodingFailure(parts.mkString(FailureMessageSeparator), history)
+  }
+
+  //-------------------------------------------------------------------------
+  /** Introduces the account a decoding failure gives of a factory that refused by raising. */
+  private val RaisedPrefix: String = "The payload was refused by the type it describes: "
+
+  /** Reported where a factory refused a payload by raising without saying anything. */
+  private val RaisedWithoutMessage: String = "no reason was given"
+
+  /**
+   * The greatest number of characters of rendered text a raised account carries.
+   *
+   * The bound is on the rendering rather than on the text behind it, an escaped character
+   * standing for six of these and a character standing for itself for one. An account that
+   * was cut carries [[RaisedAccountEllipsis]] as well, so the whole is at most this many
+   * characters plus that marker.
+   */
+  private val MaxRaisedAccount: Int = 256
+
+  /** Marks an account of a raised refusal that was cut short at [[MaxRaisedAccount]]. */
+  private val RaisedAccountEllipsis: String = "..."
+
+  /**
+   * Renders what a raised refusal said, bounded and on one line.
+   *
+   * The text comes from inside the library rather than from the document, but the value it
+   * names came from the document, so its length and its content are as unconstrained as the
+   * payload is - a message saying which date was refused carries that date, and a message
+   * saying which name was refused carries that name. It is therefore rendered as a diagnostic
+   * is rendered everywhere in these modules, by the same rule
+   * `com.opengamma.strata.collect.result.Failure` applies when it writes a failure out:
+   *
+   *   - the three control characters a reader recognises - line feed, carriage return, tab -
+   *     become their short escapes;
+   *   - every other ISO control character, the two Unicode separators a reader may treat as
+   *     ending a line (U+2028 and U+2029), and a surrogate standing on its own become a
+   *     fixed-width `\uXXXX` escape. The separators matter as much as the control characters
+   *     do: a reader that splits on them sees two lines where the log holds one, which is the
+   *     forgery this rendering exists to prevent;
+   *   - a surrogate '''pair''' is one character of one language or another and is kept whole;
+   *   - everything else stands as it is.
+   *
+   * The rendering is assembled a unit at a time, a surrogate pair counting as one, and stops
+   * as soon as the next unit would carry it past [[MaxRaisedAccount]]. Cutting by rendered
+   * unit rather than by machine word is what keeps a pair whole and an escape entire: cutting
+   * the text itself could leave half of a character at the end, which is the replacement glyph
+   * this rendering avoids everywhere else.
+   *
+   * The rule is applied here rather than borrowed, `Failure` keeping its rendering to itself
+   * for the reason stated there - rendering is what that type does when it writes a failure
+   * out, not an operation it offers its callers - and the two are held together by the tests
+   * of each, which state the same cases.
+   *
+   * @param error  the refusal that was raised
+   * @return the account of it, on one line and within the ceiling
+   */
+  private def raisedAccount(error: Throwable): String = {
+    val said = Option(error.getMessage).map(text => text.trim).filter(text => text.nonEmpty)
+    renderAccount(said.getOrElse(RaisedWithoutMessage))
+  }
+
+  /**
+   * Renders one piece of text as a bounded single line, by the rule [[raisedAccount]] states.
+   *
+   * Threading the text rendered so far through a tail-recursive step, rather than accumulating
+   * into a mutable local, keeps the method free of assignment; both the intermediate and the
+   * final strings are bounded by [[MaxRaisedAccount]], so the concatenation costs no more than
+   * assembling the result in one pass would.
+   *
+   * @param text  the text to render
+   * @return the rendering of it, on one line and within the ceiling
+   */
+  private def renderAccount(text: String): String = {
+    @tailrec
+    def rendering(index: Int, rendered: String): String =
+      if (index >= text.length) {
+        rendered
+      } else {
+        val head = text.charAt(index)
+        val pairsWithNext =
+          Character.isHighSurrogate(head) &&
+            index + 1 < text.length &&
+            Character.isLowSurrogate(text.charAt(index + 1))
+        val unit = if (pairsWithNext) text.substring(index, index + 2) else describeChar(head)
+        if (rendered.length + unit.length > MaxRaisedAccount) {
+          rendered + RaisedAccountEllipsis
+        } else {
+          rendering(index + (if (pairsWithNext) 2 else 1), rendered + unit)
+        }
+      }
+
+    rendering(0, "")
+  }
+
+  /**
+   * Renders one character of an account.
+   *
+   * @param ch  the character to render
+   * @return its short escape, its fixed-width escape, or the character itself
+   */
+  private def describeChar(ch: Char): String =
+    if (ch == '\n') {
+      "\\n"
+    } else if (ch == '\r') {
+      "\\r"
+    } else if (ch == '\t') {
+      "\\t"
+    } else if (escapesAsUnicode(ch)) {
+      unicodeEscape(ch)
+    } else {
+      ch.toString
+    }
+
+  /**
+   * Tests whether a character has to be written out as an escape rather than as itself.
+   *
+   * Every ISO control character other than the three with a short escape, the two Unicode
+   * separators a reader may treat as ending a line, and a surrogate standing on its own, which
+   * is half of a character and turns into a replacement glyph wherever it is written.
+   *
+   * @param ch  the character to test
+   * @return true where the character is written out as an escape
+   */
+  private def escapesAsUnicode(ch: Char): Boolean =
+    Character.isISOControl(ch) || ch == '\u2028' || ch == '\u2029' || Character.isSurrogate(ch)
+
+  /**
+   * The six-character escape of a character.
+   *
+   * The digits are the lower-case hexadecimal ones `Integer.toHexString` produces, padded to
+   * four so that the width of an escape is fixed and the ceiling above can be reasoned about
+   * without knowing which character was escaped.
+   *
+   * @param ch  the character to escape
+   * @return the `\uXXXX` escape of it
+   */
+  private def unicodeEscape(ch: Char): String = {
+    val digits = Integer.toHexString(ch.toInt)
+    s"\\u${"0" * (4 - digits.length)}$digits"
+  }
+
+  /**
+   * Reports a factory that refused a payload by raising as an ordinary decoding failure.
+   *
+   * Routed through the one bridge above, so a refusal that arrived this way is reported in
+   * exactly the shape a reported refusal is, and the position within the document is the
+   * position that was being decoded.
+   *
+   * @param error  the refusal that was raised
+   * @param history  the position within the document, taken from the decoding cursor
+   * @return the decoding failure describing it
+   */
+  private def raisedFailure(error: Throwable, history: List[CursorOp]): DecodingFailure =
+    decodingFailure(
+      NonEmptyChain.one(Failure.Invalid(RaisedPrefix + raisedAccount(error))),
       history)
+
+  /**
+   * Wraps a decoder so that a refusal raised while it runs is reported rather than propagated.
+   *
+   * A decoder answers with a failure; that is its whole contract, and it is what lets a caller
+   * decoding a document from outside the program decide what to do about a document it cannot
+   * use. The factories the decoders below hand their fields to do not share that contract:
+   * each of them is the factory a '''caller''' uses, and a caller supplying an argument that
+   * names nothing - a date in a year no calendar can hold data for, a magnitude no search can
+   * satisfy - is a fault in the calling code, which the library states by raising, as the
+   * library being ported did. The two contracts meet here, at the boundary between a document
+   * and a factory, and this is where the second becomes the first: what a factory raises about
+   * fields that came out of a payload is a property of that payload, so it is reported at the
+   * position it occurred, and the value the decoder was asked for is refused rather than the
+   * refusal escaping the decoding of the document altogether.
+   *
+   * The catch is deliberately broad, which it is nowhere else in these modules: elsewhere a
+   * guard names the exceptions it expects and lets anything else through as the defect it is,
+   * but the whole point here is that '''no''' refusal may leave a decoder, and the boundary
+   * cannot enumerate what every factory of every module might raise about its arguments. What
+   * it does not catch is what no code can handle: an error that says the machine itself is
+   * failing is left to propagate untouched.
+   *
+   * Both directions of the decoder are wrapped - the one that answers with the first failure
+   * and the one that accumulates - so a decoder used either way is equally bounded.
+   *
+   * @tparam A  the type decoded
+   * @param decoder  the decoder to wrap
+   * @return the decoder that reports a raised refusal as a decoding failure
+   */
+  def guardedDecoder[A](decoder: Decoder[A]): Decoder[A] = new Decoder[A] {
+
+    override def apply(cursor: HCursor): Decoder.Result[A] =
+      try decoder(cursor)
+      catch { case NonFatal(error) => Left(raisedFailure(error, cursor.history)) }
+
+    override def decodeAccumulating(cursor: HCursor): Decoder.AccumulatingResult[A] =
+      try decoder.decodeAccumulating(cursor)
+      catch { case NonFatal(error) => Validated.invalidNel(raisedFailure(error, cursor.history)) }
+  }
 
   //-------------------------------------------------------------------------
   /**
@@ -144,11 +399,11 @@ object Codecs {
    */
   def namedEnumCodec[A <: Named: NamedEnum]: Codec[A] = {
     val encoder: Encoder[A] = Encoder.instance(value => Json.fromString(value.name))
-    val decoder: Decoder[A] = Decoder.instance { cursor =>
+    val decoder: Decoder[A] = guardedDecoder(Decoder.instance { cursor =>
       stringDecoder(cursor).flatMap { text =>
         NamedEnum[A].parse(text).left.map(failures => decodingFailure(failures, cursor.history))
       }
-    }
+    })
     Codec.from(decoder, encoder)
   }
 
@@ -170,11 +425,11 @@ object Codecs {
       print: A => String): Codec[A] = {
 
     val encoder: Encoder[A] = Encoder.instance(value => Json.fromString(print(value)))
-    val decoder: Decoder[A] = Decoder.instance { cursor =>
+    val decoder: Decoder[A] = guardedDecoder(Decoder.instance { cursor =>
       stringDecoder(cursor).flatMap { text =>
         parse(text).left.map(failures => decodingFailure(failures, cursor.history))
       }
-    }
+    })
     Codec.from(decoder, encoder)
   }
 
@@ -247,6 +502,15 @@ object Codecs {
    * factory rejects becomes a decoding failure carrying every reason it gave, so it is
    * impossible to obtain an invalid value of such a type by decoding one.
    *
+   * That holds however the factory states its refusal. Most of them report one, in the
+   * failure model of the library, and those reasons are what the decoding failure carries.
+   * Some conditions are instead a fault in the calling code rather than a property of the
+   * data - a date outside the years a holiday calendar can hold data for, a shift larger
+   * than any search can satisfy - and a factory raises those, as the library being ported
+   * did. A payload is not calling code, so `guardedDecoder` turns such a refusal into a
+   * decoding failure as well: no document can make a decoder of this port raise instead of
+   * answering.
+   *
    * Only the decoder needs this treatment. The matching encoder can be derived directly,
    * because a value that exists in memory was already built through the same factory and is
    * therefore known to be legal.
@@ -258,11 +522,11 @@ object Codecs {
    * @return the decoder producing validated values
    */
   def validatedDecoder[R, A](build: R => EitherNec[Failure, A])(implicit raw: Decoder[R]): Decoder[A] =
-    Decoder.instance { cursor =>
+    guardedDecoder(Decoder.instance { cursor =>
       raw(cursor).flatMap { fields =>
         build(fields).left.map(failures => decodingFailure(failures, cursor.history))
       }
-    }
+    })
 
   /**
    * A decoder that builds a value through a checking factory reporting a single cause.
@@ -416,13 +680,13 @@ object Codecs {
   /**
    * The codec for a day of the week, represented by its constant name.
    *
-   * Saturday is the JSON string `"SATURDAY"`. Of the date and time types this port uses in
-   * its fields, five - a date, a time of day, a time zone, a period and a year with month -
-   * are taken from the JSON library unchanged and are deliberately not restated here, because
-   * what it produces for them is exactly what the policy of this port states. One is not: the
-   * day of the week, which that library does not cover at all and which this codec supplies.
-   * It is the only date or time codec the port declares itself, and the reason is the absence
-   * of a published instance rather than a disagreement with one.
+   * Saturday is the JSON string `"SATURDAY"`. Of the six date and time types carried in the
+   * fields of this library, five - a date, a time of day, a time zone, a period and a year
+   * with month - take the instances the JSON library publishes, which produce exactly the
+   * wire form the serialization contract states, so they are deliberately not restated here.
+   * The day of the week is the one type that library publishes no instance for, which is why
+   * this codec exists and why it is the only date or time codec declared here: the reason is
+   * the absence of an instance rather than a disagreement with one.
    *
    * Decoding consults the closed set of days, which is built once when this object is
    * initialized. It deliberately does not ask the day type itself to interpret the text,
@@ -444,23 +708,203 @@ object Codecs {
   }
 
   //-------------------------------------------------------------------------
-  /** Renders a run of elements as a JSON array, each element through `taggedDouble`. */
-  private def elementsJson(elements: Array[Double]): Json =
-    Json.fromValues(elements.iterator.map(element => taggedDoubleEncoder(element)).toVector)
+  /**
+   * The greatest number of elements this port reads into an array of doubles.
+   *
+   * A ceiling is needed because the size of a numeric payload is stated by the document rather
+   * than by the reader: without one, how large a run of values this port allocates, and how
+   * long it spends reading one, are chosen by whoever wrote the document, and a few kilobytes
+   * of repeated text name a run of values several gigabytes wide.
+   *
+   * The figure is far above anything this library itself produces. The longest run any captured
+   * parity fixture carries is a handful of elements, the generators of the test suites build
+   * arrays some three orders of magnitude shorter than this, and the widest numeric structure
+   * any type of this port holds is a square of currency rates. So the ceiling bounds a hostile
+   * document without ever standing between a value this port wrote and the reading of it back:
+   * `decode(encode(x))` holds for every `x` the port can build, which is the property the
+   * figure was chosen to preserve rather than one it trades away. At eight megabytes of
+   * elements it is also the largest single allocation any payload can ask this object for.
+   */
+  val MaximumArrayElements: Int = 1 << 20
+
+  /** The greatest number of rows this port reads into a matrix of doubles. */
+  val MaximumMatrixRows: Int = 4096
+
+  /** The greatest number of elements in one row this port reads into a matrix of doubles. */
+  val MaximumMatrixColumns: Int = 4096
+
+  /**
+   * The greatest number of elements, across every row, this port reads into a matrix.
+   *
+   * The row and column ceilings bound each dimension on its own; this one bounds their
+   * product, which is what actually gets allocated. It is checked in a width that the
+   * product of two counts cannot exceed, so a payload cannot slip past the ceiling by
+   * stating dimensions whose product wraps around.
+   */
+  val MaximumMatrixElements: Int = 1 << 20
+
+  /**
+   * The greatest number of elements this port reads into a collection of a value.
+   *
+   * This is the ceiling the two bounding decoders below apply, and it is deliberately the same
+   * figure the library already enforces on its own expansions: schedule generation refuses to
+   * produce more than a hundred thousand periods, and a sequence of value steps refuses to
+   * expand past a hundred thousand steps. A collection larger than this therefore cannot be
+   * part of any value this port builds - the factory that would have built it refuses first -
+   * so no document the port writes is refused by this ceiling, while a document from outside it
+   * can no longer ask for millions of entries to be allocated, sorted and grouped before the
+   * factory collapses them to a handful.
+   *
+   * It is one figure rather than one per type because the cost being bounded is the same in
+   * every case - the entries a decoder materialises out of a JSON array - and a per-type table
+   * of limits would be a set of numbers no reader could check against anything.
+   */
+  val MaximumCollectionElements: Int = 100000
+
+  /**
+   * Reports a payload whose stated size is beyond what this port reads.
+   *
+   * @param what  what was counted, naming the ceiling that was exceeded
+   * @param declared  the count the payload states
+   * @param limit  the greatest count this port reads
+   * @return the message describing the refusal
+   */
+  private def beyondCeiling(what: String, declared: Long, limit: Int): String =
+    s"Expected at most $limit $what, but the payload states $declared"
+
+  //-------------------------------------------------------------------------
+  /**
+   * Bounds how many elements the decoded value's own JSON array may state.
+   *
+   * This is the wrapper a type reaches for when its wire form '''is''' an array - a list of
+   * dates, a list of periods, a list of steps - and the ceiling is applied to that array
+   * before the wrapped decoder is invoked. The count comes from the JSON as it already stands,
+   * so a payload beyond the ceiling is refused without the wrapped decoder having allocated
+   * anything at all: that is the whole point of the wrapper, since a refusal issued after the
+   * entries have been read, sorted and grouped has already paid for them.
+   *
+   * A cursor whose value is not a JSON array has no count to offer and is passed to the
+   * wrapped decoder untouched, which is what keeps the wrapper invisible to every other
+   * refusal: what is wrong with such a payload is for the wrapped decoder to report, in its own
+   * words and at its own position.
+   *
+   * @tparam A  the type being decoded
+   * @param what  what the elements are, named as the refusal message should name them
+   * @param limit  the greatest number of elements this port reads, usually
+   *   `MaximumCollectionElements`
+   * @param decoder  the decoder to bound
+   * @return the decoder, refusing a payload that states more elements than the limit
+   */
+  def boundedElements[A](what: String, limit: Int)(decoder: Decoder[A]): Decoder[A] =
+    Decoder.instance { cursor =>
+      cursor.value.asArray match {
+        case Some(elements) if elements.size > limit =>
+          Left(DecodingFailure(beyondCeiling(what, elements.size.toLong, limit), cursor.history))
+        case _ =>
+          decoder(cursor)
+      }
+    }
+
+  /**
+   * Bounds how many elements the named array fields of the decoded object may state.
+   *
+   * This is the wrapper a product reaches for when the collections it holds are fields of its
+   * object rather than its whole wire form. Each named field is examined in the order given and
+   * the first one beyond its limit is the refusal, so a payload that is oversized in two fields
+   * reports the first of them - one refusal, naming one field, rather than a list a reader would
+   * have to interpret. The failure is positioned at the offending field, so a reader is told
+   * which part of the document to correct.
+   *
+   * A field the object does not hold, a field whose value is not a JSON array, and a field
+   * within its limit are all passed over, and a cursor whose value is not an object holds none
+   * of the named fields and is therefore passed over entirely: in each case the wrapped decoder
+   * runs exactly as it would have without the wrapper.
+   *
+   * Like `boundedElements`, every count is read from the JSON as it already stands, so nothing
+   * the wrapped decoder would have allocated is allocated for a payload this refuses.
+   *
+   * @tparam A  the type being decoded
+   * @param limits  the field names to bound, each with the greatest number of elements this
+   *   port reads for it, in the order they should be examined
+   * @param decoder  the decoder to bound
+   * @return the decoder, refusing a payload whose named field states more elements than its
+   *   limit
+   */
+  def boundedFields[A](limits: (String, Int)*)(decoder: Decoder[A]): Decoder[A] =
+    Decoder.instance { cursor =>
+      val refusal = limits.iterator
+        .flatMap { case (name, limit) => fieldRefusal(cursor, name, limit).iterator }
+        .nextOption()
+      refusal match {
+        case Some(failure) => Left(failure)
+        case None => decoder(cursor)
+      }
+    }
+
+  /**
+   * Reports one named field of an object whose stated size is beyond what this port reads.
+   *
+   * The field is reached through the cursor rather than through the underlying object, so the
+   * position carried by the refusal is the position of that field within the whole document,
+   * however deeply the object itself is nested.
+   *
+   * @param cursor  the cursor being decoded
+   * @param name  the name of the field to measure
+   * @param limit  the greatest number of elements this port reads for that field
+   * @return the refusal, or nothing if the field is absent, is not an array, or is within the
+   *   limit
+   */
+  private def fieldRefusal(cursor: HCursor, name: String, limit: Int): Option[DecodingFailure] = {
+    val field = cursor.downField(name)
+    field.focus
+      .flatMap(value => value.asArray)
+      .filter(elements => elements.size > limit)
+      .map(elements =>
+        DecodingFailure(
+          beyondCeiling(s"elements in the $name field", elements.size.toLong, limit),
+          field.history))
+  }
+
+  //-------------------------------------------------------------------------
+  /**
+   * Renders the elements of an array as a JSON array, each element through `taggedDouble`.
+   *
+   * The elements are read one at a time, by index, through the accessor the type publishes for a
+   * single element. That is the whole of what this object asks of the numeric types: neither of
+   * them has a member that hands out the run of values it holds, because a member of that kind
+   * would make the immutability of those types a convention rather than a property of their
+   * compiled form, and encoding a value is not a reason to want one.
+   *
+   * @param values  the array to render
+   * @return the JSON array of its elements
+   */
+  private def elementsJson(values: DoubleArray): Json =
+    Json.fromValues(Vector.tabulate(values.size)(index => taggedDoubleEncoder(values.get(index))))
 
   private val doubleArrayEncoder: Encoder[DoubleArray] =
-    Encoder.instance(values => elementsJson(values.toArrayUnsafe))
+    Encoder.instance(values => elementsJson(values))
 
   /** Reads the elements of a JSON array, each through `taggedDouble`. */
   private val doubleElementsDecoder: Decoder[Array[Double]] =
     Decoder.decodeArray[Double](taggedDoubleDecoder, implicitly)
 
-  // every element of the payload is read, whatever length the payload states, and the run of
-  // values the element reader has just allocated becomes the contents of the result; a payload
-  // that is not an array, or one holding an element no double can hold, is reported by that same
-  // reader at the position where it occurred
+  // the length is taken from the payload before an element is read, so a document cannot choose
+  // how much this port allocates. A payload that is not an array falls through to the element
+  // reader, which reports it - and an element no double can hold - at the position where it
+  // occurred, so those two refusals are unchanged by the ceiling. The run of values that reader
+  // allocates is handed to the copying factory, which is the only construction path the array
+  // type publishes
   private val doubleArrayDecoder: Decoder[DoubleArray] =
-    doubleElementsDecoder.map(elements => DoubleArray.ofUnsafe(elements))
+    Decoder.instance { cursor =>
+      cursor.value.asArray match {
+        case Some(elements) if elements.size > MaximumArrayElements =>
+          Left(DecodingFailure(
+            beyondCeiling("elements in the array", elements.size.toLong, MaximumArrayElements),
+            cursor.history))
+        case _ =>
+          doubleElementsDecoder(cursor).map(elements => DoubleArray.copyOf(elements))
+      }
+    }
 
   /**
    * The codec for an immutable array of doubles, represented by a JSON array.
@@ -470,27 +914,34 @@ object Codecs {
    * `taggedDouble`, so the element policy and its exactness are the same here as anywhere
    * else. An empty array is `[]`.
    *
-   * Both directions avoid a copy that would otherwise be pure overhead, and both are safe
-   * to do so for a reason particular to each. Encoding reads the elements of the array
-   * being written directly and only reads them, never retaining or modifying what it saw.
-   * Decoding produces a run of elements that has just been allocated for it and is
-   * published nowhere else, and so may be adopted as the contents of the result rather than
-   * copied into it. The two operations that make this possible are visible only within this
-   * module, precisely so that this file can use them while no caller outside can: the
-   * public surface of these arrays stays copy-safe from end to end, and nothing here widens
-   * it.
+   * Neither direction touches the run of values an array holds. Encoding reads the elements one
+   * at a time, by index, through the accessor the type publishes for a single element, and
+   * decoding hands the run of elements it has just read to the copying factory - the only
+   * construction path that type publishes. The immutability of these arrays is a property of
+   * their compiled form rather than a convention this file could opt out of, and the two
+   * aliasing members the Java original had are not ported at all, so there is nothing here for
+   * the serialization layer to be careful with.
    *
-   * ===What a document may state===
+   * ===How much a document may ask for===
    *
-   * How long the array is, is stated by the document, and decoding accepts every length the
-   * encoder can produce. That symmetry is a requirement of this port's serialization contract
-   * rather than a preference: the factories that build one of these arrays are total over
-   * every length the run-time can allocate, so a decoder that refused a length above some
-   * figure of its own would make `decode(encode(x))` fail for values the port itself creates
-   * and writes - and for every value that carries one, whether as a run of sensitivities, a
-   * schedule of amounts or a row of currency rates. A payload is therefore rejected only when
-   * it is not an array at all, or when one of its elements is not a value a double can hold;
-   * both refusals come from the element reader, which names the offending position.
+   * How long the array is, is stated by the document, so decoding measures the payload against
+   * `MaximumArrayElements` before it reads a single element. A longer payload is a decoding
+   * failure naming the ceiling, and nothing is allocated for it. The order matters: the ceiling
+   * is worth having only if it is applied before the work it bounds, since a refusal issued
+   * after the elements have been read has already paid for them.
+   *
+   * The ceiling does not cost the symmetry the serialization contract of this port requires.
+   * The factories that build one of these arrays are total over every length the run-time can
+   * allocate, so a ceiling set at a length the port could produce would make `decode(encode(x))`
+   * fail for values the port itself creates and writes - a run of sensitivities, a schedule of
+   * amounts, a row of currency rates. It is set orders of magnitude above every one of those,
+   * for the reasons recorded at `MaximumArrayElements`, so the length of an array this port
+   * wrote is never the reason a document is refused; what is refused is a document asking for
+   * more than this port has any use for.
+   *
+   * Two other refusals are the element reader's rather than the ceiling's, and are reported
+   * exactly as they would be without it: a payload that is not an array at all, and an element
+   * that is not a value a double can hold. Both name the offending position.
    */
   val doubleArrayCodec: Codec[DoubleArray] = Codec.from(doubleArrayDecoder, doubleArrayEncoder)
 
@@ -502,21 +953,42 @@ object Codecs {
   private val doubleArrayVectorDecoder: Decoder[Vector[DoubleArray]] =
     Decoder.decodeVector(doubleArrayDecoder)
 
+  /**
+   * Renders one row of a matrix as a JSON array, each element through `taggedDouble`.
+   *
+   * The elements are read by row and column index, for the reason `elementsJson` reads an array
+   * by index: the matrix publishes no member that hands out the rows it holds, and a row copied
+   * out to be read once would be an allocation per row with nothing to show for it.
+   *
+   * @param matrix  the matrix to read
+   * @param row  the zero-based row index to render
+   * @return the JSON array of that row's elements
+   */
+  private def rowJson(matrix: DoubleMatrix, row: Int): Json =
+    Json.fromValues(
+      Vector.tabulate(matrix.columnCount)(column => taggedDoubleEncoder(matrix.get(row, column))))
+
   private val doubleMatrixEncoder: Encoder[DoubleMatrix] =
     Encoder.instance { matrix =>
-      Json.fromValues(matrix.toArrayUnsafe.iterator.map(row => elementsJson(row)).toVector)
+      Json.fromValues(Vector.tabulate(matrix.rowCount)(row => rowJson(matrix, row)))
     }
 
   /**
-   * Reports a matrix payload whose rows disagree, before any of it is read.
+   * Measures the shape a matrix payload states, before any of it is read.
    *
-   * Every conclusion here is drawn from the JSON as it already stands: the widths of the rows
-   * are visible in the payload itself, so rows that cannot describe one rectangle are found
-   * and reported without a single element having been read, and therefore without any run of
-   * values having been allocated for a payload that was never going to produce a matrix. No
-   * dimension is compared against a figure of this object's own - a matrix of any shape the
-   * encoder can write is a matrix this decoder reads - and the only judgement made is whether
-   * the rows agree with each other.
+   * Every conclusion here is drawn from the JSON as it already stands, and the order in which
+   * they are reached is itself part of the guard. How many rows the payload states is known
+   * without looking at any of them, so that count is compared with its ceiling first and a
+   * payload beyond it is refused without a single row having been examined. Only a payload
+   * whose row count is already known to be within the ceiling is walked to measure the widths
+   * of its rows - at most as many measurements as that ceiling allows - and only then are the
+   * width, the product of the two dimensions and the agreement between the rows decided. The
+   * product is computed in a width that the product of two counts cannot exceed, so a stated
+   * shape cannot wrap its way past the ceiling on the elements.
+   *
+   * Nothing here reads an element, so a payload refused for its shape costs no run of values at
+   * all: the widths of the rows are visible in the payload itself, which is what lets rows that
+   * cannot describe one rectangle be found and reported before any of them is read.
    *
    * A row that is not an array has no width to offer and is passed over: what is wrong with
    * such a payload is the row itself, which the reader of that row reports precisely, at that
@@ -525,27 +997,43 @@ object Codecs {
    *
    * @param rowsJson  the rows the payload states
    * @param history  the position within the document, taken from the decoding cursor
-   * @return the refusal, or nothing if the rows the payload states agree
+   * @return the refusal, or nothing if the stated shape is one this port reads and its rows
+   *   agree
    */
-  private def matrixRaggedRefusal(
+  private def matrixShapeRefusal(
       rowsJson: Vector[Json],
       history: List[CursorOp]): Option[DecodingFailure] = {
 
-    val measured = rowsJson.flatMap(row => row.asArray.map(elements => elements.size))
-    val columns = if (measured.isEmpty) 0 else measured.max
-    if (measured.size == rowsJson.size && measured.exists(size => size != columns)) {
-      Some(DecodingFailure(RaggedMatrixMessage, history))
+    val rows = rowsJson.size
+    if (rows > MaximumMatrixRows) {
+      Some(DecodingFailure(beyondCeiling("rows in the matrix", rows.toLong, MaximumMatrixRows), history))
     } else {
-      None
+      // reached only for a row count within the ceiling, so this walk and what it collects are
+      // bounded by that ceiling rather than by the payload
+      val measured = rowsJson.flatMap(row => row.asArray.map(elements => elements.size))
+      val columns = if (measured.isEmpty) 0 else measured.max
+      if (columns > MaximumMatrixColumns) {
+        Some(DecodingFailure(
+          beyondCeiling("elements in each row of the matrix", columns.toLong, MaximumMatrixColumns),
+          history))
+      } else if (rows.toLong * columns.toLong > MaximumMatrixElements.toLong) {
+        Some(DecodingFailure(
+          beyondCeiling("elements in the matrix", rows.toLong * columns.toLong, MaximumMatrixElements),
+          history))
+      } else if (measured.size == rows && measured.exists(size => size != columns)) {
+        Some(DecodingFailure(RaggedMatrixMessage, history))
+      } else {
+        None
+      }
     }
   }
 
   private val doubleMatrixDecoder: Decoder[DoubleMatrix] =
     Decoder.instance { cursor =>
-      // the shape comes from the payload, so the rows are checked against each other before any
-      // of them is read; a payload that is not an array falls through to the row reader, which
-      // reports it exactly as it always did
-      val refusal = cursor.value.asArray.flatMap(rowsJson => matrixRaggedRefusal(rowsJson, cursor.history))
+      // the shape comes from the payload, so it is measured against the ceilings and checked for
+      // rows that agree before any of them is read; a payload that is not an array falls through
+      // to the row reader, which reports it exactly as it always did
+      val refusal = cursor.value.asArray.flatMap(rowsJson => matrixShapeRefusal(rowsJson, cursor.history))
       refusal match {
         case Some(failure) => Left(failure)
         case None =>
@@ -567,43 +1055,41 @@ object Codecs {
   /**
    * The codec for an immutable matrix of doubles, represented by a JSON array of rows.
    *
-   * A two-by-two matrix is `[[1.0, 2.0], [3.0, 4.0]]`: the matrix is an array of rows and
-   * each row is an array of elements in the shape `doubleArrayCodec` produces, so every
-   * element again goes through `taggedDouble`. A matrix with no elements is `[]`.
+   * A matrix is an array of rows, and each row is an array of elements in the shape
+   * `doubleArrayCodec` produces, so every element again goes through `taggedDouble`. A
+   * two-by-two matrix is the array of its two rows, `[1.0, 2.0]` and then `[3.0, 4.0]`. A
+   * matrix with no elements is `[]`.
    *
-   * A matrix is rectangular by construction, so decoding measures the rows against each
-   * other and reports a payload whose rows disagree as a decoding failure. The check is made
-   * here rather than being left to the factory that assembles the matrix, because that
-   * factory treats a row of the wrong length as a broken caller and raises an error, which is
-   * the right answer for a caller inside the library and the wrong one for a document
-   * arriving from outside it.
+   * ===How much a document may ask for===
    *
-   * ===What a document may state===
+   * The shape of the matrix is stated by the document, and both of its dimensions are taken
+   * from the payload as it stands - before a row is read and therefore before any row of
+   * values is allocated. Three ceilings apply, `MaximumMatrixRows`, `MaximumMatrixColumns` and
+   * `MaximumMatrixElements` for their product, and a payload beyond any of them is a decoding
+   * failure naming the one it exceeded. The row count is the first thing compared with its
+   * ceiling, because it is the one dimension knowable without touching a row: a payload
+   * stating more rows than this port reads is refused before anything examines them, so the
+   * measuring that follows is bounded by the ceiling rather than by the document. Rows that
+   * disagree are found in that same bounded pass, so a ragged payload is refused without its
+   * rows having been read either.
    *
-   * The shape of the matrix is stated by the document, and every shape the encoder can write
-   * is a shape this decoder reads: no dimension is compared against a figure of this object's
-   * own. That symmetry is a requirement of this port's serialization contract, for the reason
-   * given at `doubleArrayCodec` - the factories that assemble one of these matrices are total
-   * over every shape the run-time can allocate, so a decoder with a shape ceiling would make
-   * `decode(encode(x))` fail for a matrix the port itself creates and writes, and for every
-   * value that carries one, a matrix of currency rates included.
+   * None of the three ceilings costs the symmetry this port's serialization contract requires,
+   * for the reason given at `doubleArrayCodec`: the widest numeric structure any type of this
+   * port holds is a square of currency rates, of one row and one column per currency in play,
+   * so every matrix the port creates and writes is read back by a decoder bounded this way,
+   * and what the ceilings refuse is a shape the port has no use for.
    *
-   * The one judgement drawn from the stated shape is whether the rows agree with each other,
-   * and it is made from the payload as it stands - before a row is read and therefore before
-   * any row of values is allocated. A ragged payload is refused at that point, so nothing is
-   * read for a document that was never going to describe a rectangle.
-   *
-   * The rows are read only once they are known to agree, and the rows that result are measured
-   * once more before the matrix is assembled. That second look is not a repetition of the
-   * first: it is what keeps assembly total, since the factory reached at that point answers a
-   * row of the wrong length by raising an error rather than reporting one, and no payload may
-   * be able to reach it.
+   * The rows are read only once the stated shape is one this port accepts, and the rows that
+   * result are measured once more before the matrix is assembled. That second look is not a
+   * repetition of the first: it is what keeps assembly total, since the factory reached at that
+   * point answers a row of the wrong length by raising an error rather than reporting one, and
+   * no payload may be able to reach it.
    *
    * The rows are handed to the existing factory that assembles a matrix from them, so the
    * nested structure that a matrix keeps internally is built in the one file that owns it.
    * That is a deliberate boundary and not an incidental one: allocating a nested structure
-   * whose elements are themselves runs of values is the one allocation in this language
-   * that reaches for the very run-time type machinery this port's serialization is required
+   * whose elements are themselves runs of values is the one allocation in this language that
+   * reaches for the very run-time type machinery the serialization of this library is required
    * to do without, so it is kept out of the serialization path altogether.
    */
   val doubleMatrixCodec: Codec[DoubleMatrix] = Codec.from(doubleMatrixDecoder, doubleMatrixEncoder)

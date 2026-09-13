@@ -21,6 +21,8 @@ import io.circe.generic.semiauto.deriveDecoder
 import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -36,11 +38,9 @@ import com.opengamma.strata.collect.result.Failure
  * ===What it holds, and why that shape===
  *
  * Each currency occurs at most once, which makes this a map of currency to amount, and it is
- * held as exactly that: a `SortedMap[Currency, Double]` ordered by currency code. The
- * implementation being ported held a sorted ''set'' of [[CurrencyAmount]] instead and checked
- * after the fact that no currency appeared twice, a choice its own comment attributes to the
- * shape of its serialized form rather than to the model. Holding a map instead has three
- * consequences worth stating, because the rest of this type follows from them:
+ * held as exactly that: a `SortedMap[Currency, Double]` ordered by currency code. Three
+ * consequences of holding a map are worth stating, because the rest of this type follows from
+ * them:
  *
  *   - the no-duplicate rule is structural rather than checked, so no value of this type can
  *     exist that breaks it and no operation has to re-validate it;
@@ -66,46 +66,38 @@ import com.opengamma.strata.collect.result.Failure
  * with the data - two amounts of the same currency arriving as separate entries usually means a
  * key was lost somewhere upstream - and reports it. [[MultiCurrencyAmount.total]] treats a
  * repeated currency as arithmetic to be done, which is what aggregating a stream of cash flows
- * needs. Both behaviours are those of the implementation being ported, and neither is the safe
- * default for the other's use, so both are kept.
+ * needs. Neither is the safe default for the other's use, so both are offered.
  *
  * ===Adding values of this type: the additive instance===
  *
- * This is the one type in either module of this port that carries a `Monoid`. It can carry one
- * because adding two of these values cannot fail: amounts of a currency present in both are
- * added, amounts of a currency present in one are carried across, and the identity is the value
- * with no amounts at all. [[CurrencyAmount]] deliberately carries no `Semigroup` or `Monoid` for
- * the mirror-image reason - adding two single-currency amounts fails when their currencies
- * differ, and a `Semigroup` has nowhere to report that.
+ * This type carries a `Monoid`. It can carry one because adding two of these values cannot fail:
+ * amounts of a currency present in both are added, amounts of a currency present in one are
+ * carried across, and the identity is the value with no amounts at all. [[CurrencyAmount]]
+ * deliberately carries no `Semigroup` or `Monoid` for the opposite reason - adding two
+ * single-currency amounts fails when their currencies differ, and a `Semigroup` has nowhere to
+ * report that.
  *
- * Two limitations of that instance are documented rather than hidden, because a reader who
- * "fixes" either of them gets a law suite that fails intermittently:
+ * Two facts bound how exactly that instance is associative, and both are properties of the
+ * arithmetic rather than of the instance:
  *
- *   - '''the laws are checked over finite amounts only'''. Combining `+∞` with `−∞` produces a
- *     value that is not a number, which no amount may hold, so it raises the documented invariant
- *     of [[CurrencyAmount]] rather than producing a value. A generator that emits infinities
- *     therefore falsifies associativity by reaching that invariant, which says nothing about the
- *     instance;
- *   - '''the laws are checked with a tolerant equality''', within `1e-9` relative, rather than
- *     with the exact equality of this type. Floating point addition is only approximately
- *     associative - `(a + b) + c` and `a + (b + c)` can differ in their last bit - so exact
- *     equality falsifies associativity on ordinary finite inputs after a handful of examples.
- *     The instance is as associative as double arithmetic allows, and the tolerance is what
- *     states that precisely.
+ *   - combining `+∞` with `−∞` produces a value that is not a number, which no amount may hold,
+ *     so it raises the documented invariant of [[CurrencyAmount]] instead of yielding a value;
+ *   - floating point addition is only approximately associative - `(a + b) + c` and
+ *     `a + (b + c)` can differ in their last bit - so associativity holds to within the rounding
+ *     of double arithmetic rather than exactly.
  *
  * ===Equality and ordering===
  *
  * Two values are equal when they hold the same currencies with amounts of the same bit pattern.
- * The bit comparison is the one the generated bean performed through the equality of
- * [[CurrencyAmount]], and it differs from the comparison a plain case class would have
- * synthesised for two values: one that is not a number equals itself, and a negative zero
- * differs from a positive zero - the second being unreachable here, because every route into
- * this type normalises it away.
+ * The bit comparison is made through the equality of [[CurrencyAmount]], and it differs from the
+ * comparison a plain case class would have synthesised for two values: one that is not a number
+ * equals itself, and a negative zero differs from a positive zero - the second being unreachable
+ * here, because every route into this type normalises it away.
  *
- * There is deliberately no `Order`. The type being ported was not comparable, and there is no
- * ordering of these values that means anything: neither `[GBP 100]` nor `[USD 100]` is the
- * greater, and comparing them by size or by code would invent an answer. A caller that needs a
- * reproducible sequence of them should sort by whatever identifies them in its own domain.
+ * There is deliberately no `Order`, because no ordering of these values means anything: neither
+ * `[GBP 100]` nor `[USD 100]` is the greater, and comparing them by size or by code would invent
+ * an answer. A caller that needs a reproducible sequence of them should sort by whatever
+ * identifies them in its own domain.
  *
  * ===Which operations can fail===
  *
@@ -117,12 +109,12 @@ import com.opengamma.strata.collect.result.Failure
  * the values involved rather than on the calling code, so each is an `Either`.
  *
  * The arithmetic - [[plus]], [[minus]], [[multipliedBy]], [[negated]], [[mapAmounts]],
- * [[mapCurrencyAmounts]] - is total in signature, as it was in the implementation being ported,
- * and shares the single numeric invariant of [[CurrencyAmount]]: an amount that is not a number
- * cannot be held, and an operation that would produce one raises that invariant - literally, by
- * routing the result through [[CurrencyAmount]] itself - rather than widening every operation into
- * a failure channel. Reaching it requires infinite operands or a mapping function that produces a
- * value that is not a number.
+ * [[mapCurrencyAmounts]] - is total in signature and shares the single numeric invariant of
+ * [[CurrencyAmount]]: an amount that is not a number cannot be held, and an operation that would
+ * produce one raises that invariant - literally, by routing the result through
+ * [[CurrencyAmount]] itself - rather than widening every operation into a failure channel.
+ * Reaching it requires infinite operands or a mapping function that produces a value that is not
+ * a number.
  *
  * This type is immutable and thread-safe: a value of it can be shared freely, and every operation
  * returns a new value rather than changing the one it was called on.
@@ -136,16 +128,41 @@ import com.opengamma.strata.collect.result.Failure
  *   [[MultiCurrencyAmount.of]] for the one that refuses a repeated currency
  */
 sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Currency, Double])
-    extends FxConvertible[CurrencyAmount] {
+    extends FxConvertible[CurrencyAmount]
+    with NoJavaSerialization {
 
-  //-------------------------------------------------------------------------
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means can be
+  // stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[MultiCurrencyAmount.Impl])
+
+  // The invariant of this type, stated over the map the instance actually holds rather than over
+  // the entries a factory was given, because the implementation class carries a public
+  // constructor in the class file whatever the source asked for: a class compiled outside this
+  // library can call it directly, and identity alone would then admit a value holding numbers no
+  // amount may hold. That a currency appears at most once needs no statement - the representation
+  // is a map keyed by currency - so what is stated is what every route adds to it: each number
+  // goes through the invariant of an amount, which refuses a value that is not a number and
+  // normalises a negative zero, so every number held is one a `CurrencyAmount` could hold.
+  //
+  // The map is walked once, which is the cost the factory that builds it already pays.
+  JvmClosure.requireInvariant(
+    "every amount it holds is a number",
+    amounts.forall { case (_, amount) => !amount.isNaN })
+  JvmClosure.requireInvariant(
+    "every amount it holds is a positive zero where it is zero, a negative zero being normalised",
+    // the two zeroes compare equal, so the bit pattern is what tells them apart, exactly as it
+    // does for the single amount of a `CurrencyAmount`
+    amounts.forall { case (_, amount) =>
+      amount != 0d || java.lang.Double.doubleToLongBits(amount) == 0L
+    })
+
   /**
    * Gets the amounts held, as a set ordered by currency and then by amount.
    *
-   * This is the accessor the implementation being ported published, and the set it answers with
-   * has the same contents and the same iteration order: the ordering is that of
-   * [[CurrencyAmount]], which compares the currency first, and since each currency occurs at
-   * most once the amounts never have to be compared to break a tie.
+   * The ordering is that of [[CurrencyAmount]], which compares the currency first, and since each
+   * currency occurs at most once the amounts never have to be compared to break a tie.
    *
    * The set is built from the map this value holds rather than stored, which is what keeps the
    * single representation single. A caller that only wants to walk the amounts should prefer
@@ -185,16 +202,13 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    */
   def contains(currency: Currency): Boolean = amounts.contains(currency)
 
-  //-------------------------------------------------------------------------
   /**
    * Gets the amount of the specified currency.
    *
    * A currency this value does not hold is reported rather than answered with zero, which is the
-   * distinction the implementation being ported drew between this member and
-   * [[getAmountOrZero]]: an absent currency may mean a currency that was never involved, and
-   * silently reading it as zero would hide that. Whether it happens depends on the value and the
-   * currency a caller holds, so it is a failure rather than a throw, and its wording is the
-   * wording that implementation reported:
+   * distinction between this member and [[getAmountOrZero]]: an absent currency may mean a
+   * currency that was never involved, and silently reading it as zero would hide that. Whether it
+   * happens depends on the value and the currency a caller holds, so it is reported as a failure:
    *
    * {{{
    * multi.getAmount(Currency.GBP)   // Right(GBP 100)
@@ -226,14 +240,13 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
       .get(currency)
       .fold(CurrencyAmount.zero(currency))(amount => CurrencyAmount.create(currency, amount))
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this value with the specified amount of the specified currency added.
    *
    * A currency this value already holds has the amount added to what it holds; a currency it does
-   * not hold is added to it. The addition is ordinary `Double` arithmetic in the order the
-   * implementation being ported performed it - what is held plus what is supplied - so the result
-   * agrees with it bit for bit.
+   * not hold is added to it. The addition is ordinary `Double` arithmetic performed as what is
+   * held plus what is supplied, in that operand order, so the rounding of the result is fixed by
+   * this member rather than by the order a caller happens to write.
    *
    * {{{
    * gbp100.plus(Currency.GBP, 50d)   // [GBP 150]
@@ -273,8 +286,8 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    *
    * Each currency of the other value is added to or inserted into this one, so the result holds
    * the union of the two sets of currencies. This is the operation the additive instance of this
-   * type combines with, and the operation is associative to the extent double addition is - see
-   * the note on [[MultiCurrencyAmount.monoid]].
+   * type combines with, and it is associative to the extent double addition is - see the note on
+   * [[MultiCurrencyAmount.monoid]].
    *
    * {{{
    * // [GBP 100, USD 200] plus [EUR 75, USD 50]
@@ -282,9 +295,9 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * }}}
    *
    * The map this value holds is the accumulator the other value's entries are merged into, which
-   * is what makes each sum `what is held plus what arrives` - the order the implementation being
-   * ported added in - and what keeps the amounts of a currency only one of the two values holds
-   * exactly the numbers they were, since nothing is added to them.
+   * is what makes each sum `what is held plus what arrives` and what keeps the amounts of a
+   * currency only one of the two values holds exactly the numbers they were, since nothing is
+   * added to them.
    *
    * @param amountToAdd  the value whose amounts are to be added
    * @return this value with the other value's amounts added
@@ -295,21 +308,20 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
     MultiCurrencyAmount.instantiate(
       MultiCurrencyAmount.mergedEntries(amountToAdd.amounts.iterator, amounts))
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this value with the specified amount of the specified currency subtracted.
    *
    * A currency this value already holds has the amount subtracted from what it holds; a currency
-   * it does not hold is added to it ''negated'', which is the behaviour the implementation being
-   * ported documented and which keeps subtraction the exact inverse of addition:
+   * it does not hold is added to it ''negated'', which keeps subtraction the exact inverse of
+   * addition:
    *
    * {{{
    * gbp100.minus(Currency.GBP, 50d)   // [GBP 50]
    * gbp100.minus(Currency.USD, 50d)   // [GBP 100, USD -50]
    * }}}
    *
-   * The parameter keeps the name it had in the implementation being ported, where subtraction was
-   * written as the addition of a negated amount.
+   * The parameter is named for the addition this is written as, the amount being negated before
+   * it is added.
    *
    * @param currency  the currency to subtract an amount of
    * @param amountToAdd  the amount of that currency to subtract
@@ -323,8 +335,8 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
   /**
    * Returns a copy of this value with the specified amount subtracted.
    *
-   * The amount is negated and added, as in the implementation being ported, so a currency this
-   * value does not hold is inserted with the negated amount.
+   * The amount is negated and added, so a currency this value does not hold is inserted with the
+   * negated amount.
    *
    * @param amountToSubtract  the amount to subtract
    * @return this value with the amount subtracted
@@ -336,8 +348,8 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
   /**
    * Returns a copy of this value with every amount of the specified value subtracted.
    *
-   * The other value is negated and added, as in the implementation being ported, so a currency
-   * only it holds appears in the result with its amount negated.
+   * The other value is negated and added, so a currency only it holds appears in the result with
+   * its amount negated.
    *
    * @param amountToSubtract  the value whose amounts are to be subtracted
    * @return this value with the other value's amounts subtracted
@@ -347,14 +359,13 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
   def minus(amountToSubtract: MultiCurrencyAmount): MultiCurrencyAmount =
     plus(amountToSubtract.negated)
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this value with every amount multiplied by the specified factor.
    *
    * The currencies are untouched, so the result holds exactly the currencies this value holds.
-   * The multiplication is written as the amount times the factor, the order the implementation
-   * being ported used, so a product that rounds differently under the other order rounds the same
-   * way here.
+   * The multiplication is written as the amount times the factor, in that operand order, so the
+   * rounding of a product is fixed by this member rather than by the order a caller happens to
+   * write.
    *
    * @param factor  the factor to multiply every amount by
    * @return this value with every amount multiplied
@@ -366,10 +377,9 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
   /**
    * Returns a copy of this value with every amount negated.
    *
-   * An amount of zero negates to zero rather than to a negative zero. The implementation being
-   * ported special-cased that, and the special case is kept even though construction would
-   * normalise the sign away in any event, so that the arithmetic and the normalisation each
-   * remain correct on their own.
+   * An amount of zero negates to zero rather than to a negative zero. That case is handled here
+   * even though construction would normalise the sign away in any event, so that the arithmetic
+   * and the normalisation each remain correct on their own.
    *
    * @return this value with every amount negated
    */
@@ -385,9 +395,7 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * }}}
    *
    * The operation receives one amount at a time and cannot change its currency, so the result
-   * holds exactly the currencies this value holds and no amount can merge into another. The
-   * operation is an ordinary function rather than the primitive-specialised interface of the
-   * implementation being ported, which is the same thing expressed in this language.
+   * holds exactly the currencies this value holds and no amount can merge into another.
    *
    * @param mapper  the operation to apply to every amount
    * @return this value with the operation applied to every amount
@@ -406,8 +414,7 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * The operation is called once per currency held and may return an amount of a ''different''
    * currency, which is the whole difference between this member and [[mapAmounts]]. Two amounts
    * mapped onto the same currency are therefore added together rather than rejected - the result
-   * is the total of the mapped amounts, as the implementation being ported documented and as its
-   * use of the merging collector implemented:
+   * is the total of the mapped amounts:
    *
    * {{{
    * // [GBP 100, USD 200] with every amount mapped into EUR
@@ -422,16 +429,12 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
   def mapCurrencyAmounts(operator: CurrencyAmount => CurrencyAmount): MultiCurrencyAmount =
     MultiCurrencyAmount.merged(iterator.map(operator))
 
-  //-------------------------------------------------------------------------
   /**
    * Returns an iterator over the amounts held, ordered by currency.
    *
-   * This is what the stream of the implementation being ported becomes here, following the
-   * convention this port uses for every such member: a Java stream type has no place in the
-   * public API of a Scala library, and an `Iterator` is the same thing - a traversal that
-   * materialises nothing - expressed in the standard library of this language. A caller that
-   * wants a collection can ask for one, `iterator.toList` and [[getAmounts]] being the two
-   * obvious ways.
+   * This is the traversal that materialises nothing, for a caller that walks the amounts once. A
+   * caller that wants a collection can ask for one, `iterator.toList` and [[getAmounts]] being
+   * the two obvious ways.
    *
    * The iterator reads the map this value holds, which no operation ever modifies, so it cannot
    * observe a change part-way through a traversal.
@@ -450,7 +453,6 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
       CurrencyAmount.create(currency, amount)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Converts every amount held into the specified currency and totals them.
    *
@@ -458,8 +460,7 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * parameterised: converting a value that holds several currencies collapses it into a single
    * [[CurrencyAmount]], not into another value of this type.
    *
-   * The route taken is the route of the implementation being ported, in both of its branches,
-   * because the two differ in an observable way:
+   * There are two branches, and they differ in an observable way:
    *
    *   - a value holding exactly one amount converts that amount through
    *     [[CurrencyAmount.convertedTo]], which returns it unchanged when it is already in the
@@ -472,15 +473,13 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    *     the requested currency.
    *
    * The converted amounts are totalled in the alphabetical order of their currency codes,
-   * starting from zero, which is the order and the starting point that implementation used.
-   * Floating point addition is order-sensitive, so stating the order is what makes this total
-   * reproducible and what lets it be compared against a captured baseline.
+   * starting from zero. Floating point addition is order-sensitive, so stating the order is what
+   * makes this total reproducible from one run to the next.
    *
    * The second branch is a single traversal of the map, carrying the total as a number from one
    * amount to the next: each amount is converted and added where it is read, so nothing between
    * the map and the result is held - neither a collection of the entries nor one of the converted
-   * numbers, which is what the implementation being ported also avoided by keeping a running
-   * total. The total is the number an amount is finally built from through
+   * numbers. The total is the number an amount is finally built from through
    * [[CurrencyAmount.of]], so a total that is not a number is reported rather than raised: it can
    * only arise from rates and amounts a caller supplied.
    *
@@ -504,7 +503,6 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
       MultiCurrencyAmount.totalConverted(amounts.iterator, resultCurrency, rateProvider, 0d)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this value to a map of currency to amount.
    *
@@ -517,16 +515,15 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    */
   def toMap: SortedMap[Currency, Double] = amounts
 
-  //-------------------------------------------------------------------------
   /**
    * Checks whether this value equals another object.
    *
    * Another value of this type is equal when it holds the same currencies and, for each of them,
-   * an amount with the same bit pattern. The bit comparison is the one the generated bean
-   * performed through the equality of [[CurrencyAmount]], and it differs from the comparison a
-   * case class would have synthesised for two values: one that is not a number, which here equals
-   * itself, and a negative zero, which here differs from a positive zero and which construction
-   * ensures no amount holds. An object of any other type is not equal.
+   * an amount with the same bit pattern. The bit comparison is the one the equality of
+   * [[CurrencyAmount]] makes, and it differs from the comparison a case class would have
+   * synthesised for two values: one that is not a number, which here equals itself, and a
+   * negative zero, which here differs from a positive zero and which construction ensures no
+   * amount holds. An object of any other type is not equal.
    *
    * Because the currencies are held as a map, two values built from the same amounts in different
    * orders hold the same map and are equal without anything having to be sorted here.
@@ -550,12 +547,10 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * Returns a hash code consistent with [[equals]].
    *
    * Each entry contributes the hash of its currency and the hash of its amount, mixed with the
-   * usual odd prime in the way the bean this replaces mixed the fields of an amount, and the
-   * entries contribute in currency order so that the result does not depend on how the value was
-   * built. The amount is hashed by its bit pattern, so two values that [[equals]] calls equal
-   * always agree here too. Every part of it is a function of the value alone, so the hash of a
-   * value is identical in every run of every program, which is what the byte-stability properties
-   * of the test suite rely on.
+   * usual odd prime, and the entries contribute in currency order so that the result does not
+   * depend on how the value was built. The amount is hashed by its bit pattern, so two values
+   * that [[equals]] calls equal always agree here too. Every part of it is a function of the
+   * value alone, so the hash of a value is identical in every run of every program.
    *
    * @return the hash code of the currencies and amounts held
    */
@@ -568,10 +563,8 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
    * Returns the formatted string form of this value.
    *
    * The form is the amounts in currency order, separated by commas and enclosed in square
-   * brackets - `[GBP 100, USD 200]` - which is what the sorted collection of the implementation
-   * being ported rendered and therefore what documents, rendered output and test expectations
-   * carry. Each amount is written as [[CurrencyAmount.toString]] writes it, so a whole number has
-   * no fractional part and a value holding nothing renders as `[]`.
+   * brackets - `[GBP 100, USD 200]`. Each amount is written as [[CurrencyAmount.toString]] writes
+   * it, so a whole number has no fractional part and a value holding nothing renders as `[]`.
    *
    * @return the formatted amounts
    */
@@ -595,7 +588,7 @@ sealed abstract case class MultiCurrencyAmount private (amounts: SortedMap[Curre
  * it stays private to this file, so the checks cannot be stepped around from anywhere.
  *
  * @see [[MultiCurrencyAmount]] for the type itself, the difference between [[of]] and [[total]],
- *   and the two documented limitations of [[monoid]]
+ *   and the bounds on the associativity of [[monoid]]
  */
 object MultiCurrencyAmount {
 
@@ -612,9 +605,8 @@ object MultiCurrencyAmount {
   /**
    * The ordering the set answered by [[MultiCurrencyAmount.getAmounts]] is built with.
    *
-   * It is the order [[CurrencyAmount]] publishes - currency first, then amount - which is the
-   * comparator the sorted set of the implementation being ported used. Since a value of this type
-   * holds each currency at most once, the amounts are never reached.
+   * It is the order [[CurrencyAmount]] publishes - currency first, then amount. Since a value of
+   * this type holds each currency at most once, the amounts are never reached.
    */
   private val currencyAmountOrdering: Ordering[CurrencyAmount] = Order[CurrencyAmount].toOrdering
 
@@ -630,28 +622,25 @@ object MultiCurrencyAmount {
   private val noAmounts: SortedMap[Currency, Double] =
     SortedMap.empty[Currency, Double](currencyOrdering)
 
-  //-------------------------------------------------------------------------
   /**
    * The value that holds no amount at all.
    *
-   * This is the constant the implementation being ported held, and it is the identity of
-   * [[monoid]]: adding it to any value yields that value. It renders as `[]`, its size is zero,
-   * and converting it into any currency gives zero of that currency.
+   * This is the identity of [[monoid]]: adding it to any value yields that value. It renders as
+   * `[]`, its size is zero, and converting it into any currency gives zero of that currency.
    *
    * @return the value holding no amounts
    */
   val empty: MultiCurrencyAmount = instantiate(noAmounts)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains a value holding a single amount, of the specified currency and number.
    *
    * The number has to be an amount: a value that is not a number is rejected and a negative zero
    * is normalised to a positive zero, exactly as [[CurrencyAmount.of]] decides it, because this
-   * factory is that one with the result wrapped. The implementation being ported threw for a
-   * value that is not a number here; whether that happens depends on the number a caller holds
-   * rather than on the calling code, so it is reported as a failure - the same failure
-   * [[CurrencyAmount.of]] reports, so the two routes cannot disagree about what an amount is.
+   * factory is that one with the result wrapped. Whether the rejection happens depends on the
+   * number a caller holds rather than on the calling code, so it is reported as a failure - the
+   * same failure [[CurrencyAmount.of]] reports, so the two routes cannot disagree about what an
+   * amount is.
    *
    * {{{
    * MultiCurrencyAmount.of(Currency.GBP, 100d)         // Right([GBP 100])
@@ -672,8 +661,7 @@ object MultiCurrencyAmount {
    * Obtains a value from the specified amounts, rejecting a repeated currency.
    *
    * This is the varargs form of the factory below and behaves identically, except that no
-   * argument at all yields [[empty]] without anything being examined, which is the short-circuit
-   * the implementation being ported took.
+   * argument at all yields [[empty]] without anything being examined.
    *
    * {{{
    * MultiCurrencyAmount.of(gbp100, usd200)   // Right([GBP 100, USD 200])
@@ -692,8 +680,8 @@ object MultiCurrencyAmount {
    *
    * Each amount has to be of a different currency. A repeated currency is a statement about the
    * data rather than about the calling code - two entries of one currency usually mean a key was
-   * lost upstream - so it is reported as a failure, with the wording the implementation being
-   * ported reported, and the traversal stops where the repeat was found:
+   * lost upstream - so it is reported as a failure, and the traversal stops where the repeat was
+   * found:
    *
    * {{{
    * MultiCurrencyAmount.of(List(gbp100, usd200))   // Right([GBP 100, USD 200])
@@ -720,9 +708,8 @@ object MultiCurrencyAmount {
    *
    * A map cannot hold a key twice, so no currency can be repeated and the only thing left to
    * decide is whether each number is an amount - which it is unless it is a value that is not a
-   * number, rejected here as [[CurrencyAmount.of]] rejects it. The implementation being ported
-   * threw in that case; this reports it, consistently with the factory taking a currency and a
-   * number above.
+   * number, rejected here as [[CurrencyAmount.of]] rejects it. That rejection is reported as a
+   * failure, consistently with the factory taking a currency and a number above.
    *
    * The entries are examined in the alphabetical order of their currency codes rather than in
    * whatever order the map supplied happens to iterate in, so the failure reported for a map with
@@ -744,7 +731,6 @@ object MultiCurrencyAmount {
       .traverse { case (currency, amount) => CurrencyAmount.of(currency, amount) }
       .flatMap(amounts => of(amounts))
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains a value from the total of the specified amounts, adding up a repeated currency.
    *
@@ -758,15 +744,12 @@ object MultiCurrencyAmount {
    * }}}
    *
    * It cannot fail: there is nothing about a collection of amounts that this refuses, which is
-   * why it returns a value rather than an `Either` - as the implementation being ported also
-   * did. [[of]] is the factory that refuses a repeated currency instead.
+   * why it returns a value rather than an `Either`. [[of]] is the factory that refuses a repeated
+   * currency instead.
    *
    * Amounts of one currency are added in the order they arrive, starting from the first of them,
-   * which is the order and the starting point the collector of the implementation being ported
-   * used, so a total agrees with it bit for bit. The `Collector` that implementation published
-   * for use with a stream has no counterpart here: this member and
-   * `Monoid[MultiCurrencyAmount].combineAll` are the two ways of aggregating, and neither needs
-   * one.
+   * so the rounding of a total is fixed by the order of the collection. This member and
+   * `Monoid[MultiCurrencyAmount].combineAll` are the two ways of aggregating.
    *
    * @param amounts  the amounts to total, of any currencies, consumed once
    * @return the value holding the total per currency
@@ -775,7 +758,6 @@ object MultiCurrencyAmount {
    */
   def total(amounts: Iterable[CurrencyAmount]): MultiCurrencyAmount = merged(amounts)
 
-  //-------------------------------------------------------------------------
   /**
    * Accumulates amounts of distinct currencies, stopping at the first currency that repeats.
    *
@@ -785,9 +767,9 @@ object MultiCurrencyAmount {
    * Presence is asked of each currency before it is added, because a later amount would otherwise
    * silently replace an earlier one, which is precisely the condition being reported.
    *
-   * The recursion is in tail position and compiles to a loop, so a collection of any size is
+   * The recursion is in tail position and runs as a loop, so a collection of any size is
    * traversed without consuming stack, and the map it threads is an immutable value passed from
-   * one step to the next rather than a mutable accumulator. The map is small by nature - it holds
+   * one step to the next. The map is small by nature - it holds
    * at most one entry per currency this library defines - so the path copied by each insertion
    * costs a constant that no realistic input makes matter. That map is the map of the value
    * returned, handed to [[instantiate]] as it stands: every number in it came out of a
@@ -795,7 +777,7 @@ object MultiCurrencyAmount {
    * re-deciding it would only build a second map to arrive at the same one.
    *
    * @param remaining  the amounts still to be examined
-   * @param accumulated  the amounts accepted so far, keyed by currency
+   * @param accumulated  the amounts accepted up to this step, keyed by currency
    * @return the value holding the accumulated amounts, or the failure naming the repeated currency
    */
   @tailrec
@@ -818,10 +800,9 @@ object MultiCurrencyAmount {
    *
    * This is the merging aggregation that [[total]] and
    * [[MultiCurrencyAmount.mapCurrencyAmounts]] are written in terms of, so the way a collection of
-   * amounts combines is stated once. It is the collector of the implementation being ported
-   * expressed as a fold: [[mergedAmounts]] threads one map through the collection and
-   * [[instantiate]] takes that very map as the map of the value returned, so an aggregation of any
-   * number of amounts builds exactly one map and no intermediate amount.
+   * amounts combines is stated once. It is a fold: [[mergedAmounts]] threads one map through the
+   * collection and [[instantiate]] takes that very map as the map of the value returned, so an
+   * aggregation of any number of amounts builds exactly one map and no intermediate amount.
    *
    * @param amounts  the amounts to combine, of any currencies, consumed once
    * @return the value holding the total per currency
@@ -834,15 +815,14 @@ object MultiCurrencyAmount {
    * Merges the amounts of a collection into an accumulated map, adding up a repeated currency.
    *
    * The amounts arrive as an iterator and are pulled one at a time into [[mergedAmount]], which
-   * is where the combination and the invariant live. The recursion is in tail position and
-   * compiles to a loop, so a collection of any size is aggregated without consuming stack, and
-   * the map it threads is an immutable value handed from one step to the next - the same shape
-   * [[distinct]] uses, for the same reason: the map holds at most one entry per currency this
-   * library defines, so the path each insertion copies is a constant no realistic input makes
-   * matter, and nothing mutable appears in any signature of this type.
+   * is where the combination and the invariant live. The recursion is in tail position and runs
+   * as a loop, so a collection of any size is aggregated without consuming stack, and the map it
+   * threads is an immutable value handed from one step to the next - the same shape [[distinct]]
+   * uses, for the same reason: the map holds at most one entry per currency this library defines,
+   * so the path each insertion copies is a constant no realistic input makes matter.
    *
    * @param remaining  the amounts still to be merged
-   * @param accumulated  the total per currency so far
+   * @param accumulated  the total per currency up to this step
    * @return the total per currency once the collection is exhausted
    * @throws java.lang.IllegalArgumentException if any total is not a number
    */
@@ -864,8 +844,7 @@ object MultiCurrencyAmount {
    * amounts, and it exists so that aggregating whole values - [[MultiCurrencyAmount.plus]] of a
    * value, and `combineAll` of the additive instance - reads the numbers those values hold
    * directly. Building a [[CurrencyAmount]] per entry only to unwrap it again would allocate two
-   * objects for every entry of every input before any addition happened, which is what the
-   * flattening of this type's aggregate used to do.
+   * objects for every entry of every input before any addition happened.
    *
    * The entries are expected to come from a value of this type, so each number is already an
    * amount and each map already names its currencies once; what a repeated currency across
@@ -873,7 +852,7 @@ object MultiCurrencyAmount {
    * amounts.
    *
    * @param remaining  the entries still to be merged
-   * @param accumulated  the total per currency so far
+   * @param accumulated  the total per currency up to this step
    * @return the total per currency once the entries are exhausted
    * @throws java.lang.IllegalArgumentException if any total is not a number
    */
@@ -899,10 +878,9 @@ object MultiCurrencyAmount {
    *     arrived as the amount of a [[CurrencyAmount]] or out of the map of a value of this type,
    *     so it has already been normalised and already satisfies the invariant, and deciding it
    *     again would change nothing;
-   *   - a currency the map holds is given `accumulated + arriving`, in that operand order. It is
-   *     the order the merge function of the implementation being ported used, and the order
-   *     matters: floating point addition rounds, so the reverse order can differ in the last bit,
-   *     and the captured parity baseline of this port records the numbers this order produces.
+   *   - a currency the map holds is given `accumulated + arriving`, in that operand order. The
+   *     order matters: floating point addition rounds, so the reverse order can differ in the
+   *     last bit, and fixing it here is what makes a total reproducible.
    *
    * The sum is the one number here that has not been decided yet - two infinities of opposite sign
    * add to a value that is not a number - so it is routed through the number-level form of the
@@ -913,7 +891,7 @@ object MultiCurrencyAmount {
    * exist must not be reachable through an aggregate either. Nothing is allocated for the check,
    * so a step of this aggregation costs the entry of the map and nothing else.
    *
-   * @param accumulated  the total per currency so far
+   * @param accumulated  the total per currency up to this step
    * @param currency  the currency of the number arriving
    * @param amount  the number arriving, already normalised and within the invariant
    * @return the map with the number merged into it
@@ -949,8 +927,7 @@ object MultiCurrencyAmount {
    * established it by construction - and the invariant of an amount is still applied to every
    * number, so a caller cannot smuggle a value that is not a number past it. A number that is not
    * an amount fails here with the message [[CurrencyAmount]] reports for it,
-   * `Argument 'amount' must not be NaN`, which is the message the implementation being ported
-   * reported from the same check.
+   * `Argument 'amount' must not be NaN`.
    *
    * Exactly one map is built: the entries are normalised as they are read and the result is the
    * map of the value returned. The normalisation and the check are not restated - each number goes
@@ -997,7 +974,23 @@ object MultiCurrencyAmount {
    * @return the value holding exactly those amounts
    */
   private def instantiate(amounts: SortedMap[Currency, Double]): MultiCurrencyAmount =
-    new MultiCurrencyAmount(amounts) {}
+    new Impl(amounts)
+
+  /**
+   * The one implementation of a multi-currency amount.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[MultiCurrencyAmount]] refuse in its own constructor to be any other implementation.
+   *
+   * @param amounts  the amount per currency, holding the contract [[instantiate]] documents -
+   *   each currency once, ordered by currency code, every number already an amount
+   */
+  private final class Impl(amounts: SortedMap[Currency, Double])
+      extends MultiCurrencyAmount(amounts)
 
   /**
    * Converts the entries of a value one at a time and totals them, stopping at the first refusal.
@@ -1007,27 +1000,26 @@ object MultiCurrencyAmount {
    * a conversion is faithful - what the total is added from, and how far the traversal runs before
    * an unavailable rate settles the outcome - are both properties of the traversal itself.
    *
-   * The total is carried as a number from one entry to the next, which is what the implementation
-   * being ported did with a running total: the entries arrive in the order the map holds them, the
-   * alphabetical order of the currency codes, and each converted number is added where it is read.
-   * Nothing between the map and the result is built - no collection of the entries, and none of
-   * the converted numbers - and the addition is `what has accumulated plus what arrives`, from
-   * zero, which is the order and the starting point that reproduce the rounding of that
-   * implementation and the numbers of the captured parity baseline.
+   * The total is carried as a running number from one entry to the next: the entries arrive in
+   * the order the map holds them, the alphabetical order of the currency codes, and each converted
+   * number is added where it is read. Nothing between the map and the result is built - no
+   * collection of the entries, and none of the converted numbers - and the addition is `what has
+   * accumulated plus what arrives`, from zero, which is the order and the starting point that fix
+   * the rounding of the total.
    *
    * A rate the provider cannot supply returns its failure immediately, so no rate after it is
    * asked for. That is not only a saving: asking for rates a decided outcome does not need would
    * make the number of lookups a failing conversion costs depend on how many amounts happened to
    * follow the one that failed.
    *
-   * The recursion is in tail position and compiles to a loop, so a value holding any number of
+   * The recursion is in tail position and runs as a loop, so a value holding any number of
    * currencies converts without consuming stack, and the number it threads is an ordinary
-   * argument rather than a mutable accumulator.
+   * argument.
    *
    * @param remaining  the entries still to be converted, pulled one at a time
    * @param resultCurrency  the currency every amount is converted into
    * @param rateProvider  the provider of FX rates, asked once per entry
-   * @param accumulated  the total of the entries converted so far
+   * @param accumulated  the total of the entries converted up to this step
    * @return the total of the converted amounts as an amount of the requested currency, or the
    *   failure the provider reported for the first rate it could not supply
    */
@@ -1053,10 +1045,10 @@ object MultiCurrencyAmount {
   /**
    * The failure reported when a collection names one currency twice.
    *
-   * The wording is that of the implementation being ported, which named the currency and nothing
-   * else. The currency is a value of a closed family rather than text from outside the library,
-   * so there is nothing in it to bound or escape, and the failure deliberately carries no
-   * attributes, which makes two failures over the same currency equal and directly comparable.
+   * The message names the currency and nothing else. The currency is a value of a closed family
+   * rather than text from outside the library, so there is nothing in it to bound or escape, and
+   * the failure deliberately carries no attributes, which makes two failures over the same
+   * currency equal and directly comparable.
    *
    * @param currency  the currency that appeared twice
    * @return the failure naming the repeated currency
@@ -1067,8 +1059,8 @@ object MultiCurrencyAmount {
   /**
    * The failure reported when an amount is asked for in a currency that is not held.
    *
-   * The wording is that of the implementation being ported. As above, the currency is a member of
-   * a closed family and the failure carries no attributes.
+   * The message names the currency that is not held. As above, the currency is a member of a
+   * closed family and the failure carries no attributes.
    *
    * @param currency  the currency that is not held
    * @return the failure naming the currency
@@ -1076,16 +1068,14 @@ object MultiCurrencyAmount {
   private def unknownCurrency(currency: Currency): Failure =
     Failure.Invalid(s"Unknown currency $currency")
 
-  //-------------------------------------------------------------------------
   /**
    * The additive instance of this type: the identity is [[empty]] and combining adds per currency.
    *
-   * This is the only `Monoid` in either module of this port, and this type can carry one because
-   * combining two of these values cannot fail - amounts of a currency held by both are added,
-   * amounts of a currency held by one are carried across, and a value holding nothing leaves its
-   * partner unchanged. [[CurrencyAmount]] carries no additive instance for the opposite reason:
-   * adding two single-currency amounts fails when the currencies differ, and a `Semigroup` has
-   * nowhere to report that.
+   * This type can carry a `Monoid` because combining two of these values cannot fail - amounts of
+   * a currency held by both are added, amounts of a currency held by one are carried across, and
+   * a value holding nothing leaves its partner unchanged. [[CurrencyAmount]] carries no additive
+   * instance for the opposite reason: adding two single-currency amounts fails when the
+   * currencies differ, and a `Semigroup` has nowhere to report that.
    *
    * Aggregating a collection is `combineAll`, which is overridden here to make a single pass that
    * adds every amount of every value into one map, rather than folding whole values together one
@@ -1099,25 +1089,18 @@ object MultiCurrencyAmount {
    * the first addition happened. Nothing about the result changes - the same entries arrive in the
    * same order - and what reaches the accumulator is exactly what a traversal would have carried.
    *
-   * ===The two documented limitations of its laws===
+   * ===How exactly it is associative===
    *
-   * The law suite for this instance restricts its generators to '''finite amounts''' and compares
-   * with an equality that is tolerant to '''`1e-9` relative''' rather than with the exact
-   * equality of this type. Both are deliberate weakenings, recorded in the migration notes of
-   * this port, and neither is a convenience of the test:
+   * Two properties of the arithmetic bound the associativity of this instance, and both are facts
+   * about amounts rather than about the instance:
    *
    *   - an infinite amount combined with an infinite amount of the opposite sign produces a value
    *     that is not a number, which no amount may hold, so it raises the documented invariant of
-   *     [[CurrencyAmount]]. A generator emitting infinities falsifies associativity by reaching
-   *     that invariant, which says nothing about whether this instance is associative;
+   *     [[CurrencyAmount]] instead of yielding a value. Associativity therefore holds over finite
+   *     amounts;
    *   - floating point addition is only approximately associative, so `(a + b) + c` and
-   *     `a + (b + c)` can differ in their last bit. Under exact equality associativity is
-   *     falsified within a handful of examples on wholly ordinary finite inputs. The tolerance
-   *     states the strongest thing that is actually true of double arithmetic.
-   *
-   * A reader tempted to replace the tolerant equality with the exact one, or to widen the
-   * generators, should expect an intermittently failing law suite and nothing else: the weakness
-   * is in IEEE-754 addition, not in this instance.
+   *     `a + (b + c)` can differ in their last bit. Associativity therefore holds to within the
+   *     rounding of double arithmetic rather than under the exact equality of this type.
    *
    * @return the additive instance of this type
    */
@@ -1141,10 +1124,8 @@ object MultiCurrencyAmount {
    * [[MultiCurrencyAmount.equals]] and [[MultiCurrencyAmount.hashCode]] of the type, which
    * compare the amounts by their bit patterns.
    *
-   * No `Order` is offered, because the type being ported was not comparable and no ordering of
-   * these values means anything - neither `[GBP 100]` nor `[USD 100]` is the greater. The law
-   * suite of this port asserts that an `Order` for this type cannot be summoned, so declaring one
-   * here would be a visible change rather than an addition.
+   * No `Order` is offered, because no ordering of these values means anything - neither
+   * `[GBP 100]` nor `[USD 100]` is the greater - so an `Order` for this type cannot be summoned.
    *
    * @return the hashing and equality of these values
    */
@@ -1160,7 +1141,6 @@ object MultiCurrencyAmount {
    */
   implicit val show: Show[MultiCurrencyAmount] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The field shape both codecs are derived from, which the decoder reads before validation.
    *
@@ -1170,21 +1150,30 @@ object MultiCurrencyAmount {
    * shape of a value is stated exactly once. It is private and never returned - the only values of
    * it that exist are the ones the two codecs build.
    *
-   * The amounts are carried as a sequence rather than as an object keyed by currency, which is the
-   * shape this port defines for this type. An object keyed by currency would repeat neither more
-   * nor less information, but a sequence of amounts serializes each amount through the codec of
-   * [[CurrencyAmount]] itself, so one document names a currency and an amount in exactly one way
-   * wherever it appears.
+   * The amounts are carried as a sequence rather than as an object keyed by currency. An object
+   * keyed by currency would repeat neither more nor less information, but a sequence of amounts
+   * serializes each amount through the codec of [[CurrencyAmount]] itself, so one document names a
+   * currency and an amount in exactly one way wherever it appears.
    *
    * @param amounts  the amounts, in the alphabetical order of their currency codes on the way out,
    *   in whatever order a document supplies them on the way in
    */
-  private final case class Raw(amounts: Vector[CurrencyAmount])
+  private final case class Raw(amounts: Vector[CurrencyAmount]) extends NoJavaSerialization
+
+  /**
+   * The name of the field holding the amounts, which is the JSON key of the only field there is.
+   *
+   * It is named once here because two things below need the same string: the shape derived from
+   * [[Raw]] writes and reads the field under it, and the ceiling the decoder applies to the number
+   * of amounts a document may state is expressed in terms of it. Naming it keeps the two from
+   * drifting apart, since a bound on a field the document does not have would silently bound
+   * nothing.
+   */
+  private val AmountsField: String = "amounts"
 
   /** The derived decoder of the raw field shape, used by the checking decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder.AsObject[Raw] = deriveEncoder[Raw]
 
   /**
@@ -1199,18 +1188,15 @@ object MultiCurrencyAmount {
    *
    * The order is not a convention of the encoder but a property of the value being encoded: the
    * amounts are held in a map sorted by currency, so two values built from the same amounts in
-   * different orders encode to identical bytes. That is what makes the byte-stability property of
-   * the test suite hold for this type without anything being sorted here.
+   * different orders encode to identical bytes without anything being sorted here.
    *
-   * The shape is derived at compile time over the raw product above rather than written out field
-   * by field, which is what every product of this port does, and the value is mapped into that
-   * product: a value in memory has already been checked, so nothing further has to be decided on
-   * the way out. An amount that is infinite is written as the tagged string the double policy of
-   * this port defines, because each amount goes through the codec of [[CurrencyAmount]], which
-   * applies that policy. The result is wrapped so that a field holding no value would be omitted,
-   * which is the policy every product of this port follows - this type has no optional field, so
-   * the wrapping changes nothing about its output and exists so that the policy holds without
-   * exception.
+   * The shape is derived over the raw product above rather than written out field by field, and
+   * the value is mapped into that product: a value in memory has already been checked, so nothing
+   * further has to be decided on the way out. An amount that is infinite is written as a tagged
+   * string, because each amount goes through the codec of [[CurrencyAmount]], which applies the
+   * non-finite policy of this library. The result is wrapped so that a field holding no value
+   * would be omitted; this type has no optional field, so the wrapping changes nothing about its
+   * output and exists so that the policy holds without exception.
    *
    * @return the JSON encoding of a value
    */
@@ -1229,8 +1215,25 @@ object MultiCurrencyAmount {
    * A document may list the amounts in any order, since the value they describe does not depend on
    * it; re-encoding what was decoded puts them in currency order.
    *
+   * ===How many amounts a document may state===
+   *
+   * How long the `amounts` array is, is stated by the document, so the count is read from the
+   * payload and measured against `Codecs.MaximumCollectionElements` before a single amount is
+   * decoded. A document stating more is a decoding failure naming the ceiling and the field, and
+   * nothing is allocated for it - which is the point of measuring first: this factory collapses the
+   * amounts into a map keyed by currency, so a refusal issued afterwards would already have paid
+   * for reading, sorting and grouping every one of them, and a document naming the same currency a
+   * million times costs exactly as much as a legitimate one of that size.
+   *
+   * The ceiling cannot refuse a value this port wrote. A value of this type holds at most one
+   * amount per currency, so the longest array it can write is the number of currencies the
+   * reference data names - a figure three orders of magnitude below the ceiling - and
+   * `decode(encode(x))` therefore holds for every value that can exist. What the ceiling refuses is
+   * a document asking for entries no value of this type could hold.
+   *
    * @return the JSON decoding of a value
    */
   implicit val decoder: Decoder[MultiCurrencyAmount] =
-    Codecs.checkedDecoder[Raw, MultiCurrencyAmount](raw => of(raw.amounts))(rawDecoder)
+    Codecs.boundedFields(AmountsField -> Codecs.MaximumCollectionElements)(
+      Codecs.checkedDecoder[Raw, MultiCurrencyAmount](raw => of(raw.amounts))(rawDecoder))
 }

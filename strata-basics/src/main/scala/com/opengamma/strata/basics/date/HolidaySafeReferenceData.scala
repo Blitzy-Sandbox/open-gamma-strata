@@ -11,6 +11,7 @@ import scala.collection.immutable.Set
 
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.ReferenceDataId
+import com.opengamma.strata.collect.NoJavaSerialization
 
 /**
  * Reference data that supplies a holiday calendar for every calendar identifier.
@@ -18,10 +19,10 @@ import com.opengamma.strata.basics.ReferenceDataId
  * This decorates another set of reference data so that a [[HolidayCalendarId]] the underlying
  * data does not hold still resolves: the identifier yields a calendar whose only holidays are
  * Saturday and Sunday. A calculation can therefore proceed against reference data that is
- * incomplete, which is what makes this useful for exploratory work, demonstrations and tests -
- * and what makes it unsuitable for production, where a calendar that is missing is a fault
- * worth reporting rather than papering over. [[HolidayCalendars.defaultingReferenceData]] is
- * how a caller normally obtains one.
+ * incomplete, which is what makes this useful for exploratory work and demonstrations - and
+ * what makes it unsuitable for production, where a calendar that is missing is a fault worth
+ * reporting rather than papering over. [[HolidayCalendars.defaultingReferenceData]] is how a
+ * caller normally obtains one.
  *
  * Every other identifier is passed through untouched. A request for something that is not a
  * holiday calendar - a security, a curve, anything an application identifies for itself - is
@@ -36,7 +37,7 @@ import com.opengamma.strata.basics.ReferenceDataId
  * `name` reports, what its equality compares, what appears in the name of a calendar combined
  * with it, and what its JSON form records. Defaulting to the shared weekend calendar would
  * quietly rewrite the identifier a caller resolved, so a schedule built against incomplete
- * data would no longer say which centre it had meant.
+ * data would stop naming the centre it was written for.
  *
  * The defaulted calendar holds no holiday dates at all, so it has no range of years and every
  * query it is asked falls through to its weekend test. That is what makes it answer uniformly
@@ -58,40 +59,31 @@ import com.opengamma.strata.basics.ReferenceDataId
  * result is a calendar identified by the whole composite name in which every known part still
  * contributes its own holidays.
  *
- * ===Divergences from the type being ported===
+ * ===Two calls, two answers for a composite identifier===
  *
- * The type being ported was a bean carrying one property, with generated builder, equality and
- * serialization support. None of that machinery is ported: this is a case class, whose
- * structural equality over the single underlying set is what the generated equality did, and
- * neither the serialization support nor the builder has a counterpart in this port.
+ * [[findValue]] is the single query every [[ReferenceData]] implements, and it is a plain
+ * lookup in a store: for a composite identifier it reports nothing, by the rule above. The
+ * combined calendar is what `HolidayCalendarId.resolve(refData)` answers - the call an
+ * application makes, directly or through an adjustment - because that is the call which
+ * resolves a composite name part by part. Code reaching for a defaulted composite calendar
+ * therefore resolves the identifier rather than querying the store.
  *
- * Where the original implemented a low-level query that signalled absence by returning a
- * reference to nothing, this implements [[findValue]] returning an `Option`, which is the one
- * primitive of [[ReferenceData]] in this port. The consequence is worth stating, because it
- * changes which call a caller observes composite behaviour through: in the library being
- * ported the identifier drove the lookup, so asking that library's reference data for
- * `GBLO+USNY` returned the combined calendar; here the lookup is a plain query of a store and
- * `findValue` reports nothing for a composite identifier, while
- * `HolidayCalendarId.resolve(refData)` - the call an application makes, directly or through an
- * adjustment - returns the combined calendar.
- *
- * The type is public where the original was visible only within its package. A case class
- * synthesises a public `apply` from its constructor regardless, so restricting the type would
- * take a hand-written companion and buy nothing: there is no invariant to protect, the single
- * field being immutable reference data, and a test that means to assert the decoration itself
- * needs to name the type. [[com.opengamma.strata.basics.CombinedReferenceData]] is public in
- * this port for the same reason.
+ * The type is public. Its one field is immutable reference data, so there is no invariant to
+ * protect, and code that means to assert the decoration itself needs to name the type;
+ * [[com.opengamma.strata.basics.CombinedReferenceData]] is public for the same reason.
  *
  * As with every other implementation of [[ReferenceData]], this type has no JSON codec and no
  * typeclass instances. It stands for a heterogeneous store of values reached by identifiers of
  * differing types, so there is nothing for an encoder to write; the one kind of reference data
- * that is serializable - a holiday calendar - carries its own codec.
+ * that has a JSON form - a holiday calendar - carries its own codec.
  *
  * @param underlying  the reference data to decorate, consulted before any calendar is defaulted
  * @see [[HolidayCalendars.defaultingReferenceData]] for the way to obtain an instance
  * @see [[HolidayCalendarId.resolve]] for the resolution a composite identifier falls through to
  */
-final case class HolidaySafeReferenceData(underlying: ReferenceData) extends ReferenceData {
+final case class HolidaySafeReferenceData(underlying: ReferenceData)
+    extends ReferenceData
+    with NoJavaSerialization {
 
   /**
    * Finds the reference data value associated with the specified identifier.
@@ -196,9 +188,9 @@ object HolidaySafeReferenceData {
   /**
    * The days of the week that a defaulted calendar treats as holidays.
    *
-   * Saturday and Sunday, which is the weekend the library being ported defaulted to. It is
-   * held once here rather than built per lookup, because a lookup that defaults a calendar
-   * happens on the resolution path of every date adjustment made against incomplete data.
+   * Saturday and Sunday. The set is held once here rather than built per lookup, because a
+   * lookup that defaults a calendar happens on the resolution path of every date adjustment
+   * made against incomplete data.
    */
   private val WeekendDays: Set[DayOfWeek] = Set(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
 }

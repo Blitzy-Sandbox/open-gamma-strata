@@ -13,7 +13,9 @@ import cats.data.NonEmptyList
 
 import io.circe.Codec
 
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
@@ -29,52 +31,49 @@ import com.opengamma.strata.collect.result.Failure
  * types is the accrual convention rather than the index: compounding is the general case,
  * while averaging is used almost exclusively by US Fed Fund swaps.
  *
- * The family has exactly five members, they are the five constants of the enum being ported,
- * and nothing can add a sixth: the type is `sealed`, every member is declared in this file,
- * and the name lookup is built from those members alone. A `match` over a value of this type
- * is therefore checked for exhaustiveness by the compiler, which is what lets the conversion
- * from a floating rate name to an index enumerate the kinds it handles and be told at compile
- * time if the set ever changes.
- *
- * ===What this replaces===
- *
- * The type being ported is a Java `enum` whose text form was derived from the constant
- * identifier at class-initialization time by a shared name helper, and whose `of` factory
- * raised an error for text naming no constant. This port keeps both name forms and the whole
- * of the accepted name space, and discards the two mechanisms behind them. The text form is
- * now a string written out beside each member, so it is visible in this file rather than
- * computed from an identifier; and the factory reports rejected text as a value - `valueOf`
- * answers with an `Option` and `parse` with a `Failure` on the left of an `EitherNec` - so no
- * caller of this family has an error to catch. The annotations that registered the two
- * directions with the reflective string-conversion library of the original are gone with that
- * library; the JSON codec below is their replacement and is built by the compiler.
+ * The family has exactly five members and nothing can add a sixth: the type is `sealed`,
+ * every member is declared in this file, and the name lookup is built from those members
+ * alone. A `match` over a value of this type is therefore checked for exhaustiveness at
+ * compile time, so the conversion from a floating rate name to an index enumerates the kinds
+ * it handles and cannot silently omit one.
  *
  * ===Names===
  *
  * A member's name is the mixed-case rendering of its constant identifier - `IBOR` becomes
- * `Ibor` and `OVERNIGHT_COMPOUNDED` becomes `OvernightCompounded` - which is exactly what the
- * name helper of the original produced, so text written before this port reads back as the
- * same member and text written after it is read by the original unchanged. The name is also
- * what `toString` returns and what the JSON codec writes.
+ * `Ibor` and `OVERNIGHT_COMPOUNDED` becomes `OvernightCompounded` - and is written out beside
+ * each member, so it is visible in this file rather than computed from an identifier. The
+ * name is also what `toString` returns and what the JSON codec writes.
  *
- * The original accepted six spellings of each member: the constant identifier, the rendered
- * name, and each of those in upper and in lower case. All six still resolve, through
- * `valueOf` and through `parse` alike - the rendered name and its upper-case form are the two
- * keys the name lookup registers for every family, and the remaining spellings are declared
- * as alternate names below.
+ * Six spellings of each member resolve: the constant identifier, the rendered name, and each
+ * of those in upper and in lower case. All six resolve through `valueOf` and through `parse`
+ * alike - the rendered name and its upper-case form are the two keys the name lookup
+ * registers for every family, and the remaining spellings are declared as alternate names
+ * below.
+ *
+ * Text that names no member is reported as a value rather than raised: `valueOf` answers with
+ * an `Option` and `parse` with a `Failure` on the left of an `EitherNec`, so no caller of this
+ * family has an error to catch.
  *
  * ===Equality, ordering and rendering===
  *
  * The companion publishes exactly one equality-bearing instance, an `Order` that is also a
  * `Hash`, so two notions of equality cannot disagree about a type. Both compare by `name`,
  * which makes the ordering alphabetical - `Ibor`, `Other`, `OvernightAveraged`,
- * `OvernightCompounded`, `Price` - rather than the declaration ordering the Java enum
- * compared by. `values` still lists the members in declaration order, so both orders remain
- * available and neither is implied by the other.
+ * `OvernightCompounded`, `Price`. `values` lists the members in declaration order, so both
+ * orders remain available and neither is implied by the other.
  *
  * @see [[FloatingRate]] for the abstraction over the two kinds of floating rate
  */
-sealed abstract class FloatingRateType private[index] (val name: String) extends Named {
+sealed abstract class FloatingRateType private[index] (val name: String)
+    extends Named
+    with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to this package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be a sixth kind of rate, outside the
+  // five this type publishes and outside every match written over them - is refused here instead.
+  // The five members are the `case object`s declared in the companion.
+  JvmClosure.requireDeclaredMember(this, classOf[FloatingRateType])
 
   /**
    * Checks if the type is 'Ibor'.
@@ -105,9 +104,8 @@ sealed abstract class FloatingRateType private[index] (val name: String) extends
   /**
    * Returns the formatted name of the type.
    *
-   * This is the same string as `name`, so a type interpolated into a message renders as the
-   * mixed-case form the type being ported rendered, and agrees with the `Show` instance and
-   * with the JSON representation.
+   * This is the same string as `name`, so a type interpolated into a message renders in its
+   * mixed-case form and agrees with the `Show` instance and with the JSON representation.
    *
    * @return the formatted string representing the type
    */
@@ -118,8 +116,7 @@ sealed abstract class FloatingRateType private[index] (val name: String) extends
  * Provides the five floating rate types, together with the name lookup, typeclass instances
  * and JSON codec for them.
  *
- * The members are declared in the order of the enum constants being ported, and `values`
- * preserves that order.
+ * `values` lists the members in the order they are declared below.
  */
 object FloatingRateType {
 
@@ -135,7 +132,8 @@ object FloatingRateType {
    * A floating rate index that is based on an Overnight index with compounding.
    *
    * This kind of rate translates to an Overnight index. Compounding is the usual accrual for
-   * an Overnight rate, and is the one assumed wherever a rate does not say otherwise.
+   * an Overnight rate, and is the type carried by all but a handful of the built-in Overnight
+   * floating rate names.
    */
   case object OvernightCompounded extends FloatingRateType("OvernightCompounded")
 
@@ -167,9 +165,9 @@ object FloatingRateType {
   /**
    * The complete set of floating rate types, in declaration order.
    *
-   * The order is the declaration order of the enum constants being ported and is part of what
-   * this file preserves; it is not the order the `Order` instance below imposes, which is
-   * alphabetical by name. The list is non-empty by construction, which is what allows every
+   * The order is the order the members are declared in above; it is not the order the `Order`
+   * instance below imposes, which is alphabetical by name. The list is non-empty by
+   * construction, which is what allows every
    * operation over the family - the name lookup, a generator, an exhaustive report - to be
    * written without a case for a family that has no members.
    *
@@ -187,11 +185,10 @@ object FloatingRateType {
   /**
    * The spellings accepted in addition to the two keys every member is registered under.
    *
-   * The name helper of the type being ported accepted six spellings of each member: the
-   * constant identifier, the rendered name, and each of those folded to upper and to lower
-   * case. The name lookup of a family already registers each member under its rendered name
-   * and that name folded to upper case, so this table supplies precisely the remainder, and
-   * nothing beyond it:
+   * Six spellings of each member resolve: the constant identifier, the rendered name, and
+   * each of those folded to upper and to lower case. The name lookup of a family already
+   * registers each member under its rendered name and that name folded to upper case, so this
+   * table supplies precisely the remainder, and nothing beyond it:
    *
    *  - the constant identifier and its lower-case form, for the two members whose identifier
    *    differs from their rendered name by more than case - the underscore of
@@ -221,11 +218,10 @@ object FloatingRateType {
    * The name lookup for this family.
    *
    * This instance is the single route from text to a type, and it is built from `values` and
-   * the alternate spellings above. Of the three tables a named family may declare, the family
+   * the alternate spellings above. Of the three tables a named family may declare, this family
    * declares one: there is no pattern that rewrites text before it is looked up, and no group
-   * of names published for an external protocol, because the configuration of the library
-   * being ported declares neither for this family - it declares nothing for it at all, the
-   * whole of its name space having always been derived from its own constants.
+   * of names published for an external protocol, the whole of the accepted name space being
+   * derived from the five members themselves.
    *
    * @return the name lookup for the five types
    */
@@ -235,8 +231,8 @@ object FloatingRateType {
   /**
    * Obtains the type that the specified name identifies, if one exists.
    *
-   * This is the exact lookup, and it accepts the six spellings of each member that the type
-   * being ported accepted, and only those:
+   * This is the exact lookup, and it accepts the six spellings of each member, and only
+   * those:
    *
    * {{{
    * valueOf("OvernightCompounded")   // Some(OvernightCompounded) - the rendered name
@@ -258,16 +254,15 @@ object FloatingRateType {
   /**
    * Parses a type from text, tolerating the case of the input.
    *
-   * The exact lookup of `valueOf` is tried first, so every spelling the type being ported
-   * accepted is resolved by it. When that finds nothing, the text is folded to upper case and
-   * looked up once more, which is the whole of the leniency available to this family, since
-   * it declares no rewrite pattern for the step between the two lookups. The observable
-   * result is a lookup that ignores case while respecting every other character, so `iBoR`
-   * resolves here where the original rejected it, and `Overnight Compounded` is rejected as
-   * it always was.
+   * The exact lookup of `valueOf` is tried first, so all six spellings of each member resolve
+   * there. When that finds nothing, the text is folded to upper case and looked up once more,
+   * which is the whole of the leniency available to this family, since it declares no rewrite
+   * pattern for the step between the two lookups. The observable result is a lookup that
+   * ignores case while respecting every other character, so `iBoR` resolves and
+   * `Overnight Compounded` does not.
    *
-   * Where the original signalled an unrecognised name by raising an error, this method
-   * reports it as a value: the result is `Left` of a chain holding one
+   * Text that names no member is reported as a value: the result is `Left` of a chain holding
+   * one
    * [[com.opengamma.strata.collect.result.Failure.Parsing]] whose message names both this
    * family and the text that could not be resolved. The returned type is the same as
    * `collect.ResultNec[FloatingRateType]`, spelled out here for readability.
@@ -285,8 +280,7 @@ object FloatingRateType {
    * disagree. All three are derived from `name`, which is sound because the five names are
    * distinct and each member exists exactly once, so two types compare equal if, and only if,
    * they are the same type - the law the combined instance has to satisfy. Comparison by name
-   * makes the ordering alphabetical rather than the declaration ordering of the enum being
-   * ported.
+   * makes the ordering alphabetical rather than that of the declarations above.
    *
    * @return the ordering of types by name, which is also their hashing
    */
@@ -307,15 +301,13 @@ object FloatingRateType {
    * The JSON codec for types.
    *
    * A type is written as the bare string of its name - `"OvernightCompounded"` - and never as
-   * an object, which is the single-string form the type being ported wrote through its
-   * string-conversion annotations, so a document written before this port is read after it as
-   * the same member. A string is read back through `parse`, so a document is accepted whatever
-   * the case of the name it holds, and one naming no type of this family is rejected with a
+   * an object. A string is read back through `parse`, so a document is accepted whatever the
+   * case of the name it holds, and one naming no type of this family is rejected with a
    * decoding failure carrying the message of the parse failure.
    *
-   * The codec is assembled by the compiler from the family's own name lookup, taken from the
-   * shared JSON helpers of the collect module; nothing about it inspects a type, a class path
-   * or a configuration source while the program runs.
+   * The codec is derived from the family's own name lookup by the shared JSON helpers of the
+   * collect module, so the accepted name space of the codec and of `parse` are one and the
+   * same.
    *
    * @return the codec reading and writing a type as its name
    */

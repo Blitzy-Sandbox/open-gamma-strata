@@ -22,6 +22,8 @@ import io.circe.generic.semiauto.deriveEncoder
 import com.opengamma.strata.basics.date.BusinessDayAdjustment
 import com.opengamma.strata.basics.date.DateAdjuster
 import com.opengamma.strata.basics.date.DayCount
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
@@ -34,59 +36,34 @@ import com.opengamma.strata.collect.result.Failure
  *
  * Two pairs of dates are provided, start/end and unadjustedStart/unadjustedEnd. The period itself
  * runs from [[startDate]] to [[endDate]]. The [[unadjustedStartDate]] and [[unadjustedEndDate]]
- * are the dates used to calculate the start date and the end date when applying business day
- * adjustment.
+ * are the dates from which the start date and the end date are calculated when applying business
+ * day adjustment.
  *
  * For example, consider a schedule that has periods every three months on the 10th of the month.
  * From time to time, the scheduled date will be a weekend or holiday. In this case, a rule may
  * apply moving the date to a valid business day. If this happens, then the "unadjusted" date is
- * the original date in the periodic schedule and the "adjusted" date is the related valid business
- * day. Note that not all schedules apply a business day adjustment.
+ * the scheduled date of the periodic schedule and the "adjusted" date is the related valid
+ * business day. Note that not all schedules apply a business day adjustment.
  *
  * ===Construction===
  *
  * A period is a '''validated''' value: both pairs of dates have to be in time-line order and
- * neither pair may be degenerate. The two conditions are decided by [[SchedulePeriod.of]], which
- * reports them as failures rather than raising, so a value of this type is known to describe a
- * period of non-zero length in both its adjusted and its unadjusted form. The type is a
- * `sealed abstract case class` with a private constructor, which is what leaves it without a public
- * `apply` or `copy` - there is no route to an instance that skips the factory - while keeping the
- * `equals`, `hashCode` and `unapply` of a case class.
+ * neither pair may be degenerate - the unadjusted start date strictly before the unadjusted end
+ * date, and the start date strictly before the end date. The two conditions are decided by
+ * [[SchedulePeriod.of]], which reports them as failures rather than raising, and it accumulates
+ * them, so a caller supplying two bad pairs is told about both at once. A value of this type is
+ * therefore known to describe a period of non-zero length in both its adjusted and its unadjusted
+ * form. The type is a `sealed abstract case class` with a private constructor, which is what
+ * leaves it without a public `apply` or `copy` - there is no route to an instance that skips the
+ * factory - while keeping the `equals`, `hashCode` and `unapply` of a case class.
  *
- * ===Divergences from the Java original===
- *
- * These are the points on which this port deliberately differs from
- * `com.opengamma.strata.basics.schedule.SchedulePeriod`, recorded here for `SCALA_MIGRATION.md`:
- *
- *  - '''The validator's exception becomes an accumulating failure.''' The bean checked its two
- *    date pairs in an `@ImmutableValidator` that threw `IllegalArgumentException` at the first
- *    pair out of order. [[SchedulePeriod.of]] returns `EitherNec[Failure, SchedulePeriod]` and
- *    reports '''both''' causes, so a caller correcting a definition sees everything wrong with it
- *    at once rather than one thing per attempt.
- *  - '''`toAdjusted` gains an error channel.''' The method threw `IllegalArgumentException` where
- *    adjustment collapsed the period onto a single day; it now returns that failure as a value.
- *    [[toUnadjusted]] stays total, because the unadjusted pair of a value of this type is already
- *    known to be in order.
- *  - '''`subSchedule` gains an error channel too.''' The method built its definition through the
- *    bean builder of [[PeriodicSchedule]], which threw where the arguments described no definition;
- *    it now returns the definition through [[PeriodicSchedule.of]] and reports those reasons as a
- *    value. What it returns is still the definition rather than a generated schedule, so the
- *    holiday calendar the dates need stays a choice of the caller.
- *  - '''`yearFraction` takes the schedule as its day count contract.''' The method took the
- *    concrete schedule containing this period; it takes
- *    [[com.opengamma.strata.basics.date.DayCount.ScheduleInfo]], which is the only thing the day
- *    count reads from it, so a schedule is still accepted and a bare set of schedule facts is too.
- *  - '''Ordering gains a tie-break.''' The bean's `compareTo` compared the unadjusted start date
- *    and then the unadjusted end date, ignoring the adjusted pair, so two periods that differ only
- *    in their adjusted dates compared equal while being unequal. Cats requires `compare == 0`
- *    exactly where `eqv` holds, so [[SchedulePeriod.order]] continues with the adjusted start date
- *    and then the adjusted end date. The first two keys are unchanged, so any behaviour that
- *    depended on the Java ordering - sorting the periods of a schedule, for instance - is
- *    preserved; only pairs the Java comparison called equal are separated.
- *  - '''No Joda bean, builder or Java serialization.''' The meta-bean, the builder and its
- *    pre-build defaulting, `ImmutableBean`, `Serializable` and `Comparable` are all dropped. The
- *    builder's defaulting of each absent unadjusted date to its adjusted counterpart survives as
- *    the two-argument [[SchedulePeriod.of]], and JSON replaces Java serialization.
+ * Adjustment can bring the two dates of a short period onto the same day, which is not a period,
+ * so [[toAdjusted]] carries the error channel of the factory. [[toUnadjusted]] is total, the
+ * unadjusted pair of a value of this type being in order already. [[subSchedule]] answers with
+ * the '''definition''' of a sub-schedule rather than with a generated schedule, so the holiday
+ * calendar its dates need stays a choice of the caller, and [[yearFraction]] takes
+ * [[com.opengamma.strata.basics.date.DayCount.ScheduleInfo]], which a [[Schedule]] satisfies and
+ * a bare set of schedule facts does too.
  *
  * @param startDate  the start date of this period, used for financial calculations such as
  *   interest accrual; the first date in the schedule period, typically treated as inclusive, and
@@ -105,7 +82,30 @@ sealed abstract case class SchedulePeriod private (
     startDate: LocalDate,
     endDate: LocalDate,
     unadjustedStartDate: LocalDate,
-    unadjustedEndDate: LocalDate) {
+    unadjustedEndDate: LocalDate)
+    extends NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // could hold dates running backwards, the pair of checks `of` accumulates - can be stopped is
+  // here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[SchedulePeriod.Impl])
+
+  // The invariant of this type, stated over the four dates the instance actually holds rather than
+  // over the arguments a factory was given, because the class file of the implementation carries a
+  // public constructor whatever the source asked for: a caller compiled outside this library can
+  // name that constructor directly, and the identity check above would admit what it built with
+  // its dates running backwards or collapsed onto one day. These are exactly the two checks
+  // [[SchedulePeriod.of]] accumulates, so a period that reached this constructor by any other
+  // route is still one every member of the type can be read against - [[length]],
+  // [[lengthInDays]], [[yearFraction]] and [[isRegular]] all take the two pairs to be in order.
+  JvmClosure.requireInvariant(
+    "its unadjusted start date falls strictly before its unadjusted end date",
+    unadjustedStartDate.isBefore(unadjustedEndDate))
+  JvmClosure.requireInvariant(
+    "its start date falls strictly before its end date",
+    startDate.isBefore(endDate))
 
   /**
    * Returns the length of the period.
@@ -127,13 +127,12 @@ sealed abstract case class SchedulePeriod private (
    *
    * The count is always positive, because the two dates of a period are in order and distinct, and
    * it overflows only for a period spanning more than about 5.8 million years, where the
-   * conversion refuses with `ArithmeticException` exactly as the method being ported did.
+   * conversion refuses with `ArithmeticException`.
    *
    * @return the actual number of days in the period
    */
   def lengthInDays: Int = Math.toIntExact(endDate.toEpochDay - startDate.toEpochDay)
 
-  //-------------------------------------------------------------------------
   /**
    * Calculates the year fraction using the specified day count.
    *
@@ -143,12 +142,12 @@ sealed abstract case class SchedulePeriod private (
    * conventions that read the surrounding schedule - `Act/Act ICMA`, `Act/365 Actual`, `30U/360`
    * and `30E/360 ISDA` - take what they need from it.
    *
-   * The result is a plain `Double` rather than a failure-carrying value, which is the signature of
-   * the method being ported. A day count that reads a schedule fact the supplied schedule cannot
-   * answer refuses the call through `ArgCheck` instead, because handing a convention a schedule
-   * that cannot answer what the convention is defined in terms of breaks the contract of the call
-   * rather than describing data the library should report on. A real schedule answers everything,
-   * so that refusal is not reachable from this method.
+   * The result is a plain `Double` rather than a failure-carrying value. A day count that reads a
+   * schedule fact the supplied schedule cannot answer refuses the call through `ArgCheck`
+   * instead, because handing a convention a schedule that cannot answer what the convention is
+   * defined in terms of breaks the contract of the call rather than describing data the library
+   * should report on. A real schedule answers everything, so that refusal is not reachable from
+   * this method.
    *
    * @param dayCount  the day count convention
    * @param schedule  the schedule that contains this period
@@ -163,13 +162,13 @@ sealed abstract case class SchedulePeriod private (
    * Checks if this period is regular according to the specified frequency and roll convention.
    *
    * A schedule period is normally created from a frequency and roll convention. These can
-   * therefore be used to determine if the period is regular, which simply means that the period
-   * end date can be generated from the start date and vice versa.
+   * therefore decide whether the period is regular, which simply means that the period end date
+   * can be generated from the start date and vice versa.
    *
-   * The check is deliberately symmetric, as it was in the original: both directions have to agree,
-   * so a period whose end date rolls forward correctly from its start date but whose start date
-   * does not roll back from its end date is '''not''' regular. This is what a schedule uses to
-   * classify its first and last periods as stubs, so the two-sided form is load-bearing.
+   * The check is deliberately symmetric: both directions have to agree, so a period whose end
+   * date rolls forward correctly from its start date but whose start date does not roll back from
+   * its end date is '''not''' regular. This is what a schedule reads to classify its first and
+   * last periods as stubs, so the two-sided form is load-bearing.
    *
    * The unadjusted dates are compared, because they are the dates a roll convention generates.
    *
@@ -192,7 +191,6 @@ sealed abstract case class SchedulePeriod private (
    */
   def contains(date: LocalDate): Boolean = !date.isBefore(startDate) && date.isBefore(endDate)
 
-  //-------------------------------------------------------------------------
   /**
    * Creates a sub-schedule within this period.
    *
@@ -200,27 +198,28 @@ sealed abstract case class SchedulePeriod private (
    * start and end date of this period, because those are the dates a roll convention generates
    * from: a sub-schedule derived from the adjusted pair would roll from a business day rather than
    * from the periodic date the enclosing schedule was built on. The frequency and roll convention
-   * are used to build the unadjusted dates of the sub-schedule, the stub convention handles any
-   * remaining time where the new frequency does not divide evenly into this period, and the
-   * business day adjustment is the one the sub-schedule applies to every date it produces.
+   * build the unadjusted dates of the sub-schedule, the stub convention handles any remaining
+   * time where the new frequency does not divide evenly into this period, and the business day
+   * adjustment is the one the sub-schedule applies to every date it produces.
    *
-   * What is returned is the '''definition''' of the sub-schedule rather than the schedule itself,
-   * as it was in the method being ported: generating the dates needs a holiday calendar, so the
-   * caller resolves the definition with [[PeriodicSchedule.createSchedule]] and the reference data
-   * of its choosing. That keeps the reference data threaded explicitly, which is the rule this
-   * port follows everywhere.
+   * What is returned is the '''definition''' of the sub-schedule rather than the schedule itself:
+   * generating the dates needs a holiday calendar, so the caller resolves the definition with
+   * [[PeriodicSchedule.createSchedule]] and the reference data of its choosing, which keeps the
+   * reference data threaded explicitly.
    *
-   * The definition is decided by [[PeriodicSchedule.of]], so a set of arguments that describes no
-   * definition is reported as a chain of reasons rather than raised - the method being ported threw
-   * `ScheduleException` for the same cases. The dates this period contributes are already known to
-   * be in order, so the only reasons reachable here come from the four supplied arguments.
+   * The definition is decided by [[PeriodicSchedule.of]], which checks the ordering of the two
+   * dates it is given: the start date of the definition must fall strictly before its end date.
+   * The unadjusted dates of this period satisfy that ordering already, so a definition refused
+   * here would be refused for a date ordering this period cannot present. Whether the frequency,
+   * the roll convention and the stub convention agree with those dates is decided by schedule
+   * creation rather than by the definition.
    *
    * @param frequency  the frequency of the sub-schedule
    * @param rollConvention  the roll convention to use for rolling
    * @param stubConvention  the stub convention to use for any excess
    * @param adjustment  the business day adjustment to apply to the sub-schedule
-   * @return the definition of the sub-schedule, or the failures describing why the arguments
-   *   describe none
+   * @return the definition of the sub-schedule, or the failures naming the broken constraint of
+   *   that definition: its start date must fall strictly before its end date
    */
   def subSchedule(
       frequency: Frequency,
@@ -235,7 +234,6 @@ sealed abstract case class SchedulePeriod private (
       stubConvention,
       rollConvention)
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this period to one where the start and end dates are adjusted using the specified
    * adjuster.
@@ -248,14 +246,14 @@ sealed abstract case class SchedulePeriod private (
    * The adjuster will typically be obtained from
    * [[com.opengamma.strata.basics.date.BusinessDayAdjustment.resolve]].
    *
-   * Adjustment can collapse a short period onto a single day, and the pair of dates that results
-   * is then no longer a period; that is reported as a failure, where the method being ported threw
-   * `IllegalArgumentException`. The variant taking a merge type is how a schedule avoids the
-   * collapse for its first and last period.
+   * Adjustment can collapse a short period onto a single day, and a pair of equal dates is not a
+   * period; that is reported as a failure. The variant taking a merge type is how a schedule
+   * avoids the collapse for its first and last period.
    *
    * @param adjuster  the adjuster to use
-   * @return the adjusted schedule period, or the failures describing why the adjusted dates
-   *   describe none
+   * @return the adjusted schedule period, or the failures naming the broken constraint: the
+   *   adjusted start date must fall strictly before the adjusted end date, which adjustment
+   *   breaks by bringing the two onto the same day or past each other
    */
   def toAdjusted(adjuster: DateAdjuster): EitherNec[Failure, SchedulePeriod] =
     rebuilt(adjuster.adjust(startDate), adjuster.adjust(endDate))
@@ -275,9 +273,8 @@ sealed abstract case class SchedulePeriod private (
    *    failure is the answer, because two adjacent dates in the middle of a schedule collapsing
    *    onto one is a definition the caller has to correct.
    *
-   * The merge type is tested before the dates, as in the implementation being ported: the
-   * overwhelmingly common case is a period in the middle of a schedule, where the comparison of
-   * two integers settles the question on its own.
+   * The merge type is tested before the dates: the overwhelmingly common case is a period in the
+   * middle of a schedule, where the comparison of two integers settles the question on its own.
    *
    * This is visible within the schedule package only, because the merge type is a decision a
    * schedule makes about the position of a period within itself and means nothing to a caller
@@ -286,8 +283,9 @@ sealed abstract case class SchedulePeriod private (
    * @param adjuster  the adjuster to use
    * @param mergeType  -1 to keep the start date unadjusted, 0 to report the collapse, 1 to keep
    *   the end date unadjusted
-   * @return the adjusted schedule period, or the failures describing why the adjusted dates
-   *   describe none
+   * @return the adjusted schedule period, or the failures naming the broken constraint: the
+   *   adjusted start date must fall strictly before the adjusted end date, which a merge type of
+   *   0 leaves to be reported where adjustment brings the two onto the same day
    */
   private[schedule] def toAdjusted(
       adjuster: DateAdjuster,
@@ -295,7 +293,7 @@ sealed abstract case class SchedulePeriod private (
     val adjustedStart = adjuster.adjust(startDate)
     val adjustedEnd = adjuster.adjust(endDate)
     // the two branches are mutually exclusive - no merge type is both -1 and 1 - so each date is
-    // decided on its own, which is the same outcome as the chained condition being ported
+    // decided on its own
     val resultStart =
       if (mergeType == -1 && adjustedStart == adjustedEnd) startDate else adjustedStart
     val resultEnd =
@@ -342,7 +340,8 @@ sealed abstract case class SchedulePeriod private (
    * @param resultStart  the start date of the result
    * @param resultEnd  the end date of the result
    * @return this period where the dates are unchanged, otherwise the rebuilt period or the
-   *   failures describing why the dates describe none
+   *   failures naming the broken constraint: the new start date must fall strictly before the new
+   *   end date
    */
   private def rebuilt(
       resultStart: LocalDate,
@@ -365,9 +364,7 @@ sealed abstract case class SchedulePeriod private (
    * 2014-06-16 to 2014-07-18 (unadjusted 2014-06-16 to 2014-07-17)
    * }}}
    *
-   * This is the port's own form. The bean being ported rendered the property-by-property text of a
-   * Joda bean, which no longer has a counterpart here; the JSON encoding is where the fields are
-   * written out under their own names.
+   * The JSON encoding is where the four fields are written out under their own names.
    *
    * @return the text form of this period
    */
@@ -393,23 +390,19 @@ sealed abstract case class SchedulePeriod private (
  */
 object SchedulePeriod {
 
-  /** The name the first adjusted date is reported under, which is the name of its property. */
   private val StartDateField: String = "startDate"
 
-  /** The name the second adjusted date is reported under. */
   private val EndDateField: String = "endDate"
 
-  /** The name the first unadjusted date is reported under. */
   private val UnadjustedStartDateField: String = "unadjustedStartDate"
 
-  /** The name the second unadjusted date is reported under. */
   private val UnadjustedEndDateField: String = "unadjustedEndDate"
 
   /**
    * The ordering of dates the two order checks below are performed with.
    *
-   * The checking helpers of this port are generic in the type being compared and take its cats
-   * ordering, and cats publishes no instance for `java.time.LocalDate` - the class implements
+   * The checking helpers are generic in the type being compared and take its cats ordering, and
+   * cats publishes no instance for `java.time.LocalDate` - the class implements
    * `Comparable[ChronoLocalDate]` rather than `Comparable[LocalDate]`, so the ordering derived
    * from a comparable type does not apply to it either. The instance is therefore stated here, as
    * the natural time-line order the class itself defines, and kept private: it exists to serve the
@@ -419,7 +412,6 @@ object SchedulePeriod {
   private implicit val dateOrder: Order[LocalDate] =
     Order.from((first, second) => first.compareTo(second))
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance from the adjusted and unadjusted dates.
    *
@@ -430,14 +422,15 @@ object SchedulePeriod {
    *
    * The two checks are '''combined rather than sequenced''', so a caller supplying two bad pairs
    * is told about both of them in one chain of reasons instead of correcting one and being sent
-   * back for the other. This is the accumulation the validator of the bean being ported could not
-   * express: it threw at the first pair it found out of order.
+   * back for the other, and each reason names the pair of dates it is about.
    *
    * @param startDate  the start date, used for financial calculations such as interest accrual
    * @param endDate  the end date, used for financial calculations such as interest accrual
    * @param unadjustedStartDate  the unadjusted start date
    * @param unadjustedEndDate  the unadjusted end date
-   * @return the period, or the failures describing why the dates describe none
+   * @return the period, or the failures naming the broken constraint: the unadjusted start date
+   *   must fall strictly before the unadjusted end date, and the start date strictly before the
+   *   end date
    */
   def of(
       startDate: LocalDate,
@@ -458,17 +451,15 @@ object SchedulePeriod {
    * Obtains an instance from two dates.
    *
    * This factory is used when there is no business day adjustment of schedule dates, so each
-   * unadjusted date is the adjusted date it would have been adjusted from. It is the defaulting
-   * the builder of the bean being ported performed before validating, expressed as a factory
-   * because the port has no builder.
+   * unadjusted date is the adjusted date it would have been adjusted from.
    *
    * Since the one pair of dates fills both roles, a pair that is out of order or degenerate is
-   * reported under both pairs of names - once as the unadjusted dates and once as the adjusted
-   * dates - which is the same pair of checks the bean ran on the defaulted fields.
+   * reported twice, once under each pair of names - the unadjusted dates and the adjusted dates.
    *
    * @param startDate  the start date, used for financial calculations such as interest accrual
    * @param endDate  the end date, used for financial calculations such as interest accrual
-   * @return the period, or the failures describing why the dates describe none
+   * @return the period, or the failures naming the broken constraint: the start date must fall
+   *   strictly before the end date, reported under both pairs of names
    */
   def of(startDate: LocalDate, endDate: LocalDate): EitherNec[Failure, SchedulePeriod] =
     of(startDate, endDate, startDate, endDate)
@@ -478,8 +469,8 @@ object SchedulePeriod {
    *
    * This is the only instantiation of the type and it is private, so the two factories above are
    * the only ways into it from outside this file. The constructor of a `sealed abstract case class`
-   * is reachable only from inside the file that declares it, and `new SchedulePeriod(...) {}` - an
-   * anonymous subclass of the abstract case class - is how it is reached; that is what leaves the
+   * is reachable only from inside the file that declares it, and [[Impl]] - a subclass of the
+   * abstract case class, declared and hidden here - is how it is reached; that is what leaves the
    * type without a public `apply` or `copy` while keeping the `equals`, `hashCode` and `unapply` a
    * case class provides.
    *
@@ -502,24 +493,44 @@ object SchedulePeriod {
       endDate: LocalDate,
       unadjustedStartDate: LocalDate,
       unadjustedEndDate: LocalDate): SchedulePeriod =
-    new SchedulePeriod(startDate, endDate, unadjustedStartDate, unadjustedEndDate) {}
+    new Impl(startDate, endDate, unadjustedStartDate, unadjustedEndDate)
 
-  //-------------------------------------------------------------------------
+  /**
+   * The one implementation of a schedule period.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[SchedulePeriod]] refuse in its own constructor to be any other implementation.
+   *
+   * @param startDate  the start date, already checked to be before the end date
+   * @param endDate  the end date
+   * @param unadjustedStartDate  the unadjusted start date, already checked to be before the
+   *   unadjusted end date
+   * @param unadjustedEndDate  the unadjusted end date
+   */
+  private final class Impl(
+      startDate: LocalDate,
+      endDate: LocalDate,
+      unadjustedStartDate: LocalDate,
+      unadjustedEndDate: LocalDate)
+      extends SchedulePeriod(startDate, endDate, unadjustedStartDate, unadjustedEndDate)
+
   /**
    * The ordering, hashing and equality of schedule periods.
    *
-   * Equality and hashing are those of the case class, which compare all four dates, and they are
-   * the equality of the bean being ported, which compared the same four properties. No field holds
+   * Equality and hashing are those of the case class, which compare all four dates. No field holds
    * a `Double`, so there is no bit-pattern comparison to arrange.
    *
-   * The ordering starts where the comparison being ported started - the unadjusted start date,
-   * then the unadjusted end date - and then continues with the adjusted start date and the
-   * adjusted end date. The continuation is this port's addition, and it is required rather than
-   * chosen: cats asks that a comparison agree with equality, meaning `compare == 0` exactly where
-   * `eqv` holds, and the two unadjusted dates alone leave two periods that differ in their
-   * adjusted dates - equal periodic dates, different business days - comparing equal while being
-   * unequal. Because the two leading keys are untouched, every ordering the Java comparison
-   * produced is still produced; the addition only decides pairs that comparison called equal.
+   * The ordering reads the unadjusted start date, then the unadjusted end date, then the adjusted
+   * start date and the adjusted end date. The last two keys are required rather than chosen: a
+   * comparison has to agree with equality, meaning `compare == 0` exactly where `eqv` holds, and
+   * the two unadjusted dates alone leave two periods that differ in their adjusted dates - equal
+   * periodic dates, different business days - comparing equal while being unequal. Ordering by
+   * the unadjusted pair is what sorts the periods of a schedule; the adjusted pair only decides
+   * pairs the unadjusted dates leave tied.
    *
    * @return the ordering, hashing and equality of schedule periods
    */
@@ -553,7 +564,6 @@ object SchedulePeriod {
    */
   implicit val show: Show[SchedulePeriod] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The field shape both codecs are derived from, which the decoder reads before validation.
    *
@@ -562,13 +572,17 @@ object SchedulePeriod {
    * same two steps in reverse, so both codecs below derive from this one declaration and the JSON
    * shape of a period is stated exactly once. It is private and never returned - the only values
    * of it that exist are the ones the two codecs build. Its field names are the JSON keys, and
-   * they are the names of the four fields of [[SchedulePeriod]] itself, which are the names of the
-   * four properties of the bean being ported, in their declaration order.
+   * they are the names of the four fields of [[SchedulePeriod]] itself, in their declaration
+   * order.
    *
    * Deriving either codec from [[SchedulePeriod]] directly is not possible: the compile-time
    * derivation reads the public constructor of a product, and a validated type has none - it is an
    * abstract case class whose constructor is private - so there is no public shape to derive from.
    * Writing the four fields out by hand instead would state the same contract a second time.
+   *
+   * The shape is `java.io.Serializable`, because the compiler makes every `case class` so, and it
+   * therefore mixes in [[NoJavaSerialization]] as every product of this port does: these fields
+   * reach the library as JSON through the codecs below and in no other form.
    *
    * @param startDate  the start date, carried as its ISO date string
    * @param endDate  the end date, carried as its ISO date string
@@ -580,11 +594,10 @@ object SchedulePeriod {
       endDate: LocalDate,
       unadjustedStartDate: LocalDate,
       unadjustedEndDate: LocalDate)
+      extends NoJavaSerialization
 
-  /** The derived decoder of the raw field shape, used by the validating decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
   /**
@@ -603,9 +616,9 @@ object SchedulePeriod {
    * shape, which is what keeps them from drifting apart, and no part of the encoding inspects a
    * class while the program runs. Two equal values encode to identical bytes: the four fields are
    * written in their declaration order and a date has one ISO form. The result is wrapped so that
-   * a field holding no value would be omitted, which is the policy every product of this port
-   * follows - all four fields of this type are required, so the wrapping changes nothing about its
-   * output and exists so that the policy holds without exception.
+   * a field holding no value would be omitted, which is the rule every product here follows - all
+   * four fields of this type are required, so the wrapping changes nothing about its output and
+   * exists so that the rule holds without exception.
    *
    * @return the JSON encoding of schedule periods
    */

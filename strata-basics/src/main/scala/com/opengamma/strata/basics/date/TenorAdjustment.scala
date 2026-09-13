@@ -18,6 +18,8 @@ import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.Resolvable
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.ValidatedFailures
@@ -44,9 +46,9 @@ import com.opengamma.strata.collect.result.Failure
  * [[BusinessDayAdjustment]] held here. Where no such adjustment is wanted,
  * [[BusinessDayAdjustment.NONE]] is the value that expresses it.
  *
- * For example, a rule represented by this class might be: "the end date is 5 years after the
- * start date, with end-of-month rule based on the last business day of the month, adjusted to be
- * a valid London business day using the 'ModifiedFollowing' convention".
+ * For example, this class represents rules such as "the end date is 5 years after the start
+ * date, with end-of-month rule based on the last business day of the month, adjusted to be a
+ * valid London business day using the 'ModifiedFollowing' convention".
  *
  * {{{
  * // 3 months after 15 August 2014 is 15 November 2014, a Saturday, so Following moves it on
@@ -60,9 +62,9 @@ import com.opengamma.strata.collect.result.Failure
  * Both steps consult the same holiday calendar: the last-business-day addition convention needs
  * it to decide what the last business day of a month is, and the business day adjustment needs it
  * to decide which days it may land on. The calendar is the one the adjustment names, resolved
- * from the reference data supplied, and it is resolved exactly once per call and then used by
- * both steps - which is the behaviour of the type being ported and also the only reading of it
- * that cannot produce a date computed against two different calendars.
+ * from the reference data supplied, and it is resolved exactly once per call and then read by
+ * both steps - the only reading of it that cannot produce a date computed against two different
+ * calendars.
  *
  * ===Reference data is supplied, not looked up===
  *
@@ -87,10 +89,9 @@ import com.opengamma.strata.collect.result.Failure
  * A tenor that the addition convention cannot be applied to is rejected when an adjustment is
  * built, by [[TenorAdjustment.of]] and the two factories beside it, so no instance of this type
  * ever holds that pairing. A calendar the reference data does not supply is reported by
- * [[adjust]] and [[resolve]], as `Left(Failure.MissingData)`, because whether a given body of
- * reference data covers a given calendar is not knowable when the adjustment is written down.
- * Neither case throws, where the type being ported threw from its validator and from its
- * reference data lookup.
+ * [[adjust]] and [[resolve]], as a `Left` naming the identifier that could not be resolved,
+ * because whether a given body of reference data covers a given calendar is not knowable when
+ * the adjustment is written down. Both are answered as values rather than raised.
  *
  * ===Thread safety===
  *
@@ -102,9 +103,9 @@ import com.opengamma.strata.collect.result.Failure
  *
  * @param tenor  the tenor to be added; when the adjustment is performed, this tenor will be added
  *   to the input date
- * @param additionConvention  the addition convention to apply, which is used to refine the
- *   adjusted date - most commonly by moving the end date to the last business day of the month
- *   when the start date is the last business day of the month
+ * @param additionConvention  the addition convention to apply, which refines the adjusted
+ *   date - most commonly by moving the end date to the last business day of the month when the
+ *   start date is the last business day of the month
  * @param adjustment  the business day adjustment that is performed on the result of the addition;
  *   where no adjustment is required, this is [[BusinessDayAdjustment.NONE]]
  * @see [[Tenor]] for the period being added and the text it renders as
@@ -116,7 +117,27 @@ sealed abstract case class TenorAdjustment private (
     tenor: Tenor,
     additionConvention: PeriodAdditionConvention,
     adjustment: BusinessDayAdjustment)
-    extends Resolvable[DateAdjuster] {
+    extends Resolvable[DateAdjuster]
+    with NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // would carry a tenor and an addition convention no factory had checked against one another -
+  // can be stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[TenorAdjustment.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the class file of the implementation carries
+  // a public constructor whatever the source asked for: a class compiled outside this library can
+  // reach it directly, and the check above would admit what it built, its runtime class being the
+  // one class that check admits. What is left to state is the one condition the factories check -
+  // a convention whose rule is expressed in terms of the month a date falls in requires a tenor
+  // measured in months - and it is their own test, so the two reject the same pairings. A tenor
+  // of weeks is therefore refused here under a month-based convention, exactly as `of` refuses it.
+  JvmClosure.requireInvariant(
+    "a month-based addition convention is paired with a month-based tenor",
+    !additionConvention.isMonthBased || tenor.isMonthBased)
 
   /**
    * Adjusts the date, adding the tenor and then applying the business day adjustment.
@@ -132,9 +153,9 @@ sealed abstract case class TenorAdjustment private (
    * }}}
    *
    * @param date  the date to adjust
-   * @param refData  the reference data, used to find the holiday calendar
-   * @return the adjusted date, or `Left(Failure.MissingData)` where the reference data does not
-   *   supply the calendar this adjustment names
+   * @param refData  the reference data from which the holiday calendar is resolved
+   * @return the adjusted date, or the failure naming the calendar identifier this adjustment
+   *   holds where the reference data supplies no calendar for it
    */
   def adjust(date: LocalDate, refData: ReferenceData): Either[Failure, LocalDate] =
     adjustment.calendar.resolve(refData).map { holCal =>
@@ -155,9 +176,9 @@ sealed abstract case class TenorAdjustment private (
    * changes to the reference data, so care is needed when placing one in a cache or a persistence
    * layer. The unresolved adjustment has no such caveat, which is why both forms exist.
    *
-   * @param refData  the reference data, used to find the holiday calendar
-   * @return the adjuster bound to a specific holiday calendar, or `Left(Failure.MissingData)`
-   *   where the reference data does not supply the calendar this adjustment names
+   * @param refData  the reference data from which the holiday calendar is resolved
+   * @return the adjuster bound to a specific holiday calendar, or the failure naming the
+   *   calendar identifier the reference data supplies no calendar for
    */
   override def resolve(refData: ReferenceData): Either[Failure, DateAdjuster] =
     adjustment.calendar.resolve(refData).map { holCal =>
@@ -166,14 +187,13 @@ sealed abstract case class TenorAdjustment private (
       DateAdjuster(date => convention.adjust(additionConvention.adjust(date, period, holCal), holCal))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a string describing the adjustment.
    *
-   * The description is built from the parts that say something, in the grammar of the library
-   * being ported, character for character: the tenor alone where neither convention alters the
-   * plain addition, the tenor and the addition convention where that convention has a rule of its
-   * own, and the business day adjustment appended after `then apply` where one is to be performed:
+   * The description is built from the parts that say something: the tenor alone where neither
+   * convention alters the plain addition, the tenor and the addition convention where that
+   * convention has a rule of its own, and the business day adjustment appended after
+   * `then apply` where one is to be performed:
    *
    * {{{
    * // Tenor.of(Period.of(1, 2, 3)), no addition convention, no business day adjustment
@@ -182,8 +202,8 @@ sealed abstract case class TenorAdjustment private (
    * "3M with LastDay then apply Following using calendar Sat/Sun"
    * }}}
    *
-   * The two parts are omitted on exactly the tests the original applied - the addition convention
-   * that adds the period unchanged, and the business day adjustment that is
+   * Each part is omitted on the value it would say nothing about - the addition convention that
+   * adds the period unchanged, and the business day adjustment that is
    * [[BusinessDayAdjustment.NONE]] - so an adjustment carrying the no-adjust convention over some
    * other calendar is still described, since it is not that value. This is what the `Show`
    * instance renders.
@@ -212,37 +232,35 @@ sealed abstract case class TenorAdjustment private (
  * ===Construction===
  *
  * Every adjustment comes from one of the three factories here, each of which checks the pairing
- * of tenor and addition convention and answers with the adjustment or with the reason it does not
- * describe one. There is no public constructor and no `copy`: the type is a case class whose
- * constructor is private and whose declaration is abstract, so the compiler synthesises neither,
+ * of tenor and addition convention and answers with the adjustment or with the failure naming the
+ * constraint that pairing breaks. There is no public constructor and no `copy`: the type is a case
+ * class whose constructor is private and whose declaration is abstract, so neither is synthesised,
  * and the only instantiation of it in the program is the one inside this object, on the far side
  * of the check. Pattern matching is unaffected - `unapply` is synthesised as it is for any case
  * class - so a `case TenorAdjustment(tenor, convention, adjustment) =>` reads the three parts of
  * a value that was checked when it was built.
  *
- * There is deliberately no `NONE` constant here, unlike [[DaysAdjustment]] and
- * [[PeriodAdjustment]]. The type being ported has none either, and there is no tenor that adds
- * nothing: a tenor is always a positive period, so an adjustment that leaves every date alone
- * cannot be expressed as a value of this type.
+ * There is deliberately no `NONE` constant here, though [[DaysAdjustment]] and
+ * [[PeriodAdjustment]] each publish one, because no tenor adds nothing: a tenor is always a
+ * positive period, so an adjustment that leaves every date alone cannot be expressed as a value
+ * of this type.
  */
 object TenorAdjustment {
 
   /**
    * The wording reported when the tenor and the addition convention cannot be paired.
    *
-   * This is the message the validator of the type being ported threw with, character for
-   * character, so a caller that matched on the text of the original failure still matches. It
-   * quotes nothing the caller supplied, so there is no input to bound or to neutralise in it.
+   * The text states the constraint that was broken and quotes nothing the caller supplied, so
+   * there is no input to bound or to neutralise in it.
    */
   private val MonthBasedTenorMessage: String =
     "Tenor must not contain days when addition convention is month-based"
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance that can adjust a date by the specified tenor.
    *
    * When adjusting a date, the specified tenor is added to the input date using the addition
-   * convention supplied. The business day adjustment will then be used to ensure the result is a
+   * convention supplied. The business day adjustment then moves the result of that addition to a
    * valid business day.
    *
    * A month-based addition convention - one whose rule is expressed in terms of the month a date
@@ -256,15 +274,17 @@ object TenorAdjustment {
    * }}}
    *
    * The last of those is rejected because a week-based tenor is not month-based: the end of a
-   * month has no bearing on a period of seven days, so the pairing describes no rule anyone
-   * meant. The test is [[Tenor.isMonthBased]] rather than a look at the tenor's day count, which
-   * is what the validator being ported applied - so a tenor of weeks is rejected under a
-   * month-based convention even though it contains whole weeks rather than loose days.
+   * month has no bearing on a period of seven days. The test is [[Tenor.isMonthBased]] - a period
+   * of at least one month and no days at all - rather than a look at the tenor's day count, so a
+   * tenor of weeks is rejected under a month-based convention even though it holds whole weeks
+   * rather than loose days.
    *
    * @param tenor  the tenor to add to the input date
-   * @param additionConvention  the convention used to perform the addition
+   * @param additionConvention  the convention that performs the addition
    * @param adjustment  the business day adjustment to apply to the result of the addition
-   * @return the tenor adjustment, or the reason the arguments do not describe one
+   * @return the tenor adjustment, or the failure naming the broken constraint: a month-based
+   *   addition convention requires a tenor of months or years with no day component, so it
+   *   pairs with no tenor of days or weeks
    */
   def of(
       tenor: Tenor,
@@ -272,21 +292,22 @@ object TenorAdjustment {
       adjustment: BusinessDayAdjustment): ResultNec[TenorAdjustment] =
     Validate.toResult(
       checkedPairing(tenor, additionConvention)
-        .map(_ => new TenorAdjustment(tenor, additionConvention, adjustment) {}))
+        .map(_ => new Impl(tenor, additionConvention, adjustment)))
 
   /**
    * Obtains an instance that can adjust a date by the specified tenor using the last day of month
    * convention.
    *
    * When adjusting a date, the specified tenor is added to the input date. The business day
-   * adjustment will then be used to ensure the result is a valid business day.
+   * adjustment then moves the result of that addition to a valid business day.
    *
    * The tenor must be month-based - it must consist only of months and/or years - because the
    * convention this factory applies is, which is checked exactly as in [[of]].
    *
    * @param tenor  the tenor to add to the input date
    * @param adjustment  the business day adjustment to apply to the result of the addition
-   * @return the tenor adjustment, or the reason the arguments do not describe one
+   * @return the tenor adjustment, or the failure naming the broken constraint: the last-day
+   *   convention requires a tenor of months or years with no day component
    */
   def ofLastDay(tenor: Tenor, adjustment: BusinessDayAdjustment): ResultNec[TenorAdjustment] =
     of(tenor, PeriodAdditionConventions.LAST_DAY, adjustment)
@@ -296,39 +317,56 @@ object TenorAdjustment {
    * of month convention.
    *
    * When adjusting a date, the specified tenor is added to the input date. The business day
-   * adjustment will then be used to ensure the result is a valid business day.
+   * adjustment then moves the result of that addition to a valid business day.
    *
    * The tenor must be month-based - it must consist only of months and/or years - because the
    * convention this factory applies is, which is checked exactly as in [[of]].
    *
    * @param tenor  the tenor to add to the input date
    * @param adjustment  the business day adjustment to apply to the result of the addition
-   * @return the tenor adjustment, or the reason the arguments do not describe one
+   * @return the tenor adjustment, or the failure naming the broken constraint: the
+   *   last-business-day convention requires a tenor of months or years with no day component
    */
   def ofLastBusinessDay(tenor: Tenor, adjustment: BusinessDayAdjustment): ResultNec[TenorAdjustment] =
     of(tenor, PeriodAdditionConventions.LAST_BUSINESS_DAY, adjustment)
 
-  //-------------------------------------------------------------------------
   /**
    * Checks that a month-based addition convention has been given a month-based tenor.
    *
-   * The condition is the one the validator of the type being ported tested, written the same way
-   * round, so the two reject exactly the same pairs. The check has nothing to return, since the
-   * tenor and the convention it reads are both already in the caller's hands, so its outcome
-   * carries `Unit` and combines with any further check of this type as any other value would -
-   * this being, today, the whole validation surface of the type, there is nothing beside it to
-   * combine with.
+   * The check has nothing to return, since the tenor and the convention it reads are both
+   * already in the caller's hands, so its outcome carries `Unit` and combines with any further
+   * check of this type as any other value would. It is the whole validation this type performs,
+   * so there is nothing beside it to combine with.
    *
    * @param tenor  the tenor to check against the convention
    * @param additionConvention  the convention the tenor has to suit
-   * @return a passing outcome, or the failure the original threw with
+   * @return a passing outcome, or the failure naming the broken pairing
    */
   private def checkedPairing(
       tenor: Tenor,
       additionConvention: PeriodAdditionConvention): ValidatedFailures[Unit] =
     Validate.isFalse(additionConvention.isMonthBased && !tenor.isMonthBased, MonthBasedTenorMessage)
 
-  //-------------------------------------------------------------------------
+  /**
+   * The one implementation of a tenor adjustment.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[TenorAdjustment]] refuse in its own constructor to be any other implementation.
+   *
+   * @param tenor  the tenor to add, already checked against the addition convention
+   * @param additionConvention  the convention used to perform the addition
+   * @param adjustment  the business day adjustment applied after the addition
+   */
+  private final class Impl(
+      tenor: Tenor,
+      additionConvention: PeriodAdditionConvention,
+      adjustment: BusinessDayAdjustment)
+      extends TenorAdjustment(tenor, additionConvention, adjustment)
+
   /**
    * The hashing and equality of adjustments.
    *
@@ -337,8 +375,8 @@ object TenorAdjustment {
    * and the convention and calendar name of a business day adjustment. None of those fields holds
    * a `Double`, so there is no bit-pattern comparison to arrange. This is the type's only
    * equality-bearing instance, and `Eq[TenorAdjustment]` is obtained from it by subtyping rather
-   * than declared separately. There is no `Order`: the bean being ported is not `Comparable`, and
-   * an ordering over three unrelated parts would be this port's invention.
+   * than declared separately. There is no `Order`, because an ordering over three unrelated parts
+   * would rank adjustments by nothing the domain states.
    *
    * @return the hashing of adjustments
    */
@@ -347,14 +385,13 @@ object TenorAdjustment {
   /**
    * The rendering of adjustments as text.
    *
-   * Renders what [[TenorAdjustment.toString]] renders, which is the form of the library being
-   * ported, so the two ways of putting an adjustment into a message agree.
+   * Renders what [[TenorAdjustment.toString]] renders, so the two ways of putting an adjustment
+   * into a message agree.
    *
    * @return the rendering of an adjustment
    */
   implicit val show: Show[TenorAdjustment] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The field shape of an adjustment in JSON, from which both halves of the codec are derived.
    *
@@ -372,19 +409,18 @@ object TenorAdjustment {
       tenor: Tenor,
       additionConvention: PeriodAdditionConvention,
       adjustment: BusinessDayAdjustment)
+      extends NoJavaSerialization
 
-  /** The derived decoder of the raw field shape, used by the checking decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder.AsObject[Raw] = deriveEncoder[Raw]
 
   /**
    * The JSON encoding of adjustments.
    *
-   * The encoding is derived when this file is compiled, so no part of it inspects a class while
-   * the program runs. An adjustment encodes as an object holding its three fields under the names
-   * the Java bean declared, in declaration order:
+   * The encoding is derived in this file, so no part of it inspects a class while the program
+   * runs. An adjustment encodes as an object holding its three fields under their own names, in
+   * declaration order:
    *
    * {{{
    * {"tenor":"3M","additionConvention":"LastDay",
@@ -395,9 +431,9 @@ object TenorAdjustment {
    * publish, and the business day adjustment as the object its own codec writes, so two equal
    * adjustments always encode to identical bytes.
    *
-   * The result is wrapped so that a field holding no value would be omitted, which is the policy
-   * every product of this port follows - this type has no optional field, so the wrapping changes
-   * nothing about its output and exists so that the policy holds without exception.
+   * The result is wrapped so that a field holding no value is omitted, which every product
+   * encoder of this library does - this type has no optional field, so the wrapping changes
+   * nothing about its output and keeps that rule without exception.
    *
    * @return the JSON encoding of an adjustment
    */
@@ -409,8 +445,8 @@ object TenorAdjustment {
   /**
    * The JSON decoding of adjustments.
    *
-   * This is the inverse of the encoding above and is likewise derived at compile time. All three
-   * fields have to be present, and whether they describe an adjustment is decided exactly as a
+   * This is the inverse of the encoding above and is derived the same way. All three fields have
+   * to be present, and whether they describe an adjustment is decided exactly as a
    * caller's arguments are decided: the payload is read into the raw shape and handed to [[of]],
    * so a document pairing a month-based addition convention with a tenor that is not month-based
    * is a decoding failure carrying that reason rather than a value this type would not have built.

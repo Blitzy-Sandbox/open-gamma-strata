@@ -1145,11 +1145,12 @@ final class FailureSpec
   /**
    * The bound the rendering applies to one part of a failure.
    *
-   * The constant itself is private to [[Failure]], as the rendering is: a caller neither
-   * renders nor bounds anything, so nothing outside that file has a use for the number. It is
-   * restated here because the two cases below pin the behaviour at the boundary - a part of
-   * exactly this length written whole, one character more truncated and marked - which is what
-   * makes the bound a contract rather than an implementation detail that may drift.
+   * The constant itself is private to [[Failure]]: the number is the renderer's own, and
+   * nothing outside that file chooses or adjusts it, which is why the renderer takes only the
+   * text it is to write. It is restated here because the cases below pin the behaviour at the
+   * boundary - a part of exactly this length written whole, one character more truncated and
+   * marked - which is what makes the bound a contract rather than an implementation detail
+   * that may drift.
    */
   private val MaxRenderedPart: Int = 512
 
@@ -1388,6 +1389,111 @@ final class FailureSpec
     injected.attributes("id") shouldBe "GBXX\nINJECTED"
   }
 
+  // ===========================================================================
+  // Failure.renderDiagnostic - the renderer as a contract of its own
+  //
+  // The rendering above is not only reached through a failure: text on its way
+  // to a line-oriented sink reaches it from the JSON decoder bridge, from the
+  // resource reader naming a source it could not read, and from the text form
+  // of an identifier a caller supplied. Those callers are outside this file, so
+  // the renderer is a published member and these cases pin it as one: what it
+  // does to ordinary text, to each character that could forge a line, to a
+  // character held as a surrogate pair, and at the bound. The last case ties it
+  // to `Show[Failure]`, so the rendering a failure receives and the rendering
+  // every other caller receives cannot come apart.
+  // ===========================================================================
+
+  test("Failure.renderDiagnostic writes ordinary text as itself, character for character") {
+    // The property every other consumer of the renderer depends on: applying it costs the
+    // wording of an ordinary diagnostic nothing, so a decoder error, a resource name or an
+    // identifier reads exactly as the code that wrote it meant.
+    Failure.renderDiagnostic("Currency name not found: Rubbish") shouldBe
+      "Currency name not found: Rubbish"
+    Failure.renderDiagnostic("café, 東京 - 3M/6M (P1Y)") shouldBe "café, 東京 - 3M/6M (P1Y)"
+    Failure.renderDiagnostic("") shouldBe ""
+    Failure.renderDiagnostic("   ") shouldBe "   "
+    Failure.renderDiagnostic("C:\\rates\\3M") shouldBe "C:\\rates\\3M"
+    val atBound = "A" * MaxRenderedPart
+    Failure.renderDiagnostic(atBound) shouldBe atBound
+    Failure.renderDiagnostic(atBound) should not include "..."
+  }
+
+  test("Failure.renderDiagnostic escapes every character of any text that could forge a line") {
+    // The characters with no short escape are written by code point rather than as source
+    // escapes, so that this case holds no escape sequence of its own to misread. A bell is
+    // there as an ISO control that is neither one of the three with a short escape nor one of
+    // the two the earlier cases already name.
+    val bell = 0x0007.toChar
+    val escaped = Table(
+      ("description", "text", "rendering"),
+      ("a line feed", "GBLO\nINJECTED", "GBLO\\nINJECTED"),
+      ("a carriage return", "GBLO\rINJECTED", "GBLO\\rINJECTED"),
+      ("a tab", "GBLO\tINJECTED", "GBLO\\tINJECTED"),
+      ("a bell", s"GBLO${bell}INJECTED", "GBLO\\u0007INJECTED"),
+      ("a line separator", s"GBLO${lineSeparator}INJECTED", "GBLO\\u2028INJECTED"),
+      ("a paragraph separator", s"GBLO${paragraphSeparator}INJECTED", "GBLO\\u2029INJECTED"),
+      ("a lone high surrogate", s"GBLO${0xd83d.toChar}", "GBLO\\ud83d"),
+      ("a lone low surrogate", s"${0xde00.toChar}GBLO", "\\ude00GBLO"))
+    forAll(escaped) { (description: String, text: String, rendering: String) =>
+      withClue(s"$description: ") {
+        Failure.renderDiagnostic(text) shouldBe rendering
+        Failure.renderDiagnostic(text).exists(character =>
+          character.isControl ||
+            character == lineSeparator ||
+            character == paragraphSeparator) shouldBe false
+        unpairedSurrogates(Failure.renderDiagnostic(text)) shouldBe empty
+      }
+    }
+  }
+
+  test("Failure.renderDiagnostic keeps a surrogate pair whole and bounds what it writes") {
+    // A character outside the basic plane is one unit to the renderer, so it survives whole
+    // and truncation never leaves half of one behind.
+    val emoji: String = new String(Character.toChars(0x1f600))
+    Failure.renderDiagnostic(emoji * 3) shouldBe emoji * 3
+    unpairedSurrogates(Failure.renderDiagnostic(emoji * 3)) shouldBe empty
+    Failure.renderDiagnostic(emoji * (MaxRenderedPart + 100)) shouldBe
+      s"${emoji * (MaxRenderedPart / 2)}..."
+    unpairedSurrogates(Failure.renderDiagnostic(emoji * (MaxRenderedPart + 100))) shouldBe empty
+
+    // Past the bound the text is cut and the three characters of the marker state that there
+    // was more, so no value a caller supplies can make a diagnostic large - the property the
+    // JSON bridge and the resource reader rely on as much as a failure does.
+    val pastBound = "A" * (MaxRenderedPart + 1)
+    Failure.renderDiagnostic(pastBound) shouldBe s"${"A" * MaxRenderedPart}..."
+    Failure.renderDiagnostic("A" * 10000) shouldBe s"${"A" * MaxRenderedPart}..."
+    Failure.renderDiagnostic("A" * 10000).length shouldBe MaxRenderedPart + 3
+    Failure.renderDiagnostic(s"Unable to parse tenor: '${"A" * 10000}'").length should be <=
+      MaxRenderedPart + 3
+  }
+
+  test("Failure.renderDiagnostic renders exactly what the rendering of a failure renders") {
+    // One renderer, so the text a failure is written out with and the text every other
+    // consumer receives are the same text. Asserting the equality rather than the two results
+    // separately is what makes drift between them impossible.
+    val shaped = Table(
+      "text",
+      "Currency name not found: Rubbish",
+      "Tenor name not found: 3M\nINJECTED: forged",
+      s"Calendar not found: GBLO${lineSeparator}INJECTED",
+      s"Unable to parse tenor: '${"A" * 10000}'",
+      new String(Character.toChars(0x1f600)) * (MaxRenderedPart + 100),
+      "")
+    forAll(shaped) { (text: String) =>
+      Show[Failure].show(Failure.Parsing(text)) shouldBe s"PARSING: ${Failure.renderDiagnostic(text)}"
+      Failure.Parsing(text).toString shouldBe s"PARSING: ${Failure.renderDiagnostic(text)}"
+    }
+    // And over the failures the shared generators produce, message and attributes alike.
+    forAll { (failure: Failure) =>
+      val attributes = failure.attributes.iterator.map { case (key, value) =>
+        s"${Failure.renderDiagnostic(key)}=${Failure.renderDiagnostic(value)}"
+      }
+      val expected = s"${failure.reason.name}: ${Failure.renderDiagnostic(failure.message)}"
+      Show[Failure].show(failure) shouldBe
+        (if (failure.attributes.isEmpty) expected else s"$expected [${attributes.mkString(", ")}]")
+    }
+  }
+
   test("the JSON form carries the text whole, escaped as the JSON grammar requires") {
     // The other way a failure leaves the program, and the reason the model keeps the value
     // rather than a rendering of it: the encoding is machine-readable, so it writes the whole
@@ -1581,11 +1687,13 @@ final class FailureSpec
 // These pin behaviour the port introduces or that the original specified in its
 // main sources rather than in these test classes - chiefly the collapse contract
 // of the aggregating factory of the original, and the JSON forms, which are the
-// only serialization this port supports. The last ten cover the rendering of a
-// failure, which the original had no counterpart for at all: the messages of the
+// only serialization this port supports. The last fourteen cover the rendering of
+// a failure, which the original had no counterpart for at all: the messages of the
 // library being ported echoed the text they were handed and were written out as
 // they stood, and this port writes every part of a failure bounded and on a
-// single line while the failure itself keeps the whole of that text.
+// single line while the failure itself keeps the whole of that text. The four that
+// name the renderer directly pin it as the published member the JSON decoder
+// bridge, the resource reader and the text form of an identifier all reach for.
 //
 //   "parse also resolves a mixed-case reason name the original would have rejected"
 //   "each of the ten failures is built from a message alone and reports its matching reason"
@@ -1619,6 +1727,14 @@ final class FailureSpec
 //      character"
 //   "the text form of a failure is the rendering, so writing one out cannot
 //      bypass it"
+//   "Failure.renderDiagnostic writes ordinary text as itself, character for
+//      character"
+//   "Failure.renderDiagnostic escapes every character of any text that could
+//      forge a line"
+//   "Failure.renderDiagnostic keeps a surrogate pair whole and bounds what it
+//      writes"
+//   "Failure.renderDiagnostic renders exactly what the rendering of a failure
+//      renders"
 //   "the JSON form carries the text whole, escaped as the JSON grammar requires"
 //
 // ---------------------------------------------------------------------------

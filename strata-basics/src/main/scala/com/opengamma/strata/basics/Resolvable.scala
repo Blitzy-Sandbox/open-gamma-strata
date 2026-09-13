@@ -25,10 +25,9 @@ import com.opengamma.strata.collect.result.Failure
  * conversion - the resolved form has already done the lookups, so the calculation that
  * follows does none.
  *
- * ===A resolved object is bound to a moment in time===
+ * ===A resolved object is bound to the data it was resolved against===
  *
- * This is the one caveat of the whole trait, and it is carried over from the type being
- * ported because it has not stopped being true. A resolved object may be bound to data that
+ * This is the one caveat of the whole trait. A resolved object may be bound to data that
  * changes over time, such as a holiday calendar. If that data changes - a new holiday is
  * added, say - the resolved form is '''not''' updated: it continues to hold the calendar it
  * was resolved against. Care must therefore be taken when placing a resolved form in a cache
@@ -38,23 +37,21 @@ import com.opengamma.strata.collect.result.Failure
  *
  * The unresolved form has no such caveat, which is the reason both forms exist.
  *
- * ===Failure is returned, not thrown===
+ * ===Failure is returned, not raised===
  *
- * Resolution can fail, and it says so in its return type. Where the Java original declared
- * `throws ReferenceDataNotFoundException` for an identifier that the reference data cannot
- * satisfy, an implementation here returns `Left(Failure.MissingData(...))` naming the
- * identifier it could not find; where the original declared `throws RuntimeException` for a
- * definition that does not describe anything resolvable, an implementation returns
- * `Left(Failure.Invalid(...))` describing what it rejected. Neither exception type is ported,
- * and this part of the library defines no failure classes of its own - both of those are
- * members of the closed [[com.opengamma.strata.collect.result.Failure]] set that the whole
- * library reports through.
+ * Resolution can fail, and it says so in its return type. An identifier that the reference
+ * data supplied cannot satisfy yields `Left(Failure.MissingData(...))` naming the identifier
+ * that was not found; a description whose own parts contradict each other, so that no
+ * resolved form satisfies them, yields `Left(Failure.Invalid(...))` naming what was rejected.
+ * This part of the library defines no failure classes of its own: both of those are members
+ * of the closed [[com.opengamma.strata.collect.result.Failure]] set that the whole library
+ * reports through.
  *
  * ===Implementing this trait===
  *
- * Implementations must be immutable and thread-safe, as the Java original required: an
- * unresolved description is shared freely across threads and calculations, and `resolve` must
- * be a function of its argument and the instance alone.
+ * Implementations must be immutable and thread-safe: an unresolved description is shared
+ * freely across threads and calculations, and `resolve` must be a function of its argument
+ * and the instance alone.
  *
  * Only `resolve` has to be written. `toReader` is defined in terms of it and needs overriding
  * for no reason, so an implementation is one method long:
@@ -66,17 +63,15 @@ import com.opengamma.strata.collect.result.Failure
  * }
  * }}}
  *
- * The trait is deliberately open rather than sealed, and invariant in `T`, in both respects
- * matching the interface it replaces. Resolution is an extension point: the types that
- * implement it are the trades, positions and products of the modules built on this one, each
- * in its own file, so sealing it would be incorrect as well as impossible. It is one of the
- * forward-path types of this port - nothing inside this module consumes a `Resolvable`, and it
- * is ported now because it is part of the contract the modules migrated in later slices
- * implement.
+ * The trait is deliberately open rather than sealed, and invariant in `T`. Resolution is an
+ * extension point, and every implementation lives in the file of the type that offers it:
+ * within this module `HolidayCalendarId`, the four date adjustments and `AdjustablePayment`
+ * implement it, and beyond it the trades, positions and products of the modules built on this
+ * one. Sealing it would therefore be incorrect as well as impossible.
  *
  * This trait has no JSON codec. It describes a capability and carries no data of its own, so
  * there is nothing for an encoder to write; the types that implement it supply their own
- * codecs where they are serializable at all.
+ * codecs where they have a serialized form at all.
  *
  * @tparam T the type of the resolved result
  * @see [[ReferenceData]] for the data an instance is resolved against
@@ -129,9 +124,9 @@ trait Resolvable[T] {
    * implementation free to supply a reader built some other way, but there is no reason to.
    *
    * The `Kleisli` type arguments are spelled out rather than inferred, over the
-   * single-parameter `FailureOr` alias. That alias exists for this position: the build carries
-   * no compiler plugin supplying type-lambda syntax, so a failure type applied at the use site
-   * could not be written here at all.
+   * single-parameter `FailureOr` alias. `Kleisli` requires a type constructor of one parameter
+   * in that position, and `FailureOr[A]` is `Either[Failure, A]` - the failure type already
+   * applied - so the alias is what can be named there.
    *
    * @return the resolution of this object as a function from reference data to the resolved
    *   instance
@@ -156,26 +151,23 @@ trait Resolvable[T] {
  *
  * ===Why this is not a `Resolvable[CalculationTarget]`===
  *
- * The two contracts are kept separate, exactly as the Java interfaces they are ported from
- * keep them separate. The method here is named `resolveTarget` rather than `resolve`, and it
- * is declared to return a `CalculationTarget` - some other target, not a resolved form of any
- * particular type - so a target is free to resolve to a target of an entirely different type.
- * Deriving this trait from `Resolvable[CalculationTarget]` would merge two distinct contracts
- * and change the public surface, so it is not done; a type that genuinely offers both
- * capabilities mixes in both traits.
+ * The two contracts are kept separate. The method here is named `resolveTarget` rather than
+ * `resolve`, and it is declared to return a `CalculationTarget` - some other target, not a
+ * resolved form of any particular type - so a target is free to resolve to a target of an
+ * entirely different type. Deriving this trait from `Resolvable[CalculationTarget]` would
+ * merge two distinct contracts into one method name, so it is not done; a type that genuinely
+ * offers both capabilities mixes in both traits.
  *
- * ===Failure is returned, not thrown===
+ * ===Failure is returned, not raised===
  *
- * As with [[Resolvable]], the Java `throws ReferenceDataNotFoundException` becomes
- * `Left(Failure.MissingData(...))` for an identifier the reference data cannot satisfy, and
- * the Java `throws RuntimeException` becomes `Left(Failure.Invalid(...))` for a definition that
- * cannot be resolved. Neither exception type is ported.
+ * As with [[Resolvable]], an identifier the reference data supplied cannot satisfy yields
+ * `Left(Failure.MissingData(...))`, and a description whose own parts contradict each other
+ * yields `Left(Failure.Invalid(...))`.
  *
  * The trait is deliberately open rather than sealed, and, like `CalculationTarget` itself,
  * carries no data: implementations are the trades and positions of the modules built on this
- * one, they must be immutable and thread-safe, and nothing inside this module consumes one
- * today. It is ported now because it is part of the contract the modules migrated in later
- * slices implement, and it has no JSON codec for the same reason `CalculationTarget` has none.
+ * one, and they must be immutable and thread-safe. It has no JSON codec for the same reason
+ * `CalculationTarget` has none.
  *
  * @see [[CalculationTarget]] for the marker trait every calculation target implements
  * @see [[Resolvable]] for the general resolution contract this one parallels

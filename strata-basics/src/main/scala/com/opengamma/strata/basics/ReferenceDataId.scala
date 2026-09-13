@@ -33,8 +33,8 @@ import com.opengamma.strata.collect.result.Failure
  * entries in a map keyed by identifier, so an identifier that inherits reference equality can
  * never find the value stored under an equal-but-not-identical instance. Declaring the
  * implementation a `final case class` satisfies this for free, which is what the identifier
- * families of this module and the test fixtures do; anything that cannot be a case class must
- * write the two methods by hand. The Java original relied on exactly the same contract.
+ * families of this module do; anything that cannot be a case class must write the two methods
+ * by hand.
  *
  * Implementations must supply a [[valueType]] that recognises every value the identifier is
  * willing to be answered with, and nothing else. Reference data narrows what it finds with
@@ -44,9 +44,9 @@ import com.opengamma.strata.collect.result.Failure
  * value type demands one per instantiation.
  *
  * The trait is deliberately open rather than sealed. Reference data is an extension point of
- * this library: an identifier family such as `HolidayCalendarId` lives in its own file, and
- * applications and tests define identifiers of their own for data this module never sees.
- * Sealing the trait would make both impossible.
+ * this library: an identifier family such as `HolidayCalendarId` lives in its own file, and a
+ * host application defines identifiers of its own for data this module never sees. Sealing the
+ * trait would make both impossible.
  *
  * ===Implementing it is nearly free===
  *
@@ -70,41 +70,29 @@ import com.opengamma.strata.collect.result.Failure
  * `GBLO+USNY` is first looked up whole - letting a host supply one pre-combined calendar -
  * and only then resolved component by component.
  *
- * ===The Java runtime type token is replaced rather than dropped===
+ * ===Why the value type is carried as a witness===
  *
- * The accessor that reported the runtime type of the data - `getReferenceDataType`, which
- * returned a `Class` - has [[valueType]] as its counterpart. The token itself is not ported,
- * because reading a value's class at run time is the reflection this migration removes; the
- * witness recognises a value with an ordinary pattern match instead, which the compiler emits
- * as a type test and no reflective call.
- *
- * Keeping a counterpart at all is load-bearing, and the reason is worth stating, because the
- * closed construction path of `ImmutableReferenceData` looks at first like enough on its own.
+ * [[valueType]] is load-bearing, and the reason is worth stating, because the closed
+ * construction path of `ImmutableReferenceData` looks at first like enough on its own.
  * Reference data can only enter a store as a `ReferenceData.Entry[T]`, or through a factory
  * whose key type is an identifier of its value type, so a value is never '''filed''' under an
- * identifier of another type. That much is settled by the compiler, and it remains so. It does
- * not settle what a lookup '''finds''': a store is keyed by an identifier whose type argument
- * is erased, a map lookup compares keys with ordinary `equals`, and this trait is open. A
- * family parameterized in its value type is therefore legal - and is what a host writes as
- * soon as it names data of more than one type - and its instantiations are one key:
+ * identifier of another type. That much is settled where the store is built, and it remains
+ * so. It does not settle what a lookup '''finds''': a store is keyed by an identifier whose
+ * type argument is erased, a map lookup compares keys with ordinary `equals`, and this trait
+ * is open. A family parameterized in its value type is therefore legal - and is what a host
+ * writes once it names data of more than one type - and its instantiations are one key:
  * `GenericId[String]("x")` and `GenericId[Int]("x")` are equal values, one case class over one
  * field with the type argument gone. A lookup made with the second would be answered with the
  * `String` the first filed. [[valueType]] is what closes that: a family parameterized in its
  * value type cannot supply the witness without demanding one per instantiation, so the two
  * identifiers above carry different witnesses even though they compare equal, and
  * `ImmutableReferenceData.findValue` checks the value it found against the witness of the
- * identifier that asked for it.
- *
- * ===One member of the Java interface is deliberately absent===
- *
- * The low-level query primitive - `queryValueOrNull` - is not ported. It signalled the
- * absence of a value by returning a reference to nothing, a convention this port does not use
- * anywhere: an absence is an `Option` returned by `ReferenceData.findValue`, and a failure to
- * resolve is a `Left`. The method therefore has no counterpart.
+ * identifier that asked for it. The check is a pattern match rather than an inspection of the
+ * value's class, so no lookup reflects.
  *
  * This trait has no JSON codec, and neither has any identifier family other than
- * `HolidayCalendarId`. An identifier is a lookup token rather than serializable data, and the
- * reference data it addresses is excluded from the port's codec inventory for the same reason.
+ * `HolidayCalendarId`. An identifier is a lookup token rather than data to be written out, and
+ * the reference data it addresses carries no JSON form for the same reason.
  *
  * @tparam T the type of the reference data this identifier refers to
  */
@@ -113,8 +101,7 @@ trait ReferenceDataId[T] {
   /**
    * The witness by which a store recognises a value this identifier may be answered with.
    *
-   * This is the counterpart of the Java `getReferenceDataType()`, without its `Class` token:
-   * a [[ReferenceDataType]] carries the pattern that recognises a value of `T`, so
+   * A [[ReferenceDataType]] carries the pattern that recognises a value of `T`, so
    * `ImmutableReferenceData.findValue` can check the value it found against the identifier
    * that asked for it and never hand back a value of another type. The check costs one type
    * test, and no reflection is involved at any point.
@@ -147,11 +134,10 @@ trait ReferenceDataId[T] {
    * data it is given, so reference data is threaded explicitly through every call that needs
    * it rather than read from ambient state.
    *
-   * A missing value is reported, not thrown. Where the Java original raised a
-   * `ReferenceDataNotFoundException`, this method returns
+   * A missing item of reference data is reported rather than raised: the answer is
    * `Left(Failure.MissingData(...))` describing the identifier that could not be found, which
    * leaves the decision of what to do about it with the caller that has the context to make
-   * it. The exception type is not ported.
+   * it.
    *
    * The default implementation delegates to `ReferenceData.getValue`, which is correct for any
    * identifier that is simply an identity. A family whose resolution involves more than a
@@ -180,9 +166,9 @@ trait ReferenceDataId[T] {
    * }}}
    *
    * The `Kleisli` type arguments are spelled out rather than inferred, over the single-parameter
-   * `FailureOr` alias. That alias exists for this position: the build carries no compiler plugin
-   * supplying type-lambda syntax, so a failure type applied at the use site could not be written
-   * here at all.
+   * `FailureOr` alias. `Kleisli` requires a type constructor of one parameter in that position,
+   * and `FailureOr[A]` is `Either[Failure, A]` - the failure type already applied - so the alias
+   * is what can be named there.
    *
    * @return the resolution of this identifier as a function from reference data to the value
    */
@@ -212,13 +198,11 @@ trait ReferenceDataId[T] {
  *
  * ===Why it is not a class token===
  *
- * The Java original solved the same problem with `Class<T>` and `Class.isInstance`, which is
- * reflection, and AAP decision D-5 and its Rule 6 hold that nothing on the path that reads or
- * writes data may reflect. A witness is built from the pattern that recognises its value
- * instead - `{ case value: HolidayCalendar => value }` - which the compiler emits as a type
- * test. There is no `Class`, no `ClassTag`, no `getClass` and no name to resolve, and a
- * witness can recognise what no single class could: a value type expressed as a union of
- * patterns, or one that needs a predicate as well as a type test.
+ * Nothing on the path that reads or writes reference data reflects. A witness is built from
+ * the pattern that recognises its value - `{ case value: HolidayCalendar => value }` - which
+ * is an ordinary type test: there is no `Class`, no `ClassTag`, no `getClass` and no name to
+ * resolve. A witness can also recognise what no single class could: a value type expressed as
+ * a union of patterns, or one that needs a predicate as well as a type test.
  *
  * Recognition is by pattern, so it is as wide as the pattern is. A witness for
  * `java.lang.Number` recognises a boxed integer, which is correct - a boxed integer '''is''' a
@@ -231,10 +215,9 @@ trait ReferenceDataId[T] {
  *
  * Two witnesses are equal when they carry the same name, and a name is expected to identify
  * the value type - `"HolidayCalendar"`, `"java.lang.Number"` - so that two independently
- * constructed witnesses for one type are one value, as the `Class` tokens they replace were.
- * The narrowing itself takes no part in equality, a function having no useful equality of its
- * own. A name is also what a witness renders as, which is what makes it readable in a
- * diagnostic.
+ * constructed witnesses for one type are one value. The narrowing itself takes no part in
+ * equality, a function having no useful equality of its own. A name is also what a witness
+ * renders as, which is what makes it readable in a diagnostic.
  *
  * Instances are immutable and thread-safe, as an identifier that carries one must be, and are
  * normally declared once as a `val` and shared.
@@ -312,8 +295,8 @@ object ReferenceDataType {
   /**
    * Obtains a witness from the pattern that recognises its value type.
    *
-   * The pattern is an ordinary partial function, so it is written as the type test it is and
-   * the compiler emits it as one:
+   * The pattern is an ordinary partial function, so the recognition it performs is the type
+   * test it is written as:
    *
    * {{{
    * val holidayCalendar: ReferenceDataType[HolidayCalendar] =

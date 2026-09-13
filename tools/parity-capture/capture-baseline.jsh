@@ -1,137 +1,85 @@
 /*
  * ===========================================================================
- *  capture-baseline.jsh - Java parity baseline capture for the Scala port
+ *  capture-baseline.jsh - Java parity baseline capture
  * ===========================================================================
  *
- *  WHAT THIS IS
- *  ------------
+ *  PURPOSE
+ *  -------
  *  A JShell script (JDK 21) that runs against the Maven-built *Java* Strata
  *  jars and emits the six numerical parity baseline fixtures plus the
- *  reference-data manifest that pin the behaviour of the Scala port of
- *  `strata-collect` / `strata-basics`.
+ *  reference-data manifest that the Scala test suite asserts against.
  *
- *  Those SEVEN JSON documents are the deliverable, and they are the whole of
- *  it. This script is retained so that they can be regenerated and audited by
- *  a third party.
+ *  Those SEVEN JSON documents are the deliverable and the whole of it; the
+ *  script is retained so that they can be regenerated and audited by a third
+ *  party. `manifest/java-test-mapping.csv` is NOT one of them and is neither
+ *  written nor read here: it records mapping decisions a scanner cannot derive
+ *  - which Scala spec absorbed a consolidated Java test, why a test was
+ *  dropped - so it is owned alongside the Scala test suite and verified by the
+ *  test-scope gate that consumes it.
  *
- *  WHAT THIS SCRIPT DOES NOT PRODUCE. `manifest/java-test-mapping.csv`, the
- *  method-level test-traceability document, is NOT an output of this capture.
- *  It records mapping decisions a scanner cannot derive - which Scala spec
- *  absorbed a consolidated Java test, why a test was dropped - so it is
- *  authored and owned alongside the Scala test suite and verified by the
- *  test-scope gate that consumes it, not by this producer. Keeping it out
- *  means a numerical capture neither depends on a human-authored committed
- *  document nor republishes one.
+ *  The procedure, the fixture schemas and the manifest schema are in
+ *  `tools/parity-capture/README.md`.
  *
- *  This is a developer / audit tool. It lives OUTSIDE both sbt modules and is
- *  on no sbt source root, so it is compiled by nothing and shipped in nothing.
- *  Its extension is `.jsh`, never `.java`: that is load-bearing, because the
- *  deliverable forbids `.java` files. This script never emits, generates or
- *  compiles Java source, and it adds no build step.
+ *  TOOLCHAIN AND INVOCATION
+ *  ------------------------
+ *  `jshell` ships with JDK 21, so nothing is installed. This script is on no
+ *  sbt source root: it is compiled by nothing, shipped in nothing and run by no
+ *  CI job. Its extension is `.jsh`, never `.java` - that is load-bearing,
+ *  because the deliverable forbids `.java` files - and it emits, generates and
+ *  compiles no Java source and adds no build step.
  *
- *  DEPENDENCY PURITY (Rule 1 / Gate 2) - READ BEFORE "FIXING" THE CLASSPATH
- *  -----------------------------------------------------------------------
- *  The JShell classpath below deliberately carries the Java Strata jars
- *  TOGETHER WITH Guava and Joda. That is intentional and is NOT a Rule 1
- *  violation: Gate 2 measures the sbt `Compile` / `Test` classpaths of the two
- *  Scala modules, and `tools/` is on neither of them. Removing Guava or Joda
- *  here does not improve dependency purity - it simply breaks the capture,
- *  because the Java implementation being measured depends on both.
+ *      jshell --class-path "<the six jars below>" -R-Xmx900m \
+ *             tools/parity-capture/capture-baseline.jsh
  *
- *  REPOSITORY BOUNDARY
- *  -------------------
- *  This script READS `modules/**` (through the classpath and the classpath
- *  resources inside the jars) and NEVER writes there. Writes are confined to
- *  the seven output paths listed in `OUTPUT_*` below, and that is enforced at
- *  run time rather than by convention: `outputRoot` REFUSES A ROOT THAT SITS
- *  INSIDE A CHECKOUT WITHOUT BEING ITS ROOT BEFORE IT CREATES ANYTHING (so
- *  `-Dparity.out.dir=modules` is rejected, not obeyed, and leaves no
- *  directory behind), refuses a symbolic link at ANY component of it, and
- *  re-asserts the placement after canonicalisation; `guardedOutputTarget`
- *  then requires each path to be one of the seven declared literals, to stay
- *  under the canonical root, and to have no symbolic link at any component.
- *  Every directory actually written to is then reached through a HANDLE opened
+ *  `parity.out.dir` (default `.`, expected to be the repository root) is the
+ *  only property the capture itself defines; the seven output paths are
+ *  relative to it. Pass it through JShell's `-R` prefix. Run it from the
+ *  repository root, and see the README for the two ways of assembling the
+ *  classpath.
+ *
+ *  CLASSPATH - READ BEFORE "FIXING" IT
+ *  -----------------------------------
+ *  Six jars: the `strata-basics` and `strata-collect` Java jars, plus the
+ *  Guava, Guava `failureaccess`, Joda-Beans and Joda-Convert jars the Java
+ *  implementation requires. Carrying Guava and Joda here is NOT a
+ *  dependency-purity (Rule 1 / Gate 2) violation: that gate measures the sbt
+ *  `Compile` and `Test` classpaths of the two Scala modules, and `tools/` is on
+ *  neither of them. Removing them does not improve purity; it makes the capture
+ *  impossible, because the implementation being measured depends on both.
+ *
+ *  WRITE BOUNDARY
+ *  --------------
+ *  This script READS `modules/**` - through the classpath and the resources
+ *  inside the jars - and NEVER writes there. It writes exactly two things, and
+ *  both boundaries are enforced at run time rather than by convention:
+ *
+ *    * the seven documents, under the output root. `outputRoot` REFUSES A ROOT
+ *      THAT SITS INSIDE A CHECKOUT WITHOUT BEING ITS ROOT BEFORE IT CREATES
+ *      ANYTHING (so `-Dparity.out.dir=modules` is rejected, not obeyed, and
+ *      leaves no directory behind), refuses a symbolic link at ANY component of
+ *      it, and re-asserts the placement after canonicalisation;
+ *      `guardedOutputTarget` then requires each path to be one of the seven
+ *      declared literals, to stay under the canonical root, and to have no
+ *      symbolic link at any component;
+ *    * one empty lock file, under the JVM temporary directory, which must be
+ *      absolute, already present and outside every checkout - so the lock
+ *      cannot reach the Maven tree either. The lock path creates NO DIRECTORY
+ *      at all: the file is created relative to a handle on a directory that
+ *      already exists (`openLockRoot`, `acquireOutputLock`).
+ *
+ *  Every directory actually written to is reached through a HANDLE opened
  *  component by component from the filesystem root, never by name a second
- *  time, so the directory the bytes land in is the directory that was
- *  validated (see `OutputDirectory` and `openOrCreateNoFollowDirectory`).
- *  Every write, rename and delete goes through that handle, and a filesystem
- *  that cannot provide one refuses the run rather than falling back to
- *  pathnames.
+ *  time, so the directory the bytes land in is the directory that was validated
+ *  (see `OutputDirectory` and `openOrCreateNoFollowDirectory`). Every write,
+ *  rename and delete goes through that handle, and a filesystem that cannot
+ *  provide one refuses the run rather than falling back to pathnames.
  *
  *  CONCURRENCY
  *  -----------
- *  One capture at a time per output root. The run takes an exclusive lock
- *  keyed on the canonical root before it validates or creates anything and
- *  holds it through publication and cleanup, so two captures cannot interleave
- *  their publish moves and leave a mixed generation behind (`acquireOutputLock`).
- *
- *  HOW TO RUN
- *  ----------
- *  Two complete routes, both verified from the repository root on JDK 21, both
- *  producing byte-identical output. Take route A from a clean checkout - it
- *  needs nothing of Strata in the local Maven repository; take route B when
- *  the two Strata jars are already installed there and you want no Maven run
- *  at all.
- *
- *  ROUTE A - build from source, then capture. ONE Maven session does both the
- *  build and the classpath, and that is the whole point of the route:
- *
- *       mvn -B -pl modules/collect,modules/basics -am -DskipTests \
- *           -Dcheckstyle.skip=true -Dmaven.javadoc.skip=true \
- *           package dependency:build-classpath \
- *           -Dmdep.outputFile="$PWD/target/parity-capture-classpath.txt"
- *       jshell --class-path \
- *         "$PWD/modules/basics/target/strata-basics-2.12.74-SNAPSHOT.jar:$(cat "$PWD/target/parity-capture-classpath.txt")" \
- *         -R-Xmx900m tools/parity-capture/capture-baseline.jsh
- *
- *     WHY ONE SESSION. `package` installs nothing, so a SEPARATE
- *     `dependency:build-classpath` run over `modules/basics` has to resolve
- *     `strata-collect` from the local Maven repository: on a clean repository
- *     that fails, and on a populated one it silently answers with the
- *     INSTALLED jar, which may be older than the source you just built - the
- *     capture would then measure the wrong bytes and say nothing. Running both
- *     goals in one reactor session (with `-am`, which puts `modules/collect`
- *     in it) makes the plugin resolve the sibling from the reactor, so the
- *     written classpath names `modules/collect/target/strata-collect-2.12.74-SNAPSHOT.jar`
- *     itself. Verified offline against a local repository pruned of every
- *     `com.opengamma.strata` module artifact: BUILD SUCCESS, and the capture
- *     reproduced all six committed fixtures byte-for-byte.
- *
- *     Only the BASICS jar is appended by hand, because a module is not on its
- *     own dependency classpath; it goes FIRST so it cannot be shadowed. The
- *     classpath file is written per module and `modules/basics` is last in the
- *     reactor, so the file holds its classpath. Keep it inside git-ignored
- *     `target/` rather than in `/tmp`: two runs sharing one `/tmp` file would
- *     overwrite each other's classpath.
- *
- *  ROUTE B - zero rebuild, from jars already installed (for example by an
- *  earlier `mvn install`), with no Maven invocation at all:
- *
- *       M2="$HOME/.m2/repository"
- *       jshell --class-path \
- *         "$M2/com/opengamma/strata/strata-basics/2.12.74-SNAPSHOT/strata-basics-2.12.74-SNAPSHOT.jar:$M2/com/opengamma/strata/strata-collect/2.12.74-SNAPSHOT/strata-collect-2.12.74-SNAPSHOT.jar:$M2/com/google/guava/guava/33.4.0-jre/guava-33.4.0-jre.jar:$M2/com/google/guava/failureaccess/1.0.2/failureaccess-1.0.2.jar:$M2/org/joda/joda-beans/2.11.1/joda-beans-2.11.1.jar:$M2/org/joda/joda-convert/2.2.3/joda-convert-2.2.3.jar" \
- *         -R-Xmx900m tools/parity-capture/capture-baseline.jsh
- *
- *     Those six entries are the whole classpath the capture needs: the two
- *     Strata jars plus the four third-party jars they require. Keep the
- *     classpath quoted - it contains no spaces today, but an unquoted `$(...)`
- *     expansion would break the moment one appeared.
- *
- *     Either route prints a per-fixture summary and exits 0 only when every
- *     check passed AND all seven documents were written; see the FAIL-FAST
- *     CONTRACT below.
- *
- *  3. Optional: choose where the documents are written (default: the current
- *     directory, which is expected to be the repository root):
- *
- *       jshell ... -R-Dparity.out.dir=/tmp/parity-out ...
- *
- *     A dry run into a scratch directory needs nothing else: the capture reads
- *     the Java implementation from the classpath, never from the checkout, so
- *     the output root is the only location it has to be told about.
- *
- *  See `tools/parity-capture/README.md` for the full procedure, the fixture
- *  schemas and the manifest schema.
+ *  One capture at a time per output root. The run takes an exclusive lock keyed
+ *  on the canonical root before it validates or creates anything and holds it
+ *  through publication and cleanup, so two captures cannot interleave their
+ *  publish moves and leave a mixed generation behind (`acquireOutputLock`).
  *
  *  DETERMINISM CONTRACT
  *  --------------------
@@ -164,12 +112,12 @@
  *  every failure a Java test states carries the exception TYPE that test names
  *  and is compared by assignability (see the `Expect` banner), so a rejection
  *  that changes type cannot be recaptured as the new truth. What a measured
- *  call may throw at all is bounded separately by `requireCapturable`: a
- *  closed list of domain rejections is recorded, and an `Error`, a checked
- *  exception or a runtime type outside that list (NullPointerException,
+ *  call may throw at all is bounded separately by `requireCapturable`: a closed
+ *  list of domain rejections is recorded, and an `Error`, a checked exception
+ *  or a runtime type outside that list (NullPointerException,
  *  ClassCastException, ...) aborts the capture instead of becoming a fixture
- *  value. A row whose outcome NO Java test states is counted as capture-only
- *  in the summary, so the size of that set is visible rather than implicit.
+ *  value. A row whose outcome NO Java test states is counted as capture-only in
+ *  the summary, so the size of that set is visible rather than implicit.
  *
  *  All documents are built in memory and written only after every check has
  *  passed, so a failed run cannot leave a half-valid fixture on disk; the
@@ -181,13 +129,13 @@
  *  REFLECTION IS PERMITTED HERE
  *  ----------------------------
  *  The "no reflection" rule applies to the Scala codec path, not to this
- *  developer tool. This script uses reflection only to enumerate public
- *  constants holders (`DayCounts`, `HolidayCalendarIds`, ...), which is the
- *  cleanest way to obtain a provably complete constant list. Where an
- *  `ExtendedEnum` accessor gives the same answer, the accessor is preferred.
+ *  developer tool. Reflection is used only to enumerate public constants
+ *  holders (`DayCounts`, `HolidayCalendarIds`, ...), which is the cleanest way
+ *  to obtain a provably complete constant list. Where an `ExtendedEnum`
+ *  accessor gives the same answer, the accessor is preferred.
  *
- *  TWO JSHELL BEHAVIOURS THIS SCRIPT RELIES ON (both verified on JDK 21)
- *  --------------------------------------------------------------------
+ *  THREE JSHELL BEHAVIOURS THIS SCRIPT RELIES ON (all verified on JDK 21)
+ *  ---------------------------------------------------------------------
  *  1. `/set feedback silent` is NOT used. In script-file (non-interactive)
  *     mode JShell registers no predefined feedback modes, so that command
  *     fails and prints "Does not match any current feedback mode: silent" to
@@ -200,6 +148,10 @@
  *     `com.opengamma.strata.basics.currency.*` makes `Currency` ambiguous with
  *     `java.util.Currency` and fails to compile. A single-type import shadows
  *     the auto-imported on-demand one.
+ *  3. A TYPE MUST BE DECLARED BEFORE IT IS USED. JShell defers a snippet that
+ *     names an undeclared method until the method arrives, but rejects one that
+ *     names an undeclared type, so every helper class precedes the snippets
+ *     that mention it - which is why the lock code follows `OutputDirectory`.
  *
  *  A snippet that throws does not stop JShell - it prints a trace and the next
  *  snippet runs. The whole capture is therefore performed by one guarded
@@ -270,7 +222,8 @@ if (!PREFLIGHT_OK) {
   System.out.println("  Build them with:");
   System.out.println("    mvn -B -pl modules/collect,modules/basics -am -DskipTests \\");
   System.out.println("        -Dcheckstyle.skip=true -Dmaven.javadoc.skip=true package");
-  System.out.println("  then pass the dependency classpath as shown in this file's header.");
+  System.out.println("  then pass the dependency classpath as section 3 of");
+  System.out.println("  tools/parity-capture/README.md shows.");
   System.out.println("  Nothing was written.");
 }
 
@@ -363,8 +316,11 @@ import java.nio.file.SecureDirectoryStream;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileOwnerAttributeView;
+import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.DateTimeException;
@@ -389,9 +345,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
-// --- Static imports, copied verbatim from the Java tests whose data tables
-// --- this script reproduces, minus the test-only helpers (TestHelper,
-// --- Guavate, AssertJ, JUnit) which are replaced by local equivalents.
+// --- Static imports used by the captured cases ---
 import static com.opengamma.strata.basics.date.BusinessDayConventions.FOLLOWING;
 import static com.opengamma.strata.basics.date.BusinessDayConventions.MODIFIED_FOLLOWING;
 import static com.opengamma.strata.basics.date.BusinessDayConventions.MODIFIED_PRECEDING;
@@ -475,9 +429,7 @@ import static java.time.Month.SEPTEMBER;
 /** Number of scalar array items per line. Fixed, so output is reproducible. */
 int JSON_ARRAY_ITEMS_PER_LINE = 10;
 
-/** Base class of the tiny JSON tree. */
 abstract class Jn {
-  /** True for values that are rendered as a single token (string, number, ...). */
   abstract boolean isScalar();
 
   abstract void write(StringBuilder sb, int indent);
@@ -691,7 +643,6 @@ class JObject extends Jn {
   }
 }
 
-/** Escapes a string to a pure-ASCII JSON string literal. */
 String jsonQuote(String raw) {
   StringBuilder sb = new StringBuilder(raw.length() + 2);
   sb.append('"');
@@ -775,17 +726,18 @@ Jn jDbl(double value) {
   return new JScalar(Double.toString(value));
 }
 
-/** ISO-8601 date, or null. */
 Jn jDate(LocalDate date) {
   return date == null ? jNull() : jStr(date.toString());
 }
 
 /**
- * The canonical name of a Strata value. Every `Named` type is written through
- * getName(), and the remaining identity-bearing types through toString(), so
- * the emitted strings are exactly the identities the Scala port reproduces
- * (for example "Act/365F", "GBP-LIBOR-3M", "EUR/USD", "P3M", "3M",
- * "GBLO+USNY").
+ * The canonical name of a Strata value, which is the identity every fixture
+ * carries for it.
+ *
+ * A `Named` type is written through getName() and every other
+ * identity-bearing type through toString(), so a document holds "Act/365F",
+ * "GBP-LIBOR-3M", "EUR/USD", "P3M" for a Frequency, "3M" for a Tenor and
+ * "GBLO+USNY" - the exact strings a consumer parses back.
  */
 Jn jName(Object value) {
   if (value == null) {
@@ -859,9 +811,9 @@ String jsonRowsPerLineDocument(JArray rows) {
  * having written anything.
  *
  * TOLERANCES ARE NOT INTERCHANGEABLE (this is a real trap). The fixtures store
- * full-precision doubles for the Scala side's 1e-9 absolute AND relative
- * comparison, but a capture-time check must use the tolerance of the Java test
- * it is reproducing:
+ * full-precision doubles, which the fixture consumer compares at 1e-9 absolute
+ * AND relative; a capture-time check instead uses the tolerance of the Java
+ * test that states the value:
  *   * DayCountTest.data_yearFraction / data_days -> EXACT equality;
  *   * FxMatrixTest                               -> 1e-6;
  *   * DoubleArrayTest (its DELTA)                -> 1e-14.
@@ -961,8 +913,10 @@ class Checker {
   }
 
   /**
-   * Asserts a reference-data row count. A mismatch means the resource changed
-   * under the port, which must abort rather than silently reshape the manifest.
+   * Asserts a reference-data row count.
+   *
+   * An unexpected count aborts the capture: the resource behind it has changed,
+   * and publishing the new count would silently reshape the manifest.
    */
   void checkCount(String fixture, String what, int expected, int actual) {
     stats(fixture).checks++;
@@ -1077,19 +1031,15 @@ String OUTPUT_MANIFEST = "strata-basics/src/test/resources/manifest/reference-da
  */
 String[] FORBIDDEN_OUTPUT_PREFIXES = {"modules", "examples", "eclipse", "src", ".github", "project"};
 
-/**
- * The canonical output root, resolved once. `null` until the first call to
- * `outputRoot()`.
- */
 Path OUTPUT_ROOT_PATH = null;
 
 /**
  * True when `directory` is the root of a Strata checkout.
  *
- * Both markers are required so that a directory that merely contains a
- * `modules/` folder is not mistaken for one: the sbt build file is what this
- * port adds at the checkout root, and `modules/` is the Maven reactor the
- * baselines are captured from.
+ * BOTH markers are required - `build.sbt` and `modules/` - so that a directory
+ * merely holding one of the two is not mistaken for a checkout root. `modules/`
+ * alone is a common directory name, and a `build.sbt` alone sits at the root of
+ * any sbt project.
  */
 boolean isCheckoutRoot(Path directory) {
   return Files.isRegularFile(directory.resolve("build.sbt"), LinkOption.NOFOLLOW_LINKS)
@@ -1270,7 +1220,6 @@ void stageDocument(String relativePath, Jn root) throws IOException {
   PENDING_DOCUMENTS.put(relativePath, jsonDocument(root));
 }
 
-/** Stages a row-array document in the one-row-per-line form. */
 void stageRowsPerLineDocument(String relativePath, JArray rows) throws IOException {
   guardedOutputTarget(relativePath);
   PENDING_DOCUMENTS.put(relativePath, jsonRowsPerLineDocument(rows));
@@ -1288,218 +1237,6 @@ String FLUSH_TEMP_SUFFIX = ".capture-tmp-" + ProcessHandle.current().pid();
  * one: every name this script creates under an output directory carries it.
  */
 String FLUSH_ARTEFACT_MARKER = ".capture-tmp-";
-
-/* ---------------------------------------------------------------------------
- * ONE CAPTURE AT A TIME PER OUTPUT ROOT.
- *
- * A pid-suffixed temporary keeps two runs from colliding on a FILENAME; it
- * does not serialise the two TRANSACTIONS. Without a lock, two captures over
- * one output root both pass the stale-artefact check (neither has staged
- * anything yet), then interleave their publish moves: each file ends up whole,
- * each run exits 0, and the tree holds documents from two generations with
- * nothing on disk to say so. Because both runs succeed, no `.new`/`.old`
- * leftover is there for the next run to refuse - which is the one way this
- * mixed state would otherwise be detected.
- *
- * So the run holds an exclusive OS-level lock for the whole of validation,
- * staging, publication and cleanup, and a second capture over the same root is
- * REFUSED rather than queued: a capture takes minutes, and a caller who
- * launched two by mistake needs to be told, not made to wait.
- *
- * WHERE THE LOCK LIVES, AND WHY NOT IN THE OUTPUT ROOT. The lock file is kept
- * in a private directory of this user's under the JVM temporary directory,
- * named for the canonical output root, for two reasons. First, the output root
- * is normally the repository checkout, and a lock file there would be an
- * untracked artefact in the deliverable tree. Second, a lock file that is
- * deleted after use is not a lock: a process that opened it before the delete
- * and locked it afterwards would hold a lock on an unlinked inode while the
- * next process locked a fresh one, and both would believe they owned the root.
- * The file is therefore created once and never removed, and it carries NO
- * CONTENT at all - the lock is the file lock, so there is nothing to write and
- * nothing to truncate. The OS releases the lock if a capture is killed, so a
- * leftover file blocks nothing.
- *
- * THE LOCK PATH IS ITSELF A WRITE, SO IT IS GUARDED LIKE ONE. A predictable
- * name in a world-writable temporary directory is a place another local
- * process can plant a symbolic link, and an open that followed it would point
- * this run's file operations at whatever it named (CWE-59). So the lock lives
- * one level down, in `parity-capture-locks`, which this run creates with owner
- * -only permissions and then REQUIRES to be a directory, owned by this user
- * and writable by nobody else - a planted link or a directory somebody else
- * controls refuses the run. The lock file inside it is additionally opened
- * NOFOLLOW, so even there a link is refused rather than followed.
- *
- * The key is the DECLARED absolute, normalised root rather than the
- * canonicalised one, because the lock has to be held before `outputRoot`
- * creates anything. That is not a weaker key: `outputRoot` REFUSES any root
- * whose canonical form differs from its declared form, so every run that gets
- * past it had declared == canonical, and two spellings of one root cannot both
- * proceed.
- * ------------------------------------------------------------------------- */
-
-/** The lock file, its channel and the lock itself; all null until acquired. */
-Path OUTPUT_LOCK_PATH = null;
-FileChannel OUTPUT_LOCK_CHANNEL = null;
-FileLock OUTPUT_LOCK = null;
-
-/** Lower-case hex of the SHA-256 of `text`; the lock file name is built from it. */
-String sha256Hex(String text) {
-  try {
-    byte[] digest = MessageDigest.getInstance("SHA-256")
-        .digest(text.getBytes(StandardCharsets.UTF_8));
-    StringBuilder hex = new StringBuilder(digest.length * 2);
-    for (byte b : digest) {
-      hex.append(Character.forDigit((b >> 4) & 0xf, 16)).append(Character.forDigit(b & 0xf, 16));
-    }
-    return hex.toString();
-  } catch (NoSuchAlgorithmException impossible) {
-    // Every JDK is required to provide SHA-256; a JVM without it cannot be
-    // reasoned about, so this is fatal rather than degraded.
-    throw new IllegalStateException("this JVM provides no SHA-256 digest", impossible);
-  }
-}
-
-/**
- * Resolves the private directory the lock files live in, creating it owner-only
- * and refusing anything at that name this user does not exclusively control.
- *
- * The three requirements are what make a predictable name in a shared
- * temporary directory safe to open: it must be a DIRECTORY (so a planted
- * symbolic link, for which a no-follow attribute read reports no directory, is
- * refused), it must be OWNED by this user, and it must be writable by NOBODY
- * ELSE (so no other account can plant a lock file, or a link, inside it).
- */
-Path outputLockDirectory() throws IOException {
-  Path directory =
-      Paths.get(System.getProperty("java.io.tmpdir")).resolve("parity-capture-locks");
-  if (!Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
-    try {
-      Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(
-          PosixFilePermissions.fromString("rwx------")));
-    } catch (FileAlreadyExistsException raced) {
-      // Another capture created it first; the checks below decide either way.
-    } catch (UnsupportedOperationException noPosixPermissions) {
-      Files.createDirectory(directory);
-    }
-  }
-  BasicFileAttributes attributes =
-      Files.readAttributes(directory, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-  if (!attributes.isDirectory()) {
-    throw new IllegalStateException("Refusing to use " + directory
-        + " for the capture lock: it exists and is not a directory (a symbolic link planted at"
-        + " that name would be followed by the open, so the run stops instead). Remove it and"
-        + " re-run.");
-  }
-  String user = System.getProperty("user.name");
-  String owner = Files.getOwner(directory, LinkOption.NOFOLLOW_LINKS).getName();
-  if (!owner.equals(user)) {
-    throw new IllegalStateException("Refusing to use " + directory + " for the capture lock: it"
-        + " is owned by " + owner + " rather than " + user + ", so its contents are not under"
-        + " this run's control.");
-  }
-  try {
-    Set<PosixFilePermission> permissions =
-        Files.getPosixFilePermissions(directory, LinkOption.NOFOLLOW_LINKS);
-    if (permissions.contains(PosixFilePermission.GROUP_WRITE)
-        || permissions.contains(PosixFilePermission.OTHERS_WRITE)) {
-      throw new IllegalStateException("Refusing to use " + directory + " for the capture lock:"
-          + " it is writable by others (" + PosixFilePermissions.toString(permissions)
-          + "), so another account could plant the lock file. chmod 700 it and re-run.");
-    }
-  } catch (UnsupportedOperationException noPosixPermissions) {
-    // A filesystem without POSIX permissions cannot answer the question; the
-    // ownership check above is what stands, and the open below is no-follow.
-  }
-  return directory;
-}
-
-/**
- * Takes the exclusive lock for the output root, or fails saying who holds it.
- *
- * FAIL-CLOSED in both directions: a lock already held by another capture and a
- * lock that cannot be created at all both stop the run. The second case
- * matters - a capture that silently proceeded unlocked because the temporary
- * directory was unwritable would be exactly the unserialised run this guards
- * against, so the message names the file and the root instead.
- *
- * Nothing is ever written to or truncated in the lock file: the lock is the
- * file lock. That is deliberate, so that an operation on this path can never
- * destroy anything even if the guards above were somehow bypassed.
- */
-void acquireOutputLock() throws IOException {
-  Path root = Paths.get(OUT_ROOT).toAbsolutePath().normalize();
-  Path lockFile = outputLockDirectory()
-      .resolve("parity-capture-baseline-" + sha256Hex(root.toString()) + ".lock");
-  FileChannel channel;
-  try {
-    // CREATE plus NOFOLLOW_LINKS: create it if it is absent, and refuse it
-    // rather than follow it if what is there is a symbolic link.
-    Set<OpenOption> options = new LinkedHashSet<>();
-    options.add(StandardOpenOption.CREATE);
-    options.add(StandardOpenOption.WRITE);
-    options.add(LinkOption.NOFOLLOW_LINKS);
-    channel = FileChannel.open(lockFile, options);
-  } catch (IOException failed) {
-    throw new IllegalStateException("cannot create the capture lock " + lockFile + " for output"
-        + " root " + root + " - the capture will not run unserialised: " + errorMessage(failed),
-        failed);
-  }
-  FileLock lock;
-  String contention;
-  try {
-    lock = channel.tryLock();
-    contention = "another capture holds the exclusive lock " + lockFile;
-  } catch (OverlappingFileLockException alreadyHeldHere) {
-    // Not another process: this JVM holds it, which can only mean the driver
-    // was entered twice. Reported distinctly, because the remedy differs.
-    lock = null;
-    contention = "this JVM already holds " + lockFile + ", so the capture driver ran twice";
-  } catch (IOException failed) {
-    closeQuietly(channel, lockFile);
-    throw new IllegalStateException("cannot lock " + lockFile + " for output root " + root + ": "
-        + errorMessage(failed), failed);
-  }
-  if (lock == null) {
-    closeQuietly(channel, lockFile);
-    throw new IllegalStateException("another capture is writing to " + root + " (" + contention
-        + "). Two captures over one output root can interleave their publish moves and leave a"
-        + " mixed generation, so this run stops. Wait for the other capture to finish, or pass a"
-        + " different -Dparity.out.dir.");
-  }
-  OUTPUT_LOCK_PATH = lockFile;
-  OUTPUT_LOCK_CHANNEL = channel;
-  OUTPUT_LOCK = lock;
-  System.out.println("  output lock     = " + lockFile);
-}
-
-/** Closes a channel without masking the failure that is already being reported. */
-void closeQuietly(FileChannel channel, Path what) {
-  try {
-    channel.close();
-  } catch (IOException failed) {
-    System.out.println("NOTE: could not close " + what + " - " + errorMessage(failed));
-  }
-}
-
-/**
- * Releases the lock. Idempotent, and never throws: it runs in the `finally` of
- * the driver, where a failure of its own would hide the failure being reported.
- */
-void releaseOutputLock() {
-  if (OUTPUT_LOCK != null) {
-    try {
-      OUTPUT_LOCK.release();
-    } catch (IOException failed) {
-      System.out.println("NOTE: could not release the capture lock " + OUTPUT_LOCK_PATH + " - "
-          + errorMessage(failed));
-    }
-    OUTPUT_LOCK = null;
-  }
-  if (OUTPUT_LOCK_CHANNEL != null) {
-    closeQuietly(OUTPUT_LOCK_CHANNEL, OUTPUT_LOCK_PATH);
-    OUTPUT_LOCK_CHANNEL = null;
-  }
-}
 
 /**
  * A VALIDATED OUTPUT DIRECTORY, OPERATED THROUGH A HANDLE RATHER THAN A NAME.
@@ -1648,6 +1385,79 @@ final class OutputDirectory implements AutoCloseable {
   }
 
   /**
+   * Opens `name` inside this directory for writing as a channel that can carry
+   * a file lock, creating it when absent with owner-only permissions.
+   *
+   * The creation is HANDLE-RELATIVE. `SecureDirectoryStream.newByteChannel`
+   * creates the file inside the directory this handle holds, so no pathname is
+   * resolved and a parent exchanged for a link after validation cannot redirect
+   * it - the difference from `createChild`, which the NIO API forces to name a
+   * path because a secure stream cannot create a DIRECTORY. The file is asked
+   * for as `rw-------`, so no other account can write through it; a filesystem
+   * that does not keep POSIX permissions cannot be asked for them, and there the
+   * ownership read on the file is what stands.
+   *
+   * `SecureDirectoryStream` answers with a `SeekableByteChannel`, while a
+   * `FileLock` needs a `FileChannel`; every platform that provides a secure
+   * stream returns one here. Where one is not returned the run REFUSES, because
+   * reopening the file by pathname would put back the window this class exists
+   * to close.
+   */
+  FileChannel openOrCreatePrivateChannel(Path name) throws IOException {
+    SeekableByteChannel opened;
+    try {
+      opened = secure.newByteChannel(name,
+          options(StandardOpenOption.CREATE, StandardOpenOption.WRITE),
+          PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+    } catch (UnsupportedOperationException noPosixPermissions) {
+      opened = secure.newByteChannel(name,
+          options(StandardOpenOption.CREATE, StandardOpenOption.WRITE));
+    }
+    if (opened instanceof FileChannel) {
+      return (FileChannel) opened;
+    }
+    String answered = opened.getClass().getName();
+    opened.close();
+    throw new IllegalStateException("Refusing to lock " + path.resolve(name) + ": this filesystem"
+        + " answers with " + answered + " rather than a FileChannel, so the lock cannot be taken"
+        + " on the directory handle this run validated.");
+  }
+
+  /**
+   * The owner of `name` inside this directory, read through the handle and
+   * without following a link.
+   *
+   * Handle-bound rather than by name, so the answer describes the object inside
+   * the directory this run opened and not whatever the path points at now.
+   */
+  UserPrincipal ownerOf(Path name) throws IOException {
+    FileOwnerAttributeView view =
+        secure.getFileAttributeView(name, FileOwnerAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+    if (view == null) {
+      throw new IllegalStateException("Refusing to use " + path.resolve(name)
+          + ": this filesystem does not report file ownership.");
+    }
+    return view.getOwner();
+  }
+
+  /**
+   * The POSIX permissions of `name` inside this directory, read without
+   * following a link, or null where the filesystem does not keep them.
+   */
+  Set<PosixFilePermission> posixPermissionsOf(Path name) throws IOException {
+    PosixFileAttributeView view =
+        secure.getFileAttributeView(name, PosixFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+    if (view == null) {
+      return null;
+    }
+    try {
+      return view.readAttributes().permissions();
+    } catch (UnsupportedOperationException notKept) {
+      return null;
+    }
+  }
+
+  /**
    * The names in THIS directory that carry `marker`, sorted.
    *
    * Reads the stream this handle already holds, so the scan looks at the
@@ -1701,9 +1511,7 @@ final class OutputDirectory implements AutoCloseable {
     ByteBuffer buffer = ByteBuffer.allocate(limit + 1);
     try (SeekableByteChannel channel =
         secure.newByteChannel(name, options(StandardOpenOption.READ))) {
-      while (buffer.hasRemaining() && channel.read(buffer) > 0) {
-        // read until the buffer is full or the file ends
-      }
+      while (buffer.hasRemaining() && channel.read(buffer) > 0) { }
     }
     buffer.flip();
     byte[] read = new byte[buffer.remaining()];
@@ -1711,7 +1519,6 @@ final class OutputDirectory implements AutoCloseable {
     return read;
   }
 
-  /** True when `name` exists, without following a link at that name. */
   boolean exists(Path name) throws IOException {
     try {
       secure.getFileAttributeView(name, BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS)
@@ -1722,7 +1529,6 @@ final class OutputDirectory implements AutoCloseable {
     }
   }
 
-  /** True when `name` is a regular file - not a directory, not a link. */
   boolean isRegularFile(Path name) throws IOException {
     try {
       return secure
@@ -1802,6 +1608,365 @@ OutputDirectory openOrCreateNoFollowDirectory(Path directory) throws IOException
             + errorMessage(failed));
       }
     }
+  }
+}
+
+/**
+ * Acquires a handle on an EXISTING absolute `directory` by the same descent,
+ * creating nothing.
+ *
+ * A missing component refuses the run. That is what a write root supplied by
+ * the environment needs: a temporary directory that does not exist is an
+ * environment error, and creating a path the caller named is precisely the
+ * write the placement guards exist to prevent.
+ */
+OutputDirectory openExistingNoFollowDirectory(Path directory) throws IOException {
+  Path filesystemRoot = directory.getRoot();
+  if (filesystemRoot == null) {
+    throw new IllegalStateException("Directory is not absolute: " + directory);
+  }
+  List<OutputDirectory> chain = new ArrayList<>();
+  try {
+    OutputDirectory current = OutputDirectory.openVerified(filesystemRoot);
+    chain.add(current);
+    for (Path element : filesystemRoot.relativize(directory)) {
+      current = current.openChild(element);
+      chain.add(current);
+    }
+    // The last handle is the caller's; everything above it is closed below.
+    return chain.remove(chain.size() - 1);
+  } finally {
+    for (OutputDirectory intermediate : chain) {
+      try {
+        intermediate.close();
+      } catch (IOException failed) {
+        System.out.println("NOTE: could not close the handle on " + intermediate.path + " - "
+            + errorMessage(failed));
+      }
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * ONE CAPTURE AT A TIME PER OUTPUT ROOT.
+ *
+ * A pid-suffixed temporary keeps two runs from colliding on a FILENAME; it
+ * does not serialise the two TRANSACTIONS. Without a lock, two captures over
+ * one output root both pass the stale-artefact check (neither has staged
+ * anything yet), then interleave their publish moves: each file ends up whole,
+ * each run exits 0, and the tree holds documents from two generations with
+ * nothing on disk to say so. Because both runs succeed, no `.new`/`.old`
+ * leftover is there for the next run to refuse - which is the one way this
+ * mixed state would otherwise be detected.
+ *
+ * So the run holds an exclusive OS-level lock for the whole of validation,
+ * staging, publication and cleanup, and a second capture over the same root is
+ * REFUSED rather than queued: a capture takes minutes, and a caller who
+ * launched two by mistake needs to be told, not made to wait.
+ *
+ * WHERE THE LOCK LIVES, AND WHY NOT IN THE OUTPUT ROOT. The lock file is kept
+ * under the JVM temporary directory, named for the canonical output root, for
+ * two reasons. First, the output root is normally the repository checkout, and
+ * a lock file there would be an untracked artefact in the deliverable tree.
+ * Second, a lock file that is deleted after use is not a lock: a process that
+ * opened it before the delete and locked it afterwards would hold a lock on an
+ * unlinked inode while the next process locked a fresh one, and both would
+ * believe they owned the root. The file is therefore created once and never
+ * removed, and it carries NO CONTENT at all - the lock is the file lock, so
+ * there is nothing to write and nothing to truncate. The OS releases the lock
+ * if a capture is killed, so a leftover file blocks nothing.
+ *
+ * THE LOCK PATH IS ITSELF A WRITE, SO IT IS GUARDED AS ONE. A predictable name
+ * in a world-writable temporary directory is a place another local process can
+ * plant a symbolic link, and an open that followed it would point this run's
+ * file operations at whatever it named (CWE-22, CWE-59). SO THE LOCK PATH
+ * CREATES NO DIRECTORY: the one file it needs is created relative to a
+ * directory handle, and the directory it goes in must already exist.
+ *
+ *  1. `java.io.tmpdir` must be set, ABSOLUTE and already present. A relative
+ *     value resolves against the working directory - normally the checkout -
+ *     so it is refused rather than interpreted, and a missing directory is an
+ *     environment error rather than something this run creates;
+ *  2. neither the declared temporary directory NOR its canonical form may be a
+ *     checkout root or sit inside one, so `-Djava.io.tmpdir=<checkout>/modules`
+ *     is refused before anything is opened and the repository boundary
+ *     (`git status --porcelain -- modules examples eclipse pom.xml src .github`
+ *     staying empty) cannot be broken through the lock path. The canonical form
+ *     is the one used: unlike `parity.out.dir`, a non-canonical spelling is
+ *     RESOLVED rather than refused, because no document is written here and the
+ *     platform's own default (`/var/folders/...` on macOS, reached through the
+ *     `/var` link) would otherwise refuse every run. Both forms are checked, so
+ *     neither a declared nor a resolved temporary directory reaches a checkout;
+ *  3. every component of that canonical path is opened RELATIVE TO ITS PARENT'S
+ *     HANDLE with NOFOLLOW (`openExistingNoFollowDirectory`), so a symbolic
+ *     link anywhere in it - not only at the last component - refuses the run
+ *     instead of redirecting the write. Nothing on that path is created: a
+ *     component that is absent, or that cannot be opened as a directory without
+ *     following a link, stops the run;
+ *  4. the lock file is CREATED THROUGH THAT HANDLE, never by pathname, with
+ *     owner-only permissions. That is the whole reason no private lock
+ *     DIRECTORY is made first: Java has no handle-relative `mkdir` - a
+ *     `SecureDirectoryStream` offers `newByteChannel`, `newDirectoryStream`,
+ *     `move` and the two deletes, and nothing that creates a directory - so a
+ *     directory could only be made by naming its path, and a parent renamed
+ *     between the validation and that call would leave a directory created
+ *     somewhere else. That is precisely the write these guards exist to
+ *     prevent, and a file needs no such call, so none is made;
+ *  5. whatever is at the lock name must then be THIS RUN'S OWN regular file,
+ *     writable by nobody else. A directory, a symbolic link (refused by the
+ *     no-follow open itself), a foreign-owned file and a group- or
+ *     other-writable file each stop the run rather than being locked, because a
+ *     file another account controls can be replaced under this run - which
+ *     would leave two captures each believing they held the output root.
+ *     Ownership comes from the OS and not from configuration: a probe file
+ *     created through the same handle supplies this process's effective
+ *     identity, so the check cannot be defeated with `-Duser.name=...`.
+ *
+ * Declared after the handle machinery it uses: JShell resolves a type only
+ * once its declaration has been read, so the lock code - which operates
+ * through an `OutputDirectory` - follows that class rather than preceding it.
+ *
+ * The key is the DECLARED absolute, normalised root rather than the
+ * canonicalised one, because the lock has to be held before `outputRoot`
+ * creates anything. That is not a weaker key: `outputRoot` REFUSES any root
+ * whose canonical form differs from its declared form, so every run that gets
+ * past it had declared == canonical, and two spellings of one root cannot both
+ * proceed.
+ * ------------------------------------------------------------------------- */
+
+Path OUTPUT_LOCK_PATH = null;
+FileChannel OUTPUT_LOCK_CHANNEL = null;
+FileLock OUTPUT_LOCK = null;
+
+/** Lower-case hex of the SHA-256 of `text`; the lock file name is built from it. */
+String sha256Hex(String text) {
+  try {
+    byte[] digest = MessageDigest.getInstance("SHA-256")
+        .digest(text.getBytes(StandardCharsets.UTF_8));
+    StringBuilder hex = new StringBuilder(digest.length * 2);
+    for (byte b : digest) {
+      hex.append(Character.forDigit((b >> 4) & 0xf, 16)).append(Character.forDigit(b & 0xf, 16));
+    }
+    return hex.toString();
+  } catch (NoSuchAlgorithmException impossible) {
+    // Every JDK is required to provide SHA-256; a JVM without it cannot be
+    // reasoned about, so this is fatal rather than degraded.
+    throw new IllegalStateException("this JVM provides no SHA-256 digest", impossible);
+  }
+}
+
+/**
+ * Rejects a lock root that IS a checkout root or sits inside one.
+ *
+ * Stricter than `requireOutputRootPlacement`, which permits the checkout root
+ * itself because that is where the documents belong. A lock file belongs in no
+ * checkout at all: it is not a deliverable, and an untracked file in the tree
+ * is what the repository-boundary check exists to catch. Like that function it
+ * asks only whether a directory carries the two checkout markers, so it is
+ * safe on a path no component of which exists.
+ */
+void requireLockRootOutsideCheckout(Path root, String configured) {
+  for (Path cursor = root; cursor != null; cursor = cursor.getParent()) {
+    if (isCheckoutRoot(cursor)) {
+      throw new IllegalStateException("Refusing to keep the capture lock inside the checkout"
+          + " rooted at " + cursor + ": java.io.tmpdir=" + configured + " gives " + root
+          + ". Point -R-Djava.io.tmpdir at a directory outside every checkout.");
+    }
+  }
+}
+
+/**
+ * Requires whatever is at `lockName` to be this run's own regular file, writable
+ * by nobody else - requirement 5 of the banner above - read through the handle
+ * on the directory that holds it.
+ *
+ * OWNERSHIP COMES FROM THE OS, NOT FROM CONFIGURATION. `user.name` is a system
+ * property the same caller who sets `java.io.tmpdir` can set, so comparing an
+ * owner against it proves nothing. A probe file created through this handle is
+ * used instead, and the owner the kernel gave it - this process's effective
+ * identity - is what the lock file's owner is compared with. The probe is
+ * removed whatever the outcome, and is also the writability test, so a
+ * directory this run cannot write refuses here with a message about the
+ * directory.
+ */
+void requireLockFileIsOurs(OutputDirectory lockRoot, Path lockName) throws IOException {
+  Path lockFile = lockRoot.path.resolve(lockName);
+  if (!lockRoot.isRegularFile(lockName)) {
+    throw new IllegalStateException("Refusing to lock " + lockFile + ": what is at that name is"
+        + " not a regular file. Remove it and re-run.");
+  }
+  Path probe = Paths.get(".parity-capture-owner-probe-" + ProcessHandle.current().pid());
+  try {
+    lockRoot.writeNew(probe, new byte[0]);
+  } catch (IOException refused) {
+    throw new IllegalStateException("Refusing to lock " + lockFile + ": this run cannot create a"
+        + " file in " + lockRoot.path + " (" + errorMessage(refused) + "), so its own identity"
+        + " there cannot be established. Point -R-Djava.io.tmpdir at a directory you own.",
+        refused);
+  }
+  UserPrincipal ours;
+  try {
+    ours = lockRoot.ownerOf(probe);
+  } finally {
+    lockRoot.deleteIfExists(probe);
+  }
+  UserPrincipal owner = lockRoot.ownerOf(lockName);
+  if (!owner.equals(ours)) {
+    throw new IllegalStateException("Refusing to lock " + lockFile + ": it is owned by "
+        + owner.getName() + " rather than by this run's own " + ours.getName() + ", so another"
+        + " account controls the file this capture would serialise on. Remove it and re-run.");
+  }
+  Set<PosixFilePermission> permissions = lockRoot.posixPermissionsOf(lockName);
+  if (permissions != null && (permissions.contains(PosixFilePermission.GROUP_WRITE)
+      || permissions.contains(PosixFilePermission.OTHERS_WRITE))) {
+    throw new IllegalStateException("Refusing to lock " + lockFile + ": it is writable by others ("
+        + PosixFilePermissions.toString(permissions) + "), so another account could replace the"
+        + " file this capture serialises on. chmod 600 it and re-run.");
+  }
+}
+
+/**
+ * Opens the existing temporary directory the lock file lives in, applying
+ * requirements 1 to 3 of the banner above, and returns the HANDLE on it.
+ *
+ * Creates nothing. The handle is the caller's, and the lock file is created and
+ * opened through it; closing it afterwards does not disturb the channel that
+ * holds the lock, because that channel carries its own descriptor on the file
+ * rather than on the directory.
+ */
+OutputDirectory openLockRoot() throws IOException {
+  String configured = System.getProperty("java.io.tmpdir");
+  if (configured == null || configured.isBlank()) {
+    throw new IllegalStateException("java.io.tmpdir is not set, so there is nowhere outside the"
+        + " checkout to keep the capture lock. Pass -R-Djava.io.tmpdir=<an absolute existing"
+        + " directory outside every checkout> and re-run.");
+  }
+  Path declared = Paths.get(configured);
+  if (!declared.isAbsolute()) {
+    throw new IllegalStateException("Refusing a relative java.io.tmpdir for the capture lock: "
+        + configured + " would resolve against the working directory, which is normally the"
+        + " checkout. Pass an absolute path.");
+  }
+  declared = declared.normalize();
+  // Requirement 2 on the DECLARED path, before any component is opened, so a
+  // refusal leaves no footprint in a tree this script must not write into.
+  requireLockRootOutsideCheckout(declared, configured);
+  Path canonical;
+  try {
+    canonical = declared.toRealPath();
+  } catch (IOException unresolvable) {
+    throw new IllegalStateException("Refusing to create java.io.tmpdir for the capture lock: "
+        + declared + " does not exist or cannot be resolved (" + errorMessage(unresolvable)
+        + "). Point -R-Djava.io.tmpdir at an existing absolute directory outside every checkout.",
+        unresolvable);
+  }
+  // Requirement 2 again on the canonical path: canonicalisation can move a path
+  // into a checkout, and the canonical path is the one the lock file goes in.
+  requireLockRootOutsideCheckout(canonical, configured);
+  try {
+    return openExistingNoFollowDirectory(canonical);
+  } catch (IOException notUsable) {
+    throw new IllegalStateException("Refusing to keep the capture lock in " + canonical + ": it"
+        + " cannot be opened as a directory without following a link (" + errorMessage(notUsable)
+        + "). A symbolic link or a file on that path stops the run rather than being written"
+        + " through. Point -R-Djava.io.tmpdir at a real directory outside every checkout.",
+        notUsable);
+  }
+}
+
+/**
+ * Takes the exclusive lock for the output root, or fails saying who holds it.
+ *
+ * FAIL-CLOSED in both directions: a lock already held by another capture and a
+ * lock that cannot be created at all both stop the run. The second case
+ * matters - a capture that silently proceeded unlocked because the temporary
+ * directory was unwritable would be exactly the unserialised run this guards
+ * against, so the message names the file and the root instead.
+ *
+ * Nothing is ever written to or truncated in the lock file: the lock is the
+ * file lock. That is deliberate, so that an operation on this path can never
+ * destroy anything even if the guards above were somehow bypassed. The file is
+ * created and opened relative to the handle on the directory that was
+ * validated, so nothing on this path is reached by name.
+ */
+void acquireOutputLock() throws IOException {
+  Path root = Paths.get(OUT_ROOT).toAbsolutePath().normalize();
+  Path lockName = Paths.get("parity-capture-baseline-" + sha256Hex(root.toString()) + ".lock");
+  Path lockFile;
+  FileChannel channel;
+  try (OutputDirectory lockRoot = openLockRoot()) {
+    lockFile = lockRoot.path.resolve(lockName);
+    try {
+      channel = lockRoot.openOrCreatePrivateChannel(lockName);
+    } catch (IOException failed) {
+      throw new IllegalStateException("cannot create the capture lock " + lockFile + " for output"
+          + " root " + root + " - the capture will not run unserialised: " + errorMessage(failed),
+          failed);
+    }
+    boolean keep = false;
+    try {
+      requireLockFileIsOurs(lockRoot, lockName);
+      keep = true;
+    } finally {
+      if (!keep) {
+        closeQuietly(channel, lockFile);
+      }
+    }
+  }
+  FileLock lock;
+  String contention;
+  try {
+    lock = channel.tryLock();
+    contention = "another capture holds the exclusive lock " + lockFile;
+  } catch (OverlappingFileLockException alreadyHeldHere) {
+    // Not another process: this JVM holds it, which can only mean the driver
+    // was entered twice. Reported distinctly, because the remedy differs.
+    lock = null;
+    contention = "this JVM already holds " + lockFile + ", so the capture driver ran twice";
+  } catch (IOException failed) {
+    closeQuietly(channel, lockFile);
+    throw new IllegalStateException("cannot lock " + lockFile + " for output root " + root + ": "
+        + errorMessage(failed), failed);
+  }
+  if (lock == null) {
+    closeQuietly(channel, lockFile);
+    throw new IllegalStateException("another capture is writing to " + root + " (" + contention
+        + "). Two captures over one output root can interleave their publish moves and leave a"
+        + " mixed generation, so this run stops. Wait for the other capture to finish, or pass a"
+        + " different -Dparity.out.dir.");
+  }
+  OUTPUT_LOCK_PATH = lockFile;
+  OUTPUT_LOCK_CHANNEL = channel;
+  OUTPUT_LOCK = lock;
+  System.out.println("  output lock     = " + lockFile);
+}
+
+/** Closes a channel without masking the failure that is already being reported. */
+void closeQuietly(FileChannel channel, Path what) {
+  try {
+    channel.close();
+  } catch (IOException failed) {
+    System.out.println("NOTE: could not close " + what + " - " + errorMessage(failed));
+  }
+}
+
+/**
+ * Releases the lock. Idempotent, and never throws: it runs in the `finally` of
+ * the driver, where a failure of its own would hide the failure being reported.
+ */
+void releaseOutputLock() {
+  if (OUTPUT_LOCK != null) {
+    try {
+      OUTPUT_LOCK.release();
+    } catch (IOException failed) {
+      System.out.println("NOTE: could not release the capture lock " + OUTPUT_LOCK_PATH + " - "
+          + errorMessage(failed));
+    }
+    OUTPUT_LOCK = null;
+  }
+  if (OUTPUT_LOCK_CHANNEL != null) {
+    closeQuietly(OUTPUT_LOCK_CHANNEL, OUTPUT_LOCK_PATH);
+    OUTPUT_LOCK_CHANNEL = null;
   }
 }
 
@@ -2077,14 +2242,16 @@ void flushDocuments() throws Exception {
 }
 
 /* ===========================================================================
- * SECTION 4 - LOCAL EQUIVALENTS OF THE TEST-ONLY JAVA HELPERS
+ * SECTION 4 - FIXTURE HELPERS OVER THE PUBLIC API
  *
- * The Java tests reach `TestHelper.date` / `TestHelper.list` and their own
- * package-private `Info` class. None of those are available here:
- * `com.opengamma.strata.collect.TestHelper` lives in a test jar, and a `.jsh`
- * script runs in the UNNAMED PACKAGE so it cannot touch package-private types
- * at all. The replacements below are behaviourally identical, which is what
- * lets the Java data tables in Section 5 be used verbatim.
+ * The date, list, holiday and `ScheduleInfo` helpers that the data tables of
+ * Section 5 and the emitters of Sections 7 to 13 are written in terms of.
+ *
+ * A `.jsh` script runs in the UNNAMED PACKAGE, so nothing package-private is
+ * reachable from here - neither `com.opengamma.strata.collect.TestHelper`,
+ * which lives in a test jar, nor a Java test's own package-private stub. Every
+ * helper below is built from public API, and the ones whose behaviour differs
+ * from the obvious reading of their signature say so at their declaration.
  * ===========================================================================
  */
 
@@ -2105,9 +2272,9 @@ List<LocalDate> list(LocalDate... dates) {
 }
 
 /*
- * The two private helpers GlobalHolidayCalendarsTest builds its expected
- * holiday tables from (GlobalHolidayCalendarsTest.java:1200-1210), copied so
- * that those tables compile here unchanged.
+ * `md` names a month and a day; `mds` resolves a list of them into the dates of
+ * one year, which is the form the expected-holiday tables of Section 5 are
+ * written in (GlobalHolidayCalendarsTest.java:1200-1210).
  */
 MonthDay md(int month, int day) {
   return MonthDay.of(month, day);
@@ -2125,19 +2292,19 @@ List<LocalDate> mds(int year, MonthDay... monthDays) {
  * The SIMPLE_30_360 sentinel (Trap 2).
  *
  * DayCountTest declares `SIMPLE_30_360 = Double.NaN` and
- * `SIMPLE_30_360DAYS = 0` as MARKERS, not as expected values, and its
- * consumers resolve them through calc360 / calc360Days. Transcribing the rows
- * literally would record NaN and 0 as the expectations, which is exactly the
- * silent corruption this script exists to avoid.
+ * `SIMPLE_30_360DAYS = 0` as MARKERS, not as expected values, and resolves them
+ * through calc360 / calc360Days. A row taken literally would record NaN or 0 as
+ * its expectation, which is exactly the silent corruption the self-checks exist
+ * to prevent.
  *
- * Two different comparisons are reproduced, because Java uses two:
- *   * `value == SIMPLE_30_360` compares boxed Double REFERENCES. Declaring the
- *     constant once means every table literal shares that one autoboxed
- *     instance, so reference identity works here just as it does in the Java
- *     test (verified: it matches 59 of the 201 data_yearFraction rows).
- *   * `value == SIMPLE_30_360DAYS` compares int VALUES, so any row whose
- *     expected day count is literally 0 is also routed through calc360Days.
- *     That is Java's own behaviour and it is reproduced, not "fixed".
+ * The two markers are compared in two different ways, matching the comparisons
+ * DayCountTest itself makes:
+ *   * `value == SIMPLE_30_360` compares boxed Double REFERENCES. The constant
+ *     is declared once, so every table literal shares that one autoboxed
+ *     instance and reference identity selects exactly the sentinel rows
+ *     (measured: 59 of the 201 data_yearFraction rows).
+ *   * `value == SIMPLE_30_360DAYS` compares int VALUES, so a row whose expected
+ *     day count is literally 0 is routed through calc360Days as well.
  */
 final Double SIMPLE_30_360 = Double.NaN;
 final int SIMPLE_30_360DAYS = 0;
@@ -2151,18 +2318,20 @@ int calc360Days(int y1, int m1, int d1, int y2, int m2, int d2) {
 }
 
 /**
- * A local implementation of the PUBLIC nested interface DayCount.ScheduleInfo
- * carrying the semantics of DayCountTest's package-private `Info` stub rather
- * than those of the interface (Trap 7).
+ * An implementation of the PUBLIC nested interface DayCount.ScheduleInfo whose
+ * accessors are nullable and non-throwing, matching the stub DayCountTest
+ * declares rather than the interface defaults (Trap 7).
  *
- * The distinction matters. The interface's own defaults THROW
+ * The distinction is load-bearing. The interface's own defaults THROW
  * UnsupportedOperationException for getStartDate / getEndDate /
- * getPeriodEndDate / getFrequency, and default isEndOfMonthConvention to true.
- * The test stub instead returns NULL from every accessor and returns its fixed
- * `periodEnd` from getPeriodEndDate(date) while IGNORING the argument. That
- * stub behaviour is what the fixture's nullable `scheduleInfo` object with a
- * single fixed `periodEnd` describes, and `null` in the fixture means "the
- * Java default", which is `None` on the Scala side.
+ * getPeriodEndDate / getFrequency and default isEndOfMonthConvention to true;
+ * DayCountTest's stub returns NULL from every accessor and answers
+ * getPeriodEndDate(date) with its fixed `periodEnd`, IGNORING the argument.
+ *
+ * That is what the fixture's `scheduleInfo` object encodes: a nullable field
+ * per accessor plus a single fixed `periodEnd`, where a `null` field states
+ * that no schedule information is supplied and the interface default therefore
+ * applies to the evaluation the row records.
  */
 class Info implements DayCount.ScheduleInfo {
   private final LocalDate start;
@@ -2259,12 +2428,12 @@ Jn jScheduleInfo(Info info) {
  * `periodEnds` shape.
  *
  * `periodEnds` is the sorted list of the ADJUSTED end dates of every period.
- * Java's Schedule.getPeriodEndDate(d) returns the end date of the first period
+ * Schedule.getPeriodEndDate(d) answers with the end date of the first period
  * that contains d, comparing against the adjusted start and end dates with the
- * start included and the end excluded; for the contiguous periods of a
- * schedule that is the first boundary strictly after d when
- * start <= d < end, and it throws otherwise - which the Scala port renders as
- * None.
+ * start included and the end excluded; for the contiguous periods of a schedule
+ * that is the first boundary strictly after d when start <= d < end. Outside
+ * that range Java throws, and the encoded list has no boundary to offer, so a
+ * consumer reading it has no period end for such a date.
  */
 Jn scheduleInfoOfSchedule(Schedule schedule) {
   JArray periodEnds = new JArray();
@@ -2296,8 +2465,8 @@ String errorMessage(Throwable thrown) {
  * IndexOutOfBoundsException, ArithmeticException, DateTimeException - or with a
  * runtime exception Strata declares itself, such as
  * ReferenceDataNotFoundException. Each of those IS the expectation the fixture
- * records: the Scala port has to reproduce it as a Left or a documented
- * ArgCheck throw.
+ * records - the row states that this input is rejected, and a consumer that
+ * accepts it fails the comparison.
  *
  * Everything else means the measurement itself failed, and there are two
  * families of it. A LinkageError or NoClassDefFoundError says the classpath is
@@ -2416,10 +2585,10 @@ void rethrowIfError(Throwable thrown) {
  * The type is compared by ASSIGNABILITY, not by name, because that is what the
  * Java assertions mean - `assertThatIllegalArgumentException()` and
  * `assertThatExceptionOfType(ScheduleException.class)` are both satisfied by a
- * subtype. Comparing names would make this script stricter than the tests it
- * transcribes and fail on correct behaviour, which is exactly what
- * IndexOutOfBoundsException against the implementation's
- * ArrayIndexOutOfBoundsException does in DoubleArrayTest.
+ * subtype. Comparing names would make this check stricter than the tests it
+ * measures and fail on correct behaviour: DoubleArrayTest names
+ * IndexOutOfBoundsException where the implementation throws
+ * ArrayIndexOutOfBoundsException.
  */
 final class Expect {
   /** The type the Java test names, or null when no failure is expected. */
@@ -2482,24 +2651,21 @@ void checkExpectedFailureType(String fixture, String id, Class<? extends Throwab
 }
 
 /* =========================================================================
- * SECTION 5 - THE JAVA TEST DATA TABLES, VERBATIM
+ * SECTION 5 - THE JAVA TEST DATA TABLES
  *
- * Every table below is a byte-for-byte copy of the corresponding
- * `public static Object[][] data_*()` body from the Java test named in its
- * banner. They are copied rather than re-typed for one reason: a copy cannot
- * introduce a transcription error, and every row stays traceable to its
- * source line. The bodies are valid Java array initialisers, so they compile
- * here unchanged once the imports, the constants and the date/list helpers
- * above are in place.
+ * Each table below is the `public static Object[][] data_*()` body of the Java
+ * test its own banner names, so every row remains traceable to a source line
+ * there; the banner is the authoritative statement of where the rows come
+ * from. The bodies are valid Java array initialisers over the imports, the
+ * constants and the date/list helpers declared above.
  *
- * The row counts asserted in Section 6 are the counts measured in the Java
- * sources, so a table that is edited upstream without this script being
- * updated aborts the capture instead of silently shrinking a fixture.
+ * The row counts asserted in Section 6 are the counts measured in those Java
+ * sources, so a table edited upstream without this script being updated aborts
+ * the capture instead of silently shrinking a fixture.
  * =========================================================================
  */
 
-/* --- PeriodicScheduleTest constants (verbatim, `private static final` ->
- * `final` only, so every initialiser expression is untouched) ---
+/* --- The constants the PeriodicScheduleTest tables are written in terms of ---
  * Source: modules/basics/src/test/java/com/opengamma/strata/basics/schedule/PeriodicScheduleTest.java:85-127
  */
 final ReferenceData REF_DATA = ReferenceData.standard();
@@ -2559,7 +2725,7 @@ Object[][] data_yearFraction() {
         {ONE_ONE, 2012, 2, 29, 2012, 3, 28, 1d},
         {ONE_ONE, 2012, 3, 1, 2012, 3, 28, 1d},
 
-        //-------------------------------------------------------
+        // ACT_ACT_ISDA
         {ACT_ACT_ISDA, 2011, 12, 28, 2012, 2, 28, (4d / 365d + 58d / 366d)},
         {ACT_ACT_ISDA, 2011, 12, 28, 2012, 2, 29, (4d / 365d + 59d / 366d)},
         {ACT_ACT_ISDA, 2011, 12, 28, 2012, 3, 1, (4d / 365d + 60d / 366d)},
@@ -2570,7 +2736,7 @@ Object[][] data_yearFraction() {
         {ACT_ACT_ISDA, 2012, 2, 29, 2012, 3, 28, 28d / 366d},
         {ACT_ACT_ISDA, 2012, 3, 1, 2012, 3, 28, 27d / 366d},
 
-        //-------------------------------------------------------
+        // ACT_ACT_AFB
         {ACT_ACT_AFB, 2011, 12, 28, 2012, 2, 28, (62d / 365d)},
         {ACT_ACT_AFB, 2011, 12, 28, 2012, 2, 29, (63d / 365d)},
         {ACT_ACT_AFB, 2011, 12, 28, 2012, 3, 1, (64d / 366d)},
@@ -2581,7 +2747,7 @@ Object[][] data_yearFraction() {
         {ACT_ACT_AFB, 2012, 2, 29, 2012, 3, 28, 28d / 366d},
         {ACT_ACT_AFB, 2012, 3, 1, 2012, 3, 28, 27d / 365d},
 
-        //-------------------------------------------------------
+        // ACT_ACT_YEAR
         {ACT_ACT_YEAR, 2011, 12, 28, 2012, 2, 28, (62d / 366d)},
         {ACT_ACT_YEAR, 2011, 12, 28, 2012, 2, 29, (63d / 366d)},
         {ACT_ACT_YEAR, 2011, 12, 28, 2012, 3, 1, (64d / 366d)},
@@ -2598,7 +2764,7 @@ Object[][] data_yearFraction() {
         {ACT_ACT_YEAR, 2012, 2, 28, 2016, 3, 2, (3d / 366d) + 4},
         {ACT_ACT_YEAR, 2012, 2, 29, 2016, 3, 2, (2d / 365d) + 4},
 
-        //-------------------------------------------------------
+        // ACT_365_ACTUAL
         {ACT_365_ACTUAL, 2011, 12, 28, 2012, 2, 28, (62d / 365d)},
         {ACT_365_ACTUAL, 2011, 12, 28, 2012, 2, 29, (63d / 366d)},
         {ACT_365_ACTUAL, 2011, 12, 28, 2012, 3, 1, (64d / 366d)},
@@ -2609,7 +2775,7 @@ Object[][] data_yearFraction() {
         {ACT_365_ACTUAL, 2012, 2, 29, 2012, 3, 28, 28d / 365d},
         {ACT_365_ACTUAL, 2012, 3, 1, 2012, 3, 28, 27d / 365d},
 
-        //-------------------------------------------------------
+        // ACT_360
         {ACT_360, 2011, 12, 28, 2012, 2, 28, (62d / 360d)},
         {ACT_360, 2011, 12, 28, 2012, 2, 29, (63d / 360d)},
         {ACT_360, 2011, 12, 28, 2012, 3, 1, (64d / 360d)},
@@ -2620,7 +2786,7 @@ Object[][] data_yearFraction() {
         {ACT_360, 2012, 2, 29, 2012, 3, 28, 28d / 360d},
         {ACT_360, 2012, 3, 1, 2012, 3, 28, 27d / 360d},
 
-        //-------------------------------------------------------
+        // ACT_364
         {ACT_364, 2011, 12, 28, 2012, 2, 28, (62d / 364d)},
         {ACT_364, 2011, 12, 28, 2012, 2, 29, (63d / 364d)},
         {ACT_364, 2011, 12, 28, 2012, 3, 1, (64d / 364d)},
@@ -2631,7 +2797,7 @@ Object[][] data_yearFraction() {
         {ACT_364, 2012, 2, 29, 2012, 3, 28, 28d / 364d},
         {ACT_364, 2012, 3, 1, 2012, 3, 28, 27d / 364d},
 
-        //-------------------------------------------------------
+        // ACT_365F
         {ACT_365F, 2011, 12, 28, 2012, 2, 28, (62d / 365d)},
         {ACT_365F, 2011, 12, 28, 2012, 2, 29, (63d / 365d)},
         {ACT_365F, 2011, 12, 28, 2012, 3, 1, (64d / 365d)},
@@ -2642,7 +2808,7 @@ Object[][] data_yearFraction() {
         {ACT_365F, 2012, 2, 29, 2012, 3, 28, 28d / 365d},
         {ACT_365F, 2012, 3, 1, 2012, 3, 28, 27d / 365d},
 
-        //-------------------------------------------------------
+        // ACT_365_25
         {ACT_365_25, 2011, 12, 28, 2012, 2, 28, (62d / 365.25d)},
         {ACT_365_25, 2011, 12, 28, 2012, 2, 29, (63d / 365.25d)},
         {ACT_365_25, 2011, 12, 28, 2012, 3, 1, (64d / 365.25d)},
@@ -2653,7 +2819,7 @@ Object[][] data_yearFraction() {
         {ACT_365_25, 2012, 2, 29, 2012, 3, 28, 28d / 365.25d},
         {ACT_365_25, 2012, 3, 1, 2012, 3, 28, 27d / 365.25d},
 
-        //-------------------------------------------------------
+        // NL_360
         {NL_360, 2011, 12, 28, 2012, 2, 28, (62d / 360d)},
         {NL_360, 2011, 12, 28, 2012, 2, 29, (62d / 360d)},
         {NL_360, 2011, 12, 28, 2012, 3, 1, (63d / 360d)},
@@ -2665,7 +2831,7 @@ Object[][] data_yearFraction() {
         {NL_360, 2012, 3, 1, 2012, 3, 28, 27d / 360d},
         {NL_360, 2011, 12, 1, 2012, 12, 1, 365d / 360d},
 
-        //-------------------------------------------------------
+        // NL_365
         {NL_365, 2011, 12, 28, 2012, 2, 28, (62d / 365d)},
         {NL_365, 2011, 12, 28, 2012, 2, 29, (62d / 365d)},
         {NL_365, 2011, 12, 28, 2012, 3, 1, (63d / 365d)},
@@ -2677,7 +2843,7 @@ Object[][] data_yearFraction() {
         {NL_365, 2012, 3, 1, 2012, 3, 28, 27d / 365d},
         {NL_365, 2011, 12, 1, 2012, 12, 1, 365d / 365d},
 
-        //-------------------------------------------------------
+        // THIRTY_360_ISDA
         {THIRTY_360_ISDA, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360},
         {THIRTY_360_ISDA, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360},
         {THIRTY_360_ISDA, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360},
@@ -2700,7 +2866,7 @@ Object[][] data_yearFraction() {
         {THIRTY_360_ISDA, 2012, 5, 31, 2013, 8, 30, calc360(2012, 5, 30, 2013, 8, 30)},
         {THIRTY_360_ISDA, 2012, 5, 31, 2013, 8, 31, calc360(2012, 5, 30, 2013, 8, 30)},
 
-        //-------------------------------------------------------
+        // THIRTY_360_PSA
         {THIRTY_360_PSA, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360},
         {THIRTY_360_PSA, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360},
         {THIRTY_360_PSA, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360},
@@ -2723,7 +2889,7 @@ Object[][] data_yearFraction() {
         {THIRTY_360_PSA, 2012, 5, 31, 2013, 8, 30, calc360(2012, 5, 30, 2013, 8, 30)},
         {THIRTY_360_PSA, 2012, 5, 31, 2013, 8, 31, calc360(2012, 5, 30, 2013, 8, 30)},
 
-        //-------------------------------------------------------
+        // THIRTY_E_360
         {THIRTY_E_360, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360},
         {THIRTY_E_360, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360},
         {THIRTY_E_360, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360},
@@ -2746,7 +2912,7 @@ Object[][] data_yearFraction() {
         {THIRTY_E_360, 2012, 5, 31, 2013, 8, 30, calc360(2012, 5, 30, 2013, 8, 30)},
         {THIRTY_E_360, 2012, 5, 31, 2013, 8, 31, calc360(2012, 5, 30, 2013, 8, 30)},
 
-        //-------------------------------------------------------
+        // THIRTY_EPLUS_360
         {THIRTY_EPLUS_360, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360},
         {THIRTY_EPLUS_360, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360},
         {THIRTY_EPLUS_360, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360},
@@ -2770,7 +2936,7 @@ Object[][] data_yearFraction() {
         {THIRTY_EPLUS_360, 2012, 5, 31, 2013, 8, 30, calc360(2012, 5, 30, 2013, 8, 30)},
         {THIRTY_EPLUS_360, 2012, 5, 31, 2013, 8, 31, calc360(2012, 5, 30, 2013, 9, 1)},
 
-        //-------------------------------------------------------
+        // THIRTY_E_365
         {THIRTY_E_365, 2011, 12, 28, 2012, 2, 28, calc360Days(2011, 12, 28, 2012, 2, 28) / 365d},
         {THIRTY_E_365, 2011, 12, 28, 2012, 2, 29, calc360Days(2011, 12, 28, 2012, 2, 30) / 365d},
         {THIRTY_E_365, 2011, 12, 28, 2012, 3, 1, calc360Days(2011, 12, 28, 2012, 3, 1) / 365d},
@@ -2808,7 +2974,7 @@ Object[][] data_days() {
         {ONE_ONE, 2012, 2, 29, 2012, 3, 28, 1},
         {ONE_ONE, 2012, 3, 1, 2012, 3, 28, 1},
 
-        //-------------------------------------------------------
+        // ACT_ACT_ISDA
         {ACT_ACT_ISDA, 2011, 12, 28, 2012, 2, 28, 62},
         {ACT_ACT_ISDA, 2011, 12, 28, 2012, 2, 29, 63},
         {ACT_ACT_ISDA, 2011, 12, 28, 2012, 3, 1, 64},
@@ -2816,7 +2982,7 @@ Object[][] data_days() {
         {ACT_ACT_ISDA, 2011, 12, 28, 2016, 2, 29, 1524},
         {ACT_ACT_ISDA, 2011, 12, 28, 2016, 3, 1, 1525},
 
-        //-------------------------------------------------------
+        // ACT_ACT_AFB
         {ACT_ACT_AFB, 2011, 12, 28, 2012, 2, 28, 62},
         {ACT_ACT_AFB, 2011, 12, 28, 2012, 2, 29, 63},
         {ACT_ACT_AFB, 2011, 12, 28, 2012, 3, 1, 64},
@@ -2824,7 +2990,7 @@ Object[][] data_days() {
         {ACT_ACT_AFB, 2011, 12, 28, 2016, 2, 29, 1524},
         {ACT_ACT_AFB, 2011, 12, 28, 2016, 3, 1, 1525},
 
-        //-------------------------------------------------------
+        // ACT_ACT_YEAR
         {ACT_ACT_YEAR, 2011, 12, 28, 2012, 2, 28, 62},
         {ACT_ACT_YEAR, 2011, 12, 28, 2012, 2, 29, 63},
         {ACT_ACT_YEAR, 2011, 12, 28, 2012, 3, 1, 64},
@@ -2832,7 +2998,7 @@ Object[][] data_days() {
         {ACT_ACT_YEAR, 2011, 12, 28, 2016, 2, 29, 1524},
         {ACT_ACT_YEAR, 2011, 12, 28, 2016, 3, 1, 1525},
 
-        //-------------------------------------------------------
+        // ACT_365_ACTUAL
         {ACT_365_ACTUAL, 2011, 12, 28, 2012, 2, 28, 62},
         {ACT_365_ACTUAL, 2011, 12, 28, 2012, 2, 29, 63},
         {ACT_365_ACTUAL, 2011, 12, 28, 2012, 3, 1, 64},
@@ -2843,7 +3009,7 @@ Object[][] data_days() {
         {ACT_365_ACTUAL, 2012, 2, 29, 2012, 3, 28, 28},
         {ACT_365_ACTUAL, 2012, 3, 1, 2012, 3, 28, 27},
 
-        //-------------------------------------------------------
+        // ACT_360
         {ACT_360, 2011, 12, 28, 2012, 2, 28, 62},
         {ACT_360, 2011, 12, 28, 2012, 2, 29, 63},
         {ACT_360, 2011, 12, 28, 2012, 3, 1, 64},
@@ -2851,7 +3017,7 @@ Object[][] data_days() {
         {ACT_360, 2011, 12, 28, 2016, 2, 29, 63 + 366 + 365 + 365 + 365},
         {ACT_360, 2011, 12, 28, 2016, 3, 1, 64 + 366 + 365 + 365 + 365},
 
-        //-------------------------------------------------------
+        // ACT_364
         {ACT_364, 2011, 12, 28, 2012, 2, 28, 62},
         {ACT_364, 2011, 12, 28, 2012, 2, 29, 63},
         {ACT_364, 2011, 12, 28, 2012, 3, 1, 64},
@@ -2862,7 +3028,7 @@ Object[][] data_days() {
         {ACT_364, 2012, 2, 29, 2012, 3, 28, 28},
         {ACT_364, 2012, 3, 1, 2012, 3, 28, 27},
 
-        //-------------------------------------------------------
+        // ACT_365F
         {ACT_365F, 2011, 12, 28, 2012, 2, 28, 62},
         {ACT_365F, 2011, 12, 28, 2012, 2, 29, 63},
         {ACT_365F, 2011, 12, 28, 2012, 3, 1, 64},
@@ -2873,7 +3039,7 @@ Object[][] data_days() {
         {ACT_365F, 2012, 2, 29, 2012, 3, 28, 28},
         {ACT_365F, 2012, 3, 1, 2012, 3, 28, 27},
 
-        //-------------------------------------------------------
+        // ACT_365_25
         {ACT_365_25, 2011, 12, 28, 2012, 2, 28, 62},
         {ACT_365_25, 2011, 12, 28, 2012, 2, 29, 63},
         {ACT_365_25, 2011, 12, 28, 2012, 3, 1, 64},
@@ -2884,7 +3050,7 @@ Object[][] data_days() {
         {ACT_365_25, 2012, 2, 29, 2012, 3, 28, 28},
         {ACT_365_25, 2012, 3, 1, 2012, 3, 28, 27},
 
-        //-------------------------------------------------------
+        // NL_360
         {NL_360, 2011, 12, 28, 2012, 2, 28, 62},
         {NL_360, 2011, 12, 28, 2012, 2, 29, 62},
         {NL_360, 2011, 12, 28, 2012, 3, 1, 63},
@@ -2896,7 +3062,7 @@ Object[][] data_days() {
         {NL_360, 2012, 3, 1, 2012, 3, 28, 27},
         {NL_360, 2011, 12, 1, 2012, 12, 1, 365},
 
-        //-------------------------------------------------------
+        // NL_365
         {NL_365, 2011, 12, 28, 2012, 2, 28, 62},
         {NL_365, 2011, 12, 28, 2012, 2, 29, 62},
         {NL_365, 2011, 12, 28, 2012, 3, 1, 63},
@@ -2908,7 +3074,7 @@ Object[][] data_days() {
         {NL_365, 2012, 3, 1, 2012, 3, 28, 27},
         {NL_365, 2011, 12, 1, 2012, 12, 1, 365},
 
-        //-------------------------------------------------------
+        // THIRTY_360_ISDA
         {THIRTY_360_ISDA, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS},
         {THIRTY_360_ISDA, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360DAYS},
         {THIRTY_360_ISDA, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS},
@@ -2931,7 +3097,7 @@ Object[][] data_days() {
         {THIRTY_360_ISDA, 2012, 5, 31, 2013, 8, 30, calc360Days(2012, 5, 30, 2013, 8, 30)},
         {THIRTY_360_ISDA, 2012, 5, 31, 2013, 8, 31, calc360Days(2012, 5, 30, 2013, 8, 30)},
 
-        //-------------------------------------------------------
+        // THIRTY_360_PSA
         {THIRTY_360_PSA, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS},
         {THIRTY_360_PSA, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360DAYS},
         {THIRTY_360_PSA, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS},
@@ -2954,7 +3120,7 @@ Object[][] data_days() {
         {THIRTY_360_PSA, 2012, 5, 31, 2013, 8, 30, calc360Days(2012, 5, 30, 2013, 8, 30)},
         {THIRTY_360_PSA, 2012, 5, 31, 2013, 8, 31, calc360Days(2012, 5, 30, 2013, 8, 30)},
 
-        //-------------------------------------------------------
+        // THIRTY_E_360
         {THIRTY_E_360, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS},
         {THIRTY_E_360, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360DAYS},
         {THIRTY_E_360, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS},
@@ -2977,7 +3143,7 @@ Object[][] data_days() {
         {THIRTY_E_360, 2012, 5, 31, 2013, 8, 30, calc360Days(2012, 5, 30, 2013, 8, 30)},
         {THIRTY_E_360, 2012, 5, 31, 2013, 8, 31, calc360Days(2012, 5, 30, 2013, 8, 30)},
 
-        //-------------------------------------------------------
+        // THIRTY_EPLUS_360
         {THIRTY_EPLUS_360, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS},
         {THIRTY_EPLUS_360, 2011, 12, 28, 2012, 2, 29, SIMPLE_30_360DAYS},
         {THIRTY_EPLUS_360, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS},
@@ -3001,7 +3167,7 @@ Object[][] data_days() {
         {THIRTY_EPLUS_360, 2012, 5, 31, 2013, 8, 30, calc360Days(2012, 5, 30, 2013, 8, 30)},
         {THIRTY_EPLUS_360, 2012, 5, 31, 2013, 8, 31, calc360Days(2012, 5, 30, 2013, 9, 1)},
 
-        //-------------------------------------------------------
+        // THIRTY_E_365
         {THIRTY_E_365, 2011, 12, 28, 2012, 2, 28, SIMPLE_30_360DAYS},
         {THIRTY_E_365, 2011, 12, 28, 2012, 2, 29, calc360Days(2011, 12, 28, 2012, 2, 30)},
         {THIRTY_E_365, 2011, 12, 28, 2012, 3, 1, SIMPLE_30_360DAYS},
@@ -3468,7 +3634,7 @@ Object[][] data_generation() {
         {date(2014, 9, 17), date(2014, 10, 15), TERM, STUB_NONE, IMM, BDA, null, null, null,
             list(date(2014, 9, 17), date(2014, 10, 15)),
             list(date(2014, 9, 17), date(2014, 10, 15)), IMM},
-        // IMM with stupid short period still works
+        // IMM with an extremely short period - two days - still works
         {date(2014, 9, 17), date(2014, 10, 15), Frequency.ofDays(2), STUB_NONE, IMM, BDA, null, null, null,
             list(date(2014, 9, 17), date(2014, 10, 15)),
             list(date(2014, 9, 17), date(2014, 10, 15)), IMM},
@@ -3476,28 +3642,28 @@ Object[][] data_generation() {
             list(date(2014, 9, 17), date(2014, 10, 1)),
             list(date(2014, 9, 17), date(2014, 10, 1)), IMM},
 
-        //IMM with adjusted start dates and various conventions
-        //MF, no stub
+        // IMM with adjusted start dates and various conventions
+        // Modified Following, no stub
         {date(2018, 3, 22), date(2020, 3, 18), P6M, STUB_NONE, IMM, BDA_JPY_MF, null, null, BDA_NONE,
             list(date(2018, 3, 21), date(2018, 9, 19), date(2019, 3, 20), date(2019, 9, 18), date(2020, 3, 18)),
             list(date(2018, 3, 22), date(2018, 9, 19), date(2019, 3, 20), date(2019, 9, 18), date(2020, 3, 18)), IMM},
-        //Preceding, no stub
+        // Preceding, no stub
         {date(2018, 3, 20), date(2019, 3, 20), P6M, STUB_NONE, IMM, BDA_JPY_P, null, null, BDA_NONE,
             list(date(2018, 3, 21), date(2018, 9, 19), date(2019, 3, 20)),
             list(date(2018, 3, 20), date(2018, 9, 19), date(2019, 3, 20)), IMM},
-        //MF, null stub
+        // Modified Following, null stub
         {date(2018, 3, 22), date(2019, 3, 20), P6M, null, IMM, BDA_JPY_MF, null, null, BDA_NONE,
             list(date(2018, 3, 21), date(2018, 9, 19), date(2019, 3, 20)),
             list(date(2018, 3, 22), date(2018, 9, 19), date(2019, 3, 20)), IMM},
-        //Explicit long front stub with (adjusted) first regular start date
+        // Explicit long front stub with (adjusted) first regular start date
         {date(2017, 9, 2), date(2018, 9, 19), P6M, LONG_INITIAL, IMM, BDA_JPY_MF, date(2018, 3, 22), null, BDA_NONE,
             list(date(2017, 9, 2), date(2018, 3, 21), date(2018, 9, 19)),
             list(date(2017, 9, 2), date(2018, 3, 22), date(2018, 9, 19)), IMM},
-        //Implicit short front stub with (adjusted) first regular start date
+        // Implicit short front stub with (adjusted) first regular start date
         {date(2018, 1, 2), date(2018, 9, 19), P6M, null, IMM, BDA_JPY_MF, date(2018, 3, 22), null, BDA_NONE,
             list(date(2018, 1, 2), date(2018, 3, 21), date(2018, 9, 19)),
             list(date(2018, 1, 2), date(2018, 3, 22), date(2018, 9, 19)), IMM},
-        //Implicit back stub with (adjusted) last regular start date
+        // Implicit back stub with (adjusted) last regular start date
         {date(2017, 3, 15), date(2018, 5, 19), P6M, null, IMM, BDA_JPY_MF, null, date(2018, 3, 22), BDA_NONE,
             list(date(2017, 3, 15), date(2017, 9, 20), date(2018, 3, 21), date(2018, 5, 19)),
             list(date(2017, 3, 15), date(2017, 9, 20), date(2018, 3, 22), date(2018, 5, 21)), IMM},
@@ -3552,7 +3718,7 @@ Object[][] data_replace() {
         // original schedule had first regular date, new schedule just uses SmartInitial
         {JUN_04, JUN_03, AUG_17, P1M, null, null, BDA, JUN_17, null, null,
             list(JUN_04, JUN_17, JUL_17, AUG_17), SMART_INITIAL, null, null},
-        // original schedule had last regular date and uneccessary final stub convention
+        // original schedule had last regular date and unnecessary final stub convention
         {JUN_04, JUN_17, AUG_04, P1M, SHORT_FINAL, null, BDA, null, JUL_17, null,
             list(JUN_04, JUN_17, JUL_17, AUG_04), SMART_INITIAL, JUL_17, null},
         // original schedule was final, but resulted in Term schedule, new schedule retains the stub convention
@@ -3564,27 +3730,28 @@ Object[][] data_replace() {
 }
 
 
-/* --- GlobalHolidayCalendarsTest expected-holiday tables (verbatim) ---------
+/* --- GlobalHolidayCalendarsTest expected-holiday tables --------------------
  *
- * The 25 `data_*()` providers of
+ * Source: the 25 `data_*()` providers of
  * modules/basics/src/test/java/com/opengamma/strata/basics/date/GlobalHolidayCalendarsTest.java:245-1188,
- * copied byte for byte apart from `ImmutableList.of(` -> `list(`, which is the
- * local equivalent declared in Section 4.
+ * with `ImmutableList.of(` written as the `list(` helper of Section 4.
  *
  * WHY THEY ARE HERE. Without them the holiday fixture's only cross-checks are
  * the implementation talking to itself: `holidays(from, to)` agreeing with a
  * loop over `isHoliday`, and a sorted list being sorted. Both hold however
  * wrong the calendar is. These tables are the independent statement - 201
- * year-rows of hand-sourced dates, each with a citation in the Java test - and
- * `checkHolidayAgainstJavaTable` applies THAT TEST'S OWN RULE to them:
+ * year-rows of dates sourced from legislation, exchange notices and
+ * central-bank calendars, each cited in the Java test - and
+ * `checkHolidayAgainstJavaTable` applies that test's own rule to them:
  *
  *     isHoliday = (holidays.contains(date) || Saturday || Sunday)
  *                 && !workingDays.contains(date)
  *
- * The Saturday/Sunday part is the test's, not the calendar's: Budapest
- * declares Sunday as its only weekend day and carries its Saturdays as
- * explicit holidays, and its Java test still asserts against Sat+Sun minus its
- * six working Saturdays, so the port is held to exactly that.
+ * The Saturday/Sunday term belongs to the rule and not to the calendar:
+ * Budapest declares Sunday as its only weekend day and carries its Saturdays as
+ * explicit holidays, while its Java test asserts against Sat+Sun minus its six
+ * working Saturdays. That is the comparison this check makes for every
+ * calendar.
  * ---------------------------------------------------------------------------
  */
 
@@ -3747,7 +3914,6 @@ Object[][] data_replace() {
   public static Object[][] data_usny() {
     return new Object[][] {
         // http://www.cs.ny.gov/attendance_leave/2012_legal_holidays.cfm
-        // change year for other pages
         {2008, mds(2008, md(1, 1), md(1, 21), md(2, 18), md(5, 26), md(7, 4),
             md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))},
         {2009, mds(2009, md(1, 1), md(1, 19), md(2, 16), md(5, 25), md(7, 4),
@@ -3909,7 +4075,6 @@ Object[][] data_replace() {
 
   public static Object[][] data_brbd() {
     // http://www.planalto.gov.br/ccivil_03/leis/2002/L10607.htm
-    // fixing data
     return new Object[][] {
         {2013, mds(2013, md(1, 1), md(2, 11), md(2, 12), md(3, 29), md(4, 21), md(5, 1),
             md(5, 30), md(9, 7), md(10, 12), md(11, 2), md(11, 15), md(12, 25))},
@@ -4291,12 +4456,10 @@ String dayCountId(String base) {
   return use == 1 ? base : base + "-" + use;
 }
 
-/** The base id of a row identified by a day count and a date pair. */
 String dcId(String prefix, DayCount dayCount, LocalDate start, LocalDate end) {
   return prefix + "-" + slug(dayCount.getName()) + "-" + start + "-" + end;
 }
 
-/** The base id of a row identified by a day count and a single date. */
 String dcId(String prefix, DayCount dayCount, LocalDate start) {
   return prefix + "-" + slug(dayCount.getName()) + "-" + start;
 }
@@ -4375,7 +4538,6 @@ void setDays(String fixture, JObject row, String rowId, Eval eval, Integer expec
   }
 }
 
-/** Evaluates and records `days` for a row with no Java day-count expectation. */
 void setDays(String fixture, JObject row, String rowId, DayCount dayCount, LocalDate start,
     LocalDate end) {
   setDays(fixture, row, rowId, evalDays(dayCount, start, end), null);
@@ -4401,11 +4563,11 @@ String FX_DAYCOUNT = "daycount";
  * registry's own order, which is neither declaration order nor alphabetical
  * (measured: it starts `Act/365L, Act/Act ISDA, NL/360, ...`).
  *
- * So the names below are transcribed from the constant declarations of
- * DayCounts.java in file order, and each is resolved by name. Reflection is
- * still used - as a COMPLETENESS CHECK: if the holder ever declares a constant
- * this list does not name, or names one it no longer declares, the capture
- * aborts instead of silently dropping or reordering a day count.
+ * So the list below states the order explicitly - the constant declarations of
+ * DayCounts.java in file order - and each name is resolved through the public
+ * registry. Reflection then verifies SET EQUALITY against the holder: a
+ * constant this list does not name, or a name the holder no longer declares,
+ * aborts the capture instead of silently dropping or reordering a day count.
  *
  * Source: modules/basics/src/main/java/com/opengamma/strata/basics/date/DayCounts.java
  * (StandardDayCounts.values(), which the Java test uses, is package-private and
@@ -4620,17 +4782,16 @@ void emitData30E360Isda(JArray rows) {
         ? calc360(y1, m1, d1, y2, m2, d2) : ((Number) rawMaturity).doubleValue();
     // The Java test passes `new Info(false)` for the not-maturity case, whose
     // getEndDate() returns null - and 30E/360 ISDA only compares the second
-    // date against it, so null means "not the maturity date" and the value is
-    // computed. A null end date cannot be carried into the port, though: there
-    // `ScheduleInfo.endDate` is an Option, `None` is what Java's own default
-    // accessor models (it throws), and 30E/360 ISDA with `None` therefore
-    // throws rather than answering. The row would then be unsatisfiable - a
-    // numeric expectation against an API that must fail.
+    // date against it, so a null end date means "not the maturity date" and the
+    // value is computed.
     //
-    // So the not-maturity case is captured with an end date that is one day
-    // AFTER the period end: still not the maturity date, so Java takes exactly
-    // the same branch and produces exactly the value the Java table asserts,
-    // while the row states schedule information the port can evaluate.
+    // A row cannot state a numeric expectation against ABSENT schedule
+    // information, because absent schedule information is itself an expectation
+    // of failure for this day count (see the missing-schedule-information
+    // rows). So the not-maturity case is captured with a CONCRETE end date one
+    // day AFTER the period end: still not the maturity date, so Java takes the
+    // same branch and produces exactly the value its table asserts, while the
+    // row states schedule information a consumer can evaluate.
     Info infoNotMaturity = new Info(null, end.plusDays(1), null, false, null);
     Info infoMaturity = new Info(null, end, null, false, P3M);
     JObject rowNotMaturity = dayCountRow(
@@ -4703,9 +4864,11 @@ void emitDataAct365L(JArray rows) {
 }
 
 /**
- * Adds one Info-based case, transcribed from a named `@Test` method of
- * DayCountTest. A null `info` selects the two-argument overload, which is what
- * the ACT_ACT_ISDA and ACT_ACT_AFB assertions of the ISDA test cases use.
+ * Adds one Info-based case.
+ *
+ * `source` names the DayCountTest `@Test` method the case belongs to. A null
+ * `info` selects the two-argument `yearFraction` overload, which is the one the
+ * ACT_ACT_ISDA and ACT_ACT_AFB assertions of the ISDA cases make.
  */
 void addInfoCase(JArray rows, String source, DayCount dayCount, LocalDate start, LocalDate end,
     Info info, double expected) {
@@ -4725,10 +4888,12 @@ void addInfoCase(JArray rows, String source, DayCount dayCount, LocalDate start,
 }
 
 /**
- * The Info-based ICMA and official-ISDA cases, transcribed one row per
- * assertion from DayCountTest lines 917-1112. The expected values are written
- * as the same arithmetic expressions the Java test uses, so they stay readable
- * as the documents they come from and are checked for exact equality.
+ * The Info-based ICMA and official-ISDA cases: one row per assertion of
+ * DayCountTest:917-1112.
+ *
+ * Each expected value is the arithmetic expression that test states, left as an
+ * expression so a row stays readable against its source, and every one is
+ * checked for exact equality.
  */
 void emitInfoCases(JArray rows) {
   // test_actActIcma_singlePeriod (2 assertions)
@@ -4918,10 +5083,10 @@ void emitActActYearVsIcma(JArray rows) {
  * month-end and mid-month date pairs from 2010 to 2030, evaluated with simple
  * (default) schedule information.
  *
- * Day counts that require schedule information the default cannot supply throw
- * here, exactly as they do in Java; those rows are emitted with `error` and
- * are expectations in their own right - the Scala port reproduces them as
- * documented ArgCheck throws.
+ * A day count that requires schedule information the default cannot supply
+ * throws here. Such a row is emitted with `error`, and that IS its expectation:
+ * a consumer must observe the same precondition failure for that input rather
+ * than a value.
  */
 void emitGeneratedDateGrid(JArray rows) {
   List<LocalDate> monthEnds = new ArrayList<>();
@@ -5026,14 +5191,14 @@ void emitGeneratedScheduleGrid(JArray rows) {
  * subjects as the generated grid: the 21 standard day counts plus Bus/252
  * BRBD. Sources: DayCountTest.java:88-124.
  *
- * The Java test guards three of the four with `if (type != ONE_ONE)`, because
+ * DayCountTest guards three of the four with `if (type != ONE_ONE)`, because
  * `1/1` answers 1 for any two dates, and it runs over the 21 standard day
- * counts only. Both limits are reproduced exactly: the row is always captured,
- * and the ASSERTION is applied only where the Java test makes it - ONE_ONE is
- * recorded without a year-fraction expectation, and the extra Bus/252 BRBD row
- * is marked capture-only rather than being held to a tolerance the Java test
- * never claimed for it (a business-day count of 251 for a whole year is not
- * "365 within 5", and is correct).
+ * counts only. Both limits are enforced exactly as that test sets them: the row
+ * is always captured, while the ASSERTION is applied only where the test makes
+ * it - ONE_ONE is recorded without a year-fraction expectation, and the extra
+ * Bus/252 BRBD row is marked capture-only rather than being held to a tolerance
+ * the test never claimed for it (a business-day count of 251 for a whole year is
+ * not "365 within 5", and is correct).
  * ---------------------------------------------------------------------------
  */
 
@@ -5127,10 +5292,10 @@ void emitDataTypesYearBounds(JArray rows, boolean halfYear) {
 }
 
 /**
- * test_wrongOrder: both `yearFraction` and `days` reject dates out of order,
- * for every day count - the precondition the Scala port keeps as a documented
- * ArgCheck throw. `relativeYearFraction`, which accepts them and negates the
- * result, is captured on the same row, so the two behaviours sit side by side.
+ * test_wrongOrder: for every day count, both `yearFraction` and `days` reject a
+ * pair of dates supplied out of order, and the row states that rejection as its
+ * expectation. `relativeYearFraction` accepts them and negates the result, and
+ * is captured on the same row, so the two outcomes sit side by side.
  */
 void emitDataTypesWrongOrder(JArray rows) {
   for (DayCount dayCount : gridDayCounts()) {
@@ -5190,10 +5355,9 @@ void emitDataTypesWrongOrder(JArray rows) {
 }
 
 /**
- * The five day counts that READ schedule information, evaluated with Java's
- * defaults - the `UnsupportedOperationException` of DayCount.ScheduleInfo,
- * which the Scala port turns into an `Option` that is `None` and an ArgCheck
- * throw at the accessor.
+ * The five day counts that READ schedule information, evaluated with no
+ * schedule information supplied - the case where the DayCount.ScheduleInfo
+ * defaults throw UnsupportedOperationException.
  *
  * The expectation of each row is written out, so this is an assertion and not
  * a recording: three of the five must fail with the message named here, and
@@ -5651,9 +5815,9 @@ void emitDataReplace(JArray rows) {
         .lastRegularEndDate(lastRegular)
         .build();
     String rowId = "replace " + replaceStart + " over " + start + ".." + end;
-    // The row records the BASE definition plus the replacement start date, so
-    // the Scala side reproduces the whole operation: build the base, apply
-    // replaceStartDate, then create the unadjusted dates.
+    // The row records the BASE definition plus the replacement start date,
+    // which together state the whole operation to perform: build the base
+    // definition, apply replaceStartDate, then create the unadjusted dates.
     JObject row = jPeriodicScheduleInputs(base);
     row.set("source", jStr("PeriodicScheduleTest.data_replace"));
     row.set("replacedStartDate", jDate(replaceStart));
@@ -5697,8 +5861,8 @@ void emitDataReplace(JArray rows) {
       // (PeriodicScheduleTest.java:1002-1013: the override start date and the
       // first regular start date are cleared, the start date becomes the
       // replacement, and the start-date adjustment becomes BDA_NONE). Carrying
-      // it lets the Scala side assert the whole `replaceStartDate` operation
-      // rather than only the dates it happens to produce.
+      // it lets a consumer assert the whole `replaceStartDate` operation rather
+      // than only the dates it happens to produce.
       row.set("replacedDefinition", jPeriodicScheduleInputs(replaced));
       // `createUnadjustedDates()` on the replaced definition is what the Java
       // table asserts, and it is NOT always the unadjusted view of the resolved
@@ -5708,9 +5872,8 @@ void emitDataReplace(JArray rows) {
       // long initial stub from the replacement start - while createSchedule()
       // rolls the start onto the 17th and gives
       // [2014-05-17, 2014-06-17, 2014-07-17, 2014-08-17]. Both are real Java
-      // answers for the same definition and the port has to reproduce both, so
-      // the row carries each under its own key instead of asserting that they
-      // agree.
+      // answers for the same definition, so the row carries each under its own
+      // key and both are validated, instead of asserting that they agree.
       row.set("replacedUnadjustedDates", jDates(unadjusted));
       // Then the same full expectation set every resolved row carries, so a
       // replace row is shaped like the rest of the document rather than
@@ -5745,22 +5908,22 @@ void emitDataReplace(JArray rows) {
 /**
  * The generated combination grid: four frequencies x all eight stub
  * conventions x six roll conventions x three holiday-calendar adjustments,
- * resolved against ReferenceData.standard(). Many combinations are mutually
- * inconsistent and produce `error` rows; that is the point - the Scala port
- * must reject exactly the same ones.
+ * resolved against ReferenceData.standard().
+ *
+ * Many combinations are mutually inconsistent, and that is the point: each
+ * combination records whether Java resolved it or rejected it - a success row
+ * or an `error` row - and that classification is what every row asserts.
  */
 void emitScheduleCombinations(JArray rows) {
   Frequency[] frequencies = {P1M, P3M, P6M, P12M};
   StubConvention[] stubs = StubConvention.values();
-  // IMMCAD, IMMAUD and TBILL are mandatory here, and not for variety: in Java
-  // these three StandardRollConventions members capture built-in holiday
-  // calendars at class-initialisation time through ReferenceData.standard()
-  // (StandardRollConventions.java:60-63,74-75,103-104,133-134 - IMMCAD holds
-  // GBLO and CATO.combinedWith(CAMO), IMMAUD holds AUSY, TBILL holds USNY),
-  // whereas the Scala port binds the StandardHolidayCalendars constants
-  // directly. These rows are the evidence that the substitution is
-  // behaviour-preserving. SFE (second Friday) and IMMNZD use no calendar at
-  // all, so they are the control group for that same comparison.
+  // IMMCAD, IMMAUD and TBILL are mandatory here, and not for variety: these
+  // three StandardRollConventions members adjust with a built-in holiday
+  // calendar (StandardRollConventions.java:60-63,74-75,103-104,133-134 - IMMCAD
+  // with GBLO and CATO.combinedWith(CAMO), IMMAUD with AUSY, TBILL with USNY),
+  // so they are the only rows that exercise a calendar-bearing roll convention.
+  // SFE (second Friday) and IMMNZD use no calendar at all and are the
+  // calendar-free control beside them.
   Object[][] rollConventions = {
       {"EOM", EOM}, {"IMM", IMM}, {"IMMCAD", RollConventions.IMMCAD},
       {"IMMAUD", RollConventions.IMMAUD}, {"IMMNZD", RollConventions.IMMNZD},
@@ -5903,12 +6066,12 @@ void addScheduleCaseRow(JArray rows, String source, String rowId,
  * rejects.
  *
  * Every row here is taken from a PeriodicScheduleTest method, named in its
- * `source`, and every expectation is that test's own literal - nothing is
- * composed by hand. Three inputs of the port's validated smart constructor are
- * exercised only here: `overrideStartDate` (which the tables never set),
- * `endDateBusinessDayAdjustment` (likewise), and the five builder-time
- * validation branches, which resolve to `Failure.Invalid` in the port and so
- * need a captured message to compare against.
+ * `source`, and every expectation is that test's own literal.
+ *
+ * Three inputs are covered nowhere else in this fixture: `overrideStartDate`,
+ * which neither data table sets; `endDateBusinessDayAdjustment`, likewise; and
+ * the five builder-time validation branches, whose captured messages are the
+ * only statement this fixture carries of what a definition is rejected for.
  */
 void emitScheduleFeatures(JArray rows) {
   BusinessDayAdjustment bda = BusinessDayAdjustment.of(MODIFIED_FOLLOWING, SAT_SUN);
@@ -5976,8 +6139,8 @@ void emitScheduleFeatures(JArray rows) {
       AdjustableDate.of(jul11, bdaNone), null, null, MUST_SUCCEED);
 
   // The builder-time validation branches. Each is a definition Java rejects,
-  // and the captured message is the whole contract tying it to the port's
-  // Failure.Invalid: PeriodicSchedule.java:361 (start not before end), :363
+  // and the captured message is what the row asserts about that rejection:
+  // PeriodicSchedule.java:361 (start not before end), :363
   // (override start date not before end date), :367 and :378 (first regular
   // start date outside the schedule), :370 (last regular end date before the
   // first regular start date).
@@ -6380,7 +6543,6 @@ Jn jMultiCurrencyAmounts(MultiCurrencyAmount amount) {
  */
 Set<String> FX_ROW_IDS = new LinkedHashSet<>();
 
-/** Emits one FX scenario row. Every row carries the same nine keys. */
 void addFxScenario(JArray rows, String id, String source, List<RateEntry> definition,
     List<FxQuery> queries, List<ConversionQuery> conversions, List<MultiQuery> multi,
     List<CrossQuery> crosses, List<MergeQuery> merges, boolean captureOnly) {
@@ -6445,7 +6607,6 @@ void addFxScenario(JArray rows, String id, String source, List<RateEntry> defini
         CHECK.fail(FX_FX, queryId,
             "expected=" + query.expected + " but Java threw " + errorMessage(thrown));
       } else if (query.expectedFailure != null) {
-        // The rejection AND ITS TYPE are the assertion the Java test makes.
         checkExpectedFailureType(FX_FX, queryId, query.expectedFailure, thrown);
       }
     }
@@ -6529,7 +6690,6 @@ void addFxScenario(JArray rows, String id, String source, List<RateEntry> defini
         CHECK.fail(FX_FX, crossId,
             "expected=" + cross.expected + " but Java threw " + errorMessage(thrown));
       } else if (cross.expectedFailure != null) {
-        // The rejection AND ITS TYPE are the assertion the Java test makes.
         checkExpectedFailureType(FX_FX, crossId, cross.expectedFailure, thrown);
       }
     }
@@ -6555,7 +6715,6 @@ void addFxScenario(JArray rows, String id, String source, List<RateEntry> defini
       entry.set("error", jStr(errorMessage(mergeThrown)));
       CHECK.countErrorRow(FX_FX);
       if (merge.expectedFailure != null) {
-        // The rejection AND ITS TYPE are the assertion the Java test makes.
         checkExpectedFailureType(FX_FX, mergeId, merge.expectedFailure, mergeThrown);
       } else {
         CHECK.fail(FX_FX, mergeId,
@@ -6891,11 +7050,10 @@ Jn buildFxFixture() {
 
   // The four merge cases: disjoint (fails - FxMatrixTest:503), duplicate
   // currencies (keeps the receiver's rates), additional currencies (extends
-  // the matrix) and an empty other matrix. The last one fails as well, and
-  // deliberately so: Java's merge looks for a currency common to both
-  // matrices, and an empty matrix has none, so merging with it is an error
-  // rather than a no-op. That is a real asymmetry of the Java API and the port
-  // has to reproduce it.
+  // the matrix) and an empty other matrix. The last one fails as well, and the
+  // row asserts that failure: merge looks for a currency common to both
+  // matrices and an empty matrix has none, so merging with it is an error
+  // rather than a no-op - an asymmetry of the API worth pinning.
   //
   // Each merge carries the assertion of its Java test rather than just its
   // outcome; see MergeQuery. The rate constants below are written as the same
@@ -6918,9 +7076,9 @@ Jn buildFxFixture() {
           FxQuery.exact(Currency.GBP, Currency.USD, 1.6),
           FxQuery.exact(Currency.EUR, Currency.USD, 1.4),
           FxQuery.close(Currency.GBP, Currency.EUR, 1.6 / 1.4)));
-  // mergeAddsInAdditionalCurrencies (FxMatrixTest:525-546) verbatim: this
-  // receiver and this other matrix are that test's matrix1 and matrix2, so all
-  // six of its rate assertions apply unchanged.
+  // mergeAddsInAdditionalCurrencies (FxMatrixTest:525-546): the receiver below
+  // is that test's matrix1 and the other matrix its matrix2, and the six rates
+  // asserted here are the six that test asserts.
   MergeQuery additionalMerge = MergeQuery.extending(additional,
       currencyList(Currency.USD, Currency.GBP, Currency.EUR, Currency.CHF, Currency.AUD),
       rateChecks(
@@ -6969,18 +7127,17 @@ Jn buildFxFixture() {
  * SECTION 10 - FIXTURE 4 OF 6: currency-math-baseline.json
  *
  * Rows carry the named input lists of the row schema plus one result list per
- * subject type. Each result entry names its `op`, so the Scala side reads the
+ * subject type. Each result entry names its `op`, so a consumer reads the
  * operation rather than inferring it from position.
  *
  * TWO OPERATIONS ARE COMPOSED, NOT INVENTED. The row schema names
  * `multipliedBy` and `mapAmounts` for CurrencyAmountArray and
- * MultiCurrencyAmountArray, but the JAVA types have neither method - they are
- * added by the Scala port. Rather than invent a Java API, those expectations
- * are composed from two real public calls, `of(currency, getValues().
- * multipliedBy(s))` and `of(currency, getValues().map(f))`, and each such
- * entry is marked `"composed": true` and carries the function it used in
- * `mapAmountsFn`. The mapping function is x -> x * x, the same one the
- * double-array fixture documents.
+ * MultiCurrencyAmountArray, and the Java types declare neither method. No Java
+ * API is invented for them: both expectations are COMPOSED from two real public
+ * calls, `of(currency, getValues().multipliedBy(s))` and
+ * `of(currency, getValues().map(f))`, and every such entry is marked
+ * `"composed": true` and carries the function it used in `mapAmountsFn`. That
+ * function is x -> x * x, the same one the double-array fixture documents.
  * ===========================================================================
  */
 
@@ -7402,9 +7559,9 @@ Jn buildCurrencyAmountResults() {
 
   // The normalisation is not confined to the factory: the private constructor
   // adds 0d to every amount, so an ARITHMETIC RESULT of -0.0 is normalised
-  // too. 0.0 * -1.0 is -0.0 in IEEE-754 and +0.0 here, and the bit pattern is
-  // captured so the port cannot satisfy this row with a sign-blind
-  // comparison.
+  // too. 0.0 * -1.0 is -0.0 in IEEE-754 and +0.0 here, and the exact bit
+  // pattern is asserted through doubleToLongBits, so this row is satisfied only
+  // by a result whose sign bit matches.
   CurrencyAmount zeroTimesMinusOne = CurrencyAmount.of(Currency.GBP, 0.0).multipliedBy(-1.0);
   CHECK.checkInt(FX_CURRENCY_MATH, "CurrencyAmount 0.0 multipliedBy -1.0 doubleToLongBits", 0L,
       Double.doubleToLongBits(zeroTimesMinusOne.getAmount()));
@@ -7442,10 +7599,10 @@ Jn buildCurrencyAmountResults() {
     CHECK.countCaptureOnly(FX_CURRENCY_MATH);
   }
   // The remaining 19 currencies - the `historic = true` rows of Currency.ini,
-  // which getAvailableCurrencies() excludes and the closed Scala Currency set
-  // still contains - complete the 74. They carry the LITERAL sweep amount
-  // rather than a draw from the shared Random, because a draw here would
-  // shift the random values of every fixture captured after this one.
+  // which getAvailableCurrencies() excludes - complete this fixture's 74-code
+  // inventory. They carry the LITERAL sweep amount rather than a draw from the
+  // shared Random, because a draw here would shift the random values of every
+  // fixture captured after this one.
   int historicSwept = 0;
   for (CurrencyRow row : currencyIniRows()) {
     if (!row.historic) {
@@ -7735,10 +7892,10 @@ Jn buildCurrencyAmountArrayResults() {
           .set("right", jCurrencyAmountArray(shortArray)),
       () -> jCurrencyAmountArray(gbpArray.plus(shortArray)), MUST_REJECT_ARGUMENT);
   // The three failing shapes of `minus` mirror those of `plus`: a different
-  // currency, a different size, and a scalar amount in another currency. They
-  // are captured separately because the Java messages differ ("Currencies must
-  // be equal ..." against "Sizes must be equal ...") and the port returns a
-  // different Failure for each.
+  // currency, a different size, and a scalar amount in another currency. Each
+  // is captured separately because the messages differ ("Currencies must be
+  // equal ..." against "Sizes must be equal ..."), so every row pins its own
+  // rejection category rather than merely "rejected".
   addOperation(results, FX_CURRENCY_MATH, "CurrencyAmountArray.minus currency mismatch",
       opEntry("minus").set("left", jCurrencyAmountArray(gbpArray))
           .set("right", jCurrencyAmountArray(usdArray)),
@@ -7828,11 +7985,11 @@ Jn buildCurrencyAmountArrayResults() {
   // SIGNED ZERO THROUGH THE ARRAY TYPES - three different answers, all pinned.
   //
   // CurrencyAmount.of normalises -0.0 to +0.0, but CurrencyAmountArray stores
-  // a DoubleArray and does NOT: the element keeps its sign bit, which `of`
-  // below records through doubleToLongBits. Multiplying by -1.0 therefore
-  // flips the signs of both zeros, while `get(i)` hands the element to
-  // CurrencyAmount.of and so normalises it. A port that treated -0.0 and 0.0
-  // as interchangeable would satisfy none of the three.
+  // a DoubleArray and does NOT: the element keeps its sign bit. Multiplying by
+  // -1.0 therefore flips the signs of both zeros, while `get(i)` hands the
+  // element to CurrencyAmount.of and so normalises it. All three results are
+  // asserted separately through doubleToLongBits, so none of them can be
+  // satisfied by a sign-blind comparison.
   CurrencyAmountArray signedZeroArray =
       MATH_IN.array(CurrencyAmountArray.of(Currency.GBP, DoubleArray.of(-0.0, 0.0, 1.0)));
   CHECK.checkInt(FX_CURRENCY_MATH, "CurrencyAmountArray keeps -0.0",
@@ -7875,8 +8032,9 @@ Jn buildMultiCurrencyAmountResults() {
       () -> jMultiCurrencyAmounts(MultiCurrencyAmount.of(
           CurrencyAmount.of(Currency.GBP, 100), CurrencyAmount.of(Currency.GBP, 200))),
       MUST_REJECT_ARGUMENT);
-  // The empty amount is a legal value, not an error, and it is the identity of
-  // the port's Monoid, so its encoding (an empty amount list) is pinned here.
+  // The empty amount is a legal value rather than an error, and it is the
+  // identity of MultiCurrencyAmount addition, so its encoding - an empty amount
+  // list - is pinned here.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmount.empty",
       opEntry("of").set("input", jStr("empty")),
       () -> jMultiCurrencyAmounts(MultiCurrencyAmount.empty()), MUST_SUCCEED);
@@ -7983,8 +8141,9 @@ Jn buildMultiCurrencyAmountArrayResults() {
       opEntry("getValues").set("left", jMultiCurrencyAmountArray(raggedArray))
           .set("currency", jName(Currency.AUD)),
       () -> jDoubleArray(raggedArray.getValues(Currency.AUD)), MUST_REJECT_ARGUMENT);
-  // MultiCurrencyAmountArrayTest.test_empty_amounts: a size with no currencies
-  // at all, which the port must round-trip without inventing an entry.
+  // MultiCurrencyAmountArrayTest.test_empty_amounts: two entries with no
+  // currencies at all, so the expected structure carries size 2 and an empty
+  // currency list.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.of empty amounts",
       opEntry("of").set("size", jInt(2)).set("input", jStr("[], []")),
       () -> jMultiCurrencyAmountArray(MultiCurrencyAmountArray.of(
@@ -8010,8 +8169,8 @@ Jn buildMultiCurrencyAmountArrayResults() {
           .set("right", jMultiCurrencyAmountArray(shortArray)),
       () -> jMultiCurrencyAmountArray(base.plus(shortArray)), MUST_REJECT_ARGUMENT);
   // MultiCurrencyAmountArrayTest.test_minusArray / test_plusDifferentSize: the
-  // subtracting side of both shapes, so the port's `minus` is pinned as well
-  // as its `plus`.
+  // subtracting side of both shapes, so both addition and subtraction are
+  // captured.
   addOperation(results, FX_CURRENCY_MATH, "MultiCurrencyAmountArray.minus size mismatch",
       opEntry("minus").set("left", jMultiCurrencyAmountArray(base))
           .set("right", jMultiCurrencyAmountArray(shortArray)),
@@ -8122,8 +8281,8 @@ void checkMoneyConstants() {
       Money.of(Currency.GBP, 0.34).minus(Money.of(Currency.GBP, 1.23)));
   CHECK.checkEquals(FX_CURRENCY_MATH, "Money GBP 1.23 multipliedBy 2", Money.of(Currency.GBP, 2.46),
       Money.of(Currency.GBP, 1.23).multipliedBy(2));
-  // MoneyTest.testMinus, the failing direction: the message differs from the
-  // addition case, and the port maps each to its own Failure.
+  // MoneyTest.testMinus, the failing direction: its message differs from the
+  // addition case, so both messages are captured.
   CHECK.checkEquals(FX_CURRENCY_MATH, "Money.minus different currency message",
       "IllegalArgumentException: Unable to subtract amounts in different currencies",
       moneyFailureMessage(() -> Money.of(Currency.RON, 200.23).minus(Money.of(Currency.AUD, 100))));
@@ -8320,21 +8479,21 @@ Jn buildCurrencyMathFixture() throws Throwable {
  * compute symmetrically. The Java tests assert the same thing in the other
  * direction, listing non-weekend holidays and OR-ing Saturday and Sunday.
  *
- * WHY THAT MATTERS, AND WHY THE JAVA TEST LISTS ARE NOT COPIED HERE. HUBU is
- * built as ImmutableHolidayCalendar.of(id, holidays, SUNDAY, SUNDAY)
+ * WHY THAT MATTERS, AND WHERE HUBU MAKES IT MATTER. HUBU is built as
+ * ImmutableHolidayCalendar.of(id, holidays, SUNDAY, SUNDAY)
  * (GlobalHolidayCalendars.java:1204): Sunday is its ONLY weekend day and its
  * Saturdays are listed EXPLICITLY as holidays by addHungarianSaturdays
- * (:1239-1250). A fixture that copied the Java test tables would be ambiguous
- * between "not a holiday" and "a weekend day the table filtered out", and the
- * ambiguity would land on exactly the calendar where it changes the answer.
- * So the full isHoliday truth is emitted, and the Java tables are used only as
- * a cross-check, in the direction the tests assert them.
+ * (:1239-1250). A fixture listing only non-weekend holidays would be ambiguous
+ * between "not a holiday" and "a weekend day the list omitted", and the
+ * ambiguity would land on exactly the calendar where it changes the answer. So
+ * the full isHoliday truth is emitted, and the Java tables serve only as a
+ * cross-check, in the direction those tests assert them.
  *
  * The out-of-range rows are deliberate: outside its stored year range an
  * ImmutableHolidayCalendar falls back to a weekend-only test rather than
- * throwing (ImmutableHolidayCalendar.java:397-415), and the port must
- * reproduce that. Beyond year 0000-9999 it throws instead, which the
- * `yearRange` rows capture as `error` expectations.
+ * throwing (ImmutableHolidayCalendar.java:397-415), and those rows record that
+ * fallback. Beyond year 0000-9999 it throws instead, which the `yearRange` rows
+ * carry as `error` expectations.
  * ===========================================================================
  */
 
@@ -8379,11 +8538,13 @@ int[][] HOLIDAY_SAMPLE_SPEC = {
 };
 
 /**
- * The weekend days of every captured calendar, transcribed from the Java
- * source that constructs it - NOT from any date table. They are not public
- * API, so they are not emitted; they are the expectation the out-of-range and
- * weekend rows are checked against, which is what proves the weekend-only
- * fallback rather than assuming it.
+ * The weekend days of every captured calendar, as declared by the constructor
+ * call that builds it in GlobalHolidayCalendars - not derived from any date
+ * table.
+ *
+ * They are not public API, so they are never emitted: they are the expectation
+ * the out-of-range and weekend rows are checked against, which is what proves
+ * the weekend-only fallback instead of assuming it.
  */
 Set<DayOfWeek> weekendDaySet(DayOfWeek... days) {
   Set<DayOfWeek> set = new LinkedHashSet<>();
@@ -8499,7 +8660,8 @@ Map<String, Integer> HOLIDAY_TABLE_ROWS_USED = new TreeMap<>();
  * Java test - so agreement here is a statement about the calendar rather than
  * about the capture.
  *
- * The test's rule, verbatim: a date is a holiday when the table names it or it
+ * The test's rule, exactly as it states it: a date is a holiday when the table
+ * names it or it
  * falls at the weekend, unless the row lists it as a working day. The weekend
  * is Saturday and Sunday for all 25 tables, including Budapest's - see the
  * table banner.
@@ -8755,7 +8917,7 @@ HolidayRow addHolidayRow(JArray rows, String source, String suffix, String calen
     checkHolidayAgainstJavaTable(rowId, calendarName, year, holidayDates);
     // Cross-check 1: the same truth through a different public API. `holidays`
     // is a Stream over the range, so agreement is not a tautology of the loop
-    // above - it also pins the two APIs to each other for the port.
+    // above - the two public APIs are checked against each other.
     List<LocalDate> streamed = new ArrayList<>();
     calendar.holidays(LocalDate.of(year, 1, 1), LocalDate.of(year + 1, 1, 1)).forEach(streamed::add);
     CHECK.checkEquals(FX_HOLIDAY, rowId + " holidays(stream)", holidayDates, streamed);
@@ -8808,10 +8970,11 @@ HolidayCalendar resolveCalendar(String id) {
 }
 
 /**
- * data_easter() of GlobalHolidayCalendarsTest, extracted mechanically from the
- * Java test source as {day, month, year} triples - 201 rows covering
- * 1900-2099, with its duplicated 1900 row kept so the extraction stays a copy
- * rather than an edit.
+ * The data_easter() rows of GlobalHolidayCalendarsTest as {day, month, year}
+ * triples: 201 rows covering 1900-2099.
+ *
+ * That provider's duplicated 1900 row is kept, so the row count here equals the
+ * count in the source and neither side has to explain a difference of one.
  */
 int[][] EASTER_EXPECTED = {
     {15, 4, 1900}, {15, 4, 1900}, {7, 4, 1901}, {30, 3, 1902}, {12, 4, 1903}, {3, 4, 1904},
@@ -9036,7 +9199,6 @@ void checkHolidayDiscrimination(JArray rows) {
     }
     CHECK.checkInt(FX_HOLIDAY, hubuOutOfRange.id + " no explicit Saturdays", 0, saturdays);
   }
-  // No row other than the deliberate year-range rejections may carry an error.
   for (HolidayRow row : HOLIDAY_ROWS.values()) {
     boolean rejected = row.source.equals("yearRange");
     boolean clean = row.error == null;
@@ -9154,18 +9316,18 @@ JArray buildHolidayFixture() {
 /* ===========================================================================
  * SECTION 12 - FIXTURE 6 OF 6: double-array-baseline.json
  *
- * This fixture is the whole of the port's 1e-9 numerical-parity obligation for
- * DoubleArray and DoubleMatrix, so its row shape is FIXED AND UNIFORM: every
- * row carries every input, every index parameter and all TWENTY-TWO
- * expectations, with no optional field, no null and no `error` entry. A row
- * that omitted an expectation would silently reduce what Gate 3 measures,
- * which is the one failure a golden baseline exists to prevent.
+ * THE ROW SHAPE IS FIXED AND UNIFORM: every row carries every input, every
+ * index parameter and all TWENTY-TWO expectations, with no optional field, no
+ * null and no `error` entry. This fixture is the whole of the 1e-9 numerical
+ * comparison for DoubleArray and DoubleMatrix, so a row that omitted an
+ * expectation would silently reduce what that comparison measures - the one
+ * failure a golden baseline exists to prevent.
  *
  * BOTH OVERLOAD FAMILIES ARE CAPTURED. DoubleArray has a scalar plus, minus,
  * multipliedBy and dividedBy AND an element-wise overload of each
  * (DoubleArray.java:660,682,704,726 and :802,829,858,886). Capturing one of
- * the two would leave four retained public methods unmeasured and would leave
- * one of the row's two declared operands unused. Each expectation is therefore
+ * the two would leave four public methods unmeasured and one of the row's two
+ * declared operands unused. Each expectation is therefore
  * named after the overload that produced it - plusScalar and plusArray,
  * minusScalar and minusArray, and so on - so a reader can tell which operand
  * produced which value without consulting this script.
@@ -9200,11 +9362,10 @@ JArray buildHolidayFixture() {
  * against and are counted as capture-only, which is what keeps the summary
  * honest about how much of the fixture is independently pinned.
  *
- * The population floors are asserted in code (Section 12's
- * DOUBLE_ARRAY_MIN_* constants), so thinning the fixture cannot pass
- * unnoticed, and rows deliberately include signed zero, not-a-number and both
- * infinities so the tagged-double policy is exercised end to end on both
- * sides.
+ * The population floors are asserted in code (the DOUBLE_ARRAY_MIN_* constants
+ * below), so thinning the fixture cannot pass unnoticed, and the rows
+ * deliberately include signed zero, not-a-number and both infinities, so the
+ * tagged-double policy is exercised end to end.
  * ===========================================================================
  */
 
@@ -9214,12 +9375,12 @@ String FX_DOUBLE_ARRAY = "double-array";
  * Population floors, and the exact count the fixture is expected to carry.
  *
  * The floors are the minimum population the baseline is worth having: enough
- * Java-derived rows to pin the operations against the original's own test
- * inputs, as many seeded-random rows again so the relative bound of the parity
- * rule is exercised across magnitudes, and the IEEE-edge rows without which
- * the non-finite policy is never measured. They are asserted rather than
- * documented so that a future reduction fails the capture instead of quietly
- * shrinking Gate 3.
+ * Java-derived rows to validate the operations against the inputs and constants
+ * DoubleArrayTest and DoubleMatrixTest state, as many seeded-random rows again
+ * so the relative bound of the 1e-9 rule is exercised across magnitudes, and
+ * the IEEE-edge rows without which the non-finite policy is never measured.
+ * They are asserted rather than documented, so a later reduction fails the
+ * capture instead of quietly shrinking the comparison.
  */
 int DOUBLE_ARRAY_MIN_ROWS = 40;
 int DOUBLE_ARRAY_MIN_JAVATEST_ROWS = 16;
@@ -9325,11 +9486,11 @@ void checkDoubleMatrixValues(String rowId, DoubleMatrix actual, int rowCount, in
  * Asserts that a call the Java test expects to reject does reject, with an
  * exception of the type that test names.
  *
- * The type is checked by ASSIGNABILITY, not by name: the Java tests assert
- * `assertThatExceptionOfType(IndexOutOfBoundsException.class)` and the
+ * The type is checked by ASSIGNABILITY, not by name: DoubleArrayTest asserts
+ * `assertThatExceptionOfType(IndexOutOfBoundsException.class)` while the
  * implementation throws the more specific `ArrayIndexOutOfBoundsException`,
  * which satisfies that assertion. Comparing simple names would make this check
- * stricter than the test it transcribes and fail on correct behaviour.
+ * stricter than that test and fail on correct behaviour.
  */
 void checkDoubleArrayThrows(String rowId, Class<? extends Throwable> expectedType,
     ThrowingCall call) {
@@ -9347,11 +9508,10 @@ void checkDoubleArrayThrows(String rowId, Class<? extends Throwable> expectedTyp
 /**
  * THE HARD-CODED CONSTANTS OF DoubleArrayTest AND DoubleMatrixTest.
  *
- * The fixture rows are evaluated over the capture's own inputs, so they pin
- * the port to the Java implementation but say nothing about whether the Java
- * implementation still does what its tests claim. These are those claims,
- * transcribed with their own inputs, expected values, tolerance (DELTA =
- * 1e-14) and expected exception types:
+ * The fixture rows are evaluated over the capture's own inputs, so they say
+ * nothing about whether the Java implementation still does what its own tests
+ * claim. These are those claims, with their inputs, expected values, tolerance
+ * (DELTA = 1e-14) and expected exception types:
  *
  *   DoubleArrayTest  :192-201 subArray(from), :203-212 subArray(from,to),
  *                    :315-322 with, :325-364 scalar plus/minus/multipliedBy/
@@ -9362,8 +9522,8 @@ void checkDoubleArrayThrows(String rowId, Class<? extends Throwable> expectedTyp
  *                    plus/minus/combine and their dimension rejections,
  *                    :282-286 total.
  *
- * A change in any of them aborts the capture instead of being recaptured as
- * the new baseline.
+ * A mismatch in any of them aborts the capture, so a changed Java answer
+ * cannot be published as the new baseline.
  */
 void checkDoubleArrayJavaConstants() {
   DoubleArray oneTwoThree = DoubleArray.of(1d, 2d, 3d);
@@ -9938,8 +10098,8 @@ void addIeeeEdgeDoubleArrayRows(JArray rows) {
   addDoubleArrayRow(rows, "ieee-multiply-overflow",
       new double[] {1e200d, -1e200d, 1.5e308d}, new double[] {1e200d, 1e200d, 2d}, 1e10d, 0, 2,
       new double[][] {{1e200d, -1e200d}, {1.5e308d, 1e-320d}}, onesTwoByTwo, 0, 0, 1e308d, true);
-  // Signed zero on both sides, which `sorted` orders and which the equality of
-  // the port distinguishes.
+  // Signed zero on both sides: `sorted` orders them, and every expectation
+  // carries the exact signed value, so -0.0 and 0.0 are never interchangeable.
   addDoubleArrayRow(rows, "ieee-signed-zero", new double[] {0d, -0.0d, 1d, -1d},
       new double[] {-0.0d, 0d, -1d, 1d}, -0.0d, 1, 4,
       new double[][] {{0d, -0.0d}, {-0.0d, 0d}}, onesTwoByTwo, 0, 1, -0.0d, true);
@@ -9999,13 +10159,13 @@ Jn buildDoubleArrayFixture() {
 /* ===========================================================================
  * SECTION 13 - THE REFERENCE-DATA MANIFEST
  *
- * Enumerated from the Java side, with EVERY count asserted in code. A count
- * that differs from the independently verified expectation aborts the capture,
- * so a resource edited under the port cannot silently reshape the manifest.
+ * Enumerated from the Java reference data, with EVERY count asserted in code:
+ * a count that differs from the independently verified expectation aborts the
+ * capture, so an edited resource cannot silently reshape the manifest.
  *
- * The Scala-side spec asserts that the ported data objects equal this document
- * exactly, so key names and nesting are part of the contract: keep them
- * explicit, self-describing and stable.
+ * The consumer asserts its own data tables against this document key by key and
+ * row by row, so the key names, the nesting and the counts are the contract -
+ * keep them explicit, self-describing and stable.
  * ===========================================================================
  */
 
@@ -10270,11 +10430,11 @@ Jn buildFloatingRateNameManifest() {
 /**
  * Alternate names for one enum family.
  *
- * Two counts are recorded, because they legitimately differ: the INI
- * `[alternates]` section is the table the port transcribes, while
- * ExtendedEnum.alternateNames() additionally registers a derived UPPER-CASE
- * key for every mixed-case alternate. OvernightIndex is the case in point -
- * 10 INI rows become 13 API entries, because "DKK-Tom Next", "EUR-EuroSTR" and
+ * Two counts are recorded, because the two sources legitimately differ: the
+ * INI `[alternates]` section holds the DECLARED rows, while
+ * ExtendedEnum.alternateNames() also registers a derived UPPER-CASE key for
+ * every mixed-case alternate. OvernightIndex is the case in point - 10 INI rows
+ * against 13 API entries, because "DKK-Tom Next", "EUR-EuroSTR" and
  * "USD-Federal Funds" each gain an upper-cased twin.
  */
 Jn buildAlternateNames(String resourceName, ExtendedEnum<?> extendedEnum, String what,
@@ -10358,9 +10518,9 @@ Jn buildHolidayCalendarDataManifest() {
  * The 31 default-by-currency calendar ids.
  *
  * Thirteen of them - CLSA CNBE COBO HKHK IDJA ILTA INMU KRSE RUMO SARI SGSI
- * TRIS TWTA - have no built-in calendar in Java either, so they are ids that
- * legitimately fail to resolve. The manifest records the mapping and each id's
- * resolvability WITHOUT attempting to depend on resolution succeeding.
+ * TRIS TWTA - have no built-in calendar, so they are ids that are expected NOT
+ * to resolve. The manifest records the mapping and each id's resolvability
+ * without depending on resolution succeeding.
  */
 Jn buildHolidayCalendarDefaultManifest() {
   IniFile ini = ResourceConfig.combinedIniFile("HolidayCalendarDefaultData.ini");

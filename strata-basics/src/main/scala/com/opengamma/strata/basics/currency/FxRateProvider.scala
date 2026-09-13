@@ -19,13 +19,12 @@ import com.opengamma.strata.collect.result.Failure
  * ===Every lookup can fail, and says so in its type===
  *
  * A provider holds rates for some set of currencies and nothing forces a caller to ask about a
- * pair the provider knows. The type being ported expressed that by throwing when no rate could
- * be found, which left the possibility of failure out of the signature entirely. Here the
- * outcome of a lookup is an `Either`: a rate is a `Right`, and the absence of one is a `Left`
- * carrying a [[com.opengamma.strata.collect.result.Failure.CurrencyConversion]] whose message
- * names the pair that could not be converted. A caller therefore cannot use a rate without
- * first deciding what to do when there is none, and no implementation of this trait needs to
- * throw in order to report that state.
+ * pair the provider knows. The outcome of a lookup is therefore an `Either`: a rate is a
+ * `Right`, and the absence of one is a `Left` carrying a
+ * [[com.opengamma.strata.collect.result.Failure.CurrencyConversion]] whose message names the
+ * pair that could not be converted. A caller cannot use a rate without first deciding what to
+ * do when there is none, and an implementation reports a missing rate by returning that
+ * failure.
  *
  * The same applies to the two conversions below: they are the lookup followed by a
  * multiplication, so they fail exactly when the lookup does and carry the same failure.
@@ -83,7 +82,6 @@ trait FxRateProvider {
   def fxRate(currencyPair: CurrencyPair): Either[Failure, Double] =
     fxRate(currencyPair.base, currencyPair.counter)
 
-  //-------------------------------------------------------------------------
   /**
    * Converts an amount in a currency to an amount in a different currency using this provider.
    *
@@ -107,19 +105,18 @@ trait FxRateProvider {
    * Converts a decimal amount in a currency to an amount in a different currency using this
    * provider.
    *
-   * This is the exact-decimal counterpart of the conversion above and takes the same route as
-   * the type being ported: the rate is looked up as a `Double` and the amount is multiplied by
-   * it through the decimal's own `multipliedBy`, which converts the rate to a decimal and
-   * multiplies exactly, rather than the amount being rounded into binary floating point and
-   * back. Keeping that route is what makes this conversion agree digit for digit with the
-   * implementation being ported.
+   * This is the exact-decimal counterpart of the conversion above: the rate is looked up as a
+   * `Double` and the amount is multiplied by it through the decimal's own `multipliedBy`, which
+   * converts the rate to a decimal and multiplies exactly, rather than the amount being rounded
+   * into binary floating point and back. The result therefore carries the exact digits of the
+   * product.
    *
    * Decimal multiplication has a domain: the decimal type carries at most 18 significant
    * digits and cannot represent a rate that is not finite. A rate outside that domain is a
    * caller contract violation rather than a missing rate, so it is signalled the way the
    * decimal type signals it - by an `IllegalArgumentException` from the multiplication - and
-   * not folded into the failure channel of the lookup. In practice a provider that holds
-   * finite rates cannot reach it.
+   * not folded into the failure channel of the lookup. A provider that holds finite rates
+   * cannot reach it.
    *
    * @param amount  an amount in `fromCurrency`
    * @param fromCurrency  the currency of the amount
@@ -144,9 +141,8 @@ trait FxRateProvider {
  * about a currency and itself, where `noConversion` refuses as well and `minimal` answers with a
  * rate of one. A caller that must not perform FX at all therefore takes `noConversion` and gets
  * a failure rather than a silent identity conversion, while a caller that only ever converts an
- * amount into the currency it is already in takes `minimal` and never needs a rate. That
- * distinction is carried over unchanged from the implementation being ported, including the
- * wording of the two messages, which differ so that a failure identifies which of the two
+ * amount into the currency it is already in takes `minimal` and never needs a rate. The
+ * wording of the two failure messages differs, so that a failure identifies which of the two
  * providers produced it.
  */
 object FxRateProvider {
@@ -178,7 +174,6 @@ object FxRateProvider {
             s"FX rate conversion is not supported for $baseCurrency/$counterCurrency"))
       })
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains a provider that looks up rates using the specified function.
    *
@@ -239,7 +234,7 @@ object FxRateProvider {
    * Returns a provider that delays obtaining its underlying provider until one is actually
    * needed.
    *
-   * This is typically useful where a provider built from market data <em>may</em> be needed,
+   * This is typically useful where a provider built from market data '''may''' be needed,
    * but loading that data should be put off until it is certain to be needed. The returned
    * provider answers a conversion between a currency and itself, and a rate for a pair of
    * identical currencies, on its own; any other question forces the function, once, and is
@@ -252,12 +247,9 @@ object FxRateProvider {
    * }}}
    *
    * The function is invoked at most once however many times the provider is used and from
-   * however many threads, and the provider it yields is kept. Where the implementation being
-   * ported took a `Supplier` and memoised it, this takes an ordinary Scala function and the
-   * memoisation is a `lazy val`, which gives the same once-only, thread-safe initialisation.
-   *
-   * The method that takes this role in the type being ported is called `lazy`, which is a
-   * reserved word in Scala; the name here is the nearest available spelling of it.
+   * however many threads, and the provider it yields is kept: the memoisation is a `lazy val`,
+   * which initialises once and is safe for several threads to force at the same time. The
+   * method is spelled `lazily` because `lazy` is a reserved word.
    *
    * @param target  the function supplying the underlying provider
    * @return a provider that obtains the underlying provider only when it is needed
@@ -269,10 +261,10 @@ object FxRateProvider {
  * An [[FxRateProvider]] that delays obtaining its underlying provider until one is actually
  * needed.
  *
- * This is typically useful where a provider built from market data <em>may</em> be needed, but
+ * This is typically useful where a provider built from market data '''may''' be needed, but
  * loading that data should be put off until it is certain to be needed. It is reached through
- * [[FxRateProvider.lazily]] rather than constructed directly, which is why the class is not
- * public - as it was not in the type being ported.
+ * [[FxRateProvider.lazily]] rather than constructed directly, which is why it is visible only
+ * inside this package.
  *
  * ===What it answers without forcing the function===
  *
@@ -284,10 +276,10 @@ object FxRateProvider {
  *   - a rate for a pair of identical currencies is one.
  *
  * The two-currency rate lookup is routed through the pair form rather than implemented
- * separately, which is what extends the second of those to it; that indirection is deliberate
- * and is the shape the type being ported has. The decimal conversion inherits the trait's
- * definition, which multiplies the amount by the result of a rate lookup, so it too answers a
- * currency and itself without forcing the function.
+ * separately, which is what extends the second of those to it, and that indirection is
+ * deliberate. The decimal conversion inherits the trait's definition, which multiplies the
+ * amount by the result of a rate lookup, so it too answers a currency and itself without
+ * forcing the function.
  *
  * Anything else - a rate between two different currencies, a conversion between them - forces
  * the function once and delegates.
@@ -306,8 +298,7 @@ private[currency] final class LazyFxRateProvider(target: () => FxRateProvider) e
    *
    * A `lazy val` is the whole of the memoisation: it invokes the function the first time this
    * field is read, keeps what it returns, and is initialised exactly once even when several
-   * threads read it at the same time. That is the guarantee the memoised supplier of the
-   * implementation being ported provided, and it is why no field of this class is mutable.
+   * threads read it at the same time. No field of this class is mutable.
    */
   private lazy val underlying: FxRateProvider = target()
 

@@ -21,6 +21,8 @@ import cats.syntax.apply._
 import io.circe.Codec
 
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.json.Codecs
@@ -51,51 +53,69 @@ import com.opengamma.strata.collect.result.Failure
  *
  * ===Identity, equality and ordering===
  *
- * Equality and hashing consider the '''period alone''', exactly as in the library being ported:
- * the name is derived from the period, so it carries no information equality could use, and
- * two tenors with the same period are the same tenor however they were built. `12M` and `1Y`
- * are consequently '''not''' equal, having different periods.
+ * Equality and hashing consider the '''period alone''': the name is derived from the period, so
+ * it carries no information equality could use, and two tenors with the same period are the
+ * same tenor however they were built. `12M` and `1Y` are consequently '''not''' equal, having
+ * different periods.
  *
- * The ordering is that of the original - day-only tenors by days, month-only tenors by total
- * months, and anything else by an estimated length in days, obtained by dividing months by
- * twelve and multiplying by the mean Gregorian year of 365.2425 days - with '''one deliberate
- * addition''': tenors the original ranks equal are then ordered by name. The original ranks
- * `12M` and `1Y` equal while holding them unequal, which is a contradiction a `cats.Order` is
- * not allowed to carry, since its laws require `compare` to return zero exactly when the values
- * are equal. The name is a total, injective function of the period, so breaking the tie with it
- * restores the law without reordering any pair the original ranked strictly. [[compareTo]]
- * remains available for the unrefined comparison of the original, and the divergence is
- * recorded in `SCALA_MIGRATION.md`.
+ * The ordering compares two tenors by length first - day-only tenors by their days, month-only
+ * tenors by their total months, and anything else by an estimated length in days, obtained by
+ * dividing months by twelve and multiplying by the mean Gregorian year of 365.2425 days - and
+ * then breaks a tie by name. The tie-break is deliberate and is what keeps the ordering in step
+ * with equality: `cats.Order` requires `compare` to return zero exactly when two values are
+ * equal, and `12M` and `1Y` are of equal estimated length while being different tenors. A name
+ * is a total, injective function of a period, so two tenors share a name only when they share a
+ * period, which is exactly when they are equal; the tie-break therefore returns zero only for
+ * equal tenors and cannot reorder a pair the length comparison has already separated. The
+ * effect is a total order in which `12M` sorts immediately before `1Y` and tenors of equal
+ * estimated length are grouped. [[compareTo]] is the comparison by length on its own, for a
+ * caller that wants tenors of equal estimated length ranked equal.
  *
- * ===Deliberate divergences from the type being ported===
+ * ===Applying a tenor to a date===
  *
- *   - '''`java.time.temporal.TemporalAmount` is not implemented.''' That interface requires
- *     `getUnits` to return a list from the Java collections framework, which would place a Java
- *     collection on the public API of this port - precisely what the migration forbids, and what
- *     the bytecode audit of the public surface rejects. The three useful members
- *     survive as ordinary methods: [[get]], [[addTo]] and [[subtractFrom]], with [[units]]
- *     returning a Scala `List`. The consequence for callers is that `date.plus(tenor)` is
- *     written `tenor.addTo(date)`, whose `LocalDate` overload returns a `LocalDate` rather than
- *     a `Temporal`, so no cast is needed at the call site.
- *   - '''`Comparable` is not implemented.''' The `cats.Order` instance on the companion is the
- *     ordering of this port, and [[compareTo]] keeps the original's algorithm available to it.
- *   - '''Java serialization and annotation-driven string conversion are not supported.''' The
- *     JSON codec on the companion is the only serialized form, and it writes the canonical name.
+ * A tenor is applied through its own members rather than through date arithmetic:
+ * `tenor.addTo(date)` and `tenor.subtractFrom(date)`, whose `LocalDate` overloads answer a
+ * `LocalDate` so that no cast is needed at the call site, with overloads for any other temporal
+ * object. [[get]] reads the value of a single unit and [[units]] answers the units a tenor is
+ * measured in as a Scala `List`. The JSON codec on the companion is the only serialized form,
+ * and it writes the canonical name.
  *
  * ===Construction===
  *
  * There is no public constructor, no `apply` and no `copy`: a value of this type exists only
  * because one of the companion's factories accepted its input, so every tenor in a program is
  * positive and non-zero by construction. The factories report a rejected input as a failure
- * rather than by throwing, and [[Tenor.of]] accumulates, so a caller learns every reason its
- * input was unacceptable at once.
+ * value, and [[Tenor.of]] accumulates, so a caller learns every reason its input was
+ * unacceptable at once.
  *
  * This type is immutable and every member is a pure function of the value and its arguments, so
  * it is safe to share between threads without synchronisation.
  *
  * @param period  the period of the tenor, which is always positive and non-zero
  */
-sealed abstract case class Tenor private (period: Period) {
+sealed abstract case class Tenor private (period: Period) extends NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // would carry a period no factory had checked or a name that does not describe it - can be
+  // stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[Tenor.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the class file of the implementation carries
+  // a public constructor whatever the source asked for: a class compiled outside this library can
+  // reach it directly, and the check above would admit what it built, since its runtime class is
+  // the one class that check admits. What is left to state is therefore the two things
+  // [[Tenor.of]] establishes - a period that is positive and non-zero, and a name that is the one
+  // this type derives from that period - so that a tenor which exists by any route holds what a
+  // factory would have accepted.
+  JvmClosure.requireInvariant(
+    "its period is neither zero nor negative",
+    !period.isZero && !period.isNegative)
+  JvmClosure.requireInvariant(
+    "its name is the one this type derives from its period",
+    name == Tenor.canonicalName(period))
 
   /**
    * The name of the tenor, which is its canonical text.
@@ -137,12 +157,11 @@ sealed abstract case class Tenor private (period: Period) {
   /**
    * Normalizes the months and years of the tenor.
    *
-   * The result is a tenor of equivalent length in canonical form. A period of exactly one year
-   * becomes twelve months - so `1Y` normalizes to `12M`, which is the convention of the library
-   * being ported - and any other period is reduced by `Period.normalized`, which carries excess
-   * months into years: `20M` becomes `1Y8M` and `24M` becomes `2Y`. A tenor already in canonical
-   * form is returned unchanged, and normalizing twice therefore gives the same value as
-   * normalizing once.
+   * The result is a tenor of equivalent length in canonical form. A total of twelve months is
+   * held in months, so `1Y` normalizes to `12M`; any other period is reduced by
+   * `Period.normalized`, which carries excess months into years, so `20M` becomes `1Y8M` and
+   * `24M` becomes `2Y`. A tenor already in canonical form is returned unchanged, and normalizing
+   * twice therefore gives the same value as normalizing once.
    *
    * Days are untouched, because they are already canonical: `10D` and `2W` normalize to
    * themselves.
@@ -165,8 +184,8 @@ sealed abstract case class Tenor private (period: Period) {
    *
    * Values are available for the years, months and days units; note that weeks are not, a week
    * being held as seven days. Any other unit is unsupported and the query is rejected by
-   * `java.time`, which raises `UnsupportedTemporalTypeException` - the behaviour of the library
-   * being ported, and of every other `java.time` amount.
+   * `java.time`, which raises `UnsupportedTemporalTypeException`, as it does for every amount it
+   * measures.
    *
    * @param unit  the unit to query
    * @return the value of the tenor in the requested unit
@@ -176,9 +195,8 @@ sealed abstract case class Tenor private (period: Period) {
   /**
    * The units a tenor is measured in: years, then months, then days.
    *
-   * This replaces the `getUnits` member of the interface this type no longer implements, and
-   * returns an immutable Scala `List` in place of that interface's Java list. The contents and
-   * their order are those of the period underlying every tenor.
+   * The list is immutable, and its contents and their order are those of the period underlying
+   * every tenor, so it is the same list for every tenor.
    *
    * @return the units of a tenor, in descending order of size
    */
@@ -187,11 +205,10 @@ sealed abstract case class Tenor private (period: Period) {
   /**
    * Adds the tenor to the specified date.
    *
-   * This is the overload callers normally want, and it is the fast path of the library being
-   * ported: the months of the tenor are added to the date and the days are then applied by the
-   * module's own date arithmetic, which is exact and cheaper than the general route through
-   * `java.time`. The result is a `LocalDate`, so it composes with the rest of this module
-   * without a cast.
+   * This is the overload callers normally want, and it is the fast path: the months of the tenor
+   * are added to the date and the days are then applied by the module's own date arithmetic,
+   * which is exact and cheaper than the general route through `java.time`. The result is a
+   * `LocalDate`, so it composes with the rest of this module without a cast.
    *
    * Month arithmetic clamps the day-of-month, as everywhere in `java.time`: adding one month to
    * the 31st of January gives the 28th of February, or the 29th in a leap year.
@@ -220,7 +237,7 @@ sealed abstract case class Tenor private (period: Period) {
   /**
    * Subtracts the tenor from the specified date.
    *
-   * This mirrors [[addTo]] exactly, including its fast path and its clamping of the
+   * This is [[addTo]] in reverse, with the same fast path and the same clamping of the
    * day-of-month, and is the overload callers normally want.
    *
    * @param date  the date to subtract this tenor from
@@ -244,7 +261,7 @@ sealed abstract case class Tenor private (period: Period) {
   }
 
   /**
-   * Compares this tenor to another tenor by length, as the library being ported does.
+   * Compares this tenor to another tenor by length.
    *
    * Comparing tenors is a hard problem in general, but for the tenors in common use the outcome
    * is the expected one. Two day-only tenors are compared by their days and two month-only
@@ -255,11 +272,11 @@ sealed abstract case class Tenor private (period: Period) {
    * and a four-year tenor between 1460 and 1461 days.
    *
    * This comparison is '''not''' the `cats.Order` of the companion, and the difference is the
-   * point of having both. This method reproduces the original exactly, which means it returns
-   * zero for tenors of equal estimated length that are not equal - `12M` against `1Y` being the
-   * standard example. The `Order` instance calls this method first and then breaks such a tie by
-   * name, which is what its laws require; a caller reproducing the behaviour of the original
-   * wants this method, and a caller sorting or keying a collection wants the instance.
+   * point of having both. This method returns zero for tenors of equal estimated length that are
+   * not equal - `12M` against `1Y` being the standard example. The `Order` instance calls this
+   * method first and then breaks such a tie by name, which is what its laws require; a caller
+   * that wants tenors of equal estimated length ranked equal wants this method, and a caller
+   * sorting or keying a collection wants the instance.
    *
    * @param other  the other tenor
    * @return negative if this tenor is shorter, zero if they are of equal estimated length, and
@@ -277,8 +294,8 @@ sealed abstract case class Tenor private (period: Period) {
       // both month-only, so the comparison is again exact
       java.lang.Long.compare(thisMonths, otherMonths)
     } else {
-      // mixed, so months are estimated in days; every conversion here is explicit, because the
-      // build rejects a silent widening of one of these integral values to a Double
+      // mixed, so months are estimated in days; each integral value is converted to a Double
+      // explicitly rather than being widened in passing
       val thisLength = thisDays.toDouble + (thisMonths.toDouble / 12d) * 365.2425d
       val otherLength = otherDays.toDouble + (otherMonths.toDouble / 12d) * 365.2425d
       java.lang.Double.compare(thisLength, otherLength)
@@ -303,33 +320,28 @@ sealed abstract case class Tenor private (period: Period) {
  *
  * ===Constants===
  *
- * The constants carry the names they have in the library being ported - `TENOR_3M`, `TENOR_1Y`
- * - so that call sites, stored data and documentation continue to read the same way after the
- * migration. They are values rather than results, because their inputs are known to be
- * acceptable, and they are built by the same private code the factories use, so a constant and
- * the equivalent factory call produce equal tenors with identical names.
+ * The constants are named after the tenors they hold - `TENOR_3M`, `TENOR_1Y` - and are values
+ * rather than results, because their inputs are known to be acceptable. They are built by the
+ * same private code the factories use, so a constant and the equivalent factory call produce
+ * equal tenors with identical names.
  *
  * ===Factories===
  *
- * Every public factory reports a rejected input as a failure rather than by throwing, which is
- * what makes the type total in the sense the migration requires: the only way to hold a tenor
- * is to have had an acceptable input accepted. Two inputs are unacceptable, and the messages are
- * those of the original:
+ * Every public factory reports a rejected input as a failure value, so the only way to hold a
+ * tenor is to have had an acceptable input accepted. Two conditions make a period unacceptable:
  *
- *   - a period of zero length - `Tenor period must not be zero`;
- *   - a period with any negative element - `Tenor period must not be negative`.
+ *   - a period of zero length;
+ *   - a period with any negative element.
  *
  * [[of]] checks both at once and reports every failing check, so a caller does not have to fix
- * one problem to discover the next. The four convenience factories express the original's
- * behaviour by routing through [[of]], which is exactly equivalent for every input and keeps the
- * naming rules in one place.
+ * one problem to discover the next. The four convenience factories route through [[of]], which
+ * keeps the naming rules in one place.
  *
  * ===Instances===
  *
- * The companion declares one equality-bearing instance, one rendering and one codec, which is
- * the convention of this port: `Order` and `Hash` both extend `Eq`, so declaring them as a
- * single value makes it impossible for equality and ordering to disagree, and there is
- * deliberately no separate `Eq`.
+ * The companion declares one equality-bearing instance, one rendering and one codec: `Order` and
+ * `Hash` both extend `Eq`, so declaring them as a single value makes it impossible for equality
+ * and ordering to disagree, and there is deliberately no separate `Eq`.
  */
 object Tenor {
 
@@ -343,12 +355,43 @@ object Tenor {
   private val SupportedUnits: List[TemporalUnit] =
     List(ChronoUnit.YEARS, ChronoUnit.MONTHS, ChronoUnit.DAYS)
 
-  //-------------------------------------------------------------------------
-  // The tenors in common use, declared in the order of the library being ported and under its
-  // names, so that a reader moving between the two finds the same identifiers in the same place.
-  // Each is built by the private builder matching the factory the original used, which is what
-  // makes the day-count constants weeks: `TENOR_1W` is the period `P7D` named `1W`, exactly as
-  // `ofWeeks(1)` produces.
+  /**
+   * The longest text a tenor is parsed from, which the grammar of a period puts far below it.
+   *
+   * A tenor is named by an ISO-8601 period, with or without its leading `P`, and such a period
+   * is a handful of characters: the longest one that can name a tenor at all is a signed count
+   * of years, months, weeks and days, and even with every count written out to the ten digits an
+   * `Int` can hold that is under fifty characters. The ceiling is therefore set at 256 - four
+   * times the longest text that can succeed - so that no text a caller means to be read is ever
+   * refused for its length, while text written to be large is refused before it is worked on.
+   *
+   * It bounds work rather than meaning. [[Tenor.parse]] copies the text to prefix it, and hands
+   * the copy to `java.time.Period`, whose own parse builds a matcher over the whole of it: both
+   * costs are proportional to the length of text that arrived from outside this library
+   * (CWE-400/CWE-770), and both are now reached only by text that is within the grammar's own
+   * bound.
+   *
+   * The value is the one [[com.opengamma.strata.collect.Decimal]] uses for the same purpose on
+   * the numeral it reads, so the two ceilings of this port that bound a text grammar are the
+   * same number and are reported the same way.
+   */
+  private val MaxTextLength: Int = 256
+
+  /**
+   * Reported for text that is longer than a tenor can be.
+   *
+   * The message names the ceiling and not the text, which is the one place this port departs
+   * from quoting what it refused: the text is refused precisely for being too large to write
+   * anywhere, and the caller needs the bound rather than the input to correct it. This is the
+   * wording [[com.opengamma.strata.collect.Decimal]] reports for the same condition, with the
+   * name of this grammar in place of its own.
+   */
+  private val MaxTextLengthMessage: String =
+    s"Tenor string must not exceed $MaxTextLength characters"
+
+  // The tenors in common use, grouped by unit - days, then weeks, then months, then years - and
+  // increasing within each group. A week constant holds the period of that many weeks named in
+  // weeks: `TENOR_1W` is the period `P7D` named `1W`.
 
   /** A tenor of 1 day. */
   val TENOR_1D: Tenor = dayTenor(1)
@@ -447,7 +490,6 @@ object Tenor {
   /** A tenor of 50 years. */
   val TENOR_50Y: Tenor = yearTenor(50)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains a tenor from a period.
    *
@@ -460,7 +502,8 @@ object Tenor {
    * its period was rejected rather than only the first.
    *
    * @param period  the period to convert to a tenor
-   * @return the tenor, or the failures describing why the period is not a tenor
+   * @return the tenor, or the failures naming the conditions the period breaks: it must be of
+   *   non-zero length and must hold no negative element
    */
   def of(period: Period): ResultNec[Tenor] =
     Validate.toResult(
@@ -478,7 +521,8 @@ object Tenor {
    * describes, since a week is seven days.
    *
    * @param days  the number of days, which must be positive and non-zero
-   * @return the tenor, or the failures describing why the day count is not a tenor
+   * @return the tenor, or the failures naming the conditions the day count breaks: it must be
+   *   neither zero nor negative
    */
   def ofDays(days: Int): ResultNec[Tenor] = of(Period.ofDays(days))
 
@@ -486,7 +530,8 @@ object Tenor {
    * Obtains a tenor of the specified number of weeks.
    *
    * @param weeks  the number of weeks, which must be positive and non-zero
-   * @return the tenor, or the failures describing why the week count is not a tenor
+   * @return the tenor, or the failures naming the conditions the week count breaks: it must be
+   *   neither zero nor negative
    */
   def ofWeeks(weeks: Int): ResultNec[Tenor] = of(Period.ofWeeks(weeks))
 
@@ -497,7 +542,8 @@ object Tenor {
    * different value from `ofYears(1)`.
    *
    * @param months  the number of months, which must be positive and non-zero
-   * @return the tenor, or the failures describing why the month count is not a tenor
+   * @return the tenor, or the failures naming the conditions the month count breaks: it must be
+   *   neither zero nor negative
    */
   def ofMonths(months: Int): ResultNec[Tenor] = of(Period.ofMonths(months))
 
@@ -505,11 +551,11 @@ object Tenor {
    * Obtains a tenor of the specified number of years.
    *
    * @param years  the number of years, which must be positive and non-zero
-   * @return the tenor, or the failures describing why the year count is not a tenor
+   * @return the tenor, or the failures naming the conditions the year count breaks: it must be
+   *   neither zero nor negative
    */
   def ofYears(years: Int): ResultNec[Tenor] = of(Period.ofYears(years))
 
-  //-------------------------------------------------------------------------
   /**
    * Parses a tenor from text.
    *
@@ -525,27 +571,37 @@ object Tenor {
    * a single error channel.
    *
    * The parsing failure quotes the text back as it was given, so the message names the whole of
-   * what was refused. That text came from outside the library, so bounding it and escaping what
-   * it may hold belong to the writing of a failure, which
-   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure perform
-   * for every part they write - a message reaching a log is therefore a bounded single line
-   * whatever arrived here.
+   * what was refused.
+   *
+   * ===The grammar's own ceiling is tested first===
+   *
+   * Text longer than [[MaxTextLength]] characters names no tenor - the grammar of a period puts
+   * every name it admits far below that, as the constant explains - and is refused before
+   * anything is done with it: before the copy that adds the leading `P`, and before
+   * `java.time.Period` is asked to read it. That failure names the ceiling rather than the text,
+   * which is the wording [[com.opengamma.strata.collect.Decimal]] reports for the same
+   * condition. Every text within the ceiling reads exactly as it did, quoted in full when it is
+   * refused, so the ceiling is invisible to every caller but the one handing over a payload.
    *
    * @param toParse  the text to parse
-   * @return the tenor the text names, or the failure describing why it names none
+   * @return the tenor the text names, or the failure naming what is wrong with the text: it is
+   *   not the form of a period, or the period it holds is of zero length or holds a negative
+   *   element
    */
-  def parse(toParse: String): FailureOr[Tenor] = {
-    val prefixed = if (toParse.startsWith("P")) toParse else s"P$toParse"
-    Try(Period.parse(prefixed)).toEither match {
-      case Right(period) => of(period).left.map(Failure.collapse)
-      case Left(_) => Left(Failure.Parsing(s"Unable to parse tenor: '$toParse'"))
+  def parse(toParse: String): FailureOr[Tenor] =
+    if (toParse.length > MaxTextLength) {
+      Left(Failure.Parsing(MaxTextLengthMessage))
+    } else {
+      val prefixed = if (toParse.startsWith("P")) toParse else s"P$toParse"
+      Try(Period.parse(prefixed)).toEither match {
+        case Right(period) => of(period).left.map(Failure.collapse)
+        case Left(_) => Left(Failure.Parsing(s"Unable to parse tenor: '$toParse'"))
+      }
     }
-  }
 
-  //-------------------------------------------------------------------------
   // Creates a tenor from a period that is already known to be positive and non-zero, applying
-  // the naming rules of the library being ported: a period of days alone is named in days or
-  // weeks, and anything else is named by its ISO-8601 form without the leading `P`.
+  // the naming rules: a period of days alone is named in days or weeks, and anything else is
+  // named by its ISO-8601 form without the leading `P`.
   //
   // This is the one place a tenor is named, so `of`, the convenience factories, the constants
   // and `normalized` cannot disagree about what a given period is called. It is private, and
@@ -561,33 +617,67 @@ object Tenor {
     }
   }
 
+  // The name this type derives from a period, which is the name a tenor of that period carries.
+  //
+  // This restates the naming rule `create` applies - a period of days alone is named in days, or
+  // in weeks where the count is an exact multiple of seven, and anything else by its ISO-8601
+  // form without the leading `P` - as a function of a period alone, which is the form the
+  // invariant of the type needs: the invariant reads the fields an instance holds, so it has a
+  // period and a name and no memory of how either was arrived at.
+  //
+  // The two statements of the rule cannot drift apart. Every tenor in this file is built through
+  // `named`, and every tenor built runs that invariant as part of its construction, so a rule
+  // stated here that disagreed with the one applied above would refuse the first constant this
+  // companion builds rather than waiting to be noticed.
+  private def canonicalName(period: Period): String = {
+    val dayCount = period.getDays
+    if (period.toTotalMonths == 0L && dayCount != 0) {
+      if (dayCount % 7 == 0) s"${dayCount / 7}W" else s"${dayCount}D"
+    } else {
+      // the ISO-8601 form of a period always begins with `P`, which the canonical name drops
+      period.toString.substring(1)
+    }
+  }
+
   // Creates a tenor of a day count, naming it in weeks when the count is an exact multiple of
   // seven; the period is the same either way, a week being seven days.
   private def dayTenor(days: Int): Tenor =
     if (days % 7 == 0) weekTenor(days / 7) else named(Period.ofDays(days), s"${days}D")
 
-  // Creates a tenor of a week count.
   private def weekTenor(weeks: Int): Tenor = named(Period.ofWeeks(weeks), s"${weeks}W")
 
   // Creates a tenor of a month count, which is never normalised into years.
   private def monthTenor(months: Int): Tenor = named(Period.ofMonths(months), s"${months}M")
 
-  // Creates a tenor of a year count.
   private def yearTenor(years: Int): Tenor = named(Period.ofYears(years), s"${years}Y")
 
-  // The only construction of the type. The anonymous subclass supplies the name, which is why
-  // the name can be a `val` on every instance while staying out of the equality the case class
-  // derives from its single period element - the equality of the library being ported.
+  // The only construction of the type. The implementation class supplies the name, which is why
+  // the name can be a fixed member of every instance while staying out of the equality the case
+  // class derives from its single period element.
   //
   // The constructor of a `sealed abstract case class` is reachable only from inside this file,
   // and this is the sole place in the file that reaches it, so no caller anywhere can build a
   // tenor whose period has not been checked or whose name does not match its period.
-  private def named(period: Period, tenorName: String): Tenor =
-    new Tenor(period) {
-      override val name: String = tenorName
-    }
+  private def named(period: Period, tenorName: String): Tenor = new Impl(period, tenorName)
 
-  //-------------------------------------------------------------------------
+  /**
+   * The one implementation of a tenor.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[Tenor]] refuse in its own constructor to be any other implementation.
+   *
+   * The name the abstract class declares is supplied here as a constructor `val`, which is what
+   * keeps it off the single case element of the type and therefore out of its equality.
+   *
+   * @param period  the period of the tenor, already checked to be positive and normalised
+   * @param name  the canonical name of that period, as the factory rendered it
+   */
+  private final class Impl(period: Period, override val name: String) extends Tenor(period)
+
   /**
    * The ordering of tenors, which is also their hashing and equality.
    *
@@ -597,21 +687,20 @@ object Tenor {
    *
    * Equality and hashing are those of the value itself, which means the period alone, since that
    * is the only element the case class carries. Ordering is [[Tenor.compareTo]] - the comparison
-   * by length of the library being ported - followed by a comparison of names where that returns
-   * zero. The tie-break is a deliberate divergence, recorded in `SCALA_MIGRATION.md`, and it is
-   * required rather than cosmetic:
+   * by length - followed by a comparison of names where that returns zero. The tie-break is
+   * deliberate and is required rather than cosmetic:
    *
-   *   - the original ranks `12M` and `1Y` equal while holding them unequal, so its comparison
-   *     cannot be an `Order`, whose laws demand that `compare` return zero exactly when the
-   *     values are equal;
+   *   - the comparison by length ranks `12M` and `1Y` equal while they are different tenors, so
+   *     on its own it cannot be an `Order`, whose laws demand that `compare` return zero exactly
+   *     when the values are equal;
    *   - a name is a total, injective function of a period, so two tenors share a name only when
    *     they share a period, which is exactly when they are equal. The tie-break therefore
    *     returns zero in precisely the cases equality holds;
-   *   - it cannot reorder a pair the original ranked strictly, because it is consulted only
-   *     after the original's comparison has returned zero.
+   *   - it cannot reorder a pair the comparison by length ranked strictly, because it is
+   *     consulted only after that comparison has returned zero.
    *
-   * The effect is a total order in which `12M` sorts immediately before `1Y`, tenors of equal
-   * estimated length are grouped, and every other pair keeps the order the original gave it.
+   * The effect is a total order in which `12M` sorts immediately before `1Y` and tenors of equal
+   * estimated length are grouped.
    *
    * @return the ordering, hashing and equality of tenors
    */
@@ -644,13 +733,12 @@ object Tenor {
    * The JSON codec for tenors.
    *
    * A tenor is written as the bare string of its canonical name, so the document holds `"3M"`
-   * rather than an object, and the text is identical to the one the library being ported wrote
-   * through its own string conversion. Reading goes through [[parse]], so a document holding
-   * `"P3M"` is accepted as well and text that names no tenor is rejected with the message of the
-   * parse failure.
+   * rather than an object. Reading goes through [[parse]], so a document holding `"P3M"` is
+   * accepted as well and text that names no tenor is rejected with the message of the parse
+   * failure.
    *
    * Because the encoded form is a function of the value alone, two equal tenors always encode to
-   * identical bytes, which is the stability the round-trip tests of this port require.
+   * identical bytes.
    *
    * @return the codec reading and writing a tenor as its canonical text
    */

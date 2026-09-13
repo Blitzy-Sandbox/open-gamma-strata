@@ -9,6 +9,7 @@ import java.time.LocalDate
 
 import cats.Hash
 import cats.Show
+import cats.syntax.apply._
 
 import io.circe.Decoder
 import io.circe.Encoder
@@ -17,6 +18,9 @@ import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.Resolvable
+import com.opengamma.strata.collect.ArgCheck
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.ValidatedFailures
@@ -77,6 +81,12 @@ import com.opengamma.strata.collect.result.Failure
  * therefore no such thing as a business-day addition of zero days - asking for one names no day
  * at all - and [[DaysAdjustment.ofBusinessDays]] handles that case specially, as described there.
  *
+ * Step two is applied whatever the day count is, so an adjustment of zero days is not the
+ * identity: it adds nothing and then still applies its [[adjustment]], moving a date that is not
+ * a business day of the calendar that adjustment names. Only an adjustment that also carries the
+ * no-adjustment [[BusinessDayAdjustment]] - [[DaysAdjustment.NONE]] - returns every date
+ * unaltered.
+ *
  * ===Reference data is supplied, not looked up===
  *
  * Both calendars are held as identifiers rather than as calendars, which is what lets an
@@ -97,14 +107,13 @@ import com.opengamma.strata.collect.result.Failure
  * changes to the reference data, which is the caveat `Resolvable` documents for every resolved
  * form.
  *
- * ===Failure is returned, not thrown===
+ * ===Failure is reported as a value===
  *
- * The Java original returned a bare date and threw `ReferenceDataNotFoundException` where a
- * calendar was absent from the reference data. Here both methods answer with
- * `Either[Failure, _]`, reporting the `Failure.MissingData` that
- * [[HolidayCalendarId.resolve]] produces, naming the identifier that could not be found. Nothing
- * else about applying an adjustment can fail: once the calendars are in hand, every convention
- * answers for every date they answer for.
+ * [[adjust]] and [[resolve]] both answer `Either[Failure, _]`, and calendar resolution is the
+ * one thing either of them can fail at: where the reference data does not supply a calendar this
+ * adjustment names, [[HolidayCalendarId.resolve]] reports a failure naming that identifier.
+ * Nothing else about applying an adjustment can fail - once the calendars are in hand, every
+ * convention answers for every date they answer for.
  *
  * ===Construction===
  *
@@ -117,23 +126,21 @@ import com.opengamma.strata.collect.result.Failure
  * DaysAdjustment.of(0, HolidayCalendarIds.GBLO, BusinessDayAdjustment.NONE)  // Left - see below
  * }}}
  *
- * The condition is the one this class states above and the type being ported stated in the same
- * words: '''a business-day addition of zero days names no day at all'''. An addition calendar
- * other than the no-holidays identifier is what makes the addition walk business days, so pairing
- * one with a day count of zero describes nothing, and `of` reports it rather than building a value
- * whose calendar is never consulted. Nothing else about the three fields can be wrong - a day
- * count is any integer, and a calendar is a name rather than a resolved calendar - so that single
- * condition is the whole of the check, and it is reported through the accumulating channel every
- * validated type of this port reports through.
+ * The condition is the one this class states above: '''a business-day addition of zero days names
+ * no day at all'''. An addition calendar other than the no-holidays identifier is what makes the
+ * addition walk business days, so pairing one with a day count of zero names no day, and `of`
+ * reports it rather than building a value whose calendar is never consulted. Nothing else about
+ * the three fields can be wrong - a day count is any integer, and a calendar is a name rather
+ * than a resolved calendar - so that single condition is the whole of the check, and it is
+ * reported through the accumulating failure channel.
  *
- * The four named factories remain '''total''', and they are total because each of them lands in
- * the part of the field space `of` accepts rather than because construction is unchecked:
- * [[DaysAdjustment.ofCalendarDays]] fixes the addition calendar to the no-holidays identifier, and
- * both [[DaysAdjustment.ofBusinessDays]] forms answer a zero-day request by dropping the addition
- * calendar, which is the rule the type being ported applied in its own two-argument factory and in
- * `normalized`. `DaysAdjustmentSpec` and `SmartConstructorSpec` assert that equivalence as a
- * property - every value any factory builds is accepted by `of`, and every triple `of` rejects is
- * built by none of them - so the two construction routes cannot drift apart.
+ * The four named factories are '''total''', and they are total because each of them lands in the
+ * part of the field space `of` accepts rather than because construction is unchecked:
+ * [[DaysAdjustment.ofCalendarDays]] fixes the addition calendar to the no-holidays identifier,
+ * and both [[DaysAdjustment.ofBusinessDays]] forms answer a zero-day request by dropping the
+ * addition calendar. Every value any factory builds is therefore accepted by `of`, and every
+ * triple `of` rejects is built by none of them, so the two construction routes cannot drift
+ * apart.
  *
  * What the factories have that a raw constructor would lose is meaning - which calendar performs
  * the addition, and the zero-day case of [[DaysAdjustment.ofBusinessDays]] - and together with
@@ -157,7 +164,27 @@ sealed abstract case class DaysAdjustment private (
     days: Int,
     calendar: HolidayCalendarId,
     adjustment: BusinessDayAdjustment)
-    extends Resolvable[DateAdjuster] {
+    extends Resolvable[DateAdjuster]
+    with NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // would carry a day count and a calendar pairing no factory had checked - can be stopped is
+  // here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[DaysAdjustment.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the class file of the implementation carries
+  // a public constructor whatever the source asked for: a class compiled outside this library can
+  // reach it directly, and the check above would admit what it built, its runtime class being the
+  // one class that check admits. What is left to state is the one condition `of` checks and the
+  // named factories land on - a business-day addition of zero days names no day, so a day count
+  // of zero goes with the no-holidays addition calendar and with no other. Nothing else about the
+  // three fields can be wrong, as the documentation of `of` explains.
+  JvmClosure.requireInvariant(
+    "a day count of zero is added by the calendar that declares no holidays",
+    days != 0 || calendar == HolidayCalendarIds.NO_HOLIDAYS)
 
   /**
    * Adjusts the date, adding the period in days using the holiday calendar and then applying the
@@ -172,9 +199,9 @@ sealed abstract case class DaysAdjustment private (
    * once per date.
    *
    * @param date  the date to adjust
-   * @param refData  the reference data, used to find the holiday calendars
-   * @return the adjusted date, or `Left(Failure.MissingData)` where the reference data does not
-   *   supply one of the calendars this adjustment names
+   * @param refData  the reference data supplying the holiday calendars this adjustment names
+   * @return the adjusted date, or a failure naming the calendar identifier the reference data
+   *   does not supply
    */
   def adjust(date: LocalDate, refData: ReferenceData): Either[Failure, LocalDate] =
     for {
@@ -190,22 +217,21 @@ sealed abstract case class DaysAdjustment private (
    * adjuster returned performs no further lookup however many dates are put through it and there
    * is no need to supply the reference data again.
    *
-   * The adjuster is effectively [[normalized]]: where the addition calendar is `NoHolidays` the
-   * addition is performed as plain date arithmetic rather than by asking a calendar that has no
-   * holidays to shift a date, which is the same answer computed without the indirection. That
-   * shortcut is also why an adjustment adding calendar days resolves against reference data that
-   * holds no `NoHolidays` entry, where [[adjust]] on the same adjustment would report it missing;
-   * both behaviours are those of the type being ported, and the reference data this library
-   * builds - [[com.opengamma.strata.basics.ReferenceData.standard]], `minimal`, and anything from
+   * Where the addition calendar is `NoHolidays` the addition is performed as plain date
+   * arithmetic rather than by asking a calendar that has no holidays to shift a date, which is
+   * the same answer computed without the indirection. That shortcut is also why an adjustment
+   * adding calendar days resolves against reference data that holds no `NoHolidays` entry, where
+   * [[adjust]] on the same adjustment reports it missing; the reference data this library builds
+   * - [[com.opengamma.strata.basics.ReferenceData.standard]], `minimal`, and anything from
    * `ReferenceData.of` - always holds that entry, so the two paths answer alike for it.
    *
    * The adjuster is bound to the calendars as they stood at this moment and will not follow later
    * changes to the reference data, so care is needed when placing one in a cache or a persistence
    * layer. The unresolved adjustment has no such caveat, which is why both forms exist.
    *
-   * @param refData  the reference data, used to find the holiday calendars
-   * @return the adjuster bound to specific holiday calendars, or `Left(Failure.MissingData)`
-   *   where the reference data does not supply one of the calendars this adjustment names
+   * @param refData  the reference data supplying the holiday calendars this adjustment names
+   * @return the adjuster bound to specific holiday calendars, or a failure naming the calendar
+   *   identifier the reference data does not supply
    */
   override def resolve(refData: ReferenceData): Either[Failure, DateAdjuster] = {
     val adjustmentConvention = adjustment.convention
@@ -256,12 +282,11 @@ sealed abstract case class DaysAdjustment private (
    * is often equal to it outright; normalising an already normalised adjustment returns it as it
    * stands.
    *
-   * The first of those two rewrites is '''already done''' by the time any adjustment exists here,
-   * which is where this port and the method being ported differ in code while agreeing in result:
-   * every factory drops the addition calendar of a zero-day addition and
-   * [[DaysAdjustment.of]] refuses the pairing outright, so a zero-day adjustment always names the
-   * no-holidays calendar already and is returned as it stands. The rule is stated above because it
-   * is still the rule - it is simply enforced at construction rather than repaired here.
+   * The first of those two rewrites is '''already done''' by the time any adjustment exists:
+   * every factory drops the addition calendar of a zero-day addition and [[DaysAdjustment.of]]
+   * refuses that pairing outright, so a zero-day adjustment always names the no-holidays calendar
+   * already and is returned as it stands. The rule is stated above because it is still the rule -
+   * it is simply enforced at construction rather than repaired here.
    *
    * This cannot fail - it rebuilds an adjustment from fields this adjustment already holds.
    *
@@ -279,9 +304,9 @@ sealed abstract case class DaysAdjustment private (
   /**
    * Returns a string describing the adjustment.
    *
-   * The rendering is that of the type being ported, character for character. It names the number
-   * of days and what kind of day they are, singular or plural as the count requires, then the
-   * addition calendar where there is one, then the trailing adjustment where there is one:
+   * The rendering names the number of days and what kind of day they are, singular or plural as
+   * the count requires, then the addition calendar where there is one, then the trailing
+   * adjustment where there is one:
    *
    * {{{
    * 0 calendar days
@@ -294,6 +319,13 @@ sealed abstract case class DaysAdjustment private (
    * [[DaysAdjustment.ofBusinessDays]] builds it that way; the calendar it was given is still
    * there, in the trailing adjustment.
    *
+   * The addition calendar is rendered by asking the identifier for its own text form rather
+   * than by taking its name, which is what keeps this rendering bounded and on a single line:
+   * an identifier accepts any text, including text that reached the library from outside it,
+   * and [[HolidayCalendarId.toString]] is where that text is made safe to write out. For every
+   * identifier of a realistic shape the two are the same characters, so the renderings above
+   * are unchanged.
+   *
    * @return the descriptive string
    */
   override def toString: String = {
@@ -302,7 +334,7 @@ sealed abstract case class DaysAdjustment private (
       if (calendar == HolidayCalendarIds.NO_HOLIDAYS) {
         s"$days calendar day$plural"
       } else {
-        s"$days business day$plural using calendar ${calendar.name}"
+        s"$days business day$plural using calendar $calendar"
       }
     if (adjustment == BusinessDayAdjustment.NONE) {
       addition
@@ -326,7 +358,27 @@ object DaysAdjustment {
       days: Int,
       calendar: HolidayCalendarId,
       adjustment: BusinessDayAdjustment): DaysAdjustment =
-    new DaysAdjustment(days, calendar, adjustment) {}
+    new Impl(days, calendar, adjustment)
+
+  /**
+   * The one implementation of a days adjustment.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[DaysAdjustment]] refuse in its own constructor to be any other implementation.
+   *
+   * @param days  the number of days to add, as the factory settled it
+   * @param calendar  the addition calendar the factory decided on
+   * @param adjustment  the business day adjustment applied to the result of the addition
+   */
+  private final class Impl(
+      days: Int,
+      calendar: HolidayCalendarId,
+      adjustment: BusinessDayAdjustment)
+      extends DaysAdjustment(days, calendar, adjustment)
 
   /**
    * An instance that performs no adjustment.
@@ -342,10 +394,10 @@ object DaysAdjustment {
   val NONE: DaysAdjustment =
     create(0, HolidayCalendarIds.NO_HOLIDAYS, BusinessDayAdjustment.NONE)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance from the number of days, the addition calendar and the trailing
-   * adjustment, reporting a pairing that describes no adjustment.
+   * adjustment, rejecting a day count of zero paired with an addition calendar other than the
+   * no-holidays identifier.
    *
    * This is the validated factory of the type, and it is the route to reach for where the three
    * fields are held already - read off another adjustment, decoded from a document, or computed
@@ -375,14 +427,16 @@ object DaysAdjustment {
    * @param calendar  the identifier of the calendar that defines the meaning of a day when
    *   performing the addition
    * @param adjustment  the business day adjustment to apply to the result of the addition
-   * @return the days adjustment, or the failure describing why the three fields describe none
+   * @return the days adjustment, or the failure naming the broken condition: a day count of zero
+   *   requires the no-holidays identifier as the addition calendar, since an addition of zero
+   *   business days names no day
    */
   def of(
       days: Int,
       calendar: HolidayCalendarId,
       adjustment: BusinessDayAdjustment): ResultNec[DaysAdjustment] =
-    checkedAddition(days, calendar)
-      .map(_ => create(days, calendar, adjustment))
+    (checkedAddition(days, calendar), checkedMagnitude(days, calendar))
+      .mapN((_, _) => create(days, calendar, adjustment))
       .toEither
 
   /**
@@ -399,16 +453,12 @@ object DaysAdjustment {
    * required, which their types state on their own, and nothing else about them can be wrong.
    *
    * The rejected identifier reaches the message as it stands, so a caller correcting its input is
-   * handed back exactly what was refused. [[HolidayCalendarId.of]] is total and accepts any text,
-   * and the decoder of this type reads a calendar name straight out of a document, so the name in
-   * hand may carry line breaks or run to any length - and making that safe to write out belongs
-   * to the writing: the text form of a failure and [[Failure.show]] bound every part they write
-   * and escape anything a line-oriented reader could act on, as they do for every other reported
-   * input of these modules.
+   * handed back exactly what was refused.
    *
    * @param days  the number of days to check
    * @param calendar  the identifier of the calendar the days are counted against
-   * @return a passing outcome, or the failure describing the pairing that was rejected
+   * @return a passing outcome, or the failure naming the rejected pairing of a zero day count
+   *   with an addition calendar other than the no-holidays identifier
    */
   private def checkedAddition(
       days: Int,
@@ -419,7 +469,81 @@ object DaysAdjustment {
         s"'${HolidayCalendarIds.NO_HOLIDAYS.name}' when 'days' is zero but was " +
         s"'${calendar.name}'")
 
-  //-------------------------------------------------------------------------
+  /**
+   * Checks that a business-day addition names a number of days a calendar can walk.
+   *
+   * Adding business days is a walk of them - [[HolidayCalendar.shift]] asks the calendar about
+   * each day in turn - so the cost of applying such an adjustment is decided by the day count it
+   * holds, and that count is `Int`-wide. An adjustment is '''data''': it is read from a document,
+   * held in a convention and passed around, so a count of two thousand million would arrive here
+   * from outside the program and then occupy a processor for the best part of a minute every time
+   * the adjustment was applied, to name a date some six million years away. The count is
+   * therefore judged against the same limit the calendar applies,
+   * [[HolidayCalendar.MaxBusinessDayShift]], which is more than three hundred years of business
+   * days and beyond every convention of finance - and judged '''here''', where the adjustment is
+   * built, so that an adjustment which exists can always be applied and a document naming one
+   * that cannot is refused by the reader of this type rather than by the calendar much later.
+   *
+   * The limit belongs to the business-day addition alone. A calendar-day addition adds its days
+   * arithmetically, in one step, whatever their number, so nothing about its cost depends on the
+   * count and the no-holidays identifier is accordingly exempt - which is also what keeps
+   * [[DaysAdjustment.ofCalendarDays]] total for every count an `Int` can hold, as the factory
+   * being ported was.
+   *
+   * @param days  the number of days to check
+   * @param calendar  the identifier of the calendar the days are counted against
+   * @return a passing outcome, or the failure describing the count that was rejected
+   */
+  private def checkedMagnitude(
+      days: Int,
+      calendar: HolidayCalendarId): ValidatedFailures[Unit] =
+    Validate.isFalse(
+      exceedsWalkableCount(days, calendar),
+      s"An addition of more than ${HolidayCalendar.MaxBusinessDayShift} business days is " +
+        s"outside the accepted range, but 'days' was: $days")
+
+  /**
+   * Decides whether an addition names more days than the calendar performing it can be walked.
+   *
+   * The one statement of the limit, read by both routes into this type, so that the field space
+   * the validated factory accepts and the field space the named factories build in cannot
+   * drift apart. The no-holidays identifier is exempt because an addition against it is
+   * arithmetic on the date rather than a walk - [[HolidayCalendar.NoHolidays]] shifts by adding
+   * the days in one step - which is the same exemption that calendar makes for itself.
+   *
+   * @param days  the number of days the addition names
+   * @param calendar  the identifier of the calendar that would perform the addition
+   * @return true where the count is beyond what that calendar can be walked
+   */
+  private def exceedsWalkableCount(days: Int, calendar: HolidayCalendarId): Boolean =
+    calendar != HolidayCalendarIds.NO_HOLIDAYS &&
+      // measured in `Long` arithmetic, because the magnitude of the smallest `Int` is not an
+      // `Int`: negating it overflows back to itself, and the comparison would then pass
+      Math.abs(days.toLong) > HolidayCalendar.MaxBusinessDayShift.toLong
+
+  /**
+   * Checks the same limit as `checkedMagnitude` for the factories that name a kind of addition.
+   *
+   * The named business-day factories are total in the sense the factories being ported were -
+   * they hold the fields they are given rather than judging them - so a count beyond what any
+   * calendar can walk is stated by raising, as a precondition of the call, which is the form
+   * [[HolidayCalendar.shift]] states the same limit in. It is the one condition they check, and
+   * checking it against the same predicate is what keeps them in step with
+   * [[DaysAdjustment.of]] in both directions: every adjustment a factory builds is one that
+   * factory's validated counterpart accepts, and every set of fields the validated factory
+   * accepts is one a named factory builds.
+   *
+   * @param days  the number of business days the addition names, which is not zero
+   * @param calendar  the identifier of the calendar that performs the addition
+   * @throws IllegalArgumentException where the magnitude exceeds
+   *   [[HolidayCalendar.MaxBusinessDayShift]] for a calendar that has to be walked
+   */
+  private def checkMagnitude(days: Int, calendar: HolidayCalendarId): Unit =
+    ArgCheck.isFalse(
+      exceedsWalkableCount(days, calendar),
+      s"An addition of more than ${HolidayCalendar.MaxBusinessDayShift} business days is " +
+        s"outside the accepted range, but was: $days")
+
   /**
    * Obtains an instance that can adjust a date by a specific number of calendar days.
    *
@@ -466,15 +590,27 @@ object DaysAdjustment {
    * request as the one thing it can mean - "the next business day of this calendar, or this date
    * if it already is one" - and builds `(0, NoHolidays, Following using this calendar)` rather
    * than `(0, this calendar, no adjustment)`. The two differ in what they hold and agree in what
-   * they compute for a business day, while only the former also moves a holiday forwards, which
-   * is the behaviour the type being ported had and which the spot lags and index conventions
-   * built on this type depend on. It is also why such an instance renders in the calendar-day
-   * form, and why its [[DaysAdjustment.calendar]] is `NoHolidays` while its [[resultCalendar]] is
-   * the calendar given here.
+   * they compute for a business day, while only the first of the two also moves a holiday
+   * forwards, which is what a zero-day request is asking for. It is also why such an instance
+   * renders in the calendar-day form, and why its [[DaysAdjustment.calendar]] is `NoHolidays`
+   * while its [[resultCalendar]] is the calendar given here.
+   *
+   * '''How many days may be named.''' The addition walks the business days it is asked for, so
+   * the count is limited to [[HolidayCalendar.MaxBusinessDayShift]] in either direction, as
+   * `checkedMagnitude` describes, for every calendar that has to be walked - the no-holidays
+   * identifier being exempt, its addition adding the days in one step. This factory names a kind
+   * of addition rather than judging fields, so it states the limit by raising, exactly as
+   * [[HolidayCalendar.shift]] does for the same figure; both routes read one predicate, which is
+   * what keeps this factory and [[DaysAdjustment.of]] in step in both directions: no adjustment a
+   * factory builds is one `of` would refuse, and no fields `of` accepts are fields a factory
+   * would refuse.
    *
    * @param numberOfDays  the number of days, which may be negative
    * @param holidayCalendar  the identifier of the calendar that defines holidays and business days
    * @return the days adjustment
+   * @throws IllegalArgumentException where the count exceeds
+   *   [[HolidayCalendar.MaxBusinessDayShift]] business days in either direction against a
+   *   calendar that has to be walked
    */
   def ofBusinessDays(numberOfDays: Int, holidayCalendar: HolidayCalendarId): DaysAdjustment =
     if (numberOfDays == 0) {
@@ -483,6 +619,7 @@ object DaysAdjustment {
         HolidayCalendarIds.NO_HOLIDAYS,
         BusinessDayAdjustment.of(BusinessDayConventions.FOLLOWING, holidayCalendar))
     } else {
+      checkMagnitude(numberOfDays, holidayCalendar)
       create(numberOfDays, holidayCalendar, BusinessDayAdjustment.NONE)
     }
 
@@ -498,23 +635,28 @@ object DaysAdjustment {
    * This factory holds the fields it is given, with the '''one''' exception the two-argument form
    * also makes: a day count of zero drops the addition calendar, since there is no such thing as
    * an addition of zero business days and the calendar would name a walk that never happens. The
-   * adjustment supplied is kept, so the value built is `(0, NoHolidays, adjustment)` - which is
-   * what [[DaysAdjustment.normalized]] answers for the fields as given, and what the type being
-   * ported answered from `normalized` for the same input. Every date the two forms compute is the
-   * same, because shifting a date by zero days returns the date whichever calendar is asked, so
-   * the rule chooses the representative of the pair rather than changing an answer. It is what
-   * keeps every value of this type inside the field space [[DaysAdjustment.of]] accepts, and it is
-   * the one place this port departs from the factory being ported, which held a zero-day
-   * business-day addition as given.
+   * adjustment supplied is kept, so the value built is `(0, NoHolidays, adjustment)`, which is
+   * what [[DaysAdjustment.normalized]] answers for the fields as given. Every date the two forms
+   * compute is the same, because shifting a date by zero days returns the date whichever calendar
+   * is asked, so the rule chooses the representative of the pair rather than changing an answer,
+   * and it is what keeps every value of this type inside the field space
+   * [[DaysAdjustment.of]] accepts.
    *
    * With a non-zero day count this factory is the way to rebuild an adjustment from the fields of
-   * an existing one, and [[DaysAdjustment.of]] is the way to do so while reporting a pairing that
-   * describes no adjustment.
+   * an existing one, and [[DaysAdjustment.of]] is the way to do so while reporting a zero day
+   * count paired with an addition calendar.
+   *
+   * The count is limited as it is in the two-argument form, to
+   * [[HolidayCalendar.MaxBusinessDayShift]] business days in either direction against a calendar
+   * that has to be walked.
    *
    * @param numberOfDays  the number of days, which may be negative
    * @param holidayCalendar  the identifier of the calendar that defines holidays and business days
    * @param adjustment  the business day adjustment to apply to the result of the addition
    * @return the days adjustment
+   * @throws IllegalArgumentException where the count exceeds
+   *   [[HolidayCalendar.MaxBusinessDayShift]] business days in either direction against a
+   *   calendar that has to be walked
    */
   def ofBusinessDays(
       numberOfDays: Int,
@@ -523,25 +665,23 @@ object DaysAdjustment {
     if (numberOfDays == 0) {
       create(0, HolidayCalendarIds.NO_HOLIDAYS, adjustment)
     } else {
+      checkMagnitude(numberOfDays, holidayCalendar)
       create(numberOfDays, holidayCalendar, adjustment)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of adjustments.
    *
    * Two adjustments are equal when all three fields are equal, which is the equality the case
-   * class derives and the equality of the bean being ported: the day count, the name of the
-   * addition calendar and the convention and calendar of the trailing adjustment. No field holds
-   * a `Double`, so there is no bit-pattern comparison to arrange, and two adjustments that
-   * compute the same dates by holding different fields are deliberately '''not''' equal -
-   * [[DaysAdjustment.normalized]] is how a caller asks for the representative form before
-   * comparing.
+   * class derives: the day count, the name of the addition calendar and the convention and
+   * calendar of the trailing adjustment. No field holds a `Double`, so there is no bit-pattern
+   * comparison to arrange, and two adjustments that compute the same dates by holding different
+   * fields are deliberately '''not''' equal - [[DaysAdjustment.normalized]] is how a caller asks
+   * for the representative form before comparing.
    *
    * This is the type's only equality-bearing instance; `Eq[DaysAdjustment]` is obtained from it
-   * by subtyping rather than declared separately. There is no `Order`: the bean being ported is
-   * not `Comparable`, and an ordering over day counts and calendars would be this port's
-   * invention.
+   * by subtyping rather than declared separately. There is no `Order`, since no ordering over a
+   * day count and two calendar identifiers carries a meaning in the domain.
    *
    * @return the hashing of adjustments, which is also their equality
    */
@@ -550,14 +690,13 @@ object DaysAdjustment {
   /**
    * The rendering of adjustments as text.
    *
-   * Renders what [[DaysAdjustment.toString]] renders, which is the form of the library being
-   * ported, so the two ways of putting an adjustment into a message agree.
+   * Renders what [[DaysAdjustment.toString]] renders, so the two ways of putting an adjustment
+   * into a message agree.
    *
    * @return the rendering of an adjustment
    */
   implicit val show: Show[DaysAdjustment] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The raw field shape the JSON codec is derived from.
    *
@@ -576,19 +715,18 @@ object DaysAdjustment {
       days: Int,
       calendar: HolidayCalendarId,
       adjustment: BusinessDayAdjustment)
+      extends NoJavaSerialization
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
-  /** The derived decoder of the raw field shape, used by the decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
   /**
    * The JSON encoding of adjustments.
    *
-   * The encoding is derived when this file is compiled, so no part of it inspects a class while
-   * the program runs. An instance encodes as an object holding its three fields under the names
-   * the bean being ported declared, in declaration order:
+   * The encoding is derived at compile time, so no part of it inspects a class while the program
+   * runs. An instance encodes as an object holding its three fields under their own names, in
+   * declaration order:
    *
    * {{{
    * {"days":2,"calendar":"GBLO","adjustment":{"convention":"ModifiedFollowing","calendar":"USNY"}}
@@ -599,8 +737,8 @@ object DaysAdjustment {
    * codec writes. Two adjustments that are equal therefore encode to identical bytes.
    *
    * No field is optional, so there is no absent value to drop; the encoder is wrapped in the
-   * single policy of this port for products all the same, so that the rule holds of every product
-   * encoder without a reader having to check which products have optional fields today.
+   * shared product policy all the same, so that the rule omitting an absent value holds of every
+   * product encoder without a reader having to check which products carry an optional field.
    *
    * @return the JSON encoding of an adjustment
    */
@@ -613,12 +751,12 @@ object DaysAdjustment {
    *
    * This is the inverse of the encoding above and is likewise derived at compile time. All three
    * fields have to be present, and they are handed to the '''validated''' factory
-   * [[DaysAdjustment.of]] rather than being wrapped unchecked, so a document describing a pairing
-   * no adjustment has - a day count of zero against a named addition calendar - is a decoding
-   * failure carrying the reason that factory gives. That pairing is also one no value of this type
-   * holds, since every factory drops the addition calendar for a zero day count, so the round trip
-   * is unaffected: an encoded adjustment decodes back to one equal to it, and the check refuses
-   * only documents no encoder of this port produces.
+   * [[DaysAdjustment.of]] rather than being wrapped unchecked, so a document holding a day count
+   * of zero against a named addition calendar is a decoding failure carrying the reason that
+   * factory gives. That pairing is also one no value of this type holds, since every factory drops
+   * the addition calendar for a zero day count, so the round trip is unaffected: an encoded
+   * adjustment decodes back to one equal to it, and the check refuses only documents that no
+   * encoder here produces.
    *
    * What the fields describe beyond that pairing is checked where it can be - the convention
    * against its closed family, by its own codec, and the calendar identifiers against the

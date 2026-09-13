@@ -8,12 +8,15 @@ package com.opengamma.strata.collect.io
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
+import java.io.OutputStream
 import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, NoSuchFileException, Path, Paths}
 
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 import scala.util.Try
 
+import cats.effect.FiberIO
 import cats.effect.IO
 import cats.effect.testing.scalatest.AsyncIOSpec
 
@@ -43,35 +46,36 @@ import org.scalatest.matchers.should.Matchers
  * comes from `Files.createTempFile` or `Files.createTempDirectory`, and every one of them
  * is removed by a finalizer that runs whether the case passed, failed or was cancelled.
  *
- * ===What is ported, and what has no counterpart===
+ * ===A name is literal text===
  *
- * The original of this spec tested a locator value type whose surface was far wider than
- * the port keeps. Six of its fifteen cases have counterparts here: the two that read a
- * file through a `File` and through a `Path`, and the four that read a classpath resource
- * by absolute name, by relative name, and by either form resolved against a class. Each of
- * those asserted the same pair of properties - the first byte of the content, then the
- * decoded lines - and that pair is what the "reads it" and "decodes it" case of each member
- * below preserves. The remaining nine cases tested the prefixed locator forms
- * ("classpath:", "file:", "url:"), archives, URLs and the value equality of the locator
- * type itself. None of that API is ported, so no case here can perform the reads those
- * nine performed; what the port offers in their place is its refusal to interpret such a
- * name at all, and the two cases under "Names the port does not interpret" assert exactly
- * that - each against a positive control that reads the same file and the same resource
- * under their plain names, so a refusal cannot be mistaken for missing content. The mapping
- * at the foot of this file records where every one of the fifteen landed.
+ * Each reader takes one name and uses it exactly as supplied. `readClasspathText` asks the
+ * class loader for that resource name, dropping one leading separator so that the
+ * slash-prefixed and the bare spelling of a resource yield one content; `readFileText` asks
+ * the platform for a file at that path. Nothing inside a name is interpreted: a name opening
+ * with `file:`, `classpath:` or `url:`, and a name whose tail reaches inside an archive,
+ * name a resource or a file spelled exactly that way and nothing else. Neither reader
+ * resolves a name against a class, opens an archive, or fetches a URL, and neither takes a
+ * charset or a locator value. The two cases under "Names this reader does not interpret"
+ * assert that behaviour over names of each of those shapes, each against a positive control
+ * that reads the same file and the same resource under their plain names, so a failed read
+ * is attributable to the shape of the name rather than to absent or unreadable content; the
+ * surface case denies the rest of that API at compile time.
  *
  * Most of the cases here are additive rather than ported, and the note at the foot of this
  * file counts them and says why each family exists. The port promises a byte ceiling, a
  * strict decode, a handle released on every outcome, a read that happens only when the
- * effect is run, and a failed effect for any source it cannot obtain; the original could
- * promise none of those, because its reads happened where they were written and it reported
- * failure by throwing. Every failure here is observed through `attempt` as a value.
+ * effect is run, a failed effect for any source it cannot obtain, a failure whose text names
+ * that source in one bounded line however the source was named, and a read that can be
+ * cancelled while it waits; the original could promise none of those, because its reads
+ * happened where they were written and it reported failure by throwing. Every failure here is
+ * observed through `attempt` as a value.
  *
- * The two negative cases are additive for a reason of their own. The original had none for
- * a missing classpath resource or an unreadable file - its only negative case concerned
- * parsing a prefixed locator string - whereas the port promises that a resource it cannot
- * obtain makes the effect fail rather than yielding a sentinel or empty text. That promise
- * is part of the contract, so it is tested.
+ * A read materialises at most 64 MiB and refuses a larger source, decodes strictly as UTF-8
+ * and refuses malformed bytes rather than substituting for them, releases its handle on
+ * every outcome, performs nothing until the effect is run, and fails the effect - never
+ * yields a sentinel or empty text - for a source it cannot obtain. Each of those is asserted
+ * below, on both readers where both can reach it, and every failure is observed through
+ * `attempt` as a value rather than caught.
  *
  * ===Everything here goes through the two public readers===
  *
@@ -84,14 +88,36 @@ import org.scalatest.matchers.should.Matchers
  * over the descriptor table of this process - after a read that succeeds, after a read that
  * fails once its stream is open, and after a read the ceiling refuses.
  *
- * Two properties of the implementation are not asserted, deliberately rather than by
- * omission, because observing either would mean the subject shipping a seam for the purpose:
- * release when a read is '''cancelled''', and release when the '''acquisition''' itself fails,
- * where there is no handle to reclaim. Both belong to the pairing of acquisition with release
- * that the subject delegates to `cats.effect.Resource`, and neither can be reached from
- * outside the object: a cancellation would have to be delivered while a blocking read is in
- * flight, which no caller can observe or time deterministically, and a failed acquisition
- * leaves nothing to look for.
+ * Release when a read is '''cancelled''' is asserted as well, and it needs no seam in the
+ * subject either. The source it is asserted over is the endless device `/dev/urandom`: a whole
+ * read of it costs a few hundred milliseconds of real time, and the case '''measures''' that
+ * cost first, so what follows is compared against this machine rather than against a constant
+ * guessed at while writing the case. It then starts a second read, lets it get under way,
+ * cancels it, and times the cancellation. Three things must hold: the read ends '''cancelled'''
+ * rather than with a result, the cancellation costs a small fraction of a whole read - a
+ * cancellation that waited for the blocking call to return would cost nearly all of one,
+ * because it is delivered in the first tenth of it - and no descriptor of this process names
+ * the source afterwards that did not name it before. Where the source is absent, where the read
+ * ends before the cancellation reaches it, or where the machine reads so fast that the
+ * comparison would mean nothing, the case cancels itself with the reason stated; every wait in
+ * it is bounded, so a regression fails it rather than hanging the suite.
+ *
+ * A named pipe would be the obvious source for that case, since one opens and then never
+ * yields, and the case after it records why it is not used: the subject reads its source with
+ * one bulk call, that call requires a seekable channel, and a pipe is therefore '''refused'''
+ * the moment it is read rather than blocking on it. That is worth establishing rather than
+ * merely noting - it says that a source of this shape cannot make a read of this subject wait
+ * at all, and that the handle of the refused read comes back like any other. The case makes its
+ * pipe with `mkfifo`, opens the writing end on a fiber of its own so that the subject's open
+ * can complete, removes both by a finalizer, bounds every wait, and cancels itself with the
+ * reason stated where `mkfifo` cannot be run or where a platform turns out to read pipes after
+ * all.
+ *
+ * One property of the implementation is still not asserted, deliberately rather than by
+ * omission: release when the '''acquisition''' itself fails. That belongs to the same pairing
+ * of acquisition with release, and it cannot be observed from outside for a reason no seam
+ * would fix - an acquisition that fails never produced a handle, so there is nothing to look
+ * for in the descriptor table and nothing a caller could distinguish.
  */
 final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
@@ -100,6 +126,113 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
   /** A resource name the classpath does not hold, used by the failure and laziness cases. */
   private val AbsentResource = "parity/no-such-fixture.json"
+
+  /**
+   * A name carrying the characters a forged record is made of: a line feed, a carriage
+   * return, a tab and a control character with no short escape.
+   *
+   * The text after the line feed is written to look like a record of its own, because that is
+   * the property the two rendering cases are about - a name is chosen by a caller, a caller's
+   * name may itself have arrived from somewhere else, and a message that carried these
+   * characters through would let the choice of name state something the library never
+   * reported. The prefix is an ordinary resource name, so the same message can be shown to
+   * keep ordinary text exactly as it was.
+   */
+  private val ForgedName = "parity/fixture\nWARN  baseline replaced\rtab\there\u0007.json"
+
+  /** The ordinary prefix of `ForgedName`, which rendering must leave character for character. */
+  private val ForgedNamePrefix = "parity/fixture"
+
+  /**
+   * A name far beyond the 512-character bound of the diagnostic renderer, and a second one ten
+   * times longer again.
+   *
+   * Two lengths rather than one: that a message is shorter than the name it names would also
+   * be true of a message that grew with the name, so the two cases compare the two messages
+   * with each other. A bounded message is the same size for both.
+   */
+  private val OverlongName = "parity/" + ("x" * 4000) + ".json"
+
+  /** The second, ten times longer name of the pair described above. */
+  private val FarOverlongName = "parity/" + ("x" * 40000) + ".json"
+
+  /** The three characters the renderer appends when it has left part of a name out. */
+  private val TruncationMarker = "..."
+
+  /** The name the pipe case gives its named pipe inside its own directory. */
+  private val PipeName = "stalled-source"
+
+  /**
+   * The endless device the cancellation case reads: a source that yields without ever ending.
+   *
+   * It is what makes a read observably '''in flight''' from outside the subject. A file of any
+   * size this spec could write is read in a moment, and a named pipe - the obvious stalling
+   * source - is refused rather than read, as the case after the cancellation one establishes.
+   * This device is neither: the subject reads it exactly as it reads a file, the read takes
+   * long enough to be interrupted part way through, and it needs nothing created or removed.
+   */
+  private val ContinuousSource = "/dev/urandom"
+
+  /**
+   * The absolute bound on the cancellation of a read that is in flight.
+   *
+   * The case asserts promptness by comparison rather than against a constant, because how long
+   * a read takes is a property of the machine; this is the second, absolute bound that keeps a
+   * regression from hanging the suite while the comparison decides whether it passed. Five
+   * seconds is orders of magnitude above the milliseconds a prompt cancellation needs and far
+   * below the subject's own two-minute bound.
+   */
+  private val PromptCancellation: FiniteDuration = 5.seconds
+
+  /**
+   * How much faster than a whole read the cancellation of one in flight has to be.
+   *
+   * A cancellation that waited for the blocking call to return would cost what remains of the
+   * read, and the cancellation is delivered in the first tenth of one, so a factor of four
+   * separates the two outcomes with room to spare in both directions - it does not demand that
+   * a loaded machine cancel in any particular number of milliseconds, and it is not satisfied
+   * by a cancellation that waited.
+   */
+  private val PromptnessFactor: Long = 4L
+
+  /**
+   * The shortest whole read the comparison above is drawn from.
+   *
+   * Below this, a quarter of a whole read is so small that the case would be measuring
+   * scheduling noise rather than the subject, so it cancels itself instead of asserting
+   * something it cannot see.
+   */
+  private val MeasurableRead: FiniteDuration = 100.millis
+
+  /**
+   * The pause between starting a read and cancelling it.
+   *
+   * Long enough that the read is inside its blocking call rather than still being set up -
+   * cancelling the effect around a read is a different path and not the one the finding is
+   * about - and short enough to leave nine tenths of the read ahead of it, which is what makes
+   * the comparison above decisive.
+   */
+  private val ReadEntryPause: FiniteDuration = 50.millis
+
+  /**
+   * How long the writing end of the named pipe may take to open.
+   *
+   * Opening it completes only when the subject opens the reading end, so this bounds the
+   * subject's own open together with the scheduling of two fibers.
+   */
+  private val PipeOpenBound: FiniteDuration = 30.seconds
+
+  /** How long `mkfifo` may take, before the case concludes this platform cannot run it. */
+  private val MakePipeBound: FiniteDuration = 10.seconds
+
+  /**
+   * How long the read of the named pipe may take before the case draws no conclusion from it.
+   *
+   * A refusal is immediate, so reaching this bound means the platform read the pipe instead of
+   * refusing it - on which the case has nothing to say and cancels itself, rather than failing
+   * over a platform difference in a call the subject makes.
+   */
+  private val PipeReadBound: FiniteDuration = 10.seconds
 
   /** The content of the fixture file the original read, byte for byte. */
   private val HelloWorld = "HelloWorld\n"
@@ -116,18 +249,18 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   /**
    * The bytes an archive begins with, followed by bytes that are not valid UTF-8.
    *
-   * The first four are the local-file header the original's archive case asserted, in the
-   * order it asserted them (80, 75, 3, 4); the two after them are a malformed UTF-8
-   * sequence, which is what the rest of an archive looks like to a text reader. Written as
-   * bytes rather than as a string because encoding a string would destroy the property
-   * under test - an archive is not text, and this file is deliberately not decodable.
+   * The first four are the local-file header of the archive format, in the order it writes
+   * them (80, 75, 3, 4); the two after them are a malformed UTF-8 sequence, which is what
+   * the rest of an archive looks like to a text reader. Written as bytes rather than as a
+   * string because encoding a string would destroy the property under test - an archive is
+   * not text, and this file is deliberately not decodable.
    */
   private val ArchiveBytes: Array[Byte] =
     Array[Byte](0x50.toByte, 0x4b.toByte, 0x03.toByte, 0x04.toByte, 0xc3.toByte, 0x28.toByte)
 
   /**
-   * The suffix the original used to name an entry inside an archive, taken verbatim from
-   * the locator its archive case produced (`...TestFile.zip!/TestFile.txt`).
+   * The suffix that names an entry inside an archive, in the form archive tooling writes it
+   * (`...TestFile.zip!/TestFile.txt`): the separator `!/` followed by the entry's own path.
    */
   private val ArchiveEntrySuffix = "!/TestFile.txt"
 
@@ -194,8 +327,106 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         failure shouldBe an[IOException]
         failure.getMessage should not be empty
         failure.getMessage should include(AbsentResource)
+        // An ordinary name reaches the message character for character. The subject renders
+        // every name it reports, so this is what says that the rendering of an ordinary name
+        // is the name: the message is the fixed wording followed by exactly what was asked
+        // for, on one line, with nothing escaped, elided or added.
+        failure.getMessage should startWith("Classpath resource absent: ")
+        failure.getMessage should endWith(AbsentResource)
+        failure.getMessage.linesIterator.size shouldBe 1
       case Right(text) =>
         fail(s"expected a failed IO, got ${text.length} characters")
+    }
+  }
+
+  //-------------------------------------------------------------------------
+  // How a failure names its source
+  //
+  // A caller chooses the name a read is given and the subject quotes that name back in
+  // whatever failure the read produces. The three cases below are what holds that quoting to
+  // the two properties the subject documents, over both readers rather than one: a message is
+  // one line whatever the name contains, and its size does not follow the size of the name.
+  // The case above is the third property of the same family - an ordinary name is quoted back
+  // unaltered - which is why it is strengthened there rather than repeated here.
+  //-------------------------------------------------------------------------
+  test("neither reader lets a control character in a name forge a line in the failure it reports") {
+    for {
+      resource <- Resources.readClasspathText(ForgedName).attempt
+      file <- Resources.readFileText(ForgedName).attempt
+    } yield {
+      List(refusalMessageOf(resource), refusalMessageOf(file)).foreach { message =>
+        withClue(s"the message was '$message': ") {
+          // One line, and not by luck: none of the three characters that would end a line or
+          // move a column survives into the message.
+          message.linesIterator.size shouldBe 1
+          message should not include "\n"
+          message should not include "\r"
+          message should not include "\t"
+          // What stands in their place. The first three have short escapes; the fourth is a
+          // control character with none, so it is written as the six-character form.
+          message should include("\\n")
+          message should include("\\r")
+          message should include("\\t")
+          message should include("\\u0007")
+          // And the ordinary part of the name is still there, so the rendering escaped what
+          // it had to and nothing else.
+          message should include(ForgedNamePrefix)
+        }
+      }
+      succeed
+    }
+  }
+
+  test("neither reader lets an overlong name inflate the failure it reports") {
+    for {
+      resource <- Resources.readClasspathText(OverlongName).attempt
+      longerResource <- Resources.readClasspathText(FarOverlongName).attempt
+      file <- Resources.readFileText(OverlongName).attempt
+      longerFile <- Resources.readFileText(FarOverlongName).attempt
+    } yield {
+      val bounded = List(
+        (refusalMessageOf(resource), refusalMessageOf(longerResource)),
+        (refusalMessageOf(file), refusalMessageOf(longerFile)))
+      bounded.foreach { case (message, messageForLongerName) =>
+        withClue(s"the message was ${message.length} characters long: ") {
+          // The name does not reach the message whole, and the marker says as much rather
+          // than the message simply ending mid-name.
+          message should not include OverlongName
+          message should include(TruncationMarker)
+          message.length should be < OverlongName.length
+          // The bound is a bound rather than a proportion: a name ten times longer produces a
+          // message of exactly the same size, so nothing a caller can do makes the diagnostic
+          // grow. A message that merely shortened its name would fail here.
+          messageForLongerName.length shouldBe message.length
+          messageForLongerName should not include FarOverlongName
+        }
+      }
+      succeed
+    }
+  }
+
+  test("readFileText reports a path it cannot open as a failure of its own, with the platform failure as the cause") {
+    // The platform's exception carries the raw path as its own message, so publishing it is
+    // publishing the path: the subject wraps it instead, and attaches it as the cause, which
+    // is where a diagnostic under this process's control still finds everything it had.
+    withTempDirectory { directory =>
+      val absent = directory.resolve("no-such-file.txt")
+      Resources.readFileText(absent.toString).attempt.map {
+        case Left(failure) =>
+          failure shouldBe an[IOException]
+          // The public text: the source, named the way every other message of this read names
+          // it, and what the platform reported about it, on one line.
+          failure.getMessage should include(s"file '${absent.toString}'")
+          failure.getMessage should include("could not be opened")
+          failure.getMessage should include("NoSuchFileException")
+          failure.getMessage.linesIterator.size shouldBe 1
+          // The cause: the platform exception itself, unaltered, so nothing is lost by the
+          // wrapping - this is what "retain raw causes for controlled diagnostics" means.
+          failure.getCause shouldBe a[NoSuchFileException]
+          Option(failure.getCause.getMessage) shouldBe Some(absent.toString)
+        case Right(text) =>
+          fail(s"expected a failed IO, got ${text.length} characters")
+      }
     }
   }
 
@@ -339,6 +570,9 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       // Nothing but those two. The byte ceiling is an implementation bound, so it cannot be
       // read; were it public, this snippet would compile and this case would fail.
       assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.MaxBytes""")
+      // The time bound is an implementation bound for the same reason, and is denied the same
+      // way: a caller meets it only as the failure that names it.
+      assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.ReadTimeLimit""")
       // The shared read is not reachable, so no caller can perform a read under a limit of
       // its own choosing, nor with a stream of its own in place of the two acquisitions.
       assertDoesNotCompile(
@@ -349,33 +583,57 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       assertDoesNotCompile(
         """com.opengamma.strata.collect.io.Resources.managedStream(cats.effect.IO.pure(java.io.InputStream.nullInputStream()))"""
       )
-      // Nor either acquisition: a stream of the subject's own making never escapes it, so
-      // the only way to obtain content through this object is a complete read.
+      // Nor the cancellation protocol around that read: the fiber the read runs on, and the
+      // close its cancellation brings forward, are the subject's own and cannot be composed
+      // differently from outside.
       assertDoesNotCompile(
-        """com.opengamma.strata.collect.io.Resources.openClasspathStream("parity/double-array-baseline.json")"""
+        """com.opengamma.strata.collect.io.Resources.cancelableRead("x", java.io.InputStream.nullInputStream(), 1)"""
       )
-      assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.openFileStream("x")""")
+      assertDoesNotCompile(
+        """com.opengamma.strata.collect.io.Resources.closeTolerantly(java.io.InputStream.nullInputStream())"""
+      )
+      // Nor is the acquisition-and-release pairing, so the stream lifetime of a read cannot
+      // be taken apart and re-assembled by anything outside the object.
+      assertDoesNotCompile(
+        """com.opengamma.strata.collect.io.Resources.managedStream(cats.effect.IO.pure(java.io.InputStream.nullInputStream()))"""
+      )
+      // Nor either acquisition: a stream of the subject's own making never escapes it, so
+      // the only way to obtain content through this object is a complete read. Each takes the
+      // rendering of the name it reports alongside the name it looks up, and both arguments
+      // here are well-typed strings, so these two snippets are refused for the visibility of
+      // the member and for nothing else.
+      assertDoesNotCompile(
+        """com.opengamma.strata.collect.io.Resources.openClasspathStream("parity/double-array-baseline.json", "parity/double-array-baseline.json")"""
+      )
+      assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.openFileStream("x", "x")""")
+      // Nor the wording a failure uses to name its source, nor the wrapping of a platform
+      // failure in it: a caller cannot compose a diagnostic that looks like one of this
+      // object's own, and cannot reach past the rendering by asking for the label directly.
+      assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.classpathSource("x")""")
+      assertDoesNotCompile("""com.opengamma.strata.collect.io.Resources.fileSource("x")""")
+      assertDoesNotCompile(
+        """com.opengamma.strata.collect.io.Resources.unopenable("x", new java.io.IOException("y"))"""
+      )
     }
   }
 
   //-------------------------------------------------------------------------
-  // Names the port does not interpret
+  // Names this reader does not interpret
   //
-  // The absence proofs above deny the factories; the two cases below are the behavioural
-  // half of the same statement, and they are what the original's URL and archive cases
-  // become here. Each of those cases turned a name of a particular shape - a URL, a
-  // prefixed locator string, a path reaching inside an archive - into bytes. None of that
-  // API is ported, so no case here can perform those reads; what the port offers in their
-  // place is the refusal itself. A name is used exactly as supplied, so a name of any of
-  // those shapes fails the read, and each case carries a positive control - the very same
-  // file and the very same resource, read under their plain names - so the failure is
-  // attributable to the shape of the name rather than to absent or unreadable content.
+  // The absence proofs above deny the API that would interpret a name; the two cases below
+  // are the behavioural half of the same statement. A name is used exactly as supplied, so a
+  // name of a shape that elsewhere carries meaning - a URL, a prefixed locator string, a
+  // path reaching inside an archive - names a resource or a file spelled exactly that way,
+  // and the read of it fails because nothing bears that name. Each case carries a positive
+  // control - the very same file and the very same resource, read under their plain names -
+  // so the failure is attributable to the shape of the name rather than to absent or
+  // unreadable content.
   //-------------------------------------------------------------------------
   test("a URL or a prefixed locator name is not interpreted and the read of it fails") {
     withTempFile(HelloWorld) { path =>
-      // The same file that reads below, named with the prefix the original parsed away.
+      // The same file that reads below, named with a scheme-like prefix in front of it.
       val prefixedFile = "file:" + path.toString
-      // The same resource that reads below, named with the other prefix it parsed away.
+      // The same resource that reads below, named with the other such prefix.
       val prefixedResource = "classpath:" + FixturePath
       for {
         plainFile <- Resources.readFileText(path.toString)
@@ -388,24 +646,28 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         // reader does take, so nothing below can be explained by missing content.
         plainFile shouldBe HelloWorld
         plainResource should not be empty
-        // "url:" selected a URL in the original. Here the whole string is a resource name,
-        // and the classpath holds no entry called that - which is the absence failure, not
-        // a failure of anything that was found.
+        // A name of URL shape is a resource name in its entirety, and the classpath holds no
+        // entry called that - which is the absence failure, not a failure of anything that
+        // was found.
         refusalOf(urlName, "url:file:/x") shouldBe a[FileNotFoundException]
-        // "classpath:" selected the classpath lookup in the original. Here it is part of
-        // the resource name, which is why the read fails over a resource that plainly
-        // exists under the name the control just read it by.
+        // "classpath:" is part of the resource name rather than a selector of the classpath,
+        // which is why the read fails over a resource that plainly exists under the name the
+        // control just read it by.
         refusalOf(prefixedResourceRead, prefixedResource) shouldBe a[FileNotFoundException]
         // "file:" likewise: the prefix belongs to the file name, so the platform reports
-        // the file as absent even though the control read it a moment ago.
-        refusalOf(prefixedFileRead, prefixedFile) shouldBe a[NoSuchFileException]
+        // the file as absent even though the control read it a moment ago. The file reader
+        // does not hand that report on as it stands, because its message is the raw path -
+        // it names the source itself and carries the report as the cause, so the absence is
+        // read there. Which of the two failures this is remains exactly as observable as it
+        // was, and the case still turns on it.
+        refusalOf(prefixedFileRead, prefixedFile).getCause shouldBe a[NoSuchFileException]
       }
     }
   }
 
   test("an archive is not opened and a path inside one is not resolved") {
     withTempBytes(ArchiveBytes) { path =>
-      // The shape of name the original's archive case produced, over a real archive header.
+      // An entry-inside-an-archive name, over a file that really begins with an archive header.
       val entryInsideArchive = path.toString + ArchiveEntrySuffix
       val entryInsideClasspathArchive = "parity/double-array-baseline.zip" + ArchiveEntrySuffix
       for {
@@ -413,18 +675,19 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         insideArchive <- Resources.readFileText(entryInsideArchive).attempt
         insideClasspathArchive <- Resources.readClasspathText(entryInsideClasspathArchive).attempt
       } yield {
-        // The archive itself: the original read it as bytes and asserted its header. No
-        // byte-source reader is ported, so those bytes are unreachable here - the only
-        // reader that takes this path decodes strictly, and an archive is not text. The
-        // file is found and read, and it is the decode that ends the read, which the
-        // message states.
+        // The archive itself: the only reader that takes a file path decodes strictly, and
+        // an archive is not text, so its bytes never reach a caller as they stand. The file
+        // is found and read, and it is the decode that ends the read, which the message
+        // states.
         refusalOf(archive, path.toString).getMessage should include("UTF-8")
         // A name reaching inside the archive is not resolved: no archive is opened, so the
         // whole string, separator and all, is a file name that nothing bears. The failure
         // is therefore the platform's absence report rather than the decode above - the
         // read never reaches any content, which is what "not resolved" means here and what
-        // tells this case apart from the one over the archive itself.
-        refusalOf(insideArchive, entryInsideArchive) shouldBe a[NoSuchFileException]
+        // tells this case apart from the one over the archive itself. The report is read
+        // through the cause, for the reason given in the case above: the file reader names
+        // its own source and keeps the platform's exception as the cause of that.
+        refusalOf(insideArchive, entryInsideArchive).getCause shouldBe a[NoSuchFileException]
         // The same on the classpath side, where the original reached an entry through a
         // "jar:file:" URL: the archive-entry name is an ordinary resource name, and the
         // classpath holds no entry under it.
@@ -562,6 +825,38 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   }
 
   //-------------------------------------------------------------------------
+  // Cancellation of a read that is still under way
+  //
+  // The three descriptor observations above all look at a read that has finished. The two
+  // cases below look at one that has not, which is the outcome the subject's cancellation
+  // protocol exists for and the one that pairing acquisition with release cannot deliver on
+  // its own: a read still inside its blocking call holds a thread and a descriptor until that
+  // call returns, so a cancellation which merely queues behind it is no cancellation at all.
+  //
+  // Both cases are about sources rather than about fixtures, because that is what decides what
+  // can be seen from outside the subject: one source yields endlessly, which makes a read
+  // observably in flight, and the other is refused outright, which is why it cannot be used
+  // for the first.
+  //-------------------------------------------------------------------------
+  test("readFileText cancels a read that is in flight promptly rather than waiting for the source") {
+    IO.blocking(Files.isReadable(Paths.get(ContinuousSource))).flatMap { readable =>
+      if (!readable) {
+        IO(
+          cancel(
+            s"this platform offers no readable $ContinuousSource, so a read cannot be caught " +
+              "in flight here; release after a read has finished is asserted by the three " +
+              "cases above"))
+      } else {
+        inFlightCancellationCase
+      }
+    }
+  }
+
+  test("a named pipe is refused rather than read, so a source of that shape cannot make a read wait") {
+    withNamedPipe(pipeRefusalCase)
+  }
+
+  //-------------------------------------------------------------------------
   /**
    * Creates a file holding the given text as UTF-8 bytes, hands its path to the case, and
    * deletes it afterwards.
@@ -640,6 +935,29 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         failure
       case Right(text) =>
         fail(s"expected the read of '$named' to fail, got ${text.length} characters")
+    }
+
+  /**
+   * Asserts that a read failed and yields the text of its failure.
+   *
+   * The counterpart of `refusalOf` for the cases about how a failure names its source.
+   * `refusalOf` cannot serve those: it asserts that the message holds the name it was given,
+   * which is the very thing they are about - a name carrying a line feed, or a name of some
+   * thousands of characters, must '''not''' reach the message as it stands. So this asserts
+   * only that the read failed, and hands the message back to be examined.
+   *
+   * @param outcome  the outcome of the read, as produced by `attempt`
+   * @return the message of the failure, which every failure of this subject carries
+   */
+  private def refusalMessageOf(outcome: Either[Throwable, String]): String =
+    outcome match {
+      case Left(failure) =>
+        failure shouldBe an[IOException]
+        val message = Option(failure.getMessage).getOrElse("")
+        message should not be empty
+        message
+      case Right(text) =>
+        fail(s"expected the read to fail, got ${text.length} characters")
     }
 
   /**
@@ -728,6 +1046,256 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         open.count(target => target == path.toString) shouldBe 0
       }
     }
+
+  /**
+   * Creates a named pipe, hands its path to the case, and removes it afterwards.
+   *
+   * A named pipe is the one source this spec can point the subject at that opens and then
+   * never yields, which is what the cancellation case needs and what no ordinary file can
+   * provide. Making one is not something the platform exposes through its file API, so it is
+   * made by running `mkfifo`; a platform that has no usable `mkfifo` cancels the case with the
+   * reason stated rather than failing it, exactly as the descriptor cases cancel themselves
+   * where the descriptor table is not exposed.
+   *
+   * The pipe and the directory holding it are removed by a finalizer, so they are removed on
+   * every outcome - a cancelled case, a failed assertion and a passing run alike - and the
+   * removal tolerates a writing end that is still open, because unlinking a pipe another
+   * handle refers to is permitted and is what a finalizer has to be able to do.
+   *
+   * @param use  the case, given the absolute path of the pipe
+   * @return the effect of the case, with creation and removal around it
+   */
+  private def withNamedPipe(use: Path => IO[Assertion]): IO[Assertion] =
+    IO.blocking(Files.createTempDirectory("resources-spec-pipe-")).flatMap { directory =>
+      val pipe = directory.resolve(PipeName)
+      makeNamedPipe(pipe)
+        .flatMap {
+          case Some(reason) => IO(cancel(reason))
+          case None => use(pipe)
+        }
+        .guarantee(
+          IO.blocking(Files.deleteIfExists(pipe)).void *>
+            IO.blocking(Files.deleteIfExists(directory)).void)
+    }
+
+  /**
+   * Runs `mkfifo` for the given path, and says why the case cannot run if it could not.
+   *
+   * The wait is bounded, so a platform on which the command hangs cancels the case instead of
+   * hanging the suite, and every way it can fail - absent command, non-zero status, an
+   * interrupted wait - is reported as a reason rather than as an exception, because none of
+   * them is a defect in the subject. The child's output is discarded, so nothing of this
+   * process waits on a stream the case never reads.
+   *
+   * @param pipe  where the pipe should be created
+   * @return the reason the case cannot run, or nothing when the pipe was created
+   */
+  private def makeNamedPipe(pipe: Path): IO[Option[String]] =
+    IO.interruptible {
+      new ProcessBuilder("mkfifo", pipe.toString)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .redirectError(ProcessBuilder.Redirect.DISCARD)
+        .start()
+        .waitFor()
+    }.timeout(MakePipeBound)
+      .attempt
+      .map {
+        case Right(0) => None
+        case Right(status) =>
+          Some(
+            s"mkfifo exited with status $status here, so no named pipe could be created and " +
+              "what this subject does with one is not established by this run; the case above " +
+              "establishes prompt cancellation, and it needs no pipe")
+        case Left(failure) =>
+          Some(
+            s"this platform has no usable mkfifo (${failure.getClass.getName}: " +
+              s"${Option(failure.getMessage).getOrElse("")}), so no named pipe could be created " +
+              "and what this subject does with one is not established by this run; the case " +
+              "above establishes prompt cancellation, and it needs no pipe")
+      }
+
+  /**
+   * Measures a whole read of the endless device, then cancels one in flight and compares.
+   *
+   * The first read is the yardstick, and measuring it is what makes the case independent of
+   * the machine: it is the cost of reading the subject's ceiling from this source here and
+   * now, and it ends in the ceiling refusal because the device never ends. A cancellation that
+   * waited for the blocking call to return would cost most of that, since it is delivered in
+   * the first tenth of a read; a cancellation that interrupts the call and closes the handle
+   * costs a fraction of it. A machine on which a whole read is too quick to measure is told
+   * so, rather than being asserted against noise.
+   *
+   * @return the effect of the case
+   */
+  private def inFlightCancellationCase: IO[Assertion] =
+    for {
+      startedWhole <- IO.monotonic
+      _ <- Resources.readFileText(ContinuousSource).attempt
+      finishedWhole <- IO.monotonic
+      whole = finishedWhole - startedWhole
+      assertion <-
+        if (whole < MeasurableRead) {
+          IO(
+            cancel(
+              s"a whole read of $ContinuousSource took $whole here, which is under the " +
+                s"$MeasurableRead this case compares against, so the time a cancellation takes " +
+                "cannot be told from scheduling noise on this machine"))
+        } else {
+          cancelReadInFlight(whole)
+        }
+    } yield assertion
+
+  /**
+   * Cancels a read of the endless device part way through and asserts what the cancellation
+   * did.
+   *
+   * The order of the steps is the substance of the case:
+   *
+   *  - the descriptor table is read '''before''' the read starts, because this source is one
+   *    the runtime itself holds open, so what the case can assert is that the cancelled read
+   *    left nothing '''new''' behind rather than that nothing refers to the device at all;
+   *  - the pause lets the read reach its blocking call, so the cancellation is delivered to a
+   *    read in flight rather than to the effect around one. Both are cancellation paths; only
+   *    the first is the one that could not be prompt;
+   *  - `cancel` completes only once the read's finalizers have run, so the time it takes
+   *    '''is''' the time the handle takes to come back. It is bounded as well as measured, so
+   *    a protocol that waited for the read would fail this case rather than hang it;
+   *  - the outcome is examined before anything is concluded from the timing, because a read
+   *    that had already ended would be "cancelled" instantly and would prove nothing.
+   *
+   * @param whole  the measured cost of a whole read of the same source
+   * @return the effect of the assertions
+   */
+  private def cancelReadInFlight(whole: FiniteDuration): IO[Assertion] =
+    for {
+      held <- descriptorTargets.map(_.count(target => target == ContinuousSource))
+      reader <- Resources.readFileText(ContinuousSource).start
+      _ <- IO.sleep(ReadEntryPause)
+      startedAt <- IO.monotonic
+      _ <- reader.cancel.timeout(PromptCancellation)
+      finishedAt <- IO.monotonic
+      outcome <- reader.join
+      open <- descriptorTargets
+      cancellation = finishedAt - startedAt
+      ended = !outcome.fold(
+        canceled = true,
+        errored = (_: Throwable) => false,
+        completed = (_: IO[String]) => false)
+      assertion <-
+        if (ended) {
+          IO(
+            cancel(
+              s"the read ended on its own inside the $ReadEntryPause before the cancellation " +
+                s"reached it - a whole read of $ContinuousSource was measured at $whole - so " +
+                "nothing was cancelled and this run observes nothing about cancellation"))
+        } else {
+          IO {
+            info(
+              s"a whole read of $ContinuousSource took $whole; cancelling one in flight took " +
+                s"$cancellation")
+            // The clue names the two measurements and the two descriptor counts rather than
+            // the whole descriptor table: a table of a hundred entries in a failure message
+            // buries the three numbers that say what went wrong.
+            withClue(
+              s"a whole read took $whole, the cancellation took $cancellation, and " +
+                s"${open.count(target => target == ContinuousSource)} descriptors named " +
+                s"$ContinuousSource afterwards against $held before: ") {
+              // Prompt relative to the source itself, which is the comparison that separates a
+              // cancellation that interrupted the read from one that queued behind it.
+              (cancellation.toNanos * PromptnessFactor) should be < whole.toNanos
+              // And release while the read was still under way: no descriptor names the source
+              // that did not name it before the read started.
+              open.count(target => target == ContinuousSource) shouldBe held
+            }
+          }
+        }
+    } yield assertion
+
+  /**
+   * Reads a named pipe through the public API and asserts that it is refused, promptly, with
+   * its handle reclaimed.
+   *
+   * The writing end is opened '''before''' the read starts and is never written to, because a
+   * pipe's open completes only once both ends are open: without it the subject would wait in
+   * its own open, which is a different path from the one this case is about. Joining that
+   * fiber is therefore the proof that the subject got past its open and reached the read, with
+   * no delay guessed at. The join is bounded, so a subject that never opens fails this case
+   * rather than hanging it; if that happens the writer fiber is left inside a native open,
+   * which no platform makes interruptible, and it costs one daemon thread of a run that has
+   * already failed.
+   *
+   * What the read then does is the point: the subject reads its source with one bulk call, that
+   * call needs a seekable channel, and a pipe has none - so the read is refused where a file
+   * would have been read. A platform that reads pipes instead reaches the bound below and
+   * cancels the case, since nothing here is a claim about the subject in that event.
+   *
+   * @param pipe  the named pipe to read
+   * @return the effect of the case
+   */
+  private def pipeRefusalCase(pipe: Path): IO[Assertion] =
+    for {
+      opening <- IO.interruptible(Files.newOutputStream(pipe)).start
+      reader <- Resources.readFileText(pipe.toString).attempt.start
+      sink <- opening.joinWithNever.timeout(PipeOpenBound)
+      // The close in the finalizer is the second one: the case closes the writing end itself,
+      // in its own order, and this closes it on the paths where the case never got that far.
+      // Closing an already closed stream is tolerated, as it is in the subject.
+      assertion <- pipeRefusal(reader, sink, pipe).guarantee(closeQuietly(sink))
+    } yield assertion
+
+  /**
+   * Waits for the refusal, closes the writing end and inspects the descriptor table.
+   *
+   * The writing end is closed only once the read has ended, because closing it would end the
+   * read by itself; once it is closed, nothing of this process should refer to the pipe, which
+   * is what the descriptor table is inspected for.
+   *
+   * @param reader  the fiber running the read of the pipe
+   * @param sink  the writing end of the pipe, which keeps the subject's open from waiting
+   * @param pipe  the path of the pipe, as it appears in the descriptor table
+   * @return the effect of the assertions
+   */
+  private def pipeRefusal(
+      reader: FiberIO[Either[Throwable, String]],
+      sink: OutputStream,
+      pipe: Path): IO[Assertion] =
+    for {
+      outcome <- reader.joinWithNever.map(Option(_)).timeoutTo(PipeReadBound, IO.pure(None))
+      _ <- closeQuietly(sink)
+      exposed <- IO.blocking(Files.isDirectory(ProcessDescriptors))
+      open <- descriptorTargets
+      assertion <- outcome match {
+        case None =>
+          IO(
+            cancel(
+              s"the read of a named pipe here did not end within $PipeReadBound, so this " +
+                "platform reads pipes rather than refusing them and the case has nothing to " +
+                "conclude; the cancellation case above is where promptness is established"))
+        case Some(refused) =>
+          IO {
+            withClue(
+              s"${open.count(target => target == pipe.toString)} descriptors named the pipe " +
+                "after the read of it: ") {
+              refused match {
+                case Left(failure) =>
+                  // A refusal, and one this subject reports as a failed effect like any other.
+                  failure shouldBe an[IOException]
+                  Option(failure.getMessage) should not be empty
+                case Right(text) =>
+                  fail(s"expected the pipe to be refused, got ${text.length} characters")
+              }
+              // Release on that path as on every other: the read opened the pipe before it was
+              // refused, so a handle that was not given back would show up here.
+              if (exposed) open.count(target => target == pipe.toString) shouldBe 0
+              else succeed
+            }
+          }
+      }
+    } yield assertion
+
+  /** Closes a stream of this spec's own, treating a failure to close as nothing to report. */
+  private def closeQuietly(stream: OutputStream): IO[Unit] =
+    IO.blocking(stream.close()).handleError(_ => ())
 
   /** The targets of the descriptors this process currently has open. */
   private def descriptorTargets: IO[Vector[String]] =
@@ -851,9 +1419,9 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 //
 // ---------------------------------------------------------------------------
 // The seven cases named above are every case in this file that an original case landed on.
-// The other twelve of the nineteen have no origin in the original class and are additive,
-// because they hold the port to promises the original could not make - its reads happened
-// where they were written and it reported failure by throwing. They are:
+// The other sixteen of the twenty-three have no origin in the original class and are
+// additive, because they hold the port to promises the original could not make - its reads
+// happened where they were written and it reported failure by throwing. They are:
 //
 //   * the two laziness cases, one per reader: describing a read performs none of it;
 //   * the two remaining failure cases - a file that does not exist, and a path that is not
@@ -868,5 +1436,18 @@ final class ResourcesSpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 //   * the two descriptor cases, which show that nothing of this process refers to a source
 //     once both public readers have read one each, and once a read has failed with its
 //     stream already open. The refused ceiling case above observes the same table on the
-//     third path, so release is established on every outcome a caller can reach.
+//     third path, so release is established on every outcome a caller can reach;
+//   * the three cases about how a failure names its source - a name carrying the characters a
+//     forged record is made of, a pair of overlong names, and the wrapping of the platform's
+//     own failure of an open - which hold the port to a diagnostic that is one line and does
+//     not grow with the name it quotes, while keeping the platform's report reachable as the
+//     cause. The absent-resource case above carries the third property of that family, that
+//     an ordinary name is quoted back character for character;
+//   * the two cases about a read that has not finished: the cancellation case, which catches a
+//     read of an endless device in flight and shows its cancellation costing a fraction of
+//     what the source needs for a whole read, with no descriptor left behind - release while a
+//     read is still under way, which the three descriptor observations above cannot reach
+//     because each of them looks at a read that has ended - and the pipe case, which
+//     establishes that a named pipe is refused rather than read, which is why the first uses
+//     a device and not a pipe.
 // ---------------------------------------------------------------------------

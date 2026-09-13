@@ -24,53 +24,51 @@ import com.opengamma.strata.basics.date.Tenor.{
   TENOR_1W, TENOR_2W, TENOR_4W, TENOR_13W, TENOR_26W, TENOR_1M, TENOR_2M, TENOR_3M, TENOR_4M,
   TENOR_5M, TENOR_6M, TENOR_7M, TENOR_8M, TENOR_9M, TENOR_10M, TENOR_11M, TENOR_12M
 }
+import com.opengamma.strata.collect.NoJavaSerialization
 
 /**
  * A single row of transcribed Ibor index reference data.
  *
- * Each row is one published entry of the Ibor index reference data that the Java implementation
- * located on the classpath and parsed on first use, and carries exactly the thirteen columns that
- * data declared, in the order it declared them: the index name, the currency the rate is quoted
- * in, whether the rate is still published, the day count the rate accrues on, the calendar the
- * rate is fixed against, the number of business days from fixing to effective date, the calendar
- * those days are counted in, the calendar the effective and maturity dates are adjusted against,
- * the tenor of the rate, the text of the tenor convention, the time of day the rate is fixed at,
- * the time zone that time is expressed in, and the day count of the fixed leg a swap against this
- * rate conventionally uses.
+ * Each row is one published entry of the Ibor index reference data, and carries exactly the
+ * thirteen columns that data declares, in the order it declares them: the index name, the currency
+ * the rate is quoted in, whether the rate is still published, the day count the rate accrues on,
+ * the calendar the rate is fixed against, the number of business days from fixing to effective
+ * date, the calendar those days are counted in, the calendar the effective and maturity dates are
+ * adjusted against, the tenor of the rate, the text of the tenor convention, the time of day the
+ * rate is fixed at, the time zone that time is expressed in, and the day count of the fixed leg a
+ * swap against this rate conventionally uses.
  *
  * ===Data, not behaviour===
  *
  * A row carries no derived value. The three date offsets an index exposes - from fixing date to
  * effective date, from effective date back to fixing date, and from effective date to maturity -
- * are not columns of this data; the Java parser computed each of them from the offset days, the
- * tenor, the tenor convention and the calendars while it built the index. That computation
- * belongs with the index family in `Index.scala`, which reads these rows to create its members,
- * so the columns are kept apart here exactly as the original data kept them apart.
+ * are not columns of this data: each is computed from the offset days, the tenor, the tenor
+ * convention and the calendars, and that computation belongs with the index family in
+ * `Index.scala`, which reads these rows to create its members. The columns are therefore kept
+ * apart here, as the published data keeps them apart.
  *
  * ===Why the tenor convention stays text===
  *
  * [[tenorConvention]] is deliberately a `String` and not a parsed convention. The single column it
- * transcribes was read twice by the Java parser: once as a period addition convention, defaulting
- * to none when the text named no such convention, and once as a business day convention,
- * defaulting to modified following when the period addition convention moved to the end of a
- * month and to following otherwise. Both readings are needed to build an index, and each admits
- * text the other rejects - `LastBusinessDay` names only the first, `ModifiedFollowing` only the
- * second - so resolving the column here to either type would discard the other reading. The text
- * is therefore carried verbatim and interpreted where both readings are performed, in
- * `Index.scala`.
+ * transcribes has two readings: as a period addition convention, which is absent when the text
+ * names no such convention, and as a business day convention, which is modified following when the
+ * period addition convention moves to the end of a month and following otherwise. Both readings
+ * are needed to build an index, and each admits text the other rejects - `LastBusinessDay` names
+ * only the first, `ModifiedFollowing` only the second - so resolving the column here to either type
+ * would discard the other reading. The text is therefore carried verbatim and interpreted where
+ * both readings are performed, in `Index.scala`.
  *
  * ===Why both day counts are typed===
  *
  * [[dayCount]] and [[fixedLegDayCount]], by contrast, are resolved to [[DayCount]] here, because
- * the original resolved each of them exactly once and to exactly one type. Resolving them also
- * folds away a spelling difference that is not a difference in data: the day count of the fixed
- * leg is spelled in upper case on the Czech koruna rows and in mixed case everywhere else, and
- * the original resolved both spellings through a lookup that held the upper-case key alongside
- * the canonical one, so both name the same convention.
+ * each column has exactly one reading and one type. Resolving them also folds away a spelling
+ * difference that is not a difference in data: the day count of the fixed leg is spelled in upper
+ * case on the Czech koruna rows of the published data and in mixed case everywhere else, and both
+ * spellings name one convention, so both transcribe to the same constant.
  *
  * @param name                   the unique name of the index, such as `GBP-LIBOR-3M`; the name is
  *                               the identity of the index in text, in JSON and to a user, so it
- *                               is reproduced exactly as the original data spelled it
+ *                               is reproduced exactly as the published data spells it
  * @param currency               the currency the rate is quoted in
  * @param active                 whether the rate is still published; an inactive rate is retained
  *                               because trades that reference it outlive its publication
@@ -89,13 +87,11 @@ import com.opengamma.strata.basics.date.Tenor.{
  * @param fixedLegDayCount       the day count of the fixed leg a swap against this rate
  *                               conventionally uses
  *
- * The row is a transcription of one line of the reference data this module was built from, so it
- * is visible within `com.opengamma.strata.basics` and no further - the same visibility
- * `PriceIndexRow` has, and for the same reason. It is the shape the table below is written in
- * rather than a value of the published API: a caller reads this data as the index family the
- * companion of `Index.scala` builds from it, never as rows, so publishing the row type would add
- * a type to the module's surface that nothing outside it can use and that the port's construction
- * and codec inventories would then have to account for.
+ * The row is the shape the table below is written in rather than a value of the published API: a
+ * caller reads this data as the index family the companion of `Index.scala` builds from it, never
+ * as rows. It is therefore visible within `com.opengamma.strata.basics` and no further - the same
+ * visibility `PriceIndexRow` has, and for the same reason - so that the row type adds nothing to
+ * the published surface of the module.
  */
 private[basics] final case class IborIndexRow(
     name: String,
@@ -111,18 +107,15 @@ private[basics] final case class IborIndexRow(
     fixingTime: LocalTime,
     fixingZone: ZoneId,
     fixedLegDayCount: DayCount)
+    extends NoJavaSerialization
 
 /**
  * The Ibor index reference data of the module, expressed as immutable Scala data.
  *
- * This object carries the Ibor index table transcribed verbatim from the reference data that the
- * Java implementation located on the classpath and parsed on first use. Nothing is located,
- * parsed or cached at run time here: the 271 rows below are Scala literals fixed at compile time,
- * so the table cannot fail to initialise, needs no classpath, recovers from no load failure and
- * holds no hidden global state. Where the Java loader logged a severe error and handed back an
- * empty map when a single row would not parse - silently leaving the whole family without members,
- * all 271 of them - there is no such failure mode to recover from, because a row that does not
- * typecheck does not compile.
+ * This object carries the published Ibor index table verbatim: the 271 rows below are Scala
+ * literals fixed at compile time, each holding the thirteen columns of [[IborIndexRow]]. Nothing
+ * is located, parsed or cached at run time, so the table cannot fail to initialise, cannot be
+ * partial, cannot be overridden at run time and holds no hidden global state.
  *
  * It holds data only and no behaviour: it constructs no [[IborIndex]], because creating the
  * members of that family, deriving their date offsets and giving them the lookups and observation
@@ -134,11 +127,10 @@ private[basics] final case class IborIndexRow(
  *
  * ===Invariants===
  *
- * All of the following are pinned against the captured Java reference data manifest, so a self
- * consistent but mistranscribed row cannot pass:
+ * The table holds all of the following, and a consumer may rely on them:
  *
  *  - [[rows]] holds exactly 271 entries with distinct names, in the declaration order of the
- *    original data: 35 benchmark families, each in the order its tenors were declared.
+ *    published data: 35 benchmark families, each in the order its tenors are declared.
  *  - 162 of the rows are active and 109 are retained for trades that outlive publication.
  *  - The rows name 25 currencies, 17 tenors from one week to twelve months, and four day counts.
  *  - The tenor convention column holds exactly four texts: `Following`, `LastBusinessDay`,
@@ -146,25 +138,22 @@ private[basics] final case class IborIndexRow(
  *  - The offset from fixing to effective date is zero, one or two business days.
  *  - Nine of the calendars named here - the Chinese, Hong Kong, Israeli, Korean, Malaysian, New
  *    Zealand bank, Saudi, Singaporean and Taiwanese ones - have no built-in calendar in this
- *    library, because they had none in the original either. Such an identifier is transcribed as
- *    it stands and nothing is invented to fill the gap; resolving it against reference data fails
- *    with missing data at the point of use, exactly as it did there.
+ *    library. Such an identifier is transcribed as it stands and nothing is invented to fill the
+ *    gap; resolving it against reference data fails with missing data at the point of use.
  *  - Four families adjust their effective dates against a composite calendar. The literals below
- *    hold the text of the column and leave its normalisation to the identifier factory, precisely
- *    as the Java parser did, so the column text `SGSI+GBLO` yields the identifier named
- *    `GBLO+SGSI`.
+ *    hold the text of the column and leave its normalisation to the identifier factory, so the
+ *    column text `SGSI+GBLO` yields the identifier named `GBLO+SGSI`.
  *
  * ===What this table deliberately omits===
  *
- * There is no upper case key space in [[byName]]. Registering each name a second time in upper
- * case was how the Java registry answered a case insensitive lookup, and that responsibility now
- * belongs to the named enum support in `strata-collect`, which derives the upper case view from
- * the canonical one.
+ * There is no upper case key space in [[byName]]: a case insensitive lookup belongs to the named
+ * enum support in `strata-collect`, which derives the upper case view from the canonical one, so
+ * this table holds the canonical names alone.
  *
- * There is likewise no alternate name table. The original declared exactly one alternate Ibor
- * index name, for the won certificate of deposit rate whose tenor is spelled in weeks by the
- * index and in months by the market, and an alternate name is a property of the family's lookup
- * rather than of a row of data, so it lives with the family in `Index.scala`.
+ * There is likewise no alternate name table. Exactly one alternate Ibor index name is published,
+ * for the won certificate of deposit rate whose tenor is spelled in weeks by the index and in
+ * months by the market, and an alternate name is a property of the family's lookup rather than of
+ * a row of data, so it lives with the family in `Index.scala`.
  *
  * All members are immutable values, so this object is thread-safe.
  *
@@ -175,7 +164,7 @@ private[basics] final case class IborIndexRow(
 private[basics] object IborIndexData {
 
   /**
-   * The 271 transcribed Ibor index rows, in the declaration order of the original data.
+   * The 271 transcribed Ibor index rows, in the declaration order of the published data.
    *
    * The order is observable through any iteration a consumer performs - notably the order in
    * which `Index.scala` creates the members of the Ibor index family - so it is kept stable and
@@ -184,7 +173,7 @@ private[basics] object IborIndexData {
    * family may declare weeks before months.
    *
    * The value is the concatenation of one group per benchmark family; the groups are defined
-   * below and are listed here in the order the original data declared them.
+   * below and are listed here in the order the published data declares them.
    */
   val rows: Vector[IborIndexRow] =
     gbpLibor ++ gbpSoniaIceTerm ++ gbpSoniaRefinitivTerm ++ chfLibor ++ eurLibor ++ jpyLibor ++
@@ -205,12 +194,11 @@ private[basics] object IborIndexData {
   val byName: Map[String, IborIndexRow] =
     rows.iterator.map(row => row.name -> row).toMap
 
-  //-------------------------------------------------------------------------
   // The table is defined in one group per benchmark family rather than as a single literal, and
-  // the groups are deliberately not merged. A literal of 271 rows of thirteen columns compiles to
-  // one very large initialiser, which risks the method size limit of the virtual machine; and a
-  // group per family keeps each literal small enough to read, matches the grouping the original
-  // data itself used, and lets a family be diffed against that data on its own. Each group is a
+  // the groups are deliberately not merged. A literal of 271 rows of thirteen columns would become
+  // one very large initialiser method, which risks the method size limit of the virtual machine;
+  // and a group per family keeps each literal small enough to read, follows the grouping of the
+  // published data, and lets one family be read against that data on its own. Each group is a
   // method rather than a field so that nothing but the concatenated table is retained.
 
   /** The fourteen sterling LIBOR rows, `GBP-LIBOR-1W` to `GBP-LIBOR-12M`, six of them active. */
@@ -489,8 +477,8 @@ private[basics] object IborIndexData {
       LocalTime.of(11, 55), ZoneId.of("Europe/London"), ACT_360))
 
   /**
-   * The four dollar Bloomberg short term bank yield rows, `USD-BSBY-1M` to `USD-BSBY-12M`, all of
-   * them active.
+   * The four dollar short term bank yield rows, `USD-BSBY-1M` to `USD-BSBY-12M`, all of them
+   * active.
    */
   private def usdBsby: Vector[IborIndexRow] = Vector(
     IborIndexRow("USD-BSBY-1M", USD, active = true, ACT_360, USGS, 2,
@@ -1188,12 +1176,11 @@ private[basics] object IborIndexData {
    * Obtains a calendar identifier from the text of a calendar column.
    *
    * This is the total identifier factory under a shorter name, used for the columns whose text
-   * this library names no constant for - because the original named none either - and for the
-   * composite columns. Any name is accepted, whether or not this library ships the calendar it
-   * names, and a name joining several calendars is normalised by the factory; see
-   * [[HolidayCalendarId.of]] for both. An identifier naming a calendar that is not shipped fails
-   * to resolve against reference data at the point of use, which is the behaviour of the original
-   * and is why such an identifier is admitted here rather than rejected.
+   * this library names no constant for and for the composite columns. Any name is accepted,
+   * whether or not this library ships the calendar it names, and a name joining several calendars
+   * is normalised by the factory; see [[HolidayCalendarId.of]] for both. An identifier naming a
+   * calendar that is not shipped is admitted here rather than rejected, and fails to resolve
+   * against reference data at the point of use.
    *
    * @param uniqueName  the text of the calendar column
    * @return the calendar identifier

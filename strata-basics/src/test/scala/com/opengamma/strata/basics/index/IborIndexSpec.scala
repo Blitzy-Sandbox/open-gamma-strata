@@ -83,24 +83,16 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
 /**
  * Test [[IborIndex]].
  *
- * Every method of the Java original is kept under its own name, so the method-level
- * traceability the migration is measured by stays one-to-one, and every field, date and time
- * asserted below is transcribed from that original rather than re-derived from the index data
- * this port transcribed. The two are independent on purpose: a mistake in the transcription of
- * a row has to fail here, which it cannot do if this spec reads the row it is meant to check.
- *
- * The four parameterised methods of the original were driven from a single provider,
- * `data_name`. That shape is preserved - the provider becomes one shared table, declared once
- * below, and each of the four methods keeps its own test driven from it.
+ * The expected fields, dates and times are written out here rather than read from the index
+ * data table, so a mistranscribed row fails this spec.
  *
  * ===Reaching an index, and reading a result===
  *
- * The Java factory `IborIndex.of(name)` answered with an index or raised an error. This port
- * splits those: [[IborIndex.valueOf]] answers with a value and [[IborIndex.parse]] reports a
- * failure, so a body asserting fields uses the first through the `lookup` helper below and a
- * body asserting rejection uses the second. Of the 271 published indices only 113 have a
- * declared constant - exactly as in the original - so several bodies can reach their subject
- * only by name.
+ * [[IborIndex.valueOf]] answers with a value and [[IborIndex.parse]] reports a failure, so a
+ * body asserting fields reaches its subject through the `lookup` helper below and a body
+ * asserting rejection uses `parse`. `IborIndex.values` holds 271 published indices while
+ * [[IborIndices]] publishes 113 named constants, so most published indices are reached by name
+ * rather than through a constant.
  *
  * The five date calculations report the failure of resolving a holiday calendar, so each is
  * read through the result matchers rather than by reaching into the value. `calculateFixingDateTime`
@@ -112,66 +104,31 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * haveValue(index.maturityDateOffset)` - which asserts in one matcher call both that the
  * expected construction is accepted and that it names exactly the offset the index carries,
  * without unwrapping anything.
- *
- * ===Methods whose subject this port does not have===
- *
- * Five methods asserted machinery that is deliberately absent here, so each is ported as the
- * assertion of the guarantee that machinery gave rather than dropped. The reasoning is recorded
- * at each of them and summarised here:
- *
- *  - `test_extendedEnum` read the classpath registry of the family. The family is a closed
- *    sealed set built from transcribed data (the request's Rule 4, carried by AAP §0.4.1), so
- *    the closed-family equivalent is asserted: every name of the shared table resolves through
- *    the family's own lookup, and the membership is exactly the 271 published indices.
- *  - `test_of_lookup_null` passed an absent reference to the factory and asserted that it
- *    raised an error. This port writes no such reference (Rule 5) and its lookups answer with a
- *    value, so the case becomes the two spellings of an absent name that can actually be
- *    supplied - the empty name and a blank one.
- *  - `test_equals` and `coverage` both built a custom index through a bean builder. The family
- *    is closed to its 271 configured members and has no public constructor (Rule 4, and the
- *    `[R]` construction kind of AAP §0.3.3), so both are asserted over configured members.
- *  - `test_jodaConvert` asserted the round trip of the reflective string-conversion library the
- *    original annotated the family for. The library is gone with the port (Rule 1), and the
- *    guarantee its annotations gave is asserted directly.
- *  - `test_serialization` serialized that same custom index through the serialization mechanism
- *    of the platform, which this port does not support. Its replacement is the JSON codec, and
- *    the subject is a configured member for the same Rule 4 reason. The test mapping manifest
- *    additionally routes this method to the consolidated `json.JsonRoundTripSpec`, which sweeps
- *    every codec-bearing type of the module property-based; what is asserted here is the
- *    per-type representation, which that sweep does not pin, so the two are complementary.
- *
- * ===What this spec deliberately does not assert===
- *
- * The fidelity of the 271 transcribed rows against the manifest captured from the Java
- * implementation belongs to `ReferenceDataManifestSpec`, and the closedness of every family of
- * the library, including the absence of a name claimed by two families, belongs to
- * `NamedEnumClosedSpec`. Those two and this one are complementary, and none of the three may be
- * weakened because another exists.
  */
 class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
   /**
    * The reference data the date calculations are resolved against.
    *
-   * The standard set holds every built-in holiday calendar, which is the set the Java original
-   * used for the same assertions.
+   * The standard set holds every built-in holiday calendar, so every calendar the bodies below
+   * name resolves.
    */
   private val RefData: ReferenceData = ReferenceData.standard
 
   /**
    * The identifier of the New Zealand bank calendar, which has no constant declared for it.
    *
-   * The Java original named it the same way and for the same reason; the factory is total, so
-   * an identifier naming a calendar this library has no data for is still a perfectly good
-   * identifier and only fails when something tries to resolve it.
+   * The identifier factory is total, so an identifier naming a calendar this library holds no
+   * data for is still a well-formed identifier and only fails when something resolves it.
    */
   private val NZBD: HolidayCalendarId = HolidayCalendarId.of("NZBD")
 
   /**
-   * The shared provider, transcribed row-for-row from the Java data provider.
+   * The table the name, rendering, lookup and codec tests share.
    *
-   * Each row pairs a constant with the name it renders as and is looked up by. The rows are in
-   * the order of that provider.
+   * Each row pairs a constant with the name it renders as and is looked up by. The names are
+   * written out rather than taken from `IborIndex.values`, so a row whose name and constant
+   * disagree fails rather than agreeing with itself.
    */
   private val dataName: TableFor2[IborIndex, String] = Table(
     ("index", "name"),
@@ -194,10 +151,9 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
   /**
    * Looks a published index up by name, failing the test where the family has no such member.
    *
-   * This stands in for the Java factory every body below called. A name that does not resolve
-   * is a defect this spec should report as a failed assertion rather than as an error escaping
-   * it, and 158 of the 271 published indices have no constant - exactly as in the original - so
-   * several bodies can only reach their subject this way.
+   * A name that does not resolve is reported as a failed assertion rather than as an error
+   * escaping the body. 158 of the 271 published indices have no constant, so several bodies can
+   * only reach their subject this way.
    *
    * @param name  the name of the index to look up, such as `GBP-LIBOR-3M`
    * @return the index published under that name
@@ -237,7 +193,6 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
       haveValue(test.maturityDateOffset)
     test.dayCount shouldBe ACT_365F
     test.defaultFixedLegDayCount shouldBe ACT_365F
-    // an Ibor index names a family plus a tenor, so the family name is the name without the suffix
     FloatingRateName.valueOf("GBP-LIBOR") shouldBe Some(test.floatingRateName)
     test.toString shouldBe "GBP-LIBOR-3M"
   }
@@ -258,14 +213,12 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     test.calculateMaturityFromFixing(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 13))
     test.calculateFixingFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2014, 10, 13))
     test.calculateMaturityFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 13))
-    // fixing time and zone
     test.calculateFixingDateTime(date(2014, 10, 13)) shouldBe
       date(2014, 10, 13).atTime(LocalTime.of(11, 55)).atZone(ZoneId.of("Europe/London"))
-    // resolve - the resolved calculation of a fixing produces what the per-fixing factory does,
-    // and the observation is built only through that factory, so the two results are compared
-    // as results rather than one of them being unwrapped. Both published routes to the
-    // resolution are asserted: `IborIndex.resolve`, which is where the index being ported
-    // declared it, and `IborIndexObservation.resolve`, which is where this port implements it.
+    // the observation is built only through the per-fixing factory, so the resolved route is
+    // compared against it as a result rather than either side being unwrapped; both published
+    // routes to the resolution, `IborIndex.resolve` and `IborIndexObservation.resolve`, are
+    // asserted
     val fixing: LocalDate = date(2014, 10, 13)
     IborIndexObservation.of(test, fixing, RefData) should beSuccess
     IborIndexObservation.resolve(test, RefData).map(observe => observe(fixing)) shouldBe
@@ -282,10 +235,9 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
   }
 
   test("test_getFloatingRateName") {
-    // The Java method iterated the registry of the family. The family is closed, so its own
-    // membership is iterated instead, which covers the same indices and cannot be short of any.
-    // An Ibor index names a family and a tenor, so the family is the name up to its last hyphen
-    // - the derivation the Java method performed, transcribed verbatim.
+    // An Ibor index names a family and a tenor, so the family is the name up to its last
+    // hyphen; every one of the 271 published indices has to report the family that derivation
+    // names.
     IborIndex.values.toList.foreach { index =>
       val name = index.name.substring(0, index.name.lastIndexOf('-'))
       withClue(s"${index.name} -> $name: ") {
@@ -336,12 +288,11 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     test.calculateMaturityFromFixing(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 15))
     test.calculateFixingFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2014, 10, 10))
     test.calculateMaturityFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 14))
-    // fixing time and zone
     test.calculateFixingDateTime(date(2014, 10, 13)) shouldBe
       date(2014, 10, 13).atTime(LocalTime.of(11, 55)).atZone(ZoneId.of("Europe/London"))
-    // resolve, through both published routes; an index whose fixing and effective dates live in
-    // different calendars is the case where a single resolution could diverge from the
-    // per-fixing derivation, so the dependent dates are compared field by field as well
+    // an index whose fixing and effective dates live in different calendars is the case where a
+    // single resolution could diverge from the per-fixing derivation, so both published routes
+    // are asserted and the dependent dates are compared field by field as well
     val fixing: LocalDate = date(2014, 10, 27)
     IborIndexObservation.of(test, fixing, RefData) should beSuccess
     IborIndexObservation.resolve(test, RefData).map(observe => observe(fixing)) shouldBe
@@ -389,7 +340,6 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     test.calculateMaturityFromFixing(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 15))
     test.calculateFixingFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2014, 10, 9))
     test.calculateMaturityFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 13))
-    // fixing time and zone
     test.calculateFixingDateTime(date(2014, 10, 13)) shouldBe
       date(2014, 10, 13).atTime(LocalTime.of(11, 0)).atZone(ZoneId.of("Europe/Brussels"))
   }
@@ -426,7 +376,6 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     test.calculateMaturityFromFixing(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 16))
     test.calculateFixingFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2014, 10, 9))
     test.calculateMaturityFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 14))
-    // fixing time and zone
     test.calculateFixingDateTime(date(2014, 10, 13)) shouldBe
       date(2014, 10, 13).atTime(LocalTime.of(13, 0)).atZone(ZoneId.of("Asia/Tokyo"))
   }
@@ -436,12 +385,10 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     test.currency shouldBe JPY
     test.name shouldBe "JPY-TIBOR-EUROYEN-3M"
     test.tenor shouldBe TENOR_3M
-    // The euroyen rate ceased to be published, and this is the inactive edge of this suite: the
-    // subject carries `active = false`, where every other explicit `active` assertion in this
-    // file expects true. The flag is asserted here because nothing else in the suite asserts a
-    // false one - a transcription that dropped it, or defaulted it to true, would otherwise pass,
-    // and it would change which tenors the euroyen floating rate family reports as available.
-    // All thirteen euroyen rows are asserted, not only the three-month one the Java method named.
+    // The euroyen rate ceased to be published: all thirteen euroyen rows carry
+    // `active = false`, and they are the only rows this suite asserts a false flag for. The
+    // flag decides which tenors the euroyen floating rate family reports as available, so a
+    // row defaulted to true would change that family's behaviour.
     test.active shouldBe false
     val euroyen: List[IborIndex] =
       IborIndex.values.toList.filter(index => index.name.startsWith("JPY-TIBOR-EUROYEN"))
@@ -474,15 +421,14 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     test.calculateMaturityFromFixing(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 16))
     test.calculateFixingFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2014, 10, 9))
     test.calculateMaturityFromEffective(date(2014, 10, 12), RefData) should haveValue(date(2015, 1, 14))
-    // fixing time and zone
     test.calculateFixingDateTime(date(2014, 10, 13)) shouldBe
       date(2014, 10, 13).atTime(LocalTime.of(13, 0)).atZone(ZoneId.of("Asia/Tokyo"))
   }
 
   test("test_usdLibor_all") {
-    // Every tenor of the family that has a declared constant, asserted both by the name the
-    // lookup resolves and by identity with that constant - so a constant naming the wrong row
-    // and a row carrying the wrong name are separate failures.
+    // each tenor is asserted both by the name the lookup resolves and by identity with the
+    // constant, so a constant naming the wrong row and a row carrying the wrong name are
+    // separate failures
     lookup("USD-LIBOR-1W").name shouldBe "USD-LIBOR-1W"
     lookup("USD-LIBOR-1W") shouldBe IborIndices.USD_LIBOR_1W
     lookup("USD-LIBOR-1M").name shouldBe "USD-LIBOR-1M"
@@ -498,8 +444,7 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
   }
 
   test("test_usdAmeriborTerm") {
-    // No constant is declared for this family, so its members are reached by name alone - which
-    // is what the Java method did too, through the factory this lookup stands in for.
+    // no constant is declared for this family, so its members are reached by name alone
     lookup("USD-AMERIBORTERM-1M").name shouldBe "USD-AMERIBORTERM-1M"
     lookup("USD-AMERIBORTERM-3M").name shouldBe "USD-AMERIBORTERM-3M"
   }
@@ -737,9 +682,8 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     test.toString shouldBe "KRW-CD-13W"
 
     // The one alternate name the family declares: the market spells this rate's tenor in months
-    // while the index spells it in weeks, and both name the same rate. It is behaviour rather
-    // than configuration (Rule 4 of the request), so the alternate spelling has to resolve, and
-    // to the very same value rather than to an equal copy.
+    // while the index spells it in weeks, and both name the same rate. The alternate spelling
+    // resolves to the very same value rather than to an equal copy.
     val test2 = lookup("KRW-CD-3M")
     test2.name shouldBe "KRW-CD-13W"
     test2 shouldBe test
@@ -930,12 +874,9 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
   }
 
   test("test_extendedEnum") {
-    // Ruling: the Java method read the classpath registry of the family and indexed it by name.
-    // No registry exists here - the family is a closed sealed set built from transcribed data
-    // (Rule 4 of the request, carried by AAP §0.4.1) - so the closed-family equivalent of that
-    // assertion is made: the membership is exactly the 271 published indices, their names are
-    // distinct, and every name of the shared table resolves through the family's own lookup to
-    // the member the table pairs it with.
+    // The family is a closed set: its membership is exactly the 271 published indices, their
+    // names are distinct, and every name of the shared table resolves through the family's own
+    // lookup to the member the table pairs it with.
     val all: List[IborIndex] = IborIndex.values.toList
     all should have size 271
     all.map(_.name).distinct should have size 271
@@ -949,19 +890,16 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
   }
 
   test("test_of_lookup_notFound") {
-    // Where the Java factory raised an error for text naming no member, the port reports it as
-    // a value. The reason is compared by value rather than by matching the message, so the
-    // diagnostic wording of the failure stays free to change.
+    // Text naming no member resolves to no value and parses to a parsing failure. The reason is
+    // compared by value rather than by matching the message, so the diagnostic wording of the
+    // failure stays free to change.
     IborIndex.valueOf("Rubbish") shouldBe None
     IborIndex.parse("Rubbish") should beFailureWith(FailureReason.PARSING)
   }
 
   test("test_of_lookup_null") {
-    // Reinterpretation: the Java method passed an absent reference to the factory and asserted
-    // that it raised an error. This port writes no such reference and its lookups take a name
-    // they resolve as a value, so the case is asserted as the two spellings of an absent name
-    // that can actually be supplied - the empty name and a blank one - each of which names no
-    // member and so resolves to a parsing failure.
+    // The two spellings of an absent name - the empty name and a blank one - name no member,
+    // and each is reported as a parsing failure rather than as a member or an error.
     IborIndex.valueOf("") shouldBe None
     IborIndex.parse("") should beFailureWith(FailureReason.PARSING)
     IborIndex.valueOf("   ") shouldBe None
@@ -970,14 +908,9 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
 
   //-------------------------------------------------------------------------
   test("test_equals") {
-    // Ruling: the Java method built a custom index through a bean builder, renamed a copy of it
-    // and asserted that the two were unequal. This family is closed to its 271 configured
-    // members and has no constructor available outside its own file (Rule 4 of the request; the
-    // `[R]` construction kind of AAP §0.3.3), so no such instance can exist and the Java body is
-    // unrepresentable. The property that body asserted - that equality is decided by the name
-    // and by nothing else - is asserted over configured members instead: two members with
-    // different names are unequal and hash differently, and a member reached by a lookup is
-    // equal to the constant naming it even though it was reached by a different route.
+    // Equality is decided by the name and by nothing else: two members with different names are
+    // unequal, and a member reached by a lookup is equal to - and hashes as - the constant
+    // naming it, even though it was reached by a different route.
     val libor3m = IborIndices.GBP_LIBOR_3M
     val libor6m = IborIndices.GBP_LIBOR_6M
     Eq[IborIndex].eqv(libor3m, libor6m) shouldBe false
@@ -993,12 +926,10 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // Ruling: the Java method swept a custom bean-built index reflectively and then read the
-    // constants holder through its private constructor. Neither has a target here - the index
-    // cannot be built (Rule 4) and the holder is an object with no constructor - so what those
-    // two sweeps stood in for is asserted directly: the constants holder publishes exactly the
-    // set of constants the original published, each naming a member of the family, and the
-    // typeclass instances of the family agree with each other over those members.
+    // The 113 constants IborIndices publishes, each paired with the identifier that holds it so
+    // that a failing assertion names the constant rather than a position. Every constant is
+    // asserted to hold a distinct member of the family, to be reachable by that member's name,
+    // and to render as it.
     val constants: List[(String, IborIndex)] = List(
       ("GBP_LIBOR_1W", IborIndices.GBP_LIBOR_1W),
       ("GBP_LIBOR_1M", IborIndices.GBP_LIBOR_1M),
@@ -1114,9 +1045,8 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
       ("ZAR_JIBAR_6M", IborIndices.ZAR_JIBAR_6M),
       ("ZAR_JIBAR_12M", IborIndices.ZAR_JIBAR_12M)
     )
-    // 113 constants naming 113 distinct members, which is exactly the set the original
-    // declared. The remaining 158 published indices have no constant, also as in the original,
-    // and are reached through the lookup - which is what the term-rate bodies above do.
+    // 113 constants naming 113 distinct members; the remaining 158 of the 271 published indices
+    // have no constant and are reached through the lookup, as the term-rate bodies above do.
     constants should have size 113
     constants.map(_._1).distinct should have size 113
     val members: List[IborIndex] = constants.map(_._2)
@@ -1137,8 +1067,9 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
     }
 
     // The companion publishes one equality-bearing instance - an ordering that is also a
-    // hashing - so summoning the equality, the hashing or the ordering yields that one value
-    // and the three can never disagree. A representative pair of members observes that.
+    // hashing - so summoning the equality, the hashing or the ordering yields that value. The
+    // assertions below ask all three about the same representative pair of members and require
+    // one answer from them.
     val sample: List[IborIndex] =
       List(IborIndices.GBP_LIBOR_3M, IborIndices.GBP_LIBOR_6M)
     for (left <- sample; right <- sample) {
@@ -1146,8 +1077,7 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
       withClue(s"${left.name} against ${right.name}: ") {
         Eq[IborIndex].eqv(left, right) shouldBe sameValue
         Hash[IborIndex].eqv(left, right) shouldBe sameValue
-        // the ordering is consistent with equality: it compares equal exactly when the two
-        // values are equal, which is the law the combined instance has to satisfy
+        // consistency with equality is the law the combined instance has to satisfy
         (Order[IborIndex].compare(left, right) == 0) shouldBe sameValue
         if (sameValue) {
           Hash[IborIndex].hash(left) shouldBe Hash[IborIndex].hash(right)
@@ -1159,13 +1089,9 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
   }
 
   test("test_jodaConvert") {
-    // Ruling: the Java method asserted the round trip of the reflective string-conversion
-    // library the original annotated this family for. That library is not on the classpath of
-    // this port (Rule 1 of the request, AAP §0.2.2), and the guarantee its two annotations gave
-    // is asserted directly: a member renders as its name, and that rendering reads back as the
-    // same member. The subject is the one the Java method named. This is the text round trip;
-    // the JSON round trip is test_serialization below, and the two are kept apart because the
-    // representations they pin are independent of each other.
+    // The text round trip: a member renders as its name, and that rendering parses back as the
+    // same member. The JSON round trip is test_serialization below, and the two are kept apart
+    // because the representations they pin are independent of each other.
     val rendered = Show[IborIndex].show(IborIndices.GBP_LIBOR_12M)
     rendered shouldBe "GBP-LIBOR-12M"
     rendered shouldBe IborIndices.GBP_LIBOR_12M.name
@@ -1180,15 +1106,8 @@ class IborIndexSpec extends AnyFunSuite with Matchers with TableDrivenPropertyCh
   }
 
   test("test_serialization") {
-    // Ruling: the Java method serialized a custom bean-built index through the serialization
-    // mechanism of the platform. That mechanism is not supported here and the subject cannot be
-    // built (Rule 4), so the replacement is the JSON codec of AAP §0.6.4 over a configured
-    // member. What is pinned is the shape that codec is required to have for this family: a
-    // member is written as the bare string of its name and never as an object, so a document
-    // naming an index reads back here as the same member. The test mapping manifest also routes
-    // this method to the consolidated json.JsonRoundTripSpec, whose property-based sweep covers
-    // every codec-bearing type of the module; that sweep does not pin the per-type
-    // representation, which is what this test asserts, so neither replaces the other.
+    // The JSON shape of the family: a member is written as the bare string of its name and
+    // never as an object, so a document naming an index reads back as the same member.
     val encoded = IborIndices.GBP_LIBOR_3M.asJson
     encoded shouldBe Json.fromString("GBP-LIBOR-3M")
     encoded.as[IborIndex] shouldBe Right(IborIndices.GBP_LIBOR_3M)

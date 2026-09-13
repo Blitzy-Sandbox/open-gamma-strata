@@ -35,104 +35,20 @@ import com.opengamma.strata.collect.result.ResultNec
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
- * Test [[FxRate]], ported from the Java `FxRateTest`.
+ * Test [[FxRate]].
  *
- * The original holds twenty-four test methods - twenty-two plain and two driven by a data
- * provider - and this suite holds every one of them under the name it gave them, so that a Java
- * test method and a test of this suite stay in one-to-one correspondence in the migration
- * manifest. The two data-driven methods stay '''one''' test each, with the rows of the original
- * provider held in a table inside them, so that each contributes a single test case rather than
- * one per row.
+ * `FxRate.of` refuses a rate at or below zero, and refuses an identity pair whose rate is not
+ * one, reporting both reasons in order as a `Left`; `crossRate` and `parse` report failure as a
+ * `Left` value as well, rather than by throwing.
  *
- * Beside those ported methods the suite holds the cases this port adds for behaviour the original
- * never reached, each carrying a descriptive name rather than a Java one and each explained where
- * it is declared. The last of the suite is one of them: it covers the two rates outside the real
- * numbers that this type admits, which no test of the original and no generator of this port
- * reached, and the paragraph below says why it exists.
+ * The positivity check is `!(rate <= 0.0)`, so `NaN` and a positive infinity are rates of this
+ * type, and its equality, hashing and JSON form all have to answer for them - the edge-generator
+ * test at the end of the suite is where they do. Equality compares the rate with
+ * `java.lang.Double.compare`, which canonicalises every NaN payload to one value, so a NaN rate
+ * equals itself while `-0.0` stays distinct from `0.0`; it is not raw-bit identity.
  *
- * ===Three failure modes, kept apart===
- *
- * This is the densest failure surface of the package: the original asserted
- * `IllegalArgumentException` twenty-three times, and those twenty-three sites are not one
- * behaviour but three, which this suite is careful never to conflate.
- *
- *   - '''a rate that is not greater than zero''' and '''two identical currencies with a rate other
- *     than one''' are the two constraints of the type. Both are checked by `FxRate.of`, both are
- *     reported as [[com.opengamma.strata.collect.result.FailureReason.INVALID]], and they are
- *     told apart here by their message - the wording of the second is the wording the original
- *     validator threw with, and it is pinned exactly. `of` accumulates, so an input that breaks
- *     both is asserted to report both, in order, which is something the original could not do.
- *   - '''text that names no rate''' is [[com.opengamma.strata.collect.result.FailureReason.PARSING]],
- *     and within it there are two wordings: text the expression of [[FxRate.parse]] does not
- *     match at all is `Invalid rate: …`, while text that matches but names a rate the type
- *     rejects is `Unable to parse rate: …`. The provider of the original mixes both in one table -
- *     its last three rows are constraint failures reached through parsing, not format failures -
- *     so every row here carries its own expected wording. Asserting the table with one blanket
- *     reason would let a port that had collapsed the two wordings, or that had stopped checking
- *     the constraints on the parse path, pass unnoticed.
- *   - '''a pair this rate cannot convert''' is
- *     [[com.opengamma.strata.collect.result.FailureReason.CURRENCY_CONVERSION]], for the lookup,
- *     the two conversions and the cross-rate derivation alike, each with the message the original
- *     threw with.
- *
- * Every one of those is asserted as a `Left` value through the matchers of
- * [[com.opengamma.strata.collect.testkit.ResultMatchers]], with the reason compared as a member
- * of the closed family of reasons rather than as text, and the message pinned through
- * `Regex.quote` so that the comparison is the literal message and not a pattern that happens to
- * match it. Nothing here catches an exception, because nothing in the ported type throws one.
- *
- * ===Where the ported API differs from the original===
- *
- * Four differences shape the assertions below, and each is asserted in the form the ported type
- * actually has rather than in the form the original had:
- *
- *   - `getPair()` is the accessor `pair`, and the rate, which the original kept private, is the
- *     public accessor `rate`.
- *   - `FxRate.of` returns `ResultNec[FxRate]`, an accumulating outcome, so the fixtures of this
- *     suite are built through it and unwrapped once by [[unwrap]].
- *   - [[FxRate.parse]] returns `FailureOr[FxRate]`, a '''single''' failure rather than a chain:
- *     the two wordings of the parse path are alternatives, so there is never more than one of
- *     them to report. That is the production signature and it is what is asserted here.
- *   - the type is not comparable and its companion publishes `Hash` and `Show` and no `Order`,
- *     so `coverage` asserts those two instances and does not look for a third.
- *
- * One test is routed differently from the body of the original for the same reason. The original
- * named a test `test_fxRate_forPair` and then called the two-currency lookup in it, exactly as
- * `test_fxRate_forBase` did; here the name is kept and the test is routed through the
- * `fxRate(CurrencyPair)` overload the name describes, over the rows the original used, so the two
- * tests cover the two overloads instead of covering the same one twice.
- *
- * ===Equality is bit for bit===
- *
- * [[FxRate.equals]] compares the rate by its bit pattern, which is what the generated bean it
- * replaces did. None of the rows of the original reaches a rate outside the real numbers or a
- * negative zero - `FxRate.of` rejects the zeros and every row here is finite - so the assertions
- * of `test_equals_hashCode` compare values directly, and the case that pins the rate as part of
- * the identity of a value is the pair of rates that differ in nothing else, which the original
- * also had.
- *
- * The two rates ''outside'' the real numbers that this type nonetheless admits are covered by one
- * test of this port's own, the last of the suite. `FxRate.of` checks `!(rate <= 0.0)`, which
- * passes a rate that is not a number and accepts a positive infinity while rejecting both zeros
- * and a negative infinity, so those two are values of the type and its equality, its hashing and
- * its document form all have to answer for them. The test is driven by the shared edge generator
- * of the module's generator source, which is the same generator the typeclass law suite runs its
- * `FxRate` rule sets over, so the two audits see one set of values. The property-based sweep over
- * every codec of the module lives in the module's JSON round-trip spec and is another unit's file;
- * the JSON half of the edge coverage is therefore asserted here, beside the equality half it
- * belongs with.
- *
- * ===What is asserted elsewhere===
- *
- * The typeclass law suites, the compile-time sweep over the construction surface of every
- * validated type, the numeric-edge preconditions, the sweep that exercises every failable method
- * of the module with a failing input, and the property-based round trip of every codec each live
- * in their own spec at the root of the test tree; the fixture-driven numerical parity of FX
- * conversion and cross rates belongs to `parity.FxParitySpec`. This suite asserts the cases of
- * the Java test it is ported from, which overlap those sweeps by design.
- *
- * @see [[FxRate]] for the type under test
- * @see [[CurrencyPair]] for the pair, whose `cross` decides which cross rates exist
+ * The JSON form is `{"pair":"EUR/USD","rate":1.6}`, with the pair as its text form and a
+ * non-finite rate as a tagged string, and decoding routes both fields through `of`.
  */
 final class FxRateSpec
     extends AnyFunSuite
@@ -140,53 +56,32 @@ final class FxRateSpec
     with TableDrivenPropertyChecks
     with ScalaCheckDrivenPropertyChecks {
 
-  /**
-   * A value of a type unrelated to a rate, for the equality assertion that needs one.
-   *
-   * Held at the type `Any` and named as the original named it, so that the assertion reads as a
-   * comparison against a foreign value rather than as a comparison the compiler could reject.
-   */
+  /** A value of a type unrelated to a rate, for the equality assertion that needs one. */
   private val ANOTHER_TYPE: Any = ""
 
-  /**
-   * The refusal of a rate of zero, which is what the reciprocal of an infinite rate is.
-   *
-   * The wording is the one the argument check of the original produced, and it is the wording the
-   * factory rows above already assert for a supplied zero; the derived-rate tests assert it too,
-   * because the point of those tests is that a derived rate is held to the same constraint as a
-   * supplied one, in the same place and with the same words.
-   */
+  /** The refusal of a rate of zero, which is what the reciprocal of an infinite rate is. */
   private val ZeroRateMessage: String =
     "Argument 'rate' must not be negative or zero but has value 0.0"
 
   //-------------------------------------------------------------------------
   /**
-   * The rates the cross-rate test crosses, named and valued as the original named and valued
-   * them.
-   *
-   * The rates are written as quotients of small integers - `5d / 4d` rather than `1.25d` - because
-   * the expected cross rate is the product of two of them and has to be the same `Double` bit for
-   * bit, whichever way round the two inputs are written. A decimal literal for the product would
-   * be an assertion about rounding rather than about the cross-rate orientation this test exists
-   * to pin.
+   * The rates the cross-rate test crosses, written as quotients of small integers so that the
+   * expected cross rate is the same `Double` whichever way round the inputs are written; a decimal
+   * literal for the product would assert rounding instead of the cross-rate orientation.
    */
   private val gbpUsd: FxRate = rateOf(GBP, USD, 5d / 4d)
 
-  /** The `USD/GBP` rate, the inverse direction of [[gbpUsd]]. */
   private val usdGbp: FxRate = rateOf(USD, GBP, 4d / 5d)
 
   /** The `EUR/USD` rate crossed through `USD` below. */
   private val eurUsd: FxRate = rateOf(EUR, USD, 8d / 7d)
 
-  /** The `USD/EUR` rate, the inverse direction of [[eurUsd]]. */
   private val usdEur: FxRate = rateOf(USD, EUR, 7d / 8d)
 
   /**
-   * The cross rate every successful orientation has to produce.
-   *
-   * Its pair is the market convention pair of `EUR` and `GBP` - which is `EUR/GBP` - because
-   * [[CurrencyPair.cross]] answers in convention order however its two inputs are written, and
-   * its rate is the product in the order [[FxRate.crossRate]] forms it.
+   * The cross rate every successful orientation has to produce: its pair is `EUR/GBP`, because
+   * [[CurrencyPair.cross]] answers in convention order however its inputs are written, and its
+   * rate is the product in the order [[FxRate.crossRate]] forms it.
    */
   private val eurGbp: FxRate = rateOf(EUR, GBP, (8d / 7d) * (4d / 5d))
 
@@ -201,17 +96,9 @@ final class FxRateSpec
 
   //-------------------------------------------------------------------------
   /**
-   * Arguments of the two-currency factory that describe no rate, with the message each reports.
-   *
-   * The first and the third row are the two rows of the original: a negative rate, and two
-   * identical currencies with a rate other than one. The second row is the boundary of the first
-   * constraint, zero, which the original asserted for the parse path but not for this factory and
-   * which is the value a careless port of `notNegative` would let through.
-   *
-   * The message is part of every row because the two constraints share a reason. Without it a
-   * port that reported the positivity failure for an identity pair - or the other way round -
-   * would satisfy these rows, and the wording of the second is the wording of the validator being
-   * ported, which reaches logs and documents.
+   * Arguments of the two-currency factory that describe no rate, with the message each reports:
+   * the two constraints share one reason, so the message is what tells them apart. The second row
+   * is the boundary of the positivity constraint, zero.
    */
   private val data_ofInvalidCurrencies: TableFor4[Currency, Currency, Double, String] = Table(
     ("base", "counter", "rate", "message"),
@@ -220,11 +107,8 @@ final class FxRateSpec
     (GBP, GBP, 2d, "Conversion rate between identical currencies must be one"))
 
   /**
-   * Arguments of the currency-pair factory that describe no rate, with the message each reports.
-   *
-   * The same three cases as above, reached through the other factory, which is defined as this
-   * one applied to the pair of its two currencies and therefore has to reject exactly the same
-   * rates with exactly the same wording.
+   * The same three cases through the currency-pair factory, which is the two-currency factory
+   * applied to the pair of its arguments and so rejects the same rates with the same wording.
    */
   private val data_ofInvalidPair: TableFor3[CurrencyPair, Double, String] = Table(
     ("pair", "rate", "message"),
@@ -240,13 +124,9 @@ final class FxRateSpec
 
   //-------------------------------------------------------------------------
   /**
-   * Text that names a rate, with the rate it names, transcribed from the Java provider.
-   *
-   * All seven rows of the original are here, and three of them are doing work that is easy to
-   * mistake for repetition. `USD/EUR 3.00000000` pins that a fraction of zeros names the whole
-   * number `3` and not something that merely prints like it; `USD/EUR 2` pins that a rate needs
-   * no fractional part at all; and `cAd/GbP 1.25` pins that the text is folded before it is
-   * matched, so parsing is insensitive to the case of what a caller wrote.
+   * Text that names a rate, with the rate it names. `USD/EUR 3.00000000` pins that a fraction of
+   * zeros names the whole number `3`, `USD/EUR 2` that a rate needs no fractional part, and
+   * `cAd/GbP 1.25` that the text is folded before it is matched.
    */
   private val data_parseGood: TableFor4[String, Currency, Currency, Double] = Table(
     ("input", "base", "counter", "rate"),
@@ -259,23 +139,12 @@ final class FxRateSpec
     ("cAd/GbP 1.25", CAD, GBP, 1.25d))
 
   /**
-   * Text that names no rate, with the message each reports, transcribed from the Java provider.
-   *
-   * Nine of the ten rows of the original are here unchanged, and the table is deliberately not
-   * uniform: the first five and the ninth are text the expression of [[FxRate.parse]] does not
-   * match, reported as `Invalid rate: …`, while the sixth, seventh and eighth '''do''' match and
-   * are rejected afterwards by the two constraints of the type, reported as
-   * `Unable to parse rate: …`. Those three are a negative rate, a zero rate and two identical
-   * currencies with a rate other than one - the whole constraint surface of the type, reached
-   * through parsing - which is why each row carries its own wording rather than the table being
-   * asserted with one.
-   *
-   * The tenth row of the original was Java's absent-reference literal, which cannot be written
-   * against this API - the parameter is a `String` a caller supplies, and this port has no such
-   * literal to supply - so it is replaced by a further input that is rejected for the same reason
-   * the first five are: a rate written in exponent notation, which the rate group of the
-   * expression admits no letter into, so the whole text fails to match. The message quotes the
-   * text as it was supplied rather than as it was folded to upper case, which that row also pins.
+   * Text that names no rate, with the message each reports. Text the expression of
+   * [[FxRate.parse]] does not match is reported as `Invalid rate: …`; text that matches and is then
+   * rejected by a constraint of the type - rows six to eight - is reported as
+   * `Unable to parse rate: …`, so each row carries its own wording. `EUR/USD 1e3` is a format
+   * failure because the rate group admits no letter, and its message quotes the text as supplied
+   * rather than folded.
    */
   private val data_parseBad: TableFor2[String, String] = Table(
     ("input", "message"),
@@ -292,11 +161,9 @@ final class FxRateSpec
 
   //-------------------------------------------------------------------------
   /**
-   * Currency pairs `GBP/USD 1.25` answers for, with the rate it answers.
-   *
-   * The second row is the one that matters: the inverted pair is answered with the reciprocal
-   * rather than refused, and the expected value is written as the division the implementation
-   * performs so that the row asserts the reciprocal itself and not a decimal that rounds to it.
+   * Currency pairs `GBP/USD 1.25` answers for, with the rate it answers. The second row matters:
+   * the inverted pair is answered with the reciprocal, written as the division the implementation
+   * performs so that the row asserts the reciprocal and not a decimal that rounds to it.
    */
   private val data_fxRateFound: TableFor3[Currency, Currency, Double] = Table(
     ("base", "counter", "rate"),
@@ -304,22 +171,17 @@ final class FxRateSpec
     (USD, GBP, 1d / 1.25d))
 
   /**
-   * Currency pairs `GBP/USD 1.25` cannot answer for, with the message each reports.
-   *
-   * A rate holds one pair, so a question about a pair it does not hold has no answer. The row of
-   * the original is kept and the message names the pair that was asked about, which is what makes
-   * the failure useful to a caller holding several rates.
+   * Currency pairs `GBP/USD 1.25` cannot answer for: a rate holds one pair, so a question about a
+   * pair it does not hold has no answer, and the message names the pair that was asked about.
    */
   private val data_fxRateMissing: TableFor3[Currency, Currency, String] = Table(
     ("base", "counter", "message"),
     (GBP, AUD, "No FX rate found for GBP/AUD"))
 
   /**
-   * Pairs the pair-form lookup answers for, with the rate it answers, from the Java rows.
-   *
-   * Five rows, of which three are the identity case: a currency and itself converts at one
-   * whether or not this rate mentions that currency at all, which is why `AUD/AUD` is answered by
-   * a `GBP/USD` rate. That is the first case the implementation tests and the easiest to lose.
+   * Pairs the pair-form lookup answers for. Three of the five rows are the identity case: a
+   * currency and itself converts at one whether or not this rate mentions that currency, which is
+   * why `AUD/AUD` is answered by a `GBP/USD` rate.
    */
   private val data_fxRatePairFound: TableFor2[CurrencyPair, Double] = Table(
     ("pair", "rate"),
@@ -330,12 +192,8 @@ final class FxRateSpec
     (CurrencyPair.of(AUD, AUD), 1d))
 
   /**
-   * Pairs the pair-form lookup cannot answer for, with the message each reports, from the Java
-   * rows.
-   *
-   * All five rows of the original are kept: a pair holding one of the two currencies of the rate
-   * either way round, and a pair holding neither. Sharing a currency with the rate is not enough,
-   * which is the point of the four rows that do.
+   * Pairs the pair-form lookup cannot answer for: sharing one currency with the rate is not
+   * enough, which is the point of the four rows that do, and the last row holds neither.
    */
   private val data_fxRatePairMissing: TableFor2[CurrencyPair, String] = Table(
     ("pair", "message"),
@@ -347,15 +205,11 @@ final class FxRateSpec
 
   //-------------------------------------------------------------------------
   /**
-   * Pairs of rates that cross, with the rate the cross has to produce, from the Java rows.
-   *
-   * All eight rows of the original are here and they are the whole point of the test: the same
-   * `EUR/GBP` rate has to come out of `EUR/USD` crossed with `USD/GBP`, of either of those two
-   * written the other way round, and of the two supplied in the other order - eight combinations
-   * of two orientations each, plus the order of the two arguments. The expected value is
-   * [[eurGbp]], whose rate is the product of the two input rates in the order the implementation
-   * forms it, so a port that had reassociated the multiplication or inverted the wrong operand
-   * would fail here rather than agree to within rounding.
+   * Pairs of rates that cross, with the rate the cross has to produce. The same `EUR/GBP` rate has
+   * to come out of `EUR/USD` crossed with `USD/GBP`, of either written the other way round, and of
+   * the two supplied in the other order; the expected [[eurGbp]] carries the product in the order
+   * [[FxRate.crossRate]] forms it, so a reassociated multiplication or an inverted operand fails
+   * here rather than agreeing to within rounding.
    */
   private val data_crossRate: TableFor3[FxRate, FxRate, FxRate] = Table(
     ("first", "second", "expected"),
@@ -369,13 +223,9 @@ final class FxRateSpec
     (usdGbp, eurUsd, eurGbp))
 
   /**
-   * Pairs of rates that do not cross, with the message each reports, from the Java rows.
-   *
-   * All five rows of the original are kept, and they are three distinct reasons no cross exists:
-   * one of the rates is an identity, so its two currencies are one and there is no third; the two
-   * rates name the same two currencies, either in the same order or inverted, so again there is
-   * no third; and the two rates share no currency at all. The message names both pairs, which is
-   * the wording the original threw with.
+   * Pairs of rates that do not cross: one rate is an identity, so its two currencies are one and
+   * there is no third; the two rates name the same two currencies, in either order, so again there
+   * is no third; and the two rates share no currency at all.
    */
   private val data_crossRateInvalid: TableFor3[FxRate, FxRate, String] = Table(
     ("first", "second", "message"),
@@ -389,18 +239,13 @@ final class FxRateSpec
   test("test_of_CurrencyCurrencyDouble") {
     val test = rateOf(GBP, USD, 1.5d)
     test.pair shouldBe CurrencyPair.of(GBP, USD)
-    // the rate is a public accessor of this port, where the bean being ported kept it private
-    // and exposed the value only through the lookup and the text form; both of those are
-    // asserted here as well, so the three views of the value are pinned together
     test.rate shouldBe 1.5d
     test.fxRate(GBP, USD) should haveValue(1.5d)
     test.toString shouldBe "GBP/USD 1.5"
   }
 
   test("test_of_CurrencyCurrencyDouble_reverseStandardOrder") {
-    // a pair written the other way round from the market convention is kept exactly as it was
-    // supplied - `of` does not reorient its arguments, and `toConventional` is the member that
-    // does, asserted separately below
+    // `of` keeps the pair as supplied; `toConventional` is the member that reorients it
     val test = rateOf(USD, GBP, 0.8d)
     test.pair shouldBe CurrencyPair.of(USD, GBP)
     test.rate shouldBe 0.8d
@@ -409,7 +254,6 @@ final class FxRateSpec
   }
 
   test("test_of_CurrencyCurrencyDouble_same") {
-    // two identical currencies are legal at a rate of exactly one, which is the identity rate;
     // the text form writes a whole-number rate without a fractional part, so this is "USD/USD 1"
     val test = rateOf(USD, USD, 1d)
     test.pair shouldBe CurrencyPair.of(USD, USD)
@@ -423,17 +267,12 @@ final class FxRateSpec
     forAll(data_ofInvalidCurrencies) {
       (base: Currency, counter: Currency, rate: Double, message: String) =>
         val outcome: ResultNec[FxRate] = FxRate.of(base, counter, rate)
-        // the two constraints share a reason, so the reason alone would not tell them apart;
-        // the message is what distinguishes a rate that is not positive from an identity pair
-        // carrying a rate other than one
         outcome should beFailureWith(FailureReason.INVALID)
         outcome should haveFailureMessageMatching(Regex.quote(message))
     }
 
     // the two constraints are checked in one expression and accumulate, so arguments that break
-    // both are told about both, in the order the checks are written. The original checked them
-    // in two places and reported whichever it reached first, so this is behaviour the port adds
-    // and the reason `of` returns a chain rather than a single failure.
+    // both are told about both, in the order the checks are written
     val both: List[Failure] = failuresOf(FxRate.of(GBP, GBP, -1d))
     both.map(failure => failure.reason) shouldBe
       List(FailureReason.INVALID, FailureReason.INVALID)
@@ -443,14 +282,9 @@ final class FxRateSpec
   }
 
   test("test_of_CurrencyCurrencyDouble_null") {
-    // The Java test passed the absent-reference literal for each currency in turn and asserted
-    // an IllegalArgumentException. That case cannot be written against this API and needs no
-    // run-time guard: both currencies are required `Currency` values, and the `notNull` family
-    // of checks was dropped in the port because an absent value is modelled by `Option` rather
-    // than by an absent reference. What replaced the run-time check is therefore asserted at
-    // compile time - a currency supplied as the text of its code, and an argument omitted
-    // altogether, are both rejected before the program runs - and the valid call is asserted to
-    // compile so that the proofs cannot be passing for some unrelated reason.
+    // both currencies are required `Currency` values, so a code supplied as text or an argument
+    // omitted altogether fails to compile; the valid call is asserted to compile as well, so the
+    // proofs cannot be passing for an unrelated reason
     assertDoesNotCompile("""FxRate.of("GBP", USD, 1.5d)""")
     assertDoesNotCompile("""FxRate.of(GBP, "USD", 1.5d)""")
     assertDoesNotCompile("""FxRate.of(GBP, USD)""")
@@ -498,10 +332,6 @@ final class FxRateSpec
   }
 
   test("test_of_CurrencyPairDouble_null") {
-    // as above: the pair is a required argument of a type that cannot be absent, so the case the
-    // original asserted at run time is asserted at compile time here. The first proof is the one
-    // that matters - a rate alone does not name a pair - and the second shows that the text form
-    // of a pair is not accepted in place of a pair.
     assertDoesNotCompile("""FxRate.of(1.5d)""")
     assertDoesNotCompile("""FxRate.of("GBP/USD", 1.5d)""")
     assertDoesNotCompile("""FxRate.of(CurrencyPair.of(GBP, USD))""")
@@ -510,37 +340,28 @@ final class FxRateSpec
 
   //-------------------------------------------------------------------------
   test("test_toConventional") {
-    // a rate whose pair is written against the market convention is reoriented and its rate
-    // inverted, so `USD/GBP 0.8` is the same rate as `GBP/USD 1.25`. Which of the two directions
-    // is conventional is decided by `CurrencyPair.isConventional`, whose own spec pins the
-    // decision procedure; this test asserts only that the rate follows it.
+    // a pair written against the market convention is reoriented and its rate inverted, so
+    // `USD/GBP 0.8` is the same rate as `GBP/USD 1.25`; which direction is conventional is decided
+    // by `CurrencyPair.isConventional`
     rateOf(USD, GBP, 0.8d).toConventional shouldBe rateOf(GBP, USD, 1.25d)
     rateOf(USD, GBP, 0.8d).toConventional.pair shouldBe CurrencyPair.of(GBP, USD)
     rateOf(USD, GBP, 0.8d).toConventional.rate shouldBe 1d / 0.8d
 
-    // a rate already in the conventional direction is returned unchanged, rather than inverted
-    // twice, so the member is idempotent
     rateOf(GBP, USD, 1.25d).toConventional shouldBe rateOf(GBP, USD, 1.25d)
     rateOf(GBP, USD, 1.25d).toConventional.toConventional shouldBe rateOf(GBP, USD, 1.25d)
 
-    // an identity pair is conventional, so the identity rate is returned as it is. Inverting it
-    // would give the same value, which is why this case is invisible in the result and asserted
-    // here for the decision rather than for the arithmetic.
     rateOf(GBP, GBP, 1d).toConventional shouldBe rateOf(GBP, GBP, 1d)
   }
 
   test("test_toConventional_infinite") {
     // the conventional direction of an infinite rate written the other way round would carry the
-    // reciprocal of infinity, which is not a rate, so it is refused for the same reason and with
-    // the same wording as the inversion above - as the original refused it, from the factory its
-    // conventionalisation called
+    // reciprocal of infinity, which is not a rate, so it is refused with the wording of the
+    // supplied-zero rows above
     val infinite = rateOf(USD, EUR, Double.PositiveInfinity)
     infinite.pair.isConventional shouldBe false
     intercept[IllegalArgumentException](infinite.toConventional).getMessage shouldBe
       ZeroRateMessage
 
-    // an infinite rate already written in the conventional direction performs no division and is
-    // returned as it is, so the edge is reached by the orientation and not by the value
     val conventional = rateOf(EUR, USD, Double.PositiveInfinity)
     conventional.pair.isConventional shouldBe true
     conventional.toConventional shouldBe conventional
@@ -557,12 +378,7 @@ final class FxRateSpec
   test("test_parse_String_bad") {
     forAll(data_parseBad) { (input: String, message: String) =>
       val outcome: FailureOr[FxRate] = FxRate.parse(input)
-      // text that names no rate is reported as a parsing failure rather than by throwing
       outcome should beFailureWith(FailureReason.PARSING)
-      // and the wording says which kind of rejection it was: text the expression does not match
-      // at all, or text that matches and then breaks a constraint of the type. The three rows of
-      // the second kind are the constraint surface reached through parsing, and pinning the
-      // wording per row is what keeps them from collapsing into the format failures.
       outcome should haveFailureMessageMatching(Regex.quote(message))
     }
   }
@@ -578,35 +394,26 @@ final class FxRateSpec
   }
 
   test("test_inverse_same") {
-    // the identity rate is its own inverse: its pair inverts to itself and the reciprocal of one
-    // is one
     val test = rateOf(GBP, GBP, 1d)
     test.inverse shouldBe rateOf(GBP, GBP, 1d)
     test.inverse.rate shouldBe 1d
   }
 
   test("test_inverse_infinite") {
-    // An infinite rate is one the factory admits - it is greater than zero - but its reciprocal
-    // is zero, which is not a rate. The original refused that reciprocal from the constructor its
-    // inversion called; this port refuses it in the single creation route of the companion, so
-    // there is no way to hold a rate that the factory and the decoder would reject. The refusal
-    // is the exception the original threw, with its wording, because the member keeps the
-    // signature it had rather than growing a failure channel for an edge reachable only from a
-    // rate a caller supplied.
+    // an infinite rate is admitted - it is greater than zero - but its reciprocal is zero, which
+    // the single creation route refuses, so `inverse` throws rather than growing a failure channel
+    // for an edge reachable only from a rate a caller supplied. The reciprocal of the smallest
+    // positive rate is that infinity, while a rate that is not a number inverts to one
     val infinite = rateOf(EUR, USD, Double.PositiveInfinity)
     infinite.rate shouldBe Double.PositiveInfinity
     intercept[IllegalArgumentException](infinite.inverse).getMessage shouldBe ZeroRateMessage
 
-    // the same edge one step later: the reciprocal of the smallest positive rate is infinite,
-    // which is a rate the factory admits, and inverting that one is the refusal above
     val denormal = rateOf(EUR, USD, Double.MinPositiveValue)
     denormal.inverse.pair shouldBe CurrencyPair.of(USD, EUR)
     denormal.inverse.rate shouldBe Double.PositiveInfinity
     intercept[IllegalArgumentException](denormal.inverse.inverse).getMessage shouldBe
       ZeroRateMessage
 
-    // a rate that is not a number inverts to one that is not a number, which is admitted for the
-    // same reason the input is admitted, so this is not the refused edge
     val notANumber = rateOf(EUR, USD, Double.NaN)
     notANumber.inverse.pair shouldBe CurrencyPair.of(USD, EUR)
     notANumber.inverse.rate.isNaN shouldBe true
@@ -622,19 +429,14 @@ final class FxRateSpec
     }
     forAll(data_fxRateMissing) { (base: Currency, counter: Currency, message: String) =>
       val outcome: FailureOr[Double] = test.fxRate(base, counter)
-      // the absence of a rate is the expected outcome of asking about a pair this rate does not
-      // hold, reported in the type rather than by throwing, and the reason is compared as a
-      // member of the closed family of reasons
       outcome should beFailureWith(FailureReason.CURRENCY_CONVERSION)
       outcome should haveFailureMessageMatching(Regex.quote(message))
     }
   }
 
   test("test_fxRate_forPair") {
-    // the ordered-pair overload, which is defined as the lookup above applied to the two
-    // currencies of the pair. The original named this test for the pair form and then called the
-    // two-currency form in it; the rows are the rows of the original and they are routed through
-    // the overload the name describes, so the two tests cover the two overloads.
+    // the ordered-pair overload, which is the lookup above applied to the two currencies of the
+    // pair
     val test = rateOf(GBP, USD, 1.25d)
     forAll(data_fxRatePairFound) { (pair: CurrencyPair, rate: Double) =>
       test.fxRate(pair) should haveValue(rate)
@@ -662,9 +464,9 @@ final class FxRateSpec
   test("test_convert_Decimal") {
     val test = rateOf(GBP, USD, 1.25d)
     val hundred = decimalOf(Decimal.of(100L))
-    // the exact-decimal conversion takes the same route as the type being ported: the rate is
-    // looked up as a `Double` and the amount is multiplied by it through the decimal's own
-    // multiplication, so the result is an exact decimal rather than a rounded binary value
+    // the exact-decimal conversion looks the rate up as a `Double` and multiplies the amount by
+    // it through the decimal's own multiplication, so the result is an exact decimal rather than a
+    // rounded binary value
     test.convert(hundred, GBP, USD) should haveValue(decimalOf(Decimal.of(125L)))
     test.convert(hundred, USD, GBP) should haveValue(decimalOf(Decimal.of(100d / 1.25d)))
 
@@ -679,9 +481,7 @@ final class FxRateSpec
       first.crossRate(second) should haveValue(expected)
     }
 
-    // the pair of the cross is in market convention order whichever way round the two inputs
-    // are written, which the equality above already requires; it is stated once directly so that
-    // the orientation is visible in the spec and not only implied by the expected value
+    // the cross pair is in market convention order whichever way round the two inputs are written
     eurUsd.crossRate(usdGbp).map(cross => cross.pair) shouldBe
       Right(CurrencyPair.of(EUR, GBP))
     gbpUsd.crossRate(usdEur).map(cross => cross.pair) shouldBe
@@ -689,40 +489,29 @@ final class FxRateSpec
 
     forAll(data_crossRateInvalid) { (first: FxRate, second: FxRate, message: String) =>
       val outcome: FailureOr[FxRate] = first.crossRate(second)
-      // two rates that name no third currency between them have no cross, which is reported as a
-      // conversion failure naming both pairs rather than by throwing
       outcome should beFailureWith(FailureReason.CURRENCY_CONVERSION)
       outcome should haveFailureMessageMatching(Regex.quote(message))
     }
   }
 
   /**
-   * Asserts that rejected text is named in full and rendered bounded and on one line, in both
-   * wordings.
-   *
-   * No counterpart in the Java test class: the original interpolated the text it was handed into
-   * the exception it threw, as it stood, and this port names it the same way in the failure it
-   * returns. What the port adds is the boundary at which a failure is written out, where every
-   * part is bounded and anything that could forge a line is escaped. Both wordings are asserted,
-   * because both quote the text.
+   * Asserts that rejected text is named in full while the failure renders bounded and on one line:
+   * the message quotes the whole of what was rejected, in both wordings, while the rendering bounds
+   * what it writes, marks what it left out and escapes anything that could forge a line.
    */
   test("parsing names rejected text in full, and the failure renders bounded and on one line") {
-    // Ten thousand characters the expression does not match: the invalid-rate wording.
     val payload = "H" * 10000
     val bounded: FailureOr[FxRate] = FxRate.parse(payload)
     bounded should beFailureWith(FailureReason.PARSING)
     val failure = bounded.left.toOption.getOrElse(fail("expected a failure"))
     failure.message shouldBe s"Invalid rate: $payload"
-    // The rendering is where the size stops, and it marks what it left out.
     val rendered = Show[Failure].show(failure)
     rendered.length should be < 1000
     rendered should startWith("PARSING: Invalid rate: HHH")
     rendered should endWith("...")
 
-    // Text the expression matches and that then names no legal rate reaches the other wording,
-    // named in full and bounded by the same rendering: the rate group admits digits, so a rate
-    // written with ten thousand zeroes after the point matches and is then rejected as a zero
-    // rate.
+    // the rate group admits digits, so a rate written with ten thousand zeroes after the point
+    // matches and is then rejected as a zero rate - the other wording, bounded the same way
     val longZero = s"EUR/GBP 0.${"0" * 10000}"
     val matched: FailureOr[FxRate] = FxRate.parse(longZero)
     matched should beFailureWith(FailureReason.PARSING)
@@ -732,9 +521,6 @@ final class FxRateSpec
       .show(matched.left.toOption.getOrElse(fail("expected a failure")))
       .length should be < 1000
 
-    // Text holding a line break is named as it stands and rendered on one line, so a
-    // line-oriented consumer of the rendering cannot be made to record a line the library did
-    // not report.
     val injected = FxRate.parse("EUR\nUSD 1.25")
     injected should beFailureWith(FailureReason.PARSING)
     val injectedFailure = injected.left.toOption.getOrElse(fail("expected a failure"))
@@ -744,8 +530,6 @@ final class FxRateSpec
     injectedRendering should not include "\r"
     injectedRendering shouldBe "PARSING: Invalid rate: EUR\\nUSD 1.25"
 
-    // And the messages for ordinary rejected text are unchanged, character for character, which
-    // is what makes the bound invisible to every caller but the adversarial one.
     FxRate.parse("AUD 1.25").left.toOption.map(failure => failure.message) shouldBe
       Some("Invalid rate: AUD 1.25")
     FxRate.parse("EUR/GBP 0").left.toOption.map(failure => failure.message) shouldBe
@@ -759,10 +543,9 @@ final class FxRateSpec
     val b = rateOf(USD, GBP, 1.25d)
     val c = rateOf(USD, GBP, 1.35d)
 
-    // `equals` is called as a method, as the original called it, so that the whole matrix is
-    // stated - including the reflexive cases, which a `==` between two identical expressions
-    // would be flagged for in this build. `b` and `c` differ in nothing but their rate, which is
-    // what pins the rate as part of the identity of a value.
+    // `equals` is called as a method so that the whole matrix, including the reflexive cases, can
+    // be stated - `==` between two identical expressions would be flagged in this build. `b` and
+    // `c` differ in nothing but their rate
     a1.equals(a1) shouldBe true
     a1.equals(a2) shouldBe true
     a1.equals(b) shouldBe false
@@ -780,11 +563,8 @@ final class FxRateSpec
 
     a1.hashCode shouldBe a2.hashCode
 
-    // the same statements through the instance that carries equality and hashing for this port,
-    // which is where the rest of the library reads them from. The companion publishes one
-    // equality-bearing instance - a `Hash`, which extends `Eq` - so there is no second notion of
-    // equality that could disagree with these, and no `Order`, because rates of different pairs
-    // do not order.
+    // the same statements through the `Hash` the library reads equality and hashing from; the
+    // companion publishes no `Order`, because rates of different pairs do not order
     Hash[FxRate].eqv(a1, a2) shouldBe true
     Hash[FxRate].eqv(a1, b) shouldBe false
     Hash[FxRate].eqv(b, c) shouldBe false
@@ -794,21 +574,12 @@ final class FxRateSpec
   test("test_equals_bad") {
     val test = rateOf(AUD, GBP, 1.25d)
 
-    // a value of an unrelated type is not equal to a rate, in either direction. The original also
-    // asserted equality against the absent-reference literal; that case is subsumed by the types
-    // of this port, where a reference to a rate cannot be absent and there is no such literal to
-    // compare against, so it is recorded here rather than written.
     test.equals(ANOTHER_TYPE) shouldBe false
     ANOTHER_TYPE.equals(test) shouldBe false
   }
 
   //-----------------------------------------------------------------------
   test("test_serialization") {
-    // Java serialization is not supported by this port; the JSON codec is the serialized form of
-    // a rate, and it is an object of two fields - the pair as its text form and the rate as a
-    // number. The two values the original round-tripped are round-tripped through it, one
-    // explicit example each, with the encoded bytes pinned: the property-based sweep over every
-    // codec of the module belongs to the module's JSON round-trip spec.
     val test = rateOf(GBP, USD, 1.25d)
     val encoded: Json = test.asJson
     encoded.noSpaces shouldBe """{"pair":"GBP/USD","rate":1.25}"""
@@ -820,8 +591,7 @@ final class FxRateSpec
     encodedIdentity.as[FxRate] shouldBe Right(identityRate)
 
     // decoding routes the two fields through the same factory a caller's arguments go through, so
-    // a document naming a rate this type would not have built is a decoding failure rather than a
-    // value that bypassed the constraints
+    // a document naming a rate the factory rejects is a decoding failure
     Json
       .obj("pair" -> Json.fromString("GBP/USD"), "rate" -> Json.fromDoubleOrNull(0d))
       .as[FxRate]
@@ -833,18 +603,15 @@ final class FxRateSpec
   }
 
   test("test_serialization_derivedShape") {
-    // Both halves of the codec are derived, at compile time, from one declaration of the field
-    // shape, so what the encoder writes and what the decoder reads cannot drift apart. The
-    // properties that follow from that are pinned here: the two keys, in declaration order, and
-    // nothing else in the object.
+    // the encoded object holds exactly the keys `pair` and `rate`, in that order and nothing
+    // else, and decoding the encoded form returns the same value
     val test = rateOf(EUR, USD, 1.6d)
     test.asJson.asObject.map(obj => obj.keys.toList) shouldBe Some(List("pair", "rate"))
     test.asJson.noSpaces shouldBe """{"pair":"EUR/USD","rate":1.6}"""
     test.asJson.as[FxRate] shouldBe Right(test)
 
-    // the rate is written through the single policy this port has for a double, which writes the
-    // three values JSON cannot express as tagged strings; both survive the round trip, which is
-    // what makes the encoded form of every rate a rate again
+    // a double goes through the shared double codec, which writes the three values JSON cannot
+    // express as tagged strings; both non-finite rates survive the round trip
     val infinite = rateOf(EUR, USD, Double.PositiveInfinity)
     infinite.asJson.noSpaces shouldBe """{"pair":"EUR/USD","rate":"Infinity"}"""
     infinite.asJson.as[FxRate] shouldBe Right(infinite)
@@ -853,32 +620,18 @@ final class FxRateSpec
     notANumber.asJson.noSpaces shouldBe """{"pair":"EUR/USD","rate":"NaN"}"""
     notANumber.asJson.as[FxRate] shouldBe Right(notANumber)
 
-    // and the pair is written as its text form rather than as a nested object, which is the codec
-    // the pair itself publishes and what keeps the document readable
     test.asJson.hcursor.get[String]("pair") shouldBe Right("EUR/USD")
   }
 
   /**
    * Asserts the two non-finite rates the type admits, over the shared edge generator.
    *
-   * The Java test reached finite rates only, and so did every generator of this port until the
-   * equality, hashing and document form of these two values were found to be untested. They are
-   * values of the type: the check `FxRate.of` applies is `!(rate <= 0.0)`, under which a rate that
-   * is not a number passes - `NaN <= 0.0` is false - and a positive infinity passes for the plain
-   * reason that it exceeds zero, while both signed zeros and a negative infinity are rejected.
-   *
-   * Three things are asserted of every rate the generator draws, and each is a property a
-   * regression could break without failing anything else in the suite: the rate survives the
-   * round trip through its document form, where the two values JSON has no number for are written
-   * as tagged strings; a rate rebuilt through the factory from the same pair and rate is equal to
-   * it and hashes with it, which for a rate that is not a number holds only because the equality
-   * compares bit patterns; and the rendering is the text form of the value.
-   *
-   * The generator is the one the typeclass law suite runs its `FxRate` rule sets over, so a rate
-   * this test admits is a rate those laws are checked over as well. The assertions that follow
-   * the property pin the two values by hand and state the three the domain excludes, because a
-   * property cannot say which values are absent - and the exclusions are half of what the domain
-   * is.
+   * `FxRate.of` applies `!(rate <= 0.0)`, so a rate that is not a number passes - `NaN <= 0.0` is
+   * false - and a positive infinity passes because it exceeds zero, while both signed zeros and a
+   * negative infinity are rejected. Of every rate drawn this asserts the round trip through the
+   * document form, and equality and hashing against a rate rebuilt through the factory - which for
+   * a NaN rate holds because the equality compares through `java.lang.Double.compare`. The
+   * generator is the one the typeclass law suite runs its `FxRate` rule sets over.
    */
   test("every rate the type admits survives its document form and hashes with its equal") {
     forAll(genEdgeFxRate, minSuccessful(200)) { (rate: FxRate) =>
@@ -890,8 +643,6 @@ final class FxRateSpec
       Show[FxRate].show(rate) shouldBe rate.toString
     }
 
-    // the two non-finite rates the generator draws, stated as values so that each document is
-    // pinned as written text rather than only as a value that survives a cycle
     val notANumber: FxRate = rateOf(GBP, USD, Double.NaN)
     val infinite: FxRate = rateOf(GBP, USD, Double.PositiveInfinity)
     notANumber.asJson.noSpaces shouldBe """{"pair":"GBP/USD","rate":"NaN"}"""
@@ -904,7 +655,7 @@ final class FxRateSpec
     notANumber.hashCode shouldBe rateOf(GBP, USD, Double.NaN).hashCode
     Hash[FxRate].eqv(notANumber, infinite) shouldBe false
 
-    // and the three edge values the domain excludes, which is why the generator never draws one
+    // and the three edge values the domain excludes
     FxRate.of(GBP, USD, Double.NegativeInfinity).isLeft shouldBe true
     FxRate.of(GBP, USD, 0.0d).isLeft shouldBe true
     FxRate.of(GBP, USD, -0.0d).isLeft shouldBe true
@@ -912,43 +663,31 @@ final class FxRateSpec
 
   //-----------------------------------------------------------------------
   test("coverage") {
-    // The reflective bean sweep of the original has no counterpart: there is no meta-bean to walk
-    // and no property to read by name. What it was standing in for - that the value behaves as a
-    // value - is asserted directly over two distinct rates through the instances the companion
-    // publishes, and over the text form the rest of the library reads through `Show`.
     val test = rateOf(GBP, USD, 1.25d)
     val same = rateOf(GBP, USD, 1.25d)
     val other = rateOf(GBP, USD, 1.35d)
 
-    // inequality is stated through `eqv`, which is the form the contract bears: the instance
-    // guarantees that equal rates hash equally and says nothing whatever about unequal ones, so
-    // the hashes of `test` and `other` are deliberately left uncompared. Two distinct rates may
-    // legally collide, and asserting that they do not would make a correct hash fail here.
+    // inequality is stated through `eqv`: the instance guarantees that equal rates hash equally
+    // and says nothing about unequal ones, so the hashes of `test` and `other` are deliberately
+    // left uncompared - two distinct rates may legally collide
     Hash[FxRate].eqv(test, same) shouldBe true
     Hash[FxRate].eqv(test, other) shouldBe false
     Hash[FxRate].hash(test) shouldBe Hash[FxRate].hash(same)
 
-    // the rendering instance renders what the text form renders, so a rate reaching a message
-    // through either route reads the same
     Show[FxRate].show(test) shouldBe test.toString
     Show[FxRate].show(test) shouldBe "GBP/USD 1.25"
     Show[FxRate].show(other) shouldBe "GBP/USD 1.35"
 
-    // a whole-number rate is written without a fractional part, which is what the original wrote
-    // and what documents and expectations carry
+    // a whole-number rate is written without a fractional part
     val integral = rateOf(EUR, USD, 5d)
     integral.toString shouldBe "EUR/USD 5"
     Show[FxRate].show(integral) shouldBe "EUR/USD 5"
 
-    // and the text form is the form the parsing factory reads back
     FxRate.parse(Show[FxRate].show(test)) should haveValue(test)
     FxRate.parse(Show[FxRate].show(integral)) should haveValue(integral)
 
-    // which supplies a second, independently built pair for the direction the contract does
-    // constrain: a rate from the factory and the same rate read back out of its own text are
-    // equal, so they are required to hash equally however differently they were reached.
-    // `parse` reports a single failure rather than a chain, so it is unwrapped here as
-    // `decimalOf` unwraps one.
+    // a rate from the factory and the same rate read back out of its own text are equal, so they
+    // are required to hash equally however differently they were reached
     val reparsed: FxRate = FxRate
       .parse(Show[FxRate].show(test))
       .fold(
@@ -960,16 +699,8 @@ final class FxRateSpec
 
   //-------------------------------------------------------------------------
   /**
-   * Reads the rate out of an outcome that is expected to have produced one.
-   *
-   * This is the single unwrapping helper of the suite, and it exists because `FxRate.of` is the
-   * only way to build a rate and reports what was wrong with its arguments as a value. The
-   * outcome is matched rather than unwrapped by a partial accessor, so a fixture that fails to
-   * build is reported as a test failure naming every reason it failed instead of raising an error
-   * from somewhere else in the suite.
-   *
-   * @param outcome  the outcome expected to carry a rate
-   * @return the rate it carries
+   * Reads the rate out of an outcome expected to have produced one, reporting a fixture that fails
+   * to build as a test failure naming every reason it failed.
    */
   private def unwrap(outcome: ResultNec[FxRate]): FxRate =
     outcome.fold(
@@ -979,38 +710,17 @@ final class FxRateSpec
             failures.toChain.toList.map(failure => failure.message).mkString(", ")),
       rate => rate)
 
-  /**
-   * Builds a rate from two currencies and a rate, failing the test if the arguments describe
-   * none.
-   *
-   * @param base  the base currency
-   * @param counter  the counter currency
-   * @param rate  the rate, expected to be one the type admits
-   * @return the rate
-   */
+  /** Builds a rate from two currencies and a rate, failing the test if they describe none. */
   private def rateOf(base: Currency, counter: Currency, rate: Double): FxRate =
     unwrap(FxRate.of(base, counter, rate))
 
-  /**
-   * Builds a rate from a currency pair and a rate, failing the test if the arguments describe
-   * none.
-   *
-   * @param pair  the currency pair
-   * @param rate  the rate, expected to be one the type admits
-   * @return the rate
-   */
+  /** Builds a rate from a currency pair and a rate, failing the test if they describe none. */
   private def rateOf(pair: CurrencyPair, rate: Double): FxRate = unwrap(FxRate.of(pair, rate))
 
   /**
-   * Reads the failures out of an outcome that is expected to have produced none of a rate.
-   *
-   * Only the accumulation assertion needs this: the matchers hold when '''some''' failure of an
-   * outcome satisfies what was asked, which is the right reading for a single-failure outcome but
-   * says nothing about how many failures a chain holds. Asserting that two broken constraints are
-   * both reported, in order, needs the chain itself.
-   *
-   * @param outcome  the outcome expected to carry failures
-   * @return the failures it carries, in the order it holds them
+   * Reads the failures out of an outcome expected to have produced no rate: the matchers hold when
+   * '''some''' failure satisfies what was asked, so asserting that two broken constraints are both
+   * reported, in order, needs the chain itself.
    */
   private def failuresOf(outcome: ResultNec[FxRate]): List[Failure] =
     outcome.fold(
@@ -1018,15 +728,8 @@ final class FxRateSpec
       rate => fail(s"Expected a failure but the factory built the rate $rate"))
 
   /**
-   * Reads the decimal out of an outcome that is expected to have produced one.
-   *
-   * The decimal factories of the collection library report an unusable value the same way the
-   * rate factory does, so the amounts of the decimal conversion test are unwrapped here. This is
-   * a second helper rather than an overload of [[unwrap]] because the two error channels - a
-   * single failure and a chain of them - are the same type once the compiler has erased them.
-   *
-   * @param outcome  the outcome expected to carry a decimal
-   * @return the decimal it carries
+   * Reads the decimal out of an outcome expected to have produced one. It is a second helper rather
+   * than an overload of [[unwrap]] because the two error channels are the same type after erasure.
    */
   private def decimalOf(outcome: FailureOr[Decimal]): Decimal =
     outcome.fold(

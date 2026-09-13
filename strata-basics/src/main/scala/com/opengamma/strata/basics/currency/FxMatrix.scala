@@ -23,6 +23,8 @@ import io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.collect.ArgCheck
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.ResultNec
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.ValidatedFailures
@@ -41,52 +43,47 @@ import com.opengamma.strata.collect.result.Failure
  *
  * The currencies are held in a `Vector` and their positions in it are their positions in the
  * matrix: the currency at position `i` of [[currencies]] is the currency of row `i` and column
- * `i` of [[rates]]. The implementation being ported kept an insertion-ordered map of currency to
- * index for the same purpose, and its own documentation records why the order is part of the
- * value rather than an implementation detail - it is the order [[toString]] writes. Holding the
- * currencies in a vector makes the position the index, so no map of indices is part of the value
- * and the order cannot disagree with it.
+ * `i` of [[rates]]. That order is part of the value rather than an internal detail, because a
+ * rate is read by the positions of its two currencies: the same numbers under a different
+ * currency order describe different pairs. It is observable four ways - through [[currencies]],
+ * through [[toString]], through equality and through the encoded form. Holding the currencies in
+ * a vector makes the position the index, so no map of indices is part of the value and the order
+ * cannot disagree with it.
  *
  * If currencies `c1` and `c2` occupy positions `i` and `j`, then `rates.get(i, j)` is such that
  * one unit of `c1` is worth that many units of `c2`. So with `EUR` at position 0 and `USD` at
  * position 1, `rates.get(0, 1)` is around 1.40 and `rates.get(1, 0)` around 0.7142; the second is
  * computed from the first when the matrix is built, and every element of the matrix is meaningful.
  *
- * ===Construction, and where the builder went===
+ * ===Construction===
  *
- * The implementation being ported built a matrix through a mutable builder that held a growing
- * map of currencies, a resizable array of rates, and a set of ''pending'' rates - rates offered
- * for two currencies neither of which was in the matrix yet, which could not be placed until some
- * later rate connected one of them. The builder is not ported: this type is built by
- * [[FxMatrix.of]], [[FxMatrix.ofRates]] and [[withRate]], each of which answers with a new matrix
- * and never mutates one.
+ * A matrix is built by [[FxMatrix.of]], [[FxMatrix.ofRates]] and [[withRate]], each of which
+ * answers with a new matrix and never changes the one it was given.
  *
- * The pending rates survive that change, because they are behaviour rather than state: a caller
- * that offers a whole collection of rates may legitimately offer them in an order in which some
- * rate arrives before the rate that connects it. That tolerance now lives inside
- * [[FxMatrix.ofRates]] and [[withRates]], as a local part of their fold, and is no longer
- * something a half-built value carries: a single rate offered through [[withRate]] to a matrix it
- * has no currency in common with is a failure at that point, because there is no later offer for
- * it to wait for. What was an exception from the builder's `build` is now the failure those folds
- * report for a rate they could never place.
+ * A caller offering a whole collection of rates may offer them in an order in which some rate
+ * arrives before the rate that connects it. [[FxMatrix.ofRates]] and [[withRates]] tolerate that:
+ * such a rate is held back inside their fold and retried as later rates bring currencies in, and
+ * a rate still held back when the collection is exhausted is the failure they report. A single
+ * rate offered through [[withRate]] for two currencies the matrix holds neither of fails at that
+ * point instead, because there is no later offer for it to wait for.
  *
  * ===Rates are taken as they are given===
  *
- * No factory here judges a rate. The builder being ported validated nothing about the numbers it
- * was given, and neither does this: a rate of zero is accepted and the reciprocal recorded for it
- * is infinite, which is a matrix the captured baseline of this port deliberately contains. The
- * checks this type does make, and makes only where a matrix arrives from outside the library
- * through [[FxMatrix.fromMatrix]], are structural - the currencies are distinct, the matrix is
- * square and of their number, and its diagonal is one.
+ * No factory here judges a rate. A rate of zero is accepted, the reciprocal recorded for it is
+ * infinite, and both survive an encode and decode round trip. No rate is required to be the
+ * reciprocal of the rate in the opposite direction and no three rates are required to
+ * triangulate. The checks this type does make, and makes only where a matrix arrives from outside
+ * the library through [[FxMatrix.fromMatrix]], are structural - the currencies are distinct, the
+ * matrix is square and of their number, and its diagonal is one.
  *
  * ===Equality===
  *
  * Two matrices are equal when they hold the same currencies ''in the same order'' and rates that
  * agree bit for bit. The order is part of the value, so two matrices holding the same rates for
- * the same currencies in a different order are not equal, exactly as they were not for the
- * implementation being ported, whose equality read an ordered map. Rates are compared through
- * [[com.opengamma.strata.collect.array.DoubleMatrix]], whose equality is by bit pattern, so a
- * rate that is not a number equals itself and the two zeroes are distinct.
+ * the same currencies in a different order are not equal. Rates are compared through
+ * [[com.opengamma.strata.collect.array.DoubleMatrix]], whose equality is by bit pattern rather
+ * than numeric, so a rate that is not a number equals itself - a matrix holding such a rate is
+ * still equal to itself, and still hashes to one value - and the two zeroes are distinct.
  *
  * This class is immutable and thread-safe.
  *
@@ -94,7 +91,40 @@ import com.opengamma.strata.collect.result.Failure
  * @param rates  the matrix of rates, square and of the number of currencies, with a unit diagonal
  */
 sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates: DoubleMatrix)
-    extends FxRateProvider {
+    extends FxRateProvider
+    with NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means can be
+  // stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[FxMatrix.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the implementation class carries a public
+  // constructor in the class file whatever the source asked for: a class compiled outside this
+  // library can call it directly, and identity alone would then admit a matrix whose rates do not
+  // describe its currencies at all - a currency at two positions, so that the rate of a pair is
+  // ambiguous; rates that do not reach a position a lookup can ask for; or a currency worth
+  // something other than itself.
+  //
+  // The three conditions are those of `FxMatrix.fromMatrix`, which is where a matrix stated
+  // outside this library arrives, and they are the whole of what this type checks: as the note
+  // above records, no rate is required to be the reciprocal of the rate in the opposite direction
+  // and no three rates are required to triangulate, because a matrix built by placing rates into
+  // it can hold rates satisfying neither.
+  JvmClosure.requireInvariant(
+    "its currencies are distinct",
+    currencies.distinct.size == currencies.size)
+  JvmClosure.requireInvariant(
+    "its rates are a square matrix of one row and column per currency",
+    rates.isSquare && rates.rowCount == currencies.size)
+  JvmClosure.requireInvariant(
+    "the rate of every one of its currencies against itself is one",
+    // the diagonal is walked only as far as both dimensions reach, so this is answerable for a
+    // matrix of any shape rather than depending on the check above having passed
+    (0 until math.min(rates.rowCount, rates.columnCount))
+      .forall(index => rates.get(index, index) == 1d))
 
   /**
    * The position of each currency within this matrix.
@@ -112,26 +142,23 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * The currencies of this matrix as an insertion-ordered set, which is what [[getCurrencies]]
    * answers with.
    *
-   * This is derived from [[currencies]] and held for the same reasons the lookup above is held: a
-   * matrix cannot change, so the set derived from it cannot either, and the implementation being
-   * ported answered this question with a set it already held rather than with one built for the
-   * caller. It is built on first use, so a matrix built as one step of a fold pays nothing for a
-   * set no caller reads, and every caller thereafter reads the same value. Being derived, it takes
-   * no part in equality, in hashing or in the JSON form - those read the currencies in order,
-   * which is the value this set is a projection of.
+   * This is derived from [[currencies]] and held for the same reason the lookup above is held: a
+   * matrix cannot change, so the set derived from it cannot either, and answering with a set that
+   * is already held costs a caller nothing. It is built on first use, so a matrix built as one
+   * step of a fold pays nothing for a set no caller reads, and every caller thereafter reads the
+   * same value. Being derived, it takes no part in equality, in hashing or in the JSON form -
+   * those read the currencies in order, which is the value this set is a projection of.
    */
   private lazy val currencySet: Set[Currency] = ListSet.from(currencies)
 
-  //-------------------------------------------------------------------------
   /**
    * Returns the set of currencies held within this matrix.
    *
    * The set iterates in the order the currencies occupy in this matrix, which is the order
-   * [[currencies]] holds them in and the order the implementation being ported iterated its own
-   * insertion-ordered set in. It is therefore an insertion-ordered `ListSet` rather than a hashed
-   * set, so the order is a property of the returned value and not an accident of how few elements
-   * it holds. Where the order is what a caller needs, [[currencies]] states it in a type that
-   * cannot lose it.
+   * [[currencies]] holds them in. It is therefore an insertion-ordered `ListSet` rather than a
+   * hashed set, so the order is a property of the returned value and not an accident of how few
+   * elements it holds. Where the order is what a caller needs, [[currencies]] states it in a type
+   * that cannot lose it.
    *
    * The value answered is the one held on this matrix rather than one built per call, so repeated
    * calls answer the same set and reading the currencies of a matrix allocates nothing - see
@@ -142,7 +169,6 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    */
   def getCurrencies: Set[Currency] = currencySet
 
-  //-------------------------------------------------------------------------
   /**
    * Gets the FX rate for the specified currency pair.
    *
@@ -152,9 +178,8 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * Two identical currencies convert at one whether or not this matrix mentions them, and that
    * case is answered before the matrix is consulted, which is what lets the empty matrix answer a
    * rate at all. Any other pair is read from the matrix when it holds both currencies, and is a
-   * [[com.opengamma.strata.collect.result.Failure.CurrencyConversion]] naming the pair and the
-   * currencies this matrix does hold when it does not. The implementation being ported raised an
-   * exception with that same wording.
+   * failure naming the pair and the currencies this matrix does hold when it does not. A pair
+   * this matrix holds is answered by two position lookups and one read of the rates.
    *
    * {{{
    * val matrix = FxMatrix.of(Currency.GBP, Currency.USD, 1.6d)
@@ -187,10 +212,9 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * requested one, so the conversion carries the failure of that lookup when this matrix holds no
    * such rate.
    *
-   * The product is handed to [[CurrencyAmount.of]] rather than assembled directly, which is what
-   * the implementation being ported did and is why a product that is not a number - reachable
-   * only by multiplying a zero rate by an infinite amount, or the reverse - is reported rather
-   * than carried.
+   * The product is handed to [[CurrencyAmount.of]] rather than assembled directly, which is why
+   * a product that is not a number - reachable only by multiplying a zero rate by an infinite
+   * amount, or the reverse - is reported rather than carried.
    *
    * @param amount  the amount to be converted
    * @param targetCurrency  the currency to convert the amount to
@@ -212,23 +236,18 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * Every amount held is converted into the requested currency and the results are totalled, so
    * the answer is a single amount. An amount already in the requested currency needs no rate,
    * because [[fxRate]] answers a currency against itself without consulting the matrix; a value
-   * holding nothing at all totals to zero of the requested currency, as it did for the
-   * implementation being ported, which is why that conversion succeeds even for a currency this
-   * matrix does not hold.
+   * holding nothing at all totals to zero of the requested currency, which is why that conversion
+   * succeeds even for a currency this matrix does not hold.
    *
-   * The conversion is performed on the numbers rather than on amounts, as the implementation
-   * being ported performed it - it noted that this avoids building an intermediate amount per
-   * currency - and the terms are totalled in the alphabetical order of their currency codes,
-   * which is the order the value holds them in and the order that implementation's sorted set
-   * yielded them in. Floating-point addition is order-sensitive, so stating the order is what
-   * makes this total reproducible and what lets it be compared against a captured baseline.
+   * The conversion is performed on the numbers rather than on amounts, which avoids building an
+   * intermediate amount per currency, and the terms are totalled in the alphabetical order of
+   * their currency codes, which is the order the value holds them in. Floating-point addition is
+   * order-sensitive, so stating the order is what makes this total reproducible.
    *
    * The total is accumulated as a number, in one pass over the amounts held: the running total is
    * a parameter of the loop below, so it stays a primitive and neither the amounts converted nor
-   * the total are collected into anything. That is the shape the implementation being ported
-   * used, and its reason - it recorded that it worked in numbers to avoid creating extra objects -
-   * applies here, where a pass that collected the converted numbers first would box every one of
-   * them.
+   * the total are collected into anything. A pass that collected the converted numbers first
+   * would box every one of them.
    *
    * A single unavailable rate fails the whole conversion, carrying the failure the lookup
    * reported: a total assembled from some of the amounts would be a number with no meaning. The
@@ -244,7 +263,7 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
   def convert(amount: MultiCurrencyAmount, targetCurrency: Currency): FailureOr[CurrencyAmount] = {
     // The amounts are walked through their iterator, which yields them in the currency order the
     // value holds them in, and the total is threaded as a parameter rather than accumulated into
-    // a collection. The recursion is in tail position, so it compiles to a loop over a primitive.
+    // a collection. The recursion is in tail position, so it runs as a loop over a primitive.
     @tailrec
     def totalled(entries: Iterator[(Currency, Double)], total: Double): FailureOr[Double] =
       if (entries.hasNext) {
@@ -261,7 +280,6 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
       .flatMap(total => CurrencyAmount.of(targetCurrency, total))
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a matrix with the rate for the specified currency pair added or updated.
    *
@@ -284,7 +302,7 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * 1.6 US dollars. It is equivalent to `matrix.withRate(USD, GBP, 1 / 1.6)` in every case except
    * the one where the matrix already holds both currencies, where the two differ - see below.
    *
-   * There are four outcomes, which are the four the implementation being ported described:
+   * There are four outcomes:
    *
    *   - '''This matrix is empty.''' The two currencies and the rate become the initial pair, and
    *     the reciprocal rate is recorded with them.
@@ -308,10 +326,10 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * `matrix.withRate(EUR, USD, 1 / 1.23)` whenever the matrix holds a third currency. Both agree
    * about the `USD/EUR` rate itself and disagree about what that rate implies for the rest of the
    * matrix: restating `EUR` against `USD` leaves every rate of `USD` against a third currency
-   * alone and changes those of `EUR`, and the other way round. That asymmetry is the behaviour of
-   * the implementation being ported, is documented there at length for the same reason, and is
-   * reproduced here rather than smoothed away - a symmetric rule would answer differently for
-   * every matrix of three or more currencies.
+   * alone and changes those of `EUR`, and the other way round. The asymmetry is stated rather
+   * than smoothed away, because a symmetric rule would answer differently for every matrix of
+   * three or more currencies and a caller placing an update chooses which currency moves by
+   * choosing the order of the arguments.
    *
    * @param ccy1  the first currency of the pair, the reference currency of an update
    * @param ccy2  the second currency of the pair, the currency restated by an update
@@ -348,16 +366,15 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * }}}
    *
    * A rate still held back once every rate has been offered is one that could never be placed,
-   * and it is the failure of this method - the state the implementation being ported reported
-   * from `build`, with the same wording, listing the rates it could not place.
+   * and it is the failure of this method, which lists the rates it could not place.
    *
-   * The retry is performed in the same shape that implementation performed it, which is what
-   * makes the ''positions'' of the currencies in the result the same: after each rate that brings
-   * in a new currency, the rates held back are examined as they stand and every one of them that
-   * has become placeable is placed, and that examination is repeated until a pass places nothing.
-   * A rate that becomes placeable part way through a pass therefore waits for the next pass. The
-   * order the currencies end up in is observable - through [[currencies]], [[toString]], equality
-   * and the JSON form - so this is not an internal detail that could be reorganised.
+   * The retry proceeds in passes, and the shape of those passes is what settles the ''positions''
+   * of the currencies in the result: after each rate that brings in a new currency, the rates
+   * held back are examined as they stand and every one of them that has become placeable is
+   * placed, and that examination is repeated until a pass places nothing. A rate that becomes
+   * placeable part way through a pass therefore waits for the next pass. The order the currencies
+   * end up in is observable - through [[currencies]], [[toString]], equality and the JSON form -
+   * so this is not an internal detail that could be reorganised.
    *
    * @param rateEntries  the currency pairs and rates to place, in the order to place them
    * @return the matrix holding this matrix's rates and those rates, or the failure listing the
@@ -369,7 +386,6 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
         FxMatrix.stepped(matrix, pending, pair.base, pair.counter, rate)
       })
 
-  //-------------------------------------------------------------------------
   /**
    * Merges the entries from the other matrix into this one.
    *
@@ -383,14 +399,12 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * Note that where the other matrix has more than one currency in common with this one and the
    * rates between those shared currencies differ from the rates here, the rates the result holds
    * for the added currencies will differ from the rates the other matrix held for them. That
-   * follows from every added rate being derived through one common currency, it is the behaviour
-   * of the implementation being ported, and it is why the rates of the other matrix are described
-   * as merged into this one rather than combined with it.
+   * follows from every added rate being derived through one common currency, and it is why the
+   * rates of the other matrix are described as merged into this one rather than combined with it.
    *
-   * Two matrices with no currency in common cannot be merged, and that is a
-   * [[com.opengamma.strata.collect.result.Failure.CurrencyConversion]] naming both sets of
-   * currencies - the state the implementation being ported raised an exception for. Merging a
-   * matrix that adds nothing answers with this matrix.
+   * Two matrices that share no currency cannot be merged, because no cross rate can be computed
+   * between them, and that is the one failure of this method; it names both sets of currencies.
+   * Merging a matrix that adds nothing answers with this matrix.
    *
    * @param other  the matrix to be merged into this one
    * @return a new matrix containing the rates from this matrix plus any rates for additional
@@ -404,12 +418,12 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
       case None => Left(FxMatrix.noCommonCurrency(currencies, other.currencies))
       case Some((commonCurrency, commonIndex)) =>
         // The currencies of the other matrix are walked in its own order and each is tested
-        // against the matrix as it stands at that point, which is how the implementation being
-        // ported tested them. Each rate is read from the other matrix, between the common
+        // against the matrix as it stands at that point, so a currency added by an earlier step
+        // is not added twice. Each rate is read from the other matrix, between the common
         // currency and the currency being added, and placed here through the ordinary placement
         // of a rate - which for a currency this matrix does not hold yet is the addition of a new
-        // currency and cannot fail. Threading the outcome rather than assuming that is what keeps
-        // the method total.
+        // currency and cannot fail. Threading the outcome through the fold rather than discarding
+        // it is what keeps the method total.
         other.currencies.zipWithIndex.foldLeft[FailureOr[FxMatrix]](Right(this)) {
           case (merged, (currency, index)) =>
             merged.flatMap { matrix =>
@@ -422,19 +436,17 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
         }
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Checks whether this matrix equals another object.
    *
    * Another matrix is equal when it holds the same currencies in the same positions and rates
-   * that agree bit for bit. The currency order is read because it is part of the value: the
-   * implementation being ported compared an ordered map of currency to position, so two matrices
-   * that hold the same rates for the same currencies in a different order were not equal there
-   * either. The rates are compared by
+   * that agree bit for bit. The currency order is read because it is part of the value: two
+   * matrices that hold the same rates for the same currencies in a different order index those
+   * rates differently and are not equal. The rates are compared by
    * [[com.opengamma.strata.collect.array.DoubleMatrix]] itself, whose comparison is of the bit
-   * pattern of each element, so a rate that is not a number equals itself and a zero rate differs
-   * from a negative zero rate - the comparison the generated bean performed. An object of any
-   * other type is not equal.
+   * pattern of each element rather than numeric, so a rate that is not a number equals itself -
+   * which is what makes a matrix holding one equal to itself - and a zero rate differs from a
+   * negative zero rate. An object of any other type is not equal.
    *
    * @param obj  the object to compare to
    * @return true if the other object is a matrix holding the same currencies in the same order
@@ -461,11 +473,10 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
   /**
    * Returns a description of this matrix.
    *
-   * The form is that of the implementation being ported, down to its two separators, which are
-   * not the same one: the currencies are written in matrix order separated by a comma and a
-   * space, then a space, a colon and a space, then the rows of the matrix separated by a bare
-   * comma, each row rendered as a bracketed list of its elements. The empty matrix therefore
-   * renders as `FxMatrix[ : ]`, with both lists empty.
+   * The two separators of the form are not the same one: the currencies are written in matrix
+   * order separated by a comma and a space, then a space, a colon and a space, then the rows of
+   * the matrix separated by a bare comma, each row rendered as a bracketed list of its elements.
+   * The empty matrix therefore renders as `FxMatrix[ : ]`, with both lists empty.
    *
    * {{{
    * FxMatrix.of(Currency.GBP, Currency.USD, 1.6d).toString
@@ -473,9 +484,8 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
    * }}}
    *
    * Each row is rendered by the platform's own rendering of an array of doubles, which is what
-   * that implementation used and what fixes the spacing within a row and the way each element is
-   * written. The rows are read as independent copies, so nothing of this matrix is exposed by
-   * describing it.
+   * fixes the spacing within a row and the way each element is written. The rows are read as
+   * independent copies, so nothing of this matrix is exposed by describing it.
    *
    * @return the rendering of this matrix
    */
@@ -484,7 +494,6 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
       Vector.tabulate(rates.rowCount)(row => Arrays.toString(rates.rowArray(row))).mkString(",") +
       "]"
 
-  //-------------------------------------------------------------------------
   /**
    * The position of a currency within this matrix, if it holds it.
    *
@@ -535,12 +544,9 @@ sealed abstract case class FxMatrix private (currencies: Vector[Currency], rates
  * projected onto pairs and rates is a second collection of the same length that placing the values
  * as they are read does not need.
  *
- * The `Collector` factories of the implementation being ported, which collected a stream of
- * entries or of pairs into a matrix, are not ported: a collection is placed by these factories
- * and a stream by draining it into one. Its mutable builder is not ported either, and the mutating
- * calls that returned one are replaced by the methods of [[FxMatrix]] that answer with a new
- * matrix - so `toBuilder` has no counterpart here, and code that reached for it to add rates to an
- * existing matrix reaches for [[FxMatrix.withRate]] or [[FxMatrix.withRates]] instead.
+ * A lazy sequence of pairs and rates is placed by draining it into one of the collection
+ * factories, and rates are added to a matrix that already exists through [[FxMatrix.withRate]]
+ * and [[FxMatrix.withRates]], which answer with a new matrix.
  *
  * ===Where the placement of a rate lives===
  *
@@ -557,16 +563,14 @@ object FxMatrix {
    * The rates offered to a fold that could not be placed when they were offered, keyed by their
    * currency pair and iterating in the order they were offered in.
    *
-   * The implementation being ported held these in a map keyed by currency pair, so a rate offered
-   * twice for one pair replaced the earlier one at the cost of a single keyed write. Both
-   * properties are needed here - the replacement, because a caller may restate a rate that is
-   * still held back, and the constant cost, because how many rates are held back is the caller's
-   * choice and a scan per offer would make a collection of disconnected rates cost time
-   * proportional to the square of its size. `VectorMap` is the structure of the standard library
-   * that has both: a write for a key it already holds keeps that key's position, a write for a
-   * new key appends, and iteration is in that order. The order differs from the order of the hash
-   * table that implementation used, and the difference is deliberate - offer order is what makes
-   * a fold over a collection of rates reproducible, and it is the order the failure listing them
+   * Two properties are needed of the structure holding them. A rate offered twice for one pair
+   * has to replace the rate held for that pair, because a caller may restate a rate that is still
+   * held back; and holding one back has to cost a single keyed write, because how many rates are
+   * held back is the caller's choice and a scan per offer would make a collection of disconnected
+   * rates cost time proportional to the square of its size. `VectorMap` is the structure of the
+   * standard library that has both: a write for a key it already holds keeps that key's position,
+   * a write for a new key appends, and iteration is in that order. Offer order is what makes a
+   * fold over a collection of rates reproducible, and it is the order the failure listing them
    * reads in.
    */
   private type PendingRates = VectorMap[CurrencyPair, Double]
@@ -581,11 +585,10 @@ object FxMatrix {
    * placed is too, and a message that listed all of them could be made large by offering a large
    * collection. The listing is therefore bounded and says how many rates it left out. The
    * currencies of a matrix need no such bound, being drawn from the closed family of currencies
-   * this port holds.
+   * [[Currency]] holds.
    */
   private val MaxListedRates: Int = 8
 
-  //-------------------------------------------------------------------------
   /**
    * An empty FX matrix containing neither currencies nor rates.
    *
@@ -620,10 +623,9 @@ object FxMatrix {
    * dollars. The matrix can also be queried for the reverse rate, from `USD` to `GBP`.
    *
    * The two currencies take positions zero and one in that order, so the order they are given in
-   * is observable in the result. A rate given for one currency against itself yields a matrix of
-   * that one currency at a rate of one, the rate given being unobservable - which is what the
-   * implementation being ported produced for the same arguments, since its matrix was trimmed to
-   * the number of distinct currencies it held.
+   * is observable in the result. A rate given for one currency against itself yields the matrix
+   * of that one currency at a rate of one, the rate given being unobservable, because a matrix
+   * holds one position per distinct currency.
    *
    * @param ccy1  the first currency of the pair
    * @param ccy2  the second currency of the pair
@@ -671,8 +673,7 @@ object FxMatrix {
    * Obtains an instance containing the specified rates, stated as currency pairs and rates.
    *
    * This is [[FxMatrix.of]] for a collection whose rates are numbers rather than [[FxRate]]
-   * values, and it is the factory that corresponds to the `addRates` method of the builder being
-   * ported: every rate is taken as it is given, a rate of zero included. A `Map` of pair to rate
+   * values: every rate is taken as it is given, a rate of zero included. A `Map` of pair to rate
    * is an `Iterable` of those entries and may be passed directly, its iteration order being the
    * order the rates are placed in.
    *
@@ -690,7 +691,6 @@ object FxMatrix {
   def ofRates(rateEntries: Iterable[(CurrencyPair, Double)]): FailureOr[FxMatrix] =
     empty.withRates(rateEntries)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance from currencies and a matrix of the rates between them.
    *
@@ -708,21 +708,21 @@ object FxMatrix {
    *   - every rate of a currency against itself, which is the diagonal, is one.
    *
    * Nothing else is checked. In particular a rate is not required to be the reciprocal of the
-   * rate in the opposite direction, and three rates are not required to triangulate, because the
-   * builder being ported accepted whatever rates it was given and a matrix built by placing rates
-   * into it can hold rates that satisfy neither property. A matrix this method rejected for such
-   * a reason would therefore be a matrix that could be built but not decoded.
+   * rate in the opposite direction, and three rates are not required to triangulate: placing
+   * rates into a matrix accepts whatever rates it is given, a rate of zero included, so a matrix
+   * refused for either reason here would be a matrix that could be built but not decoded.
    *
    * @param currencies  the currencies, in the order they occupy in the matrix
    * @param rates  the matrix of rates, in the orientation described on [[FxMatrix]]
-   * @return the matrix, or every reason the currencies and rates do not describe one
+   * @return the matrix, or every broken constraint: the currencies must be distinct, the rates
+   *   must be a square matrix holding one row and column per currency, and every rate of a
+   *   currency against itself must be one
    */
   def fromMatrix(currencies: Vector[Currency], rates: DoubleMatrix): ResultNec[FxMatrix] =
     (checkedDistinct(currencies), checkedShape(currencies.size, rates), checkedDiagonal(rates))
       .mapN((_, _, _) => create(currencies, rates))
       .toEither
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance from currencies and rates that are known to describe one.
    *
@@ -746,22 +746,35 @@ object FxMatrix {
       rates.isSquare && rates.rowCount == currencies.size,
       s"An FX matrix of ${currencies.size} currencies requires a square matrix of that many " +
         s"rates, but the matrix given is ${rates.rowCount} by ${rates.columnCount}")
-    new FxMatrix(currencies, rates) {}
+    new Impl(currencies, rates)
   }
 
-  //-------------------------------------------------------------------------
+  /**
+   * The one implementation of a matrix.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[FxMatrix]] refuse in its own constructor to be any other implementation.
+   *
+   * @param currencies  the currencies, in the order they occupy in the matrix
+   * @param rates  the matrix of rates, whose shape [[create]] has already checked against the
+   *   currencies
+   */
+  private final class Impl(currencies: Vector[Currency], rates: DoubleMatrix)
+      extends FxMatrix(currencies, rates)
+
   /**
    * Places a rate into an empty matrix, as the initial pair of currencies.
    *
    * The two currencies take positions zero and one, their rate is recorded at the first position
    * of the second, its reciprocal at the second position of the first, and both rates of a
-   * currency against itself are one. This is the body of the corresponding step of the builder
-   * being ported, in the same order, so the four elements are the four numbers it stored.
+   * currency against itself are one - the four elements of a two-by-two matrix.
    *
    * Two identical currencies describe one currency rather than a pair, and the rate given is then
-   * unobservable: the result is the one-currency matrix holding a rate of one. The implementation
-   * being ported reached the same result by a different route, storing the rate and then trimming
-   * its matrix to the single currency its map held.
+   * unobservable: the result is the one-currency matrix holding a rate of one.
    *
    * @param ccy1  the first currency of the pair
    * @param ccy2  the second currency of the pair
@@ -786,11 +799,11 @@ object FxMatrix {
    * this deciding which way round it is: the inversion is one division, and performing it at the
    * call site is what keeps the reference position and the rate consistent with each other.
    *
-   * The arithmetic is the arithmetic of the builder being ported, operand for operand - the cross
-   * rate is the rate multiplied by the existing rate in that order, and the opposite rate is one
-   * divided by that same product. Floating-point multiplication and division are neither exact
-   * nor associative, so a rearranged expression would agree with the original only to within
-   * rounding, and the captured baseline of this port records the exact value.
+   * The arithmetic is stated operand for operand - the cross rate is the rate multiplied by the
+   * existing rate in that order, and the opposite rate is one divided by that same product.
+   * Floating-point multiplication and division are neither exact nor associative, so a rearranged
+   * expression would agree with this one only to within rounding, and the rates this matrix holds
+   * are the numbers these expressions produce.
    *
    * @param matrix  the matrix to place the rate into, which holds the reference currency
    * @param indexRef  the position of the reference currency within that matrix
@@ -822,13 +835,10 @@ object FxMatrix {
    * The currency at the first position is the reference and the currency at the second is
    * restated: every rate involving the restated currency is recomputed from the rate given and
    * the reference currency's existing rates, and the rate of the restated currency against itself
-   * is left at one - the element the loop of the builder being ported skipped, for the same
-   * reason.
+   * is left at one, since a currency is worth one of itself whatever the update says.
    *
-   * Every rate read here is read from the matrix as it stood before the update. The builder being
-   * ported wrote its rates in place while it read them, which reaches the same numbers because no
-   * element it wrote was read again afterwards, and stating the two matrices separately is what
-   * makes that independence evident rather than incidental.
+   * Every rate read here is read from the matrix as it stood before the update, so no element of
+   * the result is computed from another element of the result.
    *
    * This is the asymmetric operation documented on [[FxMatrix.withRate]]: which of the two
    * currencies is the reference decides which rates of the rest of the matrix move.
@@ -855,7 +865,6 @@ object FxMatrix {
       })
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Offers one rate to a matrix, holding it back if it cannot be placed yet.
    *
@@ -895,23 +904,20 @@ object FxMatrix {
    * Places every rate held back that the matrix has since come to reach, repeatedly, until a pass
    * places nothing.
    *
-   * The shape of this is the shape of the corresponding loop of the builder being ported, and the
-   * shape is what makes the positions of the currencies in the result the same: the rates held
-   * back are examined against the matrix as it stands at the start of a pass, every one of them
-   * that can be placed is then placed in the order they were offered in, and the examination is
-   * repeated. A rate that becomes placeable part way through a pass is therefore placed by the
-   * next pass rather than immediately, which is the difference between this and a depth-first
-   * placement and would reorder the currencies of a matrix built from rates that connect in a
-   * chain.
+   * The shape of the passes is what settles the positions of the currencies in the result: the
+   * rates held back are examined against the matrix as it stands at the start of a pass, every
+   * one of them that can be placed is then placed in the order they were offered in, and the
+   * examination is repeated. A rate that becomes placeable part way through a pass is therefore
+   * placed by the next pass rather than immediately, which is what distinguishes this from a
+   * depth-first placement: the two order the currencies of a matrix built from rates that connect
+   * in a chain differently.
    *
    * Each rate of a pass is placed through [[offered]] rather than directly as the addition of a
-   * new currency, which differs from that implementation in one state it could reach: where two
-   * rates held back name the same new currency - against two different currencies already held,
-   * or as a pair and its mirror image - the second of them finds both of its currencies present
-   * by the time it is placed. That implementation added the currency a second time in that state,
-   * recording a position outside the matrix it went on to build, so every rate query for that
-   * currency then failed on the index; here the second rate is an update to the first, which is
-   * what the same rate offered directly would have been.
+   * new currency, which is what makes one state well defined: where two rates held back name the
+   * same new currency - against two different currencies already held, or as a pair and the same
+   * pair the other way round - the second of them finds both of its currencies present by the
+   * time it is placed, and is an update to the first, exactly as the same rate offered directly
+   * would have been.
    *
    * The recursion ends because every pass that places anything places at least one rate held
    * back, and a rate a pass places cannot be held back again - a rate is only placed when the
@@ -940,14 +946,14 @@ object FxMatrix {
    * Offers one rate to a matrix and then, where the offer brought a currency in, places every
    * rate held back that has become placeable.
    *
-   * This is the whole of placing a rate, and it is what the corresponding method of the builder
-   * being ported did: the rate is offered, and the rates held back are retried exactly when a
-   * currency arrived, which is the only thing that can make a held-back rate placeable. A rate
-   * held back is held back because the matrix contains neither of its currencies, so a pass over
-   * the rates held back against a set of currencies that has not changed since the previous pass
-   * places nothing; performing that pass after every offer would therefore reach the same state
-   * while examining every rate held back once per offer, which is time proportional to the square
-   * of the number of rates a caller offered - the amplification this member exists to avoid.
+   * This is the whole of placing a rate: the rate is offered, and the rates held back are retried
+   * exactly when a currency arrived, which is the only thing that can make a held-back rate
+   * placeable. A rate held back is held back because the matrix contains neither of its
+   * currencies, so a pass over the rates held back against a set of currencies that has not
+   * changed since the previous pass places nothing; performing that pass after every offer would
+   * therefore reach the same state while examining every rate held back once per offer, which is
+   * time proportional to the square of the number of rates a caller offered - the amplification
+   * this member exists to avoid.
    *
    * Whether a currency arrived is read from the number of currencies, which is the whole of the
    * test: of the four outcomes of an offer only the initial pair and the addition of a new
@@ -980,13 +986,12 @@ object FxMatrix {
   /**
    * Holds a rate back, to be retried when a later rate connects it.
    *
-   * This is one keyed write, which is what the map keyed by currency pair of the implementation
-   * being ported performed: a rate offered for a pair already held back replaces the rate held
-   * for it and keeps that pair's position in the offer order, and a rate for a pair not held back
-   * is appended after the rates already held. Neither case examines the rates already held back,
-   * so offering a rate that cannot be placed costs the same whether one rate is held back or
-   * thousands - which is what bounds the work a collection of mutually disconnected rates can
-   * demand.
+   * This is one keyed write into the rates held back: a rate offered for a pair already held back
+   * takes the place of the rate held for it and keeps that pair's position in the offer order,
+   * and a rate for a pair not held back is appended after the rates already held. Neither case
+   * examines the rates already held back, so offering a rate that cannot be placed costs the same
+   * whether one rate is held back or thousands - which is what bounds the work a collection of
+   * mutually disconnected rates can demand.
    *
    * @param pending  the rates already held back
    * @param pair  the currency pair of the rate to hold back
@@ -1000,9 +1005,9 @@ object FxMatrix {
    * Answers with the matrix a fold reached, or with the failure listing the rates it could never
    * place.
    *
-   * This is the point the state the implementation being ported reported from `build` is decided:
-   * a rate still held back once every rate has been offered is a rate that has no currency in
-   * common with the matrix and never will, so the fold has failed rather than partly succeeded.
+   * This is where the outcome of a fold is decided: a rate still held back once every rate has
+   * been offered is a rate that has no currency in common with the matrix and never will, so the
+   * fold has failed rather than partly succeeded.
    *
    * @param outcome  the matrix a fold reached and the rates it still holds back
    * @return the matrix, or the failure listing the rates that could never be placed
@@ -1012,7 +1017,6 @@ object FxMatrix {
     if (pending.isEmpty) Right(matrix) else Left(unplaceableRates(pending))
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Checks that the currencies of a matrix are distinct.
    *
@@ -1076,13 +1080,11 @@ object FxMatrix {
     }
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The failure reported for a pair no rate of this matrix can convert.
    *
-   * The wording is the wording the implementation being ported raised, naming the pair asked for
-   * and the currencies the matrix holds, so a caller can see at once whether the pair is outside
-   * the matrix or the matrix is not the one they meant to query.
+   * It names the pair asked for and the currencies the matrix holds, so a caller can see at once
+   * whether the pair is outside the matrix or the matrix is not the one they meant to query.
    *
    * @param baseCurrency  the base currency asked for
    * @param counterCurrency  the counter currency asked for
@@ -1114,9 +1116,7 @@ object FxMatrix {
   /**
    * The failure reported for rates a fold could never place.
    *
-   * The wording is the wording the implementation being ported raised from `build`, and the rates
-   * are rendered as it rendered its map of them, except that the listing is bounded as described
-   * on [[MaxListedRates]].
+   * It lists those rates, bounded as described on [[MaxListedRates]].
    *
    * @param pending  the rates that could never be placed
    * @return the failure listing those rates
@@ -1128,10 +1128,9 @@ object FxMatrix {
   /**
    * Renders the currencies of a matrix, in matrix order.
    *
-   * The form is the form the implementation being ported wrote a set of currencies in, a
-   * bracketed list separated by a comma and a space. The listing is unbounded because the number
-   * of currencies is: they are drawn from the closed family of currencies this port holds, so the
-   * longest list any matrix can produce is that family.
+   * The form is a bracketed list separated by a comma and a space. The listing is unbounded
+   * because the number of currencies is bounded: they are drawn from the closed family of
+   * currencies [[Currency]] holds, so the longest list any matrix can produce is that family.
    *
    * @param currencies  the currencies to render
    * @return the rendering of those currencies
@@ -1142,10 +1141,9 @@ object FxMatrix {
   /**
    * Renders rates held back, bounded in length.
    *
-   * The form is the form the implementation being ported wrote its map of them in, a braced list
-   * of pair and rate separated by an equals sign, which for the single rate that is the common
-   * case is identical to what it wrote. Beyond [[MaxListedRates]] rates the listing states how
-   * many it left out rather than growing with the collection it was given.
+   * The form is a braced list of pair and rate separated by an equals sign. Beyond
+   * [[MaxListedRates]] rates the listing states how many it left out rather than growing with the
+   * collection it was given.
    *
    * The rates are read in the order they were offered in, which is the order the rates held back
    * iterate in, and only as far as the bound: the rendering walks an iterator rather than taking
@@ -1163,14 +1161,13 @@ object FxMatrix {
     listed.mkString("{", ", ", marker + "}")
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of matrices.
    *
    * This is the only equality-bearing instance of the type, and it is a `Hash` rather than an
-   * `Order`: the implementation being ported did not order matrices, and no ordering of them
-   * would be meaningful. `Hash` extends `Eq`, so a separate `Eq` would be a second answer to the
-   * same question; one is declared here and `Eq` is obtained from it by subtyping.
+   * `Order`: no ordering of matrices of rates would be meaningful. `Hash` extends `Eq`, so a
+   * separate `Eq` would be a second answer to the same question; one is declared here and `Eq` is
+   * obtained from it by subtyping.
    *
    * The instance defers to [[FxMatrix.equals]] and [[FxMatrix.hashCode]], which compare the
    * currencies in order and the rates by bit pattern, so `eqv` agrees with `equals` for every
@@ -1183,18 +1180,16 @@ object FxMatrix {
   /**
    * The rendering of matrices.
    *
-   * The rendering is [[FxMatrix.toString]], which is the form the implementation being ported
-   * wrote, so the two agree exactly.
+   * The rendering is [[FxMatrix.toString]], so the two agree exactly.
    *
    * @return the rendering of matrices
    */
   implicit val show: Show[FxMatrix] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
-  // The rates of the matrix go through the single policy this port has for a double, which writes
+  // The rates of the matrix go through the one policy this library has for a double, which writes
   // the values JSON cannot express as tagged strings. That is what carries a rate of zero and the
-  // infinite reciprocal recorded for it through a round trip, and the import is what makes the
-  // choice deliberate and local, as the codec support of `strata-collect` intends.
+  // infinite reciprocal recorded for it through a round trip, and the import is what keeps the
+  // choice local, as the codec support of `strata-collect` intends.
   import Codecs.implicits._
 
   /**
@@ -1211,11 +1206,20 @@ object FxMatrix {
    * @param rates  the matrix of rates, as an array of rows of tagged doubles
    */
   private final case class Raw(currencies: Vector[Currency], rates: DoubleMatrix)
+      extends NoJavaSerialization
+
+  /**
+   * The name of the field holding the currencies, which is the JSON key the derivation uses.
+   *
+   * It is named once here because the ceiling the decoder applies to the number of currencies a
+   * document may state is expressed in terms of it, and a bound naming a field the document does
+   * not hold would silently bound nothing.
+   */
+  private val CurrenciesField: String = "currencies"
 
   /** The derived decoder of the raw field shape, used by the validating decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder.AsObject[Raw] = deriveEncoder[Raw]
 
   /**
@@ -1230,8 +1234,9 @@ object FxMatrix {
    *
    * The order of the currencies is written because it is part of the value: two matrices holding
    * the same rates for the same currencies in a different order are different matrices and encode
-   * to different documents. Every rate is written through the tagged-double policy of this port,
-   * so a rate of zero and the infinite reciprocal recorded for it both survive a round trip.
+   * to different documents. Every rate is written through the tagged-double policy of this
+   * library, so a rate of zero and the infinite reciprocal recorded for it both survive a round
+   * trip.
    *
    * Both halves of the codec are assembled by the same compile-time derivation over the same raw
    * shape, which is what keeps them from drifting apart: the field names, their order and their
@@ -1240,8 +1245,8 @@ object FxMatrix {
    * validated type is not public, so there is no public shape to derive from.
    *
    * The result is wrapped so that a field holding no value would be omitted, which is the policy
-   * every product of this port follows - this type has no optional field, so the wrapping changes
-   * nothing about its output and exists so that the policy holds without exception.
+   * every product of this library follows - this type has no optional field, so the wrapping
+   * changes nothing about its output and exists so that the policy holds without exception.
    *
    * @return the JSON encoding of a matrix
    */
@@ -1259,8 +1264,32 @@ object FxMatrix {
    * whose rates are merely unusual - not reciprocal, not triangulating - decodes, because such a
    * matrix can be built by placing rates into one.
    *
+   * ===How large a matrix a document may state===
+   *
+   * Both fields of the payload are sized by the document, and both are measured before anything is
+   * read from them. The `currencies` array is measured here, against
+   * `Codecs.MaximumCollectionElements`; the `rates` field needs no bound of its own, because it is
+   * a [[com.opengamma.strata.collect.array.DoubleMatrix]] and its codec already refuses a payload
+   * beyond `Codecs.MaximumMatrixRows`, `Codecs.MaximumMatrixColumns` or
+   * `Codecs.MaximumMatrixElements` before it reads a row - bounding it a second time here would
+   * state the same ceiling in two places and refuse nothing the matrix codec does not.
+   *
+   * Measuring the currencies first is what keeps the cost of a hostile document proportional to
+   * nothing: the currencies are decoded name by name through the named-family lookup and then
+   * checked for distinctness, so a document naming a million of them would pay for a million
+   * lookups before the structural check that a matrix of ''n'' currencies must be ''n'' by ''n''
+   * rejected it. A document beyond the ceiling is a decoding failure naming the ceiling and the
+   * field, and no currency is looked up for it.
+   *
+   * The ceiling cannot refuse a matrix this port wrote. A matrix holds one row and one column per
+   * currency, so a matrix of more currencies than the ceiling would need a square of rates ten
+   * thousand times larger than the matrix codec reads - the rates of such a matrix could not be
+   * written, let alone read back - and the widest matrix the reference data can populate is the
+   * number of currencies it names, three orders of magnitude below the ceiling.
+   *
    * @return the JSON decoding of a matrix
    */
   implicit val decoder: Decoder[FxMatrix] =
-    Codecs.validatedDecoder[Raw, FxMatrix](raw => fromMatrix(raw.currencies, raw.rates))(rawDecoder)
+    Codecs.boundedFields(CurrenciesField -> Codecs.MaximumCollectionElements)(
+      Codecs.validatedDecoder[Raw, FxMatrix](raw => fromMatrix(raw.currencies, raw.rates))(rawDecoder))
 }

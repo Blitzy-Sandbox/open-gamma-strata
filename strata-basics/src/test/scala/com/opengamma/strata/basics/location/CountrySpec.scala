@@ -32,83 +32,30 @@ import com.opengamma.strata.collect.testkit.ResultMatchers
 /**
  * Test [[Country]].
  *
- * All twenty-one methods of the Java original are kept, under their own names and in the
- * order the original declared them, so that the method-level traceability of the migration
- * stays one-to-one; each of the original's two bad-input providers becomes one table declared
- * with the test that reads it, carrying the rows the provider carried other than its
- * absent-input row, for the reason given below. The five cases of the closing section are the
- * only ones that answer to no Java method, and they are named after the members of
- * [[CountryData]] they pin rather than after a method of the original, so the twenty-one cases
- * above remain exactly the count and the names of the original.
+ * The two letter code space is open and validated: `of` accepts any `[A-Z][A-Z]` code whether or
+ * not the standard assigns it, `parse` additionally folds case, and malformed text is a
+ * `Failure.Invalid` value rather than a raised error. The three letter conversions go both ways
+ * through [[CountryData]], and the JSON codec writes the bare code.
  *
- * Where the port gives a guarantee differently from the original the reasoning is recorded at
- * the method, and the same reasoning is collected here:
+ * Four facts the assertions rely on that the code does not show:
  *
- *  - `test_of_String` and `test_of_String_unknownCountryCreated` asserted that two calls with
- *    one code returned the ''same instance'', which was a property of the instance cache the
- *    original kept rather than of the value. This port interns nothing, so the guarantee that
- *    matters - two calls are indistinguishable - is asserted as equality together with an equal
- *    hash.
- *  - `test_new_Country_included_in_getAvailable` asserted that building a country grew the
- *    available set by one, which is the same instance cache seen from the outside. The
- *    available set here describes what the library knows rather than what it has been asked
- *    for, so the assertion is the documented divergence: the set is fixed, and building a
- *    country outside it leaves it unchanged.
- *  - `test_of_String_bad` and `test_parse_String_bad` asserted that malformed text raised. It is
- *    reported as a value here, so each row is asserted to be an `Invalid` failure, and the
- *    absent-input row of each provider has no counterpart because no such value can be written.
- *  - `test_compareTo_null` asserted that comparing against an absent value raised. There is no
- *    such value, so the case becomes the property that makes comparison safe to rely on: the
- *    ordering is total, antisymmetric, and agrees with equality.
- *  - `test_from3CharString_missing` and `test_get3CharString_missing` asserted one raised error
- *    apiece. The port distinguishes the two causes the original conflated - text that is not the
- *    shape of a three letter code, and a well formed code that names nothing - so both are
- *    asserted, by reason and by the message the original used.
- *  - `test_serialization` asserted the round trip of the platform serialization the original
- *    supported. That support is not carried over, and the JSON codec is the supported way to
- *    write and read a country, so the method asserts the codec: the bare string the type
- *    writes, what it reads back, and what it refuses. (The test mapping manifest additionally
- *    routes this Java method to the cross-type round-trip spec, which exercises the same codec
- *    through generated values; what is asserted here is the representation itself, which is
- *    per-type and which a generated round trip cannot pin.)
- *  - `test_jodaConvert` asserted the round trip of the reflective string-conversion library
- *    the original registered with. The library is gone, and the guarantee it gave - the
- *    rendered name is the identity, and reads back as the same country - is asserted directly.
- *
- * The three letter conversions were adjudicated against the published Java jar rather than
- * derived by hand: `CRI` is `CR`, `GIB` is `GI`, and `GB`, `FR`, `US` convert to `GBR`, `FRA`
- * and `USA`.
- *
- * ===The reference data behind the three letter conversions===
- *
- * The closing section pins [[CountryData]], the table those conversions resolve through. The
- * AAP's frozen test inventory (section 0.3.1) gives the `location` package this one spec, and
- * the table has no Java test class of its own: in the original it was not code but a properties
- * resource a loader read from the class path, and what the Java `CountryTest` asserted about it
- * is what the tests above assert. Here the table is Scala literals fixed at compile time, so
- * what a consumer of it relies on is asserted directly - the published order, the shape of every
- * key and value, the fact that the relation is a bijection, which is what makes the inverse
- * total and unambiguous as the original's bidirectional map was, and the agreement of the
- * derived views with the table they are views of.
- *
- * The row-for-row comparison against the data captured from the Java implementation is not
- * repeated there. `ReferenceDataManifestSpec` compares every table of the module with the
- * captured manifest, the 251 country rows and their count among them, and `test_get3CharString`
- * above already carries every row of the table through `Country` in both directions; both are
- * stronger than a hand-written expectation table, so the closing section states only what
- * neither of them does. Its assertions deliberately never name the type of the collections: the
- * published members are ordered maps and sets and the order is the contract, while how they are
- * backed, and what private lookups are derived from them, is not.
+ *  - What two calls with one code guarantee is that they are indistinguishable: equal, with equal
+ *    hashes.
+ *  - The available set is fixed - it names the countries the library knows about, not the ones it
+ *    has been asked for - so building a country outside it leaves it unchanged.
+ *  - A failed three letter conversion has two distinguished causes: text that is not the shape of
+ *    a three letter code, and a well formed code that names no country.
+ *  - The assertions never name the type of the published collections. Those are ordered maps and
+ *    sets whose published order is the contract, while how they are backed is not.
  */
 class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks with ResultMatchers {
 
   /**
-   * The 46 constants of the type, each with the code it carries, grouped as the original
-   * declared them: Europe, the Americas, then the rest of the world.
+   * The 46 constants of the type, each with the code it carries, grouped as Europe, the Americas,
+   * then the rest of the world.
    *
-   * The table is the pairing the Java `test_constants` asserted one line at a time, and it is
-   * read by several tests below so that a constant added to the type is covered by all of them
-   * at once.
+   * Several tests below read this table, so a constant added to the type is covered by all of
+   * them at once.
    */
   private val dataConstants: TableFor2[String, Country] =
     Table(
@@ -178,8 +125,6 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
 
   //-----------------------------------------------------------------------
   test("test_getAvailable") {
-    // an immutable sorted set of the library's own collection vocabulary, where the original
-    // answered with a platform set
     val available: SortedSet[Country] = Country.availableCountries
     available should contain(Country.US)
     available should contain(Country.EU)
@@ -204,14 +149,9 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   }
 
   test("test_new_Country_included_in_getAvailable") {
-    // Documented divergence. The Java equivalent of this set exposed the contents of an
-    // instance cache, so asking for a country the cache did not hold grew it by one and this
-    // test asserted that growth. The set here is fixed: it describes the countries the library
-    // knows about rather than the ones it has been asked for, so building a country outside it -
-    // which `of` permits for any well formed code - leaves it exactly as it was. The divergence
-    // is the one this spec states, and it is recorded in `SCALA_MIGRATION.md`; the behaviour it
-    // replaces is at `Country.java:55,285` (the cache and the call that grows it) and
-    // `Country.java:265-268` (the snapshot of it this method answered with).
+    // The set is fixed: it describes the countries the library knows about rather than the ones
+    // it has been asked for, so building a country outside it - which `of` permits for any well
+    // formed code - leaves it exactly as it was.
     val before: SortedSet[Country] = Country.availableCountries
     before.size should be > 0
 
@@ -229,9 +169,7 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   test("test_of_String") {
     Country.of("SE") should haveValue(Country.SE)
     Country.of("SE").map(_.code) should haveValue("SE")
-    // Reinterpretation: the Java assertion was that two calls returned the same instance, a
-    // property of its instance cache. Nothing is interned here, so what is asserted is that two
-    // calls are indistinguishable - equal, with equal hashes.
+    // Two calls with one code are indistinguishable: equal, with equal hashes and equal codes.
     val first = Country.of("SE")
     val second = Country.of("SE")
     first shouldBe second
@@ -241,8 +179,8 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
 
   test("test_of_String_unknownCountryCreated") {
     // The code space is open: any two upper case ASCII letters are accepted whether or not the
-    // standard assigns them, which is the behaviour of the original and the reason this type is
-    // a validated value rather than one of the closed named families of the library.
+    // standard assigns them, which is why this type is a validated value rather than one of the
+    // closed named families of the library.
     Country.of("AA").map(_.code) should haveValue("AA")
     Country.of("AA") shouldBe Country.of("AA")
     Country.of("ZZ").map(_.code) should haveValue("ZZ")
@@ -256,39 +194,33 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   }
 
   test("test_of_String_bad") {
-    // The six rows of the Java `data_ofBad` provider, transcribed in the order the provider
-    // declared them. Its seventh row was an absent input, and that row has no counterpart: the
-    // port models an absent value as an `Option` and drops the checks the original made against
-    // a missing reference, so no such argument can be written - a fact asserted below at the
-    // only level at which it can be, the compiler's.
-    //
-    // Note that `gb` is rejected here and accepted by `parse`, which is the asymmetry the two
-    // providers of the original encode between them: folding case is exactly what `parse` adds.
+    // Malformed text, one row per shape the check rejects. `gb` is rejected here and accepted by
+    // `parse`, which is the asymmetry between the two factories: folding case is exactly what
+    // `parse` adds.
     val dataOfBad: TableFor1[String] =
       Table("input", "", "A", "gb", "ABC", "123", " GB")
 
     forAll(dataOfBad) { (input: String) =>
       withClue(s"'$input': ") {
-        // Every row is one accumulated `Invalid` failure: the three ways of being malformed
-        // share one message in the original because what the caller has to correct is the same
-        // in each case, and they share one here too.
+        // Every row is one accumulated `Invalid` failure: the ways of being malformed share one
+        // message, because what the caller has to correct is the same in each case.
         Country.of(input) should beFailureWith(FailureReason.INVALID)
         // a single cause, not an accumulation: the input has one thing wrong with it
         Country.of(input).left.map(_.length) shouldBe Left(1L)
       }
     }
 
-    // beyond the provider, the shapes it samples: an embedded space, a punctuation character, a
-    // three letter code, a control character and a mixture of case are each malformed too
+    // beyond the rows above: an embedded space, a punctuation character, a three letter code, a
+    // control character and a mixture of case are each malformed too
     List("G B", "G-B", "GBR", "\u0000B", "gB", "Gb").foreach { input =>
       withClue(s"'$input': ") {
         Country.of(input) should beFailureWith(FailureReason.INVALID)
       }
     }
 
-    // The absent-input row of the provider, at the only level it can be asserted. The positive
-    // form is asserted alongside it so that the ruling is known to be about the argument being
-    // absent rather than about anything else in the snippet.
+    // `of` takes a code, so an `Option` in its place is rejected by the compiler. The accepted
+    // form is asserted alongside the rejected one so that the ruling is known to be about the
+    // argument rather than about anything else in the snippet.
     assertCompiles("""Country.of("GB")""")
     assertDoesNotCompile("""Country.of(Option.empty[String])""")
   }
@@ -322,10 +254,9 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   }
 
   test("test_parse_String_bad") {
-    // The five rows of the Java `data_parseBad` provider, in its order. Its sixth row was an
-    // absent input and has no counterpart, for the reason given on `test_of_String_bad`. `gb` is
-    // deliberately absent from this provider and present in the other, because folding case is
-    // exactly what `parse` adds to `of`, so it is valid here - asserted as such below.
+    // Malformed text that folding case does not rescue. `gb` is deliberately absent from these
+    // rows and present in those of `of`, because folding case is exactly what `parse` adds to
+    // `of`, so it is valid here - asserted as such below.
     val dataParseBad: TableFor1[String] =
       Table("input", "", "A", "ABC", "123", " GB")
 
@@ -335,29 +266,39 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
       }
     }
 
-    // the row the other provider holds and this one does not, asserted from the other side
+    // the input `of` rejects and `parse` accepts, asserted from this side
     Country.parse("gb") should beSuccess
 
-    // beyond the provider: folding case does not enlarge the code space, so a letter outside
-    // ASCII is malformed however it is cased
+    // folding case does not enlarge the code space, so a letter outside ASCII is malformed
+    // however it is cased
     List("G B", "\u00c9\u00c9", "\uff21\uff21").foreach { input =>
       withClue(s"'$input': ") {
         Country.parse(input) should beFailureWith(FailureReason.INVALID)
       }
     }
 
-    // the absent-input row of the provider, at the only level it can be asserted
+    // `parse` too takes a code, not an `Option`
     assertCompiles("""Country.parse("GB")""")
     assertDoesNotCompile("""Country.parse(Option.empty[String])""")
-    // `parse` folds the text before checking it, so the message quotes the folded code rather
-    // than the text as it was supplied. That is the behaviour of the original, which folds in
-    // exactly the same place and lets its check report the folded value, so it is what is
-    // asserted here. (The scaladoc of `Country.parse` currently says the opposite; the code, and
-    // the Java it ports, are what this asserts.)
-    Country.parse("abc") should haveFailureMessageMatching(".*'ABC'.*")
+    // `parse` folds the text before checking it, and folds it only when it is the length of a
+    // code, since text of any other length can be no code however it is cased. So the message
+    // quotes the folded code for an input of two characters and the text as it was supplied for
+    // an input of any other length. Both are asserted, because between them they say where the
+    // fold happens.
+    Country.parse("a1") should haveFailureMessageMatching(".*'A1'.*")
+    Country.parse("abc") should haveFailureMessageMatching(".*'abc'.*")
     Country.parse("abc") should beFailureWith(FailureReason.INVALID)
     // and `of`, which folds nothing, quotes exactly what it was given
     Country.of("abc") should haveFailureMessageMatching(".*'abc'.*")
+
+    // Beyond the provider, and the reason the fold is conditional: text of any size is refused
+    // as the text it is, rather than being copied in full to be refused as the text it would
+    // fold to (CWE-400/CWE-770). The message names the whole of it, as every rejection of this
+    // library names what it refused, and bounding that for a reader belongs to the rendering of
+    // the failure.
+    val oversized: String = "h" * 10000
+    Country.parse(oversized) should beFailureWith(FailureReason.INVALID)
+    Country.parse(oversized) should haveFailureMessageMatching(s".*'$oversized'.*")
   }
 
   //-----------------------------------------------------------------------
@@ -378,7 +319,7 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     Order[Country].compare(b, c) should be < 0
     Order[Country].compare(c, b) should be > 0
 
-    // the ordering is alphabetical by code, which is the comparison of the original
+    // the ordering is alphabetical by code
     List(Country.JP, Country.EU, Country.GB).sorted(Order[Country].toOrdering) shouldBe
       List(Country.EU, Country.GB, Country.JP)
 
@@ -393,13 +334,9 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   }
 
   test("test_compareTo_null") {
-    // Reinterpretation: the Java `test_compareTo_null` compared a country against an absent
-    // value and asserted that the comparison raised. The port models an absent value as an
-    // `Option` and drops the checks against a missing reference, so that comparison cannot be
-    // written and the error it raised cannot be observed - which is why nothing here expects a
-    // raised error. What replaces it is the pair of facts that make the raised error
-    // unnecessary: the comparison is rejected at compile time rather than at run time, and
-    // comparison over the values that do exist is total.
+    // The comparison is typed: it takes two countries, so neither an `Option` nor text can be
+    // supplied in place of one, which the two rejected snippets below prove. The accepted form
+    // is asserted alongside them so that each ruling is known to be about the argument.
     assertCompiles("""cats.Order[Country].compare(Country.EU, Country.GB)""")
     assertDoesNotCompile("""cats.Order[Country].compare(Country.EU, Option.empty[Country])""")
     assertDoesNotCompile("""cats.Order[Country].compare(Country.EU, "GB")""")
@@ -437,9 +374,8 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
 
   //-----------------------------------------------------------------------
   test("test_from3CharString_missing") {
-    // The original raised one kind of error for both of its cases; the port reports them as the
-    // two distinct causes they are. A well formed code that names no country is a `Parsing`
-    // failure carrying the message the original used.
+    // The two causes of a failed conversion are reported distinctly. A well formed code that
+    // names no country is a `Parsing` failure, naming the code it was given.
     Country.of3Char("ZZZ") should beFailureWith(FailureReason.PARSING)
     Country.of3Char("ZZZ").left.map(_.message) shouldBe Left("Unknown country code: ZZZ")
     // text that is not the shape of a three letter code never reaches the lookup, so it is an
@@ -451,9 +387,7 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     Country.of3Char("GB") should beFailureWith(FailureReason.INVALID)
     Country.of3Char("GBRA") should beFailureWith(FailureReason.INVALID)
     Country.of3Char("12 ") should beFailureWith(FailureReason.INVALID)
-    // The original's second case passed an absent value and asserted that it raised. As with
-    // `test_of_String_bad`, no such argument can be written here, so the case is asserted at
-    // the compiler.
+    // `of3Char` takes a code, not an `Option`
     assertCompiles("""Country.of3Char("GBR")""")
     assertDoesNotCompile("""Country.of3Char(Option.empty[String])""")
   }
@@ -480,8 +414,7 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   //-----------------------------------------------------------------------
   test("test_get3CharString_missing") {
     // A well formed code with no row in the reference data has no three letter form. That is a
-    // property of the data rather than a mistake by the caller, so it is `MissingData`, with the
-    // message the original used.
+    // property of the data rather than a mistake by the caller, so it is `MissingData`.
     Country.of("ZZ").map(_.code3Char) shouldBe Right(Left(Failure.MissingData("Unknown country: ZZ")))
     Country.EU.code3Char should beFailureWith(FailureReason.MISSING_DATA)
     Country.EU.code3Char.left.map(_.message) shouldBe Left("Unknown country: EU")
@@ -498,11 +431,10 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
     a1 should not be b
     a2.map(_.hashCode) shouldBe Right(a1.hashCode)
 
-    // The original's two negative cases compared a country against text and against an absent
-    // value. Both are asserted through the untyped comparison of the framework, whose parameter
-    // is `Any`, with the country ascribed so that no comparison of unrelated types is written -
-    // one of those would be reported by the compiler and, this build treating a report as an
-    // error, would not compile at all.
+    // A country is unequal to text and to an absent reference, asserted through the untyped
+    // comparison of the framework, whose parameter is `Any`, with the country ascribed so that
+    // no comparison of unrelated types is written - one of those would be reported by the
+    // compiler and, this build treating a report as an error, would not compile at all.
     (a1: Any) should not equal ""
     (a1: Any) should not equal null
 
@@ -523,7 +455,7 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   test("test_toString") {
     Country.GB.toString shouldBe "GB"
     // the rendering of the type class is the rendering of the value, as it is for every named
-    // or text-identified type of this port
+    // or text-identified type of the library
     Show[Country].show(Country.GB) shouldBe "GB"
     forAll(dataConstants) { (code: String, country: Country) =>
       withClue(s"$code: ") {
@@ -538,22 +470,16 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   }
 
   test("test_serialization") {
-    // Reinterpretation: the Java method asserted the round trip of the platform serialization
-    // the original supported, and the wire format of the bean library it was written against.
-    // Neither is carried over - platform serialization and that library's documents are both
-    // outside the scope of this port - and the JSON codec is the supported way to write and
-    // read a country, so what is asserted here is that codec.
-    //
-    // A country is text, not a record: the document is the bare two letter code rather than an
-    // object naming the field, which is the form the original wrote and which keeps a country
-    // usable wherever a string is expected.
+    // The JSON codec is the supported way to write and read a country. A country is text, not a
+    // record: the document is the bare two letter code rather than an object naming a field,
+    // which keeps a country usable wherever a string is expected.
     Country.GB.asJson shouldBe Json.fromString("GB")
     Country.GB.asJson.noSpaces shouldBe "\"GB\""
     decode[Country]("\"GB\"") shouldBe Right(Country.GB)
     Json.fromString("GB").as[Country] shouldBe Right(Country.GB)
 
-    // the round trip of the two values the original serialized, written and read back through
-    // the document rather than through the encoder alone
+    // the round trip written and read back through the document rather than through the encoder
+    // alone
     Country.GB.asJson.as[Country] shouldBe Right(Country.GB)
     Country.of("US").map(country => decode[Country](country.asJson.noSpaces)) shouldBe
       Right(Right(Country.US))
@@ -584,12 +510,8 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   }
 
   test("test_jodaConvert") {
-    // Reinterpretation: the Java method asserted the round trip of the reflective
-    // string-conversion library the original registered with. The library is gone with the
-    // port, and the guarantee it gave is asserted directly: a country renders as its bare code,
-    // and that rendering reads back as the same country, through both of the factories that
-    // accept it. The rendered name remains the identity of the value, which is what made the
-    // conversion the original registered worth asserting in the first place.
+    // The rendering is the identity of the value: a country renders as its bare code, and that
+    // rendering reads back as the same country through both of the factories that accept it.
     forAll(dataConstants) { (code: String, country: Country) =>
       val rendered = Show[Country].show(country)
       withClue(s"$code: ") {
@@ -599,7 +521,7 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
         Country.parse(country.toString) should haveValue(country)
       }
     }
-    // the two values the original converted, stated as the original stated them
+    // the same round trip over single values
     Country.of(Country.GB.code) should haveValue(Country.GB)
     Country.parse(Country.GB.toString) should haveValue(Country.GB)
     Country.of("US").map(country => Show[Country].show(country)) should haveValue("US")
@@ -608,24 +530,17 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   }
 
   //-----------------------------------------------------------------------
-  // The reference data table the three letter conversions resolve through.
-  //
-  // No case below answers to a method of the Java original; each is named after the member of
-  // `CountryData` it pins. What the captured reference data and `test_get3CharString` already
-  // establish is not restated here - the scaladoc of this spec records which of them covers what.
+  // The reference data table the three letter conversions resolve through: each case below pins
+  // one member of `CountryData`.
   //-----------------------------------------------------------------------
 
   test("test_alpha3ToAlpha2_isPublishedInAscendingOrderOfCode") {
     // The published order is the contract of the member, and it is ascending by three letter
-    // code: a consumer that iterates the table - a report, or a comparison against the captured
-    // reference data - sees the rows in that order.
+    // code: a consumer that iterates the table sees the rows in that order.
     val keys = CountryData.alpha3ToAlpha2.keys.toVector
     keys shouldBe keys.sorted
     keys.head shouldBe "ABW"
     keys.last shouldBe "ZWE"
-    // and the order is stable: iterating twice gives the same sequence, so no consumer can
-    // observe a different one
-    CountryData.alpha3ToAlpha2.toVector shouldBe CountryData.alpha3ToAlpha2.toVector
   }
 
   test("test_alpha3ToAlpha2_keysAndValuesAreWellFormedCodes") {
@@ -641,10 +556,10 @@ class CountrySpec extends AnyFunSuite with Matchers with TableDrivenPropertyChec
   }
 
   test("test_relationIsABijection") {
-    // The original held this data in a bidirectional map, which is what let it convert in both
-    // directions. That is only sound while the relation is one-to-one, so it is asserted here:
-    // both sides are distinct, and the two conversions compose to the identity in both
-    // directions over the whole table.
+    // Converting in both directions is only sound while the relation is one-to-one, which is
+    // what makes the inverse total and unambiguous, so it is asserted here: both sides are
+    // distinct, and the two conversions compose to the identity in both directions over the
+    // whole table.
     val alpha3Keys = CountryData.alpha3ToAlpha2.keys.toVector
     val alpha2Values = CountryData.alpha3ToAlpha2.values.toVector
     alpha3Keys.distinct should have size 251

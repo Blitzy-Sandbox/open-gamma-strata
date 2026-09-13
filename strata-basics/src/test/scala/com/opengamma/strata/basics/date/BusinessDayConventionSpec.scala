@@ -28,80 +28,20 @@ import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
 /**
- * Test [[BusinessDayConvention]], ported from the Java `BusinessDayConventionTest`.
+ * Test [[BusinessDayConvention]].
  *
- * Every method of the Java class is kept under the name it had, and this spec holds exactly
- * those fourteen tests and no others, so the method-level traceability recorded in
- * `manifest/java-test-mapping.csv` stays one-to-one: `test_convention`, `test_nearest`,
- * `test_name`, `test_toString`, `test_of_lookup`, `test_lenientLookup_standardNames`,
- * `test_extendedEnum`, `test_of_lookup_notFound`, `test_of_lookup_null`,
- * `test_lenientLookup_specialNames`, `test_lenientLookup_constants`, `coverage`,
- * `test_serialization` and `test_jodaConvert`.
+ * `adjust` takes a calendar rather than reference data, so these tests are the pure rule of each
+ * convention with no lookup involved.
  *
- * The roster being closed is why what a reader might expect to be a test of its own is folded
- * into the test whose subject it belongs to: the convention matrix against a calendar holding a
- * holiday is part of `test_convention`, and the one SWIFT spelling that no lenient pattern
- * accepts is part of `test_extendedEnum`, which is where this spec asserts the external tables.
- * `json.JsonRoundTripSpec` owns the property-based round trip over every codec-bearing type of
- * the module, which is what the manifest consolidates the Java `test_serialization` methods
- * into; `test_serialization` here asserts the concrete document this one type writes, which a
- * property over arbitrary values cannot state.
- *
- * The three Java data providers are transcribed in full rather than sampled, and each becomes
- * one table shared by the tests that were driven from it:
- *
- *   - `data_convention` - '''72''' rows, driven against `Sat/Sun`;
- *   - `data_name` - 7 rows, driven by `test_name`, `test_toString`, `test_of_lookup`,
- *     `test_lenientLookup_standardNames` and `test_extendedEnum`;
- *   - `data_lenient` - '''27''' rows.
- *
- * ===How the shape of the port changes the assertions===
- *
- *   - The throwing `BusinessDayConvention.of(name)` became two members: [[
- *     BusinessDayConvention.valueOf]], the exact lookup over the canonical and upper-case keys,
- *     returning an `Option`, and [[BusinessDayConvention.parse]], the lenient lookup, returning
- *     `EitherNec[Failure, _]`. Both are asserted wherever Java asserted `of`, so the two entry
- *     points cannot drift apart.
- *   - `extendedEnum()` - the registry the Java type built by reading a configuration resource
- *     off the class path - became the `NamedEnum[BusinessDayConvention]` instance the companion
- *     publishes. `test_extendedEnum` asserts the canonical map the Java method read
- *     (`lookupAll`), states the 14-key union of canonical and upper-case names explicitly so
- *     the Java relationship stays visible, and asserts the two external groups and the lenient
- *     table the resource declared, because in this port they are code and a lost row would
- *     otherwise be invisible.
- *   - `test_of_lookup_null` passed the absent reference to the factory and asserted a throw. The
- *     `notNull` guard behind that throw has no target here, because the argument it guarded
- *     against cannot be expressed: the case is therefore asserted as a compile-time proof that
- *     the name is required, and then as the hostile text a caller can actually supply - empty,
- *     blank, and several near-misses - each of which answers `None`/`Left(PARSING)` and never
- *     raises. No `null` is written.
- *   - `test_lenientLookup_constants` reflected over the public constants of
- *     `BusinessDayConventions` to check that each identifier resolves leniently. This port
- *     performs no reflection, so the seven identifiers are written out as a table; the constants
- *     themselves are checked against the members in `coverage`.
- *   - `coverage` called `coverPrivateConstructor` and `coverEnum`, which existed only to satisfy
- *     a coverage tool by reflectively touching a private constructor and the values of a Java
- *     enum. Neither has a target here, so what they stood for is asserted directly: the seven
- *     constants are the members, `values` is in Java declaration order, and the typeclass
- *     instances agree with each other.
- *   - `test_serialization` round-tripped a convention through Java serialization and through the
- *     binary and JSON encodings of the bean library the Java type belonged to, each of which
- *     read the class back reflectively. None of the three is a dependency of this port and
- *     neither Java serialization nor compatibility with that library's JSON is in its scope, so
- *     the round trip is asserted through the circe codec that replaced them, whose document is
- *     the bare canonical name and never an object.
- *   - `test_jodaConvert` asserted a round trip through the reflective string-conversion library
- *     the Java type was annotated for. That library is not a dependency of this port either, and
- *     its two annotations became `Show` and `parse`, so the guarantee is asserted over those and
- *     over `toString`, which agrees with them.
- *
- * @see [[BusinessDayAdjustmentSpec]] for the same conventions applied through reference data
+ * Lookup has two entry points, both asserted wherever a name is looked up: `valueOf`, the exact
+ * lookup over the canonical and upper-case keys, answering with an `Option`, and `parse`, which
+ * adds the ordered lenient rewrites and answers with `EitherNec[Failure, _]`.
  */
 class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
   import BusinessDayConventionSpec._
 
-  /** The Java `data_name` provider: each convention with the name it renders as. */
+  /** Each convention with the name it renders as. */
   private val dataName: TableFor2[BusinessDayConvention, String] = Table(
     ("convention", "name"),
     (BusinessDayConventions.NO_ADJUST, "NoAdjust"),
@@ -114,12 +54,9 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
   )
 
   /**
-   * The Java `data_lenient` provider, all 27 rows, in the order the provider listed them.
-   *
-   * Every row is a spelling that the ordered chain of lenient rewrites turns into a canonical
-   * name. The rows exercise the abbreviations, the screaming-snake spellings of the constant
-   * identifiers, and the spaced and hyphen-free spellings of a name - so a reordering of the
-   * transcribed pattern list, which would change what resolves, is caught here.
+   * Spellings that the ordered chain of lenient rewrites turns into a canonical name: the
+   * abbreviations, the screaming-snake spellings of the constant identifiers, and the spaced and
+   * hyphen-free spellings of a name. A reordering of the pattern list changes what resolves.
    */
   private val dataLenient: TableFor2[String, BusinessDayConvention] = Table(
     ("name", "convention"),
@@ -153,14 +90,8 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
   )
 
   /**
-   * The identifiers of the constants of [[BusinessDayConventions]], with the convention each
-   * names.
-   *
-   * This table replaces the reflective sweep of the Java `test_lenientLookup_constants`, which
-   * read the public static final fields of the constants holder and asserted that each field
-   * '''name''' resolved leniently to the field's value. The identifiers are written out because
-   * this port performs no reflection; they are the seven the holder declares, in declaration
-   * order, and `coverage` asserts that no eighth constant exists.
+   * Each constant identifier of [[BusinessDayConventions]] with the convention it names, every
+   * one of which must resolve leniently.
    */
   private val dataConstantIdentifiers: TableFor2[String, BusinessDayConvention] = Table(
     ("identifier", "convention"),
@@ -173,7 +104,7 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
     ("NEAREST", BusinessDayConventions.NEAREST)
   )
 
-  /** The seven conventions in the declaration order of the enum being ported. */
+  /** The seven conventions in declaration order. */
   private val declarationOrder: List[BusinessDayConvention] =
     List(
       BusinessDayConvention.NoAdjust,
@@ -186,21 +117,17 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
 
   //-------------------------------------------------------------------------
   test("test_convention") {
-    // The Java parameterised method, driven from the whole provider against the same calendar
-    // it used. `adjust` takes a calendar rather than reference data, so this is the pure rule
-    // of each convention with no lookup involved.
     forAll(dataConvention) { (convention: BusinessDayConvention, input: LocalDate, expected: LocalDate) =>
       withClue(s"$convention adjusting $input: ") {
         convention.adjust(input, HolidayCalendars.SAT_SUN) shouldBe expected
       }
     }
 
-    // Beyond the Java provider, which uses a weekend-only calendar throughout: every convention
-    // against a calendar that also holds a holiday, so that a run of non-business days has to be
-    // walked rather than a single weekend. The expected values are those of the Java rules
-    // applied to this calendar, and they are what makes the direction each convention chooses
-    // observable - in particular `Nearest`, which decides from the day of the week of the input
-    // before searching, so Sunday and the holiday Monday both move forward past the Monday.
+    // Every convention against a calendar that also holds a holiday, so that a run of
+    // non-business days has to be walked rather than a single weekend, which is what makes the
+    // direction each convention chooses observable - in particular `Nearest`, which decides from
+    // the day of the week of the input before searching, so the Sunday and the holiday Monday
+    // both move forward to the Tuesday even though the Friday is nearer.
     val calendar: HolidayCalendar =
       ImmutableHolidayCalendar.of(HolidayCalendarId.of("Test"), List(MON_2014_07_14), SATURDAY, SUNDAY)
 
@@ -242,9 +169,8 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
       }
     }
 
-    // Every convention other than `NoAdjust` answers with a business day of the calendar it was
-    // given; `NoAdjust` is the one member that can return a holiday, which the rows above show
-    // for all three non-business days.
+    // `NoAdjust` is the only member that can answer with a non-business day; every other member
+    // answers with a business day of the calendar it was given.
     val nonBusinessDays: List[LocalDate] = List(SAT_2014_07_12, SUN_2014_07_13, MON_2014_07_14)
     BusinessDayConvention.values.toList.filterNot(_ == BusinessDayConventions.NO_ADJUST).foreach {
       convention =>
@@ -257,9 +183,8 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_nearest") {
-    // Transcribed from the Java method, including the calendar it built: a single holiday on
-    // Monday, with the Saturday/Sunday weekend. The Sunday and the Monday move forward to the
-    // Tuesday even though the Friday is nearer, which is the documented behaviour of the rule.
+    // The rule decides from the day of the week of the input before searching: the Saturday goes
+    // back to the Friday, the Sunday and the holiday Monday forward to the Tuesday.
     val calendar: HolidayCalendar =
       ImmutableHolidayCalendar.of(HolidayCalendarId.of("Test"), List(MON_2014_07_14), SATURDAY, SUNDAY)
 
@@ -283,10 +208,8 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_of_lookup") {
-    // The Java `of` was one throwing factory. Both of the members that replaced it are asserted
-    // here: the exact lookup, which answers for the canonical name and for its upper-case
-    // spelling because those are the two keys each member is registered under, and the lenient
-    // one, which accepts everything the exact one does.
+    // The canonical name and its upper-case spelling are the two keys each member is registered
+    // under, and the lenient lookup accepts everything the exact one does.
     forAll(dataName) { (convention: BusinessDayConvention, name: String) =>
       withClue(s"$name: ") {
         BusinessDayConvention.valueOf(name) shouldBe Some(convention)
@@ -300,10 +223,8 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_lenientLookup_standardNames") {
-    // The Java method asked the registry for the lower-case spelling of each canonical name,
-    // through `findLenient`. Here that is `parse`, and the lower-case spelling is deliberately
-    // asserted to be outside the exact key space: it resolves because of the leniency and not
-    // because the family registered a third key for each member.
+    // A lower-case name is deliberately asserted to be outside the exact key space: it resolves
+    // through the leniency and not through a third key registered for each member.
     forAll(dataName) { (convention: BusinessDayConvention, name: String) =>
       val lowerCase = name.toLowerCase(Locale.ENGLISH)
       withClue(s"$lowerCase: ") {
@@ -314,11 +235,8 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_extendedEnum") {
-    // The Java method read `extendedEnum().lookupAll()` and looked each canonical name up in it.
-    // The counterpart of that map here is `byCanonicalName`, which is the Java
-    // `lookupAllNormalized` - the 7 canonical keys - while the Java `lookupAll` was the 14-key
-    // union of those with the upper-case spellings. Both are asserted, the union by its exact
-    // key set, so the relationship to the Java registry stays readable.
+    // `byCanonicalName` is the canonical-key map, 7 keys, and `byUpperName` the upper-case one;
+    // their union is the 14-key space the exact lookup answers over, asserted by its exact keys.
     val lookup = BusinessDayConvention.namedEnum
 
     forAll(dataName) { (convention: BusinessDayConvention, name: String) =>
@@ -337,8 +255,6 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
         "ModifiedPreceding",
         "Nearest")
 
-    // The Java `lookupAll` key set, transcribed from the registry: every canonical name and the
-    // English upper-case of it, 14 keys for 7 members.
     (lookup.byCanonicalName.keySet ++ lookup.byUpperName.keySet) shouldBe
       Set(
         "NoAdjust",
@@ -358,13 +274,12 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
     (lookup.byCanonicalName.keySet ++ lookup.byUpperName.keySet) should have size 14
     lookup.byUpperName should have size 7
 
-    // This family declares no alternate spelling, because the configuration resource being
-    // transcribed declared none for it: everything beyond the 14 keys arrives through the
-    // lenient chain or through an external group.
+    // This family declares no alternate spelling, so everything beyond those 14 keys arrives
+    // through the lenient chain or through an external group.
     lookup.alternateNames shouldBe Map.empty[String, String]
 
-    // The two groups of external spellings the resource published, asserted row for row. They
-    // take part in no lookup, which is why a lost row would otherwise be invisible.
+    // The two groups of external spellings, asserted row for row: they take part in no lookup,
+    // so a lost row would otherwise be invisible.
     lookup.externalNameGroups shouldBe Set("FpML", "SWIFT")
     lookup.externalNames("FpML") shouldBe
       Some(
@@ -381,20 +296,18 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
           "MODIFIEDF" -> BusinessDayConventions.MODIFIED_FOLLOWING,
           "PRECEDING" -> BusinessDayConventions.PRECEDING))
 
-    // The raw tables hold the same rows as text, and every row resolves - so neither group names
-    // a member this family does not have, which is what comparing the two key sets establishes.
+    // The raw tables hold the same keys as text, so neither names a member the family lacks.
     lookup.externalNamesRaw("FpML").map(_.keySet) shouldBe lookup.externalNames("FpML").map(_.keySet)
     lookup.externalNamesRaw("SWIFT").map(_.keySet) shouldBe lookup.externalNames("SWIFT").map(_.keySet)
     lookup.externalNamesRaw("FpML").map(_("NONE")) shouldBe Some("NoAdjust")
     lookup.externalNamesRaw("SWIFT").map(_("MODIFIEDF")) shouldBe Some("ModifiedFollowing")
 
-    // A group the family does not publish is an empty answer rather than a failure.
+    // A group the family does not publish answers with nothing rather than failing.
     lookup.externalNames("Rubbish") shouldBe None
     lookup.externalNamesRaw("Rubbish") shouldBe None
 
-    // The ordered lenient table, whose 11 rows are the rows of the resource. The order is part
-    // of the data - a later pattern sees what an earlier one produced - so the count is asserted
-    // alongside the rows that `test_lenientLookup_specialNames` drives through it.
+    // The lenient chain is ordered and each pattern sees what the previous one produced, so the
+    // row order is part of the data: a reordering changes what resolves.
     lookup.lenientPatterns should have size 11
     lookup.lenientPatterns.map { case (_, replacement) => replacement } shouldBe
       List(
@@ -410,26 +323,20 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
         "NoAdjust",
         "NoAdjust")
 
-    // The sharpest statement about the SWIFT group, and the reason the external tables are
-    // asserted here rather than left to the closedness specification alone: `MODIFIEDF` is a
-    // spelling no lenient pattern accepts, so the external table is the only route from it to a
-    // convention. Java behaves identically - `findLenient("MODIFIEDF")` is empty there too -
-    // which is why it appears in no lenient row.
+    // `MODIFIEDF` is a spelling no lenient pattern accepts, so the SWIFT table is the only route
+    // from it to a convention.
     BusinessDayConvention.valueOf("MODIFIEDF") shouldBe None
     BusinessDayConvention.parse("MODIFIEDF") should beFailureWith(FailureReason.PARSING)
     lookup.externalNames("SWIFT").flatMap(_.get("MODIFIEDF")) shouldBe
       Some(BusinessDayConventions.MODIFIED_FOLLOWING)
 
-    // The lookup is the family's own and covers exactly its members.
     lookup.values.toList shouldBe declarationOrder
     lookup.toString shouldBe "NamedEnum[BusinessDayConvention]"
   }
 
   test("test_of_lookup_notFound") {
-    // Where the Java factory raised an error for text naming no member, the port reports it as a
-    // value. The reason is compared as a member of the closed family of reasons, and the message
-    // is asserted once because it names the family and the text - the two things a caller has to
-    // be told.
+    // Text naming no member is reported as a `PARSING` failure whose message names the family
+    // and the text, rather than raised.
     BusinessDayConvention.valueOf("Rubbish") shouldBe None
     BusinessDayConvention.parse("Rubbish") should beFailureWith(FailureReason.PARSING)
     BusinessDayConvention.parse("Rubbish") should
@@ -437,18 +344,11 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_of_lookup_null") {
-    // Reinterpretation: the Java method passed the absent reference to the factory and asserted
-    // that it raised an error. The check that stood behind that error - the `notNull` guard of
-    // the argument checker - has no target in this port, because the absent argument it guarded
-    // against is not something a Scala caller can express: the name is a required parameter of a
-    // required type, so omitting it or offering something that is not text is rejected when this
-    // spec is compiled rather than when it runs. That is asserted here as a compile-time proof,
-    // which is the strongest form the Java case can take, and no `null` is written anywhere.
+    // The name is a required parameter, which these two proofs state.
     assertDoesNotCompile("BusinessDayConvention.parse()")
     assertDoesNotCompile("BusinessDayConvention.valueOf()")
 
-    // What a caller can actually supply is text that names nothing, so the rest of the case is
-    // every spelling of "no usable name" - empty, blank, and several near-misses - each of which
+    // The rest of the case is hostile text - empty, blank and near-misses - each of which
     // resolves to nothing and raises nothing.
     val hostile: List[String] =
       List(
@@ -474,10 +374,8 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
 
   //-------------------------------------------------------------------------
   test("test_lenientLookup_specialNames") {
-    // The Java method drove every row of `data_lenient` through `findLenient` after folding it
-    // to lower case. `parse` is that method here, and each row is asserted in three spellings -
-    // as written, folded down and folded up - because the patterns are matched insensitively to
-    // case and the input is folded to upper case before they are applied.
+    // Each row is asserted in three spellings - as written, folded down and folded up - because
+    // the input is folded to upper case before the patterns are applied.
     forAll(dataLenient) { (name: String, convention: BusinessDayConvention) =>
       withClue(s"$name: ") {
         BusinessDayConvention.parse(name.toLowerCase(Locale.ENGLISH)) should haveValue(convention)
@@ -488,9 +386,6 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_lenientLookup_constants") {
-    // The port of the reflective sweep over the constants holder: each identifier resolves
-    // leniently to the constant it names, in its own spelling and folded to lower case, exactly
-    // as the Java method asserted for the field names it discovered.
     forAll(dataConstantIdentifiers) { (identifier: String, convention: BusinessDayConvention) =>
       withClue(s"$identifier: ") {
         BusinessDayConvention.parse(identifier) should haveValue(convention)
@@ -501,22 +396,13 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // The Java method was `coverPrivateConstructor(BusinessDayConventions.class)` and
-    // `coverEnum(StandardBusinessDayConventions.class)`: the first reflectively invoked the
-    // private constructor of a static holder, the second read the values of a package-private
-    // enum, both so that a coverage tool would not report them as unexercised. A Scala `object`
-    // has no constructor to reach and there is no second enum - the members are declared in the
-    // companion - so what those calls stood for is asserted directly.
-
-    // The family has exactly seven members, in the declaration order of the enum being ported,
-    // which is not the alphabetical order the `Order` instance imposes.
+    // `values` is in declaration order, not the alphabetical order `Order` imposes.
     BusinessDayConvention.values.toList shouldBe declarationOrder
     BusinessDayConvention.values.toList should have size 7
     BusinessDayConvention.values.toList.distinct should have size 7
     BusinessDayConvention.values.toList.map(_.name).distinct should have size 7
 
-    // Each constant of the holder is the very member of the family, not a copy or a registry
-    // indirection, so a call site reading the constant and one reading the member are the same.
+    // Each constant of the holder is the member itself, not a copy.
     BusinessDayConventions.NO_ADJUST should be theSameInstanceAs BusinessDayConvention.NoAdjust
     BusinessDayConventions.FOLLOWING should be theSameInstanceAs BusinessDayConvention.Following
     BusinessDayConventions.MODIFIED_FOLLOWING should be theSameInstanceAs
@@ -528,8 +414,7 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
       BusinessDayConvention.ModifiedPreceding
     BusinessDayConventions.NEAREST should be theSameInstanceAs BusinessDayConvention.Nearest
 
-    // The holder publishes those seven and nothing else, which is the other half of what the
-    // reflective sweep would have discovered.
+    // The holder publishes exactly those seven.
     val constants: List[BusinessDayConvention] =
       List(
         BusinessDayConventions.NO_ADJUST,
@@ -541,8 +426,6 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
         BusinessDayConventions.NEAREST)
     constants shouldBe declarationOrder
 
-    // Every member is reachable by its own name through both entry points, so the name space and
-    // the membership agree.
     BusinessDayConvention.values.toList.foreach { convention =>
       withClue(s"${convention.name}: ") {
         BusinessDayConvention.valueOf(convention.name) shouldBe Some(convention)
@@ -552,9 +435,9 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
       }
     }
 
-    // The companion publishes one equality-bearing instance - an ordering that is also a hashing
-    // - so summoning the equality, the hashing or the ordering yields that one value and the
-    // three can never disagree. Every ordered pair of members is asked all three questions.
+    // The companion publishes a single equality-bearing instance - an ordering that is also a
+    // hashing - and every ordered pair of members is checked through all three: equal values
+    // hash equally and compare 0, unequal members compare non-zero.
     val all: List[BusinessDayConvention] = BusinessDayConvention.values.toList
     for (left <- all; right <- all) {
       val sameValue = left == right
@@ -570,23 +453,13 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
       }
     }
 
-    // And the ordering is by name, which is alphabetical rather than the declaration order above.
     all.sorted(Order[BusinessDayConvention].toOrdering).map(_.name) shouldBe
       all.map(_.name).sorted
   }
 
   test("test_serialization") {
-    // The Java method was `assertSerialization(NO_ADJUST)`: a round trip through Java
-    // serialization and through the binary and JSON encodings of the bean library the type
-    // belonged to, all three of which read the class back reflectively. None of them is a
-    // dependency of this port, and neither Java serialization nor wire compatibility with that
-    // library's JSON is in its scope. What replaces them is the circe codec the companion
-    // publishes, so the round trip is asserted through that - over the convention the Java
-    // method named and over all seven, since the codec is one instance shared by the family.
-    //
-    // The document is the bare canonical name and never an object: that is the single-string
-    // form the annotated string conversion of the type being ported wrote, so a document from
-    // either side names the same convention.
+    // The document is the bare canonical name and never an object, so a document from either
+    // side names the same convention.
     val noAdjust: Json = BusinessDayConventions.NO_ADJUST.asJson
     noAdjust.isString shouldBe true
     noAdjust.isObject shouldBe false
@@ -604,27 +477,21 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
       }
     }
 
-    // Text that names no convention is rejected by the reader, as is a document of the wrong
-    // JSON type - the codec reads a string and nothing else, which is what keeps the failure of
-    // an unrecognised name a decoding failure rather than an exception.
+    // A name no convention answers to is rejected, as is a document of the wrong JSON type: the
+    // codec reads a string and nothing else, and both are decoding failures, not exceptions.
     Json.fromString("Rubbish").as[BusinessDayConvention].isLeft shouldBe true
     Json.fromInt(1).as[BusinessDayConvention].isLeft shouldBe true
     Json.obj("name" -> Json.fromString("NoAdjust")).as[BusinessDayConvention].isLeft shouldBe true
 
-    // The decoder is as lenient as `parse`, which is what lets a document written by hand, or by
-    // the library being ported through one of its external vocabularies, still be read.
+    // The decoder is as lenient as `parse`, which is what lets a hand-written name or an
+    // external spelling still be read.
     Json.fromString("MODFOLLOWING").as[BusinessDayConvention] shouldBe
       Right(BusinessDayConventions.MODIFIED_FOLLOWING)
   }
 
   test("test_jodaConvert") {
-    // The Java method asserted, for two conventions, a round trip through the reflective
-    // string-conversion library the type was annotated for: the annotated renderer produced one
-    // string and the annotated factory read that string back as the same value. That library is
-    // not a dependency of this port, and its two annotations became `Show` and
-    // `BusinessDayConvention.parse`, so the guarantee is asserted over those - for every
-    // convention, and then for the two the Java method named, whose exact text is the contract a
-    // caller, a document and a message all rely on.
+    // `name`, `toString` and `Show` render the same text, and `parse` reads that text back as
+    // the same convention.
     forAll(dataName) { (convention: BusinessDayConvention, name: String) =>
       withClue(s"$name: ") {
         convention.name shouldBe name
@@ -645,17 +512,10 @@ class BusinessDayConventionSpec extends AnyFunSuite with Matchers with TableDriv
 }
 
 /**
- * The shared data providers of this spec, held where a sibling spec can read them.
+ * The date fixtures of this spec and the 72-row convention table it is driven from.
  *
- * The Java class declared its providers as public static methods, and
- * `BusinessDayAdjustmentTest.test_adjustDate` was driven from `data_convention` through a
- * `@MethodSource` naming this very class. The relationship is preserved here rather than
- * duplicated: the provider and the dates it is written from live in this companion, and
- * [[BusinessDayAdjustmentSpec]] drives its own `test_adjustDate` from the same rows, so the two
- * specs can never assert against different tables.
- *
- * Visible within the `date` test package alone, because it is a fixture of these two specs and
- * not a published surface.
+ * Visible within the `date` test package alone, because it is a fixture and not a published
+ * surface.
  */
 private[date] object BusinessDayConventionSpec extends TableDrivenPropertyChecks {
 
@@ -681,13 +541,11 @@ private[date] object BusinessDayConventionSpec extends TableDrivenPropertyChecks
   val MON_2014_11_17: LocalDate = LocalDate.of(2014, 11, 17)
 
   /**
-   * The Java `data_convention` provider, all 72 rows, in the order the provider listed them.
+   * Each convention with an input date and the date it adjusts to against a `Sat/Sun` calendar.
    *
-   * The rows cross every boundary the family can be held back by: a weekend inside a month, a
+   * The rows cross every boundary a convention can be held back by: a weekend inside a month, a
    * weekend spanning a month end in both directions, and - for the bi-monthly convention - a
-   * weekend spanning the 15th. The rows commented `modified` are the ones where the modified
-   * conventions reverse direction, and they are the reason the whole provider is transcribed
-   * rather than sampled.
+   * weekend spanning the 15th. The rows marked `modified` are where those reverse direction.
    */
   val dataConvention: TableFor3[BusinessDayConvention, LocalDate, LocalDate] = Table(
     ("convention", "input", "expected"),
@@ -737,7 +595,7 @@ private[date] object BusinessDayConventionSpec extends TableDrivenPropertyChecks
     // modified: the next business day would cross the 15th, out of the first half-month
     (BusinessDayConventions.MODIFIED_FOLLOWING_BI_MONTHLY, SAT_2014_11_15, FRI_2014_11_14),
     // and not modified the other way round: a date in the second half-month is only ever held
-    // back by the month end, which is the asymmetry the Java implementation had
+    // back by the month end
     (BusinessDayConventions.MODIFIED_FOLLOWING_BI_MONTHLY, SUN_2014_11_16, MON_2014_11_17),
     (BusinessDayConventions.MODIFIED_FOLLOWING_BI_MONTHLY, MON_2014_11_17, MON_2014_11_17),
     (BusinessDayConventions.PRECEDING, FRI_2014_07_11, FRI_2014_07_11),

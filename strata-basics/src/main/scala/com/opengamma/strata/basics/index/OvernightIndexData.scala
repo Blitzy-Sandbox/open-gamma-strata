@@ -11,13 +11,13 @@ import com.opengamma.strata.basics.date.DayCounts
 import com.opengamma.strata.basics.date.HolidayCalendarId
 import com.opengamma.strata.basics.date.HolidayCalendarIds
 import com.opengamma.strata.basics.date.StandardHolidayCalendars
+import com.opengamma.strata.collect.NoJavaSerialization
 
 /**
  * A single row of transcribed Overnight index reference data.
  *
- * Each row corresponds to one entry of the Overnight index reference data that the Java
- * implementation located on the classpath and parsed on first use, and carries exactly the eight
- * columns that data declared, in the order it declared them: the index name, the currency the
+ * Each row carries one Overnight index of the published reference data, with exactly the eight
+ * columns that data declares, in the order it declares them: the index name, the currency the
  * index is quoted in, whether the index is still published, the day count of the index, the
  * calendar that determines the days the index is fixed on, the number of days from a fixing date
  * to the date the fixing is published on, the number of days from a fixing date to the date the
@@ -30,8 +30,7 @@ import com.opengamma.strata.basics.date.StandardHolidayCalendars
  * publication, effective or maturity date of an observation: those are functions of a fixing date,
  * of the two offsets below and of the resolved fixing calendar, and computing them is the work of
  * the index family in `Index.scala`, which reads these rows to build its members. Nor does it
- * carry a fixing time or zone, because the original data declared no such column for an Overnight
- * index.
+ * carry a fixing time or zone, there being no such column for an Overnight index.
  *
  * ===The two day count columns are independent===
  *
@@ -41,12 +40,16 @@ import com.opengamma.strata.basics.date.StandardHolidayCalendars
  * whose index accrues on an actual/actual year basis while a fixed leg against it accrues on
  * actual/360.
  *
+ * The row type is the shape the table below is written in rather than a value of the published
+ * API: a caller reads this data as the index family the companion of `Index.scala` builds from it,
+ * never as rows. It is therefore visible within `com.opengamma.strata.basics` and no further - the
+ * same visibility `PriceIndexRow` has, and for the same reason.
+ *
  * @param name                   the unique name of the index, such as `GBP-SONIA`; the name is the
  *                               identity of the index in text, in JSON and to a user, so it is
- *                               reproduced exactly as the original data spelled it, punctuation
- *                               included
+ *                               reproduced exactly as published, punctuation included
  * @param currency               the currency the index is quoted in
- * @param active                 whether the index is currently published, false once it has been
+ * @param active                 whether the index is still published, false once it has been
  *                               discontinued
  * @param dayCount               the day count the index itself accrues on
  * @param fixingCalendar         the calendar that determines the days the index is fixed on
@@ -59,14 +62,6 @@ import com.opengamma.strata.basics.date.StandardHolidayCalendars
  * @param fixedLegDayCount       the day count a fixed leg conventionally uses against this index,
  *                               which is the day count of the index on every row but the Norwegian
  *                               one
- *
- * The row is a transcription of one line of the reference data this module was built from, so it
- * is visible within `com.opengamma.strata.basics` and no further - the same visibility
- * `PriceIndexRow` has, and for the same reason. It is the shape the table below is written in
- * rather than a value of the published API: a caller reads this data as the index family the
- * companion of `Index.scala` builds from it, never as rows, so publishing the row type would add
- * a type to the module's surface that nothing outside it can use and that the port's construction
- * and codec inventories would then have to account for.
  */
 private[basics] final case class OvernightIndexRow(
     name: String,
@@ -77,17 +72,16 @@ private[basics] final case class OvernightIndexRow(
     publicationOffsetDays: Int,
     effectiveOffsetDays: Int,
     fixedLegDayCount: DayCount)
+    extends NoJavaSerialization
 
 /**
  * The Overnight index reference data of the module, expressed as immutable Scala data.
  *
- * This object carries the Overnight index table transcribed verbatim from the reference data that
- * the Java implementation located on the classpath and parsed on first use. Nothing is located,
- * parsed or cached at run time here: the thirty-five rows below are Scala literals fixed at compile
- * time, so the table cannot fail to initialise, needs no classpath, recovers from no load failure
- * and holds no hidden global state. Where the Java loader logged a severe error and handed back an
- * empty map when a row would not parse - silently leaving the whole family without members - there
- * is no such failure mode to recover from, because a row that does not typecheck does not compile.
+ * This object carries the Overnight index table transcribed verbatim from the published reference
+ * data. Nothing is located, parsed or cached at run time here: the thirty-five rows below are
+ * Scala literals fixed at compile time, so the table cannot fail to initialise, reads no external
+ * source, recovers from no load failure and holds no hidden global state. A row that does not
+ * typecheck does not compile, so the family can never come up with some of its members missing.
  *
  * It holds data only and no behaviour: it constructs no [[OvernightIndex]], because creating the
  * members of that family, and giving them the lookups, the date calculations and the observation
@@ -98,46 +92,46 @@ private[basics] final case class OvernightIndexRow(
  *
  * ===Invariants===
  *
- * All of the following are pinned against the Java captured reference data manifest, so a self
- * consistent but mistranscribed row cannot pass:
+ * The order of the rows is the published order and is part of the meaning of this table, and every
+ * cell of every row is transcribed from the published reference data for that index:
  *
- *  - [[rows]] holds exactly thirty-five entries with distinct names, in the declaration order of
- *    the original data: the nine major currency rates first, then the remaining rates grouped by
- *    currency in alphabetical order of currency code.
+ *  - [[rows]] holds exactly thirty-five entries with distinct names, in published order: the nine
+ *    major currency rates first, then the remaining rates grouped by currency in alphabetical
+ *    order of currency code.
  *  - Every row but one is active. The Swiss tomorrow/next rate is the single discontinued index and
- *    is kept rather than deleted, because a rate that is no longer published is still needed to
- *    value a trade that references it.
- *  - Thirty-three rows accrue on actual/360 or actual/365 fixed - fourteen on the former and
- *    nineteen on the latter. The two exceptions are the Brazilian rate, which accrues on the
+ *    is kept rather than deleted, because a discontinued rate is still needed to value a trade
+ *    that references it.
+ *  - Thirty-three rows accrue on actual/360 or actual/365 fixed - fourteen on actual/360 and
+ *    nineteen on actual/365 fixed. The two exceptions are the Brazilian rate, which accrues on the
  *    business days of the Brazilian calendar, and the Norwegian rate, which accrues on an
  *    actual/actual year basis while its fixed leg accrues on actual/360.
- *  - The two offsets are transcribed per row and follow no pattern that may be assumed: most rates
- *    publish on the fixing date or the next business day and are effective on the fixing date,
- *    while the Danish rates offset both by a day, the Swedish and the Swiss tomorrow/next rates are
- *    effective a day after the fixing, and the Thai rate is effective two days after it.
+ *  - The two offsets vary from row to row, so each is transcribed from the published data for its
+ *    index: most rates publish on the fixing date or the next business day and are effective on
+ *    the fixing date, while the Danish rates offset both by a day, the Swedish and the Swiss
+ *    tomorrow/next rates are effective a day after the fixing, and the Thai rate is effective two
+ *    days after it.
  *  - Ten distinct fixing calendars, on eleven of the rows, name a calendar whose holidays this
  *    library does not ship - the Chilean, Colombian, Hong Kong, Indonesian, Israeli, Indian,
- *    Russian, Saudi, Singaporean and Turkish ones, the Singaporean one twice - because the original
- *    shipped none either, so those indices resolve against `ReferenceData.standard` with a missing
- *    data failure, exactly as they did there. Nothing is invented to fill the gap.
+ *    Russian, Saudi, Singaporean and Turkish ones, the Singaporean one twice - so those indices
+ *    resolve against `ReferenceData.standard` with a missing data failure until a host supplies
+ *    the calendar. Nothing is invented to fill the gap.
  *  - One fixing calendar is composite: the New Zealand rate fixes on the days that are business
  *    days in both Auckland and Wellington.
  *
  * ===What this table deliberately omits===
  *
- * There is no upper case key space in [[byName]]. Registering each name a second time in upper
- * case was how the Java registry answered a case insensitive lookup, and that responsibility now
- * belongs to the named enum support in `strata-collect`, which derives the upper case view from the
- * canonical one.
+ * There is no upper case key space in [[byName]]: each name is held once, and the case insensitive
+ * view of it is derived from the canonical name by the named enum support in `strata-collect`.
  *
  * There is likewise no alternate name table, although this family has the largest one: the ten
- * alternate names that resolve to six of the rows below - among them the former names of the euro
- * and the Japanese overnight rates, and four spellings of the United States federal funds rate -
- * are a property of the family's lookup rather than of a row of data, so they live with the family
- * in `Index.scala`.
+ * alternate names that resolve to six of the rows below - among them two further spellings of the
+ * euro short-term rate, the shorter spelling of the Japanese overnight rate, and four spellings of
+ * the United States federal funds rate - are a property of the family's lookup rather than of a
+ * row of data, so they live with the family in `Index.scala`.
  *
- * No index may be added to, removed from or edited in this table: it is a transcription of existing
- * reference data, and introducing a new index is outside the scope of the port.
+ * No index may be added to, removed from or edited in this table. It is the published Overnight
+ * index reference data, so a change here changes the reference data this library publishes, and
+ * every consumer of an index name, offset, calendar or day count reads the change.
  *
  * All members are immutable values, so this object is thread-safe.
  *
@@ -147,15 +141,13 @@ private[basics] final case class OvernightIndexRow(
  */
 private[basics] object OvernightIndexData {
 
-  //-------------------------------------------------------------------------
   // The four day counts and the calendar identifiers the rows below are built from.
   //
   // The day counts are bound to names before the table rather than after it, because the fields of
   // an object are initialised in the order they are declared, so a value the table reads has to be
   // declared above it. Each name is the day count column value it stands for, written once here
   // instead of once in each of the seventy day count cells of the table, which keeps every row on
-  // one line and diffable against the original data.
-  //-------------------------------------------------------------------------
+  // one line.
 
   /**
    * The 'Act/360' day count, which is the accrual basis of fourteen of the rows and the fixed leg
@@ -180,9 +172,7 @@ private[basics] object OvernightIndexData {
    * than two equal ones.
    *
    * The calendar itself is generated when this value is first read, which is when this object is
-   * initialised. That cost is paid once per process and is the behaviour of the implementation
-   * being ported, whose Brazilian day count likewise resolved its calendar the first time it was
-   * needed.
+   * initialised, so that cost is paid once per process.
    */
   private val bus252Brbd: DayCount = DayCount.ofBus252(StandardHolidayCalendars.BRBD)
 
@@ -190,27 +180,24 @@ private[basics] object OvernightIndexData {
    * Obtains a calendar identifier from the text of the fixing calendar column.
    *
    * This is the total identifier factory under a shorter name, used for the calendars this library
-   * does not name with a constant, so that each row of the table fits on one line and stays
-   * diffable against the original data. Any name is accepted, whether or not this library ships
-   * the calendar it names, and a name joining several calendars is normalised by the factory; see
-   * [[HolidayCalendarId.of]] for both. An identifier naming a calendar that is not shipped fails
-   * to resolve against reference data at the point of use, which is the behaviour of the original
-   * and is why such an identifier is admitted here rather than rejected.
+   * does not name with a constant, so that each row of the table fits on one line. Any name is
+   * accepted, whether or not this library ships the calendar it names, and a name joining several
+   * calendars is normalised by the factory; see [[HolidayCalendarId.of]] for both. An identifier
+   * naming a calendar that is not shipped is admitted here and fails to resolve against reference
+   * data at the point of use, so a host that supplies the calendar makes the index usable without
+   * a change to this table.
    *
    * @param uniqueName  the text of the fixing calendar column
    * @return the calendar identifier
    */
   private def calendar(uniqueName: String): HolidayCalendarId = HolidayCalendarId.of(uniqueName)
 
-  //-------------------------------------------------------------------------
   /**
-   * The thirty-five transcribed Overnight index rows, in the declaration order of the original
-   * data.
+   * The thirty-five transcribed Overnight index rows, in published order.
    *
    * The order is observable through any iteration a consumer performs - notably the order in which
    * `Index.scala` creates the members of the Overnight index family - so it is kept stable and
-   * deterministic rather than re-sorted. The columns appear in the order the original data declared
-   * them, so the literal list can be diffed line for line against it.
+   * deterministic rather than re-sorted. The columns appear in published order too.
    */
   val rows: Vector[OvernightIndexRow] = Vector(
     OvernightIndexRow("GBP-SONIA", Currency.GBP, active = true, act365F, HolidayCalendarIds.GBLO, 1, 0, act365F),
@@ -233,7 +220,7 @@ private[basics] object OvernightIndexData {
     OvernightIndexRow("DKK-DESTR", Currency.DKK, active = true, act360, HolidayCalendarIds.DKCO, 1, 1, act360),
     OvernightIndexRow("HKD-HONIA", Currency.HKD, active = true, act365F, calendar("HKHK"), 0, 0, act365F),
     OvernightIndexRow("HUF-HUFONIA", Currency.HUF, active = true, act365F, HolidayCalendarIds.HUBU, 1, 0, act365F),
-    // has replaced the overnight Jakarta interbank rate
+    // the successor to the overnight Jakarta interbank rate
     OvernightIndexRow("IDR-INDONIA", Currency.IDR, active = true, act365F, calendar("IDJA"), 1, 0, act365F),
     // the Tel Aviv rate, prefixed by O for uniqueness against the term rates of the same name
     OvernightIndexRow("ILS-OTELBOR", Currency.ILS, active = true, act365F, calendar("ILTA"), 1, 0, act365F),

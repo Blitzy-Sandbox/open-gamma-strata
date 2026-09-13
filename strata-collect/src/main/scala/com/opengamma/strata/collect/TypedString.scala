@@ -207,14 +207,30 @@ abstract class TypedStringCompanion[T <: Named](
     }
 
   /**
-   * The rendering of values as text.
+   * The rendering of values as text, for a reader.
    *
    * A typed string renders as its name, with no decoration of any kind, which is the form the
-   * ported type rendered and the form its own factory accepts back.
+   * ported type rendered and the form [[of]] accepts back. What the rendering adds is the
+   * neutralising every diagnostic of these two modules applies: the name is written through
+   * [[com.opengamma.strata.collect.result.Failure.renderDiagnostic]], so the rendered text is
+   * bounded in length and is a single line.
+   *
+   * That matters here because the text of a typed string is a caller's, checked only for the
+   * shape the concrete type's own validation states - the plain form asks merely that the text
+   * is present, and a shape check is free to accept a control character - while a rendering is
+   * read in a log, a report or a line of a console, where arbitrary text could otherwise forge
+   * a line (CWE-117) or fill one (CWE-400). Rendering is the act of writing text out, so it is
+   * the only place this happens: [[Named.name]] answers with the text exactly, the JSON form
+   * writes it exactly, and a value therefore round-trips as the text it was built from however
+   * that text is shaped.
+   *
+   * For text of a realistic shape the rendering ''is'' the name, character for character - the
+   * renderer changes only what is beyond its bound or cannot be written on one line - so the
+   * rendering of an ordinary typed string reads exactly as the value the ported type rendered.
    *
    * @return the rendering of a value of the type
    */
-  implicit val show: Show[T] = Show.show(value => value.name)
+  implicit val show: Show[T] = Show.show(value => Failure.renderDiagnostic(value.name))
 
   /**
    * The single codec behind the two instances published below.

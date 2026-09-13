@@ -28,7 +28,9 @@ import _root_.io.circe.generic.semiauto.deriveDecoder
 import _root_.io.circe.generic.semiauto.deriveEncoder
 
 import com.opengamma.strata.collect.ArgCheck
+import com.opengamma.strata.collect.JvmClosure
 import com.opengamma.strata.collect.Named
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.ValidatedFailures
 import com.opengamma.strata.collect.json.Codecs
@@ -50,11 +52,9 @@ import com.opengamma.strata.collect.result.Failure
  * The six sequences defined in the companion of this class are the whole family. The class is
  * `sealed`, its constructor is visible only inside this package, and each sequence exists
  * exactly once as a value in the companion, so no further sequence can come into being - not
- * by subclassing from another file, and not by registering one at run time. That replaces the
- * run-time registry of the type being ported, which assembled the family by reading a
- * configuration resource from the classpath: the members are fixed when this file is compiled,
- * the compiler can check a match over them for exhaustiveness, and a name that belongs to no
- * member is rejected by `parse` as a value rather than discovered as a missing resource.
+ * by subclassing from another file, and not by adding one while the program runs. The members
+ * are therefore fixed, a match over them can be checked for exhaustiveness, and text naming no
+ * member is rejected by `parse` as a value.
  *
  * ===The two families of method, and the one difference between them===
  *
@@ -90,26 +90,38 @@ import com.opengamma.strata.collect.result.Failure
  * Stepping through a sequence cannot fail on the data it is given: every date has a next
  * sequence date, so these methods are total in their signature. A sequence number that is
  * zero or negative is a different matter - it is not a value the sequence could interpret, it
- * is a broken precondition of the call, exactly as it was in the type being ported - and it is
- * reported through `ArgCheck` rather than as a returned failure. The one place a sequence
- * number arrives as data is a [[SequenceDate]] built from user input, and there it is checked
- * by the validating factory before any sequence sees it.
+ * is a broken precondition of the call - and it is reported through `ArgCheck` rather than as a
+ * returned failure. The one place a sequence number arrives as data is a [[SequenceDate]] built
+ * from user input, and there it is checked by the validating factory before any sequence sees
+ * it.
  *
  * @param name  the unique name of the sequence, as it appears in text and in JSON
  */
-sealed abstract class DateSequence private[date] (val name: String) extends Named {
+sealed abstract class DateSequence private[date] (val name: String)
+    extends Named
+    with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to the package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be a seventh sequence, outside the
+  // six this type publishes - is refused here instead.
+  //
+  // No invariant accompanies the check, and none is needed: every member of this family is a
+  // `case object`, and the class of a `case object` takes no argument, so a class file naming one
+  // of them directly has no field to supply and no state to disagree with its name. A family that
+  // builds members from a hidden implementation class has to state one, because there the fields
+  // are the caller's to choose; [[SequenceDate]], below, is that shape and states its own.
+  JvmClosure.requireDeclaredMember(this, classOf[DateSequence])
 
   /**
    * Returns the name of this sequence, which is how a sequence renders as text.
    *
-   * This is the representation the type being ported produced and the representation `parse`
-   * reads back, so a name written by the original resolves to the same sequence here.
+   * It is the text `parse` reads back, so the rendering of a sequence names that sequence.
    *
    * @return the unique name of this sequence
    */
   override def toString: String = name
 
-  //-------------------------------------------------------------------------
   /**
    * Gets the base sequence of this sequence.
    *
@@ -180,14 +192,13 @@ sealed abstract class DateSequence private[date] (val name: String) extends Name
   /**
    * Steps forward through the sequence a fixed number of times.
    *
-   * The type being ported expressed the general form of `nth` and `nthOrSame` by recursing on
-   * the public method itself. That recursion is not a tail call a compiler may flatten, because
-   * the method it re-enters can be overridden; this private helper is the same walk written so
-   * that it is one, which keeps the general implementation free of a growing stack while
-   * leaving what it computes untouched - the walk still dispatches through `next`, so a member
-   * that overrides `next` is honoured here exactly as it was there.
+   * The general form of `nth` and `nthOrSame` counts by stepping one sequence date at a time.
+   * Recursing on the overridable public method would not be a tail call, so the walk is written
+   * here, in a private method where it is one, and a large sequence number therefore costs no
+   * stack. Each step still goes through `next`, so a member that overrides `next` is the member
+   * that answers.
    *
-   * @param date  the sequence date reached so far
+   * @param date  the sequence date the walk has reached
    * @param remaining  the number of further steps to take, never negative
    * @return the sequence date reached after taking every remaining step
    */
@@ -195,7 +206,6 @@ sealed abstract class DateSequence private[date] (val name: String) extends Name
   private def advance(date: LocalDate, remaining: Int): LocalDate =
     if (remaining == 0) date else advance(next(date), remaining - 1)
 
-  //-------------------------------------------------------------------------
   /**
    * Finds the date in the sequence that corresponds to the specified year-month.
    *
@@ -209,7 +219,6 @@ sealed abstract class DateSequence private[date] (val name: String) extends Name
    */
   def dateMatching(yearMonth: YearMonth): LocalDate
 
-  //-------------------------------------------------------------------------
   /**
    * Selects a date from the sequence, always later than the input date.
    *
@@ -245,12 +254,11 @@ sealed abstract class DateSequence private[date] (val name: String) extends Name
  *
  * Each sequence exists here exactly once, and the two tables a named family may declare - a
  * map of alternate spellings and a list of patterns that rewrite text before it is looked up -
- * are both empty, because the configuration resource of the type being ported declared neither
- * for this family. The whole name space of the family is therefore its six canonical names,
- * which is exactly the name space the original accepted.
+ * are both empty for this family. The whole name space of the family is therefore its six
+ * canonical names.
  *
- * The constants are also published under their original identifiers by [[DateSequences]], so
- * either spelling resolves to the same value.
+ * The same six values are published as constants of [[DateSequences]], so a call site reaches
+ * a sequence through either object and holds the same value.
  */
 object DateSequence {
 
@@ -281,7 +289,6 @@ object DateSequence {
     monthsUntilNextQuarter + (sequenceNumber - 1) * 3
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The 'Quarterly-IMM' sequence, the third Wednesday of March, June, September and December.
    *
@@ -495,16 +502,14 @@ object DateSequence {
     override def dateMatching(yearMonth: YearMonth): LocalDate = nextOrSame(yearMonth.atDay(1))
   }
 
-  //-------------------------------------------------------------------------
   /**
    * The complete set of date sequences, in declaration order.
    *
-   * The order is the declaration order of the enum being ported, which is the order the
-   * configuration resource of the original listed and the order a report over the family
-   * follows. It is not the order the `Order` instance below imposes, which is alphabetical by
-   * name. The list is non-empty by construction, which is what lets every operation over the
-   * family - a name table, a generator, an exhaustive report - be written without a case for a
-   * family that has no members.
+   * The order is the order the members are declared in above, and it is the order a report over
+   * the family follows. It is not the order the `Order` instance below imposes, which is
+   * alphabetical by name. The list is non-empty by construction, which is what lets every
+   * operation over the family - a name table, a generator, an exhaustive report - be written
+   * without a case for a family that has no members.
    *
    * @return the six sequences, in declaration order
    */
@@ -522,8 +527,7 @@ object DateSequence {
    * The name lookup for this family.
    *
    * This instance is the single route from text to a sequence, and it is built from `values`
-   * alone. All three tables a named family may declare are empty here, because the
-   * configuration resource of the type being ported declared none of them: it named no
+   * alone. All three tables a named family may declare are empty here: this family has no
    * alternate spelling of any sequence, no pattern that rewrites text before it is looked up,
    * and no group of names published for an external protocol. The name space of the family is
    * therefore exactly its six canonical names.
@@ -558,13 +562,13 @@ object DateSequence {
    * parse("Quarterly IMM")  // Left - a name this family has never had
    * }}}
    *
-   * Where the type being ported signalled an unrecognised name by raising an error, this
-   * method reports it as a value: the result is `Left` of a chain holding one [[Failure]] whose
-   * reason is `PARSING` and whose message names both this family and the text that could not be
-   * resolved.
+   * Text that neither lookup resolves is reported as a value rather than raised: the result is
+   * `Left` of a chain holding one [[Failure]] that names this family and the text it could not
+   * resolve.
    *
    * @param name  the text to parse
-   * @return the sequence the text names, or the failure describing why it names none
+   * @return the sequence the text names, or the failure naming the broken condition: the text
+   *   must be one of the six canonical names, in that spelling or folded to upper case
    */
   def parse(name: String): EitherNec[Failure, DateSequence] = namedEnum.parse(name)
 
@@ -595,10 +599,9 @@ object DateSequence {
    * The JSON codec for sequences.
    *
    * A sequence is written as the bare string of its canonical name - `"Quarterly-IMM"` - and
-   * never as an object, which is the single-string form the type being ported wrote through its
-   * string conversion, so a document written before this port reads back here as the same
-   * sequence. Decoding goes through `parse`, so the leniency of the two is identical and
-   * unresolvable text is reported as a decoding failure rather than raised.
+   * never as an object. Decoding goes through `parse`, so a document is read with exactly the
+   * leniency text is, and a string naming no sequence is reported as a decoding failure rather
+   * than raised.
    *
    * @return the codec reading and writing a sequence as its canonical name
    */
@@ -606,12 +609,10 @@ object DateSequence {
 }
 
 /**
- * The standard date sequences, published under the identifiers the ported library used.
+ * The standard date sequences, as constants.
  *
- * Every constant here is one of the members of [[DateSequence]], exposed under the name the
- * original constants holder gave it so that call sites reading `DateSequences.QUARTERLY_IMM`
- * port across unchanged. The values are the same objects, so a constant taken from here and the
- * matching member of the companion are indistinguishable.
+ * Every constant here is one of the members of [[DateSequence]] and is that same value, so a
+ * constant taken from here and the matching member of the companion are indistinguishable.
  */
 object DateSequences {
 
@@ -685,15 +686,15 @@ object DateSequences {
  * }}}
  *
  * The factories accumulate: an instruction wrong in two ways reports both failures rather than
- * only the first one found. Where the type being ported raised an error from its constructor,
- * this reports the same three conditions, with the same messages, as values.
+ * only the first one found. The three conditions are named on [[SequenceDate.of]], the general
+ * factory every one of the eight goes through.
  *
  * ===Normalisation===
  *
- * A minimum period of zero is no minimum period at all, and is normalised away, exactly as the
- * type being ported did. Two instructions written as `base(Period.ZERO, 1)` and `base(1)` are
- * therefore the same value, they encode to the same JSON, and rebuilding either one from its
- * own fields yields itself.
+ * A minimum period of zero is no minimum period at all, and is normalised away rather than
+ * rejected. Two instructions written as `base(Period.ZERO, 1)` and `base(1)` are therefore the
+ * same value, they encode to the same JSON, and rebuilding either one from its own fields
+ * yields itself.
  *
  * @param yearMonth  the month to count from, used instead of the input date when present
  * @param minimumPeriod  the period added to the input date before counting begins, never zero
@@ -705,7 +706,39 @@ sealed abstract case class SequenceDate private (
     yearMonth: Option[YearMonth],
     minimumPeriod: Option[Period],
     sequenceNumber: Int,
-    fullSequence: Boolean) {
+    fullSequence: Boolean)
+    extends NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // would carry a starting point, a minimum period and a sequence number no factory had checked
+  // or normalised - can be stopped is here. The single implementation is the companion's hidden
+  // `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[SequenceDate.Impl])
+
+  // The invariant of this type, stated over the four fields the instance actually holds rather
+  // than over the arguments a factory was given, because the class file of the implementation
+  // carries a public constructor whatever the source asked for: a class compiled outside this
+  // library can reach it directly, and the check above would admit what it built, its runtime
+  // class being the one class that check admits. What is left to state is the three conditions
+  // [[SequenceDate.of]] checks and the normalisation it then performs, so an instruction that
+  // exists by any route is one that describes a date: two starting points would leave
+  // [[selectDate]] choosing between them, a minimum period running backwards would move the
+  // starting point behind the input date, and a sequence number of zero or less would count to no
+  // date at all, 1 being the first.
+  JvmClosure.requireInvariant(
+    "it names a starting month or a minimum period, and not both",
+    !(yearMonth.isDefined && minimumPeriod.isDefined))
+  JvmClosure.requireInvariant(
+    "its minimum period does not run backwards",
+    !minimumPeriod.exists(period => period.isNegative))
+  JvmClosure.requireInvariant(
+    "its sequence number is positive, 1 being the first date of the sequence",
+    sequenceNumber > 0)
+  JvmClosure.requireInvariant(
+    "a minimum period of zero is held as no minimum period at all",
+    !minimumPeriod.contains(Period.ZERO))
 
   /**
    * Applies this instruction to a sequence, producing the date it describes.
@@ -750,8 +783,7 @@ sealed abstract case class SequenceDate private (
    * Returns a string describing the instruction.
    *
    * All four fields are named, in the declaration order of the type, and a field holding
-   * nothing is rendered with the companion's `AbsentFieldMarker` rather than left out, so the
-   * rendering is that of the bean being ported character for character:
+   * nothing is rendered with the companion's `AbsentFieldMarker` rather than left out:
    *
    * {{{
    * SequenceDate{yearMonth=[absent], minimumPeriod=P2M, sequenceNumber=3, fullSequence=true}
@@ -759,8 +791,8 @@ sealed abstract case class SequenceDate private (
    * }}}
    *
    * `[absent]` stands in for the text of `AbsentFieldMarker`, which these examples name rather
-   * than print: that text is the host platform's rendering of an absent reference, a token the
-   * domain code of this port writes nowhere, and the constant carries the reason why.
+   * than print: that text is the host platform's rendering of an absent reference, which the
+   * domain code of this library writes nowhere, and the constant carries the reason why.
    *
    * The field set is fixed rather than derived from which fields are present, because a reader
    * of a log line or a snapshot compares renderings of different instructions against one
@@ -768,8 +800,7 @@ sealed abstract case class SequenceDate private (
    * the `Show` instance renders, which is obtained from this method so the two cannot diverge.
    *
    * Note that this is not the shape of the JSON this type writes, where an absent field is
-   * dropped from the document entirely: the two serve different readers, and only this one is
-   * required to reproduce the rendering of the type being ported.
+   * dropped from the document entirely: the two serve different readers.
    *
    * @return the descriptive string, naming all four fields
    */
@@ -802,13 +833,10 @@ object SequenceDate {
   /**
    * The text an absent optional field is rendered with by [[SequenceDate.toString]].
    *
-   * This is the marker the bean being ported printed for a field holding nothing, and it has to
-   * be reproduced exactly for the rendering of an instruction to be the rendering that bean
-   * produced. It is obtained from the way the host platform renders an absent reference -
-   * converting an empty `Option` to a reference and asking the platform for its text - rather
-   * than written out as a string literal, because the domain code of this port names no absent
-   * reference anywhere and is checked for that: taking the text from the platform keeps the one
-   * place that needs the marker free of the token as well.
+   * It is obtained from the way the host platform renders an absent reference - converting an
+   * empty `Option` to a reference and asking the platform for its text - rather than written
+   * out as a string literal, which keeps the one place that needs the marker free of the token
+   * itself.
    */
   private val AbsentFieldMarker: String = String.valueOf(Option.empty[AnyRef].orNull)
 
@@ -834,20 +862,20 @@ object SequenceDate {
       minimumPeriod: Option[Period],
       sequenceNumber: Int,
       fullSequence: Boolean)
+      extends NoJavaSerialization
 
-  /** The derived decoder of the raw field shape, used by the validating decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instruction selecting the next base sequence date on or after the start of the
    * specified month.
    *
    * @param yearMonth  the month to count from
-   * @return the instruction, or the failure describing why the inputs describe none
+   * @return the instruction, which this factory always produces: it names no minimum period
+   *   alongside the month and supplies the sequence number itself, so none of the conditions
+   *   [[of]] checks can be broken
    */
   def base(yearMonth: YearMonth): EitherNec[Failure, SequenceDate] =
     of(Some(yearMonth), None, 1, fullSequence = false)
@@ -858,7 +886,8 @@ object SequenceDate {
    *
    * @param yearMonth  the month to count from
    * @param sequenceNumber  the 1-based sequence number, not zero or negative
-   * @return the instruction, or the failure describing why the inputs describe none
+   * @return the instruction, or the failure naming the broken condition: the sequence number
+   *   must be positive
    */
   def base(yearMonth: YearMonth, sequenceNumber: Int): EitherNec[Failure, SequenceDate] =
     of(Some(yearMonth), None, sequenceNumber, fullSequence = false)
@@ -867,7 +896,8 @@ object SequenceDate {
    * Obtains an instruction selecting the nth base sequence date after the input date.
    *
    * @param sequenceNumber  the 1-based sequence number, not zero or negative
-   * @return the instruction, or the failure describing why the inputs describe none
+   * @return the instruction, or the failure naming the broken condition: the sequence number
+   *   must be positive
    */
   def base(sequenceNumber: Int): EitherNec[Failure, SequenceDate] =
     of(None, None, sequenceNumber, fullSequence = false)
@@ -879,18 +909,20 @@ object SequenceDate {
    * @param minimumPeriod  the minimum period between the input date and the first sequence date,
    *   not negative
    * @param sequenceNumber  the 1-based sequence number, not zero or negative
-   * @return the instruction, or the failure describing why the inputs describe none
+   * @return the instruction, or the failures naming every broken condition: the minimum period
+   *   must have no negative years, months or days, and the sequence number must be positive
    */
   def base(minimumPeriod: Period, sequenceNumber: Int): EitherNec[Failure, SequenceDate] =
     of(None, Some(minimumPeriod), sequenceNumber, fullSequence = false)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instruction selecting the next full sequence date on or after the start of the
    * specified month.
    *
    * @param yearMonth  the month to count from
-   * @return the instruction, or the failure describing why the inputs describe none
+   * @return the instruction, which this factory always produces: it names no minimum period
+   *   alongside the month and supplies the sequence number itself, so none of the conditions
+   *   [[of]] checks can be broken
    */
   def full(yearMonth: YearMonth): EitherNec[Failure, SequenceDate] =
     of(Some(yearMonth), None, 1, fullSequence = true)
@@ -901,7 +933,8 @@ object SequenceDate {
    *
    * @param yearMonth  the month to count from
    * @param sequenceNumber  the 1-based sequence number, not zero or negative
-   * @return the instruction, or the failure describing why the inputs describe none
+   * @return the instruction, or the failure naming the broken condition: the sequence number
+   *   must be positive
    */
   def full(yearMonth: YearMonth, sequenceNumber: Int): EitherNec[Failure, SequenceDate] =
     of(Some(yearMonth), None, sequenceNumber, fullSequence = true)
@@ -910,7 +943,8 @@ object SequenceDate {
    * Obtains an instruction selecting the nth full sequence date after the input date.
    *
    * @param sequenceNumber  the 1-based sequence number, not zero or negative
-   * @return the instruction, or the failure describing why the inputs describe none
+   * @return the instruction, or the failure naming the broken condition: the sequence number
+   *   must be positive
    */
   def full(sequenceNumber: Int): EitherNec[Failure, SequenceDate] =
     of(None, None, sequenceNumber, fullSequence = true)
@@ -922,12 +956,12 @@ object SequenceDate {
    * @param minimumPeriod  the minimum period between the input date and the first sequence date,
    *   not negative
    * @param sequenceNumber  the 1-based sequence number, not zero or negative
-   * @return the instruction, or the failure describing why the inputs describe none
+   * @return the instruction, or the failures naming every broken condition: the minimum period
+   *   must have no negative years, months or days, and the sequence number must be positive
    */
   def full(minimumPeriod: Period, sequenceNumber: Int): EitherNec[Failure, SequenceDate] =
     of(None, Some(minimumPeriod), sequenceNumber, fullSequence = true)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instruction from every field, validating the combination.
    *
@@ -937,7 +971,7 @@ object SequenceDate {
    *
    *   - a starting month and a minimum period may not both be given, since each names a
    *     different starting point;
-   *   - a minimum period may not run backwards;
+   *   - a minimum period may not run backwards, in any of its years, months or days;
    *   - a sequence number must be positive, 1 being the first date of the sequence.
    *
    * A minimum period of zero passes the checks and is then normalised away, which is what makes
@@ -948,7 +982,9 @@ object SequenceDate {
    * @param minimumPeriod  the minimum period added to the input date, if there is one
    * @param sequenceNumber  the 1-based sequence number, not zero or negative
    * @param fullSequence  whether to count over the full sequence rather than the base sequence
-   * @return the instruction, or every reason the inputs describe none
+   * @return the instruction, or the failures naming every broken condition: a starting month and
+   *   a minimum period may not both be given, the minimum period must have no negative years,
+   *   months or days, and the sequence number must be positive
    */
   def of(
       yearMonth: Option[YearMonth],
@@ -969,22 +1005,42 @@ object SequenceDate {
     Validate.toResult(
       (checkedStartingPoint, checkedMinimumPeriod, checkedSequenceNumber).mapN {
         (_, checkedPeriod, checkedNumber) =>
-          new SequenceDate(
+          new Impl(
             yearMonth,
             checkedPeriod.filterNot(_ == Period.ZERO),
             checkedNumber,
-            fullSequence) {}
+            fullSequence)
       })
   }
 
-  //-------------------------------------------------------------------------
+  /**
+   * The one implementation of an instruction.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[SequenceDate]] refuse in its own constructor to be any other implementation.
+   *
+   * @param yearMonth  the month to count from, if the count starts from a month
+   * @param minimumPeriod  the minimum period, already normalised so that it is never zero
+   * @param sequenceNumber  the 1-based sequence number, already checked to be positive
+   * @param fullSequence  whether to count over the full sequence rather than the base sequence
+   */
+  private final class Impl(
+      yearMonth: Option[YearMonth],
+      minimumPeriod: Option[Period],
+      sequenceNumber: Int,
+      fullSequence: Boolean)
+      extends SequenceDate(yearMonth, minimumPeriod, sequenceNumber, fullSequence)
+
   /**
    * The hashing and equality of instructions.
    *
    * This is the only equality-bearing instance of the type. Two instructions are equal when
    * every field is equal, which is the equality of the data they hold and nothing else; there
-   * is no ordering, because the type being ported was not comparable and no order over
-   * instructions has a meaning of its own.
+   * is no ordering, because no order over instructions has a meaning of its own.
    *
    * @return the hashing of instructions, which is also their equality
    */
@@ -993,10 +1049,9 @@ object SequenceDate {
   /**
    * The rendering of instructions as text.
    *
-   * Renders what [[SequenceDate.toString]] renders, which reproduces the rendering of the type
-   * being ported field for field: all four fields, always, in declaration order, an absent
-   * optional field carrying the `AbsentFieldMarker` text that type printed for one, which the
-   * examples below stand in for as `[absent]`:
+   * Renders what [[SequenceDate.toString]] renders, field for field: all four fields, always,
+   * in declaration order, an absent optional field carrying the `AbsentFieldMarker` text, which
+   * the examples below stand in for as `[absent]`:
    *
    * {{{
    * SequenceDate{yearMonth=[absent], minimumPeriod=P3M, sequenceNumber=2, fullSequence=true}
@@ -1011,7 +1066,6 @@ object SequenceDate {
    */
   implicit val show: Show[SequenceDate] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The JSON encoder for instructions.
    *
@@ -1030,10 +1084,11 @@ object SequenceDate {
    * taken apart into those fields and the derived encoder writes them, which is the exact
    * counterpart of the decoder below reading them and handing them to the factory. Deriving the
    * field set instead of listing it is what keeps the written document and the product in step -
-   * a field added to the type is a field the compiler makes appear here.
+   * a field added to the product appears in the document without anything here being changed.
    *
    * The derived encoder is then wrapped so that a field holding nothing is dropped from the
-   * output rather than written as explicitly empty, as every product encoding of this port is.
+   * output rather than written as explicitly empty, as every product encoding of this library
+   * is.
    *
    * @return the encoder writing an instruction as an object of the fields it carries
    */

@@ -82,81 +82,19 @@ import StubConvention.SMART_FINAL
 import StubConvention.SMART_INITIAL
 
 /**
- * Test [[PeriodicSchedule]], ported from the Java `PeriodicScheduleTest`.
+ * Test [[PeriodicSchedule]]: the validation of a schedule definition, the dates and schedules it
+ * generates, the replacement of its start date, and its equality, text and JSON codec.
  *
- * This is a one-to-one port of the richest behavioural table in the module. The Java class
- * declares thirty-nine annotated methods - thirty-one plain and eight parameterised over just two
- * providers, `data_generation` seven times and `data_replace` once - and this file declares
- * '''thirty-nine''' tests, each keeping the Java method name verbatim and appearing in the Java
- * order. Every parameterised method is '''one''' test that drives its whole table inside itself
- * rather than one test per row, because the acceptance gate joins
- * `manifest/java-test-mapping.csv` to `target/test-reports/TEST-*.xml` on the suite class and the
- * test name, so the roster of names has to be closed and exact (AAP §0.10.1).
- *
- * Both providers are transcribed '''verbatim''': `data_generation` keeps all eighty-seven rows and
- * its twelve columns in the Java order, `data_replace` all eleven rows and its fourteen columns,
- * with the Java comments that group them. Each column the Java table left as a missing
- * reference is an `Option` here, and `list(...)` is the test kit's own list builder, so a row
- * reads as it read in Java.
- *
- * ===How the shape of the port changes the assertions===
- *
- *   - '''The bean builder has no target.''' Every Java body began with
- *     `PeriodicSchedule.builder()…build()`, which threw on a broken invariant. Construction
- *     here is through the four factories of the companion, all of which answer
- *     `EitherNec[Failure, PeriodicSchedule]`, so each Java builder block becomes one call to
- *     the local [[definition]] helper - the eleven properties with the seven optional ones
- *     defaulting to `None` - and the result is unwrapped by [[valid]].
- *   - '''Schedule creation reports failure as a value.''' `createSchedule`,
- *     `createUnadjustedDates` and `createAdjustedDates` return `Either[Failure, …]`, and
- *     `replaceStartDate` returns `EitherNec`. Every Java `ScheduleException` is a
- *     `Left(Failure.Invalid)` carrying the rejected definition under the `definition` attribute -
- *     which is what the exception carried as a field - so each of the failure tests goes through
- *     [[generationFailure]], which asserts the reason '''and''' that attribute rather than the
- *     reason alone (Rule 5). No test in this file asserts a raised exception, and no test writes
- *     `null`.
- *   - '''Reference data is threaded explicitly.''' `test_monthly_schedule` asserts both forms of
- *     schedule creation - the direct `createSchedule(refData)` and the `toReader` reader that
- *     awaits its reference data - and that the two agree on every row of the table (AAP §0.6.5).
- *   - '''Java's null-argument tests have no counterpart.''' `test_of_LocalDateEom_null` and
- *     `test_of_LocalDateRoll_null` keep their names and assert the validation the factories
- *     actually perform, for the reason given on each.
- *   - '''Three Java tests extended a type that is now sealed.''' `HolidayCalendar`,
- *     `BusinessDayConvention` and `RollConvention` are closed families (Rule 4), so the anonymous
- *     subclasses of `test_combinePeriodsWhenNecessary_1w_createSchedule`,
- *     `test_brokenWhenAdjusted_twoPeriods_createSchedule` and
- *     `test_emptyWhenAdjusted_badRoll_createUnadjustedDates` cannot be written here at all. Each of
- *     those three tests carries a comment naming the substitution it uses instead and why.
- *   - '''`getFrequency` split in two.''' `Schedule` implements the schedule information interface,
- *     whose `frequency` is an `Option`, so the plainly typed property the Java getter returned is
- *     [[Schedule.periodicFrequency]] and that is what the ported assertions read.
- *   - '''The reflective helpers have no target.''' `coverImmutableBean` and `assertSerialization`
- *     do not exist in this port's test kit, so `coverage`, `coverage_builder` and
- *     `test_serialization` assert what those helpers stood for: the properties of two distinct
- *     definitions, the typeclass instances, construction through the factory and the `with*`
- *     copies, and a circe round trip. Joda-Beans wire compatibility is out of scope
- *     (AAP §0.2.2).
- *
- * ===The four tests that have no Java counterpart===
- *
- * Beyond the thirty-nine ported tests this file declares '''four''' of its own, at the end, each
- * stating something the ported implementation did not do and therefore had no method to test:
- * `test_generation_boundedPeriodCount` (generation stops exactly at the documented period ceiling,
- * and a span provably beyond it is refused before anything is materialised, while every span the
- * generation accepts is refused by nothing),
- * `test_generation_datesOutsideSupportedRange` (roll arithmetic at the edges of `LocalDate` is
- * reported rather than raised), `test_interiorAdjustmentResolvedOnce` (the business day adjustment
- * is resolved once per generation, and only where there is an interior date to adjust) and
- * `test_invalidPeriod_branchOrder` (the failure a schedule of invalid periods reports is chosen in
- * the Java order, and duplicate-date messages render their date lists as Java's message formatter
- * did). They are additions, not replacements: no ported test is weakened by them, and the
- * traceability join the acceptance gate performs runs from a manifest row to a test case, so a
- * test case that no row names costs nothing.
- *
- * Numerical parity with the Java implementation is '''not''' this file's job: the sibling
- * `parity/ScheduleParitySpec` asserts it against `schedule-baseline.json`, whose inputs are drawn
- * from these same two providers. Neither spec is weakened on the assumption that the other covers
- * it - this one asserts exact behaviour, that one asserts parity.
+ * Three conventions hold throughout the file. Definitions are built through the factories of the
+ * companion, which validate the eleven properties and answer
+ * `EitherNec[Failure, PeriodicSchedule]`, so a case that wants the value passes the result to
+ * [[valid]] and names only the properties it cares about through the local [[definition]] helper.
+ * Generation failures are values: `createSchedule`, `createUnadjustedDates` and
+ * `createAdjustedDates` answer `Left(Failure.Invalid)` carrying the rejected definition under the
+ * `definition` attribute, and [[generationFailure]] asserts the reason together with that
+ * attribute. `Schedule` also implements `ScheduleInfo`, whose `frequency` is `Option`-valued, so
+ * the plainly typed frequency of a created schedule is [[Schedule.periodicFrequency]] and that is
+ * what the assertions read.
  */
 class PeriodicScheduleSpec
     extends AnyFunSuite
@@ -165,7 +103,6 @@ class PeriodicScheduleSpec
     with ResultMatchers {
 
   //-------------------------------------------------------------------------
-  // The fixtures of the Java test class, unchanged.
   private val REF_DATA: ReferenceData = ReferenceData.standard
   private val ROLL_NONE: RollConvention = RollConventions.NONE
   private val STUB_NONE: StubConvention = StubConvention.NONE
@@ -212,12 +149,11 @@ class PeriodicScheduleSpec
 
   //-------------------------------------------------------------------------
   /**
-   * Builds a definition from the eleven properties, which is what the Java bean builder did.
+   * Builds a definition from the eleven properties of a schedule.
    *
-   * The seven optional properties default to absent, so a body that declared none of them names
-   * four arguments, exactly as the Java builder blocks that set only four properties did. The
-   * result is '''not''' unwrapped: the order invariants are part of what several tests assert, and
-   * a caller that wants the value passes the result to [[valid]].
+   * The seven optional properties default to absent, so a case names only the properties it cares
+   * about. The result is not unwrapped: the order invariants the factory enforces are part of what
+   * several tests assert, and a caller that wants the value passes the result to [[valid]].
    *
    * @param startDate  the unadjusted start date of the schedule
    * @param endDate  the unadjusted end date of the schedule
@@ -258,10 +194,11 @@ class PeriodicScheduleSpec
       overrideStartDate)
 
   /**
-   * The four-date helper of the Java test class, which `test_builder_invalidDateOrder` drives.
+   * Builds a monthly definition from the four dates that order validation compares.
    *
-   * It answers the result rather than the value, because that test asserts the rejection of six of
-   * its seven cases and the acceptance of the seventh.
+   * It answers the result rather than the value, because `test_builder_invalidDateOrder` - the one
+   * test that drives it - asserts the rejection of six of its seven cases and the acceptance of
+   * the seventh.
    *
    * @param start  the unadjusted start date of the schedule
    * @param end  the unadjusted end date of the schedule
@@ -304,9 +241,9 @@ class PeriodicScheduleSpec
   /**
    * Unwraps a frequency built by the validating factory, failing the test if it was rejected.
    *
-   * The Java table wrote `Frequency.ofDays(2)` and `Frequency.ofYears(2)` inline; both factories
-   * answer a result here, because a non-positive or over-long period names no frequency, so the
-   * table wraps them in this helper.
+   * `Frequency.ofDays` and `Frequency.ofYears` answer a result, because a non-positive or
+   * over-long period names no frequency, so the rows and cases that build one wrap it in this
+   * helper.
    *
    * @param result  the result of the factory
    * @return the frequency the factory built
@@ -360,13 +297,11 @@ class PeriodicScheduleSpec
       value => fail(s"Expected a rejection but a definition was produced: $value"))
 
   /**
-   * Asserts that a schedule operation failed as the ported exception did, and returns the failure.
+   * Asserts that a schedule operation reported an invalid definition, and returns the failure.
    *
-   * The `ScheduleException` of the library being ported has no counterpart type: it is a
-   * `Failure.Invalid` whose message is the ported message and whose `definition` attribute holds
-   * the definition the exception carried as a field. Both halves are asserted here, so every
-   * failure test of this file states that the rejected definition is reported and not merely that
-   * something was rejected (Rule 5).
+   * A generation failure is a `Failure.Invalid` whose `definition` attribute holds the definition
+   * that was rejected. Both halves are asserted here, so every failure test of this file states
+   * which definition was reported and not merely that something was rejected.
    *
    * @param result  the result of the operation
    * @param definition  the definition the operation was performed on
@@ -404,20 +339,12 @@ class PeriodicScheduleSpec
 
   //-------------------------------------------------------------------------
   /**
-   * The schedule definitions and the dates they generate, transcribed verbatim from the Java
-   * provider of the same name, with its comments.
+   * The schedule definitions and the dates they generate, ending in the roll convention the
+   * resulting schedule is expected to carry.
    *
-   * All eighty-seven rows are present and the twelve columns keep the Java order: the start and
-   * end dates, the frequency, the stub convention, the roll convention, the business day
-   * adjustment, the first regular start date, the last regular end date, the start date's own
-   * business day adjustment, the unadjusted dates, the adjusted dates, and the roll convention the
-   * resulting schedule is expected to carry. The five columns the Java table left as a missing
-   * reference - the two conventions, the two regular dates and the start date's adjustment - are
-   * `Option`s.
-   *
-   * Seven of this file's tests drive this one table, which is why it is a `val` and not a method:
-   * the Java provider was re-invoked per parameterised method, and building the rows once instead
-   * changes nothing about them, every value in them being immutable.
+   * The columns are named by the header row, and an `Option` column states a property the
+   * definition leaves unset. The rows are grouped by the feature they exercise. Several tests
+   * drive this table, and it is a `val` because every value in it is immutable.
    */
   private val data_generation: TableFor12[
       LocalDate,
@@ -813,7 +740,7 @@ class PeriodicScheduleSpec
       list(date(2014, 9, 17), date(2014, 10, 15)),
       list(date(2014, 9, 17), date(2014, 10, 15)),
       IMM),
-    // IMM with stupid short period still works
+    // IMM with a very short period still works
     (date(2014, 9, 17), date(2014, 10, 15), freq(Frequency.ofDays(2)), Some(STUB_NONE), Some(IMM),
       BDA, None, None, None,
       list(date(2014, 9, 17), date(2014, 10, 15)),
@@ -939,13 +866,9 @@ class PeriodicScheduleSpec
   }
 
   test("test_of_LocalDateEom_null") {
-    // The Java case passed `null` for each of the five arguments in turn and asserted that the
-    // factory refused it. That has no counterpart: this port states absence with `Option` and
-    // never writes `null` (Rule 5), and the three convention-typed arguments of this factory are
-    // values of closed families, so no absent one can be offered. What the factory does decide is
-    // whether the dates it is given describe a schedule, and that is what the name now asserts -
-    // the two rejections the Java builder would also have made, reported as failures rather than
-    // raised, each naming the properties it compared.
+    // What this factory validates is whether the dates it is given describe a schedule: equal
+    // dates and reversed dates are both rejected, and the failure names the two properties it
+    // compared.
     val sameDates: ResultNec[PeriodicSchedule] =
       PeriodicSchedule.of(SEP_17, SEP_17, P1M, BDA, SHORT_INITIAL, false)
     sameDates should beFailureWith(FailureReason.INVALID)
@@ -1021,11 +944,10 @@ class PeriodicScheduleSpec
   }
 
   test("test_of_LocalDateRoll_null") {
-    // As `test_of_LocalDateEom_null`: the six null arguments the Java case passed cannot be
-    // written here, so the name asserts the validation this overload performs instead. The roll
-    // convention is carried into the definition without being checked against the dates - that is
-    // schedule creation's decision, which `test_backwards_badStub` and `test_forwards_badStub`
-    // assert - so the rejections are again the order of the dates.
+    // The roll convention this overload takes is carried into the definition without being checked
+    // against the dates - that is schedule creation's decision, which `test_backwards_badStub` and
+    // `test_forwards_badStub` assert - so this factory, like the one above, rejects on the order
+    // of the dates.
     val sameDates: ResultNec[PeriodicSchedule] =
       PeriodicSchedule.of(SEP_17, SEP_17, P1M, BDA, SHORT_INITIAL, DAY_17)
     sameDates should beFailureWith(FailureReason.INVALID)
@@ -1035,8 +957,6 @@ class PeriodicScheduleSpec
     reversedDates should beFailureWith(FailureReason.INVALID)
     failuresOf(reversedDates) should have size 1
 
-    // The roll convention this overload declares is retained, so the refusals above are about the
-    // dates and nothing else.
     valid(PeriodicSchedule.of(JUN_04, SEP_17, P1M, BDA, SHORT_INITIAL, DAY_17)).rollConvention
       .shouldBe(Some(DAY_17))
   }
@@ -1065,9 +985,9 @@ class PeriodicScheduleSpec
       overrideStartDate = Some(AdjustableDate.of(AUG_04))) should
       beFailureWith(FailureReason.INVALID)
 
-    // The validating factory accumulates rather than stopping at the first broken invariant, which
-    // the raising validator being ported could not do: dates that break several are reported
-    // together, every one of them an `Invalid` naming the two properties it compared.
+    // The factory accumulates rather than stopping at the first broken invariant: dates that break
+    // several are reported together, every one of them an `Invalid` naming the two properties it
+    // compared.
     val several: List[Failure] = failuresOf(createDates(SEP_17, JUN_04, Some(SEP_05), Some(SEP_04)))
     several.size should be > 1
     several.map(failure => failure.reason).distinct shouldBe List(FailureReason.INVALID)
@@ -1129,10 +1049,9 @@ class PeriodicScheduleSpec
           test.periodicFrequency shouldBe freq
           test.rollConvention shouldBe expRoll
 
-          // Reference data is threaded explicitly (AAP §0.6.5), and this type offers both forms of
-          // that threading: the direct call above and the reader that awaits its data, which a
-          // caller composes with other reference-data operations and supplies the data to once.
-          // The two agree on every row of the table.
+          // Reference data is threaded explicitly, in either of two forms: the direct call above,
+          // and the reader that awaits its data, which a caller composes with other
+          // reference-data operations and supplies the data to once.
           defn.toReader.run(REF_DATA) shouldBe defn.createSchedule(REF_DATA)
           defn.toReader.run(REF_DATA) shouldBe Right(test)
         }
@@ -1218,7 +1137,9 @@ class PeriodicScheduleSpec
             lastRegularEndDate = lastReg))
         withClue(s"$defn: ") {
           dates(defn.createUnadjustedDates(REF_DATA)) shouldBe unadjusted
-          // createUnadjustedDates() does not work as expected without ReferenceData
+          // The no-argument overload cannot recover a pre-adjusted start date, which needs the
+          // holiday calendars, so it generates the table's dates only on the rows that ask for no
+          // such recovery: no start date adjustment and no 'EOM' roll convention.
           if (startBusDayAdjustment.isEmpty && !rollConv.contains(EOM)) {
             dates(defn.createUnadjustedDates()) shouldBe unadjusted
           }
@@ -1258,7 +1179,8 @@ class PeriodicScheduleSpec
           val test: List[LocalDate] = dates(defn.createUnadjustedDates(REF_DATA))
           test.head shouldBe date(2011, 1, 9)
           test.drop(1) shouldBe unadjusted.slice(1, test.size)
-          // createUnadjustedDates() does not work as expected without ReferenceData
+          // As above, the no-argument overload is compared with the table only on the rows that
+          // need no recovery of a pre-adjusted start date.
           if (startBusDayAdjustment.isEmpty && !rollConv.contains(EOM)) {
             val testNoRefData: List[LocalDate] = dates(defn.createUnadjustedDates())
             testNoRefData.head shouldBe date(2011, 1, 9)
@@ -1420,14 +1342,13 @@ class PeriodicScheduleSpec
 
   //-------------------------------------------------------------------------
   /**
-   * The definitions whose start date is replaced and what the replacement holds, transcribed
-   * verbatim from the Java provider of the same name, with its comments.
+   * The definitions whose start date is replaced and what the replacement holds: the replacement
+   * start date, then the properties of the definition it is applied to, then the unadjusted dates
+   * the replacement generates and the stub convention, last regular end date and roll convention
+   * it is expected to carry.
    *
-   * All eleven rows are present and the fourteen columns keep the Java order: the replacement
-   * start date, then the ten properties of the definition it is applied to, then the unadjusted
-   * dates the replacement generates - absent where the replacement is expected to be refused - and
-   * the stub convention, last regular end date and roll convention the replacement is expected to
-   * carry.
+   * The unadjusted dates are absent on the one row where the replacement is expected to be
+   * refused.
    */
   private val data_replace: TableFor14[
       LocalDate,
@@ -1544,10 +1465,9 @@ class PeriodicScheduleSpec
         withClue(s"$base replaced with $replaceStart: ") {
           unadjusted match {
             case None =>
-              // The row that cannot set the start after the end. The Java case asserted a raised
-              // `IllegalArgumentException` from the replacement followed by schedule creation;
-              // here the replacement itself reports the refusal as a value, so the whole
-              // expression - the replacement and the creation it feeds - is a `Left` (Rule 5).
+              // The row that cannot set the start after the end. The replacement itself reports
+              // the refusal as a value, so the whole expression - the replacement and the creation
+              // it feeds - is a `Left` carrying the definition that was replaced.
               val replaced: ResultNec[Schedule] = base
                 .replaceStartDate(replaceStart)
                 .flatMap(defn =>
@@ -1735,14 +1655,11 @@ class PeriodicScheduleSpec
   }
 
   test("test_combinePeriodsWhenNecessary_1w_createSchedule") {
-    // Rule 4 substitution. The Java case built an anonymous `HolidayCalendar` whose holidays were
-    // the weekend plus the first eight days of October 2020, under the identifier "calendar".
-    // `HolidayCalendar` is a closed family here, so no subtype can be declared outside its file
-    // and that anonymous class cannot be written at all. The faithful substitute is the built-in
-    // immutable calendar carrying exactly those holidays: its year range is derived from them, so
-    // it covers the whole of 2020, and outside that range it falls back to the weekend - which is
-    // precisely what the anonymous class did for every date, the definition below lying entirely
-    // within 2020.
+    // The calendar this case needs treats the weekend plus the first eight days of October 2020 as
+    // holidays. It is constructed here as an `ImmutableHolidayCalendar` carrying those holidays and
+    // supplied to generation through `ImmutableReferenceData`: its year range is derived from its
+    // holidays, so it covers the whole of 2020, and outside that range only the weekend applies.
+    // The definition below lies entirely within 2020.
     val id: HolidayCalendarId = HolidayCalendarId.of("calendar")
     val calendar: ImmutableHolidayCalendar = ImmutableHolidayCalendar.of(
       id,
@@ -1773,10 +1690,9 @@ class PeriodicScheduleSpec
   }
 
   test("test_combinePeriodsWhenNecessary_1d_createSchedule_duplicate_exception") {
-    // Despite the Java method name this is a success case: combining is requested, so the runs of
+    // Combining is requested here, so despite the name this is a success case: the runs of
     // coincident adjusted dates that a daily frequency produces over weekends are merged into one
-    // boundary instead of being reported as a failure. The name is kept verbatim because the
-    // acceptance gate joins on it.
+    // boundary instead of being reported as a failure.
     val id: HolidayCalendarId = SAT_SUN
     val calendar = HolidayCalendars.SAT_SUN
 
@@ -1867,18 +1783,13 @@ class PeriodicScheduleSpec
   }
 
   test("test_brokenWhenAdjusted_twoPeriods_createSchedule") {
-    // Rule 4 substitution. The Java case declared an anonymous `BusinessDayConvention`
-    // ("TestBack3OnSun", moving a Sunday back three days) so that the adjusted dates came out
-    // unsorted while remaining distinct, and asserted the message
-    // "Schedule calculation resulted in invalid period". `BusinessDayConvention` is a closed
-    // seven-member family here, so that anonymous class cannot be written; the proof of the
-    // sealing is below. The same failure is reached with two real conventions instead: the
-    // unadjusted dates straddle a weekend (Wed 27th, Sat 30th, Sun 31st of May 2015), the
-    // schedule's own adjustment moves the interior Saturday forwards to Mon 1st June, and the end
-    // date's own adjustment moves the final Sunday backwards to Fri 29th May. The adjusted dates
-    // are therefore Wed 27th, Mon 1st, Fri 29th - out of order and with no duplicate, which is
-    // exactly the state the anonymous convention produced, so the general message is reported
-    // rather than the duplicate-dates one.
+    // The case under test is adjusted dates that come out unsorted while remaining distinct, which
+    // two of the standard conventions produce between them: the unadjusted dates straddle a
+    // weekend (Wed 27th, Sat 30th, Sun 31st of May 2015), the schedule's own adjustment moves the
+    // interior Saturday forwards to Mon 1st June, and the end date's own adjustment moves the
+    // final Sunday backwards to Fri 29th May. The adjusted dates are therefore Wed 27th, Mon 1st,
+    // Fri 29th - out of order and with no duplicate - so the general invalid-period message is
+    // reported rather than the duplicate-dates one.
     val defn: PeriodicSchedule = valid(
       definition(
         date(2015, 5, 27),
@@ -1891,8 +1802,6 @@ class PeriodicScheduleSpec
         firstRegularStartDate = None,
         lastRegularEndDate = None))
 
-    // The unadjusted dates are sorted and distinct; the adjusted ones are neither in order nor
-    // duplicated, which is what the case is about.
     dates(defn.createUnadjustedDates()) shouldBe
       list(date(2015, 5, 27), date(2015, 5, 30), date(2015, 5, 31))
     dates(defn.createAdjustedDates(REF_DATA)) shouldBe
@@ -1902,8 +1811,8 @@ class PeriodicScheduleSpec
     generationFailure(result, defn).message shouldBe
       "Schedule calculation resulted in invalid period"
 
-    // The sealing itself: no business day convention can be declared outside the file that
-    // declares the family, which is why the Java anonymous convention has no counterpart.
+    // `BusinessDayConvention` is a closed family: no convention can be declared outside the file
+    // that declares the family, so the seven standard members are the whole of it.
     assertDoesNotCompile(
       """object TestBack3OnSun extends com.opengamma.strata.basics.date.BusinessDayConvention {
            def adjust(
@@ -1913,25 +1822,21 @@ class PeriodicScheduleSpec
   }
 
   test("test_emptyWhenAdjusted_badRoll_createUnadjustedDates") {
-    // Rule 3 and Rule 4 substitution, and the one Java case whose scenario is unreachable by
-    // construction rather than merely inexpressible. The Java case declared an anonymous
-    // `RollConvention` holding a mutable `seen` flag, so that its first `next` answered the date
-    // it was given and the schedule came out with duplicate unadjusted dates. Neither half of
-    // that can exist here: the family is closed (Rule 4), so no subtype can be declared outside
-    // its file, and nothing in this port carries mutable state (Rule 3).
+    // A roll convention that answered the date it was given would make generation produce
+    // duplicate unadjusted dates. `RollConvention` is a closed family whose constructor is not
+    // public, so neither a subtype declared outside the family's file nor a direct construction
+    // compiles.
     assertDoesNotCompile(
       """object TestRoll extends RollConvention("Test") {
            def adjust(date: LocalDate): LocalDate = date
          }""")
     assertDoesNotCompile("""RollConvention("Test")""")
 
-    // Beyond being undeclarable, the behaviour the anonymous convention faked cannot arise from
-    // any of the real conventions: `next` and `previous` each answer a date strictly after or
-    // strictly before the one they are given, correcting by a month where adding or subtracting
-    // the frequency would not move past it. The closest real analogue of the Java scenario is the
-    // IMM convention rolled with a frequency far shorter than a month - the very configuration the
-    // generation table covers - where every rolled date would otherwise land back on the same
-    // third Wednesday. It yields strictly increasing dates and a schedule, not duplicates.
+    // No member of the family behaves that way either: `next` and `previous` each answer a date
+    // strictly after or strictly before the one they are given, correcting by a month where adding
+    // or subtracting the frequency would not move past it. The tightest case is the IMM convention
+    // rolled with a frequency far shorter than a month, where every rolled date would otherwise
+    // land back on the same third Wednesday; it yields strictly increasing dates and a schedule.
     val shortRoll: PeriodicSchedule = valid(
       definition(
         date(2014, 9, 17),
@@ -1969,10 +1874,10 @@ class PeriodicScheduleSpec
           _: List[LocalDate],
           _: List[LocalDate],
           _: RollConvention) =>
-        // The thirteen variants of the Java case, each differing from the first in one property.
-        // Note that `LocalDate.MIN` and `LocalDate.MAX` are accepted rather than rejected: the
-        // factory decides the order of the dates and nothing about their magnitude, so both
-        // variants are values and the assertion is the inequality, as in Java.
+        // Each variant below differs from the row's own definition in exactly one property.
+        // `LocalDate.MIN` and `LocalDate.MAX` are accepted rather than rejected: the factory
+        // decides the order of the dates and nothing about their magnitude, so both variants are
+        // values and what is asserted of them is the inequality.
         val a1: PeriodicSchedule = valid(
           definition(
             start,
@@ -2132,10 +2037,9 @@ class PeriodicScheduleSpec
   }
 
   test("coverage_builder") {
-    // The bean builder has no target, so the eleven properties the Java case set are set through
-    // the full-field factory, and the same value is reached again through the `with*` copies that
-    // replace the builder - each of which re-validates, so no sequence of them can arrive at a
-    // definition the factory would have refused.
+    // All eleven properties are set through the full-field factory, and the same value is reached
+    // again by chaining the `with*` copies, each of which re-validates - so a copy that breaks an
+    // invariant is refused rather than built.
     val test: PeriodicSchedule = valid(
       definition(
         JUL_17,
@@ -2165,17 +2069,11 @@ class PeriodicScheduleSpec
       .flatMap(defn => defn.withOverrideStartDate(Some(AdjustableDate.of(JUL_11))))
     valid(chained) shouldBe test
 
-    // A `with*` copy that breaks an invariant is refused rather than built, which is the builder
-    // behaviour this replaces.
     test.withEndDate(JUN_04) should beFailureWith(FailureReason.INVALID)
   }
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // `coverImmutableBean` walked the bean's meta-properties reflectively. There is no meta-bean
-    // to walk, so the ground it covered is asserted directly: the properties of two distinct
-    // definitions and the instances the companion publishes in place of the bean's equality,
-    // hashing and generated text.
     val bda: BusinessDayAdjustment = BusinessDayAdjustment.of(FOLLOWING, SAT_SUN)
     val defn: PeriodicSchedule = valid(
       PeriodicSchedule.of(
@@ -2214,12 +2112,10 @@ class PeriodicScheduleSpec
   }
 
   test("test_serialization") {
-    // `assertSerialization` checked Java serialization, which this port does not support, and
-    // Joda-Beans wire compatibility is out of scope (AAP §0.2.2). The replacement is the circe
-    // round trip through the compile-time derived product codec: the keys are the Java property
-    // names in declaration order, an absent optional property is omitted from the object rather
-    // than written with an empty value, and a payload whose dates are out of order is rejected by
-    // the validating decoder instead of being carried into a value.
+    // The codec contract of this type: the keys are the property names in declaration order, an
+    // absent optional property is omitted from the object rather than written with an empty value,
+    // and a payload whose dates are out of order is rejected by the validating decoder instead of
+    // being carried into a value.
     val bda: BusinessDayAdjustment = BusinessDayAdjustment.of(FOLLOWING, SAT_SUN)
     val defn: PeriodicSchedule = valid(
       PeriodicSchedule.of(
@@ -2295,11 +2191,6 @@ class PeriodicScheduleSpec
   }
 
   //-------------------------------------------------------------------------
-  // The four tests below have no counterpart in the Java test class, for the reason given in the
-  // scaladoc of this spec: each states a containment or an ordering that the ported implementation
-  // did not have, so there was no Java method to port. They are named in this file's style and are
-  // not part of the traceability roster, which runs from a manifest row to a test case.
-
   test("test_generation_boundedPeriodCount") {
     // A definition asks for as many periods as its dates and frequency imply, and both are chosen
     // by the caller, so generation is bounded: a daily frequency over a span wider than the
@@ -2404,7 +2295,7 @@ class PeriodicScheduleSpec
     // The roll arithmetic of a generation is total over almost the whole of `LocalDate` and fails
     // within one frequency of its two extremes, where `java.time` raises. That is a failure of the
     // data of a definition, so it is reported through the channel every other generation failure
-    // uses (AAP §0.3.3) rather than raised out of a member that answers with `Either`.
+    // uses rather than raised out of a member that answers with `Either`.
     val backwards: PeriodicSchedule = valid(
       definition(
         LocalDate.MIN,
@@ -2462,35 +2353,34 @@ class PeriodicScheduleSpec
       "Date '2014-11-28' does not match roll convention 'Day30' when starting to roll forwards"
     dates(defn.createUnadjustedDates(REF_DATA)) shouldBe
       list(NOV_30, date(2014, 12, 30), date(2015, 1, 30), date(2015, 2, 1))
-    // The duplicate-date message names its two lists exactly as the ported message formatter did,
-    // between square brackets - `[2014-11-28, ...]` - and not as a Scala `List(...)`, so a caller
-    // matching on the text of a rejected schedule reads what it always read.
+    // The duplicate-date message renders its two date lists between square brackets -
+    // `[2014-11-28, ...]` - and not as a Scala `List(...)`, which is the form a caller matching on
+    // the text of a rejected schedule reads.
     generationFailure(defn.createAdjustedDates(REF_DATA), defn).message shouldBe
       "Schedule calculation resulted in duplicate adjusted dates " +
         "[2014-11-28, 2014-12-30, 2015-01-30, 2015-01-30] from unadjusted dates " +
         "[2014-11-30, 2014-12-30, 2015-01-30, 2015-02-01] using adjustment " +
         s"'$BDA'"
 
-    // Schedule creation therefore cannot build its periods, and the failure it reports is the
-    // first of those two - the no-argument one - which is the order the ported implementation
-    // reported in [PeriodicSchedule.java:466-473]. Reporting on the reference-data-derived lists
-    // instead would answer with the duplicate-adjusted-dates message asserted above.
+    // Schedule creation therefore cannot build its periods, and of those two failures it reports
+    // the first - the no-argument one. Reporting on the reference-data-derived lists instead would
+    // answer with the duplicate-adjusted-dates message asserted above.
     generationFailure(defn.createSchedule(REF_DATA), defn).message shouldBe
       "Date '2014-11-28' does not match roll convention 'Day30' when starting to roll forwards"
 
     // Asking for coincident boundaries to be combined removes the reason the branch was reached at
-    // all, so this definition then produces a schedule of two periods. The branch is reported on
-    // only where the periods really cannot be built, which is the behaviour of the ported form.
+    // all, so this definition then produces a schedule of two periods: the failure is reported
+    // only where the periods really cannot be built.
     sched(defn.createSchedule(REF_DATA, true)).size shouldBe 2
   }
 
-  test("test_interiorAdjustmentResolvedOnce") {
-    // The interior dates take `businessDayAdjustment`, and it is resolved to an adjuster once per
-    // generation rather than per date. The observable half of that change is when the resolution
-    // happens: a schedule with no interior date puts nothing through the adjustment - the ported
-    // loop ran from the second date to the second-to-last, so it had no iterations - and must
-    // therefore still produce its schedule when that adjustment names a calendar the supplied
-    // reference data does not hold.
+  test("test_interiorAdjustmentResolvedOnlyWhenNeeded") {
+    // Each end of a schedule takes its own adjustment where it declares one, and every interior
+    // date - the second to the second-to-last - takes `businessDayAdjustment`. Generation
+    // therefore resolves that adjustment against the reference data only where there is an interior
+    // date to adjust: the two-date definition below, whose ends both declare their own adjustment,
+    // still generates when `businessDayAdjustment` names a calendar the supplied reference data
+    // does not hold.
     val missing: HolidayCalendarId = HolidayCalendarId.of("NotSupplied")
     val onlySatSun: ReferenceData = ImmutableReferenceData.of(SAT_SUN, HolidayCalendars.SAT_SUN)
 
@@ -2509,7 +2399,7 @@ class PeriodicScheduleSpec
     sched(twoDates.createSchedule(onlySatSun)).size shouldBe 1
 
     // With an interior date the adjustment is resolved, so the same missing calendar is reported -
-    // the laziness above is about there being nothing to adjust, not about the adjustment being
+    // the case above is about there being nothing to adjust, not about the adjustment being
     // skipped.
     val threeDates: PeriodicSchedule = valid(
       definition(
@@ -2524,9 +2414,9 @@ class PeriodicScheduleSpec
     threeDates.createAdjustedDates(onlySatSun) should beFailureWith(FailureReason.MISSING_DATA)
     threeDates.createSchedule(onlySatSun) should beFailureWith(FailureReason.MISSING_DATA)
 
-    // And where the calendar is supplied, the interior dates really are adjusted by it: the 17th
-    // of August 2014 is a Sunday, which 'ModifiedFollowing' moves forwards to the Monday, while
-    // the two ends keep their own adjustments.
+    // And where the calendar is supplied, the interior date really is adjusted by it: the 17th of
+    // August 2014 is a Sunday, which 'ModifiedFollowing' moves forwards to the Monday, while the
+    // two ends are business days already and come out unchanged.
     val resolvable: PeriodicSchedule = valid(
       definition(
         JUL_17,

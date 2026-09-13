@@ -336,7 +336,7 @@ object DoubleArrayMath {
    * @param array1  the first array
    * @param array2  the second array
    * @return an array combining the two input arrays using the plus operator
-   * @throws IllegalArgumentException if the arrays differ in length
+   * @throws java.lang.IllegalArgumentException if the arrays differ in length
    */
   def combineByAddition(array1: Array[Double], array2: Array[Double]): Array[Double] =
     combine(array1, array2, (a, b) => a + b)
@@ -359,7 +359,7 @@ object DoubleArrayMath {
    * @param array1  the first array
    * @param array2  the second array
    * @return an array combining the two input arrays using the multiply operator
-   * @throws IllegalArgumentException if the arrays differ in length
+   * @throws java.lang.IllegalArgumentException if the arrays differ in length
    */
   def combineByMultiplication(array1: Array[Double], array2: Array[Double]): Array[Double] =
     combine(array1, array2, (a, b) => a * b)
@@ -378,7 +378,7 @@ object DoubleArrayMath {
    * @param array2  the second array
    * @param operator  the operator to use when combining values
    * @return an array combining the two input arrays using the operator
-   * @throws IllegalArgumentException if the arrays differ in length
+   * @throws java.lang.IllegalArgumentException if the arrays differ in length
    */
   def combine(
       array1: Array[Double],
@@ -488,7 +488,7 @@ object DoubleArrayMath {
    * @param b  the second value
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if the two values are effectively equal
-   * @throws IllegalArgumentException if the tolerance is negative or is not a number
+   * @throws java.lang.IllegalArgumentException if the tolerance is negative or is not a number
    */
   def fuzzyEquals(a: Double, b: Double, tolerance: Double): Boolean = {
     ArgCheck.notNaN(tolerance, "tolerance")
@@ -522,7 +522,7 @@ object DoubleArrayMath {
    * @param array  the array to check
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if the array is effectively equal to zero
-   * @throws IllegalArgumentException if the tolerance is negative or is not a number
+   * @throws java.lang.IllegalArgumentException if the tolerance is negative or is not a number
    */
   def fuzzyEqualsZero(array: Array[Double], tolerance: Double): Boolean = {
     ArgCheck.notNaN(tolerance, "tolerance")
@@ -545,7 +545,7 @@ object DoubleArrayMath {
    * @param array2  the second array to check
    * @param tolerance  the tolerance to use, zero or greater
    * @return true if the arrays are effectively equal
-   * @throws IllegalArgumentException if the tolerance is negative or is not a number
+   * @throws java.lang.IllegalArgumentException if the tolerance is negative or is not a number
    */
   def fuzzyEquals(array1: Array[Double], array2: Array[Double], tolerance: Double): Boolean = {
     ArgCheck.notNaN(tolerance, "tolerance")
@@ -623,7 +623,7 @@ object DoubleArrayMath {
    * @param values  the array of values
    * @param positions  the array of positions
    * @return the reordered copy
-   * @throws IllegalArgumentException if the arrays differ in length, or if any of the
+   * @throws java.lang.IllegalArgumentException if the arrays differ in length, or if any of the
    *   positions does not correspond to an index in the values
    */
   def reorderedCopy(values: Array[Double], positions: Array[Int]): Array[Double] = {
@@ -678,7 +678,7 @@ object DoubleArrayMath {
    * @param keys  the array of keys to sort
    * @param values  the array of associated values to retain
    * @return the sorted keys and the values reordered to match
-   * @throws IllegalArgumentException if the arrays differ in length
+   * @throws java.lang.IllegalArgumentException if the arrays differ in length
    */
   def sortPairs(keys: Array[Double], values: Array[Double]): (Array[Double], Array[Double]) = {
     val order = sortedOrder(keys, values.length)
@@ -694,7 +694,7 @@ object DoubleArrayMath {
    * @param keys  the array of keys to sort
    * @param values  the array of associated values to retain
    * @return the sorted keys and the values reordered to match
-   * @throws IllegalArgumentException if the arrays differ in length
+   * @throws java.lang.IllegalArgumentException if the arrays differ in length
    */
   def sortPairs(keys: Array[Double], values: Array[Int]): (Array[Double], Array[Int]) = {
     val order = sortedOrder(keys, values.length)
@@ -714,7 +714,7 @@ object DoubleArrayMath {
    * @param keys  the array of keys to sort
    * @param values  the array of associated values to retain
    * @return the sorted keys and the values reordered to match
-   * @throws IllegalArgumentException if the arrays differ in length
+   * @throws java.lang.IllegalArgumentException if the arrays differ in length
    */
   def sortPairs[V](keys: Array[Double], values: Array[V]): (Array[Double], Array[V]) = {
     val order = sortedOrder(keys, values.length)
@@ -731,10 +731,10 @@ object DoubleArrayMath {
   // the permutation more than once.
   //
   // A merge sort is what a stable result asks for - runs are merged rather than elements
-  // exchanged, and a tie is resolved by taking from the earlier run - and it is the same
-  // O(n log n) as the quicksort of the Java original. What it costs, and where that cost has
-  // been taken out, is worth stating because the Java original sorted the caller's own arrays
-  // in place and so allocated nothing at all:
+  // exchanged, and a tie is resolved by taking from the earlier run, the comparison throughout
+  // being `java.lang.Double.compare` - and it merges in O(n log n) comparisons at worst,
+  // whatever the order the keys arrive in. What it allocates is bounded by the length of the
+  // input alone:
   //
   //   - keys already in ascending order are recognised by a single pass over them, and the
   //     identity permutation is then already the sorted one. Nothing is merged, and the merge
@@ -743,7 +743,8 @@ object DoubleArrayMath {
   //     once per pass, and the two arrays then exchange roles after every pass - each pass
   //     reading the array the pass before it wrote. That is what removes the copy back over
   //     the permutation that a fixed source and a fixed buffer would need after every pass,
-  //     which was a further full pass over the indices for each of the roughly log2(n) of them.
+  //     which would be a further full pass over the indices for each of the roughly log2(n)
+  //     of them.
   private def sortedOrder(keys: Array[Double], valuesLength: Int): Array[Int] = {
     ArgCheck.isTrue(keys.length == valuesLength, "Arrays cannot be sorted as they differ in length")
     val order = new Array[Int](keys.length)

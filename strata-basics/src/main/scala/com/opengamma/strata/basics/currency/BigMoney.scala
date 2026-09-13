@@ -20,6 +20,8 @@ import io.circe.generic.semiauto.deriveEncoder
 import com.opengamma.strata.collect.Decimal
 import com.opengamma.strata.collect.DoubleArrayMath
 import com.opengamma.strata.collect.FailureOr
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -37,12 +39,12 @@ import com.opengamma.strata.collect.result.Failure
  * ===Twelve decimal places is the invariant, and it is applied everywhere===
  *
  * Every route into this type rounds to twelve decimal places, half up: the factories, and equally
- * the arithmetic, because the implementation being ported reached its private constructor for
- * both and that constructor rounded. So a value read from text naming more digits is shortened -
- * `AUD 1.123456789012345` is `AUD 1.123456789012` - and a product, a sum or a mapped amount that
- * lands on a finer digit is shortened in the same way. The invariant that follows is worth
- * stating on its own: '''the amount of a value of this type never has more than twelve decimal
- * places''' - and it is the one property [[Money]] does not share, since money is narrower still.
+ * the arithmetic, because both reach the one private creation step and that step rounds. So a
+ * value read from text naming more digits is shortened - `AUD 1.123456789012345` is
+ * `AUD 1.123456789012` - and a product, a sum or a mapped amount that lands on a finer digit is
+ * shortened in the same way. The invariant that follows is worth stating on its own: '''the
+ * amount of a value of this type never has more than twelve decimal places''' - and it is the one
+ * property [[Money]] does not share, since money is narrower still.
  *
  * The twelve places are an upper bound rather than an exact width, because [[Decimal]] normalises
  * away a trailing fractional zero: the amount inside `RON 200.2345` is the decimal `200.2345` at
@@ -58,37 +60,33 @@ import com.opengamma.strata.collect.result.Failure
  * ===Which operations can fail===
  *
  * Adding or subtracting another value fails when the two currencies differ, because the result
- * would have no currency, and comparing two values fails for the same reason - the implementation
- * being ported refused all five of those cases. Parsing fails when the text names no value;
- * converting fails when the rate the conversion needs is unavailable, and when a rate other than
- * one is supplied for a conversion into the currency the value already has. Building a value from
- * a `Double`, a `BigDecimal` or a [[CurrencyAmount]] fails when the number is one no decimal
- * holds. Each of those depends on the values involved rather than on the calling code, so each is
- * an `Either` and none of them abandons the call stack.
+ * would have no currency, and each of the four comparison predicates fails for the same reason.
+ * Parsing fails for text that is not an amount preceded by a currency code; converting fails when
+ * the rate the conversion needs is unavailable, and when a rate other than one is supplied for a
+ * conversion into the currency the value already has. Building a value from a `Double`, a
+ * `BigDecimal` or a [[CurrencyAmount]] fails when the number is one no decimal holds. Each of
+ * those depends on the values involved rather than on the calling code, so each is an `Either`
+ * and none of them abandons the call stack.
  *
- * The arithmetic, by contrast, is total in signature, exactly as it was in the implementation
- * being ported. Its one edge belongs to [[Decimal]] rather than to this type: a result beyond
- * eighteen digits is a broken precondition and is raised by the argument checks of
- * `strata-collect`, not reported as a failure of this type. [[roundToScale]] is total for the same
- * reason and with the same caveat, described where it is declared.
+ * The arithmetic, by contrast, is total in signature. Its one edge belongs to [[Decimal]] rather
+ * than to this type: a result beyond eighteen digits is a broken precondition and is raised by the
+ * argument checks of `strata-collect`, not reported as a failure of this type. [[roundToScale]] is
+ * total for the same reason and with the same caveat, described where it is declared.
  *
  * ===Equality and ordering===
  *
- * Two values are equal when their currencies and their amounts are equal, which is the comparison
- * the implementation being ported performed. No bit-level special case is needed here - the reason
- * [[CurrencyAmount]] needs one is that it holds a `Double`, where a value that is not a number
- * would otherwise differ from itself; an amount held as a [[Decimal]] is normalised and compares
- * as a number, so the equality synthesised from the two fields is already the right one. Values
- * order by currency alphabetically and then by amount, as they did in the implementation being
- * ported, and that ordering agrees with equality: `compare` returns zero exactly when the two
- * values are equal.
+ * Two values are equal when their currencies and their amounts are equal. No bit-level special
+ * case is needed here - the reason [[CurrencyAmount]] needs one is that it holds a `Double`, where
+ * a value that is not a number would otherwise differ from itself; an amount held as a [[Decimal]]
+ * is normalised and compares as a number, so the equality synthesised from the two fields is
+ * already the right one. Values order by currency alphabetically and then by amount, and that
+ * ordering agrees with equality: `compare` returns zero exactly when the two values are equal.
  *
- * Ordering through the instance below is one thing and the five failable comparisons are another.
+ * Ordering through the instance below is one thing and the four failable comparisons are another.
  * `Order` answers for any two values, including two in different currencies, because a total order
  * is what sorting a mixed collection needs; the predicates [[isGreaterThan]] and its three
  * companions refuse a mixed pair, because asking whether one sum of money exceeds another in a
- * different currency has no answer without a rate. Both behaviours are the ones the implementation
- * being ported had, and the choice between them is the caller's.
+ * different currency has no answer without a rate. The choice between them is the caller's.
  *
  * ===Conversions to the neighbouring types===
  *
@@ -111,9 +109,26 @@ import com.opengamma.strata.collect.result.Failure
  * @see [[FxRateProvider]] for the source of the rates the conversions use
  */
 sealed abstract case class BigMoney private (currency: Currency, amount: Decimal)
-    extends FxConvertible[BigMoney] {
+    extends FxConvertible[BigMoney]
+    with NoJavaSerialization {
 
-  //-------------------------------------------------------------------------
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means can be
+  // stopped is here. The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[BigMoney.Impl])
+
+  // The invariant of this type, stated over the amount the instance actually holds rather than
+  // over the argument a factory was given, because the implementation class carries a public
+  // constructor in the class file whatever the source asked for: a class compiled outside this
+  // library can call it directly, and identity alone would then admit an amount beyond the twelve
+  // decimal places this type presents, which `toString`, the codec and `toMoney` would each read
+  // differently. What `BigMoney.create` establishes is that the amount is rounded to those twelve
+  // places, so rounding it again is what leaves it alone.
+  JvmClosure.requireInvariant(
+    s"its amount is already rounded to ${BigMoney.MaximumDecimalPlaces} decimal places",
+    amount.roundToScale(BigMoney.MaximumDecimalPlaces, RoundingMode.HALF_UP) == amount)
+
   /**
    * Gets the amount as a `BigDecimal` of at least the currency's scale.
    *
@@ -123,12 +138,8 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    * more than the two sterling and the Australian dollar quote. Nothing is ever dropped, so this
    * is total - padding a scale upwards always succeeds.
    *
-   * The implementation being ported deprecated this accessor in favour of [[getValue]], which
-   * carries the amount without encoding a presentation width in it. It is kept, with its name,
-   * because callers of the port read the same documentation and expect the same members; new code
-   * should prefer [[getValue]] or the [[amount]] the value holds. It is not marked deprecated in
-   * Scala: this build turns every warning into an error, so the annotation would make each
-   * ordinary use of a member the implementation being ported still published fail to compile.
+   * New code should prefer [[getValue]], or the [[amount]] the value holds, since neither encodes
+   * a presentation width in what it answers with.
    *
    * @return the amount, with a scale of at least the currency's minor unit digits and at most
    *   twelve
@@ -144,7 +155,7 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    *
    * This is the amount as it is held, so `BHD 1.23456` answers the decimal `1.23456` rather than
    * a value padded or narrowed to the three digits that currency quotes. It is where this type
-   * and [[Money]] visibly diverge: money answers with its amount paired with the currency's
+   * and [[Money]] visibly differ: money answers with its amount paired with the currency's
    * scale, because that scale is a property of every money value, while an amount of at most
    * twelve places has no single presentation width to carry and is returned on its own.
    *
@@ -152,21 +163,20 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    */
   def getValue: Decimal = amount
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this value with the specified amount added.
    *
    * The two values have to be in the same currency, since this is an amount ''of'' a currency and
    * there is no meaningful sum of amounts of different ones. A mismatch is reported rather than
-   * thrown, because whether it happens depends on the values a caller holds:
+   * raised, because whether it happens depends on the values a caller holds:
    *
    * {{{
    * ron200.plus(ron100)   // Right(RON 300.3594)
    * ron200.plus(aud100)   // Left(Failure.Invalid("Unable to add amounts in different currencies"))
    * }}}
    *
-   * The sum is rounded to twelve decimal places, as every route into this type is, because the
-   * implementation being ported reached its rounding constructor here too.
+   * The sum is rounded to twelve decimal places, as every route into this type is, because this
+   * one reaches the same rounding creation step.
    *
    * @param amountToAdd  the amount to add, in the same currency as this value
    * @return this value with the other added, or the failure describing the currency mismatch
@@ -199,18 +209,13 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
       Left(Failure.Invalid(BigMoney.DifferentCurrenciesSubtractMessage))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this value with the amount multiplied by the specified whole number.
    *
-   * The multiplier is a whole number because that is what the implementation being ported took.
-   * Scaling by a fraction is [[map]] over the amount, or [[convertedTo]] where the fraction is an
-   * exchange rate.
-   *
-   * A whole-number literal needs no suffix, since it is typed as the `Long` the parameter asks
-   * for; an `Int` ''value'' has to be converted explicitly, because this build treats an implicit
-   * numeric widening as an error. So `value.multipliedBy(3)` compiles and
-   * `value.multipliedBy(count)` for an `Int` count is written `value.multipliedBy(count.toLong)`.
+   * The multiplier is a whole number, so `value.multipliedBy(3)` is written as it stands and an
+   * `Int` value is widened at the call site - `value.multipliedBy(count.toLong)`. Scaling by a
+   * fraction is [[map]] over the amount, or [[convertedTo]] where the fraction is an exchange
+   * rate.
    *
    * @param valueToMultiplyBy  the whole number to multiply the amount by
    * @return this value with its amount multiplied
@@ -221,7 +226,7 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
     BigMoney.create(currency, amount.multipliedBy(valueToMultiplyBy))
 
   /**
-   * Returns a copy of this value with the amount replaced by the result of a function.
+   * Returns a copy of this value whose amount is the result of a function of the amount.
    *
    * This is how the arithmetic of [[Decimal]] is reached, so that an operation this type does not
    * publish is still a single step:
@@ -241,18 +246,14 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
   def map(mapper: Decimal => Decimal): BigMoney = BigMoney.create(currency, mapper(amount))
 
   /**
-   * Returns a copy of this value with the amount replaced by the result of a function on
-   * `BigDecimal`.
+   * Returns a copy of this value whose amount is the result of a function on `BigDecimal`.
    *
-   * This is [[map]] with the amount presented as a `BigDecimal`, and unlike [[map]] it answers
-   * with an outcome: a function of arbitrary precision can return a number no decimal holds - one
-   * that is not finite, or one whose whole part needs more than eighteen digits - and that is a
-   * property of the function and the value rather than of the calling code. The implementation
-   * being ported raised in that case, from the decimal conversion this delegates to.
+   * This is [[map]] with the amount presented as a `BigDecimal`, and it differs from [[map]] in
+   * answering with an outcome: a function of arbitrary precision can return a number no decimal
+   * holds - one that is not finite, or one whose whole part needs more than eighteen digits - and
+   * that is a property of the function and the value rather than of the calling code.
    *
-   * The implementation being ported deprecated this in favour of [[map]], whose function works on
-   * the decimal directly. It is kept, with its name, for the reason [[getAmount]] gives, and for
-   * the same reason it carries no deprecation annotation.
+   * New code should prefer [[map]], whose function works on the decimal directly.
    *
    * @param mapper  the function to apply to the amount, as a `BigDecimal`
    * @return this value with the function applied and the result rounded, or the failure describing
@@ -261,16 +262,14 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
   def mapAmount(mapper: BigDecimal => BigDecimal): FailureOr[BigMoney] =
     amount.mapAsBigDecimal(mapper).map(mapped => BigMoney.create(currency, mapped))
 
-  //-------------------------------------------------------------------------
   /**
    * Checks whether this value is greater than another.
    *
-   * The two values have to be in the same currency. The implementation being ported refused a
-   * mixed pair here rather than comparing the bare numbers, and refusing is the right answer:
-   * `GBP 1` and `USD 1` stand in no order without an exchange rate, and a comparison that
-   * silently ignored the currencies would report one as the greater on the strength of its digits
-   * alone. The refusal is reported rather than thrown, because whether it happens depends on the
-   * values a caller holds - which is the same reason [[plus]] reports it.
+   * The two values have to be in the same currency: `GBP 1` and `USD 1` stand in no order without
+   * an exchange rate, and a comparison that silently ignored the currencies would report one as
+   * the greater on the strength of its digits alone. A mixed pair is therefore refused, and the
+   * refusal is reported rather than raised, because whether it happens depends on the values a
+   * caller holds - which is the same reason [[plus]] reports it.
    *
    * {{{
    * gbp1_000009.isGreaterThan(gbp1)   // Right(true)
@@ -329,9 +328,8 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    * Applies a comparison of the two amounts, provided the two currencies agree.
    *
    * The four predicates above differ only in which comparison of [[Decimal]] they delegate to, so
-   * the currency check and the wording of its failure are written once here. The implementation
-   * being ported repeated both four times and reported one message for all four, which is the
-   * message reported here.
+   * the currency check and the wording of its failure are written once here, and all four report
+   * that one message.
    *
    * @param otherAmount  the value being compared to
    * @param predicate  the comparison to apply to the two amounts
@@ -345,7 +343,6 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
       Left(Failure.Invalid(BigMoney.DifferentCurrenciesCompareMessage))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this value with the amount rounded to the specified scale.
    *
@@ -367,11 +364,11 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    * half-up rounding at twelve places as every other route into the type, which cannot change it
    * further.
    *
-   * The two ways this can raise both belong to [[Decimal]] and are the ways the implementation
-   * being ported raised: a scale of `-18` or less, where the edges of the representation make the
-   * answer ambiguous, and the `UNNECESSARY` mode applied to an amount that does need rounding.
-   * Neither depends on the money value - both are properties of the arguments the caller chose -
-   * so both stay raised rather than reported, and the signature stays total as it was.
+   * The two ways this can raise both belong to [[Decimal]]: a scale of `-18` or less, where the
+   * edges of the representation make the answer ambiguous, and the `UNNECESSARY` mode applied to
+   * an amount that does need rounding. Neither depends on the money value - both are properties
+   * of the arguments the caller chose - so both are raised rather than reported, and the signature
+   * is total.
    *
    * @param desiredScale  the scale to round to, positive for decimal places, negative to round the
    *   whole part, and greater than `-18`
@@ -383,7 +380,6 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
   def roundToScale(desiredScale: Int, roundingMode: RoundingMode): BigMoney =
     BigMoney.create(currency, amount.roundToScale(desiredScale, roundingMode))
 
-  //-------------------------------------------------------------------------
   /**
    * Checks whether the amount is zero.
    *
@@ -409,12 +405,11 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    */
   def isNegative: Boolean = amount.unscaledValue < 0L
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this value with the amount negated.
    *
-   * A zero amount returns this value, which is what the implementation being ported did and what
-   * keeps the negation of zero from depending on how that zero was written.
+   * A zero amount returns this value, which keeps the negation of zero from depending on how that
+   * zero was written.
    *
    * @return this value with its amount negated
    */
@@ -434,21 +429,19 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    */
   def negative: BigMoney = if (isPositive) negated else this
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this value to the equivalent [[CurrencyAmount]].
    *
    * The amount is the nearest `Double` to the exact amount held here, so the conversion loses
    * precision in the direction one would expect of it and the currency is unchanged.
    *
-   * This is total, as it was in the implementation being ported, and it is reached through the
-   * trusted constructor of that type rather than through `CurrencyAmount.of`, which answers with
-   * an outcome: that factory rejects one thing only, a value that is not a number, and the
-   * `Double` of a decimal is always finite - so routing through it would put a failure branch that
-   * cannot be reached into the signature of an accessor whose answer always exists. The trusted
-   * route performs the same normalisation and the same invariant check as every other way into
-   * that type, and allocates only the amount returned; the implementation being ported constructed
-   * the result once as well.
+   * This is total, and it is reached through the trusted constructor of that type rather than
+   * through `CurrencyAmount.of`, which answers with an outcome: that factory rejects one thing
+   * only, a value that is not a number, and the `Double` of a decimal is always finite - so
+   * routing through it would put a failure branch that cannot be reached into the signature of an
+   * accessor whose answer always exists. The trusted route performs the same normalisation and
+   * the same invariant check as every other way into that type, and allocates only the amount
+   * returned.
    *
    * @return the equivalent amount, held as a `Double`
    */
@@ -464,15 +457,14 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    * quotes none. A value whose amount is already within the currency's minor units is unchanged.
    *
    * It is total, because rounding narrows an amount rather than refusing it, and it is written as
-   * the `Money.of` overload that takes a value of this type - the same delegation the
-   * implementation being ported wrote - so this method and that factory are one route with two
-   * names and can never disagree. [[Money.toBigMoney]] is the widening that reverses it.
+   * the `Money.of` overload that takes a value of this type, so this method and that factory are
+   * one route with two names and can never disagree. [[Money.toBigMoney]] is the widening that
+   * reverses it.
    *
    * @return the equivalent money value, rounded to the currency's minor units
    */
   def toMoney: Money = Money.of(this)
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this value into the specified currency at the specified rate.
    *
@@ -485,8 +477,9 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    *
    * @param resultCurrency  the currency of the result
    * @param fxRate  the rate from the currency of this value to the result currency
-   * @return this value expressed in the result currency, or the failure describing why the rate
-   *   supplied does not describe that conversion
+   * @return this value expressed in the result currency, or the failure naming the broken
+   *   condition: the rate is a number no decimal holds, or the result currency is the currency
+   *   this value already has and the rate is not one
    * @throws java.lang.IllegalArgumentException if the converted amount needs more than eighteen
    *   digits, which is the documented arithmetic precondition of [[Decimal]]
    */
@@ -496,10 +489,9 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
   /**
    * Converts this value into the specified currency at the specified rate.
    *
-   * Converting into the currency this value already has is the one case that needs a decision, and
-   * the decision is the one the implementation being ported made: such a conversion requires no
-   * arithmetic, so a rate of one - within a tolerance of `1e-8`, the literal that implementation
-   * used - returns this value unchanged, and any other rate is reported as a failure rather than
+   * Converting into the currency this value already has is the one case that needs a decision:
+   * such a conversion requires no arithmetic, so a rate of one - within a tolerance of `1e-8` -
+   * returns this value unchanged, and any other rate is reported as a failure rather than
    * silently applied. That keeps a caller from scaling an amount by passing a rate for a
    * conversion that does not happen.
    *
@@ -515,8 +507,9 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    *
    * @param resultCurrency  the currency of the result
    * @param fxRate  the rate from the currency of this value to the result currency
-   * @return this value expressed in the result currency, or the failure describing why the rate
-   *   supplied does not describe that conversion
+   * @return this value expressed in the result currency, or the failure naming the broken
+   *   condition: the result currency is the currency this value already has and the rate differs
+   *   from one by more than `1e-8`
    * @throws java.lang.IllegalArgumentException if the converted amount needs more than eighteen
    *   digits, which is the documented arithmetic precondition of [[Decimal]]
    */
@@ -536,15 +529,14 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    *
    * This is the [[FxConvertible]] implementation of this type. A value already in the requested
    * currency is returned unchanged and the provider is not consulted, so such a conversion
-   * succeeds even under a provider that supplies no rates at all - which is the behaviour of the
-   * implementation being ported. Otherwise the provider converts the amount and the failure it
-   * reports when it holds no rate for the pair is the failure of this conversion.
+   * succeeds even under a provider that supplies no rates at all. Otherwise the provider converts
+   * the amount and the failure it reports when it holds no rate for the pair is the failure of
+   * this conversion.
    *
    * The conversion goes through the `Double`-valued arithmetic of the provider and the exact
-   * amount is then rebuilt from the result, which is the route the implementation being ported
-   * took for this type; the outcome therefore agrees with it digit for digit, rather than being
-   * the more precise answer an exact multiplication by the rate would give. A caller wanting the
-   * exact product has the rated form above.
+   * amount is then rebuilt from the result, so the outcome carries the precision of that
+   * arithmetic rather than the more precise answer an exact multiplication by the rate would
+   * give. A caller wanting the exact product has the rated form above.
    *
    * @param resultCurrency  the currency of the result
    * @param rateProvider  the provider of FX rates
@@ -562,19 +554,15 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
         .flatMap(converted => BigMoney.of(resultCurrency, converted))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Compares this value to another, by currency and then by amount.
    *
    * Currencies compare alphabetically by their codes and equal currencies fall through to the
-   * amounts, which is the comparison the implementation being ported performed. Both comparisons
-   * return zero exactly when their operands are equal, so this returns zero exactly when the two
-   * values are equal and the ordering agrees with equality.
+   * amounts. Both comparisons return zero exactly when their operands are equal, so this returns
+   * zero exactly when the two values are equal and the ordering agrees with equality.
    *
-   * Only the sign of the result is part of the contract, as it is for every comparison in Scala.
-   * The implementation being ported narrowed the magnitude to `-1` and `1` through the comparison
-   * chain it used; this returns the value the underlying comparison gives, so the sign agrees and
-   * the magnitude may differ.
+   * Only the sign of the result is part of the contract, as it is for every comparison in Scala:
+   * this returns the value the underlying comparison gives, whose magnitude is not bounded to one.
    *
    * @param other  the value to compare to
    * @return negative when this value is the smaller, zero when the two are equal, positive
@@ -590,9 +578,9 @@ sealed abstract case class BigMoney private (currency: Currency, amount: Decimal
    *
    * The form is the currency code, a space, and the amount shown with at least the number of
    * decimal places the currency quotes - `AUD 200.00`, `RON 200.2345`, `BHD 100.120` - which is
-   * the form [[BigMoney.parse]] reads back and the form the implementation being ported wrote. The
-   * amount is padded rather than truncated, so an amount finer than the currency's minor units is
-   * shown in full; only an amount with fewer digits is padded.
+   * the form [[BigMoney.parse]] reads back. The amount is padded rather than truncated, so an
+   * amount finer than the currency's minor units is shown in full; only an amount with fewer
+   * digits is padded.
    *
    * @return the formatted value
    */
@@ -617,9 +605,9 @@ object BigMoney {
   /**
    * The number of decimal places a value of this type keeps.
    *
-   * Twelve, which is the width the implementation being ported rounded to and the property that
-   * distinguishes this type from [[Money]]. It appears once, in [[create]], so every route into
-   * the type rounds to the same width by construction rather than by repetition.
+   * Twelve, which is the property that distinguishes this type from [[Money]]. It appears once,
+   * in [[create]], so every route into the type rounds to the same width by construction rather
+   * than by repetition.
    */
   private val MaximumDecimalPlaces: Int = 12
 
@@ -634,9 +622,8 @@ object BigMoney {
   /**
    * Reported when two values of different currencies are compared by one of the four predicates.
    *
-   * One wording covers all four, as it did in the implementation being ported, so a caller cannot
-   * tell from the message which comparison was attempted - only that the currencies disagreed,
-   * which is the whole of the problem.
+   * One wording covers all four, so a caller cannot tell from the message which comparison was
+   * attempted - only that the currencies disagreed, which is the whole of the problem.
    */
   private val DifferentCurrenciesCompareMessage: String =
     "Unable to compare amounts in different currencies"
@@ -648,22 +635,35 @@ object BigMoney {
   /**
    * The tolerance within which a rate counts as one for a conversion that does not convert.
    *
-   * This is the literal the implementation being ported used for the same comparison, so a rate it
-   * accepted for a conversion into the currency of the value is accepted here as well.
+   * A rate within `1e-8` of one is accepted for a conversion into the currency the value already
+   * has, so a rate that arrived through floating point arithmetic is not refused for its last
+   * digits.
    */
   private val NoConversionTolerance: Double = 1e-8
-
-  /** The number of parts the text form of a value has, which is the code and the amount. */
-  private val TextParts: Int = 2
 
   /**
    * The separator between the currency code and the amount in the text form.
    *
-   * A single space, as [[BigMoney.toString]] writes it and as [[BigMoney.parse]] splits on.
+   * A single space, as [[BigMoney.toString]] writes it and as [[BigMoney.parse]] locates it. The
+   * text form has exactly two parts either side of that one separator, which is the whole of the
+   * grammar, and the parse tests that shape by index rather than by splitting the text: a
+   * constant naming the number of parts would describe an intermediate the parse no longer
+   * builds, so none is declared.
    */
   private val TextSeparator: String = " "
 
-  //-------------------------------------------------------------------------
+  /**
+   * The longest the amount part of the text form may be.
+   *
+   * This is the ceiling [[com.opengamma.strata.collect.Decimal]] already puts on the numeral it
+   * reads, restated here so that it can be applied before the numeral is copied out of the text
+   * rather than after. Nothing about what is accepted changes: a numeral of this length or less
+   * reaches the decimal exactly as before, and one longer was refused by the decimal and is
+   * refused here, with the same wording either way. What changes is that a tail of a sender's
+   * choosing is no longer copied in order to be measured (CWE-400/CWE-770).
+   */
+  private val MaxAmountTextLength: Int = 256
+
   /**
    * Obtains a zero value in the specified currency.
    *
@@ -677,15 +677,12 @@ object BigMoney {
   /**
    * Obtains a value from a [[CurrencyAmount]], keeping twelve decimal places of the amount.
    *
-   * This answers with an outcome where the implementation being ported was total, and the
-   * difference is a real one rather than a stylistic one: an amount is permitted to be infinite -
-   * that type accepts the two infinities and rejects only a value that is not a number - while no
-   * decimal holds a value that is not finite. An infinite amount is therefore not a value of this
-   * type, and saying so in the signature is what keeps the rejection visible instead of raising
-   * from an accessor later. An amount whose magnitude needs more than eighteen digits is rejected
-   * for the same reason. The implementation being ported raised on both, from the decimal
-   * conversion this performs. [[Money.of]] answers with an outcome for the same boundary and for
-   * the same reason.
+   * This answers with an outcome because an amount is permitted to be infinite - that type accepts
+   * the two infinities and rejects only a value that is not a number - while no decimal holds a
+   * value that is not finite. An infinite amount is therefore not a value of this type, and saying
+   * so in the signature is what keeps the rejection visible instead of raising from an accessor
+   * later. An amount whose magnitude needs more than eighteen digits is rejected for the same
+   * reason. [[Money.of]] answers with an outcome for the same boundary and for the same reason.
    *
    * {{{
    * CurrencyAmount.of(Currency.RON, 200.2345d).flatMap(BigMoney.of)   // Right(RON 200.2345)
@@ -733,8 +730,8 @@ object BigMoney {
   /**
    * Obtains a value from a currency and a `BigDecimal` amount, keeping twelve decimal places.
    *
-   * Precision beyond eighteen digits is truncated towards zero, as it is by every decimal factory
-   * of this port, and a value too large for a decimal to hold is reported as a failure. The
+   * Precision beyond eighteen digits is truncated towards zero, as it is by every factory of
+   * [[Decimal]], and a value too large for a decimal to hold is reported as a failure. The
    * fraction is then rounded to twelve places half up, so this is the route by which a
    * `BigDecimal` of arbitrary width becomes a value of this type.
    *
@@ -759,15 +756,13 @@ object BigMoney {
    */
   def of(currency: Currency, amount: Decimal): BigMoney = create(currency, amount)
 
-  //-------------------------------------------------------------------------
   /**
    * Parses a value from text of the form `RON 200.2345`.
    *
    * The parsed form is the currency code, a space and the amount, which is the form
-   * [[BigMoney.toString]] writes. The text is split on the space and has to fall into exactly two
-   * parts, as it did in the implementation being ported - so text holding no space, and text
-   * holding two, is rejected as malformed before anything is read from it. The two wordings that
-   * implementation reported are the two wordings reported here:
+   * [[BigMoney.toString]] writes. The text has to hold exactly one space, so text holding no
+   * space, and text holding two, is rejected as malformed before anything is read from it. There
+   * are two wordings:
    *
    *   - text that does not fall into exactly two space-separated parts is
    *     `Unable to parse amount, invalid format: <text>`;
@@ -781,32 +776,51 @@ object BigMoney {
    * BigMoney.parse("200.23 RON")            // Left - right shape, names no currency in its first part
    * }}}
    *
-   * The case of the currency code is tolerated, as it was in the implementation being ported,
-   * because the code is resolved through [[Currency.parse]]. The cause of a rejection is
-   * deliberately not carried in the failure: the implementation being ported wrapped it in the
-   * exception it threw, but the message - which is what a caller reads, logs and asserts on - named
-   * only the text, and keeping the failure to that one message keeps two failures over the same
-   * text equal and their serialized form stable.
+   * The case of the currency code is tolerated, because the code is resolved through
+   * [[Currency.parse]]. The cause of a rejection is deliberately not carried in the failure: the
+   * message is what a caller reads, logs and asserts on, and keeping the failure to that one
+   * message keeps two failures over the same text equal and their serialized form stable.
    *
-   * Both wordings name the text as it was given, so each reads as the original's did. The text
-   * came from outside the library, so bounding it and escaping what it may hold belong to the
-   * writing of a failure, which [[com.opengamma.strata.collect.result.Failure.show]] and the
-   * text form of a failure perform for every part they write.
+   * Both wordings name the text as it was given. The text came from outside the library, so
+   * bounding it and escaping what it may hold belong to the writing of a failure, which
+   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure perform
+   * for every part they write.
+   *
+   * ===The shape is decided before anything is built from the text===
+   *
+   * The two parts are taken by locating the one separator rather than by splitting the text into
+   * however many pieces it holds. Splitting made the cost of a rejection proportional to the
+   * number of separators the text carried - text of a million spaces built a million strings,
+   * every one of them to be discarded by the very next comparison - while locating the separator
+   * decides the shape from two index scans and allocates at most the two substrings the grammar
+   * has, whatever arrives (CWE-400/CWE-770). What the caller observes is unchanged: exactly the
+   * text that fell into two space-separated parts before falls into them now, the empty second
+   * part of `RON ` included, and the same wording rejects everything else.
    *
    * @param amountStr  the value as text, in the form `RON 200.2345`
-   * @return the value the text names, or the failure describing why it names none
+   * @return the value the text names, or the failure naming the broken condition: the text is not
+   *   two space-separated parts, or its first part is no currency code, or its second part is no
+   *   decimal
    */
   def parse(amountStr: String): FailureOr[BigMoney] = {
-    // The limit of -1 keeps trailing empty parts, which is what the splitter the implementation
-    // being ported used did: "RON " is two parts there and has to be two parts here, so that it is
-    // rejected for naming no decimal rather than for having the wrong shape.
-    val parts = amountStr.split(TextSeparator, -1)
-    if (parts.length != TextParts) {
+    // The first separator, and then the absence of a second one, are the whole of the shape
+    // check: text with no separator has one part and text with two has three, and neither is the
+    // two parts the form has. A trailing separator is kept, so "RON " is two parts, the second of
+    // them empty, and is rejected for naming no decimal rather than for having the wrong shape.
+    val separator = amountStr.indexOf(TextSeparator)
+    if (separator < 0 || amountStr.indexOf(TextSeparator, separator + TextSeparator.length) >= 0) {
       Left(invalidFormat(amountStr))
+    } else if (amountStr.length - (separator + TextSeparator.length) > MaxAmountTextLength) {
+      // the ceiling the decimal would apply, applied before the numeral is copied rather than
+      // after: the outcome is the one the decimal's own refusal produced, and the copy is not
+      // made
+      Left(Failure.Parsing(s"Unable to parse amount: $amountStr"))
     } else {
+      val currencyCode = amountStr.substring(0, separator)
+      val amountText = amountStr.substring(separator + TextSeparator.length)
       val parsed: Option[BigMoney] = for {
-        currency <- Currency.parse(parts(0)).toOption
-        amount <- Decimal.parse(parts(1)).toOption
+        currency <- Currency.parse(currencyCode).toOption
+        amount <- Decimal.parse(amountText).toOption
       } yield create(currency, amount)
       // the text is rendered rather than interpolated as it stands, which bounds the message and
       // keeps it to one line while leaving an in-bound spelling quoted as it was given
@@ -814,15 +828,13 @@ object BigMoney {
     }
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Creates a value, rounding the amount, which every route funnels through.
    *
    * This is the only instantiation of the type and it is private, so the routes above are the only
    * way into it from outside this file. Rounding here rather than in each of them is what makes the
-   * invariant of the type hold for the results of the arithmetic as well: the implementation being
-   * ported reached its rounding constructor from `plus`, `minus`, `multipliedBy`, `map`,
-   * `roundToScale` and each of its factories, and so does this.
+   * invariant of the type hold for the results of the arithmetic as well: `plus`, `minus`,
+   * `multipliedBy`, `map`, `roundToScale` and every factory reach this one step.
    *
    * Rounding is to twelve decimal places, half up, and cannot fail: twelve is within the eighteen
    * places a [[Decimal]] holds, so the scale is always available, and an amount already at twelve
@@ -833,35 +845,48 @@ object BigMoney {
    * @return the value
    */
   private def create(currency: Currency, amount: Decimal): BigMoney =
-    new BigMoney(currency, amount.roundToScale(MaximumDecimalPlaces, RoundingMode.HALF_UP)) {}
+    new Impl(currency, amount.roundToScale(MaximumDecimalPlaces, RoundingMode.HALF_UP))
+
+  /**
+   * The one implementation of a monetary value.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[BigMoney]] refuse in its own constructor to be any other implementation.
+   *
+   * @param currency  the currency
+   * @param amount  the amount, already rounded to twelve decimal places by [[create]]
+   */
+  private final class Impl(currency: Currency, amount: Decimal)
+      extends BigMoney(currency, amount)
 
   /**
    * The failure reported for text whose shape does not admit a monetary value.
    *
-   * The text is quoted as it stands, which is the wording the implementation being ported
-   * produced; bounding it and escaping what it may hold belong to the writing of a failure,
-   * which the text form of one and [[Failure.show]] perform for every part they write.
+   * The text is quoted as it stands; bounding it and escaping what it may hold belong to the
+   * writing of a failure, which the text form of one and [[Failure.show]] perform for every part
+   * they write.
    */
   private def invalidFormat(amountStr: String): Failure =
     Failure.Parsing(s"Unable to parse amount, invalid format: $amountStr")
 
-  //-------------------------------------------------------------------------
   /**
    * The ordering, hashing and equality of values of this type.
    *
-   * Values order by currency alphabetically and then by amount, which is the comparison the
-   * implementation being ported performed and which [[BigMoney.compareTo]] describes. The ordering
-   * agrees with equality exactly - `compare` returns zero precisely when `eqv` holds - because both
-   * fields compare as zero only when they are equal, so no secondary comparison is needed to break
-   * a tie.
+   * Values order by currency alphabetically and then by amount, as [[BigMoney.compareTo]]
+   * describes. The ordering agrees with equality exactly - `compare` returns zero precisely when
+   * `eqv` holds - because both fields compare as zero only when they are equal, so no secondary
+   * comparison is needed to break a tie.
    *
    * Equality and hashing are those of the value itself: the currency compares by its code and the
-   * amount is a normalised decimal that compares as a number, which is exactly the comparison the
-   * implementation being ported made. Nothing bit-level is involved, unlike [[CurrencyAmount]],
-   * whose `Double` amount forces it to compare bit patterns so that a value that is not a number
-   * still equals itself. No override is written here for that reason, and the hashing is the
-   * deterministic hash of the two fields, so the hash of a value is identical in every run of every
-   * program - which is what the byte-stability properties of the test suite rely on.
+   * amount is a normalised decimal that compares as a number. Nothing bit-level is involved, in
+   * contrast to [[CurrencyAmount]], whose `Double` amount forces it to compare bit patterns so
+   * that a value that is not a number still equals itself. No override is written here for that
+   * reason, and the hashing is the deterministic hash of the two fields, so the hash of a value is
+   * identical in every run of every program.
    *
    * This is the only equality-bearing instance of the type. `Order` and `Hash` both extend `Eq`, so
    * a separate `Eq` would be a second answer to the same question; one is declared here and `Eq` is
@@ -888,7 +913,6 @@ object BigMoney {
    */
   implicit val show: Show[BigMoney] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The raw field shape both codecs of this type are derived over.
    *
@@ -900,14 +924,14 @@ object BigMoney {
    * derived shape and the type from drifting apart.
    *
    * @param currency  the currency, read from its three letter code
-   * @param amount  the amount, read from the canonical text of a decimal and not yet rounded
+   * @param amount  the amount, read from the canonical text of a decimal at whatever scale the
+   *   document names, the rounding to twelve decimal places being applied by the factory the
+   *   decoder hands it to
    */
-  private final case class Raw(currency: Currency, amount: Decimal)
+  private final case class Raw(currency: Currency, amount: Decimal) extends NoJavaSerialization
 
-  /** The derived decoder of the raw field shape, used by the decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
   /**
@@ -920,19 +944,18 @@ object BigMoney {
    * {"currency":"GBP","amount":"12.34"}
    * }}}
    *
-   * The amount is a string rather than a number because that is how every decimal of this port is
-   * written: a JSON number is read back as a binary floating point value in most parsers, which is
-   * exactly the representation this type exists to avoid - and with twelve decimal places to carry,
-   * it is the type for which that matters most. The text is the canonical form of the decimal, so
-   * it carries the amount and not a presentation width - `AUD 100.00` is written `"100"` - and the
+   * The amount is a string rather than a number because every [[Decimal]] is written that way: a
+   * JSON number is read back as a binary floating point value in most parsers, which is exactly
+   * the representation this type exists to avoid - and with twelve decimal places to carry, it is
+   * the type for which that matters most. The text is the canonical form of the decimal, so it
+   * carries the amount and not a presentation width - `AUD 100.00` is written `"100"` - and the
    * width is recovered from the currency whenever the value is rendered.
    *
-   * The shape is derived at compile time over the raw product above rather than written out field
-   * by field, which is what every product of this port does, and the value is contramapped into
-   * that product: a value in memory is already rounded, so nothing further has to be decided on the
-   * way out. The result is wrapped so that a field holding no value would be omitted, which is the
-   * policy every product of this port follows - this type has no optional field, so the wrapping
-   * changes nothing about its output and exists so that the policy holds without exception.
+   * The shape is derived over the raw product above rather than written out field by field, and
+   * the value is contramapped into that product: a value in memory is already rounded, so nothing
+   * further has to be decided on the way out. The result is wrapped so that a field holding no
+   * value would be omitted; this type has no optional field, so the wrapping changes nothing about
+   * its output and exists so that the policy holds without exception.
    *
    * @return the JSON encoding of a value of this type
    */
@@ -945,19 +968,18 @@ object BigMoney {
    * This is the inverse of the encoding above: the payload is read into the raw shape and handed to
    * the total factory, which rounds the amount to twelve decimal places. A payload whose amount
    * names more places is therefore accepted and rounded rather than rejected, which is the
-   * behaviour of every other route into this type and of the implementation being ported, whose
-   * constructor rounded whatever it was given.
+   * behaviour of every other route into this type.
    *
-   * That choice is consistent with the round trip the test suite asserts: encoding is a function of
-   * the value, and a value is always rounded already, so decoding what this encoder wrote returns
-   * the value it was given and equal values encode to identical bytes. It is the other direction
-   * that normalises - a hand-written document naming `"1.123456789012345"` decodes to
-   * `1.123456789012` and re-encodes as that - and that is a deliberate normalisation of input
-   * rather than an inconsistency of the codec.
+   * The round trip holds in both directions: encoding is a function of the value, and a value is
+   * always rounded already, so decoding what this encoder wrote returns the value it was given and
+   * equal values encode to identical bytes. It is the other direction that normalises - a
+   * hand-written document naming `"1.123456789012345"` decodes to `1.123456789012` and re-encodes
+   * as that - and that is a deliberate normalisation of input rather than an inconsistency of the
+   * codec.
    *
    * The payload reaches the factory through
    * [[com.opengamma.strata.collect.json.Codecs.validatedDecoder]], the one construction gate every
-   * checking and every rounding type of this port decodes through, so this type is inside that
+   * checking and every rounding type of this library decodes through, so this type is inside that
    * policy rather than beside it: whatever is added to the gate - a further check, a different way
    * of reporting a rejection - is inherited here without this file being touched, and [[Money]]
    * reads the same two fields through the same gate. The factory the gate reaches is total, so no

@@ -15,6 +15,8 @@ import cats.Show
 
 import io.circe.Codec
 
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
@@ -35,11 +37,10 @@ import com.opengamma.strata.collect.result.ResultNec
  *
  * The set of countries is deliberately '''open'''. The code space is what is constrained -
  * exactly two characters, each an upper case ASCII letter - and any code satisfying that is
- * accepted, whether or not it appears in the reference data or among the constants. This
- * mirrors the type being ported, which created a country on demand for any well formed code,
- * and it is why this type is a validated value rather than one of the closed named families
- * of this library. A code that no standard assigns, such as `AA`, is therefore a country
- * here; whether it means anything is a question for the data it came from, not for this type.
+ * accepted, whether or not it appears in the reference data or among the constants. This type
+ * is therefore a validated value rather than one of the closed named families of this library:
+ * a code that no standard assigns, such as `AA`, is a country here, and whether it means
+ * anything is a question for the data it came from, not for this type.
  *
  * ===Construction===
  *
@@ -68,43 +69,19 @@ import com.opengamma.strata.collect.result.ResultNec
  *
  * Two countries are equal when their codes are equal, and they order alphabetically by code.
  * Ordering therefore agrees with equality exactly - `compare` returns zero precisely when the
- * two values are equal - so no secondary comparison is needed to reconcile the two, which is
- * not true of every validated type in this library. A country renders as its bare code, both
- * through `toString` and through its `Show` instance, and its JSON form is the same bare
- * string.
+ * two values are equal - so no secondary comparison is needed to reconcile the two. A country
+ * renders as its bare code, both through `toString` and through its `Show` instance, and the
+ * [[codec]] below writes and reads that same bare string, which is the whole of the support
+ * for writing a country out.
  *
- * ===Deliberate differences from the type being ported===
+ * Values are not interned. Each factory call builds a fresh value, and equality of codes is
+ * the only comparison that is meaningful here: two countries with the same code are equal,
+ * have equal hash codes and are interchangeable, but they need not be the same object, so
+ * they must never be compared by identity.
  *
- * The behaviour of this type is that of the Java original, with the following differences,
- * each of which follows from a convention of this port rather than from a change of intent:
- *
- *   - '''Instances are not interned.''' The original kept a growing global map of every
- *     country it had been asked for and handed back the stored instance, so two calls for the
- *     same code yielded the same object. A mutable global map is hidden state, which this
- *     port does not keep, so each call builds a fresh value. Equality of values is unchanged
- *     and is the only comparison that is meaningful here; two countries with the same code
- *     are equal, have equal hash codes and are interchangeable, but they need not be the same
- *     object, so identity must not be used to compare them.
- *   - '''[[Country.availableCountries]] is fixed.''' Because there is no cache to grow, the
- *     set of available countries is the constant set of everything this type knows about -
- *     the reference data and the constants - and asking for a country outside it does not
- *     change it. The original, whose set was the contents of its cache, grew by one each time
- *     a previously unseen code was requested.
- *   - '''Failures are returned, not raised.''' Where the original raised an error for a
- *     malformed code, an unknown three letter code, or a country with no three letter form,
- *     the corresponding member here reports a [[Failure]] on the left of an `Either`. The
- *     messages are those of the original, word for word, so text that reaches a log or a test
- *     expectation is unchanged.
- *   - '''An absent input is not modelled.''' The original checked its arguments for a missing
- *     reference and raised an error when it found one. This port expresses a value that may
- *     be absent as an `Option` instead, so the members here take a plain `String` and the
- *     corresponding cases of the original have no counterpart.
- *   - '''Serialization support is the JSON codec alone.''' The Java serialization hooks and
- *     the string-conversion annotations of the original are not carried over; the [[codec]]
- *     below is the supported way to write and read a country, and it writes the same bare
- *     code the original wrote.
- *   - '''Comparison against an absent value is not modelled''', following from the same
- *     reasoning as the input case above.
+ * Every member that can be given text it cannot accept - a malformed code, an unknown three
+ * letter code, or a country with no three letter form - reports a [[Failure]] on the left of
+ * an `Either` rather than interrupting the caller.
  *
  * ===Thread safety===
  *
@@ -114,7 +91,26 @@ import com.opengamma.strata.collect.result.ResultNec
  *
  * @see [[CountryData]] for the reference data behind the three letter codes
  */
-sealed abstract case class Country private (code: String) {
+sealed abstract case class Country private (code: String) extends NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - carrying
+  // a code the two-letter check would have refused - can be stopped is here. The single
+  // implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[Country.Impl])
+
+  // The invariant of this type, stated over the field the instance actually holds rather than over
+  // the argument a factory was given, because the class file of the implementation carries a
+  // public constructor whatever the source asked for: a class compiled outside this library can
+  // call it directly, and identity alone would then admit a country whose code is lower case,
+  // longer or shorter than two characters, or holds something that is not a letter at all - text
+  // that renders as a country and matches none. The statement is what [[Country.of]] establishes,
+  // over the same predicate that check is written with; it is the shape of the code and not
+  // membership of a list, because the set of countries is deliberately open (see [[Country.of]]).
+  JvmClosure.requireInvariant(
+    "its code is two upper-case ASCII letters",
+    code.length == 2 && code.forall(character => Country.isCodeChar(character)))
 
   /**
    * Returns the ISO-3166-1 alpha-3 three letter code of this country.
@@ -130,8 +126,8 @@ sealed abstract case class Country private (code: String) {
    * Country.EU.code3Char   // Left(Failure.MissingData("Unknown country: EU"))
    * }}}
    *
-   * The failure is `MissingData` because the reference data holds no row for the code, and
-   * its message is the one the type being ported used.
+   * The failure reports missing data, because the shortfall is a row the reference data does
+   * not hold rather than anything wrong with the country.
    *
    * The lookup goes through the hash index of the reference data rather than through its
    * published sorted table, so it costs one probe rather than a descent of the sorted table;
@@ -148,8 +144,7 @@ sealed abstract case class Country private (code: String) {
    * Returns the two letter code of this country.
    *
    * The bare code is the rendering of a country everywhere in this library - in reports, in
-   * logs and in JSON - so it is what this returns, rather than the generated form naming the
-   * type and its field.
+   * logs and in JSON - so it is what this returns.
    *
    * @return the two letter country code
    */
@@ -160,18 +155,17 @@ sealed abstract case class Country private (code: String) {
  * Provides the countries this library names, the factories that build one from text, and the
  * instances for the type.
  *
- * The constants are the selection of countries the type being ported declared, in the same
- * order and under the same names, grouped by region. They are a convenience for the code that
- * refers to a country by name and carry no privilege: a constant is the same value that the
- * matching call to [[of]] produces, so `Country.of("GB")` and `Country.GB` are equal.
+ * The constants name a selection of countries, declared in groups by region. They are a
+ * convenience for the code that refers to a country by name and carry no privilege: a constant
+ * is the same value that the matching call to [[of]] produces, so `Country.of("GB")` and
+ * `Country.GB` are equal.
  */
 object Country {
 
   /**
    * Tests whether a character is one the code space allows.
    *
-   * The code space is the upper case ASCII letters, which is the character matcher of the
-   * type being ported written as a predicate.
+   * The code space is the upper case ASCII letters `A` to `Z`, and nothing else.
    *
    * @param character  the character to test
    * @return true if the character may appear in a country code
@@ -179,21 +173,44 @@ object Country {
   private def isCodeChar(character: Char): Boolean = character >= 'A' && character <= 'Z'
 
   /**
+   * The length of an alpha-2 country code, which is the length [[of]] requires.
+   *
+   * Held as a constant because two routes read it: the check in [[of]], which is written as a
+   * pair of bounds around the code space, and [[parse]], which folds the case only of text that
+   * could still fold to a code - text no longer than this, since folding never produces fewer
+   * characters than it was given. The length is the one property of caller text that can be
+   * decided without looking at any of it.
+   */
+  private val CodeLength: Int = 2
+
+  /**
    * Builds a country from a code already known to be valid.
    *
    * This is the only place a country is instantiated, and it performs no check, so every
    * caller has to have established validity by other means. Two kinds of caller qualify: the
-   * constants below, whose codes are literals written in this file and read by the tests
-   * against [[of]]; and the factories below, which call this only on the value handed back
-   * by a check that passed. It is private because neither guarantee is available to code
-   * outside this object.
+   * constants below, whose codes are two letter upper case literals written in this file; and
+   * the factories below, which call this only on the value handed back by a check that
+   * passed. It is private because neither guarantee is available to code outside this object.
    *
    * @param code  the valid two letter country code
    * @return the country
    */
-  private def unsafe(code: String): Country = new Country(code) {}
+  private def unsafe(code: String): Country = new Impl(code)
 
-  //-------------------------------------------------------------------------
+  /**
+   * The one implementation of a country.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared here rather than written as an anonymous subclass at the instantiation
+   * site for two reasons, both about what the class file says: a private member class is one a
+   * compiler in another language refuses to name, where an anonymous class is public and can be
+   * instantiated directly by such a caller; and a named class can be compared against, which is
+   * what lets [[Country]] refuse in its own constructor to be any other implementation.
+   *
+   * @param code  the two letter country code, already established as valid by [[unsafe]]'s callers
+   */
+  private final class Impl(code: String) extends Country(code)
+
   // selected countries of Europe
   /** The region of 'EU' - Europe (special status in ISO-3166). */
   val EU: Country = unsafe("EU")
@@ -244,7 +261,6 @@ object Country {
   /** The country 'TR' - Turkey. */
   val TR: Country = unsafe("TR")
 
-  //-------------------------------------------------------------------------
   // selected countries of the Americas
   /** The country 'AR' - Argentina. */
   val AR: Country = unsafe("AR")
@@ -259,7 +275,6 @@ object Country {
   /** The country 'US' - United States. */
   val US: Country = unsafe("US")
 
-  //-------------------------------------------------------------------------
   // selected countries of the Rest of the World
   /** The country 'AU' - Australia. */
   val AU: Country = unsafe("AU")
@@ -306,17 +321,15 @@ object Country {
     AR, BR, CA, CL, MX, US,
     AU, CN, EG, HK, ID, IL, IN, JP, KR, MY, NZ, RU, SA, SG, TH, ZA)
 
-  //-------------------------------------------------------------------------
   /**
    * The ordering of countries, which is also their hashing.
    *
    * This is the only equality-bearing instance of the type: `Order` and `Hash` both extend
    * `Eq`, so declaring one instance is what keeps the three from ever disagreeing. Countries
-   * order alphabetically by their two letter code, which is the comparison of the type being
-   * ported, and they are equal when those codes are equal. The two agree without any further
-   * comparison, because the code is the whole of the value - `compare` returns zero exactly
-   * when the two countries are equal - so unlike several validated types in this library this
-   * one needs no secondary comparison to reconcile its ordering with its equality.
+   * order alphabetically by their two letter code and are equal when those codes are equal.
+   * The two agree without any further comparison, because the code is the whole of the value -
+   * `compare` returns zero exactly when the two countries are equal - so this type needs no
+   * secondary comparison to reconcile its ordering with its equality.
    *
    * @return the ordering of countries
    */
@@ -341,7 +354,6 @@ object Country {
    */
   implicit val show: Show[Country] = Show.show(_.code)
 
-  //-------------------------------------------------------------------------
   /**
    * Returns the set of countries this type knows about, ordered by code.
    *
@@ -350,10 +362,9 @@ object Country {
    * constants contribute exactly one country the data does not, the `EU` region, which the
    * standard treats specially and gives no three letter code, so the set holds 252 countries.
    *
-   * The set is fixed. Unlike the type being ported, whose equivalent grew as codes were
-   * requested because it exposed the contents of an instance cache, this one describes what
-   * the library knows rather than what it has been asked for, and building a country outside
-   * it - which [[of]] permits for any well formed code - leaves it unchanged.
+   * The set is fixed. It describes what the library knows rather than what it has been asked
+   * for, so building a country outside it - which [[of]] permits for any well formed code -
+   * leaves it unchanged.
    *
    * It is computed on first use and then held, because building it touches the whole of the
    * reference data and most callers never ask for it.
@@ -363,7 +374,6 @@ object Country {
   lazy val availableCountries: SortedSet[Country] =
     SortedSet.from(CountryData.alpha2Codes.iterator.map(unsafe) ++ constants.iterator)(order.toOrdering)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains a country from its ISO-3166-1 alpha-2 two letter code.
    *
@@ -380,10 +390,11 @@ object Country {
    * Country.of(" GB")   // Left - too long, and a character outside the code space
    * }}}
    *
-   * The three ways of being malformed share one message, as they do in the type being
-   * ported, because what the caller has to correct is the same in each case: the text does
-   * not have the shape of a country code. The result is the accumulating form so that this
-   * factory composes with the checks of a larger value being built around it.
+   * The three ways of being malformed - too short, too long, or holding a character outside
+   * the code space - share one message, because what the caller has to correct is the same in
+   * each case: the text does not have the shape of a country code. The result is the
+   * accumulating form so that this factory composes with the checks of a larger value being
+   * built around it.
    *
    * @param countryCode  the two letter country code, upper case ASCII
    * @return the country, or the failure describing why the code was rejected
@@ -391,7 +402,7 @@ object Country {
   def of(countryCode: String): ResultNec[Country] =
     Validate.toResult(
       Validate
-        .matches(isCodeChar, 2, 2, countryCode, "countryCode", "[A-Z][A-Z]")
+        .matches(isCodeChar, CodeLength, CodeLength, countryCode, "countryCode", "[A-Z][A-Z]")
         .map(unsafe))
 
   /**
@@ -400,7 +411,9 @@ object Country {
    * This is [[of]] applied to the upper case of the text, so it accepts everything `of`
    * accepts and additionally accepts any mixture of case. Nothing else differs: text whose
    * upper case is not a well formed code is rejected with the message `of` would give, which
-   * quotes the code as it was supplied rather than as it was folded.
+   * quotes the code exactly as `of` received it - the folded text for an input of two
+   * characters, which is the only length a fold can help, and the text as it was supplied for
+   * any other length.
    *
    * {{{
    * Country.parse("gb")   // Right(GB)
@@ -413,19 +426,28 @@ object Country {
    * program happens to be running - in some locales the upper case of a Latin letter is not
    * the letter this code space expects.
    *
+   * Text longer than [[CodeLength]] characters is not folded, since folding never makes a text
+   * shorter and no longer text can fold to a code; it is handed to [[of]] as it stands - where
+   * the length is tested before the characters are, so the rejection costs no scan either.
+   * Folding first made the cost of rejecting text proportional to its length, the whole of it
+   * being copied to be measured once and discarded (CWE-400/CWE-770). Every text that could
+   * still fold to a code is folded exactly as before, shorter text included - `ß` folds to the
+   * code `SS` and is accepted as it always was - and the message a rejection carries is `of`'s
+   * in both cases, quoting the text that reached it.
+   *
    * @param countryCode  the two letter country code, in any case
    * @return the country, or the failure describing why the code was rejected
    */
-  def parse(countryCode: String): ResultNec[Country] = of(countryCode.toUpperCase(Locale.ENGLISH))
+  def parse(countryCode: String): ResultNec[Country] =
+    of(if (countryCode.length <= CodeLength) countryCode.toUpperCase(Locale.ENGLISH) else countryCode)
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains a country from its ISO-3166-1 alpha-3 three letter code.
    *
-   * Unlike [[of]], this does not accept every well formed code, because a three letter code
-   * is not an identity of its own: it has to be translated into the two letter code that is,
-   * and only the codes held in [[CountryData]] can be translated. The two ways this can fail
-   * are therefore distinct, and each reports the failure the type being ported reported:
+   * This accepts fewer codes than [[of]] does, because a three letter code is not an identity
+   * of its own: it has to be translated into the two letter code that is, and only the codes
+   * held in [[CountryData]] can be translated. The two ways this can fail are therefore
+   * distinct, and each reports its own cause:
    *
    * {{{
    * Country.of3Char("GBR")   // Right(GB)
@@ -457,19 +479,17 @@ object Country {
           .toRight(Failure.Parsing(s"Unknown country code: $code"))
           .map(unsafe))
 
-  //-------------------------------------------------------------------------
   /**
    * The JSON codec for countries.
    *
    * A country is written as the bare string of its two letter code, so `Country.GB` is the
-   * JSON `"GB"` rather than an object naming the field. That is the form the type being
-   * ported wrote, which keeps documents readable and keeps a country usable wherever a
-   * string is expected.
+   * JSON `"GB"` rather than an object naming the field. That keeps documents readable and
+   * keeps a country usable wherever a string is expected.
    *
    * Reading goes through [[of]] and not through [[parse]], so the codec accepts exactly the
    * canonical form it writes: a document holding `"gb"` is rejected rather than quietly
-   * folded, which is the behaviour of the string conversion this replaces. Text that names
-   * no well formed code is reported with the message of the rejecting check.
+   * folded. Text that names no well formed code is reported with the message of the rejecting
+   * check.
    *
    * The codec is assembled from functions at compile time and reads nothing about the type
    * while it runs.

@@ -23,120 +23,48 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * Test [[GlobalHolidayCalendars]].
  *
  * [[GlobalHolidayCalendars]] is a rule engine rather than a data file: each of its twenty-five
- * generators expresses the legislation of one financial centre as a function of the year and
- * applies it across the whole range of years the calendar covers. Nothing in the generator says
- * which dates come out, which is exactly why this spec exists - the expected dates transcribed
- * below were established by hand from the published holiday schedules, Hansard records and
- * government sources cited in the comments, and they are the only independent evidence that the
- * rules produce the calendar they are meant to produce.
+ * generators expresses the legislation of one financial centre as a function of the year, and
+ * nothing in a generator says which dates come out. The expected dates below were established by
+ * hand from the published schedules, Hansard records and government sources cited alongside them -
+ * the only independent evidence that the rules produce the intended calendars.
  *
- * ===What is asserted, and how much of it===
+ * Every year-row is checked for '''every day of that year''': the calendar must report a holiday
+ * on exactly the dates the row names and on the weekend, and a business day on every other date,
+ * so the absence of a holiday is asserted as strongly as its presence.
  *
- * Two hundred and one year-rows are asserted, distributed across the twenty-five calendars in
- * the proportions the Java original used, plus two hundred and one rows of Easter Sunday
- * covering 1900 to 2099. Every year-row is checked for '''every day of that year''': a row
- * lists the holidays, and the assertion is that the calendar reports a holiday on exactly those
- * dates and on the weekend, and a business day on every other date. A row that merely listed
- * dates the calendar agrees about would prove far less, because a generator that produced a
- * holiday nobody asked for would still pass it.
- *
- * Each Java `@MethodSource` provider is transcribed row for row into one private table, and
- * each Java test method becomes one test of the same name driving that table through
- * [[org.scalatest.prop.TableDrivenPropertyChecks]]. Every provider fed exactly one method in
- * the original, so every table here is read by exactly one test, and the method-level mapping
- * of the migration stays one-to-one.
- *
- * ===Why the fixtures call the generators===
- *
- * The twenty-five calendars are built by calling the generators directly, which is what makes
- * this a test of [[GlobalHolidayCalendars]] rather than of `StandardHolidayCalendars`: the
- * latter holds the same calendars memoised as values, so testing through it would assert that
- * its table names the right generators and leave the rules themselves unasserted. Production
- * code does not memoise a generator - that is `StandardHolidayCalendars`' job - so each fixture
- * here is a `lazy val`, generated at most once per suite run and only if the test that reads it
- * runs at all. Regenerating a hundred and fifty years of holidays inside a table row would make
- * this spec pathologically slow for no additional assertion.
- *
- * `NZBD` is generated and asserted here although it has no `HolidayCalendarIds` constant, which
- * is why it is reached through its generator alone.
- *
- * ===Where an exception would be the wrong answer===
- *
- * Every generator is total: a year always has holidays, so there is no error channel to assert
- * and nothing in this spec expects a `Left` or an exception. The Java original asserted none
- * either. Numerical parity of these calendars against the library being ported, for the years
- * no row below names, is a separate concern owned by the holiday parity fixture and its spec;
- * this spec carries the hand-verified rows and nothing else, and reads no resource of any kind.
- *
- * @see [[HolidayCalendar]] for the sealed family the generators produce values of
- * @see [[ImmutableHolidayCalendar]] for the representation and its merge
+ * The calendars come from the generators directly rather than from `StandardHolidayCalendars`,
+ * which holds the same calendars memoised and would only prove that its table names the right
+ * generators. Each fixture is a `lazy val` because regenerating a century and a half of holidays
+ * inside a table row would be pathologically slow.
  */
 final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
   //-------------------------------------------------------------------------
-  // helpers shared by every test, in place of the mutable accumulation of the Java original
-  //-------------------------------------------------------------------------
-  /**
-   * A month and a day, the shape in which the expected holidays of a year are written.
-   *
-   * A row states its year once and its holidays as month-day pairs, so that the year cannot
-   * disagree with itself across a row of a dozen dates.
-   *
-   * @param month  the month, from 1 (January) to 12 (December)
-   * @param day  the day of the month
-   * @return the month-day
-   */
+  /** A month (1 to 12) and a day: a row states its year once, so it cannot disagree with itself. */
   private def md(month: Int, day: Int): MonthDay = MonthDay.of(month, day)
 
-  /**
-   * Resolves month-day pairs against a year, giving the expected holidays of that year.
-   *
-   * @param year  the year to resolve against
-   * @param monthDays  the month-day pairs, in the order they are written in the row
-   * @return the dates, in the order they were given
-   */
+  /** Resolves the month-day pairs of a row against its year, in the order they are written. */
   private def mds(year: Int, monthDays: MonthDay*): List[LocalDate] =
     monthDays.iterator.map(monthDay => monthDay.atYear(year)).toList
 
-  /**
-   * Every day of a year, from the first of January to the last of December.
-   *
-   * The iterator is bounded by the length of the year, so a leap day is included in the years
-   * that have one, matching the `lengthOfYear` loop of the Java original.
-   *
-   * @param year  the year
-   * @return the days of that year in order
-   */
+  /** Every day of a year, bounded by the length of the year so that a leap day is included. */
   private def daysOfYear(year: Int): Iterator[LocalDate] = {
     val firstDay = LocalDate.of(year, 1, 1)
     Iterator.iterate(firstDay)(day => day.plusDays(1)).take(firstDay.lengthOfYear)
   }
 
   /**
-   * Whether a date falls at the Saturday-Sunday weekend.
-   *
-   * Twenty-four of the twenty-five calendars close at that weekend, and their rows list only
-   * the holidays that are not weekend days, so the weekend has to be added back before the
-   * expectation is complete. Budapest is the exception and is handled by its own assertion.
-   *
-   * @param day  the date
-   * @return true if the date is a Saturday or a Sunday
+   * Whether a date falls at the Saturday-Sunday weekend. Twenty-four of the twenty-five calendars
+   * close at that weekend and their rows need not list weekend days, so the weekend is added back
+   * before the expectation is complete; Budapest is the exception and has its own assertion.
    */
   private def isWeekend(day: LocalDate): Boolean =
     day.getDayOfWeek == SATURDAY || day.getDayOfWeek == SUNDAY
 
   /**
-   * Asserts a calendar over a whole year against the holidays a row lists.
-   *
-   * The expectation for a date is that it is a holiday if and only if the row names it or it
-   * falls at the weekend, which asserts the absence of a holiday as strongly as its presence.
-   * The date is carried in the clue so that a failure names the day that disagreed rather than
-   * only the year.
-   *
-   * @param calendar  the calendar under test
-   * @param year  the year to assert
-   * @param holidays  the dates of that year the calendar should report as holidays, weekends aside
-   * @return the assertion
+   * Asserts a calendar over a whole year: a date is a holiday if and only if the row names it or
+   * it falls at the weekend, so the absence of a holiday is asserted as strongly as its presence.
+   * The date is carried in the clue so that a failure names the day that disagreed.
    */
   private def assertHolidays(
       calendar: HolidayCalendar,
@@ -152,20 +80,12 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   /**
-   * Asserts the Budapest calendar over a whole year against the holidays and working days a row
-   * lists.
-   *
-   * Budapest is the one centre whose weekend is a single day. Its calendar declares Sunday as
-   * its only weekend day and lists every Saturday that is not worked as a holiday, because a
-   * Hungarian holiday that falls midweek is bridged by working the Saturday that year's decree
-   * names. The expectation is therefore the holidays and the weekend '''less''' the working
-   * days: a Saturday named as a working day is a business day even though every other Saturday
-   * is not, and a bridged holiday is a holiday even though it is a Monday or a Friday.
-   *
-   * @param year  the year to assert
-   * @param holidays  the dates of that year the calendar should report as holidays, the weekend aside
-   * @param workDays  the dates that are business days in spite of the holidays and the weekend
-   * @return the assertion
+   * Asserts the Budapest calendar over a whole year. Budapest is the one centre whose weekend is a
+   * single day: its calendar declares Sunday as its only weekend day and lists every Saturday that
+   * is not worked as a holiday, because a Hungarian holiday falling midweek is bridged by working
+   * the Saturday that year's decree names. The expectation is therefore the holidays and the
+   * weekend '''less''' the working days - a Saturday named as a working day is a business day, and
+   * a bridged Monday or Friday is a holiday.
    */
   private def assertBudapest(
       year: Int,
@@ -183,18 +103,11 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
 
   //-------------------------------------------------------------------------
   /**
-   * Easter Sunday from 1900 to 2099, as published.
-   *
-   * The columns are the day of the month, the month and the year, in the order the Java
-   * original wrote them. The table opens with 1900 twice; the duplicate is in the original and
-   * is transcribed rather than tidied away, because a table that has been edited is a table
-   * whose provenance has to be re-established.
-   *
-   * This is the cheapest high-value assertion in the spec. The anonymous Gregorian algorithm
-   * behind [[GlobalHolidayCalendars.easter]] feeds Good Friday, Easter Monday, Ascension,
-   * Whitsun, Corpus Christi and Carnival across most of the European and Latin American
-   * calendars, so an error here would show up as a cascade of failures in the calendars below
-   * and is worth isolating.
+   * Easter Sunday from 1900 to 2099, as published, in columns of day, month and year; the table opens
+   * with 1900 twice and the duplicate asserts that year a second time. The anonymous Gregorian
+   * algorithm behind [[GlobalHolidayCalendars.easter]] feeds Good Friday, Easter Monday, Ascension,
+   * Whitsun, Corpus Christi and Carnival across most of the European and Latin American calendars,
+   * so an error here would cascade through the calendars below.
    */
   private val data_easter: TableFor3[Int, Int, Int] = Table(
     ("day", "month", "year"),
@@ -407,18 +320,13 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The London calendar, `GBLO`, generated from the rules of the English bank holidays. */
   private lazy val GBLO: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateLondon()
 
   /**
-   * The London expectations, transcribed row for row.
-   *
-   * The years before 1971 are the ones that predate the Banking and Financial Dealings Act and
-   * whose holidays were set year by year; the Hansard citations are the record of that and are
-   * kept because they are the provenance of dates no rule produces. From 1971 the rules apply,
-   * and the later rows are the published schedule - including the additional holidays for the
-   * Diamond Jubilee in 2012, the Platinum Jubilee and the state funeral in 2022, and the
-   * coronation in 2023.
+   * The rows before 1971 predate the Banking and Financial Dealings Act, when holidays were set
+   * year by year, and the Hansard citations below are the provenance of dates no rule produces. From
+   * 1971 the rules apply and the later rows are the published schedule, including the Diamond
+   * Jubilee in 2012, the Platinum Jubilee and state funeral in 2022 and the coronation in 2023.
    */
   private val data_gblo: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -435,7 +343,6 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
     (1969, mds(1969, md(4, 4), md(4, 7), md(5, 26), md(9, 1), md(12, 25), md(12, 26))),
     // 25th May, 31st Aug - http://hansard.millbanksystems.com/written_answers/1967/jul/28/bank-holidays
     (1970, mds(1970, md(3, 27), md(3, 30), md(5, 25), md(8, 31), md(12, 25), md(12, 28))),
-    // applying rules
     (1971, mds(1971, md(4, 9), md(4, 12), md(5, 31), md(8, 30), md(12, 27), md(12, 28))),
     (2009, mds(2009, md(1, 1), md(4, 10), md(4, 13), md(5, 4), md(5, 25), md(8, 31), md(12, 25), md(12, 28))),
     (2010, mds(2010, md(1, 1), md(4, 2), md(4, 5), md(5, 3), md(5, 31), md(8, 30), md(12, 27), md(12, 28))),
@@ -469,19 +376,11 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Paris calendar, `FRPA`. */
   private lazy val FRPA: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateParis()
 
-  /**
-   * The Paris expectations, transcribed row for row.
-   *
-   * France does not move a holiday that falls at a weekend, which is what makes these rows worth
-   * asserting day by day: the fixed dates appear in the list only in the years they fall on a
-   * working day, and the calendar must not invent a substitute in the years they do not.
-   */
+  /** France does not move a holiday off a weekend, so no substitute day may be closed for one. */
   private val data_frpa: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
-    // dates not shifted if fall on a weekend
     (2003, mds(2003, md(1, 1), md(4, 18), md(4, 21), md(5, 1), md(5, 8), md(5, 29),
       md(6, 9), md(7, 14), md(8, 15), md(11, 1), md(11, 11), md(12, 25), md(12, 26))),
     (2004, mds(2004, md(1, 1), md(4, 9), md(4, 12), md(5, 1), md(5, 8), md(5, 20), md(5, 31),
@@ -512,16 +411,9 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Frankfurt calendar, `DEFR`. */
   private lazy val DEFR: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateFrankfurt()
 
-  /**
-   * The Frankfurt expectations, transcribed row for row.
-   *
-   * The 2017 row is the one that carries Reformation Day on the 31st of October, a one-off
-   * national holiday for the five-hundredth anniversary, and is why that row has a date the
-   * other three do not.
-   */
+  /** The 2017 row alone carries Reformation Day on the 31st of October, a one-off national holiday. */
   private val data_defr: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
     // dates not shifted if fall on a weekend
@@ -541,10 +433,8 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Zurich calendar, `CHZU`. */
   private lazy val CHZU: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateZurich()
 
-  /** The Zurich expectations, transcribed row for row. */
   private val data_chzu: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
     // dates not shifted if fall on a weekend
@@ -566,31 +456,21 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The European TARGET calendar, `EUTA`. */
   private lazy val EUTA: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateEuropeanTarget()
 
   /**
-   * The TARGET expectations, transcribed row for row.
-   *
-   * TARGET did not exist before 1997, so its generator covers 1997 to 2099 rather than 1950 to
-   * 2099 and every row below lies inside that range. The first rows are the reason the range
-   * matters: through the testing phase of 1997 and 1998 the system closed only on New Year's Day
-   * and Christmas Day, 1999 added New Year's Eve, and the settled schedule - New Year's Day,
-   * Good Friday, Easter Monday, Labour Day, Christmas Day and the 26th of December - applies
-   * only from 2000, with 2001 keeping New Year's Eve as well.
+   * TARGET did not exist before 1997, so its generator covers 1997 to 2099 rather than 1950 to 2099
+   * and every row lies inside that range. Through the testing phase of 1997 and 1998 it closed only
+   * on New Year's Day and Christmas Day; 1999 and 2001 add New Year's Eve, and the settled schedule -
+   * those two plus Good Friday, Easter Monday, Labour Day and the 26th of December - runs from 2000.
    */
   private val data_euta: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
-    // 1997 - 1998 (testing phase), Jan 1, christmas day
     (1997, mds(1997, md(1, 1), md(12, 25))),
     (1998, mds(1998, md(1, 1), md(12, 25))),
-    // in 1999, Jan 1, christmas day, Dec 26, Dec 31
     (1999, mds(1999, md(1, 1), md(12, 25), md(12, 31))),
-    // in 2000, Jan 1, good friday, easter monday, May 1, christmas day, Dec 26
     (2000, mds(2000, md(1, 1), md(4, 21), md(4, 24), md(5, 1), md(12, 25), md(12, 26))),
-    // in 2001, Jan 1, good friday, easter monday, May 1, christmas day, Dec 26, Dec 31
     (2001, mds(2001, md(1, 1), md(4, 13), md(4, 16), md(5, 1), md(12, 25), md(12, 26), md(12, 31))),
-    // from 2002, Jan 1, good friday, easter monday, May 1, christmas day, Dec 26
     (2002, mds(2002, md(1, 1), md(3, 29), md(4, 1), md(5, 1), md(12, 25), md(12, 26))),
     (2003, mds(2003, md(1, 1), md(4, 18), md(4, 21), md(5, 1), md(12, 25), md(12, 26))),
     // http://www.ecb.europa.eu/home/html/holidays.en.html
@@ -604,18 +484,13 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The US government securities calendar, `USGS`. */
   private lazy val USGS: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateUsGovtSecurities()
 
   /**
-   * The US government securities expectations, transcribed row for row.
-   *
-   * These twenty rows are the SIFMA recommendations, and they are the most exacting rows in the
-   * spec because the US market has three different weekend rules at once: most federal holidays
-   * shift from Sunday to the following Monday and from Saturday to the preceding Friday, but
-   * Independence Day and Christmas Day shift only in one direction in some years, Veterans Day
-   * disappears in the years it falls at a weekend, and Good Friday is observed although it is
-   * not a federal holiday at all.
+   * The SIFMA recommendations, and the most exacting rows here because more than one weekend rule
+   * applies at once: Independence Day and Christmas Day shift both ways - Sunday to the following
+   * Monday, Saturday to the preceding Friday - while New Year's Day and Veterans Day are not observed
+   * at all when they fall on a Saturday, and Good Friday is observed though it is not federal.
    */
   private val data_usgs: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -668,20 +543,15 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The New York state calendar, `USNY`. */
   private lazy val USNY: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateUsNewYork()
 
   /**
-   * The New York state expectations, transcribed row for row.
-   *
-   * New York observes the federal holidays without Good Friday, which is what distinguishes
-   * these rows from the government securities rows above. The 2022 row carries Juneteenth on
-   * the 20th of June, the first year that holiday applies.
+   * New York observes the federal holidays without Good Friday, which distinguishes these rows from
+   * the government securities rows above; the 2022 row carries Juneteenth on the 20th of June.
    */
   private val data_usny: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
     // http://www.cs.ny.gov/attendance_leave/2012_legal_holidays.cfm
-    // change year for other pages
     (2008, mds(2008, md(1, 1), md(1, 21), md(2, 18), md(5, 26), md(7, 4),
       md(9, 1), md(10, 13), md(11, 11), md(11, 27), md(12, 25))),
     (2009, mds(2009, md(1, 1), md(1, 19), md(2, 16), md(5, 25), md(7, 4),
@@ -710,15 +580,11 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The New York Fed calendar, `NYFD`. */
   private lazy val NYFD: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateNewYorkFed()
 
   /**
-   * The New York Fed expectations, transcribed row for row.
-   *
-   * The Fed is the calendar that drops a holiday rather than moving it: a holiday that falls on
-   * a Saturday is not observed at all, which is why the 2004 and 2010 rows have no Christmas Day
-   * and the 2009 and 2015 rows have no Independence Day.
+   * The Fed drops a holiday that falls on a Saturday rather than moving it, which is why the 2004
+   * and 2010 rows have no Christmas Day and the 2009 and 2015 rows no Independence Day.
    */
   private val data_nyfd: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -767,15 +633,11 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The New York Stock Exchange calendar, `NYSE`. */
   private lazy val NYSE: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateNewYorkStockExchange()
 
   /**
-   * The New York Stock Exchange expectations, transcribed row for row.
-   *
-   * The exchange observes Good Friday but neither Columbus Day nor Veterans Day, which is what
-   * distinguishes these rows from both sets above. The 2012 row carries the 30th of October, the
-   * second day the exchange was closed for Hurricane Sandy.
+   * The exchange observes Good Friday but neither Columbus Day nor Veterans Day; the 2012 row
+   * carries the 30th of October, the Hurricane Sandy closure.
    */
   private val data_nyse: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -806,19 +668,14 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Tokyo calendar, `JPTO`. */
   private lazy val JPTO: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateTokyo()
 
   /**
-   * The Tokyo expectations, transcribed row for row.
-   *
-   * Japan has two rules no other calendar here has, and these rows are what prove both. A
-   * holiday that falls on a Sunday is observed on the following Monday, and a day that lies
-   * between two holidays becomes a citizens' holiday itself - which is where the extra day in
-   * the 2015 row, between Respect for the Aged Day and the autumn equinox, comes from. The rows
-   * also carry the one-off moves: the 2019 enthronement year with its ten-day Golden Week and
-   * its 22nd of October, and the 2020 and 2021 rows with the marine, mountain and sports days
-   * moved for the Olympic Games.
+   * Japan has two rules no other calendar here has: a holiday that falls on a Sunday is observed on
+   * the following Monday, and a day between two holidays becomes a citizens' holiday itself - the
+   * source of the 22nd of September 2015, between Respect for the Aged Day and the autumn equinox.
+   * The one-off moves are here too: the 2019 enthronement year with its extended Golden Week and its
+   * 22nd of October, and the Olympic moves of the marine, mountain and sports days.
    */
   private val data_jpto: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -874,17 +731,13 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Sydney calendar, `AUSY`. */
   private lazy val AUSY: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateSydney()
 
   /**
-   * The Sydney expectations, transcribed row for row.
-   *
-   * New South Wales observes the Easter weekend in full - Good Friday, Easter Saturday, Easter
-   * Sunday and Easter Monday - which is why these rows list four consecutive days in March or
-   * April, including days that fall at the weekend and would otherwise not need listing. The
-   * 2022 row carries the 22nd of September, the national day of mourning, and the 2026 row the
-   * 27th of April, Anzac Day observed on the Monday.
+   * New South Wales observes the Easter weekend in full - Good Friday, Easter Saturday, Easter Sunday
+   * and Easter Monday - which is why rows such as 2014 list four consecutive days including weekend
+   * days. The 2022 row carries the national day of mourning on the 22nd of September, the 2026 row
+   * Anzac Day observed on Monday the 27th of April.
    */
   private val data_ausy: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -912,21 +765,16 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Brazil calendar, `BRBD`. */
   private lazy val BRBD: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateBrazil()
 
   /**
-   * The Brazil expectations, transcribed row for row.
-   *
-   * Carnival is the pair of days before Ash Wednesday, forty-eight and forty-seven days before
-   * Easter, which is the reason each row opens with two consecutive February or March dates.
-   * The 2024 row carries the 20th of November, Black Consciousness Day, from the year it became
-   * a national holiday.
+   * Carnival is the pair of days before Ash Wednesday, forty-eight and forty-seven days before Easter,
+   * which is why each row opens with two consecutive February or March dates. The 2024 row carries
+   * Black Consciousness Day on the 20th of November, which applies from 2024 onwards.
    */
   private val data_brbd: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
     // http://www.planalto.gov.br/ccivil_03/leis/2002/L10607.htm
-    // fixing data
     (2013, mds(2013, md(1, 1), md(2, 11), md(2, 12), md(3, 29), md(4, 21), md(5, 1),
       md(5, 30), md(9, 7), md(10, 12), md(11, 2), md(11, 15), md(12, 25))),
     (2014, mds(2014, md(1, 1), md(3, 3), md(3, 4), md(4, 18), md(4, 21), md(5, 1),
@@ -945,15 +793,11 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Montreal calendar, `CAMO`. */
   private lazy val CAMO: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateMontreal()
 
   /**
-   * The Montreal expectations, transcribed row for row.
-   *
    * Quebec observes the National Holiday on the 24th of June and Good Friday rather than Easter
-   * Monday, which is what distinguishes these rows from Toronto's. The 2022 row carries the 30th
-   * of September, the National Day for Truth and Reconciliation.
+   * Monday; the 2022 row carries Truth and Reconciliation Day on the 30th of September.
    */
   private val data_camo: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -973,16 +817,13 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Toronto calendar, `CATO`. */
   private lazy val CATO: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateToronto()
 
   /**
-   * The Toronto expectations, transcribed row for row.
-   *
    * Ontario observes Family Day, Victoria Day, the Civic Holiday and Remembrance Day, and moves
-   * Christmas Day and Boxing Day off the weekend as a pair, which is the reason the December
-   * dates differ from year to year rather than staying on the 25th and 26th. The 2025 row
-   * carries the 30th of September.
+   * Christmas Day and Boxing Day off the weekend as a pair, which is why the December dates differ
+   * from row to row rather than staying on the 25th and 26th. The 2025 row carries Truth and
+   * Reconciliation Day on the 30th of September.
    */
   private val data_cato: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1012,15 +853,11 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Prague calendar, `CZPR`. */
   private lazy val CZPR: ImmutableHolidayCalendar = GlobalHolidayCalendars.generatePrague()
 
   /**
-   * The Prague expectations, transcribed row for row.
-   *
    * The Czech holidays are fixed dates that are not moved off the weekend, plus Easter Monday
-   * throughout and Good Friday from 2016 - which is exactly what the last two rows carry and the
-   * first eight do not.
+   * throughout and Good Friday from 2016 - which the 2016 and 2017 rows carry and the rest do not.
    */
   private val data_czpr: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1054,16 +891,12 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Copenhagen calendar, `DKCO`. */
   private lazy val DKCO: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateCopenhagen()
 
   /**
-   * The Copenhagen expectations, transcribed row for row.
-   *
-   * Denmark observes Maundy Thursday, Great Prayer Day - the fourth Friday after Easter - and
-   * the day after Ascension, none of which appear in any other calendar here, which is why each
-   * row carries three dates in the spring that look unrelated to Easter until they are counted
-   * from it.
+   * Denmark observes Maundy Thursday, Great Prayer Day - the fourth Friday after Easter - and the day
+   * after Ascension, none of which appears in any other calendar here, which is why each row carries
+   * spring dates that look unrelated to Easter until they are counted from it.
    */
   private val data_dkco: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1084,20 +917,12 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Budapest calendar, `HUBU`. */
   private lazy val HUBU: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateBudapest()
 
   /**
-   * The Budapest expectations, transcribed row for row, with the working days of each year.
-   *
-   * This is the one provider of the Java original with three columns, and it stays that way
-   * because Budapest is the one calendar whose weekend is a single day. Hungary bridges a
-   * holiday that falls on a Tuesday or a Thursday by closing the intervening Monday or Friday
-   * and working a Saturday in compensation, so the year's working Saturdays are as much a part
-   * of the expectation as its holidays: the second column lists what the calendar must close,
-   * and the third lists what it must open in spite of the first column and the weekend. Which
-   * Saturday is worked is set by decree each year, which is why the third column cannot be
-   * derived and has to be transcribed.
+   * The Budapest expectations need a third column: the second lists what the calendar must close, the
+   * third the compensating working Saturdays it must open in spite of the second column and the
+   * weekend. Which Saturday is worked is set by decree each year, so it cannot be derived.
    */
   private val data_hubu: TableFor3[Int, List[LocalDate], List[LocalDate]] = Table(
     ("year", "holidays", "workDays"),
@@ -1142,16 +967,12 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Mexico City calendar, `MXMC`. */
   private lazy val MXMC: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateMexicoCity()
 
   /**
-   * The Mexico City expectations, transcribed row for row.
-   *
-   * Three Mexican holidays are the first Monday of February, the third Monday of March and the
-   * third Monday of November, which is why the February, March and November dates move by a week
-   * from row to row while the 16th of September, the 2nd of November, the 12th of December and
-   * Christmas Day do not. The 2024 row carries the 1st of October, the presidential inauguration.
+   * Three Mexican holidays are the first Monday of February, the third Monday of March and the third
+   * Monday of November, which is why those dates move by a week from row to row while the fixed
+   * dates do not. The 2024 row carries the presidential inauguration on the 1st of October.
    */
   private val data_mxmc: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1176,16 +997,12 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Oslo calendar, `NOOS`. */
   private lazy val NOOS: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateOslo()
 
   /**
-   * The Oslo expectations, transcribed row for row.
-   *
-   * Norway does not move a holiday off the weekend, so the rows for 2011, 2016 and 2017 are the
-   * interesting ones: New Year's Day, Labour Day, Constitution Day or Christmas Eve fall at a
-   * weekend in those years and simply do not appear, and the calendar must not substitute a day
-   * for them.
+   * Norway does not move a holiday off the weekend, so the 2011, 2016 and 2017 rows are the
+   * interesting ones: New Year's Day, Labour Day, Constitution Day or Christmas Eve fall at a weekend
+   * in those years, simply do not appear, and get no substitute.
    */
   private val data_noos: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1214,17 +1031,12 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Auckland calendar, `NZAU`. */
   private lazy val NZAU: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateAuckland()
 
   /**
-   * The Auckland expectations, transcribed row for row.
-   *
-   * New Zealand moves a public holiday that falls at a weekend to the following Monday, or to
-   * the Tuesday where the Monday is already taken, and adds the anniversary day of the province
-   * - which for Auckland is the Monday nearest the 29th of January. That anniversary is the only
-   * difference between these rows and Wellington's, and it is why the January dates here fall in
-   * the last week of the month rather than the third.
+   * New Zealand moves a public holiday that falls at a weekend to the following Monday, or to the
+   * Tuesday where the Monday is already taken, and adds the province's anniversary day - for Auckland
+   * the Monday nearest the 29th of January, the only difference from Wellington's rows.
    */
   private val data_nzau: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1246,15 +1058,9 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Wellington calendar, `NZWE`. */
   private lazy val NZWE: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateWellington()
 
-  /**
-   * The Wellington expectations, transcribed row for row.
-   *
-   * Wellington's anniversary day is the Monday nearest the 22nd of January, which is the single
-   * respect in which these rows differ from Auckland's.
-   */
+  /** Wellington's anniversary day is the Monday nearest the 22nd of January, unlike Auckland's. */
   private val data_nzwe: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
     // https://www.govt.nz/browse/work/public-holidays-and-work/public-holidays-and-anniversary-dates/
@@ -1275,20 +1081,13 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /**
-   * The national New Zealand calendar, `NZBD`.
-   *
-   * This calendar is generated and asserted although it has no `HolidayCalendarIds` constant,
-   * exactly as in the library being ported, so it is reached through its generator alone.
-   */
+  /** `NZBD` has no `HolidayCalendarIds` constant, so it is reached through its generator alone. */
   private lazy val NZBD: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateNewZealand()
 
   /**
-   * The national New Zealand expectations, transcribed row for row.
-   *
-   * These are the public holidays of the whole country, so no provincial anniversary day
-   * appears - which is the only respect in which they differ from the two provincial calendars
-   * above. The 2025 row carries the 20th of June, Matariki.
+   * The public holidays of the whole country, so no provincial anniversary day appears - the only
+   * respect in which these rows differ from the provincial calendars above. The 2025 row carries
+   * Matariki on the 20th of June.
    */
   private val data_nzbd: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1312,16 +1111,13 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Warsaw calendar, `PLWA`. */
   private lazy val PLWA: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateWarsaw()
 
   /**
-   * The Warsaw expectations, transcribed row for row.
-   *
-   * Poland observes Epiphany from 2011, Corpus Christi on the Thursday sixty days after Easter,
-   * and the exchange closes on Christmas Eve and New Year's Eve in the years they fall on a
-   * working day - which is why those two dates come and go across the rows. The 2018 row carries
-   * the 12th of November, the centenary of independence.
+   * Poland observes Epiphany from 2011 and Corpus Christi on the Thursday sixty days after Easter,
+   * and the exchange closes on Christmas Eve every year but on New Year's Eve only when it falls on a
+   * Monday, a Thursday or a Friday - hence no 31st of December in the 2013 and 2014 rows. The 2018 row
+   * carries the centenary of independence on the 12th of November.
    */
   private val data_plwa: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1347,16 +1143,12 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Stockholm calendar, `SEST`. */
   private lazy val SEST: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateStockholm()
 
   /**
-   * The Stockholm expectations, transcribed row for row.
-   *
-   * Sweden observes Midsummer Eve - the Friday between the 19th and the 25th of June - and the
-   * Swedish fixing calendar closes on Christmas Eve and New Year's Eve, none of which is moved
-   * when it falls at a weekend. The 2016 row is the shortest of the three for precisely that
-   * reason.
+   * Sweden observes Midsummer Eve - the Friday between the 19th and the 25th of June - and the fixing
+   * calendar closes on Christmas Eve and New Year's Eve, none of which is moved off a weekend, which
+   * is why the 2016 row is the shortest of the three.
    */
   private val data_sest: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1375,17 +1167,13 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   }
 
   //-------------------------------------------------------------------------
-  /** The Johannesburg calendar, `ZAJO`. */
   private lazy val ZAJO: ImmutableHolidayCalendar = GlobalHolidayCalendars.generateJohannesburg()
 
   /**
-   * The Johannesburg expectations, transcribed row for row.
-   *
-   * South Africa moves a holiday that falls on a Sunday to the following Monday and adds an
-   * election day when one is held, which is where the 3rd of August 2016 and the September dates
-   * come from. The 2017 row lists the 16th of December twice; the duplicate is in the original
-   * and is transcribed rather than tidied away, and it changes nothing because the expectation
-   * is membership of the list.
+   * South Africa moves a holiday that falls on a Sunday to the following Monday and adds an election
+   * day when one is held, which is where the 3rd of August 2016 comes from and why the 2017 row names
+   * the 25th of September rather than the 24th. That row lists the 16th of December twice; the
+   * duplicate changes nothing, because the expectation is membership of the list.
    */
   private val data_zajo: TableFor2[Int, List[LocalDate]] = Table(
     ("year", "holidays"),
@@ -1407,16 +1195,10 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
   //-------------------------------------------------------------------------
   /**
    * Merging two generated calendars keeps every holiday of both, for ninety years of dates.
-   *
-   * [[ImmutableHolidayCalendar.combined]] merges the stored months of its two arguments rather
-   * than reading both on every query, so what it produces has to be checked against the union of
-   * the two calendars it came from rather than trusted. Tokyo and New York are the pair the Java
-   * original used, and they are a demanding pair: their holidays barely overlap, so almost every
-   * holiday of the merged calendar comes from exactly one side.
-   *
-   * Both fixtures are typed as [[ImmutableHolidayCalendar]] because that is what the generators
-   * return, which is how the two casts of the Java original disappear rather than becoming
-   * unchecked casts here.
+   * [[ImmutableHolidayCalendar.combined]] merges the stored months of its two arguments rather than
+   * reading both on every query, so what it produces has to be checked against the union of the two
+   * calendars it came from. Tokyo and New York are a demanding pair: their holidays barely overlap,
+   * so almost every holiday of the merged calendar comes from exactly one side.
    */
   test("test_combinedWith") {
     val combined = ImmutableHolidayCalendar.combined(JPTO, USNY)
@@ -1433,12 +1215,9 @@ final class GlobalHolidayCalendarsSpec extends AnyFunSuite with Matchers with Ta
 
   //-------------------------------------------------------------------------
   /**
-   * The Christmas and Boxing Day bumps, pinned across the four ways the pair can fall.
-   *
-   * These two helpers are shared by most of the calendars that observe Christmas, and the four
-   * years below cover every case between them: the pair needs no bump, Christmas is bumped over
-   * a whole weekend, Christmas is bumped over a Sunday, and Boxing Day alone is bumped. Each
-   * year is named by the weekday Christmas falls on, because that is what selects the case.
+   * The Christmas and Boxing Day bumps, pinned across the four ways the pair can fall: no bump,
+   * Christmas bumped over a whole weekend, Christmas bumped over a Sunday, and Boxing Day alone
+   * bumped. Both helpers are shared by most of the calendars that observe Christmas.
    */
   test("test_christmas") {
     // christmas on Friday

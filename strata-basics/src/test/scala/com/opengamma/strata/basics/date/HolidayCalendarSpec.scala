@@ -25,71 +25,21 @@ import com.opengamma.strata.collect.testkit.TestHelper._
 /**
  * Test [[HolidayCalendar]].
  *
- * The Java original ran fifty-one annotated methods - thirty-nine plain tests and twelve
- * parameterised ones fed by ten data providers - and all fifty-one are here, one test each,
- * under the name the Java method had. Every provider is transcribed row for row into a table,
- * and the two providers that fed two methods each (`data_shift`, which drove both `test_shift`
- * and `test_adjustBy`, and `data_lastBusinessDayOfMonth`, which drove both
- * `test_lastBusinessDayOfMonth` and `test_isLastBusinessDayOfMonth`) are hoisted into one value
- * apiece and read by both of their tests, exactly as the Java file shared one provider method.
- *
- * ===What this spec is about===
- *
  * [[HolidayCalendar]] answers one question - whether a date is a holiday - and derives a dozen
- * more from it. This spec owns that derivation and the calendars whose content follows from
- * their names:
+ * more from it. This spec owns that derivation, the four built-in calendars whose content
+ * follows from their names - each swept over the 1,491 days from 2011-01-01 to 2015-01-30 - and
+ * composition: [[HolidayCalendar.combinedWith]] is a holiday where '''either''' part is closed
+ * and [[HolidayCalendar.linkedWith]] only where '''both''' are, each with its own identities.
  *
- *   - the four built-in values [[HolidayCalendars.NO_HOLIDAYS]], [[HolidayCalendars.SAT_SUN]],
- *     [[HolidayCalendars.FRI_SAT]] and [[HolidayCalendars.THU_FRI]], each swept over four years
- *     of dates and then put through the date arithmetic it overrides;
- *   - the default methods of the trait - `shift`, `adjustBy`, `next`, `nextOrSame`, `previous`,
- *     `previousOrSame`, `nextSameOrLastInMonth`, `lastBusinessDayOfMonth`,
- *     `isLastBusinessDayOfMonth`, `daysBetween`, `businessDays` and `holidays` - driven by the
- *     ten transcribed tables;
- *   - composition: [[HolidayCalendar.combinedWith]], a holiday where '''either''' part is
- *     closed, and [[HolidayCalendar.linkedWith]], a holiday only where '''both''' are, together
- *     with the identities each of them has.
- *
- * What belongs to neighbouring specs is deliberately not repeated here, which is the division
- * the Java file already had: the behaviour of a calendar built from a list of dates belongs to
- * `ImmutableHolidayCalendarSpec`, the four constants as a holder and the defaulting decoration
- * to `HolidayCalendarsSpec`, the twenty-six generated national calendars to
- * `GlobalHolidayCalendarsSpec` and `parity/HolidayCalendarParitySpec`, the closed-family and
- * alias sweeps to `NamedEnumClosedSpec`, the compile-time proof that the family cannot be
- * extended to `ApiSurfaceSpec`, and the property-based JSON round trip to
- * `json/JsonRoundTripSpec`.
- *
- * ===How the shape of the port changes the assertions===
- *
- *   - '''The two mock calendars are built rather than declared.''' The Java file declared
- *     `MockHolCal` and `MockEomHolCal`, two throwaway implementations of the interface. The
- *     Scala family is `sealed` and every member of it lives in `HolidayCalendar.scala` (AAP
- *     Rule 4), so no implementation can be declared here - which is the point of sealing it.
- *     Each mock is therefore reproduced as an [[ImmutableHolidayCalendar]] carrying the same
- *     identifier and the same holidays: see [[MOCK]] and [[MOCK_EOM]] below, where the
- *     equivalence and its range are set out. The identifiers matter as much as the holidays,
- *     because two of the tests assert the name a composite calendar takes.
- *   - '''`getName` became `name`''' and `HolidayCalendars.of` returns an `Either` rather than
- *     raising on an unknown name, so each of the four `test_*_of` methods asserts a successful
- *     outcome carrying the expected calendar. Every `Either` here is threaded through `map` or
- *     through the outcome matchers rather than forced with `.get` (AAP Rule 5).
- *   - '''`businessDays` and `holidays` return a Scala `Iterator`''' where the Java methods
- *     returned a Java stream, collected there by a Guava collector that has no port. Each
- *     result is materialised '''once''' with `.toList` and compared to a Scala `List`; an
- *     iterator is single-use, so reading one twice would compare the second pass against an
- *     exhausted iterator.
- *   - '''The three `endBeforeStart` methods keep their throw.''' A range supplied the wrong way
- *     round is a fault in the calling code and is independent of the data the calendar holds, so
- *     it remains a fail-fast `ArgCheck` precondition rather than becoming a `Left` (AAP section
- *     0.3.3's classification rule); each of the three tests notes the precondition it is
- *     asserting.
- *   - '''`test_extendedEnum` reads closed data.''' There is no runtime registry (AAP D-2 /
- *     Rule 4); the note on that test says what replaced it.
+ * Neighbouring specs own the rest: a calendar built from a list of dates belongs to
+ * `ImmutableHolidayCalendarSpec`, the constants as a holder and the defaulting decoration to
+ * `HolidayCalendarsSpec`, the national calendars - generated and data-backed `THBA` - to
+ * `GlobalHolidayCalendarsSpec` and `parity/HolidayCalendarParitySpec`, and the closed-family
+ * sweeps to `NamedEnumClosedSpec` and `ApiSurfaceSpec`.
  */
 final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
 
-  // The dates of the Java original, named for their day of the week so that every expectation
-  // below can be read without a calendar to hand. July 2014 begins on a Tuesday.
+  // Named for their day of the week; July 2014 begins on a Tuesday.
   private val MON_2014_07_07: LocalDate = date(2014, 7, 7)
   private val WED_2014_07_09: LocalDate = date(2014, 7, 9)
   private val THU_2014_07_10: LocalDate = date(2014, 7, 10)
@@ -113,64 +63,39 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   /** The first day of the sweep each of the four built-in calendars is put through. */
   private val SWEEP_START: LocalDate = date(2011, 1, 1)
 
-  /** The day after the last day of that sweep, as the Java original's end date was exclusive. */
+  /** The day after the last day of that sweep, which therefore ends on 2015-01-30. */
   private val SWEEP_END_EXCLUSIVE: LocalDate = date(2015, 1, 31)
 
-  /**
-   * A value of a type that is not a holiday calendar at all.
-   *
-   * The Java original held the same value under the same name, to assert that a composite
-   * calendar reports a value of another type unequal to itself.
-   */
+  /** A value of a type that is not a holiday calendar at all. */
   private val ANOTHER_TYPE: Any = ""
 
-  /**
-   * The null reference, as a value of `Any`.
-   *
-   * The Java original asserted `test.equals(null)` directly. It is held in a value here so that
-   * the assertion reads as a call of the equality contract rather than as a comparison against
-   * a literal `null`, which the compiler would be entitled to fold.
-   */
+  /** The null reference, held as a value so the assertions read as equality-contract calls. */
   private val NULL_REFERENCE: Any = null
 
   //-------------------------------------------------------------------------
-  // The two calendars the Java original declared as throwaway implementations of the interface.
-  //
-  // The family is sealed, so neither can be declared here; each is built instead as an
-  // `ImmutableHolidayCalendar` holding exactly the dates the Java rule made holidays, over a
-  // range of years that covers every date any test below reaches. The equivalence is therefore
-  // exact where it is used and nowhere claimed beyond it: outside the years its holidays span,
-  // an `ImmutableHolidayCalendar` applies its weekend alone, whereas the Java mock applied its
-  // rule for all time. Every date these two calendars are asked about lies in 2014, and the
-  // furthest any test steps is one business day into August or October 2014, so the five years
-  // 2012 to 2016 leave four clear years of margin at each end.
-  //
-  // The identifiers are the identifiers the Java mocks returned - `Mock` and `MockEom` - which
-  // `test_combinedWith` and `test_linkedWith` both depend on, because the name of a composite
-  // calendar is composed from the names of its parts.
+  // The two mock calendars the tables below are read against. The family is sealed, so no
+  // implementation can be declared here; each is built as an `ImmutableHolidayCalendar` holding
+  // the dates its rule makes holidays over 2012 to 2016. Outside the years its holidays span an
+  // `ImmutableHolidayCalendar` applies its weekend alone, so each rule holds only inside that
+  // range: every date these two are asked about lies in 2014 and the furthest any test steps is
+  // a business day into the neighbouring month, about two years of margin at each end. The
+  // identifiers `Mock` and `MockEom` are load-bearing too - `test_combinedWith` and
+  // `test_linkedWith` assert a composite's name, which is composed from its parts' names.
 
-  /** The first year the two mock calendars hold holiday data for. */
   private val MOCK_FIRST_YEAR: Int = 2012
 
-  /** The year after the last one the two mock calendars hold holiday data for. */
   private val MOCK_END_YEAR_EXCLUSIVE: Int = 2017
 
-  /** The years the two mock calendars hold holiday data for. */
   private val MOCK_YEARS: List[Int] = (MOCK_FIRST_YEAR until MOCK_END_YEAR_EXCLUSIVE).toList
 
-  /**
-   * The days of the month the first mock calendar treats as holidays, whatever month they fall
-   * in, which is the rule the Java `MockHolCal.isHoliday` applied alongside its weekend.
-   */
+  /** The days of the month the first mock calendar treats as holidays, in every month. */
   private val MOCK_HOLIDAY_DAYS_OF_MONTH: List[Int] = List(16, 18, 31)
 
   /**
-   * The calendar the Java original called `MockHolCal`.
-   *
-   * A holiday is the 16th, the 18th or the 31st of any month, or a Saturday or a Sunday. In
-   * July 2014 - the month nearly every table below works in - that leaves the business days
-   * 1st to 4th, 7th to 11th, 14th, 15th, 17th, 21st to 25th and 28th to 30th, which is what
-   * makes the Java expectations skip from the 15th to the 17th and from the 17th to the 21st.
+   * A holiday is the 16th, the 18th or the 31st of any month, or a Saturday or a Sunday. In July
+   * 2014 - the month nearly every table below works in - the business days are the 1st to 4th,
+   * 7th to 11th, 14th, 15th, 17th, 21st to 25th and 28th to 30th, which is why the expectations
+   * skip from the 15th to the 17th and from the 17th to the 21st.
    */
   private val MOCK: ImmutableHolidayCalendar =
     ImmutableHolidayCalendar.of(
@@ -185,13 +110,8 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
       Set(SATURDAY, SUNDAY))
 
   /**
-   * The calendar the Java original called `MockEomHolCal`.
-   *
-   * A holiday is the 30th of June, the 31st of July, or a Saturday or a Sunday - chosen by the
-   * Java original so that the last day of the month falls each of the four ways that matter to
-   * `lastBusinessDayOfMonth`: a holiday on a weekday (June), a holiday on a weekday again but
-   * with no weekend before it (July), a weekend day (August) and an ordinary business day
-   * (September).
+   * A holiday is the 30th of June, the 31st of July, or a Saturday or a Sunday, so the month's
+   * last day falls each of the four ways [[data_lastBusinessDayOfMonth]] covers.
    */
   private val MOCK_EOM: ImmutableHolidayCalendar =
     ImmutableHolidayCalendar.of(
@@ -200,14 +120,7 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
       Set(SATURDAY, SUNDAY))
 
   //-------------------------------------------------------------------------
-  /**
-   * The rows of the Java provider `data_shift`, transcribed in order.
-   *
-   * Five blocks of twelve dates - shifts of one and two business days forward, no shift at all,
-   * and one and two business days back - each block running from Thursday the 10th to whichever
-   * date the Java original started it from. This table drives both `test_shift` and
-   * `test_adjustBy`, as the one Java provider drove both of those methods.
-   */
+  /** Business-day shifts forward, none and backward, read by `test_shift` and `test_adjustBy`. */
   private val data_shift: TableFor3[LocalDate, Int, LocalDate] = Table(
     ("date", "amount", "expected"),
     (THU_2014_07_10, 1, FRI_2014_07_11),
@@ -272,7 +185,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     (TUE_2014_07_22, -2, THU_2014_07_17)
   )
 
-  /** The rows of the Java provider `data_next`, transcribed in order. */
   private val data_next: TableFor2[LocalDate, LocalDate] = Table(
     ("date", "expectedNext"),
     (THU_2014_07_10, FRI_2014_07_11),
@@ -289,7 +201,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     (MON_2014_07_21, TUE_2014_07_22)
   )
 
-  /** The rows of the Java provider `data_nextOrSame`, transcribed in order. */
   private val data_nextOrSame: TableFor2[LocalDate, LocalDate] = Table(
     ("date", "expectedNext"),
     (THU_2014_07_10, THU_2014_07_10),
@@ -306,7 +217,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     (MON_2014_07_21, MON_2014_07_21)
   )
 
-  /** The rows of the Java provider `data_previous`, transcribed in order. */
   private val data_previous: TableFor2[LocalDate, LocalDate] = Table(
     ("date", "expectedPrevious"),
     (FRI_2014_07_11, THU_2014_07_10),
@@ -323,7 +233,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     (TUE_2014_07_22, MON_2014_07_21)
   )
 
-  /** The rows of the Java provider `data_previousOrSame`, transcribed in order. */
   private val data_previousOrSame: TableFor2[LocalDate, LocalDate] = Table(
     ("date", "expectedPrevious"),
     (FRI_2014_07_11, FRI_2014_07_11),
@@ -341,11 +250,8 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   )
 
   /**
-   * The rows of the Java provider `data_nextSameOrLastInMonth`, transcribed in order.
-   *
-   * The final row is the one that distinguishes this method from `nextOrSame`: the 31st of July
-   * is a holiday of the mock calendar and the next business day after it falls in August, so the
-   * answer runs '''backwards''' to the last business day of July.
+   * The final row distinguishes this method from `nextOrSame`: the 31st of July is a holiday
+   * here and the next business day falls in August, so the answer runs '''backwards'''.
    */
   private val data_nextSameOrLastInMonth: TableFor2[LocalDate, LocalDate] = Table(
     ("date", "expectedNext"),
@@ -364,14 +270,7 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     (THU_2014_07_31, WED_2014_07_30)
   )
 
-  /**
-   * The rows of the Java provider `data_lastBusinessDayOfMonth`, transcribed in order together
-   * with the Java comments that say why each month is there.
-   *
-   * This table drives both `test_lastBusinessDayOfMonth` and `test_isLastBusinessDayOfMonth`, as
-   * the one Java provider drove both of those methods, and it is read against [[MOCK_EOM]]
-   * rather than [[MOCK]].
-   */
+  /** Read against [[MOCK_EOM]], by `test_lastBusinessDayOfMonth` and `test_isLastBusinessDayOfMonth`. */
   private val data_lastBusinessDayOfMonth: TableFor2[LocalDate, LocalDate] = Table(
     ("date", "expectedEom"),
     // June 30th is Monday holiday, June 28/29 is weekend
@@ -395,7 +294,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     (date(2014, 9, 30), date(2014, 9, 30))
   )
 
-  /** The rows of the Java provider `data_daysBetween`, transcribed in order. */
   private val data_daysBetween: TableFor3[LocalDate, LocalDate, Int] = Table(
     ("start", "end", "expected"),
     (FRI_2014_07_11, FRI_2014_07_11, 0),
@@ -412,12 +310,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     (FRI_2014_07_11, TUE_2014_07_22, 5)
   )
 
-  /**
-   * The rows of the Java provider `data_businessDays`, transcribed in order.
-   *
-   * The expected values were `ImmutableList`s built with Guava; they are Scala `List`s here,
-   * which is what the ported `businessDays` iterator is materialised into.
-   */
   private val data_businessDays: TableFor3[LocalDate, LocalDate, List[LocalDate]] = Table(
     ("start", "end", "expected"),
     (FRI_2014_07_11, FRI_2014_07_11, Nil),
@@ -449,7 +341,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
       List(FRI_2014_07_11, MON_2014_07_14, TUE_2014_07_15, THU_2014_07_17, MON_2014_07_21))
   )
 
-  /** The rows of the Java provider `data_holidays`, transcribed in order. */
   private val data_holidays: TableFor3[LocalDate, LocalDate, List[LocalDate]] = Table(
     ("start", "end", "expected"),
     (FRI_2014_07_11, FRI_2014_07_11, Nil),
@@ -492,13 +383,9 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
 
   //-------------------------------------------------------------------------
   /**
-   * Sweeps a calendar over the four years of dates the Java original swept, asserting that it
-   * calls exactly the expected days holidays and that `isBusinessDay` is the complement of
-   * `isHoliday` on every one of them.
-   *
-   * The Java original wrote this sweep out once per built-in calendar, differing only in the
-   * predicate; the predicate is the parameter here and the four tests below each supply their
-   * own, so each of them still states the whole of what its calendar means.
+   * Sweeps a calendar over the 1,491 days from 2011-01-01 to 2015-01-30, asserting that it calls
+   * exactly the expected days holidays and that `isBusinessDay` is the complement of `isHoliday`
+   * on each. Those days are a sample of a date range, not every date.
    *
    * @param test  the calendar to sweep
    * @param isHolidayExpected  the days the calendar is expected to call holidays
@@ -515,16 +402,12 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   /**
-   * Asserts the sixteen shifts the Java original's private `assertSatSun` helper asserted.
-   *
-   * It is applied to two calendars by `test_SAT_SUN_shift`: the built-in `Sat/Sun` calendar, and
-   * an [[ImmutableHolidayCalendar]] holding no holidays at all but declaring Saturday and Sunday
-   * as its weekend. The point of running the same sixteen shifts against both is that the two
-   * reach their answers by different routes - one applies its weekend directly, the other has
-   * stored months to search first - and must agree.
+   * Asserts a fixed set of `Sat/Sun` shifts. `test_SAT_SUN_shift` applies it to two calendars
+   * that reach their answers by different routes - one applies its weekend directly, the other
+   * has stored months to search first - and must agree.
    *
    * @param test  the calendar to shift against
-   * @return the assertion that all sixteen shifts landed where they should
+   * @return the assertion that every shift landed where it should
    */
   private def assertSatSun(test: HolidayCalendar): Assertion = {
     test.shift(THU_2014_07_10, 2) shouldBe MON_2014_07_14
@@ -552,15 +435,13 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   //-------------------------------------------------------------------------
   test("test_NO_HOLIDAYS") {
     val test = HolidayCalendars.NO_HOLIDAYS
-    // every day is a business day, so the sweep expects no holiday at all
     assertSweep(test, _ => false)
     test.name shouldBe "NoHolidays"
     test.toString shouldBe "HolidayCalendar[NoHolidays]"
   }
 
   test("test_NO_HOLIDAYS_of") {
-    // `of` reports an unknown name as a failure rather than raising, so the outcome is asserted
-    // to be a success carrying the constant rather than compared with it directly
+    // `of` reports an unknown name as a failure, so a success carrying the constant is asserted
     HolidayCalendars.of("NoHolidays") should haveValue(HolidayCalendars.NO_HOLIDAYS)
   }
 
@@ -600,7 +481,7 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_NO_HOLIDAYS_combineWith") {
-    // the calendar with no holidays is the identity of combination, and the identity is the
+    // the calendar with no holidays is the identity of combination, and the result is that
     // calendar itself rather than a composite equal to it
     val base: HolidayCalendar = MOCK
     val test = HolidayCalendars.NO_HOLIDAYS.combinedWith(base)
@@ -620,7 +501,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_SAT_SUN_shift") {
-    // a calendar holding no holidays but declaring the same weekend must shift identically
     val equivalent =
       ImmutableHolidayCalendar.of(HolidayCalendarId.of("TEST-SAT-SUN"), Nil, Set(SATURDAY, SUNDAY))
     assertSatSun(equivalent)
@@ -749,8 +629,7 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
 
   //-------------------------------------------------------------------------
   test("test_of_combined") {
-    // the parts of a combined name are sorted, so a name written the other way round names the
-    // same calendar and the calendar reports the sorted name
+    // the parts of a combined name are sorted, so either order names the same calendar
     val test = HolidayCalendars.of("Thu/Fri+Fri/Sat")
     test.map(calendar => calendar.name) should haveValue("Fri/Sat+Thu/Fri")
     test.map(calendar => calendar.toString) should haveValue("HolidayCalendar[Fri/Sat+Thu/Fri]")
@@ -758,8 +637,7 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     val test2 = HolidayCalendars.of("Thu/Fri+Fri/Sat")
     test shouldBe test2
 
-    // and it behaves as a combination should: a holiday where either part is closed, which for
-    // these two parts is Thursday, Friday and Saturday, leaving Sunday and Monday business days
+    // and it behaves as a combination: either part closes Thursday, Friday and Saturday
     test.map(calendar => calendar.isHoliday(THU_2014_07_10)) should haveValue(true)
     test.map(calendar => calendar.isHoliday(FRI_2014_07_11)) should haveValue(true)
     test.map(calendar => calendar.isHoliday(SAT_2014_07_12)) should haveValue(true)
@@ -769,7 +647,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
 
   //-------------------------------------------------------------------------
   test("test_shift") {
-    // the mock calendar has Sat/Sun plus the 16th, 18th and 31st as holidays
     forAll(data_shift) { (day: LocalDate, amount: Int, expected: LocalDate) =>
       withClue(s"$day shifted by $amount: ") {
         MOCK.shift(day, amount) shouldBe expected
@@ -826,7 +703,6 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
 
   //-------------------------------------------------------------------------
   test("test_nextLastOrSame") {
-    // mock calendar has Sat/Sun plus 16th, 18th and 31st as holidays
     forAll(data_nextSameOrLastInMonth) { (day: LocalDate, expectedNext: LocalDate) =>
       withClue(s"$day: ") {
         MOCK.nextSameOrLastInMonth(day) shouldBe expectedNext
@@ -846,8 +722,7 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   test("test_isLastBusinessDayOfMonth") {
     forAll(data_lastBusinessDayOfMonth) { (day: LocalDate, expectedEom: LocalDate) =>
       withClue(s"$day: ") {
-        // only the last business day of the month is the last business day of the month, so the
-        // expectation is derived from the same row rather than tabulated separately
+        // the expectation is derived from the same row rather than tabulated separately
         MOCK_EOM.isLastBusinessDayOfMonth(day) shouldBe (day == expectedEom)
       }
     }
@@ -863,10 +738,8 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_daysBetween_LocalDateLocalDate_endBeforeStart") {
-    // Precondition: `startInclusive` must not be after `endExclusive`. Supplying a range the
-    // wrong way round is a fault in the calling code and is independent of the holidays the
-    // calendar holds, so it stays a fail-fast `ArgCheck` throw rather than becoming a `Left`
-    // (AAP section 0.3.3's classification rule for a caller-contract violation).
+    // Precondition: `startInclusive` must not be after `endExclusive` - a fault in the calling
+    // code, independent of the holidays held, so it stays a fail-fast `ArgCheck` throw.
     val thrown =
       intercept[IllegalArgumentException](MOCK.daysBetween(TUE_2014_07_15, MON_2014_07_14))
     thrown.getMessage should include("startInclusive")
@@ -877,17 +750,14 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   test("test_businessDays_LocalDateLocalDate") {
     forAll(data_businessDays) { (start: LocalDate, end: LocalDate, expected: List[LocalDate]) =>
       withClue(s"$start to $end: ") {
-        // the ported method returns a Scala `Iterator`, which is single-use, so it is
-        // materialised exactly once and the list is what the row is compared against
+        // `businessDays` returns a single-use `Iterator`, materialised exactly once here
         MOCK.businessDays(start, end).toList shouldBe expected
       }
     }
   }
 
   test("test_businessDays_LocalDateLocalDate_endBeforeStart") {
-    // Precondition: `startInclusive` must not be after `endExclusive`, checked before the
-    // iterator is built. As above, a range the wrong way round is a caller-contract violation
-    // independent of the data, so it remains a fail-fast `ArgCheck` throw.
+    // Precondition: `startInclusive` must not be after `endExclusive`, checked before the iterator.
     val thrown =
       intercept[IllegalArgumentException](MOCK.businessDays(TUE_2014_07_15, MON_2014_07_14))
     thrown.getMessage should include("startInclusive")
@@ -905,9 +775,7 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_holidays_LocalDateLocalDate_endBeforeStart") {
-    // Precondition: `startInclusive` must not be after `endExclusive`, checked before the
-    // iterator is built. As above, a range the wrong way round is a caller-contract violation
-    // independent of the data, so it remains a fail-fast `ArgCheck` throw.
+    // Precondition: `startInclusive` must not be after `endExclusive`, checked before the iterator.
     val thrown =
       intercept[IllegalArgumentException](MOCK.holidays(TUE_2014_07_15, MON_2014_07_14))
     thrown.getMessage should include("startInclusive")
@@ -926,17 +794,16 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     test.name shouldBe "Fri/Sat+Mock"
     test.id shouldBe HolidayCalendarId.of("Fri/Sat+Mock")
 
-    // equality is structural over the pair of parts, so an equal combination built a second
-    // time is equal and hashes alike, and neither a value of another type nor the null
-    // reference is equal to it
+    // equality is structural over the pair of parts, so an equal combination built a second time
+    // is equal and hashes alike, while another type and the null reference are not
     test.equals(base1.combinedWith(base2)) shouldBe true
     test.equals(ANOTHER_TYPE) shouldBe false
     test.equals(NULL_REFERENCE) shouldBe false
     test.hashCode shouldBe base1.combinedWith(base2).hashCode
 
-    // A day is a holiday of a combination where EITHER part is closed. Friday, Saturday, the
-    // 18th and the 19th are holidays of `Fri/Sat`; Saturday, Sunday, the 16th and the 18th are
-    // holidays of the mock calendar; the result observes the union of the two.
+    // A day is a holiday of a combination where EITHER part is closed: `Fri/Sat` closes Friday,
+    // Saturday, the 18th and the 19th, the mock calendar Saturday, Sunday, the 16th and the 18th,
+    // and the result observes the union.
     test.isHoliday(THU_2014_07_10) shouldBe false
     test.isHoliday(FRI_2014_07_11) shouldBe true
     test.isHoliday(SAT_2014_07_12) shouldBe true
@@ -952,15 +819,13 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
   }
 
   test("test_combineWith_same") {
-    // combining a calendar with itself changes nothing, and the result is the calendar itself
-    // rather than a composite equal to it
+    // combining a calendar with itself yields the calendar, not a composite equal to it
     val base: HolidayCalendar = MOCK
     val test = base.combinedWith(base)
     test should be theSameInstanceAs base
   }
 
   test("test_combineWith_none") {
-    // the calendar with no holidays is the identity of combination
     val base: HolidayCalendar = MOCK
     val test = base.combinedWith(HolidayCalendars.NO_HOLIDAYS)
     test should be theSameInstanceAs base
@@ -982,10 +847,9 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     test.equals(NULL_REFERENCE) shouldBe false
     test.hashCode shouldBe base1.linkedWith(base2).hashCode
 
-    // A day is a holiday of a link only where BOTH parts are closed, which is the whole
-    // difference from a combination: Friday the 11th is a holiday of `Fri/Sat` alone and Sunday
-    // the 13th of the mock calendar alone, so neither is a holiday here, while Saturday the
-    // 12th, Friday the 18th and Saturday the 19th are holidays of both and remain holidays.
+    // A day is a holiday of a link only where BOTH parts are closed, the whole difference from a
+    // combination: Friday the 11th is closed by `Fri/Sat` alone and Sunday the 13th by the mock
+    // calendar alone, so neither is a holiday, while the 12th, 18th and 19th are closed by both.
     test.isHoliday(THU_2014_07_10) shouldBe false
     test.isHoliday(FRI_2014_07_11) shouldBe false
     test.isHoliday(SAT_2014_07_12) shouldBe true
@@ -1007,6 +871,107 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
     test should be theSameInstanceAs base
   }
 
+  //-------------------------------------------------------------------------
+  // The three limits of the family. None of them has a counterpart in the library being ported,
+  // which walked whatever it was asked to walk and nested however deep it was told to: each
+  // bounds work whose size a value arriving from outside the program would otherwise decide.
+
+  test("shift refuses a number of business days no search can satisfy") {
+    // Shifting walks the business days asked for, so the cost of the call is the count - and the
+    // count is `Int`-wide. Two thousand million business days occupy a processor for the best
+    // part of a minute and name a date six million years away, which no rule of finance does.
+    val limit: Int = HolidayCalendar.MaxBusinessDayShift
+    limit should be > 100
+    intercept[IllegalArgumentException](HolidayCalendars.SAT_SUN.shift(WED_2014_07_16, limit + 1))
+    intercept[IllegalArgumentException](HolidayCalendars.SAT_SUN.shift(WED_2014_07_16, -limit - 1))
+    intercept[IllegalArgumentException](HolidayCalendars.SAT_SUN.shift(WED_2014_07_16, Int.MaxValue))
+    // the magnitude is measured in `Long` arithmetic, so the smallest `Int` - whose negation
+    // overflows back to itself - is refused rather than slipping through the comparison
+    intercept[IllegalArgumentException](HolidayCalendars.SAT_SUN.shift(WED_2014_07_16, Int.MinValue))
+    intercept[IllegalArgumentException](MOCK.shift(WED_2014_07_16, Int.MaxValue))
+    // the adjuster judges the count where it is named rather than when it is applied
+    intercept[IllegalArgumentException](HolidayCalendars.SAT_SUN.adjustBy(Int.MaxValue))
+
+    // a shift within the limit answers exactly as it always did
+    HolidayCalendars.SAT_SUN.shift(WED_2014_07_16, 2) shouldBe FRI_2014_07_18
+    HolidayCalendars.SAT_SUN.shift(WED_2014_07_16, -2) shouldBe MON_2014_07_14
+    HolidayCalendars.SAT_SUN.adjustBy(2).adjust(WED_2014_07_16) shouldBe FRI_2014_07_18
+
+    // the calendar of no holidays adds its days in one step whatever their number, so it is
+    // deliberately not limited: nothing about its cost depends on the count
+    HolidayCalendars.NO_HOLIDAYS.shift(WED_2014_07_16, Int.MaxValue).getYear should be > 5000000
+    HolidayCalendars.NO_HOLIDAYS.adjustBy(Int.MaxValue).adjust(WED_2014_07_16).getYear should be > 5000000
+  }
+
+  test("a business day search refuses a calendar that has no business day") {
+    // Both parts here are ordinary calendars - a western weekend and a working week - so no
+    // factory could have refused either of them, and between them they close every day of the
+    // week. A search of such a calendar cannot succeed, and without a progress requirement it
+    // walks millions of days to the end of the range of dates before reporting the year it
+    // reached, which says nothing about what is actually wrong.
+    val workingWeek: HolidayCalendar = ImmutableHolidayCalendar.of(
+      HolidayCalendarId.of("HolidayCalendarSpecWorkingWeek"),
+      List(date(2014, 1, 1)),
+      List(
+        java.time.DayOfWeek.MONDAY,
+        java.time.DayOfWeek.TUESDAY,
+        java.time.DayOfWeek.WEDNESDAY,
+        THURSDAY,
+        FRIDAY))
+    val alwaysClosed: HolidayCalendar = HolidayCalendars.SAT_SUN.combinedWith(workingWeek)
+
+    val refusal: String =
+      intercept[IllegalArgumentException](alwaysClosed.nextOrSame(WED_2014_07_16)).getMessage
+    refusal should include(alwaysClosed.name)
+    refusal should include(WED_2014_07_16.toString)
+    refusal should include(HolidayCalendar.MaxConsecutiveHolidays.toString)
+    intercept[IllegalArgumentException](alwaysClosed.previousOrSame(WED_2014_07_16))
+    intercept[IllegalArgumentException](alwaysClosed.next(WED_2014_07_16))
+    intercept[IllegalArgumentException](alwaysClosed.previous(WED_2014_07_16))
+    intercept[IllegalArgumentException](alwaysClosed.shift(WED_2014_07_16, 1))
+
+    // and it is bounded rather than merely eventual: the search crosses at most the stated
+    // number of days, whichever calendar it is asked about
+    HolidayCalendar.MaxConsecutiveHolidays should be > 366
+
+    // a calendar that leaves a day open is unaffected, however long its closures
+    alwaysClosed.isHoliday(WED_2014_07_16) shouldBe true
+    HolidayCalendars.SAT_SUN.nextOrSame(SAT_2014_07_12) shouldBe MON_2014_07_14
+  }
+
+  test("composition refuses a composite deeper than the family allows") {
+    // A composite reads a pair of calendars on every query, either of which may be a composite,
+    // so every recursive operation of the family - deciding a date, composing the identifier,
+    // writing the calendar out, reading one back - walks a tree whose height is the nesting. A
+    // tree tall enough exhausts the stack, which ends the calling thread rather than the
+    // calculation.
+    val limit: Int = HolidayCalendar.MaxCompositeDepth
+    limit should be > 30
+    val deepest: HolidayCalendar =
+      (1 to limit).foldLeft(HolidayCalendars.SAT_SUN)((inner, _) =>
+        HolidayCalendar.Combined(inner, HolidayCalendars.THU_FRI))
+
+    // a composite at the limit is a calendar like any other
+    deepest.isHoliday(SAT_2014_07_12) shouldBe true
+    deepest.isHoliday(WED_2014_07_16) shouldBe false
+
+    // one calendar deeper is refused, by both composition methods and by the constructors of
+    // both composites, so the limit cannot be gone round by building the tree directly
+    intercept[IllegalArgumentException](deepest.combinedWith(MOCK)).getMessage should
+      include(limit.toString)
+    intercept[IllegalArgumentException](deepest.linkedWith(MOCK))
+    intercept[IllegalArgumentException](HolidayCalendar.Combined(deepest, MOCK))
+    intercept[IllegalArgumentException](HolidayCalendar.Linked(deepest, MOCK))
+    intercept[IllegalArgumentException](HolidayCalendar.Combined(deepest, deepest))
+
+    // the short-circuiting compositions are unaffected, neither of them building a composite
+    deepest.combinedWith(deepest) should be theSameInstanceAs deepest
+    deepest.combinedWith(HolidayCalendars.NO_HOLIDAYS) should be theSameInstanceAs deepest
+    deepest.linkedWith(HolidayCalendars.NO_HOLIDAYS) should be theSameInstanceAs
+      HolidayCalendars.NO_HOLIDAYS
+  }
+
+  //-------------------------------------------------------------------------
   test("test_linkedWith_none") {
     // the calendar with no holidays absorbs a link rather than being its identity: every day is
     // a business day of it, so no day is left on which both parts are closed
@@ -1017,15 +982,9 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
 
   //-------------------------------------------------------------------------
   test("test_extendedEnum") {
-    // The Java method read one entry of a runtime registry:
-    //   HolidayCalendars.extendedEnum().lookupAll().get("NoHolidays") == NO_HOLIDAYS
-    // There is no registry in this port (AAP D-2 / Rule 4). The built-in calendars are closed
-    // data in `StandardHolidayCalendars`, and the three name-resolution views that replace the
-    // registry - `HolidayCalendars.of`, `StandardHolidayCalendars.byName` (the canonical key
-    // space, which is what `lookupAllNormalized` published) and
-    // `StandardHolidayCalendars.byUpperName` (the English upper-case key space, which the
-    // registry filed every calendar under as well) - are asserted to agree over the whole of
-    // that data rather than over the single entry the Java method sampled.
+    // The built-in calendars are closed data in `StandardHolidayCalendars`, and the three
+    // name-resolution views over them - `HolidayCalendars.of`, `StandardHolidayCalendars.byName`
+    // and `StandardHolidayCalendars.byUpperName` - agree over the whole of that set.
     HolidayCalendars.of("NoHolidays") should haveValue(HolidayCalendars.NO_HOLIDAYS)
     StandardHolidayCalendars.byName("NoHolidays") shouldBe Some(HolidayCalendars.NO_HOLIDAYS)
 
@@ -1042,10 +1001,8 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
       case (id, calendar) =>
         withClue(s"${id.name}: ") {
           // the calendar filed under an identifier claims that identifier, which is what makes
-          // the three lookups below say something: a calendar holding holiday data is equal to
-          // any calendar of the same identifier, so without this the lookups could be satisfied
-          // by a calendar of the right name holding the wrong dates. What the dates should be is
-          // asserted by `GlobalHolidayCalendarsSpec` and `parity/HolidayCalendarParitySpec`.
+          // the lookups below say something: a calendar holding holiday data is equal to any of
+          // the same identifier, so they would otherwise accept wrong dates under a right name
           calendar.id shouldBe id
           HolidayCalendars.of(id.name) should haveValue(calendar)
           StandardHolidayCalendars.byName(id.name) shouldBe Some(calendar)
@@ -1053,16 +1010,14 @@ final class HolidayCalendarSpec extends AnyFunSuite with Matchers with TableDriv
         }
     }
 
-    // the upper-case key space of the four calendars whose content follows from their names,
-    // spelled out so that the second of the registry's two keys is asserted literally
+    // `of` resolves the upper-case of a name as well as the canonical name
     HolidayCalendars.of("NOHOLIDAYS") should haveValue(HolidayCalendars.NO_HOLIDAYS)
     HolidayCalendars.of("SAT/SUN") should haveValue(HolidayCalendars.SAT_SUN)
     HolidayCalendars.of("FRI/SAT") should haveValue(HolidayCalendars.FRI_SAT)
     HolidayCalendars.of("THU/FRI") should haveValue(HolidayCalendars.THU_FRI)
 
-    // A name the closed data does not hold depends on the argument rather than on the calling
-    // code, so it is reported as a failure rather than raised (AAP Rule 5), and the reason is
-    // compared as a value of the closed family of reasons rather than as message text.
+    // A name the closed data does not hold depends on the argument rather than the calling code,
+    // so it is reported as a failure, whose reason is compared as a `FailureReason` value.
     HolidayCalendars.of("NotKnown") should beFailureWith(FailureReason.PARSING)
   }
 }

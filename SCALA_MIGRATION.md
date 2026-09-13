@@ -28,26 +28,36 @@ Two principles run through everything below:
 
 Sections (a) to (f) are the six the AAP requires, in its order. Section (c) is the one to read before
 depending on the port: it lists the behaviours that are deliberately not identical to Java, and the
-one place where this tree does not yet meet the AAP. What supports each of its rows — which committed
-fixture, which spec, which command — is stated at the head of that section.
+one place where the AAP's own wording had to be reconciled with its authoritative file layout
+(row 46). What supports each of its rows — which committed fixture, which spec, which command — is
+stated at the head of that section. Section (g) is not one of
+the six: it is the ledger of the build, CI and dependency findings raised against this tree and what
+each one changed.
 
 ### What is in the tree
 
-- **`strata-collect`** — 18 main sources: validation (`ArgCheck`, `Validate`), the `Failure` ADT with
-  `FailureReason` and the result aliases, `NamedEnum`, `Named`, the typed-string support
-  (`TypedStringCompanion`), `Decimal` and `FixedScaleDecimal`,
-  `DoubleArray`/`DoubleMatrix`/`Matrix`/`DoubleArrayMath`, `Collections`, `io.Resources` and
-  `json.Codecs`.
-- **`strata-basics`** — 73 main sources: the root contracts (`ReferenceData`, `ReferenceDataId`,
+- **`strata-collect`** — the 18 main sources AAP §0.3.1 enumerates, and no others: validation
+  (`ArgCheck`, `Validate`), the `Failure` ADT with `FailureReason` and the result aliases,
+  `NamedEnum`, `Named`, the typed-string support (`TypedStringCompanion`), `Decimal` and
+  `FixedScaleDecimal`, `DoubleArray`/`DoubleMatrix`/`Matrix`/`DoubleArrayMath`, `Collections`,
+  `io.Resources`, `json.Codecs`. The two mechanisms that make the construction policy and the
+  absence of Java serialization hold on the JVM rather than only in the Scala source — the
+  construction guards every closed type runs, and the `NoJavaSerialization` refusal every product
+  mixes in — are housed at the bottom of **`ArgCheck.scala`**, which is where they belong: they are
+  fail-fast contract checks like everything else in that file, differing only in who the caller is,
+  a constructor rather than a method. Both are `private[strata]`, so neither widens the public API
+  of the module, and `JvmClosure` is not a `strata-basics`-specific concept — a later slice porting
+  another module gets the same closure from the same place. Rows 42 and 43 describe what they do.
+- **`strata-basics`** — 77 main sources: the root contracts (`ReferenceData`, `ReferenceDataId`,
   `Resolvable`, `CalculationTarget`, `StandardId`, `StandardSchemes`), `currency` (16), `date` (20,
   including `DayCount`, the 25 calendar generators, `THBA` and `StandardHolidayCalendars`), `index`
-  (14, the sealed `Index` hierarchy with its four constants objects and four data tables,
-  `FloatingRate`, `FloatingRateType`, `FloatingRateName`, `FloatingRateNameData` and the whole
-  sealed observation family in `IndexObservation.scala`), `location` (2), `schedule` (6), `value`
-  (7) and `demo/BasicsDemoApp.scala`. The AAP's §0.3.1 layout enumerates 77 by naming the four
-  derived observations in files of their own; Scala 2 requires the direct subtypes of a sealed type
-  to share its file, which is the same rule that collapses the whole `Index` hierarchy into one
-  file, so they sit with `IndexObservation` and the count is four lower (row 32).
+  (18, the sealed `Index` hierarchy with its four constants objects and four data tables,
+  `FloatingRate`, `FloatingRateType`, `FloatingRateName`, `FloatingRateNameData`, the retained open
+  interface contract `IndexObservation`, and its four observation implementations —
+  `IborIndexObservation`, `OvernightIndexObservation`, `PriceIndexObservation` and
+  `FxIndexObservation` — each in a file of its own), `location` (2), `schedule` (6), `value` (7)
+  and `demo/BasicsDemoApp.scala`. That is the AAP's §0.3.1 layout file for file: the seven root
+  sources plus 16 + 20 + 18 + 2 + 6 + 7 + 1.
 - **Around them** — the six parity baselines, the reference-data manifest, the method-level
   `java-test-mapping.csv`, the capture tooling under `tools/parity-capture/`, the gate runner
   `scripts/verify-gates.sh`, and the tests: 21 test sources in `strata-collect` and 86 in
@@ -124,17 +134,17 @@ is the module's test scope, visible to `strata-basics` tests through
 | 40 | `collect.MapStream` | `forEach` | `Map#foreach` | — |
 | 41 | `collect.MapStream` | `toMap` | `.toMap`, `Collections.toSortedMap` where duplicate keys must be reported as a `Failure`, or `Collections.groupByPreservingOrder` where insertion order matters | collect |
 | 42 | `collect.Messages` | `format` | Scala string interpolation (`s"..."`) | — |
-| 43 | `collect.array.DoubleArray` | `of` | `DoubleArray.of` — the fixed-arity forms and a varargs form, each copying its input. A collection is `DoubleArray.copyOf(Iterable[Double])` (`DoubleArray.scala:1311`); `of` takes no `Iterable` | collect |
+| 43 | `collect.array.DoubleArray` | `of` | `DoubleArray.of(values: Double*)` — one varargs member, copying its input, in place of the Java type's ten arity-specific `of` overloads (no values, one through eight values, and eight values followed by a varargs tail), which existed only to spare a caller an array allocation per call. A collection is `DoubleArray.copyOf(Iterable[Double])` (`DoubleArray.scala:1114`); `of` takes no `Iterable` | collect |
 | 44 | `collect.array.DoubleArray` | `filled` | `DoubleArray.filled` (size, and size with a fill value) | collect |
 | 45 | `collect.array.DoubleArray` | `get` | `DoubleArray.get` — indexes the backing array directly, as Java did, so an out-of-range index raises `ArrayIndexOutOfBoundsException` (divergence (c)-11) | collect |
 | 46 | `collect.array.DoubleArray` | `size` | `DoubleArray.size` (with `isEmpty`) | collect |
 | 47 | `collect.array.DoubleArray` | `plus`, `minus`, `multipliedBy` | The same three members | collect |
 | 48 | `collect.array.DoubleArray` | `stream` | `DoubleArray.iterator`, `toList` and `forEach` — no `DoubleStream` crosses the public API (Rule 10) | collect |
-| 49 | `collect.array.DoubleArray` | `ofUnsafe`, `toArrayUnsafe` | Both `private[collect]`; callers outside collect build with `tabulate`, `map`, `mapWithIndex` or `combine` and read with the copying `toArray` — see divergence (c)-13 | collect |
+| 49 | `collect.array.DoubleArray` | `ofUnsafe`, `toArrayUnsafe` | No target: neither name exists in the port, so no caller anywhere can adopt or reach a backing array. Callers build with `of`, `copyOf`, `filled`, `tabulate`, `map`, `mapWithIndex` or `combine` and read with the copying `toArray` — see divergence (c)-13 | collect |
 | 50 | `collect.array.DoubleArray` | `DoubleArray.class` as a Joda-Beans meta-property type literal (`CurrencyAmountArray`) | No target — there are no meta-beans; the Scala type appears directly in the field's type | — |
 | 51 | `collect.array.DoubleMatrix` | `get` | `DoubleMatrix.get(row, column)` — direct indexing, as Java did (divergence (c)-11) | collect |
 | 52 | `collect.array.DoubleMatrix` | `toArray` | `DoubleMatrix.toArray` — deep-copies every row | collect |
-| 53 | `collect.array.DoubleMatrix` | `ofUnsafe`, `toArrayUnsafe` | Both `private[collect]`; callers use `of`/`ofArrays`/`copyOf`/`tabulate` and the copying `toArray` — see divergence (c)-13 | collect |
+| 53 | `collect.array.DoubleMatrix` | `ofUnsafe`, `toArrayUnsafe` | No target: neither name exists in the port. Callers use `of`/`ofArrays`/`ofArrayObjects`/`copyOf`/`tabulate` and read with the copying `toArray`, `rowArray` and `columnArray` — see divergence (c)-13 | collect |
 | 54 | `collect.array.DoubleMatrix` | `DoubleMatrix.class` as a Joda-Beans meta-property type literal (`FxMatrix`) | No target — there are no meta-beans | — |
 | 55 | `collect.io.CsvFile` | `of`, `rows` | No target — the index CSV tables are Scala data objects (`IborIndexData`, `OvernightIndexData`, `PriceIndexData`, `FxIndexData`) | — |
 | 56 | `collect.io.CsvRow` | `getValue`, `getField` | No target — a data-object row is a typed Scala value, so a column is read by name at compile time | — |
@@ -172,7 +182,7 @@ is the module's test scope, visible to `strata-basics` tests through
 
 The rows below are **not** part of the AAP's required inventory: none of them is a `strata-collect`
 member that Java `strata-basics` imports or references. They are recorded because the Scala port
-depends on them and a reader looking for them would otherwise find nothing. **9 rows.**
+depends on them and a reader looking for them would otherwise find nothing. **11 rows.**
 
 | # | Symbol | Referenced by Java `strata-basics` | Scala replacement | Module |
 |---|--------|------------------------------------|-------------------|--------|
@@ -185,6 +195,8 @@ depends on them and a reader looking for them would otherwise find nothing. **9 
 | S7 | `collect.named.ExtendedEnum.externalNames` | No | `NamedEnum.externalNames(group)`, `externalNamesRaw(group)`, `externalNameGroups` — kept because the FpML and SWIFT alias groups belong to the collect contract | collect |
 | S8 | `collect.io.ResourceLocator.ofFile` | No | `io.Resources.readFileText(path): IO[String]` — see divergence (c)-16 | collect |
 | S9 | Guava `DoubleMath.fuzzyEquals` and `DoubleMath.isMathematicalInteger` — used by Java `strata-basics` directly rather than through `strata-collect` (the fixed-rate `convertedTo` overloads of `CurrencyAmount`/`Money`/`BigMoney`; `CurrencyAmount.toString` and `FxRate.toString`) | Yes, but as Guava, not as `strata-collect` | `DoubleArrayMath.fuzzyEquals` (scalar and array forms) and `DoubleArrayMath.isMathematicalInteger`. The NaN and infinite-tolerance behaviour of `fuzzyEquals` follows the AAP rather than Guava — see (c)-9 | collect |
+| S10 | `collect.Guavate.only(Iterable)` and `Guavate.toOnly()` — the "exactly one element" pair, both answering an empty `Optional` | No | `Collections.ensureOnlyOne`, returning `Either[Failure, Option[A]]`, which **distinguishes** the two cases the Java pair conflated: no element is `Right(None)`, one element is `Right(Some(value))`, and several elements are a `Failure`. The default form names the first two elements it found (`Multiple values found where only one was expected: <first> and <second>`) and stops there; the overload that takes a message by name carries the caller's text instead and never reads those elements into it. A caller that wanted "several" treated as "none" writes `.toOption.flatten` | collect |
+| S11 | `collect.result.Result.of(Supplier)`, `Result.wrap(Supplier)`, `ValueWithFailures.of(value, Supplier)` — the factories that ran a caller's block and turned what it threw into a failure — and `Result.mapFailureItems` | No | No target, and none is supplied. Nothing in either module raises in order to report a failure, so a computation that can fail returns its failures and there is no block to capture; a caller holding Java code that throws wraps it itself with `scala.util.Try`. `mapFailureItems` has no subject either — there is no item type, so both of Java's failure-mapping members arrive at `leftMap` over the sealed `Failure` ADT | collect |
 
 Guava's `Immutable*` collections become `scala.collection.immutable`, its `Splitter`/`Joiner` become
 `String#split`/`mkString`, and `Suppliers.memoize` becomes a `lazy val`. Joda-Beans and Joda-Convert
@@ -228,9 +240,12 @@ Of the `Guavate` and `MapStream` surfaces, only the members listed in section (a
 ## (c) Deliberate divergences from the Java original
 
 Each row is a behaviour that is **not** identical to Java `2.12.74-SNAPSHOT`, deliberately — row 9
-among them, where the AAP directs the port away from the Guava comparison the Java code called.
-Every row describes code that is in the tree; row numbers are referenced from sections (a), (d), (e) and (f), so they are stable
-and are never reused.
+among them, where the AAP directs the port away from the Guava comparison the Java code called. Rows
+32 and 34 are structural rather than behavioural — the first about test sources and the manifest, the
+second about the shape of `IndexObservation`, which Java's own interface shares — and, like row 19 on
+the parity harness, have no Java behaviour to quote. Every row describes code that is in the tree;
+row numbers are referenced from sections (a), (d), (e) and (f), so they are stable and are never
+reused.
 
 **What supports a row.** The rows differ in the kind of evidence behind them, and the difference
 matters when one is checked:
@@ -259,15 +274,15 @@ matters when one is checked:
 | 2 | Retained throws | Every precondition throws | A caller-contract or numeric-edge precondition still throws `IllegalArgumentException`, through `ArgCheck`, and is documented on the member: array and matrix **dimension** preconditions (a negative or mismatched size, a sub-array bound, a reduction over an empty array); a calendar query outside years 0–9999; a NaN produced by arithmetic on infinite `CurrencyAmount` operands; `Decimal` overflow past 18 digits; `DayCount.yearFraction` with dates out of order or without the schedule information the day count reads. Element **access** is not among them — `DoubleArray.get` and `DoubleMatrix.get` index the backing array directly on both sides, so an out-of-range index is an `ArrayIndexOutOfBoundsException`, not an `ArgCheck` failure (row 11) | A contract violation is a programming error, not a data outcome; putting it in the signature would tax every correct caller |
 | 3 | Null arguments | Rejected with `IllegalArgumentException` from `ArgChecker.notNull` (measured: `StandardId.of(null, "v")` → `Argument 'scheme' must not be null`) | **Outside the contract of every public entry point.** `null` is not a value the port accepts, guards or documents; passing one raises `NullPointerException` where the argument is dereferenced, except `Currency.of(null)`, which happens to answer `Left(Failure.Parsing("Currency name not found: null"))` because it is a table lookup. See (c)-3 below | The `ArgChecker.notNull` family is deliberately not ported, and Scala code has `Option` for absence. Guarding `null` in Scala signatures would pay for a Java hazard the port has no Java callers to protect |
 | 4 | Public API shape | Java types: `Optional`, `java.util` collections, Guava `Immutable*`, checked names | Scala-native throughout: `Option`, `scala.collection.immutable`, `cats.data.{NonEmptyList, NonEmptyChain, Validated, Ior, Kleisli}`, cats typeclass instances. No Java-callable façade and no interop shim | Design decision D-3. A façade would constrain every signature to what Java can express |
-| 5 | Named families | `ExtendedEnum` reads INI files off the classpath at class-initialisation time; applications extend a family by adding a provider or an INI override | Each family is a **closed** sealed type whose instances exist only in its companion, with a `NamedEnum[A]` instance. Runtime extensibility is gone. The *behaviour* the INI files encoded is kept as Scala data: alias tables, `[externals.FpML]`/`[externals.SWIFT]` groups and the ordered `[lenientPatterns]` rewrites, so `parse` resolves exactly the names Java resolved | Rule 4, and a closed family is exhaustively checkable by the compiler. `main` sources reference no `.ini`, `.csv` or `.properties` resource |
+| 5 | Named families | `ExtendedEnum` reads INI files off the classpath at class-initialisation time; applications extend a family by adding a provider or an INI override | Each family is a **closed** sealed type whose instances exist only in its companion, with a `NamedEnum[A]` instance. Runtime extensibility is gone. The *behaviour* the INI files encoded is kept as Scala data: alias tables, `[externals.FpML]`/`[externals.SWIFT]` groups and the ordered `[lenientPatterns]` rewrites, so `parse` resolves exactly the names Java resolved. One narrowing: the lenient stage of a family — the fold to upper case and the ordered rewrites — is applied only to text within `NamedEnum.lenientLengthCeiling`, which each family derives from its own data (its longest lookup key, its longest alternate spelling, its longest alternate target and its longest expression source, plus a margin of 32 characters, giving 35 for `Currency` and 52 for the sixty-seven-row `DayCount` family). Text beyond it is reported as not found, with the family's own message, rather than being folded and scanned. The bound is applied in all three places the lenient stage can be entered, and in each of them *before* the fold to upper case, which is itself a copy of the whole input: `NamedEnum.parse`, `NamedEnum.rewriteLeniently` (so a caller running the chain itself is bounded even if it folded first), and `DayCount.parseWith`, which runs stage two itself in order to interleave its `Bus/252` provider and therefore checks the ceiling before folding. The *exact* lookup is not bounded at all, which is why every name, alias, external and lenient row of every family is inside its ceiling and a `Bus/252` name naming thousands of calendars still resolves. One registration rule is applied to every family where Java had two, which matters only for names that differ in case alone - see (c)-5 below | Rule 4, and a closed family is exhaustively checkable by the compiler. `main` sources reference no `.ini`, `.csv` or `.properties` resource. The lenient bound makes refusing a name cost what the name costs: an unbounded miss was a full pass over the text per rewrite, which external input chooses the length of |
 | 6 | `Currency` | Any three upper-case letters mint a currency, guessing zero minor units and USD triangulation (measured: `Currency.of("XYZ")` → `XYZ`, `minorUnitDigits=0`, triangulation `USD`) | The closed set of the 74 configured currencies. An unknown code is `Left(Failure.Parsing("Currency name not found: XYZ"))` (measured). `Country`, by contrast, keeps Java's open code space — any `[A-Z][A-Z]` is accepted (measured: `Country.of("ZZ")` → `Right(ZZ)`) | Rule 4 closes the currency family; AAP Conflict 4. A minted currency with guessed conventions is a silent data error, and `Country` is not a named-enum family in the first place |
 | 7 | `FxIndex` | `FxIndex.of(pair)`/`of(name)` mint an index for an unconfigured pair through `createFxIndex`, using the pair's default calendar and a two-day maturity offset (measured: `FxIndex.of("GBP/SEK")` → an index) | The closed set of the 16 configured rows. `of(pair)` answers the configured index with the lowest name, as Java's `min` does, and `Left(Failure.Parsing)` for an unconfigured pair. `createFxIndex` is not ported | Rule 4; AAP Conflict 7 |
 | 8 | `ReferenceDataNotFoundException` | Thrown by `ReferenceData.getValue` and by `resolve` | Not ported. `getValue(id)` is `Either[Failure, T]` with `Failure.MissingData` carrying the id as an attribute; `findValue(id)` is `Option[T]`; `containsValue(id)` is unchanged | Row 1, applied to reference data. The exception type had no other use |
 | 9 | Tolerance comparison at NaN and at an infinite tolerance | Guava's algorithm is `copySign(a - b, 1.0) <= tolerance \|\| a == b \|\| (isNaN(a) && isNaN(b))`; its third clause makes two NaNs fuzzy-equal (measured: `DoubleMath.fuzzyEquals(NaN, NaN, 0.1)` is `true`), and its magnitude test equalises any two non-NaN values at an infinite tolerance | The comparison classifies before it measures: a NaN on either side is equal to nothing, an infinity is equal only to the same infinity whatever the tolerance, and two finite values are equal when their distance does not exceed it (`DoubleArrayMath.scala:568`). Measured: `fuzzyEquals(NaN, NaN, 0.1)` is `false` at every tolerance, `fuzzyEquals(+Inf, +Inf, 0.0)` is `true`, and `fuzzyEquals(+Inf, -Inf, +Inf)` and `fuzzyEquals(0.0, +Inf, +Inf)` are `false` | AAP §0.3.3 requires Guava's semantics **with `NaN` never fuzzy-equal and each infinity fuzzy-equal only to itself**, and §0.4.2 restates it. The AAP is frozen and authoritative, so the two edges where Guava disagrees with it follow the AAP; (c)-9 states the rule, the shape of the comparison and what each entry point answers |
 | 10 | Tolerance argument | Guava rejects a NaN tolerance (`tolerance (NaN) must be >= 0`) | Rejected too, through `ArgCheck.notNaN`, with the port's message `Argument 'tolerance' must not be NaN` (measured). The private near-zero test in `ArgCheck`/`Validate` keeps the Java reading — `abs(x) <= tolerance \|\| x == 0.0` — while `DoubleArrayMath`'s zero comparison follows the AAP rule of row 9, so the two answer the same on every input a caller is likely to pass and differ at an *infinite* tolerance over an infinity (measured: `ArgCheck.notZero(+Inf, +Inf, "x")` throws `Argument 'x' must not be zero`, whereas `fuzzyEqualsZero([+Inf], +Inf)` is `false`). A NaN counts as near zero on neither (measured: `ArgCheck.notZero(NaN, 1e-9, "x")` returns and `fuzzyEqualsZero([NaN], 1e-9)` is `false`) | The message set is the port's own, and the Java check is the authority for these two checks and their messages, which is why the local test keeps its reading; the two are deliberately kept in separate files rather than one calling the other, because that object checks its own tolerance through this one and calling back would tie the two into a cycle |
 | 11 | Numeric precondition types — **checked preconditions only** | `DoubleArray.EMPTY.min`/`max` → `IllegalStateException`; `subArray(4)` on a 3-element array → `IndexOutOfBoundsException`; `DoubleMatrix.identity(-1)` → `NegativeArraySizeException`; `DoubleMatrix.filled(0, -1)` → the empty matrix (all measured) | Every one of those becomes an `IllegalArgumentException` through `ArgCheck`, with Java's message text preserved where Java had one (`Unable to find minimum of an empty array`, `Array index out of bounds: 4 > 3`) and the argument named where it did not (`Argument 'size' must not be negative but has value -1`); `filled(0, -1)` and `of(0, -1)` now fail rather than returning the empty matrix. A negative length rejects the call rather than producing a value, with one exception type and one message shape across all four array and matrix size paths: `DoubleArray.filled(-1)`, `DoubleArray.filled(-1, 2.0)` and `DoubleArray.tabulate(-1)` check through `ArgCheck.notNegative` before allocating and report `Argument 'size' must not be negative but has value -1`, matching `DoubleMatrix.identity(-1)` exactly (all measured), and `DoubleMatrix.filled(0, -1)` names its own argument (`Argument 'columns' …`); no port path lets the allocator's `NegativeArraySizeException` escape. **Element access is outside this row and is unchanged:** `DoubleArray.get` and `DoubleMatrix.get` index the backing array directly, with no `ArgCheck` call, so `get(-1)` raises `ArrayIndexOutOfBoundsException` on both sides | AAP §0.3.3 classes array and matrix dimension errors as fail-fast `ArgCheck` invariants, and checking before allocating is what stops a negative or huge dimension reaching the allocator. Element access is left to the JVM's own bounds check, which is the same behaviour Java had and costs the hot path nothing. **A caller must not discriminate on the exception type of a checked precondition failure across this boundary** |
-| 12 | Ragged matrix input | `DoubleMatrix.copyOf` accepts a ragged `double[][]` and returns a value whose `total()` and `get(row, col)` then throw `ArrayIndexOutOfBoundsException`, while `toString` renders each row at its own length (all measured) | A matrix is rectangular by contract: `ofArrays` rejects a wrong-length row (`Function returned array of incorrect length 1, expected 2`) and the JSON decoder refuses a ragged payload (`Expected every row of the matrix to hold the same number of elements`). Ragged input has no defined matrix meaning, and Java's permissiveness here — which produced a value whose own reads throw — is not preserved as a feature. `copyOf` rejects it as well, before anything is cloned — `copyOf([[1,2],[1]])` reports `Array cannot be copied as row 1 is of length 1, expected 2` and `copyOf([[1],[1,2]])` names length 2 against 1 (both measured) — where Java copied the array and handed back a value whose own `total`/`get` then threw. Rendering is total on this side whatever a value was built from: `toString` renders each row at its own length, as Java's did | A `[T]` total type with copy-safe factories should not be able to produce a value whose own reads fail, and the three factories plus the JSON decoder now answer raggedness the same way |
-| 13 | Array aliasing | `DoubleArray.ofUnsafe`/`toArrayUnsafe` and `DoubleMatrix.ofUnsafe` are public, and alias the caller's array | They are `private[collect]`. The whole public surface copies: `of`, `copyOf`, `filled`, `tabulate`, `toArray`, and the matrix equivalents. `strata-basics` builds arrays with `tabulate`, `map`, `mapWithIndex` and `combine` instead | Rule 3 immutability, enforced by the compiler rather than by a documentation convention |
+| 12 | Ragged matrix input | `DoubleMatrix.copyOf` accepts a ragged `double[][]` and returns a value whose `total()` and `get(row, col)` then throw `ArrayIndexOutOfBoundsException`, while `toString` renders each row at its own length (all measured) | A matrix is rectangular by contract: `ofArrays` rejects a wrong-length row (`Function returned array of incorrect length 1, expected 2`) and the JSON decoder refuses a ragged payload (`Expected every row of the matrix to hold the same number of elements`). Ragged input has no defined matrix meaning, and Java's permissiveness here — which produced a value whose own reads throw — is not preserved as a feature. `copyOf` rejects it as well, and so does every other route, because the rows are measured in the one constructor they all pass through, before anything is cloned — `copyOf([[1,2],[1]])` reports `Expected every row of the matrix to hold 2 elements, but row 1 holds 1` and `copyOf([[1],[1,2]])` names 1 element against row 1's 2 (both measured) — where Java copied the array and handed back a value whose own `total`/`get` then threw. No value of this type is non-rectangular, whatever route built it, so `toString` renders a rectangle and rendering stays total, as Java's did | A `[T]` total type with copy-safe factories should not be able to produce a value whose own reads fail, and the three factories plus the JSON decoder now answer raggedness the same way |
+| 13 | Array aliasing | `DoubleArray.ofUnsafe`/`toArrayUnsafe` and `DoubleMatrix.ofUnsafe`/`toArrayUnsafe` are public, and alias the caller's array | Neither member is ported, and immutability is a property of the compiled form rather than of a visibility. A `private[collect]` member is emitted as a public method, so restricting these in the source would have left the same two aliasing entry points in the bytecode; instead they are gone, no member of either type answers with the storage it holds, and the sole constructor of each — which the compiler must emit publicly, because the companion constructs through it — **copies** what it is handed (`DoubleArray` clones the array, `DoubleMatrix` deep-clones the rows after measuring them). Every public factory and accessor therefore copies: `of`, `copyOf`, `filled`, `tabulate`, `ofArrays`, `ofArrayObjects`, `toArray`, `rowArray`, `columnArray`. `strata-basics` builds arrays with `tabulate`, `map`, `mapWithIndex` and `combine`. Measured through Java reflection: constructing either type from a caller's array and then mutating that array leaves the value unchanged, and `toArray` answers with a distinct array on every call | Rule 3 immutability. The cost is one array copy per constructed value, which is paid to make the guarantee hold for every caller the bytecode admits — including a Java or package-spoofing caller, for which a source-level restriction does nothing |
 | 14 | `DoubleArrayMath.sortPairs` | An in-place recursive dual-array quicksort (`dualArrayQuickSort`) that **mutates the caller's arrays**, is not stable, and is `O(n²)` in the worst case | Pure: it returns fresh arrays and leaves its arguments untouched, sorting a stable bottom-up merge sort over one `Array[Int]` permutation plus one `Array[Int]` buffer that the passes alternate between rather than copying back over, comparing `java.lang.Double.compare` directly — stable, no boxing, and `O(n log n)` in the worst case, where the Java sort was `O(n²)`: the worst-case complexity class **improves**. The allocation is bounded and does not depend on the input's order: two result arrays plus one index buffer, and neither the buffer nor any merging for keys already in ascending order (an `O(n)` scan answers with the identity permutation, which is what a stable merge of such an input produces). The length-mismatch message is Java's (`Arrays cannot be sorted as they differ in length`) | Immutability (Rule 3) rules out sorting the caller's arrays, stability is what lets a value of any element type follow its key, and the permutation sort is what keeps the operation `var`-free and boxing-free. Returning fresh arrays costs allocation that an in-place sort does not, and a stable merge costs a constant factor that an unstable quicksort does not; both are the accepted price of those properties. No benchmark of that constant factor is committed with the port, so none is quoted here |
 | 15 | Primitive callbacks | Java uses its own `collect.function.*` interfaces (`DoubleTernaryOperator`, `IntIntDoubleConsumer`, …) | Those interfaces are not ported (section (b)). Where a primitive callback is needed to keep a hot path free of boxing, the type is a single-abstract-method trait declared beside its user: `DoubleArray.DoubleTernaryOperator` (taken by `combineReduce` instead of a three-argument function) and `DoubleMatrix`'s `ElementAction`, `ElementFunction`, `RowArrayFunction`, `RowArrayObjectFunction`. Call sites stay ordinary Scala lambdas | `Function3` and friends are specialised over nothing, so the standard function types cannot satisfy the no-boxing requirement for these methods |
 | 16 | Text loading | `ResourceLocator` decodes leniently, substituting a replacement character for malformed input, and reads a resource of any size | `io.Resources` decodes UTF-8 **strictly** — malformed or unmappable input fails the effect with an `IOException` naming the source — and refuses a source larger than the public `Resources.MaxBytes` ceiling (64 MiB). `readFileText` is an unconfined filesystem reader, exactly as the Java original was: its only callers are in test scope — `ResourcesSpec` — and **callers must not pass it an untrusted path** | A substituted character inside a captured baseline is a silently altered expectation: the measurement still runs, against a value nobody captured |
@@ -283,11 +298,24 @@ matters when one is checked:
 | 26 | `Frequency` | `ofYears(1)` is `P1Y` and is **not** equal to `P12M`; `ofMonths(30)` renders `P30M`; `normalized()` maps a 12-month frequency to `P1Y` (all measured) | Normalised at construction: a year is held as twelve months, so `ofYears(1)` and `of(P1Y)` both render `P12M` (measured) and equal `P12M`; `ofMonths(30)` renders `P2Y6M` (measured); `normalized` is the identity | The AAP requires a normalised `Period`, the constants are named `P1D`…`P12M`, and every captured Java parity baseline spells the annual frequency `P12M`. Once every value is canonical there is nothing for `normalized` to do, and a length has exactly one name |
 | 27 | `ValueAdjustmentType` members | The Java enum constants are spelled `REPLACE`, `DELTA_AMOUNT`, `DELTA_MULTIPLIER`, `MULTIPLIER`, and format to the canonical names `Replace`, `DeltaAmount`, `DeltaMultiplier`, `Multiplier` | Scala code refers to the members as `Replace`, `DeltaAmount`, `DeltaMultiplier`, `Multiplier`. The canonical names, JSON form, `Show` output and parse surface are identical to Java's, and the Java constant identifiers stay resolvable as lookup keys (`valueOf("DELTA_AMOUNT")` answers `DeltaAmount`) | AAP §0.4.1 fixes the required identifiers for this file; nothing reachable by name is lost. Scala source written against the Java constant spellings must be adjusted — no such source exists |
 | 28 | `SequenceDate` rendering | `toString` contains the platform's absent-reference token for whichever of the two mutually exclusive fields is unset | Byte-identical at runtime; the token is obtained from the platform rather than written into the source, and the scaladoc examples stand it in as `[absent]` | The literal token in main sources would breach the build's no-`null` gate while changing nothing observable |
-| 29 | JSON detail | Joda-Beans wire forms | The port's own shapes, described in section (e). Three deliberate narrowings: the `LocalTime` encoder is the port's own so that a time renders `11:00` rather than `11:00:00`; the tagged-double decoder refuses a JSON *number* that is not finite, since the tags are the only spelling the encoder produces for those values; and the `Rounding` decoder rejects an unknown field rather than ignoring it | Each accepts strictly less than a lenient reading would, and only payloads the port could never have written |
+| 29 | JSON detail | Joda-Beans wire forms | The port's own shapes, described in section (e). Four deliberate narrowings: the `LocalTime` encoder is the port's own so that a time renders `11:00` rather than `11:00:00`; the tagged-double decoder refuses a JSON *number* that is not finite, since the tags are the only spelling the encoder produces for those values; the `Rounding` decoder rejects an unknown field rather than ignoring it; and every decoded collection carries a published ceiling, measured from the payload before an element is read — `Codecs.MaximumArrayElements` (1 048 576) for an array of doubles, `MaximumMatrixRows`/`MaximumMatrixColumns` (4096 each) and `MaximumMatrixElements` (1 048 576, checked as a 64-bit product so a stated shape cannot wrap) for a matrix, and `MaximumCollectionElements` (100 000) for a bounded collection field of a value: the holiday and working-day lists and weekend days of a calendar, a schedule's periods, a value schedule's steps, an `AdjustableDates` run, a `MultiCurrencyAmount`'s amounts and an `FxMatrix`'s currencies | The first three accept strictly less than a lenient reading would, and only payloads the port could never have written. The ceilings bound what a document can make the reader allocate: without them the size of every decoded run is the document's choice, and a few kilobytes of repeated text name gigabytes of values. The collection figure is the one the library already enforces on its own expansions (`PeriodicSchedule.MaximumPeriodCount`, `ValueStepSequence.MaximumStepCount`), so no value the port can build is refused by it, and `decode(encode(x))` still holds for every `x` |
 | 30 | Serialization compatibility | Joda-Beans JSON and binary, plus `java.io.Serializable`/`Externalizable` | Neither is supported or tested, for any type. `ImmutableHolidayCalendar-Old.json` is not readable, `assertJodaSerialization` has no counterpart, and the `ImmutableHolidayCalendar` JSON shape is the port's own | Reflective serialization is what design decision D-5 and Rule 6 remove |
 | 31 | Holiday calendar cache | `GlobalHolidayCalendars.bin`, a generated cache read at class-initialisation time, and `main` method that writes it | Not carried. The 25 generators are pure Scala functions, memoised as `lazy val`s, so a calendar is generated once, on first use | A binary cache in the classpath is the runtime-loading mechanism this port removes |
-| 32 | Layout and manifest details | — | The four derived observations live in `index/IndexObservation.scala` with the sealed trait they extend, rather than in the four files AAP §0.3.1 names, because Scala 2 admits no direct subtype of a sealed type outside its file — so `index` holds 14 main sources and `strata-basics` 73. Every test source is one the AAP sanctions: each is named in section 0.3.1 or is the `<Type>Spec` of a retained Java test class, `ScheduleFailureSpec` being section 0.2.2's rename of `ScheduleExceptionTest`. `java-test-mapping.csv` carries one method-level `dropped` row beyond the five class-level exclusions (`ImmutableHolidayCalendarTest.test_readOldJodaFormat`, dropped with Joda wire compatibility), quotes `scala_test_name` per RFC 4180 on the 80 rows whose test name contains a comma, and qualifies two overloaded Java methods with an erased parameter list | Each was required to make a contract testable or a manifest unambiguous. The gate script must parse the manifest with a comma-tolerant CSV reader and allow the one method-level exclusion |
+| 32 | Test-source and manifest details | — | Every test source is one the AAP sanctions: each is named in section 0.3.1 or is the `<Type>Spec` of a retained Java test class, `ScheduleFailureSpec` being section 0.2.2's rename of `ScheduleExceptionTest`. `java-test-mapping.csv` carries one method-level `dropped` row beyond the five class-level exclusions (`ImmutableHolidayCalendarTest.test_readOldJodaFormat`, dropped with Joda wire compatibility), quotes `scala_test_name` per RFC 4180 on the 80 rows whose test name contains a comma, and qualifies two overloaded Java methods with an erased parameter list | Each was required to make a contract testable or a manifest unambiguous. The gate script must parse the manifest with a comma-tolerant CSV reader and allow the one method-level exclusion |
 | 33 | Failure rendering of caller-supplied text | A message quotes the text handed to a parse or a check as it stands, and the failure is written out the same way — unbounded and unescaped — so a log line is as large as the input and a line break in the input puts one in the line (measured against the `2.12.74-SNAPSHOT` jars, message length for a ten-thousand-character input: `BusinessDayConvention.of` 10,038, `Currency.of` 10,073, `CurrencyPair.parse` 10,023, `CurrencyAmount.parse` 10,040, `FxRate.parse` 10,014, `StandardId.parse` 10,027, `StandardId.of` with a rejected scheme 10,072, `ArgChecker.matches` 10,058; and `BusinessDayConvention.of("EUR\nUSD")` reports `BusinessDayConvention name not found: EUR`, a line feed, then `USD`). Java's `Decimal` is the one exception: its scanner threw a `NumberFormatException` naming the offending character rather than the text (measured), so the text this port quotes there is the port's own wording | The message is the Java one, character for character: every failure quotes the whole of what it rejected, and `Failure.message`/`Failure.attributes` hand that text back unchanged, so a caller correcting its input is given exactly what was refused. What differs is the **writing out**. `Failure.show` — and the text form of every failure, which delegates to it — renders each part (the message, and the key and value of every attribute) through one private bounded renderer: at most 512 characters per part plus a three-character marker, with a line feed written `\n`, a carriage return `\r`, a tab `\t` and every other ISO control character together with U+2028, U+2029 and a lone surrogate written as a six-character `\uXXXX` escape. A part within the bound and free of those characters renders byte-identically, so every ordinary failure reads exactly as the Java message did. Measured on this build: `Currency.of` with a ten-thousand-character code carries a 10,025-character message and renders to a 542-character single line; `Failure.Parsing("3M\nINJECTED")` renders on one line. The JSON form carries the text whole, escaped by the JSON grammar. One asymmetry remains deliberately: `ArgCheck` precondition failures are **thrown** rather than returned, are outside this contract, and echo their argument as it stands, as Java's `ArgChecker` did (measured: `ArgCheck.matches` with a ten-thousand-character argument throws a 10,058-character message, the same length Java's `ArgChecker.matches` produced) | A failure is a value that code acts on and a line that a person reads, and the two need different things: parity and full fidelity in the value, a bounded single line at the sink. Neutralising on output is what stops text that reached the library from outside it forging a line of a log (CWE-117) or making that line as large as itself, without restating what any message says |
+| 34 | Bounded date generation | Date generation is unbounded: `PeriodicSchedule` and `ValueStepSequence` each materialise as many dates as the definition implies | Both refuse a definition asking for more than 100,000 items — `MaximumPeriodCount` periods, `MaximumStepCount` steps — so a definition Java would have generated, slowly, can be refused here. See (c)-34 below | An unbounded walk chosen by a caller's own frequency is a denial of service; the ceiling is a constant far above any real schedule |
+| 35 | Date arithmetic at the calendar's edges | A roll or step leaving the range `java.time` represents raises `DateTimeException` or `ArithmeticException` out of schedule generation and step-sequence expansion | Those two exceptions, and no others, are caught around the stepping and reported as an invalid definition, so an `Either`-returning member stays one at the extremes of the calendar. See (c)-35 below | Row 1 applied to the one data-dependent failure that channel could not otherwise describe |
+| 36 | Refusals moved into construction | `Schedule` validates only that its periods are non-empty; `ValueSchedule` has no validator; the three-argument `DaysAdjustment.ofBusinessDays` takes a zero-day business-day addition with a named calendar as given | `Schedule.of` requires the periods in chronological order and non-overlapping — no period's end after the next one's start, checked in the unadjusted and the adjusted pair alike, a gap between two periods being allowed; `ValueSchedule.of` refuses two steps at one position with different adjustments; `DaysAdjustment.of` refuses a zero-day business-day addition naming a calendar other than the no-holidays one. An input Java accepted is refused. See (c)-36 below | A value that cannot be built wrong needs no consumer to re-check it |
+| 37 | Deprecation | `@Deprecated` marks seven `IborIndices` constants, two `OvernightIndices`, two `FloatingRateNames`, and the two superseded accessors of each of `Money` and `BigMoney` | No `@deprecated` annotation exists anywhere in the module. The seven `IborIndices` constants are the only members carrying a Scaladoc `@deprecated` tag, which names the date publication stopped; the two retired `OvernightIndices` constants, the two retired floating rate names and the superseded `getAmount` of each of `Money` and `BigMoney` are documented in ordinary prose that names what to read in their place and says no annotation is attached. Publication state is carried by the index's `active` flag. See (c)-37 below | A warning-as-error build that forbids suppression cannot name an annotated constant in a test or the demo; the state a caller needs is data, not a diagnostic |
+| 38 | Hash codes stable across runs | Generated bean `hashCode`s seed their mixing with `getClass().hashCode()`, whose value depends on the run; 33 files of the Java module do this | No hash code here reads `getClass`, so every one is a function of the value alone, identical in every run and different from the Java value. The mechanism is chosen per type: eight types mix into a `HashSeed` constant that is the hash of their own type name, a value identified by a single field hashes by that field, and the rest fold their fields directly or take the derived product hash. Equality is untouched. See (c)-38 below | A hash that changes between runs cannot be written down or compared across processes |
+| 39 | Product rendering | A bean's text form lists every property, present or absent, between braces | A product renders only what it holds, in a form of its own rather than a generated one: `PeriodicSchedule` its required four and whichever optionals are present, parenthesized — which is also the text a rejected definition carries as its `definition` attribute, so rendered definitions differ from the Java ones; `ValueStep` braced, naming only the position it holds; `SchedulePeriod` as a date phrase, adding the unadjusted pair only when it differs. `ValueAdjustment` renders its calculation in square brackets exactly as Java does, and the named types and `CalculationTargetList` reproduce the Java text exactly. See (c)-39 below | An absent optional field has nothing to print |
+| 40 | Case-tolerant parsing of two families | `StubConvention.of` and `FloatingRateType.of` resolve through an exact map; neither family had a lenient lookup | `parse` applies the same upper-case lenient step every named family of this port uses, so any case of a member's name resolves; the alternates are unchanged. See (c)-40 below | One lookup algorithm for every named family, rather than two |
+| 41 | `Country` interning | Each value is interned in a growing map, so identity comparison happens to work and `getAvailableCountries` grows by one whenever an unlisted code is first requested | A factory builds a fresh value, compared by `equals`/`Eq` and never by identity, and `availableCountries` is a fixed set of 252 — the 251 alpha-2 codes of the built-in table plus `EU`. See (c)-41 below | A published set that changes with what a program has already asked for is not a property of the library |
+| 42 | Construction closure on the JVM | `sealed`, a `private`/`private[pkg]` constructor and the absent `apply`/`copy` are checked by scalac and by nothing else. In the class file this language version emits no `PermittedSubclasses` attribute and a `private` constructor becomes **public**, so every family base class and every validated type is an ordinary extensible public abstract class with a reachable constructor — a property the Java module relied on, `ExtendedEnum` having been designed to be extended at run time | Every one of the 33 `sealed abstract case class _ private` types and the 15 `sealed abstract class _ private[pkg]` families runs a construction guard as the first statement of its own body: `JvmClosure.requireSoleImplementation(this, classOf[X.Impl])` for a validated or normalising type, `JvmClosure.requireDeclaredMember(this, classOf[Family])` for a named family. Each type's implementations are `private final class`es declared in its own companion (or, for `DayCount.Bus252`, in the companion of the family that guards it), so the class file keeps them private too. A subtype compiled by another language raises `IllegalArgumentException` while running `super(...)` and never completes. Measured by the closure row of `scripts/verify-gates.sh`: 48 closed types call their guard in their own constructor bytecode, 90 hidden implementation classes are unnameable from Java — `javac` refuses every one with "has private access" — and 48 generated external Java subclasses compile, as the JVM permits, while none constructs (47 refused by the guard, one refused earlier because its base class derives a field from the argument). **Identity alone is not closure, and the second half of the mechanism is why.** A `private final class Impl` is emitted as an `ACC_PUBLIC` class with an `ACC_PUBLIC` constructor: only the `InnerClasses` attribute records the `private`, which `javac` honours — hence the 90 refused probes — and a class file emitted without a compiler does not, so the implementation's own constructor is reachable and a value built through it has exactly the runtime class the identity guard admits. Every closed type whose implementation carries state therefore also states, with `JvmClosure.requireInvariant`, the invariant its factory establishes, over the fields the instance holds: `Currency` that its code, minor units and triangulation currency are the row the reference data publishes for that code; `CurrencyAmount` that its amount is a number and its zero positive; `Money` that its amount is already rounded to its currency's minor units; `SchedulePeriod` that its dates run forwards; `Tenor` that its name is the one its period implies; and so on for 41 types, the invariant living on the class that declares the fields (`DayCount.Bus252`, `RollConvention.Dom`) where that is not the head of the family. No type carrying state is exempt: `CurrencyAmountArray` was the one exemption while its factory admitted every array of numbers, and it states the element invariant its factory now establishes - that every element of its values is a number - which the empty run satisfies vacuously. **Closure of the hierarchy roots**: `Index`, `FloatingRateIndex` and `RateIndex` are abstract **classes** rather than traits, because a trait compiles to a plain JVM interface that any class file may implement without running a constructor; `Index` runs `JvmClosure.requirePermittedSubtype`, which the levels beneath inherit; `IndexObservation` is deliberately not closed (row 46). Measured by the closure row of `scripts/verify-gates.sh`, in eight parts of which five are executed attacks: 51 closed declarations (48 closed types and 3 hierarchy levels) call their guard in their own constructor bytecode and 41 of 41 stateful ones state an invariant; 90 hidden implementations are unnameable from Java and 90 are reachable in bytecode; 48 external Java subclasses and 3 foreign subtypes of a hierarchy level compile, as the JVM permits, and none constructs; and 10 forged states pushed through the binary `Impl` constructors — reached by compiling against a stub tree that declares them under their binary names, so the attacker's bytecode is a plain `new`/`invokespecial` on the real constructor — are all refused by the invariant, named in the refusal. Subsection (c)-42 states what this does not cover | Rule 4's closed families and AAP §0.3.3's construction policy are what removes dynamic currencies, indices and conventions; a closure holding only for Scala callers does not remove them, and a validated value forged through a public constructor carries exactly the input its factory rejects (CWE-20, CWE-668) |
+| 43 | Java serialization | Joda-Beans wire forms plus `java.io.Serializable`/`Externalizable`, and — in Scala — a `case object` that deserializes through the compiler's module proxy while a case class is populated field by field | Refused in **both** directions by every product of both modules. `collect.NoJavaSerialization` supplies the two inheritable hooks the JDK consults, `writeReplace` and `readResolve`, so `ObjectOutputStream.writeObject` raises before a byte is written and an object reconstructed from a forged stream raises before it reaches the caller that asked for it. Measured: all 193 compiled products of both modules refuse; the classes still taking part are the compiler's own encoding — 105 singleton companion modules and 155 derivation and lambda classes — none of which carries data of the library. **Both hooks are `final`**, which is the difference between a refusal and a convention: a subclass overriding them to return itself would be written and read normally, its fields populated by the stream and no constructor run, so the compiler emits them `ACC_FINAL` on every class that mixes the trait in and the JVM rejects such a class when it is **loaded**. The gate mounts that attack rather than asserting it — a stub declares the type with overridable hooks, a subclass overriding both is compiled against it, a real object stream carrying that subclass is written, and reading it against the real classes fails inside `ObjectInputStream.readObject` with `IncompatibleClassChangeError: class attack.ForgedDecimal overrides final method ...readResolve` — and `ApiSurfaceSpec` asserts over the emitted methods of all 193 products that neither hook is overridable. Two visible consequences: the refusal is an `IllegalArgumentException` rather than `NotSerializableException`, because Rule 5's gate confines `throw new` to `ArgCheck.scala`, and a `case object` of these modules no longer round-trips through `ObjectInputStream` where Java's would | Row 30 takes Joda and Java serialization out of the contract, but the compiler's `Serializable` supertype leaves `ObjectInputStream` as a second construction path that fills fields no factory validated and no decoder checked (CWE-502) |
+| 44 | Shape of the fail-fast checks | `ArgChecker`'s value checks return the checked argument, so a check can be written inline in a field assignment; `isTrue` has five forms — one with no message, one with a plain message, and three taking a message template with `Object...`, `long` or `double` arguments — and `isFalse` two, both message-bearing; an iterable and a collection have separate emptiness checks (`ArgChecker.java:557` and `:587`, in that order) | Every `ArgCheck` member returns `Unit` and is called in statement position; one `isTrue(Boolean)`, one `isTrue(Boolean, => String)` and one `isFalse(Boolean, => String)` take their message by name and build it only on failure; one `notEmpty(Iterable[T], String)` covers both. The exception type is unchanged, and so is the message of every check that survives with its Java counterpart - with one exception created by that last collapse: an empty *collection* is reported `Argument iterable '<name>' must not be empty` where Java's collection overload said `Argument collection '<name>' must not be empty`. See (c)-44 below | A discarded value is a compile error in this build, so returning the argument would force every call into a throwaway binding; interpolation at the call site is compiler-checked where a template is not; and the throw stays direct because `require` would prefix every message that reaches a log or a test expectation |
+| 45 | What a failure carries | `FailureItem` holds a reason, a message, attributes, a **stack trace** built at construction - synthesized from the current thread's frames for a message-built failure, taken from the supplied throwable for a `Throwable`-built one, and inherited from the underlying item when a `FailureItemProvider` is wrapped - and an optional **cause type**, the class of that throwable | `Failure` holds the reason, the message and the attributes, and nothing else. Neither a trace nor a cause type is captured, rendered by `Failure.show` or carried in the JSON form of section (e), and constructing a failure costs no stack walk. See (c)-45 below | A failure here describes what went wrong with the data - the part a caller acts on and a reader reads. Where the frames matter they belong to the `IO` edge that escalates the failure into an error, which is raised at that point |
+| 46 | `IndexObservation` — the AAP's wording against the AAP's file layout | — | `IndexObservation` is an open `trait` declaring one member, `index: Index`, and the four observations this module publishes — `IborIndexObservation`, `OvernightIndexObservation`, `PriceIndexObservation`, `FxIndexObservation` — extend it from a file of their own. AAP §0.4.1's key-changes cell for `index/IndexObservation.scala` writes `sealed trait IndexObservation`, while §0.3.1, the authoritative file layout, gives those four observations files of their own; Scala 2 admits a direct subtype of a sealed type only in the file that declares the type, so the two cannot both hold. The port follows §0.3.1, and Rule 4 agrees: the families it names as closed are `Index` with its leaf families, the calendars, `Rounding` and the failure model, and `IndexObservation` is not among them. Java's `IndexObservation` is a plain interface, so **nothing observable in Java's behaviour changes** and an application may still implement the trait and be carried by every signature written over it. One consequence follows for a caller: the set of observations is not closed, so a `match` over the trait is not checked for exhaustiveness and narrowing code writes a default branch, exactly as code over the Java interface tested with `instanceof` did. `ApiSurfaceSpec` carries the trait's row among the open contracts and compiles an implementation declared outside `IndexObservation.scala` | This row reconciles §0.4.1's wording with §0.3.1's layout; it is **not** an accepted departure from the frozen per-file plan, which documentation could not authorise in any case. The delivered tree matches §0.3.1 file for file (`index`: 18 main sources), and the four observation files are what sealing the trait would have cost. Openness is also the reading that keeps the extension point the ported interface offers |
 
 ### (c)-3 — Null arguments are outside the contract
 
@@ -316,6 +344,30 @@ key — not a guarantee, and no other entry point matches it. Hold a possibly-ab
 `Option[String]` and decide what absence means before calling: `Failure` describes *data* that is
 wrong, and a missing reference is not data. Java rejected `null` too, so nothing here is a parity
 regression; only the exception type differs.
+
+### (c)-5 — Name registration when two names differ only in case
+
+Java registered a family's names two different ways, depending on how the family was declared. A
+family read from configuration registered the declared spelling unconditionally and the English
+upper-case spelling only where it was free — `mutableMap.put(key, name)` then
+`mutableMap.putIfAbsent(key.toUpperCase(Locale.ENGLISH), name)` in
+`FloatingRateNameIniLookup.java:125-126`, which is the loader for `FloatingRateName`; the
+alternate-name table was built the same way (`ExtendedEnum.java:255-256`). A family read from a
+constants class registered both spellings conditionally —
+`instances.putIfAbsent(instance.getName(), instance)` then
+`putIfAbsent(instance.getName().toUpperCase(Locale.ENGLISH), instance)`,
+`ExtendedEnum.java:232-233`.
+
+`NamedEnum` implements the first rule for every family: a member claims its canonical name
+unconditionally, and its upper-case spelling only where no member has claimed that key already. The
+two rules agree for every family whose names are distinct once case is discounted, and they part
+company where they are not: under the conditional rule the upper-case spelling of an earlier member
+occupies the key that is a later member's own canonical name, and that later member stops being
+resolvable by the name it reports. `FloatingRateName` holds two such pairs —
+`DKK-DESTR-OIS Compound` beside `DKK-DESTR-OIS COMPOUND`, and the `SEK-SWESTR-OIS` pair — and Java
+read that family from configuration, so the port answers those four names exactly as Java did.
+Applying the one rule everywhere is what keeps every member of every family resolvable by its own
+name, whatever the family is declared from.
 
 ### (c)-9 — Tolerance comparison at NaN and at an infinite tolerance
 
@@ -396,6 +448,224 @@ parts, and only then links the results. Two consequences, both measured:
   (`Failure.MissingData`, attributes `id -> XXXX`, `compositeId -> GBLO+XXXX`) while Java names the
   composite part (`Reference data not found for 'GBLO+XXXX' … when finding 'GBLO+XXXX~USNY'`). The
   message text and attribute names are otherwise the Java ones.
+
+### (c)-34 — Bounded date generation
+
+Neither Java `PeriodicSchedule` nor Java `ValueStepSequence` caps the number of dates it generates:
+each walk materialises as many boundaries as the dates and the frequency imply, so a daily
+frequency over a span of centuries is attempted rather than refused (no ceiling appears in either
+Java source).
+
+This port refuses a definition asking for more than 100,000 items — `MaximumPeriodCount` periods in
+`PeriodicSchedule`, `MaximumStepCount` steps in `ValueStepSequence`. `PeriodicSchedule` holds the
+ceiling three times over: a span whose width makes it provably unreachable is refused in constant
+time before either walk begins, so nothing a generation would have completed is refused; each walk
+stops at the ceiling's worth of boundaries, so nothing beyond it is materialised; and the assembled
+date list is checked against the ceiling exactly. `ValueStepSequence` holds it as each rolled date
+is accepted. A definition Java would have generated, slowly, can therefore be refused here.
+
+The ceiling sits far above any real schedule and is a constant rather than a parameter, so no
+caller can raise it: an unbounded walk chosen by a caller's own frequency is a denial of service in
+a library that values whatever it is handed.
+
+### (c)-35 — Date arithmetic at the edges of the representable calendar
+
+A roll or a step that leaves the range `java.time` can represent raises `DateTimeException` or
+`ArithmeticException` out of Java's schedule generation and out of its step-sequence expansion;
+neither Java source catches either type, so the exception escapes a method that otherwise reports
+its failures.
+
+Here those two exceptions, and no others, are caught around the stepping in `PeriodicSchedule` and
+`ValueStepSequence` and reported as an invalid definition. A member that answers `Either` therefore
+keeps answering `Either` at the extremes of the calendar. This is row 1 applied to the one case
+that channel could not otherwise describe.
+
+### (c)-36 — Three refusals moved into construction
+
+Java builds three values this port refuses:
+
+- `Schedule` validates only that its period list is non-empty (`validate = "notEmpty"`), so a list
+  that runs backwards or overlaps is constructible. `Schedule.of` here requires that no period's
+  end falls after the next period's start, checked independently for the unadjusted pair and the
+  adjusted pair, so a list that runs backwards or in which two periods overlap is refused.
+  Adjacency is not required: a gap between one period and the next is allowed, because a schedule
+  may describe accrual that pauses.
+- Java `ValueSchedule` carries no validator, so two steps naming one position are detected during
+  resolution if at all. `ValueSchedule.of` here refuses two steps naming the same position with
+  different adjustments.
+- The three-argument `DaysAdjustment.ofBusinessDays` constructs a zero-day business-day addition
+  that names a holiday calendar exactly as given. `DaysAdjustment.of` here refuses a zero-day
+  business-day addition whose calendar is not the no-holidays one, because an addition of zero
+  business days names no day. The two-argument factory behaves as Java's does, substituting the
+  no-holidays calendar and carrying the named calendar in the business-day adjustment instead.
+
+An input Java accepted is refused in each case. A value that cannot be built wrong needs no
+consumer to re-check it, and a contradiction found at construction names the field that carried it.
+
+### (c)-37 — Deprecation is documented, not annotated
+
+`@Deprecated` marks seven `IborIndices` constants, two `OvernightIndices` constants, two
+`FloatingRateNames` constants and the two superseded accessors of each of `Money` and `BigMoney`.
+
+This port documents the same facts and attaches no annotation anywhere: `@deprecated` appears in
+these sources only inside documentation, never on a declaration. Where it appears as a Scaladoc tag
+it names the date the rate stopped being published, and the seven `IborIndices` constants are the
+only members that carry one.
+
+The rest are documented in ordinary prose instead, each naming the member or the flag to read in
+its place and saying in as many words that it carries no deprecation annotation: the two retired
+`OvernightIndices` constants, the two retired `FloatingRateName` constants, and the superseded
+`getAmount` of each of `Money` and `BigMoney`, whose replacement `getValue` carries the scale
+alongside the value rather than encoding it in a `BigDecimal`. Whether the rate behind an index is
+still published is carried by the index's own `active` flag, which a caller reads and branches on.
+
+The annotation is a compiler diagnostic, and this build compiles every warning as an error while
+forbidding a suppression anywhere (section 0.10.1, Rule 9), so annotating a constant that the
+tests, the demo and the reference-data manifest must name would make the build unbuildable. What a
+caller needs is the publication state as data on the index, not a warning at its own call site.
+
+### (c)-38 — Hash codes are stable across runs
+
+Generated bean `hashCode`s seed their mixing with `getClass().hashCode()`, whose value depends on
+the run. Thirty-three files of the Java module do this.
+
+No hash code in this port reads `getClass`. Every one is a function of the value alone, so it is
+identical in every run of every JVM and differs from the Java value for the same value. Equality is
+untouched, as is the contract that equal values hash equally.
+
+The mechanism is chosen per type rather than applied uniformly, and three shapes appear:
+
+- eight types mix their fields into a `HashSeed` constant that is the hash of their own type name:
+  `FxRate`, `CurrencyAmountArray`, `MultiCurrencyAmountArray`, `ValueAdjustment`, `ValueSchedule`,
+  `ValueDerivatives`, `OvernightIndexObservation` and `FxIndexObservation`;
+- a value identified by a single field hashes by that field, which is what the named families do:
+  `name` for the four index families, the day counts and a reference data id, `code` for a
+  currency, `id` for a holiday calendar, `externalName` for a floating rate name, and `store` for
+  the immutable reference data;
+- the rest fold their fields directly with no type-name seed: `CurrencyAmount` mixes currency and
+  amount, `FxMatrix` its currencies and its rates, `MultiCurrencyAmount` folds its entries in
+  currency order, and `IborIndexObservation` starts its mixing from the hash of the index.
+
+Every type not in that list takes the hash the compiler derives for the product, which reads the
+fields and nothing else. A hash that changes between runs cannot be written down, compared across
+processes, or used to make a test deterministic, and none of these change.
+
+### (c)-39 — A product renders the fields it holds
+
+The text form of a bean lists every property, present or absent, between braces —
+`PeriodicSchedule{startDate=2014-06-16, ..., stubConvention=null, ...}`.
+
+A product here renders only what it holds, and the form is chosen per type rather than generated:
+
+- `PeriodicSchedule` writes its four required fields and whichever of its seven optional fields are
+  present, parenthesized: `PeriodicSchedule(startDate=2014-06-16, endDate=2014-09-16,
+  frequency=P3M, businessDayAdjustment=...)`. That text is also what a rejected definition carries
+  as the `definition` attribute of its failure, so a caller comparing rendered definitions sees a
+  different string from the Java one.
+- `ValueStep` keeps the braces and names only the position it holds —
+  `ValueStep{periodIndex=2, value=...}` or `ValueStep{date=2014-06-30, value=...}` — where the
+  bean printed both positions and rendered the absent one as its absence marker.
+- `SchedulePeriod` renders a date phrase, `2014-06-16 to 2014-09-16`, adding
+  `(unadjusted ... to ...)` only when the unadjusted pair differs from the adjusted one, where the
+  bean printed all four dates under their property names. Its four fields are written out under
+  their own names by the JSON encoding instead.
+- `ValueAdjustment` renders the calculation it performs in square brackets,
+  `ValueAdjustment[result = input + -2000.0]`, which is what the Java class does as well; this one
+  is unchanged rather than divergent.
+
+`Schedule`, `ValueSchedule`, `CalculationTargetList` and the named types are readable the same way,
+from their own `toString`, and the last two reproduce the Java text exactly (section (e)). An absent
+optional field has nothing to print, and a rendering that prints it prints the absence marker of
+whatever held it.
+
+### (c)-40 — Case-tolerant name parsing for two families
+
+Java's `StubConvention.of` and `FloatingRateType.of` resolve through an exact map, so only a
+published spelling or a registered alternate resolves; neither family had the lenient lookup the
+configuration-backed families had.
+
+`parse` on both families applies the same upper-case lenient step every named family of this port
+uses, so any case of a member's name resolves. The alternates themselves are unchanged, and no new
+spelling is accepted beyond a case variant of one that already resolved.
+
+### (c)-41 — `Country` values are not interned, and the published set is fixed
+
+Java interns each `Country` in a growing map keyed by code, so two requests for one code answer the
+same instance and an identity comparison happens to work, and `getAvailableCountries` returns that
+map's values — which grow by one each time a code outside the published table is first requested.
+
+Here a factory builds a fresh value, compared by `equals` and by `Eq` rather than by identity, and
+`availableCountries` is a fixed set of 252: the 251 alpha-2 codes of the built-in table and `EU`.
+Building a country outside that set does not enlarge it. A published set that changes according to
+what a program has already asked for is not a property of the library.
+
+### (c)-42 — What the construction closure does not cover
+
+Row 42 closes the construction of every **closed** type, and closes the roots of the closed
+hierarchies as well. Two things are deliberately left open, and are open in the AAP as well as
+here, so they are stated rather than implied.
+
+`Index`, `RateIndex` and `FloatingRateIndex` are **not** among them. They were
+sealed traits, which compile to plain JVM interfaces that any class file may implement without
+running a constructor, so a foreign implementation could be accepted where the type is accepted and
+an exhaustive match over it — one the compiler proved complete — would meet a shape the source does
+not contain. AAP §0.3.3 makes the `Index` hierarchy closed, and closed means closed in the class
+file too, so all three are abstract classes with package-private constructors whose bodies run
+`JvmClosure.requirePermittedSubtype`; the gate compiles a foreign subtype of each level and none
+constructs. `IndexObservation` stays an open trait, for the reason row 46 records, and
+`FloatingRate` remains an open trait, which the AAP requires explicitly — it is kept
+open so that `FloatingRateName` need not move into `Index.scala`. Both are listed below with the
+other extension points.
+- **The published extension points.** `IndexObservation`, `FloatingRate`, `ReferenceData`, `ReferenceDataId`,
+  `DateAdjuster`, `FxRateProvider`, `FxConvertible`, `Resolvable`, `ResolvableCalculationTarget`,
+  `CalculationTarget` and `TypedStringCompanion` are meant to be implemented by callers — that is
+  what lets an application supply its own holidays, its own rates and its own instruments — and
+  `ApiSurfaceSpec` asserts that each of them still admits an implementation, which is also the
+  sensitivity control for every sealing assertion beside it.
+- **The compiler's own `Serializable` classes.** The singleton class of every companion object, and
+  the anonymous classes circe's derivation and Scala's lambdas produce, declare
+  `java.io.Serializable` because their supertypes do. None is a product, none holds data of this
+  library, and a module deserializes to the singleton it already is. The gate counts them (105 and
+  155 on this build) and requires the remainder — a class of these modules holding data and taking
+  part in Java serialization — to be empty.
+
+### (c)-44 — Shape of the fail-fast checks
+
+`ArgCheck` carries the checks of Java's `ArgChecker` that survive the port — the `notNull` family
+does not, for the reason in (c)-3, and the preconditions whose exception type moved are row 11 —
+with a different calling shape that is visible at every call site. Each surviving check keeps its Java message
+character for character (row 33), with one exception, created by the collapse of two members into
+one and stated in the table below:
+
+| Java `ArgChecker` | `ArgCheck` | Why |
+|---|---|---|
+| A value check returns the checked argument — `notNull`, `notEmpty`, `notNegative` and the rest — so a check can be written inline in a field assignment; `isTrue`/`isFalse` return `void` | Every check returns `Unit` and is called in statement position | A discarded value is a compile error in this build, so returning the argument would force every call into a binding that exists only to be thrown away. The argument is already in scope at the call site, and validated construction goes through a factory that returns the finished value |
+| Five `isTrue` forms — one without a message, one with a plain message, and three taking a message template with `Object...`, `long` or `double` arguments — and two `isFalse` forms, both with a message | One `isTrue(Boolean)`, one `isTrue(Boolean, => String)` and one `isFalse(Boolean, => String)` | A by-name message is built only when the check fails, and interpolation at the call site is checked by the compiler where a template is not. As in Java, there is no `isFalse` without a message |
+| Separate emptiness checks for a collection (`Argument collection '<name>' must not be empty`, `ArgChecker.java:597`) and for an iterable (`Argument iterable '<name>' must not be empty`) | One `notEmpty(Iterable[T], String)` reporting `Argument iterable '<name>' must not be empty` (`ArgCheck.scala:382`). **This is the one message the port changes:** an empty collection is now reported with the iterable wording | `Iterable` covers every ordinary Scala collection, sequences, sets and maps alike; Java needed two members only because its collection type adds an emptiness test of its own. Nothing in either module asserts the collection wording |
+| `notNull`, `noNulls`, `notNullItem` | Not ported — see (c)-3 and section (a) row 10 | Absence is `Option`, and a reference is never empty of a referent |
+| The throw is the standard argument exception, raised directly | The same exception, raised directly through the one private `fail` of the object rather than through the standard `require` | `require` prefixes the message it is handed, which would change text that reaches logs and test expectations |
+
+### (c)-45 — A failure carries no stack trace and no cause type
+
+Java's `FailureItem` holds five fields: the reason, the message, the attributes, a **stack trace**
+and an optional **cause type**. The trace is neither optional nor lazy — every factory builds one at
+construction — but it does not always come from the same place:
+
+- a failure built from a message alone synthesizes it from the current thread, walking
+  `Thread.currentThread().getStackTrace()` and rendering the frames into a string with the message as
+  the first line (`FailureItem.java:151,157-164`), and records no cause type;
+- a failure built from a `Throwable` takes **that throwable's** trace instead
+  (`Throwables.getStackTraceAsString(cause)`) and records the throwable's class as the cause type
+  (`FailureItem.java:211-212`);
+- a failure built from a `Throwable` that is itself a `FailureItemProvider` wraps the underlying item
+  and inherits its trace and its cause type unchanged (`FailureItem.java:272`).
+
+`Failure` holds three: the reason, the message and the attributes. Neither the trace nor the cause
+type is carried, so neither appears in `Failure.show`, in the text form of any member, or in the JSON
+form of section (e), and constructing a failure costs no stack walk. A failure here describes what
+went wrong with the data, which is what a caller acts on and what a reader reads; where the frames
+that produced it are wanted, they belong to the `IO` edge that escalates the failure, which raises an
+ordinary error at the point of escalation.
 
 ## (d) Covered holiday calendar set
 
@@ -668,10 +938,11 @@ carry both identities, four carry only a rule number, and `Gate 5` is six rows r
 its six sections are present as `## ` headings, and that section (a) carries at least as many table
 rows as there are distinct `strata-collect` members referenced from `modules/basics/src` — a count
 the script computes with the specification's own grep rather than hardcoding. Measured on this
-revision: **51** referenced members against the **85** rows of section (a)'s required table, and six
-headings. The script counts every table line inside section (a), so it reads **96** rows, the nine
-supplemental rows and the two tables' header lines included; the required table alone already clears
-the threshold. The manual half is an approving pull-request review by a
+revision: **51** referenced members against the **85** rows of section (a)'s required table, and all
+six required sections present once each and in order. The row reports the total number of `## `
+headings without judging it, so section (g)'s ledger is counted and never required. The script counts every table line inside section (a) and subtracts the first table's header and
+separator, so it reads **98** rows from the 100 lines there - the eleven supplemental rows and the second table's own
+header and separator included; the required table alone already clears the threshold. The manual half is an approving pull-request review by a
 [`CODEOWNERS`](.github/CODEOWNERS) owner, confirming this note's content against the six items the
 migration note owes; the script never blocks on a human, and reports that half as "automated checks
 passed; manual approval: see PR review".
@@ -691,3 +962,101 @@ reads `java-test-mapping.csv` with a quoting-aware CSV reader (`python3`'s `csv`
 `dropped` row alongside the five class-level exclusions. Forked tests write their parity reports to
 `target/parity-report` and their JUnit XML to `target/test-reports`, both under the repository root,
 whichever project ran them, because `build.sbt` hands both projects those two absolute paths.
+
+## (g) Remediation ledger — build, CI and dependency-affecting findings
+
+This section is not one of the six the AAP requires. It exists because the review of this port's
+dependency safety and supply chain needed evidence the repository did not hold: the reconciled reports
+of the build-configuration, CI and gate-runner reviews are review artefacts that live beside the run
+rather than in the tree, so what they decided about dependencies could only be reconstructed from
+commit messages. This ledger is the in-repository record of the same facts — which finding, which
+files, what was done, and what it did to the dependency set or to a resolved classpath — anchored to
+commits, so a reader re-checks a row with `git` and `sbt` instead of trusting this table.
+
+**The invariant the ledger makes checkable.** The declared dependency set is the eleven coordinates
+`build.sbt` has carried since the build was introduced in `27df2962f`, and no remediation has added,
+removed or re-versioned any of them. The only change to a dependency declaration in this build's whole
+history is row 9's exclusion, which subtracts a duplicate transitive and adds nothing:
+
+```
+coordinates() { grep -E '^[[:space:]]+\(?"(org|io|com)\.' | sed -E 's/^[[:space:]]+//' | sort; }
+diff <(git show 27df2962f:build.sbt | coordinates) <(coordinates <build.sbt)
+# eleven lines each; the one that differs is discipline-scalatest, parenthesised to carry its exclusion
+```
+
+Both sides are compared through process substitution rather than through temporary files: a fixed path
+under a shared temporary directory races every other process that follows the same instruction, and
+`>` follows a symbolic link already sitting there.
+
+Rows 1 to 5 are the findings raised against the build definition and the CI job while the tree was
+being finished, one row each. Row 6 is the gate-runner review, whose twenty-nine findings have a row
+each in the second table below. Rows 7 to 12 are the findings of the dependency-safety,
+tooling-security and comment reviews of the finished tree. **Impact** is measured rather than assumed
+— `none` means no declared coordinate changed and no entry joined or left a resolved Compile or Test
+classpath.
+
+| # | Finding | Review checkpoint | Files changed | Resolution | Dependency / classpath impact | Commits |
+|---|---|---|---|---|---|---|
+| 1 | `config/F01` — LOW, blocking: `Global / excludeLintKeys += logManager` suppressed sbt's unused-key lint, against the no-suppression requirement | sbt Build and Repository Configuration (4 findings, all LOW, 1 blocking) | `build.sbt` | The custom test-logging layer that needed the exclusion was removed, and the exclusion with it; nothing in this build filters or silences a warning | none | added `55fca5ed8`, removed `86d8c8a32` |
+| 2 | `config/F02` — LOW: the custom log appender opened a `PrintStream` per logger with no deterministic close | sbt Build and Repository Configuration | `build.sbt` | Removed with the same layer; test reporting is ScalaTest's own `-u` reporter, which owns its files | none | `86d8c8a32` |
+| 3 | `config/F03` — LOW: six `sbt.internal.*` types coupled the meta-build to sbt 1.13.0 implementation detail | sbt Build and Repository Configuration | `build.sbt` | Removed with the layer; the build definition now uses public sbt API only | none — the coupling was to the meta-build, never to a module classpath | `86d8c8a32` |
+| 4 | `config/F04` — LOW: `IO.createDirectory` mutated the filesystem during setting evaluation | sbt Build and Repository Configuration | `build.sbt` | Removed; the `-u` reporter creates its own report directory when tests run | none | `86d8c8a32` |
+| 5 | `ci/F01` — LOW: `>> $BASH_ENV` was unquoted in the sbt installation step | Scala Build CI Infrastructure (1 finding, LOW) | `.circleci/config.yml` | Quoted: `>> "$BASH_ENV"` | none | added `c6e6a0489`, fixed `86d8c8a32` |
+| 6 | `gate/F01`–`gate/F29` — 8 HIGH, 16 MEDIUM, 5 LOW, 21 blocking: gate rows that could pass vacuously, unchecked evidence paths, and report and output-path handling | Acceptance Gate Runner / SCRIPTING-INTEGRATION (29 findings) | `scripts/verify-gates.sh` | Rows hardened individually against AAP §0.10.1, which remains the authority for every row and pass condition; each finding has its own row in the second table below, with the state of the script as it now stands | none — the runner declares no dependency and contributes nothing to a classpath. Its dependency-bearing content is the Gate 2 row, which measures the four dependency trees and both exported classpaths | added `d2f5ba43c` (2,705 lines), hardened `86d8c8a32` (+3,743 / −614) |
+| 7 | `SECDEP-F02` — HIGH, blocking: the `scala_build21` cache restored `~/.sbt` and `~/.cache/coursier` through branchless prefix fallbacks and saved with `when: always`, so an untrusted branch could persist global sbt plugins or altered dependency bytes into a later trusted build | Dependency Safety and Software Supply Chain | `.circleci/config.yml` | Two fully qualified restore keys, each naming the architecture, one branch, the job and all three build-definition checksums, and never a truncated prefix; `save_cache` runs only for the trunk pipeline (a `when` condition on `<< pipeline.git.branch >>`) and carries no `when` of its own, so the `on_success` default keeps a failed run from saving; the cached path is the Coursier download cache alone. Because CircleCI caches are one project-wide namespace that `restore_cache` searches by prefix, no key is treated as a trust boundary: two steps between the restore and the gate validate what arrived — the sbt home is refused if it carries any `*.sbt`, `*.scala`, credential or `plugins` entry outside `boot/`, and every restored jar and pom is re-checked against the SHA-1 the repository publishes and deleted when it does not match, so an unverified byte is downloaded again rather than executed | none to the declared set or to any resolved classpath; what changes is which cache a build may write and which restored bytes may run | this revision |
+| 8 | `SECTOOL-F16` — MEDIUM, blocking: `save_cache` stored the whole `~/.sbt`, the standard home of `credentials.sbt` and `.credentials`, and no scanner examines cache contents | Tooling, Artifact and Secret Security | `.circleci/config.yml` | The cached paths are the two download caches only — `~/.cache/coursier` and `~/.sbt/boot`; the sbt home itself is never cached, and the validation step of row 7 refuses a credential file arriving from anywhere else | none to any classpath | this revision |
+| 9 | `SECDEP-F03` — MEDIUM: `discipline-scalatest` 2.3.0 pulled `org.scalatestplus:scalacheck-1-18_2.13:3.2.18.0` alongside the declared `scalacheck-1-20_2.13:3.2.20.0`; different artifact ids, so nothing evicted either, and both publish the same 23 class names with a byte-different `CheckerAsserting` | Dependency Safety and Software Supply Chain | `build.sbt`, `scripts/verify-gates.sh` | The transitive is excluded at the declaration that introduces it, leaving the adapter matching the resolved ScalaCheck as the only one; the Gate 2 row gained a duplicate-class audit that fails on any class name two entries of one exported classpath provide, so the condition cannot silently return | the one classpath change in this ledger: the `strata-basics` Test classpath loses `scalacheck-1-18_2.13:3.2.18.0` — 46 entries to 45, duplicated class names 23 to 0, byte-different duplicates 2 to 0 — while both Compile classpaths and both `strata-collect` classpaths are unchanged, the latter never having carried it | this revision |
+| 10 | `SECDEP-F01` — LOW: the reconciled build-configuration and gate-runner reports the dependency review required as evidence were not in the clone, so the remediation decisions could not be verified independently | Dependency Safety and Software Supply Chain | `SCALA_MIGRATION.md` | This section: the ledger of every row above with its files, resolution and measured impact, anchored to commits rather than to a report that lives outside the tree | none | this revision |
+| 11 | `CMTBLD-F01`–`F04`, `F87`, `F88` — six LOW, two blocking: migration narration in the `build.sbt` banner and the CI job banner, a paraphrase of the visible compiler options, a duplicated report-path explanation, a comment duplicating README material, and a time-sensitive GPG version claim | COMMENTS — Build, Tooling, CI and Documentation | `build.sbt`, `.circleci/config.yml` | Comment text only: the narration is gone, the surviving comments state the root-project, fork-lifecycle, cache and gate-ownership invariants, and the GPG note is tied to what the block requires (loopback pinentry, GPG 2.1 or later) instead of to what an image happened to ship | none — no setting, coordinate or step semantics changed | this revision |
+| 12 | `SECDEP-F04` — LOW: the first version of this section's re-check procedure wrote to the fixed shared paths `/tmp/then` and `/tmp/now`, which race concurrent runs and follow a symbolic link already at that path | Dependency Safety and Software Supply Chain | `SCALA_MIGRATION.md` | The procedure compares both sides through process substitution and writes no file | none | this revision |
+
+### The gate-runner review, finding by finding
+
+Every row below changed `scripts/verify-gates.sh` and nothing else, was introduced with the
+runner in `d2f5ba43c` and adjudicated in `86d8c8a32`, and has no dependency or classpath impact:
+the runner declares no dependency and contributes nothing to a Compile or Test classpath. The
+state column is what this revision's script does, read at the row's own code rather than taken
+from the report.
+
+| # | Finding | Verdict | What was wrong | How it stands in this tree |
+|---|---|---|---|---|
+| 1 | `gate/F01` — MEDIUM, blocking | resolved | Gate 7's manual row deviated from the mandated approval text when the automated half failed | The mandated sentence is emitted unconditionally; no conditional failure text remains in the manual row |
+| 2 | `gate/F02` — LOW | resolved | A blank line at end of file made `git diff --check` exit 2 | The file ends with its last statement and one newline; `git diff --check` is clean |
+| 3 | `gate/F03` — HIGH, blocking | resolved | The boxing audit selected hot methods by name prefix, so loop helpers such as `scaledInto`, `ternaryFoldFrom`, `buildRows`, `fillRow`, `addInto`, `multiplyInto` and `applyInto` were never disassembled | Selection is the transitive, asserted-closed call graph of the hot methods the specification names, and the row asserts each named method is declared by its class before auditing it |
+| 4 | `gate/F04` — MEDIUM, blocking | resolved | Snapshot and restore `rm`, `cp` and `mkdir` were unchecked while `errexit` was disabled inside gate calls, so stale or missing evidence could survive a passing row | Each helper reports through `snapshot_failure` into the framework-error record, and the copy is verified file by file against its source |
+| 5 | `gate/F05` — MEDIUM | resolved | Only the JUnit XML was restored, losing Gate 1's text test reports the script promises | A snapshot mirrors every file of the directory it covers rather than a chosen extension |
+| 6 | `gate/F06` — HIGH, blocking | resolved | The parity-report parser validated neither field types nor cross-field consistency, so `failed: 0` beside a non-empty `failures` array could pass | The parser rejects booleans and non-integers and enforces the cross-field agreement between the counts and the failure list |
+| 7 | `gate/F07` — MEDIUM, blocking | resolved | Gate 4 discarded the exclusion reasons, so a wrong or blank rationale could be published as evidence | The whole `EXCLUDED <fqcn> <reason>` line is compared against the pinned inventory of section (e) |
+| 8 | `gate/F08` — MEDIUM, blocking | resolved | The resource grep the specification prescribes was informational while a narrower substitute decided the row | The literal recursive grep for `.ini`, `.csv` and `.properties` over both modules' main sources decides the row, and the semantic scans are supplementary to it |
+| 9 | `gate/F09` — HIGH, blocking | resolved | Hidden-class identities were normalised before the deciding difference, so distinct codec-only classes could collapse into one name and escape inspection | The raw difference is the decision set, stated as such in the row's contract; hidden entries are classified rather than merged |
+| 10 | `gate/F10` — MEDIUM, blocking | resolved | The warning-policy scan narrowed its scope and ignored hits inside comments rather than enforcing the prescribed recursive grep | The scan covers `build.sbt`, `project/` minus generated output, and both modules' `src` trees, and every hit outside the single allowed option element fails, comments included |
+| 11 | `gate/F11` — HIGH, blocking | resolved | The `partial` and `dropped` allow-lists were class-wide, so any method of an allowed class could be excused | Exact `(class, method)` pairs are required, and class-level exceptions remain only for the wholly excluded classes |
+| 12 | `gate/F12` — MEDIUM, blocking | resolved | Status grammar, consolidated-target equality, duplicate rows and row cardinality were unenforced | The status grammar is matched exactly, `consolidated:<spec>` must equal the row's own spec, duplicate rows are rejected and the derived 1,876-row cardinality is enforced |
+| 13 | `gate/F13` — LOW | resolved | `--help unexpected` exited 0 and silently ignored the unsupported second argument | Arity is decided by `case "$#"`, with a usage error and exit 2 for every arity other than none or one help flag |
+| 14 | `gate/F14` — MEDIUM | resolved | Contrary to its own comment, sbt output was not streamed, so a long command printed nothing until it finished | `run_sbt` pipes through `tee` and takes sbt's status from `PIPESTATUS[0]` |
+| 15 | `gate/F15` — MEDIUM | resolved | Sourcing the script still read caller arguments, changed directory, truncated artifacts and replaced traps | Every side effect and the trap installation sit in `init_run`; sourcing defines the helpers and the rows and runs nothing, which is how a single row can be exercised |
+| 16 | `gate/F16` — MEDIUM, blocking | resolved | Report completion was flagged before the write to the final path succeeded, so an interrupted run could leave a partial report the exit trap refused to retry | The report is written to a temporary file, verified and renamed, and only then is completion recorded |
+| 17 | `gate/F17` — LOW, blocking | resolved | A preflight failure produced impossible summary counts through subtraction | Preflight is recorded as its own row kind, nothing is derived by subtraction, and the preflight path reports an incomplete run |
+| 18 | `gate/F18` — MEDIUM, blocking | resolved | The Gate 2a Test check required `test-classes` but not the collect main `classes` directory | Both directories are required on the Test internal dependency classpath, which is the proof of the compile-and-test edge |
+| 19 | `gate/F19` — MEDIUM, blocking | resolved | Any six level-two headings passed Gate 7; the required sections were never identified | Each `## (a)` to `## (f)` is looked for by its own label, required exactly once and required in order before section (a) is validated |
+| 20 | `gate/F20` — MEDIUM, blocking | resolved | The documentation half of Gate 6 was missing, so the demo command needed to appear in no README | The row requires the exact demo command in `README.md` and `strata-basics/README.md` and fails naming the file that omits it |
+| 21 | `gate/F21` — HIGH, blocking | resolved | The authoritative collect test-class set was derived from the manifest being audited, so omitting a whole class escaped detection | The class inventories are pinned in the script from AAP sections 0.4.1 and 0.2.2, and the manifest must equal them before any method join |
+| 22 | `gate/F22` — MEDIUM | resolved | The source-root parser tokenised on whitespace, so a checkout path containing a space caused a false Gate 2a failure | The row compares the expected source directories rather than splitting printed paths on whitespace |
+| 23 | `gate/F23` — MEDIUM, blocking | resolved | The Gate 2a section files were not truncated before parsing, so stale content from an earlier run could satisfy the edge checks | Each section file is started through `safe_truncate`, and the parsed headers are counted and attributed |
+| 24 | `gate/F24` — LOW | resolved | Preflight omitted several commands the runner actually uses | The required list carries `cat`, `head`, `tail`, `basename`, `date`, `cp`, `rm`, `mkdir`, `mv` and `tee` beside `git`, `sbt`, `java`, `javap`, `python3` and the text utilities |
+| 25 | `gate/F25` — HIGH, blocking | resolved | Overloaded Java test methods collapsed by bare name, reporting 642 methods where the authority is 643 | Methods are keyed by normalised signature, so `DecimalTest`'s two `testValuesOfBigDecimal` methods stay two rows, and the 643-method count is asserted |
+| 26 | `gate/F26` — HIGH, blocking | resolved | Components of the ignored `target` path could be symbolic links, redirecting truncation and copies outside the repository | Every output is started through the symlink-refusing, canonicalising write path, and a refused path is a framework error rather than a silent write |
+| 27 | `gate/F27` — LOW | recurring | An unused helper and a counter that was maintained but never read | `count_matches` is gone, but the dead-write class this finding named is present again: `GATE_TOTAL`, `GATE7_MEMBER_COUNT` and `GATE7_TABLE_ROWS` are each assigned once and never read. It is open at this boundary under the tooling-security review's own findings on the runner, which belong to the unit that owns the script's rows, and is recorded here rather than closed |
+| 28 | `gate/F28` — HIGH, blocking | resolved | `__JVM_LookupDefineClass__` matched the generic identifier pattern and was handed to `javap` as a host class, failing the row spuriously | JVM markers are handled before generic identifiers and reported as non-inspectable instead of being disassembled |
+| 29 | `gate/F29` — MEDIUM, blocking | resolved | With `errexit` disabled inside gate calls, many row pipelines were unchecked, so a failing `comm` or redirection could yield a passing row | Framework errors are counted before and after every row, so an unchecked command's failure becomes the row's verdict and is summarised in the report |
+
+**Re-checking a row.** The commands below establish rows 1 to 6 from history and rows 7 to 12 from the
+tree as it stands:
+
+```
+git log --format='%h %ad %s' --date=short -- build.sbt project .circleci/config.yml scripts
+git show 86d8c8a32 -- build.sbt .circleci/config.yml | grep -E 'excludeLintKeys|sbt\.internal|BASH_ENV'
+sbt -batch "export strata-basics/Test/fullClasspath"          # no scalacheck-1-18 entry
+source scripts/verify-gates.sh; init_run; row_02_dependency_purity
+cat target/audit/gate02-duplicate-classes.txt                 # per-classpath duplicate audit
+```

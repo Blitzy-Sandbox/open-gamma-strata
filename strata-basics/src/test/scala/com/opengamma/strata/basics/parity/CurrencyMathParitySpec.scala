@@ -40,173 +40,112 @@ import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 
 /**
- * Parity of the currency arithmetic of the port against the Java baseline.
+ * Parity of the currency arithmetic of this module against the committed baseline.
  *
- * This is the measurement that pins the money layer: `CurrencyAmount` and its normalisations,
- * `Money` and `BigMoney` with their rounding to a currency's minor units and to scale twelve, the
- * two amount-array types with their element-wise arithmetic and their aggregation, and
- * `MultiCurrencyAmount` with its duplicate-rejecting factory and its merging total. The values it
- * is held to were captured from the untouched Java modules by `tools/parity-capture/capture-baseline.jsh`
- * and committed as `strata-basics/src/test/resources/parity/currency-math-baseline.json`. That
- * document is read-only here: no expectation is ever corrected, loosened or skipped, and a row
- * that disagrees with the port is reported rather than accommodated.
- *
- * The gate that consumes it (AAP section 0.10.1, Gate 3, for the user's Rule 2) runs
- *
- * {{{
- * sbt -batch "testOnly *ParitySpec"
- * }}}
- *
- * and then reads `<parity.report.dir>/currency-math.json`, requiring `failed == 0`. The
- * `ParitySpec` suffix of this class, its package, the fixture stem `currency-math` and the five
- * keys of the report document are therefore all part of that contract and none of them may drift.
+ * The measurement pins the money layer: `CurrencyAmount` and its normalisations, `Money` and
+ * `BigMoney` with their rounding to a currency's minor units and to scale twelve, the two
+ * amount-array types with their element-wise arithmetic and their aggregation, and
+ * `MultiCurrencyAmount` with its duplicate-rejecting factory and its merging total. The committed
+ * baseline `strata-basics/src/test/resources/parity/currency-math-baseline.json` holds the
+ * reference values and is read-only here: no expectation is corrected, loosened or skipped.
  *
  * ===Two comparison rules, and which applies where===
  *
- * Every `Double` the port produces - an amount, an array element, a converted value - is compared
- * by [[ParityHarness.assertParity]], which requires the difference to be within `1e-9`
- * '''absolutely and relatively'''. That is the user's Rule 2.
+ * Every `Double` this module produces - an amount, an array element, a converted value - goes
+ * through [[ParityHarness.assertParity]], which requires the difference to be within `1e-9`
+ * '''absolutely and relatively'''.
  *
- * Every `Money` and `BigMoney` expectation is compared by [[ParityHarness.assertExact]] and never
- * by a tolerance. This is the whole reason the capture writes those amounts as '''decimal
- * strings''' rather than as doubles (`tools/parity-capture/README.md`, section 6): rounding to a
- * currency's minor units is a discrete decision, so the scale and the trailing digits are part of
- * the expectation. `BHD 100.120` and `BHD 100.12` are the same quantity and different answers -
- * only one of them is what `Money.of(BHD, 100.12)` produces - and a tolerance would accept either.
- * The currency of every expectation, every size, every index and every captured bit pattern is
- * compared exactly for the same reason.
+ * Every `Money` and `BigMoney` expectation goes through [[ParityHarness.assertExact]] and never
+ * through a tolerance, because those amounts are recorded as '''decimal strings''' and rounding to
+ * a currency's minor units is a discrete decision: `BHD 100.120` and `BHD 100.12` are the same
+ * quantity and different answers, only one of which `Money.of(BHD, 100.12)` produces, and a
+ * tolerance would accept either. Currencies, sizes and indices compare exactly for the same reason.
  *
- * A third rule applies to the four entries that carry `doubleToLongBits`. Positive and negative
- * zero are within every tolerance of each other and are not the same representation, so where the
- * capture pinned the sign of a zero this spec compares the '''bit pattern''' of the value the port
- * produced against the captured one. Those four entries are the three different answers the
- * README describes - `CurrencyAmount.of` normalises `-0.0` away, `CurrencyAmountArray` keeps the
- * sign bit of its elements, and `CurrencyAmountArray.get` normalises it again on the way out - and
- * a sign-blind implementation satisfies none of them.
+ * A third rule applies to the entries that carry `doubleToLongBits`. Positive and negative zero are
+ * within every tolerance of each other and are not the same representation, so where an entry
+ * carries that key this spec compares the '''bit pattern''' of the value produced against the
+ * captured `long`. Those entries pin three distinct answers - `CurrencyAmount.of` normalises `-0.0`
+ * away, `CurrencyAmountArray` keeps the sign bit of its elements, and `CurrencyAmountArray.get`
+ * normalises it again on the way out - and a sign-blind implementation satisfies none of them.
  *
  * ===Failures are values, with exactly one exception===
  *
- * The fixture carries twenty-nine `error` entries, each an operation the Java implementation
- * refused. Every one of them is an expectation in its own right. All but one are data-dependent
- * failures - a currency mismatch, an unknown currency, a size mismatch, a duplicate currency, a
- * rate that is not one where no conversion is required, a missing rate - and the port reports
- * those in the error channel, so they are checked with [[ParityHarness.assertLeft]]. There is no
- * exception-interception helper, no exception handler and nothing that reaches into an `Either`
- * anywhere in this file.
+ * Every `error` entry is an expectation in its own right. The data-dependent ones - a currency
+ * mismatch, an unknown currency, a size mismatch, a duplicate currency, a rate that is not one
+ * where no conversion is required, a missing rate - are reported in the error channel and are
+ * checked with [[ParityHarness.assertLeft]]; there is no exception-interception helper, no
+ * exception handler and nothing that reaches into an `Either` in this file.
  *
- * The single exception is the entry that adds `+Infinity` to `-Infinity` in one currency. Arithmetic
- * on `CurrencyAmount` is total in signature, exactly as it is in Java, so the sum that is not a
- * number is refused by the type's invariant rather than returned as a failure (AAP section 0.3.3).
- * It is observed with [[ParityHarness.attemptArgCheck]], which is the only sanctioned way to watch
- * a precondition here, and the choice between the two is made from the operands rather than
- * configured: an `error` entry whose two amounts name '''the same''' currency can only be that
- * numeric edge, because a same-currency addition has no other way to fail.
+ * The single exception is the entry that adds `+Infinity` to `-Infinity` in one currency.
+ * Arithmetic on `CurrencyAmount` is total in signature, so a sum that is not a number is refused by
+ * the type's invariant rather than returned as a failure; it is observed with
+ * [[ParityHarness.attemptArgCheck]], and the choice between the two is made from the operands
+ * rather than configured: an `error` entry whose two amounts name '''the same''' currency can only
+ * be that numeric edge, because a same-currency addition has no other way to fail. Captured
+ * message text is never asserted.
  *
- * Captured Java message text is never asserted. Turning those exceptions into a sealed failure
- * model is a recorded divergence (AAP section 0.8.3), so the `error` string is used in diagnostics
- * only.
+ * ===The fixture grammar, and why there is no positional pairing===
  *
- * ===What the fixture looks like, and why there is no positional pairing===
- *
- * `tools/parity-capture/README.md` section 6 is the schema of record, and it settles the shape of
- * this spec's decoder. The document holds six rows, one per Java test family, each with the same
- * fifteen keys: an identity, the Java test class it came from, seven input lists and six
- * expectation buckets. The input lists are a '''registry''' - the deduplicated, insertion-ordered
- * record of the values the row's expectations were computed from - and not a positional pairing:
- * an expectation names its operation in `op` and carries its own operands inline. This spec
- * therefore reads each entry on its own terms, and uses the registry for what it is good for,
- * which is checking that every input the capture recorded can still be built by the port and
- * still renders as it did (see [[CurrencyMathParitySpec.checkRegistry]]).
- *
- * Two consequences are worth stating because they are what makes the measurement complete rather
- * than merely green. An entry whose shape this spec does not recognise is '''reported''' as a
- * fixture disagreement instead of being passed over, so a capture that starts emitting a new
- * operation fails the gate rather than going unmeasured. And because `failed == 0` cannot
- * distinguish a complete measurement from a thinned one, the second test below asserts the
- * population the baseline is required to carry, including that all three distinct
- * `minorUnitDigits` values and the seventy-four-currency sweeps are present.
+ * The document holds six rows, each carrying the same fifteen keys: an identity, the `source` of
+ * its values, seven input lists and six expectation buckets. The input lists are a '''registry''' -
+ * the deduplicated, insertion-ordered record of the values the expectations were computed from -
+ * and not a positional pairing: an expectation names its operation in `op` and carries its own
+ * operands inline. The registry is used for what it is good for, which is checking that every
+ * recorded input can still be built and still renders as it did
+ * ([[CurrencyMathParitySpec.checkRegistry]]); an entry whose shape this spec does not recognise is
+ * '''reported''' as a fixture disagreement rather than passed over.
  *
  * ===The document's shape is declared rather than assumed===
  *
- * Every object this spec reads - the row, an entry of each of the six expectation buckets, and each
- * nested value - declares the key sets it is documented to carry as a [[KeySchema]] beside the
- * model that describes it, and is read through [[ParityHarness.strictObject]], which checks those
- * keys before the object is decoded. The models are permissive by construction and that is exactly
- * why: a bucket holds several operations, so every operand field is optional, and a decoder with
- * optional fields reads an entry that has gained a key, lost one or had one renamed just as
- * happily as the documented one. The gained key would be ignored, the lost operand would become
- * `None`, the check would then measure a smaller operation or none at all, and a newly captured
- * expectation would go unmeasured while the report still read `failed == 0`. The declared key sets
- * are the ones the six committed rows carry, measured from the document - ten shapes in
- * `currencyAmountResults`, eight in `moneyResults`, nine in `bigMoneyResults`, twelve in
- * `currencyAmountArrayResults`, nine in `multiCurrencyAmountResults` and eleven in
- * `multiCurrencyAmountArrayResults`, each of them naming its operation in `op` and stating exactly
- * one of `result` and `error` - and the third test of this suite proves that every shape is
- * refused when a key is added, removed or renamed.
+ * Every object this spec reads - the row, an entry of each of the six buckets, and each nested
+ * value - declares the key sets it carries as a [[KeySchema]] beside the model that describes it,
+ * and is read through [[ParityHarness.strictObject]], which checks those keys before the object is
+ * decoded. Those declarations are needed because the models are permissive: a bucket holds several
+ * operations, so every operand field is optional, and a decoder with optional fields reads an entry
+ * that has gained a key, lost one or had one renamed just as happily as the documented one. The
+ * gained key would be ignored, the lost operand would become `None`, the check would measure a
+ * smaller operation or none at all, and a newly captured expectation would go unmeasured while the
+ * report still read `failed == 0`. The declared shapes are ten in `currencyAmountResults`, eight in
+ * `moneyResults`, nine in `bigMoneyResults`, twelve in `currencyAmountArrayResults`, nine in
+ * `multiCurrencyAmountResults` and eleven in `multiCurrencyAmountArrayResults`, each naming its
+ * operation in `op` and stating exactly one of `result` and `error`.
  *
- * The two money buckets have two schemas rather than one. `Money` and `BigMoney` were captured
- * through the same writer into the same model, but they hold different operations - only `BigMoney`
- * records `roundToScale`, only `Money` records a conversion through a rate list - so each bucket is
- * read against its own key sets, and the row decoder names the decoder of each bucket explicitly
- * instead of leaving the choice to an implicit lookup that would find one decoder for both.
+ * The two money buckets have two schemas rather than one: `Money` and `BigMoney` are read through
+ * the same model but hold different operations - only `BigMoney` records `roundToScale`, only
+ * `Money` records a conversion through a rate list - so each bucket is read against its own key
+ * sets, and the row decoder names the decoder of each bucket explicitly instead of leaving the
+ * choice to an implicit lookup that would find one decoder for both.
  *
  * ===Where a replayed rate comes from===
  *
- * Every captured conversion names the rates it was replayed with, so each is replayed against
- * its own - including `MultiCurrencyAmountArray.convertedTo`, whose entry carries the `rates`
- * key the capture writes beside it. For an entry that names none the rate is resolved, rather
- * than invented here to compensate, from the '''document-wide''' rate registry - every `rates`
- * entry of every row and of every entry, in document order. The fixture is not edited, no
- * literal rate appears in this file, and the resolution is confined to entries that carry no
- * rate of their own, so no `error` expectation can be satisfied by it.
+ * Every captured conversion that names its rates is replayed against its own. An entry that names
+ * none resolves its rate from the '''document-wide''' rate registry - every `rates` entry of every
+ * row and of every entry, in document order - so no literal rate appears in this file, and the
+ * resolution is confined to entries carrying no rate of their own, which is why no `error`
+ * expectation can be satisfied by it.
  *
- * That registry is assembled '''by the driver''', not by the suite: [[ParityHarness.runFixtureWith]]
- * decodes the rows, builds it under `attempt` inside the measurement, and on a failure publishes a
- * report of `passed = 0` whose single discrepancy is attributed to `currency-math:setup` before
- * leaving the verdict to [[ParityHarness.failIfAny]]. Building it in the suite ahead of the driver
- * would raise before any report was written, and the counts Gate 3 reads have to survive exactly
- * the run in which a captured rate has stopped being buildable (AAP section 0.6.1).
+ * That registry is assembled '''by the driver''', not by the suite:
+ * [[ParityHarness.runFixtureWith]] decodes the rows and builds it under `attempt` inside the
+ * measurement, so a captured rate that has stopped being buildable yields a report of `passed = 0`
+ * with a single discrepancy attributed to `currency-math:setup`, and the verdict is still left to
+ * [[ParityHarness.failIfAny]]. Building it ahead of the driver would raise before any report was
+ * written.
  *
- * ===Obligations===
- *
- * `review_rules` reports that '''no user rules were provided''': the project's rules document is
- * empty, so enterprise-standard best practice governs this file and nothing here is held to an
- * invented rule. The numbered obligations it does answer to are requirements of the user's prompt
- * carried by AAP sections 0.7, 0.8.1 and 0.10.1: Rule 2 (the tolerance above), Rule 5 (failures as
- * values), Rule 7 (`cats.effect` confined to this package, the demo and `collect.io.Resources` -
- * its use here is correct), Rule 9 (a warning-clean build, warnings as errors, no suppression)
- * and Rule 10 (no collection, optional, iterator, stream or function type of the Java platform
- * library, and no mutable Scala collection; `DoubleArray` is built through its copy-safe public
- * factories, never through the module-private unchecked ones, which this module cannot reach).
- *
- * `strata-basics/src/test/resources/manifest/java-test-mapping.csv` maps no Java test method to
- * this suite - it maps none to any `*ParitySpec`, because the parity specs measure the captured
- * baseline rather than porting a Java test class - so the test names below are this spec's own and
- * satisfy no verbatim obligation.
- *
- * ===No timing===
- *
- * Nothing here asserts a duration, and the report it publishes carries none. The measurement reads
- * the document once, through the driver, and the rate registry is built from the rows the driver
- * decoded, which keeps every number this spec uses sourced from the document rather than from a
- * constant in this file. The population test below reads it a second time because it measures the
- * coverage of the fixture rather than the port, and publishes no report.
+ * The population test reads the document a second time because it measures the coverage of the
+ * fixture rather than the implementation, and publishes no report: a check of `failed == 0` cannot
+ * distinguish a complete measurement from a thinned one, so that test asserts the population the
+ * baseline must carry, including all three distinct `minorUnitDigits` values and the
+ * seventy-four-currency sweeps.
  */
 class CurrencyMathParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
   import CurrencyMathParitySpec._
 
-  /*
-   * The measurement is declared first, deliberately: the report it publishes is the artifact
-   * Gate 3 collects, so it is written on every run of this suite rather than only on the runs
-   * where some other case happens to pass first.
-   */
   test("currency arithmetic reproduces the Java baseline exactly") {
     for {
-      // The registry is collected from the whole document before any row is measured, because one
-      // captured conversion names no rate of its own; see the class documentation. It is built by
-      // the driver rather than here, so that a registry which cannot be built is an attributed
-      // failure in a published report instead of an exception raised before the report exists.
+      // The registry is built by the driver rather than here, so a registry that cannot be built
+      // is an attributed failure in a published report rather than an exception raised before any
+      // report exists.
       report <- ParityHarness.runFixtureWith[CurrencyMathRow, FxRateProvider](
         FixtureName,
         FixtureResource,
@@ -225,8 +164,8 @@ class CurrencyMathParitySpec extends AsyncFunSuite with AsyncIOSpec with Matcher
         // The six rows are named rather than counted: each of the six families has to be present,
         // and a row that vanished would otherwise be hidden by a row that was added.
         rows.map(_.id) shouldBe RowIds
-        // Floors rather than equalities, so that extending the capture stays possible while
-        // thinning it cannot pass. The figures are the ones the README reports as observed.
+        // Floors rather than equalities, so that extending the fixture stays possible while
+        // thinning it cannot pass.
         entryCount should be >= MinimumEntries
         errorCount should be >= MinimumErrorEntries
         // Every row carries the bucket of its own family and nothing else, which is the invariant
@@ -235,25 +174,18 @@ class CurrencyMathParitySpec extends AsyncFunSuite with AsyncIOSpec with Matcher
         // Money rounding is only measured if all three distinct minor-unit scales are exercised:
         // zero digits, two and three. This is the property the per-currency sweeps exist for.
         minorUnitDigitsCovered(rows) shouldBe RequiredMinorUnitDigits
-        // The two sweeps across every configured and historic currency, which are what make the
-        // rounding claim hold for the whole closed currency family rather than for a
-        // representative of it.
+        // The two sweeps across every configured and historic currency, which hold the rounding
+        // claim for the whole closed currency family rather than for a representative of it.
         sweptCurrencies(rows, _.moneyResults) should have size CurrencyFamilySize.toLong
         sweptCurrencies(rows, _.bigMoneyResults) should have size CurrencyFamilySize.toLong
-        // The four entries that pin the sign of a zero, without which the three different answers
-        // the README describes would all be satisfied by a sign-blind port.
+        // The entries that pin the sign of a zero, without which the three distinct answers
+        // would all be satisfied by a sign-blind implementation.
         signedZeroEntries(rows) should be >= MinimumSignedZeroEntries
         succeed
       }
     }
   }
 
-  /*
-   * The last two cases measure the two rules by which this spec reads the document rather than the
-   * port: a union-typed value states exactly one captured shape, and a description is accounted
-   * for in full. Both are input validation of the fixture, so both are measured over crafted
-   * values and neither reads a resource.
-   */
   test("a union-typed value is decided by its shape and whole key set, not by declaration order") {
     IO.pure(unionDecoderDiscrepancies).map(discrepancies => discrepancies shouldBe empty)
   }
@@ -267,8 +199,7 @@ class CurrencyMathParitySpec extends AsyncFunSuite with AsyncIOSpec with Matcher
       withClue(s"probed shapes: ${StrictShapes.map(_.label).mkString("; ")}: ") {
         // Every nested value shape, one entry of each of the six buckets, and the row: the
         // documented object decodes, and the same object with a key added, with a required key
-        // removed and with a key renamed is refused with the key named. Without this the declared
-        // key sets could be wired to nothing and the fixture would still measure green.
+        // removed and with a key renamed is refused with the key named.
         strictnessViolations shouldBe empty
         // And the two money buckets, whose entries share one model, do not accept each other's
         // shapes.
@@ -279,41 +210,20 @@ class CurrencyMathParitySpec extends AsyncFunSuite with AsyncIOSpec with Matcher
   }
 }
 
-/**
- * The row model of `currency-math-baseline.json` and the checks applied to one row.
- *
- * It lives in the companion rather than in the suite because the JSON derivation needs the row
- * types on a stable path, and because keeping the measurement out of the suite body makes it plain
- * that the suite contributes nothing to the measurement beyond ordering it. Everything here is
- * confined to this package.
- */
+/** The row model of `currency-math-baseline.json` and the checks applied to one row. */
 private[parity] object CurrencyMathParitySpec {
 
-  //-------------------------------------------------------------------------
-  // Contract constants. The first two are agreements with something outside this file - the
-  // resource name with the capture script that writes it, the fixture stem with the gate script
-  // that reads `<parity.report.dir>/currency-math.json` - so neither may drift.
-  //-------------------------------------------------------------------------
-
-  /** The fixture stem, which names the measurement and the report document. */
+  /** The fixture stem, which names the measurement and its report document. */
   val FixtureName: String = "currency-math"
 
-  /** The captured baseline, on the test classpath. */
   val FixtureResource: String = "parity/currency-math-baseline.json"
 
-  /**
-   * The mapping function the composed expectations were captured with.
-   *
-   * The capture writes it into every entry that used it, and this spec asserts the entry's text
-   * against this constant before applying [[mapAmountsFunction]]. A capture that changed the
-   * function would then be reported rather than silently measured against the wrong one.
-   */
+  /** The mapping function the composed expectations were computed with, as an entry states it. */
   val MapAmountsText: String = "x -> x * x"
 
-  /** The function [[MapAmountsText]] describes, which is also the one the double-array fixture uses. */
   private def mapAmountsFunction(value: Double): Double = value * value
 
-  /** The description the capture writes for the amount that holds nothing. */
+  /** The description an entry carries for the amount that holds nothing. */
   private val EmptyDescription: String = "empty"
 
   /** The six row identities, in the order the document lists them. */
@@ -326,10 +236,10 @@ private[parity] object CurrencyMathParitySpec {
       "multi-currency-amount",
       "multi-currency-amount-array")
 
-  /** The number of expectation entries the README reports as observed, used as a floor. */
+  /** The number of expectation entries the baseline carries, used as a floor. */
   val MinimumEntries: Int = 355
 
-  /** The number of `error` entries the README reports as observed, used as a floor. */
+  /** The number of `error` entries the baseline carries, used as a floor. */
   val MinimumErrorEntries: Int = 29
 
   /** The three distinct minor-unit scales of the closed currency family, all of which must appear. */
@@ -342,18 +252,9 @@ private[parity] object CurrencyMathParitySpec {
   val MinimumSignedZeroEntries: Int = 4
 
   //-------------------------------------------------------------------------
-  // The captured value shapes.
-  //
-  // Each is exactly what one of the capture's `j*` writers emits, named after the port type it
-  // describes. The decoders are derived where the JSON keys are the field names and written out
-  // where they are not: a money value carries its rendering under the key `toString`, which is not
-  // a name a field may take.
-  //
-  // Every one of them reads its object through `ParityHarness.strictObject` against the key set
-  // declared beside it. A decoder on its own reads the fields it knows and ignores every other key
-  // of the object it is given, so a captured value that gained a field would decode into the same
-  // model and leave whatever that field carries unmeasured while the report still read zero
-  // failures. The key sets are the ones the six committed rows carry, measured from the document.
+  // The captured value shapes. Each reads its object through `ParityHarness.strictObject` against
+  // the key set declared beside it, because a decoder on its own ignores every key it does not
+  // know; a decoder is written out where a JSON key is not a name a field may take.
   //-------------------------------------------------------------------------
 
   /** A `CurrencyAmount`: `{"currency": "GBP", "amount": 100.0}`. */
@@ -362,50 +263,34 @@ private[parity] object CurrencyMathParitySpec {
   /** A `CurrencyAmountArray`: `{"currency": "GBP", "values": [1.0, 2.0, 3.0]}`. */
   final case class ArrayValue(currency: String, values: Vector[Double])
 
-  /**
-   * A `Money` or a `BigMoney`: `{"currency": "AUD", "amount": "100.12", "toString": "AUD 100.12"}`.
-   *
-   * The amount is the decimal '''string''' the capture wrote from `getValue().toString()`, never a
-   * double, and `text` is the type's own `toString`. Both are compared exactly.
-   */
+  /** A `Money` or a `BigMoney`, whose `amount` is a decimal string and `text` its own rendering. */
   final case class MoneyValue(currency: String, amount: String, text: String)
 
   /** A `MultiCurrencyAmountArray`: `{"size": 3, "arrays": [{"currency": …, "values": …}]}`. */
   final case class MultiArrayValue(size: Int, arrays: Vector[ArrayValue])
 
-  /** A registered multi-currency run, which the registry writes without its size. */
+  /** A registered multi-currency run, which the input list records without its size. */
   final case class MultiArrayInput(arrays: Vector[ArrayValue])
 
   /** A rate a provider was built from: `{"pair": "GBP/USD", "rate": 1.6}`. */
   final case class RateValue(pair: String, rate: Double)
 
-  /** The schema of a captured `CurrencyAmount`, wherever one appears. */
   val AmountValueSchema: KeySchema =
     KeySchema.uniform("a captured CurrencyAmount", Set("currency", "amount"))
 
-  /** The schema of a captured `CurrencyAmountArray`, wherever one appears. */
   val ArrayValueSchema: KeySchema =
     KeySchema.uniform("a captured CurrencyAmountArray", Set("currency", "values"))
 
-  /** The schema of a captured `Money` or `BigMoney`, wherever one appears. */
   val MoneyValueSchema: KeySchema =
     KeySchema.uniform("a captured Money or BigMoney", Set("currency", "amount", "toString"))
 
-  /** The schema of a captured `MultiCurrencyAmountArray` operand or expectation. */
   val MultiArrayValueSchema: KeySchema =
     KeySchema.uniform("a captured MultiCurrencyAmountArray", Set("size", "arrays"))
 
-  /**
-   * The schema of a registered multi-currency run, which is '''not''' the operand shape above.
-   *
-   * The seven input lists record a run without its size - the map factory derives that from the
-   * arrays - so an element of `multiArrays` carries `arrays` alone, and a registered run that
-   * gained a `size` key would be a capture whose registry had changed shape.
-   */
+  /** The schema of a registered multi-currency run, which carries `arrays` without a `size`. */
   val MultiArrayInputSchema: KeySchema =
     KeySchema.uniform("a registered multi-currency run", Set("arrays"))
 
-  /** The schema of a captured FX rate, in a row's registry or in an entry. */
   val RateValueSchema: KeySchema =
     KeySchema.uniform("a captured FX rate", Set("pair", "rate"))
 
@@ -436,35 +321,18 @@ private[parity] object CurrencyMathParitySpec {
   // The expectation of one entry.
   //-------------------------------------------------------------------------
 
-  /**
-   * What the Java implementation produced for one operation: a value, or a refusal.
-   *
-   * The two are modelled as a sum rather than as an `Option` because a refusal is an expectation
-   * in its own right and not the absence of one. Collapsing them would leave the spec unable to
-   * distinguish "Java refused this" from "the capture recorded nothing", and the first of those is
-   * a quarter of the entries of some rows.
-   */
+  /** What one operation produced: a value, or a refusal, which is an expectation in its own right. */
   sealed trait Expected[+A]
 
   object Expected {
 
-    /** Java produced this value. */
     final case class Value[+A](value: A) extends Expected[A]
 
-    /** Java refused, with this message, which is used in diagnostics and never asserted. */
+    /** The operation was refused, with this message, used in diagnostics and never asserted. */
     final case class Failed(message: String) extends Expected[Nothing]
   }
 
-  /**
-   * Reads the expectation of an entry, trying `error` before `result`.
-   *
-   * An entry carrying both, or neither, is a fixture that no longer agrees with this spec and is
-   * reported as a decoding failure rather than resolved by a precedence rule: exactly one of the
-   * two keys states the expectation, which is the contract section 6 of the capture README gives.
-   *
-   * @param cursor  the entry
-   * @return the expectation the entry states
-   */
+  /** Reads an entry's expectation: exactly one of `error` and `result`, else a decoding failure. */
   private def expectedOf[A: Decoder](cursor: HCursor): Decoder.Result[Expected[A]] = {
     val error = cursor.downField("error")
     val result = cursor.downField("result")
@@ -487,44 +355,24 @@ private[parity] object CurrencyMathParitySpec {
   }
 
   //-------------------------------------------------------------------------
-  // The operands whose captured shape is a union.
+  // The operands whose shape is a union.
   //
-  // Three keys carry more than one shape, because the Java members they were captured from are
-  // overloaded: an amount array is added to another array or to a single amount, a multi-currency
-  // run to another run or to a single multi-currency amount, and a run's expectation is a run, a
-  // converted single-currency array or a bare list of values.
+  // Three keys - `right`, `input` and `result` - carry more than one shape, because the members
+  // they record are overloaded: an amount array is added to another array or to a single amount, a
+  // multi-currency run to another run or to a single multi-currency amount, and a run's expectation
+  // is a run, a converted single-currency array or a bare list of values.
   //
-  // Every one of the five unions below is decoded by [[unionDecoder]], which decides the
-  // alternative from the document and never from the order the alternatives are declared in. A
-  // chain of alternative decoders cannot do that: a derived product decoder ignores a key it does
-  // not know, so an object carrying the keys of two alternatives is accepted by whichever one is
-  // tried first and the sibling's fields are discarded without a word - a captured expectation
-  // silently replaced by a smaller one, which is the class of defect this whole fixture exists to
-  // detect. The rule enforced here instead is:
-  //
-  //  - the JSON shape selects first, so a JSON array, a JSON string and a JSON object are told
-  //    apart before any field is read, and a shape no alternative accepts is a decoding failure
-  //    naming every accepted form;
-  //  - an object must carry '''exactly''' one alternative's key set. An object with an unknown
-  //    key, a missing key, or the keys of two alternatives matches none of them and is a decoding
-  //    failure that quotes the keys it carries, the accepted key sets and the cursor path.
-  //
-  // Exact-key strictness is also what keeps a money value - `{currency, amount, toString}`, which
-  // has its own decoder and belongs to no union - out of an operand position it would otherwise
-  // satisfy the amount half of.
+  // All five unions below are decoded by `unionDecoder`, which decides the alternative from the
+  // document and never from declaration order: the JSON shape selects first, and an object must
+  // carry exactly one alternative's whole key set. A chain of alternative decoders cannot do that,
+  // because a derived product decoder ignores a key it does not know, so an object carrying the
+  // keys of two alternatives would be accepted by whichever is tried first and the sibling's
+  // fields discarded without a word - a captured expectation silently replaced by a smaller one.
   //-------------------------------------------------------------------------
 
-  /**
-   * The JSON shape that selects one alternative of a captured union.
-   *
-   * A shape is a '''complete''' description of what the capture writes for its alternative, not a
-   * necessary condition on it: an object shape names the whole key set rather than the keys that
-   * must be present, which is what makes two object alternatives mutually exclusive instead of
-   * merely ordered.
-   */
+  /** The JSON shape that selects one alternative of a union, naming its '''whole''' key set. */
   private sealed trait UnionShape {
 
-    /** How this alternative reads in a decoding failure, in full. */
     def describe: String
   }
 
@@ -540,53 +388,29 @@ private[parity] object CurrencyMathParitySpec {
       val describe: String = "a JSON string"
     }
 
-    /**
-     * Selected by the value being a JSON object whose key set equals [[keys]] exactly.
-     *
-     * @param name  the captured shape's name, for the failure message
-     * @param keys  every key the capture writes for it, and no other
-     */
+    /** Selected by the value being a JSON object whose key set equals [[keys]] exactly. */
     final case class ObjectShape(name: String, keys: Set[String]) extends UnionShape {
       val describe: String =
         s"$name, an object with exactly the keys {${keys.toVector.sorted.mkString(", ")}}"
     }
   }
 
-  /**
-   * One alternative of a captured union: the shape that selects it, and the decoder that reads it.
-   *
-   * @param shape  the shape the capture writes this alternative as
-   * @param decoder  the decoder of the alternative, already lifted into the union type
-   * @tparam A  the union type
-   */
+  /** One alternative of a union: the shape that selects it, and the decoder that reads it. */
   private final case class UnionVariant[A](shape: UnionShape, decoder: Decoder[A])
 
-  /** The shape of a captured `ArrayValue`, which is the array half of two unions. */
   private val ArrayValueShape: UnionShape =
     UnionShape.ObjectShape("an array of amounts in one currency", Set("currency", "values"))
 
-  /** The shape of a captured `AmountValue`, which is the single-amount half of two unions. */
   private val AmountValueShape: UnionShape =
     UnionShape.ObjectShape("a single amount", Set("currency", "amount"))
 
-  /** The shape of a captured `MultiArrayValue`, which is the run half of two unions. */
   private val MultiArrayValueShape: UnionShape =
     UnionShape.ObjectShape("a multi-currency run", Set("size", "arrays"))
 
   /**
-   * Decodes a union by deciding the alternative before reading a field of it.
-   *
-   * The one place in this file that resolves a union, so that the rule is stated once and every
-   * union-typed key of the document is held to it. The decision is made from the value's shape and,
-   * for an object, from its '''whole''' key set, and it is a decoding failure unless exactly one
-   * alternative claims the value. Nothing falls back to a later alternative, so no captured field
-   * can be discarded by an earlier one.
-   *
-   * @param label  what is being decoded, for the failure message
-   * @param variants  the alternatives, whose shapes are mutually exclusive by construction
-   * @tparam A  the union type
-   * @return a decoder of the union; it fails, naming the accepted forms and the cursor path, for a
-   *         value that is not exactly one of them
+   * Decodes a union by deciding the alternative before reading a field of it: from the value's
+   * shape and, for an object, from its '''whole''' key set. Nothing falls back to a later
+   * alternative, so no captured field can be discarded by an earlier one.
    */
   private def unionDecoder[A](label: String, variants: Vector[UnionVariant[A]]): Decoder[A] =
     Decoder.instance { cursor =>
@@ -610,19 +434,7 @@ private[parity] object CurrencyMathParitySpec {
       }
     }
 
-  /**
-   * The message of a union that the document does not state exactly one alternative of.
-   *
-   * It quotes what was found - the key set of an object, the shape of anything else - alongside
-   * every accepted form, because the reader of a failing gate has the fixture and this file in
-   * front of them and needs to know which of the two moved.
-   *
-   * @param label  what was being decoded
-   * @param json  the value found
-   * @param variants  the alternatives that were accepted
-   * @tparam A  the union type
-   * @return the message
-   */
+  /** The message of a union no alternative claims: what was found, and every accepted form. */
   private def unionFailureMessage[A](
       label: String,
       json: Json,
@@ -643,7 +455,6 @@ private[parity] object CurrencyMathParitySpec {
 
   object ArrayOperand {
 
-    /** A whole array of amounts in one currency. */
     final case class Run(value: ArrayValue) extends ArrayOperand
 
     /** One amount, which an array operation broadcasts over its elements. */
@@ -710,7 +521,6 @@ private[parity] object CurrencyMathParitySpec {
 
   object MultiArrayOperand {
 
-    /** Another run of multi-currency amounts. */
     final case class Run(value: MultiArrayValue) extends MultiArrayOperand
 
     /** One multi-currency amount, which a run operation broadcasts over its indices. */
@@ -728,12 +538,10 @@ private[parity] object CurrencyMathParitySpec {
           UnionShape.ArrayShape,
           Decoder[Vector[AmountValue]].map[MultiArrayOperand](MultiArrayOperand.Amounts(_)))))
 
-  /** The expectation of a multi-currency run operation. */
   sealed trait MultiArrayResult
 
   object MultiArrayResult {
 
-    /** A run of multi-currency amounts. */
     final case class Run(value: MultiArrayValue) extends MultiArrayResult
 
     /** A single-currency array, which is what `convertedTo` produces. */
@@ -758,55 +566,25 @@ private[parity] object CurrencyMathParitySpec {
           Decoder[Vector[Double]].map[MultiArrayResult](MultiArrayResult.Values(_)))))
 
   //-------------------------------------------------------------------------
-  // The five entry models, one per expectation bucket - the two money buckets share theirs,
-  // because `Money` and `BigMoney` were captured through the same writer.
+  // The five entry models, one per expectation bucket - the two money buckets share theirs.
   //
-  // Every operand key is optional because the bucket holds several operations, and every decoder
-  // is written out rather than derived because the expectation is a sum of `result` and `error`
-  // that no derivation produces. An entry that carries an operand this spec does not expect for
-  // its operation is reported by the check, not by the decoder: reading the document is one
-  // concern and recognising an operation is another.
-  //
-  // Optional fields are exactly why each bucket declares a key schema. A model whose operands are
-  // all optional decodes an entry that has lost a key, gained one or had one renamed just as
-  // happily as the documented one - the lost operand becomes `None`, the gained key is ignored -
-  // and the check would then measure a smaller operation, or none, while the report read zero
-  // failures. So the documented key sets of each bucket are declared below, measured from the six
-  // committed rows, and `ParityHarness.strictObject` applies them before the entry is decoded.
-  // They are variants rather than one key set because a bucket holds several operations: `op` and
-  // exactly one of `result` and `error` appear in every one of them, and the rest is the operand
-  // list of that particular operation.
+  // Every operand key is optional because the bucket holds several operations, and every decoder is
+  // written out rather than derived because the expectation is a sum of `result` and `error` that
+  // no derivation produces. An entry that carries an operand this spec does not expect for its
+  // operation is reported by the check, not by the decoder: reading the document is one concern and
+  // recognising an operation is another. The key sets declared below are what keeps those optional
+  // fields honest, for the reason the class documentation gives.
   //-------------------------------------------------------------------------
 
-  /**
-   * A documented entry shape whose expectation is a value: its own operand keys, plus the `op`
-   * every captured entry names its operation in and the `result` this kind states.
-   *
-   * @param name  the shape's name, which is the operation it was captured from
-   * @param keys  the operand keys, without `op` and `result`
-   * @return the variant
-   */
+  /** An entry shape whose expectation is a value: its operand keys, plus `op` and `result`. */
   private def valueVariant(name: String, keys: String*): (String, Set[String]) =
     name -> (keys.toSet + "op" + "result")
 
-  /**
-   * A documented entry shape whose expectation is a refusal, which carries `error` where the
-   * corresponding value shape carries `result`.
-   *
-   * @param name  the shape's name, which is the operation it was captured from
-   * @param keys  the operand keys, without `op` and `error`
-   * @return the variant
-   */
+  /** An entry shape whose expectation is a refusal: its operand keys, plus `op` and `error`. */
   private def errorVariant(name: String, keys: String*): (String, Set[String]) =
     name -> (keys.toSet + "op" + "error")
 
-  /**
-   * The schema of one entry of `currencyAmountResults`.
-   *
-   * The ten key sets the ninety committed entries of that bucket carry. The two that name
-   * `doubleToLongBits` are entries that pin the sign of a zero, and `minorUnitDigits` with
-   * `captureOnly` marks the sub-minor-unit sweep.
-   */
+  /** The schema of one entry of `currencyAmountResults`: the ten key sets that bucket carries. */
   val CurrencyAmountEntrySchema: KeySchema =
     KeySchema.variants(
       "a captured CurrencyAmount operation",
@@ -821,14 +599,7 @@ private[parity] object CurrencyMathParitySpec {
       errorVariant("refused-conversion", "left", "rate", "target"),
       errorVariant("refused-construction", "input"))
 
-  /**
-   * The schema of one entry of `moneyResults`.
-   *
-   * The eight key sets the hundred committed `Money` entries carry. This is '''not''' the schema
-   * of the `bigMoneyResults` bucket below: the two were captured through the same writer and hold
-   * different operations, so a `Money` entry that carried the `scale` and `roundingMode` of
-   * `BigMoney.roundToScale` would be an entry in the wrong bucket rather than a new shape.
-   */
+  /** The schema of one entry of `moneyResults`: the eight key sets that bucket carries. */
   val MoneyEntrySchema: KeySchema =
     KeySchema.variants(
       "a captured Money operation",
@@ -841,12 +612,7 @@ private[parity] object CurrencyMathParitySpec {
       errorVariant("refused-combination", "left", "right"),
       errorVariant("refused-conversion", "left", "rate", "target"))
 
-  /**
-   * The schema of one entry of `bigMoneyResults`.
-   *
-   * The nine key sets the hundred and fifteen committed `BigMoney` entries carry, of which
-   * `rounded-to-scale` and `narrowed` are the two this bucket has and the `Money` bucket does not.
-   */
+  /** The schema of one entry of `bigMoneyResults`: the nine key sets that bucket carries. */
   val BigMoneyEntrySchema: KeySchema =
     KeySchema.variants(
       "a captured BigMoney operation",
@@ -860,13 +626,7 @@ private[parity] object CurrencyMathParitySpec {
       errorVariant("refused-combination", "left", "right"),
       errorVariant("refused-conversion", "left", "rate", "target"))
 
-  /**
-   * The schema of one entry of `currencyAmountArrayResults`.
-   *
-   * The twelve key sets the twenty-one committed entries carry - the widest inventory of the six
-   * buckets, because this is the family whose construction, element access, element-wise
-   * arithmetic, mapping and conversion were all captured.
-   */
+  /** The schema of one entry of `currencyAmountArrayResults`: the twelve key sets it carries. */
   val CurrencyAmountArrayEntrySchema: KeySchema =
     KeySchema.variants(
       "a captured CurrencyAmountArray operation",
@@ -883,13 +643,7 @@ private[parity] object CurrencyMathParitySpec {
       errorVariant("refused-construction-with-size", "input", "size"),
       errorVariant("refused-conversion", "left", "rates", "target"))
 
-  /**
-   * The schema of one entry of `multiCurrencyAmountResults`.
-   *
-   * The nine key sets the eleven committed entries carry. Two of them name their operand as a
-   * described `input` rather than as a typed list, which is what the capture wrote for a list the
-   * seven typed input lists could not hold.
-   */
+  /** The schema of one entry of `multiCurrencyAmountResults`: the nine key sets it carries. */
   val MultiCurrencyAmountEntrySchema: KeySchema =
     KeySchema.variants(
       "a captured MultiCurrencyAmount operation",
@@ -903,13 +657,7 @@ private[parity] object CurrencyMathParitySpec {
       errorVariant("refused-lookup", "currency", "left"),
       errorVariant("refused-construction", "input"))
 
-  /**
-   * The schema of one entry of `multiCurrencyAmountArrayResults`.
-   *
-   * The eleven key sets the eighteen committed entries carry. `converted` names the rates it was
-   * replayed with, as every other captured conversion of this document does, so the key set
-   * declares them and the decoder reads them rather than passing over them.
-   */
+  /** The schema of one entry of `multiCurrencyAmountArrayResults`: the eleven key sets it holds. */
   val MultiCurrencyAmountArrayEntrySchema: KeySchema =
     KeySchema.variants(
       "a captured MultiCurrencyAmountArray operation",
@@ -925,7 +673,6 @@ private[parity] object CurrencyMathParitySpec {
       errorVariant("refused-lookup", "currency", "left"),
       errorVariant("refused-construction", "input"))
 
-  /** One captured `CurrencyAmount` operation. */
   final case class CurrencyAmountEntry(
       op: String,
       left: Option[AmountValue],
@@ -966,12 +713,7 @@ private[parity] object CurrencyMathParitySpec {
         captureOnly.getOrElse(false),
         expected)))
 
-  /**
-   * One captured `Money` or `BigMoney` operation.
-   *
-   * The scalar is a `Long` rather than a `Double` because both types multiply by a whole number
-   * only, which is the signature the implementation being ported had.
-   */
+  /** One captured `Money` or `BigMoney` operation; the scalar is whole, as both types require. */
   final case class MoneyEntry(
       op: String,
       currency: Option[String],
@@ -988,12 +730,7 @@ private[parity] object CurrencyMathParitySpec {
       captureOnly: Boolean,
       expected: Expected[MoneyValue])
 
-  /**
-   * The body both money buckets decode with, which the two schemas below are applied to.
-   *
-   * The two buckets share a model because `Money` and `BigMoney` were captured through the same
-   * writer, and they do not share a key schema because they hold different operations.
-   */
+  /** The body both money buckets decode with, to which each bucket's own key schema applies. */
   private val moneyEntryBody: Decoder[MoneyEntry] =
     Decoder.instance(cursor =>
       for {
@@ -1035,7 +772,6 @@ private[parity] object CurrencyMathParitySpec {
   val bigMoneyEntryDecoder: Decoder[MoneyEntry] =
     ParityHarness.strictObject(BigMoneyEntrySchema)(moneyEntryBody)
 
-  /** One captured `CurrencyAmountArray` operation. */
   final case class CurrencyAmountArrayEntry(
       op: String,
       left: Option[ArrayValue],
@@ -1088,7 +824,6 @@ private[parity] object CurrencyMathParitySpec {
         bits,
         expected)))
 
-  /** One captured `MultiCurrencyAmount` operation. */
   final case class MultiCurrencyAmountEntry(
       op: String,
       amounts: Option[Vector[AmountValue]],
@@ -1129,7 +864,6 @@ private[parity] object CurrencyMathParitySpec {
         mapAmountsFn,
         expected)))
 
-  /** One captured `MultiCurrencyAmountArray` operation. */
   final case class MultiCurrencyAmountArrayEntry(
       op: String,
       left: Option[MultiArrayValue],
@@ -1174,13 +908,10 @@ private[parity] object CurrencyMathParitySpec {
         expected)))
 
   /**
-   * One row: the identity, the Java test class it came from, the seven input lists and the six
-   * expectation buckets.
-   *
-   * The fifteen keys are present on every row of the document, so no field of this product is
-   * optional; an input list or an expectation bucket a row does not use is an empty array. Five of
-   * the six buckets are empty on every row, which is the invariant the second test asserts and the
-   * one [[checkRow]] dispatches on.
+   * One row: the identity, the `source` of its values, the seven input lists and the six
+   * expectation buckets. The fifteen keys are on every row, so no field of this product is optional
+   * and an unused list or bucket is an empty array; five of the six buckets are empty on every row,
+   * which is the invariant the population test asserts and the one [[checkRow]] dispatches on.
    */
   final case class CurrencyMathRow(
       id: String,
@@ -1200,14 +931,7 @@ private[parity] object CurrencyMathParitySpec {
       multiCurrencyAmountArrayResults: Vector[MultiCurrencyAmountArrayEntry])
       extends ParityRow
 
-  /**
-   * The schema of one '''row''' of `currency-math-baseline.json`.
-   *
-   * The fifteen keys the six committed rows carry, each of them on every row, which is why this is
-   * one variant with nothing optional: exact equality of key sets. A row that gains a key, loses
-   * one or renames one is refused by [[ParityHarness.loadStrict]] with the offending key named,
-   * rather than decoded into a model that has no field for it.
-   */
+  /** The schema of one '''row''': the fifteen keys every row carries, with nothing optional. */
   val RowSchema: KeySchema =
     KeySchema.uniform(
       "a currency-math baseline row",
@@ -1229,13 +953,9 @@ private[parity] object CurrencyMathParitySpec {
         "multiCurrencyAmountArrayResults"))
 
   /**
-   * The row decoder, which names the decoder of every bucket explicitly.
-   *
-   * It is written out rather than derived for one reason: `moneyResults` and `bigMoneyResults`
-   * share the [[MoneyEntry]] model and do '''not''' share a key schema, so the bucket each entry
-   * is read against has to be decided here, where the bucket is known, rather than by an implicit
-   * lookup that would find one decoder for both. The seven input lists are read through the
-   * implicit decoders of their value shapes, each of which is strict in its own right.
+   * The row decoder, which names the decoder of every bucket explicitly, because `moneyResults` and
+   * `bigMoneyResults` share the [[MoneyEntry]] model and do '''not''' share a key schema: the
+   * bucket each entry is read against has to be decided here, where the bucket is known.
    */
   implicit val currencyMathRowDecoder: Decoder[CurrencyMathRow] =
     ParityHarness.strictObject(RowSchema)(Decoder.instance(cursor =>
@@ -1278,48 +998,32 @@ private[parity] object CurrencyMathParitySpec {
         multiRunResults)))
 
   //-------------------------------------------------------------------------
-  // Building the operands.
-  //
-  // Every operand is rebuilt through the port's own public factories, which is the point: an
-  // operand the port cannot build is a defect in the port or in the fixture rather than a parity
-  // result of any kind, so it is lifted into a failed effect through the harness's two lifts and
-  // recorded against the row. A captured currency code is one of the seventy-four the closed
-  // family holds - the document was captured from the implementation that defines them - so a
-  // refusal here is a real defect and is surfaced as one.
-  //
-  // The two arrays are built with `DoubleArray.copyOf`, a copy-safe public factory. The unchecked
-  // factories that alias a caller's array are module-private and unavailable here by design.
+  // Building the operands. Every operand is rebuilt through this module's own public factories, so
+  // an operand that cannot be built is lifted into a failed effect through the harness's two lifts
+  // and recorded against the row rather than passing as a parity result of any kind. The two arrays
+  // are built with `DoubleArray.copyOf`, a copy-safe public factory; the unchecked factories that
+  // alias a caller's array are module-private and unavailable here.
   //-------------------------------------------------------------------------
 
-  /** Resolves a captured currency code. */
   private def currencyOf(code: String): IO[Currency] = ParityHarness.raise(Currency.parse(code))
 
-  /** Rebuilds a captured amount. */
   private def amountOf(value: AmountValue): IO[CurrencyAmount] =
     currencyOf(value.currency).flatMap(currency =>
       ParityHarness.raise(CurrencyAmount.of(currency, value.amount)))
 
-  /**
-   * Rebuilds a captured money value from its exact decimal text.
-   *
-   * The decimal is read from the captured string rather than from a double, so the operand carries
-   * the scale the capture recorded, and the total `Money.of(Currency, Decimal)` then rounds it to
-   * the currency's minor units - which is a no-op for a value that came from the same rounding.
-   */
+  /** Rebuilds a captured money value from its exact decimal text, keeping the recorded scale. */
   private def moneyOf(value: MoneyValue): IO[Money] =
     for {
       currency <- currencyOf(value.currency)
       decimal <- ParityHarness.raise(Decimal.of(value.amount))
     } yield Money.of(currency, decimal)
 
-  /** Rebuilds a captured big-money value from its exact decimal text. */
   private def bigMoneyOf(value: MoneyValue): IO[BigMoney] =
     for {
       currency <- currencyOf(value.currency)
       decimal <- ParityHarness.raise(Decimal.of(value.amount))
     } yield BigMoney.of(currency, decimal)
 
-  /** Rebuilds a captured single-currency array. */
   private def runOf(value: ArrayValue): IO[CurrencyAmountArray] =
     currencyOf(value.currency)
       .map(currency => CurrencyAmountArray.of(currency, DoubleArray.copyOf(value.values)))
@@ -1330,15 +1034,7 @@ private[parity] object CurrencyMathParitySpec {
       .traverse(amountOf)
       .flatMap(amounts => ParityHarness.raise(MultiCurrencyAmount.of(amounts)))
 
-  /**
-   * Reads the values a captured multi-currency run holds per currency.
-   *
-   * The size of a rebuilt run is derived from its arrays, as the map factory derives it, so a
-   * captured operand that states a size while holding no array at all cannot be reproduced this
-   * way. No operand of the document is of that shape - the one run with no currencies is captured
-   * as a construction input rather than as an operand - and the case is refused explicitly rather
-   * than silently producing a run of size zero.
-   */
+  /** The values a captured run holds per currency; a size stated without arrays is refused. */
   private def runEntriesOf(value: MultiArrayValue): IO[Map[Currency, DoubleArray]] =
     if (value.arrays.isEmpty && value.size > 0) {
       IO.raiseError(
@@ -1352,12 +1048,10 @@ private[parity] object CurrencyMathParitySpec {
         .map(entries => entries.toMap)
     }
 
-  /** Rebuilds a captured multi-currency run. */
   private def multiRunOf(value: MultiArrayValue): IO[MultiCurrencyAmountArray] =
     runEntriesOf(value)
       .flatMap(entries => ParityHarness.raiseNec(MultiCurrencyAmountArray.of(entries)))
 
-  /** The amounts a captured array construction input names, all of them built by the port. */
   private def amountsOf(input: ArrayInput, currency: Option[String]): IO[Vector[CurrencyAmount]] =
     input match {
       case ArrayInput.Values(values) =>
@@ -1375,47 +1069,24 @@ private[parity] object CurrencyMathParitySpec {
     }
 
   //-------------------------------------------------------------------------
-  // Reading the descriptions the capture wrote for inputs that are not a single typed value.
+  // Reading the descriptions recorded for inputs that are not a single typed value.
   //
-  // Four entries build from a list the capture could not write as one of the seven typed input
-  // lists - a mixed-currency list of amounts, which is rejected, or a ragged list of
-  // multi-currency amounts, which is zero-filled - so it wrote a short description instead
-  // (capture README, section 6). Each description is read back here through the port's own
-  // parsers, so the text is data rather than a special case: `"GBP 4"` is exactly the form
-  // `CurrencyAmount.parse` accepts.
+  // Some entries build from a list that cannot be written as one of the seven typed input lists - a
+  // mixed-currency list of amounts, which is rejected, or a ragged list of multi-currency amounts,
+  // which is zero-filled - so the document holds a short description instead, read back here
+  // through this module's own parsers: `"GBP 4"` is exactly the form `CurrencyAmount.parse` takes.
   //
-  // Every parser below reads its description as an '''anchored''' grammar: the items it finds and
-  // the documented separators between them have to account for the whole of the trimmed text, and
-  // anything left over - a prefix, a suffix, a doubled or dangling separator, an empty item, or no
-  // item at all - is reported as a fixture disagreement through [[describedFormError]] and
-  // recorded against the row by the harness.
-  //
-  // Consuming only part of the text would be a parity-integrity defect rather than a convenience.
-  // A description is an '''operand''': text such as `"junk [EUR 4] trailing"` that yields the one
-  // group a search happens to find would be measured as if the capture had written `"[EUR 4]"`, so
-  // the row would compare a smaller operand against an expectation computed from the captured one
-  // and report the answer as parity. The grammars are therefore total in both directions - every
-  // form the capture writes is accepted, and nothing else is - and the accepted forms are:
-  //
-  //  - `"empty"`, the whole text, naming no amounts at all;
-  //  - `"GBP 4, USD 5"`, a comma-separated list of amounts, each `CurrencyAmount.parse`'s own
-  //    three-letter code, one space and numeral;
-  //  - `"[EUR 4], [GBP 21, USD 32, EUR 43], [EUR 44]"` and `"[], []"`, a comma-separated list of
-  //    bracketed groups, where a group holds a list of amounts and an '''empty''' group is
-  //    legitimate and names none;
-  //  - `"GBP[1,2,3], USD[1,2]"` and `"GBP[1,2,3] + USD[10,20,30]"`, a list of per-currency runs
-  //    separated by a comma or by a plus, where a run's brackets hold a list of numerals and may
-  //    also be empty.
+  // Every parser reads its description as an anchored grammar, because a description is an operand:
+  // text such as `"junk [EUR 4] trailing"` read as the one group a search happens to find would
+  // compare a smaller operand against an expectation computed from the whole one and report the
+  // answer as parity. So the items and the documented separators between them have to account for
+  // the whole of the trimmed text, and anything left over is reported as a fixture disagreement.
+  // The accepted forms are `"empty"`, a comma-separated list of amounts, a comma-separated list of
+  // bracketed groups of amounts, and per-currency runs separated by a comma or by a plus; a group
+  // and a run's brackets may both be empty.
   //-------------------------------------------------------------------------
 
-  /**
-   * The numeral production, which is the language `String.toDoubleOption` reads.
-   *
-   * Written out rather than narrowed to the integers the committed document happens to hold, so
-   * that a capture rendering a value through `Double.toString` - an exponent, a signed zero, a
-   * non-finite value - is read as the numeral it is and left to the port's own factories to accept
-   * or refuse. What it does not do is admit text that is not a numeral at all.
-   */
+  /** The numeral production, which is the language `String.toDoubleOption` reads. */
   private val NumeralSource: String =
     """[+-]?(?:Infinity|NaN|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"""
 
@@ -1434,39 +1105,19 @@ private[parity] object CurrencyMathParitySpec {
   /** The separator between the items of a captured list: a comma, with or without spacing. */
   private val ItemSeparator: Regex = """\s*,\s*""".r
 
-  /** The separator between captured runs, which the capture writes as a comma or as a plus. */
+  /** The separator between runs, which the document writes as a comma or as a plus. */
   private val RunSeparator: Regex = """\s*[,+]\s*""".r
 
-  /**
-   * Whether a description names whole runs per currency rather than individual amounts.
-   *
-   * The dispatch is a search rather than a whole-text test, and it is safe as such precisely
-   * because it decides nothing on its own: whichever of the two grammars it selects then has to
-   * account for the whole text, so a description that mixes the two forms or carries anything
-   * around them is refused by the branch it reaches rather than partially read by it. `"[EUR 4]
-   * junk"` names no run and is refused by the bracketed-group grammar; `"junk GBP[1,2]"` names one
-   * and is refused by the run grammar.
-   *
-   * @param text  the description the capture wrote
-   * @return true when the text names at least one per-currency run
-   */
+  /** Whether a description names whole runs per currency rather than individual amounts. */
   private def describesRuns(text: String): Boolean = CurrencyRun.findFirstIn(text).isDefined
 
   /**
    * The items of a description, when the items and the separators account for all of it.
    *
-   * This is the anchoring the four parsers share. The items are found by search and then have to
-   * '''tile''' the text: the first starts at its beginning, the last ends at its end, and every
-   * gap between two of them is one separator and nothing more. A text with no item at all is
-   * refused here too, so an empty or unrecognisable description cannot pass as a list of nothing -
-   * the three places where naming nothing is legitimate say so themselves, by testing for the
-   * `"empty"` description, for an empty group and for empty brackets before they ask for items.
-   *
-   * @param text  the trimmed description
-   * @param item  the production of one item, whose match is the item
-   * @param separator  the production of one separator, which must match a gap in full
-   * @return the items in the order the text lists them, of which there is at least one; otherwise
-   *         what the text carries beyond them
+   * This is the anchoring the four parsers share: the items are found by search and then have to
+   * '''tile''' the text - the first starts at its beginning, the last ends at its end, and every
+   * gap between two of them is one separator in full. A text with no item at all is refused here
+   * too, so an unrecognisable description cannot pass as a list of nothing.
    */
   private def itemsOf(
       text: String,
@@ -1493,39 +1144,19 @@ private[parity] object CurrencyMathParitySpec {
         }
     }
 
-  /**
-   * Reports a description the grammar of its production does not account for in full.
-   *
-   * @param production  the form the description was read as, as a reader of the report would name it
-   * @param text  the trimmed description
-   * @param reason  what the grammar found beyond the form
-   * @tparam A  the type the caller was reading
-   * @return a failed effect, which the harness records as a discrepancy of the row
-   */
+  /** Reports a description its production does not account for in full, as a failed effect. */
   private def describedFormError[A](production: String, text: String, reason: String): IO[A] =
     IO.raiseError(
       new IllegalStateException(
         s"fixture disagreement: the description '$text' is not $production, because $reason"))
 
-  /**
-   * The amounts a description such as `"GBP 4, USD 5"` names; `"empty"` names none.
-   *
-   * @param text  the description the capture wrote
-   * @return the amounts, built by the port's own parser; the effect fails when the text is not the
-   *         `"empty"` description and not a comma-separated list of amounts in full
-   */
+  /** The amounts a description such as `"GBP 4, USD 5"` names; `"empty"` names none. */
   private def parseAmounts(text: String): IO[List[CurrencyAmount]] = {
     val trimmed = text.trim
     if (trimmed == EmptyDescription) IO.pure(Nil) else parseAmountList(trimmed)
   }
 
-  /**
-   * The amounts a non-empty comma-separated list names, which is the production a description and
-   * a bracketed group share.
-   *
-   * @param text  the trimmed list, which names at least one amount
-   * @return the amounts; the effect fails when the text is not that list in full
-   */
+  /** The amounts a non-empty comma-separated list names, shared by a description and a group. */
   private def parseAmountList(text: String): IO[List[CurrencyAmount]] =
     itemsOf(text, AmountTerm, ItemSeparator) match {
       case Right(items) =>
@@ -1534,14 +1165,7 @@ private[parity] object CurrencyMathParitySpec {
         describedFormError("a comma-separated list of amounts such as 'GBP 4, USD 5'", text, reason)
     }
 
-  /**
-   * The multi-currency amounts a description of bracketed groups names, one per group.
-   *
-   * @param text  the description the capture wrote
-   * @return the amounts, one per group in the order the text lists them; the effect fails when the
-   *         text is not a comma-separated list of bracketed groups in full, or when a group names
-   *         amounts the port refuses to hold together
-   */
+  /** The multi-currency amounts a description of bracketed groups names, one per group. */
   private def parseMultiAmounts(text: String): IO[List[MultiCurrencyAmount]] = {
     val trimmed = text.trim
     itemsOf(trimmed, BracketGroup, ItemSeparator) match {
@@ -1554,18 +1178,7 @@ private[parity] object CurrencyMathParitySpec {
     }
   }
 
-  /**
-   * The multi-currency amount one bracketed group names, where `"[]"` names one holding nothing.
-   *
-   * The empty group is the one item of a list that legitimately names no amount - the capture
-   * writes `"[], []"` for the run of two `MultiCurrencyAmount.empty()` elements, the case that
-   * pins a size carrying no currency at all - so it is tested for here rather than being reached
-   * by a list grammar that would have to accept an empty item everywhere to admit it.
-   *
-   * @param content  the text between one group's brackets
-   * @return the amount; the effect fails when the group is neither empty nor a list of amounts in
-   *         full, or when the port refuses the amounts it names
-   */
+  /** The multi-currency amount one bracketed group names, where `"[]"` names one holding none. */
   private def parseGroup(content: String): IO[MultiCurrencyAmount] = {
     val trimmed = content.trim
     val amounts =
@@ -1573,19 +1186,7 @@ private[parity] object CurrencyMathParitySpec {
     amounts.flatMap(list => ParityHarness.raise(MultiCurrencyAmount.of(list)))
   }
 
-  /**
-   * The runs a description such as `"GBP[1,2,3], USD[1,2]"` or `"GBP[1,2] + USD[3,4]"` names.
-   *
-   * Both separators the capture uses are accepted, because both appear in the committed document -
-   * the map factory's input is written with commas and the total's with a plus - and neither is
-   * accepted twice over or on its own.
-   *
-   * @param text  the description the capture wrote
-   * @return the runs in the order the text lists them, each with the currency the port built from
-   *         its code; the effect fails when the text is not a list of runs in full, when a code is
-   *         not one of the closed currency family, or when a run's brackets hold something other
-   *         than numerals
-   */
+  /** The runs a description such as `"GBP[1,2,3], USD[1,2]"` or `"GBP[1,2] + USD[3,4]"` names. */
   private def parseRuns(text: String): IO[List[(Currency, DoubleArray)]] = {
     val trimmed = text.trim
     itemsOf(trimmed, CurrencyRun, RunSeparator) match {
@@ -1603,16 +1204,7 @@ private[parity] object CurrencyMathParitySpec {
     }
   }
 
-  /**
-   * The values a comma-separated numeral list names, which may be empty.
-   *
-   * Empty brackets name no value, which is what `"[]"` means; `"1,,2"` and `"1,"` name a value
-   * list with a hole in it and are refused rather than read as the values that surround it.
-   *
-   * @param text  the text between one run's brackets
-   * @return the values in the order the text lists them; the effect fails when the text is neither
-   *         empty nor a comma-separated list of numerals in full
-   */
+  /** The values a comma-separated numeral list names; `"[]"` names none and `"1,,2"` is refused. */
   private def parseValues(text: String): IO[Vector[Double]] = {
     val trimmed = text.trim
     if (trimmed.isEmpty) {
@@ -1637,24 +1229,18 @@ private[parity] object CurrencyMathParitySpec {
   }
 
   //-------------------------------------------------------------------------
-  // The rate providers.
-  //
-  // A captured conversion names its rates inline, and the capture supplied them as an `FxRate` -
-  // which is itself an `FxRateProvider` - so a single rate is replayed as exactly that. Several
-  // rates are replayed as a provider that answers from the first of them that can, which is the
-  // behaviour of a list of rates and, unlike a matrix, does not additionally require the rates to
-  // name a connected set of currencies. That matters for the document-wide registry, whose rates
-  // are deliberately not connected.
+  // The rate providers. A single rate is replayed as the `FxRate` it describes, which is itself an
+  // `FxRateProvider`; several are replayed as a provider answering from the first of them that can,
+  // which - unlike a matrix - does not require the rates to name a connected set of currencies, and
+  // the document-wide registry's rates are not connected.
   //-------------------------------------------------------------------------
 
-  /** Rebuilds the rates of one entry, or of the whole document. */
   private def fxRatesOf(rates: Vector[RateValue]): IO[Vector[FxRate]] =
     rates.traverse(entry =>
       ParityHarness
         .raise(CurrencyPair.parse(entry.pair))
         .flatMap(pair => ParityHarness.raiseNec(FxRate.of(pair, entry.rate))))
 
-  /** The provider a list of rates describes. */
   private def providerOf(rates: Vector[FxRate]): FxRateProvider =
     rates match {
       case Vector(single) => single
@@ -1666,16 +1252,13 @@ private[parity] object CurrencyMathParitySpec {
             .toRight(Failure.CurrencyConversion(s"No FX rate found for $base/$counter")))
     }
 
-  /** Builds the provider a captured list of rates describes. */
   private def providerFrom(rates: Vector[RateValue]): IO[FxRateProvider] =
     fxRatesOf(rates).map(providerOf)
 
   /**
-   * Builds the provider used by an entry that carries no rate of its own.
-   *
-   * The rates of every row and of every entry, in document order and deduplicated. One captured
-   * conversion needs it, for the reason the class documentation gives, and this is what keeps the
-   * rate it uses a value read from the fixture rather than a literal written here.
+   * Builds the provider used by an entry that carries no rate of its own: the rates of every row
+   * and of every entry, in document order and deduplicated, so every rate replayed here is read
+   * from the fixture rather than written in this file.
    */
   def registryProvider(rows: Vector[CurrencyMathRow]): IO[FxRateProvider] =
     providerFrom(registeredRates(rows))
@@ -1689,10 +1272,9 @@ private[parity] object CurrencyMathParitySpec {
       rows.flatMap(_.multiCurrencyAmountResults).flatMap(_.rates.getOrElse(Vector.empty))).distinct
 
   //-------------------------------------------------------------------------
-  // The comparators of this fixture, each built from the harness's own.
-  //
-  // A money value is compared exactly in all three of its parts; every other value compares its
-  // currency, its size and its indices exactly and its numbers under the parity tolerance.
+  // The comparators, each built from the harness's own: a money value is compared exactly in all
+  // three of its parts, and every other value compares its currency, size and indices exactly and
+  // its numbers under the parity tolerance.
   //-------------------------------------------------------------------------
 
   /** Compares an amount: its currency exactly, its value under the tolerance. */
@@ -1706,13 +1288,9 @@ private[parity] object CurrencyMathParitySpec {
       ParityHarness.assertParitySeq(s"$label.values", actual.values.toList, expected.values)
 
   /**
-   * Compares a money value exactly, never under a tolerance.
-   *
-   * All three captured parts are compared: the currency, the decimal text of the value - which
-   * carries the scale of the currency's minor units, so `BHD 100.120` does not match `100.12` -
-   * and the rendering. `getValue` is failable on `Money` because a value has to fit the fixed
-   * scale it is asked for, and a value that came from that same rounding does; the check goes
-   * through [[ParityHarness.assertRight]] so that a refusal is reported rather than unwrapped.
+   * Compares a money value exactly, never under a tolerance: the currency, the decimal text and the
+   * rendering. `getValue` is failable on `Money`, so it goes through [[ParityHarness.assertRight]]
+   * rather than being unwrapped.
    */
   private def compareMoney(label: String, actual: Money, expected: MoneyValue): List[String] =
     ParityHarness.assertExact(s"$label.currency", actual.currency.name, expected.currency) :::
@@ -1726,15 +1304,7 @@ private[parity] object CurrencyMathParitySpec {
       ParityHarness.assertExact(s"$label.amount", actual.getValue.toString, expected.amount) :::
       ParityHarness.assertExact(s"$label.toString", actual.toString, expected.text)
 
-  /**
-   * Compares a multi-currency amount against the amounts the capture wrote.
-   *
-   * The port holds its amounts in a `SortedMap` keyed by currency, so `getAmounts` iterates in
-   * currency-code order. The capture writes them sorted the same way, and the expectation is
-   * sorted here as well rather than trusted to arrive in that order: the ordering is a property of
-   * the port being measured, so reading it from the fixture would make the comparison agree with
-   * itself.
-   */
+  /** Compares a multi-currency amount, sorting the expectation as `getAmounts` orders its own. */
   private def compareMulti(
       label: String,
       actual: MultiCurrencyAmount,
@@ -1754,14 +1324,7 @@ private[parity] object CurrencyMathParitySpec {
     }
   }
 
-  /**
-   * Compares a multi-currency run: its size and currencies exactly, its values under the
-   * tolerance.
-   *
-   * The currencies are compared as a whole list before any value is, so a run holding the wrong
-   * set of currencies is reported once instead of once per currency, and the values are only
-   * compared when the currencies agree.
-   */
+  /** Compares a multi-currency run: size and currencies exactly, values under the tolerance. */
   private def compareMultiRun(
       label: String,
       actual: MultiCurrencyAmountArray,
@@ -1786,12 +1349,9 @@ private[parity] object CurrencyMathParitySpec {
   }
 
   /**
-   * Compares the bit pattern of a value whose sign the capture pinned.
-   *
-   * Positive and negative zero are within every tolerance of each other, so the four entries that
-   * carry `doubleToLongBits` are the only way the three different answers the port gives for a
-   * signed zero can be told apart. The captured `long` is the authority, not the JSON number
-   * beside it.
+   * Compares the bit pattern of a value whose sign the fixture pins: positive and negative zero are
+   * within every tolerance of each other, so the captured `doubleToLongBits` is the authority here
+   * and the JSON number beside it is not.
    */
   private def compareBits(label: String, actual: Double, expected: Long): List[String] = {
     val produced = java.lang.Double.doubleToLongBits(actual)
@@ -1804,13 +1364,7 @@ private[parity] object CurrencyMathParitySpec {
     }
   }
 
-  /**
-   * Checks that an operation refused for the reason the port documents for it.
-   *
-   * Used where the reason is unambiguous - a conversion the provider has no rate for is a
-   * currency-conversion failure and nothing else - so that a refusal for some unrelated reason is
-   * not accepted as the expected one. The message is never compared; only the reason is.
-   */
+  /** Checks that an operation refused for the documented reason; the message is never compared. */
   private def assertLeftFor(
       label: String,
       actual: Either[Failure, Any],
@@ -1822,7 +1376,7 @@ private[parity] object CurrencyMathParitySpec {
       case Right(value) => List(s"$label: expected a failure, but the operation returned $value")
     }
 
-  /** Checks the minor-unit scale the capture recorded against the one the port's currency holds. */
+  /** Checks the minor-unit scale an entry states against the one this module's currency holds. */
   private def checkMinorUnitDigits(
       label: String,
       currency: Currency,
@@ -1830,7 +1384,7 @@ private[parity] object CurrencyMathParitySpec {
     captured.toList.flatMap(digits =>
       ParityHarness.assertExact(s"$label.minorUnitDigits", currency.minorUnitDigits, digits))
 
-  /** Checks that a composed expectation was captured with the mapping function this spec applies. */
+  /** Checks that a composed expectation used the mapping function this spec applies. */
   private def checkMapAmountsText(label: String, captured: Option[String]): List[String] =
     captured.toList.flatMap(text =>
       ParityHarness.assertExact(s"$label.mapAmountsFn", MapAmountsText, text))
@@ -1847,7 +1401,7 @@ private[parity] object CurrencyMathParitySpec {
       fallback: FxRateProvider): IO[FxRateProvider] =
     rates.fold(IO.pure(fallback))(providerFrom)
 
-  /** The rounding modes by the constant name the capture wrote, which is a closed set. */
+  /** The rounding modes by the constant name an entry carries, which is a closed set. */
   private val RoundingModesByName: Map[String, RoundingMode] =
     RoundingMode.values().iterator.map(mode => (mode.name(), mode)).toMap
 
@@ -1855,12 +1409,7 @@ private[parity] object CurrencyMathParitySpec {
   // The `CurrencyAmount` bucket.
   //-------------------------------------------------------------------------
 
-  /**
-   * Measures one captured `CurrencyAmount` operation.
-   *
-   * @param entry  the captured operation
-   * @return every discrepancy found, empty where the port reproduced it
-   */
+  /** Measures one captured `CurrencyAmount` operation, answering with every discrepancy found. */
   private def checkAmountEntry(entry: CurrencyAmountEntry): IO[List[String]] =
     entry.op match {
       case "plus" => checkAmountPair(entry, (left, right) => left.plus(right))
@@ -1877,13 +1426,10 @@ private[parity] object CurrencyMathParitySpec {
   /**
    * Measures an addition or a subtraction of two amounts, and decides how its refusal is observed.
    *
-   * The choice is made from the operands, not from configuration. Two amounts in '''different'''
-   * currencies cannot be combined at all, and the port reports that in the error channel, so the
-   * refusal is a `Left`. Two amounts in the '''same''' currency always combine, and the only way
-   * the outcome can be refused is the documented numeric edge of the type - infinities of opposite
-   * sign summing to a value that is not a number - which the port refuses through its invariant,
-   * exactly as the implementation being ported did (AAP section 0.3.3). That one is observed with
-   * [[ParityHarness.attemptArgCheck]], and it is the only precondition this fixture reaches.
+   * The choice is made from the operands: two amounts in '''different''' currencies cannot be
+   * combined at all and that refusal is a `Left`, while two in the '''same''' currency always
+   * combine, so the only refusal left is the numeric edge of the type, which
+   * [[ParityHarness.attemptArgCheck]] observes.
    */
   private def checkAmountPair(
       entry: CurrencyAmountEntry,
@@ -1908,14 +1454,7 @@ private[parity] object CurrencyMathParitySpec {
         IO.pure(unrecognised(s"the CurrencyAmount '${entry.op}' entry", "no pair of amounts"))
     }
 
-  /**
-   * Measures a multiplication by a number, which is total.
-   *
-   * The entries that sweep the currency family carry the currency's minor-unit scale, which is
-   * checked against the port's own currency data: the amount arithmetic does not depend on it, but
-   * the capture recorded it and a disagreement would mean the two sides no longer hold the same
-   * currency.
-   */
+  /** Measures a multiplication by a number, which is total, and the minor-unit scale it states. */
   private def checkAmountScalar(entry: CurrencyAmountEntry): IO[List[String]] =
     (entry.left, entry.scalar, entry.expected) match {
       case (Some(leftValue), Some(scalar), Expected.Value(expected)) =>
@@ -1948,14 +1487,7 @@ private[parity] object CurrencyMathParitySpec {
           unrecognised(s"the CurrencyAmount '${entry.op}' entry", "no amount and value expectation"))
     }
 
-  /**
-   * Measures a conversion at an explicit rate.
-   *
-   * The captured refusals of this operation are the same-currency rule: a conversion into the
-   * currency the amount is already in requires a rate of one, and the port compares it with the
-   * same fuzzy equality the implementation being ported used, so the rates 1.25 and 1.5 are
-   * refused while 1 is not.
-   */
+  /** Measures a conversion at an explicit rate, whose refusals are the same-currency rule. */
   private def checkAmountConversion(entry: CurrencyAmountEntry): IO[List[String]] =
     (entry.left, entry.target, entry.rate) match {
       case (Some(leftValue), Some(target), Some(rate)) =>
@@ -1979,12 +1511,9 @@ private[parity] object CurrencyMathParitySpec {
     }
 
   /**
-   * Measures the factory, which is where the two normalisations of the type are pinned.
-   *
-   * A value that is not a number is refused in the error channel, and `-0.0` is normalised to
-   * `+0.0` - which is why the captured bit pattern is compared here and not only the value.
-   * Infinities are accepted, as they were by the implementation being ported, so "not finite" is
-   * not one category on this path.
+   * Measures the factory, where the two normalisations of the type are pinned: a value that is not
+   * a number is refused in the error channel, and `-0.0` becomes `+0.0`, which is why the captured
+   * bit pattern is compared here and not only the value. Infinities are accepted.
    */
   private def checkAmountFactory(entry: CurrencyAmountEntry): IO[List[String]] =
     entry.input match {
@@ -2005,11 +1534,9 @@ private[parity] object CurrencyMathParitySpec {
     }
 
   //-------------------------------------------------------------------------
-  // The `Money` and `BigMoney` buckets. Every comparison here is exact.
-  //
-  // Each operand is compared against its own captured rendering as it is rebuilt. That costs
-  // nothing and it pins the decimal text of every operand of the two seventy-four-currency sweeps,
-  // which the input registry does not record.
+  // The `Money` and `BigMoney` buckets. Every comparison here is exact, and each operand is
+  // compared against its own captured rendering as it is rebuilt, which pins the decimal text of
+  // every operand of the two seventy-four-currency sweeps - text the input registry does not hold.
   //-------------------------------------------------------------------------
 
   /** Measures one captured `Money` operation. */
@@ -2030,9 +1557,8 @@ private[parity] object CurrencyMathParitySpec {
         }
       case "convertedTo" => checkMoneyConversion(entry, fallback)
       case "toBigMoney" =>
-        // The port publishes the widening under the captured name, so the method the capture
-        // recorded is the method replayed here; `BigMoney.of(money)` is the same conversion named
-        // from the wider companion, and the unit suites assert that the two agree value for value.
+        // The widening is published under the name the entry records, so that is the method
+        // replayed here; `BigMoney.of(money)` is the same conversion named from the companion.
         (entry.left, entry.expected) match {
           case (Some(leftValue), Expected.Value(expected)) =>
             moneyOf(leftValue).map(left =>
@@ -2044,13 +1570,7 @@ private[parity] object CurrencyMathParitySpec {
       case other => IO.pure(unrecognised("a Money entry", s"the operation '$other'"))
     }
 
-  /**
-   * Measures `Money.of`, which rounds half up to the currency's minor units.
-   *
-   * The captured `minorUnitDigits` is compared against the port's currency as well, because it is
-   * the number the rounding is performed to: an expectation of `BHD 100.125` only means anything
-   * if both sides agree that the currency has three minor digits.
-   */
+  /** Measures `Money.of`, which rounds half up to the currency's minor units. */
   private def checkMoneyFactory(entry: MoneyEntry): IO[List[String]] =
     (entry.currency, entry.amount) match {
       case (Some(code), Some(amount)) =>
@@ -2091,13 +1611,7 @@ private[parity] object CurrencyMathParitySpec {
       case _ => IO.pure(unrecognised(s"the Money '${entry.op}' entry", "no pair of values"))
     }
 
-  /**
-   * Measures a conversion, at an explicit rate or through a provider.
-   *
-   * The explicit rate is applied through the exact-decimal overload rather than the binary
-   * floating point one, which is how the capture applied it: the rate is a decimal quantity and
-   * reading it as one keeps the conversion exact.
-   */
+  /** Measures a conversion; an explicit rate goes through the exact-decimal overload. */
   private def checkMoneyConversion(entry: MoneyEntry, fallback: FxRateProvider): IO[List[String]] =
     (entry.left, entry.target) match {
       case (Some(leftValue), Some(target)) =>
@@ -2176,7 +1690,6 @@ private[parity] object CurrencyMathParitySpec {
         IO.pure(unrecognised(s"the BigMoney '${entry.op}' entry", "no currency and number"))
     }
 
-  /** Measures an addition or a subtraction of two big-money values. */
   private def checkBigMoneyPair(
       entry: MoneyEntry,
       operation: (BigMoney, BigMoney) => Either[Failure, BigMoney]): IO[List[String]] =
@@ -2199,7 +1712,6 @@ private[parity] object CurrencyMathParitySpec {
       case _ => IO.pure(unrecognised(s"the BigMoney '${entry.op}' entry", "no pair of values"))
     }
 
-  /** Measures a big-money conversion at an explicit rate or through a provider. */
   private def checkBigMoneyConversion(entry: MoneyEntry, fallback: FxRateProvider): IO[List[String]] =
     (entry.left, entry.target) match {
       case (Some(leftValue), Some(target)) =>
@@ -2226,13 +1738,7 @@ private[parity] object CurrencyMathParitySpec {
         IO.pure(unrecognised(s"the BigMoney '${entry.op}' entry", "no value and target currency"))
     }
 
-  /**
-   * Measures the twelve captured roundings: six modes at scale two and three negative scales.
-   *
-   * The mode is looked up in the closed set of the platform's rounding modes by the constant name
-   * the capture wrote, and a name that is not one of them is reported rather than resolved, so an
-   * unknown mode cannot be read as a default.
-   */
+  /** Measures the twelve captured roundings: six modes at scale two, six at negative scales. */
   private def checkBigMoneyRounding(entry: MoneyEntry): IO[List[String]] =
     (entry.left, entry.scale, entry.roundingMode, entry.expected) match {
       case (Some(leftValue), Some(scale), Some(mode), Expected.Value(expected)) =>
@@ -2268,9 +1774,8 @@ private[parity] object CurrencyMathParitySpec {
       case "multipliedBy" =>
         (entry.left, entry.scalar, entry.expected) match {
           case (Some(leftValue), Some(scalar), Expected.Value(ArrayOperand.Run(expected))) =>
-            // The port adds this member, which the Java type does not have; the capture therefore
-            // composed the expectation from `of(currency, values.multipliedBy(scalar))`. Measuring
-            // the port's own member against that composition is the whole point of the entry.
+            // The expectation is composed from `of(currency, values.multipliedBy(scalar))`, and
+            // measuring this module's own member against that composition is the point of it.
             runOf(leftValue).map(left => compareRun(entry.op, left.multipliedBy(scalar), expected))
           case _ =>
             IO.pure(
@@ -2296,12 +1801,7 @@ private[parity] object CurrencyMathParitySpec {
       case other => IO.pure(unrecognised("a CurrencyAmountArray entry", s"the operation '$other'"))
     }
 
-  /**
-   * Measures an element-wise combination, against another array or against one amount.
-   *
-   * Both captured refusals are data-dependent - the currencies differ, or the lengths do - so both
-   * are `Left`, and the port reports a different failure for each.
-   */
+  /** Measures an element-wise combination; both captured refusals are data-dependent `Left`s. */
   private def checkRunPair(
       entry: CurrencyAmountArrayEntry,
       arrayOperation: (CurrencyAmountArray, CurrencyAmountArray) => Either[Failure, CurrencyAmountArray],
@@ -2322,15 +1822,7 @@ private[parity] object CurrencyMathParitySpec {
           unrecognised(s"the CurrencyAmountArray '${entry.op}' entry", "no array and operand"))
     }
 
-  /**
-   * Measures a conversion of a whole array.
-   *
-   * The captured entry carries either the single rate the conversion was performed at - which the
-   * capture supplied as the `FxRate` from the array's currency to the target - or the list of
-   * rates a provider was built from, which is how the missing-rate refusal is captured: a rate for
-   * an unrelated pair leaves the conversion without one, and the port reports that as a
-   * currency-conversion failure rather than leaving the values unconverted.
-   */
+  /** Measures a conversion of a whole array, at the rate or the rate list the entry carries. */
   private def checkRunConversion(
       entry: CurrencyAmountArrayEntry,
       fallback: FxRateProvider): IO[List[String]] =
@@ -2361,7 +1853,6 @@ private[parity] object CurrencyMathParitySpec {
             "no array and target currency"))
     }
 
-  /** The provider a captured array conversion was performed through. */
   private def runProviderFor(
       entry: CurrencyAmountArrayEntry,
       base: String,
@@ -2378,14 +1869,11 @@ private[parity] object CurrencyMathParitySpec {
     }
 
   /**
-   * Measures the three factories of the type, told apart by the keys of the entry.
-   *
-   * An entry carrying a `size` was captured through `of(size, valueFunction)`. An entry carrying a
-   * captured bit pattern was captured through `of(currency, DoubleArray)`, which is the only one
-   * of the three that '''keeps''' the sign of a zero - the other two build their elements through
-   * `CurrencyAmount.of`, which normalises it away - so the marker is what identifies it. Everything
-   * else was captured through `of(Iterable[CurrencyAmount])`, whose mixed-currency refusal is one
-   * of the entries here.
+   * Measures the three factories of the type, told apart by the keys of the entry: a `size` marks
+   * `of(size, valueFunction)`, a bit pattern marks `of(currency, DoubleArray)` - the only one of
+   * the three that '''keeps''' the sign of a zero, the other two building their elements through
+   * `CurrencyAmount.of`, which normalises it away - and everything else is
+   * `of(Iterable[CurrencyAmount])`, whose mixed-currency refusal is one of the entries here.
    */
   private def checkRunFactory(entry: CurrencyAmountArrayEntry): IO[List[String]] =
     (entry.input, entry.size, entry.doubleToLongBits) match {
@@ -2419,12 +1907,7 @@ private[parity] object CurrencyMathParitySpec {
           unrecognised(s"the CurrencyAmountArray '${entry.op}' entry", "no construction input"))
     }
 
-  /**
-   * Measures reading one element back out.
-   *
-   * The element is handed to `CurrencyAmount.of`, which normalises the sign of a zero the array
-   * itself kept, so this is the third of the three answers the captured bit patterns pin.
-   */
+  /** Measures reading one element back out, which normalises the sign of a zero again. */
   private def checkRunElement(entry: CurrencyAmountArrayEntry): IO[List[String]] =
     (entry.left, entry.index, entry.expected) match {
       case (Some(leftValue), Some(index), Expected.Value(ArrayOperand.Single(expected))) =>
@@ -2479,8 +1962,8 @@ private[parity] object CurrencyMathParitySpec {
       fallback: FxRateProvider): IO[List[String]] =
     entry.op match {
       case "of" =>
-        // `of` rejects a repeated currency where `total` merges it, and the fixture captures both
-        // over the same input, so the two are never substituted for one another here.
+        // `of` rejects a repeated currency where `total` merges it, and the fixture holds both over
+        // the same input, so the two are never substituted for one another here.
         multiAmountsOf(entry)
           .map(amounts => expectMulti(entry.op, MultiCurrencyAmount.of(amounts), entry.expected))
       case "total" =>
@@ -2655,8 +2138,7 @@ private[parity] object CurrencyMathParitySpec {
       case "multipliedBy" =>
         (entry.left, entry.scalar) match {
           case (Some(leftValue), Some(scalar)) =>
-            // Another member the port adds, captured as the composition of the same scaling over
-            // every currency of the run.
+            // The expectation is composed from the same scaling applied over every currency.
             multiRunOf(leftValue)
               .map(left => expectMultiRunValue(entry.op, left.multipliedBy(scalar), entry.expected))
           case _ =>
@@ -2682,14 +2164,11 @@ private[parity] object CurrencyMathParitySpec {
     }
 
   /**
-   * Measures the factories of the type, told apart by what the entry names.
-   *
-   * The map factory is the one that '''rejects''' arrays of unequal length, and it is reached
-   * either from a captured run or from a description naming whole runs per currency. The list and
-   * function factories take multi-currency amounts instead, where a currency missing from one
-   * element is zero-filled rather than rejected and a currency absent from every element stays
-   * unknown - the contrast the capture records deliberately - and a `size` distinguishes the
-   * function form from the list form.
+   * Measures the factories of the type, told apart by what the entry names. The map factory is the
+   * one that '''rejects''' arrays of unequal length, reached from a captured run or from a
+   * description naming whole runs per currency; the list and function factories take multi-currency
+   * amounts, where a currency missing from one element is zero-filled and one absent from every
+   * element stays unknown, and a `size` tells the function form from the list form.
    */
   private def checkMultiRunFactory(entry: MultiCurrencyAmountArrayEntry): IO[List[String]] =
     (entry.left, entry.input) match {
@@ -2769,13 +2248,7 @@ private[parity] object CurrencyMathParitySpec {
           unrecognised(s"the MultiCurrencyAmountArray '${entry.op}' entry", "no run and operand"))
     }
 
-  /**
-   * Measures converting a whole run into one currency.
-   *
-   * This is the one captured conversion that names no rate of its own, so the provider it is
-   * replayed through is the document-wide one; the class documentation records why, and the
-   * provider is still built entirely from rates the fixture registers.
-   */
+  /** Measures converting a whole run into one currency, at the entry's rates or the registry's. */
   private def checkMultiRunConversion(
       entry: MultiCurrencyAmountArrayEntry,
       fallback: FxRateProvider): IO[List[String]] =
@@ -2842,12 +2315,10 @@ private[parity] object CurrencyMathParitySpec {
    * Measures one row of the fixture, answering with everything that differed.
    *
    * Every bucket is measured, not only the one the row's family populates: five of the six are
-   * empty on every row of the document and measuring them costs nothing, while dispatching on the
-   * row's identity instead would leave an entry that appeared in the wrong bucket unmeasured. The
-   * shape of the row is checked separately, so a bucket that is populated where it should not be is
-   * reported as the fixture disagreement it is.
+   * empty on every row, and dispatching on the row's identity instead would leave an entry that
+   * appeared in the wrong bucket unmeasured.
    *
-   * @param fallback  the provider for the one captured conversion that names no rate
+   * @param fallback  the provider for an entry that names no rate of its own
    * @param row  the row to measure
    * @return every discrepancy found in the row, empty where it matched in every respect
    */
@@ -2869,15 +2340,7 @@ private[parity] object CurrencyMathParitySpec {
     } yield checkShape(row) ::: registry ::: amounts ::: money ::: bigMoney ::: runs ::: multi :::
       multiRuns
 
-  /**
-   * Measures every entry of one bucket, labelling each message with the bucket and the index.
-   *
-   * An entry whose measurement raises instead of answering contributes one message naming the
-   * error and the remaining entries of the bucket are still measured. That matters here in a way
-   * it does not for a fixture of small rows: one row of this document holds a hundred and fifteen
-   * entries, and letting the first unbuildable operand end the row would take a hundred and
-   * fourteen measurements with it.
-   */
+  /** Measures every entry of one bucket, labelling each message with the bucket and the index. */
   private def checkEntries[E](bucket: String, entries: Vector[E])(
       check: E => IO[List[String]]): IO[List[String]] =
     entries.zipWithIndex.toList.flatTraverse { case (entry, index) =>
@@ -2887,14 +2350,7 @@ private[parity] object CurrencyMathParitySpec {
       }
     }
 
-  /**
-   * Checks the invariants of the row itself, before anything is measured.
-   *
-   * These are properties of the document rather than of the port: an identity this spec does not
-   * know, or a row populating a bucket that is not its family's, is a fixture that has stopped
-   * agreeing with this spec, and reporting it as such keeps it from being read as a defect of the
-   * port.
-   */
+  /** Checks the row's own invariants: a known identity, and its own family's bucket alone. */
   private def checkShape(row: CurrencyMathRow): List[String] = {
     val known =
       if (RowIds.contains(row.id)) {
@@ -2918,16 +2374,12 @@ private[parity] object CurrencyMathParitySpec {
   }
 
   /**
-   * Checks that every input the row registers can still be built by the port, and still renders
-   * as it did.
+   * Checks that every input the row registers can still be built, and still renders as it did.
    *
    * The registry is not a positional pairing and cannot be measured as one, but it is not inert
-   * either: it is the record of the values the row's expectations were computed from, so rebuilding
-   * each of them through the port's factories and comparing the rebuilt value against its own
-   * captured form catches a mistranscribed input, a currency the closed family no longer holds and
-   * a change in the way a value renders - the last of which is what a money amount's decimal text
-   * is. The registered numbers themselves need no construction and are consumed by the entries
-   * that name them.
+   * either: rebuilding each registered value and comparing it against its own captured form catches
+   * a mistranscribed input, a currency the closed family no longer holds, and a change in the way a
+   * value renders - the last of which is what a money amount's decimal text is.
    */
   def checkRegistry(row: CurrencyMathRow): IO[List[String]] =
     for {
@@ -2961,10 +2413,9 @@ private[parity] object CurrencyMathParitySpec {
     } yield amounts ::: arrays ::: multiArrays ::: money ::: bigMoney ::: rates
 
   //-------------------------------------------------------------------------
-  // The population of the document, which the second test of the suite asserts.
-  //
-  // A gate that reads `failed == 0` cannot tell a complete measurement from a thinned one, so
-  // these read the coverage of the fixture rather than the behaviour of the port.
+  // The population of the document, which the second test of the suite asserts: a check of
+  // `failed == 0` cannot tell a complete measurement from a thinned one, so these read the
+  // coverage of the fixture rather than the behaviour of the code.
   //-------------------------------------------------------------------------
 
   /** The bucket the row of the given identity carries. */
@@ -3005,7 +2456,6 @@ private[parity] object CurrencyMathParitySpec {
       row.multiCurrencyAmountResults.count(entry => isRefusal(entry.expected)) +
       row.multiCurrencyAmountArrayResults.count(entry => isRefusal(entry.expected))
 
-  /** Whether an expectation records a refusal. */
   private def isRefusal(expected: Expected[Any]): Boolean =
     expected match {
       case Expected.Failed(_) => true
@@ -3018,14 +2468,7 @@ private[parity] object CurrencyMathParitySpec {
       rows.flatMap(_.bigMoneyResults).flatMap(_.minorUnitDigits) ++
       rows.flatMap(_.currencyAmountResults).flatMap(_.minorUnitDigits)).toSet
 
-  /**
-   * The currencies one money bucket names, whether as the currency of a factory or as the currency
-   * of the value an operation was applied to.
-   *
-   * Both money buckets carry a sweep across the whole closed currency family - `Money.of` in one
-   * and `BigMoney.toMoney` in the other - and the two record it differently, so both places are
-   * read.
-   */
+  /** The currencies one money bucket names, as a factory's currency or as an operand's. */
   def sweptCurrencies(
       rows: Vector[CurrencyMathRow],
       bucket: CurrencyMathRow => Vector[MoneyEntry]): Set[String] =
@@ -3040,33 +2483,18 @@ private[parity] object CurrencyMathParitySpec {
       rows.flatMap(_.currencyAmountArrayResults).count(entry => entry.doubleToLongBits.isDefined)
 
   //-------------------------------------------------------------------------
-  // The two schema rules, which the last two tests of the suite assert.
-  //
-  // A union is exactly one captured shape ([[unionDecoder]]) and a description is accounted for in
-  // full ([[itemsOf]]). Both rules exist to stop a malformed fixture from being measured as a
-  // smaller but valid one, and neither is observable from the committed document, which satisfies
-  // both - so they are measured here over crafted values instead. Nothing below reads a fixture or
-  // performs any I/O: the forms that must be accepted are the ones the committed document carries,
-  // written out, and the forms that must be refused are the malformations the rules exist for.
+  // The two schema rules, which the last two tests of the suite assert: a union is exactly one
+  // captured shape, and a description is accounted for in full. Both exist to stop a malformed
+  // fixture from being measured as a smaller but valid one, and neither is observable from the
+  // committed document, which satisfies both - so both are measured over crafted values, and
+  // nothing below reads a fixture or performs any I/O.
   //-------------------------------------------------------------------------
 
   /** The discrepancy of a decoding the union schema must refuse. */
   private def refusesShape[A](label: String, outcome: Decoder.Result[A]): List[String] =
     ParityHarness.assertLeft(s"$label, which the union schema must refuse", outcome)
 
-  /**
-   * The discrepancy of a refusal whose message must quote what it found.
-   *
-   * The message is part of the rule rather than decoration: an ambiguous object is refused so that
-   * whoever reads the failing gate can see which keys the document carried, and a refusal that
-   * does not say so leaves them to guess.
-   *
-   * @param label  what was decoded
-   * @param outcome  the decoding
-   * @param quoted  the text the refusal must carry
-   * @tparam A  the union type
-   * @return the discrepancy, or nothing when it was refused with that text
-   */
+  /** The discrepancy of a refusal whose message must quote the keys the document carried. */
   private def refusesNaming[A](
       label: String,
       outcome: Decoder.Result[A],
@@ -3083,19 +2511,7 @@ private[parity] object CurrencyMathParitySpec {
   private def decodesAs[A](label: String, outcome: Decoder.Result[A], expected: A): List[String] =
     ParityHarness.assertExact[Decoder.Result[A]](label, outcome, Right(expected))
 
-  /**
-   * Measures the five union decoders against the shapes the capture writes and the shapes it
-   * cannot.
-   *
-   * Every alternative of every union is decoded from the shape the committed document writes it
-   * as, and every malformation the strict rule exists for is offered to the union it could have
-   * been mistaken for: an object carrying the keys of two alternatives - which a chain of
-   * alternative decoders accepts as whichever comes first, discarding the sibling's fields - one
-   * carrying an unknown key, one missing a key, a money value in an operand position, and a value
-   * of a shape no alternative accepts.
-   *
-   * @return every case whose outcome was not the one the schema states; empty when it holds
-   */
+  /** Measures the five union decoders against the documented shapes and the malformations. */
   def unionDecoderDiscrepancies: List[String] = {
     val arrayValue = ArrayValue("GBP", Vector(1.0, 2.0))
     val amountValue = AmountValue("GBP", 4.0)
@@ -3211,12 +2627,10 @@ private[parity] object CurrencyMathParitySpec {
   private def amountPairs(amounts: List[CurrencyAmount]): List[(String, Double)] =
     amounts.map(amount => (amount.currency.name, amount.amount))
 
-  /** Measures a description the grammar must read as a list of amounts. */
   private def acceptsAmounts(text: String, expected: List[(String, Double)]): IO[List[String]] =
     parseAmounts(text).map(amounts =>
       ParityHarness.assertExact(s"the description '$text'", amountPairs(amounts), expected))
 
-  /** Measures a description the grammar must read as bracketed groups of amounts. */
   private def acceptsGroups(
       text: String,
       expected: List[List[(String, Double)]]): IO[List[String]] =
@@ -3226,7 +2640,6 @@ private[parity] object CurrencyMathParitySpec {
         groups.map(group => amountPairs(group.getAmounts.toList)),
         expected))
 
-  /** Measures a description the grammar must read as per-currency runs. */
   private def acceptsRuns(
       text: String,
       expected: List[(String, List[Double])]): IO[List[String]] =
@@ -3236,19 +2649,11 @@ private[parity] object CurrencyMathParitySpec {
         runs.map { case (currency, values) => (currency.name, values.toList) },
         expected))
 
-  /** Measures the text between one run's brackets, which the grammar must read as values. */
   private def acceptsValues(text: String, expected: Vector[Double]): IO[List[String]] =
     parseValues(text).map(values =>
       ParityHarness.assertExact(s"the value list '$text'", values, expected))
 
-  /**
-   * The descriptions the anchored grammars must refuse, each named as it reads.
-   *
-   * Every case is text that a search-and-extract parser accepts as a '''smaller''' operand than
-   * the one it carries, or as no operand at all: leading and trailing text around a form the
-   * capture does write, a missing separator, a doubled one, a dangling one, an empty item, a
-   * description offered to the other branch of the run dispatch, and text naming nothing.
-   */
+  /** The descriptions the anchored grammars must refuse, each a partial match of a real form. */
   private def refusedDescriptions: List[(String, IO[Any])] =
     List(
       ("the empty description", parseAmounts("")),
@@ -3273,10 +2678,7 @@ private[parity] object CurrencyMathParitySpec {
       ("a value list with no separator", parseValues("1 2")),
       ("a value list of text", parseValues("junk")))
 
-  /**
-   * The branch of the description dispatch each form reaches, which is what makes the two grammars
-   * jointly total: the run grammar is reached by exactly the forms that name a run.
-   */
+  /** The branch of the dispatch each form reaches, which makes the two grammars jointly total. */
   private def dispatchDiscrepancies: List[String] =
     List(
       ("GBP[1,2,3], USD[1,2]", true),
@@ -3292,14 +2694,10 @@ private[parity] object CurrencyMathParitySpec {
 
   /**
    * Measures the four description grammars against every form the committed document writes and
-   * against text that only partially matches one of them.
-   *
-   * The accepted cases are the eight description strings the committed fixture carries, with what
-   * each names written out, together with the empty and populated value lists a run's brackets
-   * hold, so that a grammar tightened past what the capture writes fails here rather than in a row
-   * of the measurement. The refused cases are [[refusedDescriptions]].
-   *
-   * @return every case whose outcome was not the one the grammar states; empty when it holds
+   * against text that only partially matches one of them: the accepted cases are the eight
+   * description strings the fixture carries, with what each names written out, so that a grammar
+   * tightened past what the document writes fails here. The refused cases are
+   * [[refusedDescriptions]].
    */
   def describedFormDiscrepancies: IO[List[String]] =
     for {
@@ -3335,16 +2733,14 @@ private[parity] object CurrencyMathParitySpec {
   // The strictness of the declared key sets, which the third test of the suite asserts.
   //
   // A schema that is declared and not applied reads exactly like one that is, and the difference
-  // only shows on a document nobody has captured yet - which is the document the declaration
-  // exists for. So each shape is probed here on a hand-built object rather than on the fixture:
-  // the documented shape must decode, and the same object with a key added, with one of its keys
-  // removed and with one of its keys renamed must each be refused with the offending key named.
-  // Nothing here replays an operation or compares a number; these are properties of the decoders.
+  // only shows on a document nobody has captured yet - which is the document the declaration exists
+  // for. So each shape is probed on a hand-built object: the documented shape must decode, and the
+  // same object with a key added, with one of its keys removed and with one renamed must each be
+  // refused with the offending key named.
   //
   // The key each probe removes is chosen so that the smaller key set matches no other documented
-  // variant of the same shape. Removing `scalar` from a scaled CurrencyAmount entry, for one,
-  // leaves exactly the documented unary shape and is properly accepted, which is a property of the
-  // captured inventory rather than a weakness of the check.
+  // variant of the same shape. Removing `scalar` from a scaled `CurrencyAmount` entry, for one,
+  // leaves exactly the documented unary shape and is properly accepted.
   //-------------------------------------------------------------------------
 
   /** The key an added-key probe puts on an object, which no documented variant knows. */
@@ -3367,11 +2763,9 @@ private[parity] object CurrencyMathParitySpec {
       required: String,
       decode: Json => Decoder.Result[Unit])
 
-  /** A captured `CurrencyAmount`, as the capture writes one. */
   private def amountObject(currency: String, amount: Double): JsonObject =
     JsonObject("currency" -> Json.fromString(currency), "amount" -> Json.fromDoubleOrNull(amount))
 
-  /** A captured `CurrencyAmountArray`. */
   private def arrayObject(currency: String, values: Vector[Double]): JsonObject =
     JsonObject(
       "currency" -> Json.fromString(currency),
@@ -3390,7 +2784,6 @@ private[parity] object CurrencyMathParitySpec {
       "size" -> Json.fromInt(values.size),
       "arrays" -> Json.arr(Json.fromJsonObject(arrayObject(currency, values))))
 
-  /** A captured FX rate. */
   private def rateObject(pair: String, rate: Double): JsonObject =
     JsonObject("pair" -> Json.fromString(pair), "rate" -> Json.fromDoubleOrNull(rate))
 
@@ -3439,10 +2832,7 @@ private[parity] object CurrencyMathParitySpec {
       required: String): StrictShape =
     StrictShape(label, documented, required, json => decoder.decodeJson(json).map(_ => ()))
 
-  /**
-   * The shapes the suite proves the strictness of: every nested value shape, one entry of every
-   * one of the six expectation buckets, and the row itself.
-   */
+  /** Every shape the suite proves strict: the value shapes, the six bucket entries, and the row. */
   val StrictShapes: Vector[StrictShape] =
     Vector(
       shapeOf(
@@ -3526,13 +2916,7 @@ private[parity] object CurrencyMathParitySpec {
         "left"),
       shapeOf("a currency-math baseline row", currencyMathRowDecoder, DocumentedRow, "rates"))
 
-  /**
-   * Decodes every probed shape and its three mutations, answering with everything that did not
-   * hold.
-   *
-   * @return one message per shape and mutation that behaved differently from the strictness rule,
-   *         empty where every shape is read exactly as its declared key set says
-   */
+  /** Decodes every probed shape and its three mutations, answering with everything that differed. */
   def strictnessViolations: List[String] = StrictShapes.toList.flatMap(shapeViolations)
 
   /** The four probes of one shape: the documented object, and its three mutations. */
@@ -3561,13 +2945,7 @@ private[parity] object CurrencyMathParitySpec {
       refusalNaming(shape, s"'${shape.required}' renamed to '$renamedKey'", renamed, missing)
   }
 
-  /**
-   * Checks that one mutated object is refused, with a message carrying the given fragment.
-   *
-   * The fragment is the offending key, or the harness's own `is missing {key}` phrasing for a key
-   * that was taken away: a refusal that does not say which key it is about would leave whoever
-   * reads the failure to diff two documents by hand.
-   */
+  /** Checks that one mutated object is refused with a message naming the offending key. */
   private def refusalNaming(
       shape: StrictShape,
       mutation: String,
@@ -3585,16 +2963,7 @@ private[parity] object CurrencyMathParitySpec {
             s"'$naming': ${failure.message}")
     }
 
-  /**
-   * Checks that the two money buckets do not accept each other's shapes.
-   *
-   * `Money` and `BigMoney` were captured through one writer into one model, so this is the
-   * property that keeps the two key schemas doing work: an entry that carries the operands of the
-   * other bucket's operation is an entry in the wrong bucket, and measuring it as one of this
-   * bucket's own would measure the wrong operation.
-   *
-   * @return one message per bucket that accepted the other's shape, empty where neither did
-   */
+  /** Checks that the two money buckets, which share one model, refuse each other's shapes. */
   def crossFamilyViolations: List[String] =
     refusedBy(
       "moneyResults",

@@ -33,169 +33,90 @@ import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
 /**
- * Parity of the day-count conventions against the Java baseline.
+ * Parity of the day-count conventions against the committed baseline.
  *
- * This is the measurement that pins the day-count layer of the port: the year fraction of every
- * standard convention, the relative year fraction in both directions, the day count itself, the
- * business-day convention `Bus/252 BRBD` with its weekend-only fallback outside the calendar's
- * range, and - the part no unit spec can cover as broadly - the four conventions that read
- * schedule information, measured against both shapes of schedule information the capture wrote.
- *
- * The gate that consumes it (AAP section 0.10.1, Gate 3, for the user's Rule 2) runs
- *
- * {{{
- * sbt -batch "testOnly *ParitySpec"
- * }}}
- *
- * and then reads `<parity.report.dir>/daycount.json`, requiring `failed == 0` and copying `rows`
- * and `passed` into `target/gate-report.md`. The `ParitySpec` suffix of this class, its package,
- * the fixture stem `daycount` and the five keys of the report document are therefore all part of
- * that contract and none of them may drift: renaming the class removes this measurement from the
- * gate without failing anything.
- *
- * ===Every number goes through the harness===
+ * The fixture measures, for every standard convention, the year fraction, the relative year
+ * fraction in both directions and the day count, together with `Bus/252 BRBD` and its weekend-only
+ * behaviour outside the range of its calendar. The four conventions that read schedule information
+ * are measured against each shape of schedule information the document carries.
+ * `daycount-baseline.json` holds the reference values and is read-only here: no expectation is
+ * corrected or loosened, and no row is skipped.
  *
  * A year fraction is compared by [[ParityHarness.assertParity]], which passes only inside `1e-9`
  * absolute '''and''' `1e-9` relative. No tolerance operator of the test framework appears in this
- * file - no `===` with a tolerance, no `+-`, and no `shouldBe` on a `Double` - because each of
- * those would put the bound somewhere other than the one place the rule is stated. A day count is
- * an `Int` and is compared exactly by [[ParityHarness.assertExact]], never widened to a `Double`.
+ * file - no `===` with a tolerance, no `+-` and no `shouldBe` on a `Double` - so the bound is
+ * stated in one place only. A day count is an `Int`, compared exactly by
+ * [[ParityHarness.assertExact]] and never widened to a `Double`.
  *
- * ===The schedule information is the subtle part===
+ * ===Schedule information===
  *
- * Seventeen of the twenty-one standard conventions ignore schedule information entirely. Four read
- * it: `Act/Act ICMA` reads the schedule end date, the period end date and the frequency,
- * `Act/365L` reads the period end date and the frequency, `30E/360 ISDA` reads the schedule end
- * date, and `30U/360` reads the end-of-month flag
- * (`modules/basics/src/main/java/com/opengamma/strata/basics/date/StandardDayCounts.java:71-74,212-213,419,345`).
- * The captured document therefore carries the schedule information each evaluation was given, in
- * one of three shapes, and this spec reproduces each of them exactly:
+ * Seventeen of the twenty-one standard conventions ignore schedule information. Four read it:
+ * `Act/Act ICMA` reads the schedule end date, the period end date and the frequency, `Act/365L`
+ * the period end date and the frequency, `30E/360 ISDA` the schedule end date, and `30U/360` the
+ * end-of-month flag. A row carries the schedule information its evaluation was given, in one of
+ * three shapes, each of which is reproduced exactly:
  *
- *   - '''Nothing at all.''' Every subfield absent, which is precisely the set of rows the capture
- *     evaluated through the Java two-argument overload against `DayCounts.SIMPLE_SCHEDULE_INFO`
- *     (capture README, section 6). Those rows are measured against the port's own
- *     `DayCount.ScheduleInfo.simple` - the value its two-argument overloads pass, so the captured
- *     evaluation is reproduced with the same schedule information rather than simulated by an
- *     adapter that happens to answer the same way.
- *   - '''One fixed period end date''' - `periodEnd`. This reproduces the `DayCountTest` stub, whose
- *     `getPeriodEndDate(LocalDate date)` '''ignores its argument''' and returns the single date it
- *     was built with (`modules/basics/src/test/java/com/opengamma/strata/basics/date/DayCountTest.java:1373-1416`).
- *     That is not a simplification to be improved on: reproducing the stub faithfully is what makes
- *     the expectations captured through it reproducible at all. [[DayCountParitySpec.StubScheduleInfo]].
- *   - '''The boundary list of a real schedule''' - `periodEnds`. There `periodEndDate(d)` is the
- *     first boundary '''strictly''' after `d`, and only when `start <= d < end`; anywhere else it
- *     is `None`. No interpolation, no clamping and no nearest-boundary rule: `None` outside every
- *     period is the port's documented behaviour where the interface being ported raised
- *     (`modules/basics/src/main/scala/com/opengamma/strata/basics/schedule/Schedule.scala`, and
- *     `modules/basics/src/main/java/com/opengamma/strata/basics/schedule/Schedule.java:332-338`
- *     for what it replaces). [[DayCountParitySpec.ListedScheduleInfo]].
+ *   - '''Nothing at all''', every subfield absent. Such rows are measured against
+ *     `DayCount.ScheduleInfo.simple`, the value the two-argument overloads pass.
+ *   - '''One fixed period end date''', `periodEnd`, whose `periodEndDate` '''ignores its
+ *     argument''' and answers the single date the row carries.
+ *     [[DayCountParitySpec.StubScheduleInfo]].
+ *   - '''The boundary list of a schedule''', `periodEnds`, where `periodEndDate(d)` is the first
+ *     boundary '''strictly''' after `d`, and only while `start <= d < end`; anywhere else it is
+ *     `None`. No interpolation, no clamping and no nearest-boundary rule.
+ *     [[DayCountParitySpec.ListedScheduleInfo]].
  *
- * `null` inside `scheduleInfo` has exactly one meaning - absent, therefore `None` - with one
- * exception a reader has to know: `eom` absent means the '''interface default''', which is `true`
- * (`DayCounts.SIMPLE_SCHEDULE_INFO` answers `true` from `isEndOfMonthConvention` while raising from
- * the other four accessors). Mapping it to `false` would quietly re-point every `30U/360` row at
- * the other of that convention's two day-of-month rules.
+ * `null` inside `scheduleInfo` means absent, therefore `None`, with one exception: an absent `eom`
+ * is the interface default, which is `true`. Mapping it to `false` would re-point every `30U/360`
+ * row at the other of that convention's two day-of-month rules.
  *
- * ===`Bus/252` needs no reference data, and no special case===
+ * `Bus/252 BRBD` is resolved by the same `DayCount.parse` call as every other subject, and its
+ * calendar comes from the calendars built into this library - constant data - so nothing here
+ * supplies or threads a `ReferenceData`, and the convention goes through exactly the path the other
+ * twenty-one do. The nine `bus252` rows probe a span inside the calendar's 1950-2099 range, spans
+ * wholly outside it in both directions, and spans crossing each end, where the calendar falls back
+ * to a weekend-only test.
  *
- * `Bus/252 BRBD` is resolved by the same `DayCount.parse` call as every other subject, and the
- * port resolves its calendar against the calendars '''built into the library''' - constant data,
- * not ambient reference data (AAP section 0.6.5) - so nothing here supplies or threads a
- * `ReferenceData`, and the convention is measured by exactly the code path that measures the other
- * twenty-one. The two identities the Java tests assert for it, `yearFraction` equal to the
- * business days between the dates divided by `252` and `days` equal to that same count
- * (`modules/basics/src/test/java/com/opengamma/strata/basics/date/Business252DayCountTest.java`),
- * are what the captured numbers '''are''': they were produced by the Java implementation, so
- * measuring the port against them is the assertion, and recomputing either side here would replace
- * a captured baseline with a hand-derived one. The nine `bus252` rows probe a span inside the
- * calendar's 1950-2099 range, spans wholly outside it in both directions, and spans crossing each
- * end, where Java falls back to a weekend-only test - and the reversed-date row for this
- * convention is an ordinary member of the out-of-order family below.
+ * ===The two refusals===
  *
- * ===The two refusals, and why they are refusals rather than failures===
- *
- * AAP section 0.3.3 keeps exactly two day-count throw families as documented `ArgCheck`
- * preconditions instead of moving them into the error channel, because both are violations of a
- * caller contract that do not depend on the values of the data:
- *
- *   1. '''Dates out of order.''' `yearFraction(later, earlier)` and `days(later, earlier)` refuse,
- *      for every convention (`DayCountTest.test_wrongOrder`). The 22 `order` rows of the fixture
- *      carry an `error` for both operations.
- *   2. '''Required schedule information absent.''' Where Java raised
- *      `UnsupportedOperationException` from an accessor of `SIMPLE_SCHEDULE_INFO`, the port refuses
- *      through `ArgCheck` off the absent `Option`. 1,028 rows carry that `error`, and the five
- *      `missing` rows state the case once per convention commonly said to need schedule
- *      information - recording that `Act/365 Actual` and `30U/360` do '''not''' raise, which makes
- *      that evidence rather than folklore.
+ * Two day-count throw families are documented `ArgCheck` preconditions rather than error-channel
+ * failures, because both are caller-contract violations that do not depend on the data: dates out
+ * of order, where `yearFraction(later, earlier)` and `days(later, earlier)` refuse for every
+ * convention and the 22 `order` rows carry an `error` for both operations; and required schedule
+ * information absent, which 1,028 rows carry, with the five `missing` rows stating the case once
+ * per convention commonly said to need it - recording that `Act/365 Actual` and `30U/360` do
+ * '''not''' raise.
  *
  * Both are observed with [[ParityHarness.attemptArgCheck]], which runs the call inside an effect
- * and turns the throw back into a value, so a refusing row stays in the report beside every other
- * row instead of ending the run. Neither `intercept` nor `try`/`catch` appears in this file. Only
- * the '''type''' of the refusal is asserted: the captured text is the message of the implementation
- * being replaced, and message parity is deliberately not claimed here - AAP section 0.8.3 records
- * the exception-to-`Either` and message divergences - so the captured message is quoted in the
- * diagnostic and never compared.
+ * and turns the throw back into a value, so a refusing row stays in the report instead of ending
+ * the run. Neither `intercept` nor `try`/`catch` appears in this file, and only the '''type''' of
+ * the refusal is asserted: the captured message is quoted in the diagnostic and compared nowhere.
+ * An `error` row is an expectation, and so is its absence: a row carrying neither a value nor an
+ * error for an operation the fixture always records is a fixture that no longer agrees with this
+ * spec, and is reported as that rather than measured as nothing.
  *
- * An `error` row is not a gap in the data, and the reverse also holds: a row that carries neither a
- * value nor an error for an operation the capture always performs is a fixture that has stopped
- * agreeing with this spec, and is reported as that rather than silently measured as nothing.
+ * ===The relative year fraction===
  *
- * ===The relative year fraction is total, and is measured in both directions===
- *
- * `relativeYearFraction` has no order check by design: it swaps a reversed pair and negates the
- * result, which is why it answers where `yearFraction` refuses. It is therefore '''never''' asserted
- * to throw for a reversed pair. The fixture captured it, in both directions, exactly where it
- * carries information - the 201 `data_yearFraction` rows, whose Java consumers assert the reverse
- * against `-expected`, and the 20 out-of-order rows where it succeeds while the other two
- * operations refuse. Where a row carries the captured value, that value is the expectation. Where
- * it does not, the expectation is the identity the Java contract documents - "will be negative if
- * the first date is after the second date" - applied to the row's own year fraction, and applied
- * only where it holds: for a '''zero-length''' span Java answers `+yearFraction` rather than its
- * negation, because the second date is then not before the first, and `1/1` - which answers `1`
- * for any pair, a zero-length span included - is what makes that observable rather than academic.
+ * `relativeYearFraction` has no order check: it swaps a reversed pair and negates, which is why it
+ * answers where `yearFraction` refuses, and it is never asserted to throw. Where a row carries the
+ * captured value, that value is the expectation; where it does not, the expectation is the
+ * documented identity - negative when the first date is after the second - applied to the row's
+ * own year fraction, and only where that identity holds: a zero-length span answers `+yearFraction`
+ * rather than its negation, which `1/1` makes observable by answering `1` for any pair.
  * [[DayCountParitySpec.expectedForward]] and [[DayCountParitySpec.expectedReversed]] are that rule.
  *
- * ===The fixture is the authority===
- *
- * `daycount-baseline.json` was captured from the untouched Java modules by
- * `tools/parity-capture/capture-baseline.jsh`, which cross-checked its rows against the constants
- * of the Java tests before writing them - including the hard anchor that `Act/Act ISDA` from
- * 2011-12-28 to 2012-02-28 equals `4/365 + 58/366`. It is never edited here, no expectation is
- * ever "corrected" and no row is ever skipped: a row that disagrees with the port means the port is
- * wrong, and reporting it is the whole job. Because a gate that reads `failed == 0` cannot tell a
- * complete measurement from a thinned one, the second test below asserts the population the
- * baseline is required to carry.
- *
- * The `SIMPLE_30_360` and `SIMPLE_30_360DAYS` markers of `DayCountTest` are table flags rather than
- * values - `Double.NaN` and `0` standing for "compute it with `calc360`" - and the capture resolves
- * them as the Java consumers do, so no row reaches this spec carrying `"NaN"` as a year fraction. A
- * `"NaN"` expectation here would be a defect of the fixture, and it is reported as an ordinary
- * discrepancy by the same comparator that measures everything else, because a not-a-number is at
- * parity only with a not-a-number.
- *
- * ===No timing===
- *
- * Parity is a value comparison. Nothing here, and nothing in the report it publishes, asserts a
- * duration. The cost of 18,356 rows is controlled structurally instead: each convention is resolved
- * once per distinct name for the whole run, and the calendars behind `Bus/252` are the built-in
- * lazily generated set, so the rule generation is paid once per JVM.
+ * No row reaches this spec carrying `"NaN"` as a year fraction. A `"NaN"` expectation is reported
+ * as an ordinary discrepancy by the same comparator that measures everything else, because a
+ * not-a-number is at parity only with a not-a-number.
  */
 class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
   import DayCountParitySpec._
 
-  /*
-   * The measurement is declared first, deliberately: the report it publishes is the artifact
-   * Gate 3 collects, so it is written on every run of this suite rather than only on the runs
-   * where some other case happens to pass first. `runFixture` writes it before returning, and
-   * `failIfAny` is what then decides the verdict, so the counts survive a failing run.
-   */
   test("the day count conventions reproduce the Java baseline exactly") {
     for {
       // One resolution per distinct convention name for the whole run, behind a cats-effect
-      // reference over an immutable map: no `var`, no mutable collection, nothing ambient. The
-      // rows are measured one after another, so the map is built in fixture order and a repeated
-      // name costs a lookup.
+      // reference over an immutable map.
       conventions <- Ref.of[IO, Map[String, DayCount]](Map.empty)
       report <- ParityHarness.runFixture[DayCountRow](FixtureName, FixtureResource, RowSchema)(row =>
         checkRow(conventions, row))
@@ -203,15 +124,15 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     } yield succeed
   }
 
+  // A verdict that reads `failed == 0` cannot tell a complete measurement from a thinned one, so
+  // this case asserts the population the baseline is required to carry.
   test("the fixture carries the population the day-count baseline is required to measure") {
     ParityHarness.loadStrict[DayCountRow](FixtureResource, RowSchema).map { rows =>
       val families = rows.groupBy(familyOf).view.mapValues(_.size).toMap
       withClue(
         s"fixture rows: ${rows.size}; rows by id family: " +
           s"${families.toVector.sortBy(_._1).mkString(", ")}: ") {
-        // The floors are the contract of the capture, restated on the consuming side so that a
-        // reduced fixture fails here instead of reporting a green measurement of less. They are
-        // floors rather than equalities so that extending the coverage stays possible.
+        // Floors rather than equalities, so that extending the coverage stays possible.
         rows.size should be >= MinimumRows
         rows.map(_.id).distinct should have size rows.size.toLong
         MinimumRowsByFamily.foreach { case (family, minimum) =>
@@ -219,12 +140,10 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
             families.getOrElse(family, 0) should be >= minimum
           }
         }
-        // A row of unstated provenance is reported rather than counted towards a floor it does
-        // not belong to.
+        // A row of an undeclared family is reported rather than counted towards a floor.
         rows.map(familyOf).distinct.filterNot(MinimumRowsByFamily.contains) shouldBe empty
-        // Every convention the port is required to reproduce appears, and appears in both
-        // generated populations - the one with no schedule information and the one with a real
-        // schedule - so thinning a subject out of either cannot pass on the row count alone.
+        // Every required convention appears, and appears in both generated populations, so
+        // thinning a subject out of either cannot pass on the row count alone.
         val subjects = rows.map(_.dayCount).distinct.toSet
         RequiredDayCounts.filterNot(subjects.contains) shouldBe empty
         GeneratedFamilies.foreach { family =>
@@ -233,22 +152,18 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
             RequiredDayCounts.filterNot(covered.contains) shouldBe empty
           }
         }
-        // Each operation the capture always performs carries exactly one of a value and an error.
-        // These are the two row kinds this spec measures differently, so the distinction is
-        // asserted rather than assumed: a row carrying neither would measure nothing at all.
+        // Each operation the fixture always records carries exactly one of a value and an error;
+        // a row carrying neither would measure nothing at all.
         rows.filter(row => row.yearFraction.isDefined == row.error.isDefined).map(_.id) shouldBe empty
         rows.filter(row => row.days.isDefined == row.daysError.isDefined).map(_.id) shouldBe empty
         rows.count(_.error.isDefined) should be >= MinimumYearFractionRefusals
         rows.count(_.daysError.isDefined) should be >= MinimumDaysRefusals
-        // Every out-of-order row refuses both operations, for every subject: that family is the
-        // whole of the first precondition's coverage.
         rows
           .filter(row => familyOf(row) == OutOfOrderFamily)
           .filter(row => row.error.isEmpty || row.daysError.isEmpty || !row.start.isAfter(row.end))
           .map(_.id) shouldBe empty
         // The relative forms are captured as a pair or not at all, and enough rows carry them for
-        // the captured expectation - rather than the derived identity - to be what is measured
-        // where the Java tests assert it.
+        // the captured expectation, rather than the derived identity, to be what is measured.
         rows
           .filter(row => row.relativeYearFraction.isDefined != row.relativeYearFractionReversed.isDefined)
           .map(_.id) shouldBe empty
@@ -273,47 +188,18 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   //-------------------------------------------------------------------------
   // THE CONTRACT OF THE SHARED HARNESS
   //
-  // ===Why these cases are in a day-count parity spec===
-  //
-  // The AAP's frozen test inventory (sections 0.3.1 and 0.4.1) plans `parity/ParityHarness.scala`
-  // together with exactly five basics `*ParitySpec` files and no spec of its own for the harness,
-  // so the harness's contract has to be asserted from inside one of the specs that consume it.
-  // This is the heaviest consumer of it by a wide margin - 18,356 fixture rows, every comparator,
-  // both refusal families, the `raise` and `raiseNec` lifts and the published `daycount.json` - so
-  // it is the spec whose measurement a silently weakened harness decision invalidates most
-  // completely, and therefore the spec these cases belong in. They can reach the decisions at all
-  // because the seams that carry them - `decodeRows`, `runFixtureIn`, `writeReportTo`,
-  // `reportDirectoryFrom`, `raise`, `raiseNec`, `MaxFixtureCharacters`, `MaxFixtureRows` and
-  // `ReportDirectoryProperty` - are `private[parity]` and this file is in that package.
-  //
-  // ===Why the harness needs its own cases at all===
-  //
-  // An apparatus that measures its own subject cannot also vouch for itself: a fixture row either
-  // agrees with the port or it does not, and either way it says nothing about whether the
-  // comparison that decided it was the comparison Rule 2 calls for. Turn the conjunction of the
-  // two tolerance bounds into a disjunction, drop the sign of a presence mismatch, count
-  // discrepancies as rows, or accept a fixture with no rows at all, and the two measurements above
-  // - and every other parity spec of this module - still pass while measuring something weaker
-  // than required; in the last case, nothing at all. Each case below therefore fixes one decision
-  // of the harness against inputs chosen for that decision, and every one is deterministic: fixed
-  // values, committed fixtures, no generated data, no timing and no ordering that depends on the
-  // runner.
-  //
-  // ===Nothing here writes where Gate 3 looks===
-  //
-  // The measurement at the top of this suite publishes the real `daycount.json` into the directory
-  // named by `parity.report.dir`. The cases below that publish anything go through
-  // `ParityHarness.runFixtureIn` or `ParityHarness.writeReportTo` into a temporary directory each
-  // creates and removes for itself, under probe stems: never through `runFixture`, never into the
-  // configured directory, and never under one of the six stems the gate collects. A report written
-  // here while measuring the harness would otherwise be indistinguishable from a measurement of
-  // the port, which is exactly the confusion the report exists to prevent.
+  // The harness has no spec of its own, so its decisions are asserted from inside its heaviest
+  // consumer, which can reach them because the seams that carry them are `private[parity]` and
+  // this file is in that package. Weaken the conjunction of the two tolerance bounds to a
+  // disjunction, drop the sign of a presence mismatch, count discrepancies as rows or accept a
+  // fixture with no rows, and the measurements above still pass while measuring something weaker.
+  // Every case below that publishes anything does so under a probe stem, into a temporary
+  // directory it creates and removes for itself, never into the directory named by
+  // `parity.report.dir`, which is where the measurement above publishes the real `daycount.json`.
   //-------------------------------------------------------------------------
 
-  // The row model the cases below decode with, `HarnessProbeRow`, and its decoder are declared in
-  // the companion object beside the other row models of this file, and reach this body through the
-  // wildcard import above. A row model declared inside the class would carry an outer reference
-  // its synthesized type test cannot check at run time, which this build rejects.
+  // `HarnessProbeRow` and its decoder are declared in the companion, because a row model declared
+  // inside the class would carry an outer reference its type test cannot check at run time.
 
   /** The smallest committed baseline that carries row identities, used by the driver cases. */
   private val HarnessFxFixture: String = "parity/fx-baseline.json"
@@ -321,7 +207,6 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   /** A committed baseline of several hundred rows, so the ceilings are exercised on real data. */
   private val HarnessScheduleFixture: String = "parity/schedule-baseline.json"
 
-  /** Every baseline this module commits, in the order the gate reports them. */
   private val HarnessCommittedFixtures: Vector[String] =
     Vector(
       FixtureResource,
@@ -344,15 +229,8 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     ParityReport(fixture, 1, 1, 0, Vector.empty)
 
   /**
-   * Creates an empty directory, hands it to the case, and removes it and anything the case wrote
-   * afterwards.
-   *
-   * Reports published while measuring the harness go here rather than into the directory the gate
-   * reads, and the finalizer runs on every outcome - in the same effect that created the directory
-   * - so a failing case leaves nothing behind for the next run to find.
-   *
-   * @param use  the case, given the absolute path of the directory
-   * @return the effect of the case, with creation and removal around it
+   * Creates an empty directory, hands it to the case, and removes it and anything the case wrote.
+   * The finalizer runs on every outcome, so a failing case leaves nothing behind.
    */
   private def withHarnessTempDirectory(use: Path => IO[Assertion]): IO[Assertion] =
     IO.blocking(Files.createTempDirectory("daycount-parity-harness-")).flatMap { directory =>
@@ -365,16 +243,10 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       })
     }
 
-  //-------------------------------------------------------------------------
-  // The tolerance rule.
-  //-------------------------------------------------------------------------
   test("the shared harness: assertParity passes a pair inside both bounds") {
     IO {
       ParityHarness.assertParity("equal", 1.0d, 1.0d) shouldBe Nil
       ParityHarness.assertParity("equal zero", 0.0d, 0.0d) shouldBe Nil
-      // A difference of two to the power of minus thirty-one: exactly representable next to
-      // one, so the difference computed here is exact rather than approximate. It is inside
-      // the absolute bound of 1e-9, and inside the relative bound because the scale is one.
       ParityHarness.assertParity("just inside", 1.0d, 1.0d + HarnessJustInsideBothBounds) shouldBe Nil
       ParityHarness.assertParity("negative, just inside", -1.0d, -1.0d - HarnessJustInsideBothBounds) shouldBe Nil
     }
@@ -382,10 +254,8 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
   test("the shared harness: assertParity rejects a difference that only the relative bound admits") {
     IO {
-      // A thousandth, between values of the order of 1e12: a relative difference of 1e-15,
-      // which the relative bound admits comfortably, and an absolute difference a million
-      // times the absolute bound. Were the rule a disjunction, this pair would pass, and a
-      // parity measurement of large quantities would be worthless.
+      // A thousandth between values of the order of 1e12: a relative difference of 1e-15 and an
+      // absolute difference a million times the absolute bound, which a disjunction would admit.
       val discrepancies = ParityHarness.assertParity("large magnitude", 1e12d, 1e12d + 1e-3d)
       discrepancies should have size 1L
       discrepancies.head should include("met: false")
@@ -395,9 +265,8 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
   test("the shared harness: assertParity rejects a difference that only the absolute bound admits") {
     IO {
-      // One value twice the other, both of the order of 1e-15: an absolute difference far
-      // inside 1e-9 and a relative difference of fifty percent. Were the rule a disjunction,
-      // this pair would pass, and a parity measurement of small quantities would be worthless.
+      // One value twice the other, both of the order of 1e-15: an absolute difference far inside
+      // 1e-9 and a relative difference of fifty percent, which a disjunction would admit.
       val discrepancies = ParityHarness.assertParity("near zero", 1e-15d, 2e-15d)
       discrepancies should have size 1L
       discrepancies.head should include("met: true")
@@ -407,8 +276,6 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
   test("the shared harness: assertParity rejects a difference outside both bounds") {
     IO {
-      // Two to the power of minus twenty-nine next to one: outside the absolute bound, and
-      // outside the relative bound at a scale of one. Both conjuncts reject it.
       val discrepancies = ParityHarness.assertParity("outside", 1.0d, 1.0d + HarnessJustOutsideBothBounds)
       discrepancies should have size 1L
       discrepancies.head should include("met: false")
@@ -417,9 +284,8 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
   test("the shared harness: assertParity treats identical values outside the finite range as parity") {
     IO {
-      // Bit identity is decided before any arithmetic, which is the only way these can pass:
-      // the difference of two infinities is not a number, and every comparison against a value
-      // that is not a number is false.
+      // Bit identity is decided before any arithmetic, the only way these can pass: the difference
+      // of two infinities is not a number, and every comparison against one is false.
       ParityHarness.assertParity("nan", Double.NaN, Double.NaN) shouldBe Nil
       ParityHarness.assertParity("positive infinity", Double.PositiveInfinity, Double.PositiveInfinity) shouldBe Nil
       ParityHarness.assertParity("negative infinity", Double.NegativeInfinity, Double.NegativeInfinity) shouldBe Nil
@@ -434,8 +300,7 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       opposedInfinities.head should include("outside the finite range")
       ParityHarness.assertParity("nan against finite", Double.NaN, 1.0d) should have size 1L
       ParityHarness.assertParity("finite against infinity", 1.0d, Double.PositiveInfinity) should have size 1L
-      // No difference is computed for such a pair, so no arithmetic on a value outside the
-      // range appears in the message.
+      // No difference is computed for such a pair, so no arithmetic on one appears in the message.
       opposedInfinities.head should not include "difference NaN"
     }
   }
@@ -443,8 +308,7 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   test("the shared harness: assertParity treats positive and negative zero as parity") {
     IO {
       // The two zeros are not bit identical, so they reach the tolerance test, where their
-      // difference is zero and both bounds hold. Signed zero is a representation rather than a
-      // quantity, and the captured baselines carry negative zero.
+      // difference is zero and both bounds hold.
       ParityHarness.assertParity("signed zero", -0.0d, 0.0d) shouldBe Nil
       ParityHarness.assertParity("signed zero, reversed", 0.0d, -0.0d) shouldBe Nil
     }
@@ -464,16 +328,12 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     }
   }
 
-  //-------------------------------------------------------------------------
-  // The other comparators.
-  //-------------------------------------------------------------------------
   test("the shared harness: assertParityOpt compares presence as an expectation in its own right") {
     IO {
       ParityHarness.assertParityOpt("absent", None, None) shouldBe Nil
       ParityHarness.assertParityOpt("present", Some(1.0d), Some(1.0d)) shouldBe Nil
       ParityHarness.assertParityOpt("beyond tolerance", Some(1.0d), Some(2.0d)) should have size 1L
-      // A stub the port produced where the baseline has none, and the reverse, are different
-      // facts and are reported differently.
+      // A value produced where the baseline has none, and the reverse, are reported differently.
       val unexpected = ParityHarness.assertParityOpt("unexpected", Some(1.0d), None)
       unexpected should have size 1L
       unexpected.head should include("expected no value")
@@ -486,14 +346,12 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   test("the shared harness: assertParitySeq reports a length difference once, else compares by index") {
     IO {
       ParityHarness.assertParitySeq("equal", Vector(1.0d, 2.0d), Vector(1.0d, 2.0d)) shouldBe Nil
-      // A shifted sequence differs at every index; reporting the length once is what keeps the
-      // one fact worth knowing visible.
+      // A shifted sequence differs at every index; reporting the length once keeps that visible.
       val lengths = ParityHarness.assertParitySeq("lengths", Vector(1.0d), Vector(1.0d, 2.0d))
       lengths should have size 1L
       lengths.head should include("1 elements")
       lengths.head should include("2 elements")
-      // Equal lengths are compared element by element, each under its own indexed label, so
-      // two differing positions are two discrepancies rather than one.
+      // Equal lengths are compared by index, so two differing positions are two discrepancies.
       val elements =
         ParityHarness.assertParitySeq("elements", Vector(1.0d, 9.0d, 3.0d), Vector(1.0d, 2.0d, 4.0d))
       elements should have size 2L
@@ -512,7 +370,7 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       ParityHarness.assertExact("name", "Act/365F", "Act/365F") shouldBe Nil
       ParityHarness.assertExact("days", 31, 31) shouldBe Nil
       // No tolerance anywhere near these: a money amount out by one unit in the last place is
-      // wrong rather than close, which is why the amounts are captured as their decimal text.
+      // wrong rather than close, which is why amounts are captured as their decimal text.
       ParityHarness.assertExact("amount", "12.34", "12.35") should have size 1L
       val dates = ParityHarness.assertExact("date", LocalDate.of(2024, 1, 31), LocalDate.of(2024, 2, 1))
       dates should have size 1L
@@ -526,7 +384,6 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       ParityHarness.assertLeft("refused", Left(Failure.Invalid("refused"))) shouldBe Nil
       val accepted = ParityHarness.assertLeft("accepted", Right(1.5d))
       accepted should have size 1L
-      // The value that should not have been produced is named, because that is the evidence.
       accepted.head should include("1.5")
     }
   }
@@ -538,8 +395,8 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         ParityHarness.assertParity("value", value, 2.0d)) shouldBe Nil
       ParityHarness.assertRight("succeeded, differing", Right(2.0d))(value =>
         ParityHarness.assertParity("value", value, 3.0d)) should have size 1L
-      // On failure the check is not run at all: its comparisons would have nothing to compare,
-      // and reporting them as further discrepancies would multiply one fact into several.
+      // On failure the check is not run: reporting comparisons that had nothing to compare would
+      // multiply one fact into several.
       val failed = ParityHarness.assertRight("failed", Left(Failure.MissingData("no calendar")))(_ =>
         List("the check must not run"))
       failed should have size 1L
@@ -555,11 +412,9 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       returned <- ParityHarness.attemptArgCheck("returned")(42)
     } yield {
       refused shouldBe Nil
-      // A precondition enforced by a different failure is not the precondition the baseline
-      // recorded, so the type that did refuse is named.
+      // A precondition enforced by a different failure is not the one recorded.
       wrongType should have size 1L
       wrongType.head should include("IllegalStateException")
-      // A call that returned refused nothing at all.
       returned should have size 1L
       returned.head should include("42")
     }
@@ -575,15 +430,11 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
     } yield {
       value shouldBe 7
       single.left.map(_.getMessage) shouldBe Left("one cause")
-      // Every cause survives the lift, joined, because an input the port refuses for two
-      // reasons is not diagnosable from one of them.
+      // Every cause survives the lift, joined: two reasons are not diagnosable from one of them.
       several.left.map(_.getMessage) shouldBe Left("first cause; second cause")
     }
   }
 
-  //-------------------------------------------------------------------------
-  // Loading a fixture.
-  //-------------------------------------------------------------------------
   test("the shared harness: load reads a committed baseline into its rows, in fixture order") {
     for {
       rows <- ParityHarness.load[HarnessProbeRow](HarnessFxFixture)
@@ -593,17 +444,14 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       rows.size should be >= 14
       rows.map(_.id).head shouldBe "cross-rate-triangulating-matrix"
       rows.filter(_.id.isEmpty) shouldBe empty
-      // Fixture order is asserted against the document itself rather than against a copy of
-      // its row names: each row's identity is located in the text the resource carries, and
-      // those positions have to ascend in the order the rows were decoded. A reordering
-      // decoder, or one that indexed rows by identity, would fail here while a hard-coded
-      // list of names would keep passing as the fixture grew.
+      // Fixture order is asserted against the document itself: each row's identity is located in
+      // the text, and those positions have to ascend in the order the rows were decoded.
       val offsets = rows.map(row => text.indexOf("\"" + row.id + "\""))
       offsets.filter(_ < 0) shouldBe empty
       offsets.distinct should have size offsets.size.toLong
       offsets shouldBe offsets.sorted
-      // A fixture of several hundred rows goes through the same ceilings untouched, so the
-      // bounds are not quietly refusing real data.
+      // A fixture of several hundred rows passes the same ceilings, which therefore admit real
+      // data.
       larger.size should be > 100
     }
   }
@@ -619,10 +467,8 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   }
 
   test("the shared harness: load refuses an empty fixture, so an emptied baseline cannot pass") {
-    // The finding this case exists for: an empty array decodes perfectly well into no rows,
-    // and a report of zero rows, zero passed and zero failed is exactly the shape of a
-    // measurement that succeeded. Replacing a baseline with an empty array would therefore
-    // retire every comparison in it while Gate 3 still read a pass.
+    // An empty array decodes into no rows, and zero rows, zero passed and zero failed is the shape
+    // of a measurement that succeeded, so an emptied baseline would retire every comparison in it.
     ParityHarness.decodeRows[HarnessProbeRow]("probe", "[]", ParityHarness.MaxFixtureCharacters, 10).attempt.map {
       case Left(failure) => failure.getMessage should include("holds no rows")
       case Right(rows) => fail(s"expected an empty fixture to be refused, got ${rows.size} rows")
@@ -641,9 +487,8 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         .decodeRows[HarnessProbeRow]("probe", "[{\"unexpected\":1}]", ParityHarness.MaxFixtureCharacters, 10)
         .attempt
     } yield {
-      // Each of the three is a different fact about the fixture, and none of them is the port
-      // disagreeing with Java; absorbing any of them into a parity result would make the
-      // gate's verdict worthless.
+      // Each of the three is a fact about the fixture rather than a discrepancy of this
+      // implementation, and absorbing one into a parity result would make the verdict useless.
       anObject.left.map(_.getMessage) match {
         case Left(message) => message should include("not a top-level JSON array")
         case Right(rows) => fail(s"expected a JSON object to be refused, got ${rows.size} rows")
@@ -692,38 +537,30 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
           }
         }
         // The largest baseline committed today is the day-count document this suite measures, at
-        // roughly 12.7 MiB and 18,356 rows. Both ceilings are set clear of it, so enforcing them
-        // cannot start refusing legitimate data, and the largest fixture is loaded here rather
-        // than assumed.
+        // roughly 12.7 MiB and 18,356 rows, and it is loaded here rather than assumed.
         ParityHarness.MaxFixtureCharacters should be > 16 * 1024 * 1024
         ParityHarness.MaxFixtureRows should be > 20000
         measured.map(_._2).max should be > 18000
       }
   }
 
-  //-------------------------------------------------------------------------
-  // Where the report goes.
-  //-------------------------------------------------------------------------
   test("the shared harness: the report directory must be configured, and must be absolute") {
     IO {
-      // Nothing configured has no fallback: a default would let a misconfigured run publish
-      // where the gate never looks, and a gate that finds no report cannot tell that apart
-      // from a measurement nobody made.
+      // An unset property has no fallback: a default would let a misconfigured run publish where
+      // nothing collects it, which cannot be told apart from a measurement nobody made.
       ParityHarness.reportDirectoryFrom(None) match {
         case Left(message) => message should include(ParityHarness.ReportDirectoryProperty)
         case Right(directory) => fail(s"an unset property was accepted as $directory")
       }
       ParityHarness.reportDirectoryFrom(Some("   ")).isLeft shouldBe true
-      // A relative path resolves against the working directory of a forked test JVM, which is
-      // not the one directory the gate collects from.
+      // A relative path resolves against the working directory of a forked test JVM.
       ParityHarness.reportDirectoryFrom(Some("target/parity-report")) match {
         case Left(message) => message should include("relative")
         case Right(directory) => fail(s"a relative property was accepted as $directory")
       }
       ParityHarness.reportDirectoryFrom(Some("/tmp/parity-report-probe")) shouldBe
         Right(Paths.get("/tmp/parity-report-probe"))
-      // The build supplies exactly that: an absolute path, which is what the measurement at the
-      // top of this suite then publishes `daycount.json` into.
+      // The build supplies exactly that: the absolute path `daycount.json` is published into.
       ParityHarness.reportDirectoryFrom(sys.props.get(ParityHarness.ReportDirectoryProperty)) match {
         case Right(directory) => directory.isAbsolute shouldBe true
         case Left(message) => fail(s"the build's own report directory was refused: $message")
@@ -740,23 +577,17 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         plain <- ParityHarness.writeReportTo(directory, harnessReportOf("probe"))
         published <- IO.blocking(Option(directory.toFile.listFiles()).map(_.length).getOrElse(0))
       } yield {
-        // A stem becomes part of a path, so one carrying a separator would publish outside the
-        // directory the gate collects.
+        // A stem becomes part of a path, so one carrying a separator would publish elsewhere.
         nested.left.map(_.getClass.getName) shouldBe Left("java.lang.IllegalArgumentException")
         windows.isLeft shouldBe true
         blank.isLeft shouldBe true
         plain.getFileName.toString shouldBe "probe.json"
         plain.getParent shouldBe directory
-        // The three refused stems wrote nothing anywhere: the plain one is the only file in the
-        // directory afterwards.
         published shouldBe 1
       }
     }
   }
 
-  //-------------------------------------------------------------------------
-  // The driver.
-  //-------------------------------------------------------------------------
   test("the shared harness: runFixtureIn counts rows that matched and discrepancies that did not") {
     withHarnessTempDirectory { directory =>
       for {
@@ -766,9 +597,8 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
           IO.pure(if (row.id == firstId) List("first difference", "second difference") else Nil)
         }
       } yield {
-        // The counting convention: `passed` counts rows with no message at all, `failed`
-        // counts discrepancies rather than rows, so one row differing twice makes their sum
-        // exceed the number of rows.
+        // The counting convention: `passed` counts rows with no message, `failed` counts
+        // discrepancies rather than rows, so one row differing twice exceeds the number of rows.
         report.fixture shouldBe "probe-counts"
         report.rows shouldBe rows.size
         report.passed shouldBe rows.size - 1
@@ -789,9 +619,8 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         gate <- ParityHarness.failIfAny(report).attempt
         clean <- ParityHarness.failIfAny(report.copy(failed = 0, failures = Vector.empty)).attempt
       } yield {
-        // The counts of a failing run are the reason the report exists, so they are on disk
-        // before anything can decide the run failed. Reading the file back here is what proves
-        // the order: the gate below has not run yet.
+        // The counts of a failing run are the reason the report exists, so they are on disk before
+        // anything can decide the run failed; reading the file back here proves that order.
         report.failed shouldBe report.rows
         parse(published).map(_.asObject.map(_.keys.toVector)) shouldBe
           Right(Some(Vector("fixture", "rows", "passed", "failed", "failures")))
@@ -818,8 +647,7 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
           if (row.id == firstId) IO.raiseError(new RuntimeException("the check itself broke")) else IO.pure(Nil)
         }
       } yield {
-        // An exception escaping a row would take the counts of every row after it with it, so
-        // it becomes one discrepancy of that row and the run continues.
+        // An exception escaping a row would take the counts of every row after it with it.
         report.rows shouldBe rows.size
         report.failed shouldBe 1
         report.passed shouldBe rows.size - 1
@@ -842,15 +670,12 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
           case Left(message) =>
             message should include("difference 0")
             message should include("difference 19")
-            // Everything beyond the quota stays in the report document rather than in the console,
-            // so the console output of a systematically broken port stays readable.
+            // Everything beyond the quota stays in the document rather than the console.
             message should not include "difference 20"
             message should include("and 5 more")
           case Right(_) => fail("a report holding discrepancies did not fail the gate")
         }
-        // The other half of that decision: the document on disk is the complete record. The
-        // truncation is a property of the message alone, and a report that dropped the five it
-        // did not quote would lose exactly the detail the report exists to keep.
+        // The document on disk stays the complete record: truncation belongs to the message.
         parse(document).map(_.asObject.flatMap(_("failures")).flatMap(_.asArray).map(_.size)) shouldBe
           Right(Some(failures.size))
         document should include("difference 20")
@@ -860,29 +685,23 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   }
 
   /*
-   * The three tests below are about the decoding of the fixture rather than about the port. They
-   * exist because the two above cannot see what they are not given: a gate that reads
-   * `failed == 0` over rows that decoded perfectly cannot tell a fixture that is measured in full
-   * from one that has grown a key nothing reads. So the schemas are asserted to be the key sets
-   * the row models actually read, and the refusals are exercised rather than assumed.
+   * The three cases below are about the decoding of the fixture: a verdict of `failed == 0` over
+   * rows that decoded perfectly cannot tell a fixture measured in full from one that has grown a
+   * key nothing reads.
    */
 
   test("the declared row and scheduleInfo key sets are the ones the row models read") {
     IO {
-      // The schema is the model's own field set, so the keys the decoder enforces cannot drift
-      // from the fields this spec measures: a field added to the model without being added to the
-      // schema, or the reverse, fails here.
+      // The schema is the model's own field set, so a field added to the model without being added
+      // to the schema, or the reverse, fails here.
       RowSchema.known shouldBe DocumentedRowModel.productElementNames.toSet
       RowSchema.known.size shouldBe 12
       ScheduleInfoSchema.known shouldBe DocumentedListedScheduleInfoModel.productElementNames.toSet
       ScheduleInfoSchema.known.size shouldBe 6
-      // And the documented shapes are those key sets, which is what ties the two committed
-      // documents below to the declarations above.
       DocumentedRow.asObject.map(_.keys.toSet) shouldBe Some(RowSchema.known)
       ScheduleInfoSchema.variants.map(_._1) shouldBe Vector(FixedPeriodEndVariant, BoundaryListVariant)
       ScheduleInfoSchema.variants.map(_._2.size) shouldBe Vector(5, 5)
-      // Each variant is satisfied by exactly one of the two committed encodings, and the schema
-      // names which - the decision the decoder is then handed instead of making a second time.
+      // Each variant is satisfied by exactly one committed encoding, and the schema names which.
       variantOf(DocumentedFixedScheduleInfo) shouldBe Some(FixedPeriodEndVariant)
       variantOf(DocumentedListedScheduleInfo) shouldBe Some(BoundaryListVariant)
       succeed
@@ -892,12 +711,10 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
   test("a captured row whose keys are not the documented twelve is refused by name") {
     IO {
       // The documented shape decodes, field for field: strictness refuses what the document does
-      // not document and nothing else. This is a decode identity compared exactly - the mapping
-      // of keys onto fields - and not a measurement, so the tolerance rule of this file, which
-      // governs the comparison of the port's numbers against the baseline, is untouched by it.
+      // not document and nothing else.
       StrictRowDecoder.decodeJson(DocumentedRow) shouldBe Right(DocumentedRowModel)
-      // A key the capture has started emitting. This is the case the finding is about: a derived
-      // decoder would ignore it and measure the row as though the new expectation did not exist.
+      // A key that has appeared in the document: a derived decoder would ignore it and measure
+      // the row as though the new expectation did not exist.
       refusalOf(
         StrictRowDecoder,
         withKey(DocumentedRow, "yearFractionRounded", Json.fromDoubleOrNull(1.0d))) should include(
@@ -906,7 +723,6 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
       // apart from the `null` that means "this evaluation was not performed".
       refusalOf(StrictRowDecoder, withoutKey(DocumentedRow, "days")) should include(
         "a day-count parity row is missing {days}")
-      // A renamed key is both at once, and the refusal names both halves.
       val renamed = refusalOf(StrictRowDecoder, withRenamedKey(DocumentedRow, "daysError", "dayCountError"))
       renamed should include("unknown keys {dayCountError}")
       renamed should include("a day-count parity row is missing {daysError}")
@@ -916,14 +732,13 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
   test("a scheduleInfo object that is neither documented variant is refused by name") {
     IO {
-      // Both documented encodings decode, and the boundary list decodes to its dates in order.
       StrictRowDecoder.decodeJson(DocumentedRow).map(_.scheduleInfo) shouldBe
         Right(DocumentedRowModel.scheduleInfo)
       StrictRowDecoder
         .decodeJson(rowWithScheduleInfo(DocumentedListedScheduleInfo))
         .map(_.scheduleInfo) shouldBe Right(DocumentedListedScheduleInfoModel)
-      // Both period-end encodings at once: section 6 states never both, and the two have
-      // different readings of `periodEndDate`, so the object is refused with the keys it carries.
+      // Both encodings at once: a row carries exactly one, and the two read `periodEndDate`
+      // differently, so the object is refused with the keys it carries.
       val both = refusalOf(
         StrictRowDecoder,
         rowWithScheduleInfo(withKey(DocumentedListedScheduleInfo, FixedPeriodEndKey, Json.Null)))
@@ -935,14 +750,12 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
         rowWithScheduleInfo(withoutKey(DocumentedFixedScheduleInfo, FixedPeriodEndKey)))
       neither should include(s"$FixedPeriodEndVariant is missing {$FixedPeriodEndKey}")
       neither should include(s"$BoundaryListVariant is missing {$BoundaryListKey}")
-      // A key the capture has started emitting inside the nested object, which only that object's
-      // own decoder ever sees.
+      // A key that has appeared inside the nested object, which only its own decoder sees.
       refusalOf(
         StrictRowDecoder,
         rowWithScheduleInfo(
           withKey(DocumentedListedScheduleInfo, "periodStarts", Json.arr()))) should include(
         "unknown keys {periodStarts}")
-      // And a renamed common key, which is a loss and a gain of the nested object at once.
       val renamed = refusalOf(
         StrictRowDecoder,
         rowWithScheduleInfo(withRenamedKey(DocumentedListedScheduleInfo, EndOfMonthKey, "endOfMonth")))
@@ -955,32 +768,24 @@ class DayCountParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers {
 
 /**
  * The row model of `daycount-baseline.json`, the schedule information it encodes, and the checks
- * applied to one row.
- *
- * It lives in the companion rather than in the suite because the JSON derivation needs the row
- * types on a stable path, and because keeping the measurement out of the suite body makes it plain
- * that the suite contributes nothing to the measurement beyond ordering it. Everything here is
- * confined to this package.
+ * applied to one row. It lives in the companion because the JSON derivation needs the row types on
+ * a stable path, and everything here is confined to this package.
  */
 private[parity] object DayCountParitySpec {
 
   /*
-   * The single policy for a double, in scope before the row decoders are derived.
-   *
-   * The captured documents write a non-finite double as one of the three tagged strings `"NaN"`,
-   * `"Infinity"` and `"-Infinity"` and every finite one as a full-precision JSON number. An
-   * imported implicit outranks the one circe publishes for `Double` in its own companion, so the
-   * `Option[Double]` fields below read a tagged value with no ambiguity. No row of this fixture is
-   * expected to carry one - the capture resolves the `DayCountTest` table markers - and reading
-   * them is what lets such a row be reported as a discrepancy instead of a decode failure of the
-   * whole document.
+   * The single policy for a double, in scope before the row decoders are derived. The baseline
+   * writes a non-finite double as one of the tagged strings `"NaN"`, `"Infinity"` and
+   * `"-Infinity"`, and every finite one as a full-precision JSON number; an imported implicit
+   * outranks the one circe publishes for `Double`, so the `Option[Double]` fields below read a
+   * tagged value with no ambiguity. No row is expected to carry one, and reading them is what lets
+   * such a row be reported as a discrepancy instead of a decode failure of the whole document.
    */
   import Codecs.implicits.doubleCodec
 
   //-------------------------------------------------------------------------
-  // Contract constants. The first two are agreements with something outside this file - the
-  // resource name with the capture script that writes it, the fixture stem with the gate script
-  // that reads `<parity.report.dir>/daycount.json` - so neither may drift.
+  // Contract constants. The resource name and the fixture stem are agreements with something
+  // outside this file - the document read, and the `<parity.report.dir>/daycount.json` written.
   //-------------------------------------------------------------------------
 
   /** The fixture stem, which is also the `fixture` field of the report and its file name. */
@@ -990,29 +795,18 @@ private[parity] object DayCountParitySpec {
   val FixtureResource: String = "parity/daycount-baseline.json"
 
   /**
-   * The end-of-month convention that an absent `eom` stands for.
-   *
-   * The interface being ported defaults `isEndOfMonthConvention` to `true`, and so does the port's
-   * `ScheduleInfo`. An absent flag is therefore the default rather than `false`, which matters
-   * because `30U/360` chooses between two day-of-month rules by it.
+   * The end-of-month convention an absent `eom` stands for: `ScheduleInfo` defaults
+   * `isEndOfMonthConvention` to `true`, and `30U/360` chooses between two day-of-month rules by it.
    */
   val EndOfMonthDefault: Boolean = true
 
-  /**
-   * The least number of rows the baseline is worth measuring.
-   *
-   * The committed document holds 18,356. Section 6 of `tools/parity-capture/README.md` records
-   * that count and the population behind it.
-   */
+  /** The least number of rows the baseline is worth measuring; the document holds 18,356. */
   val MinimumRows: Int = 18356
 
   /**
-   * The least number of rows of each captured population, keyed by the row's id family.
-   *
-   * The family is the part of the identity before its first `'-'`, and the key set is closed: a
-   * row whose family is not one of these seventeen is a population this spec does not know how to
-   * account for, and is reported rather than measured silently. The counts are those of section 6
-   * of the capture README, and they sum to [[MinimumRows]] exactly.
+   * The least number of rows of each population, keyed by the row's id family. The key set is
+   * closed: a row of another family is reported rather than measured silently, and the counts sum
+   * to [[MinimumRows]].
    */
   val MinimumRowsByFamily: Map[String, Int] =
     Map(
@@ -1020,7 +814,7 @@ private[parity] object DayCountParitySpec {
       "grid" -> 11044,
       // all 22 subjects x P1M/P3M/P6M/P12M x regular, short initial, short final x every period
       "sched" -> 6446,
-      // the two Java tables, one row per table row per consumer
+      // the tabulated year-fraction and day-count cases, one row per case per consumer
       "yf" -> 201,
       "days" -> 185,
       // every 1000th iteration of the Act/Act Year versus Act/Act ICMA equivalence
@@ -1046,18 +840,14 @@ private[parity] object DayCountParitySpec {
       "missing" -> 5
     )
 
-  /** The two generated populations, each of which covers every subject. */
   val GeneratedFamilies: Vector[String] = Vector("grid", "sched")
 
   /** The family whose every row supplies its dates out of order, refusing both operations. */
   val OutOfOrderFamily: String = "order"
 
   /**
-   * Every day-count name the baseline is required to measure.
-   *
-   * The 21 standard conventions and the business-day convention `Bus/252 BRBD`, whose calendar the
-   * port resolves against the built-in set - constant data rather than ambient state (AAP section
-   * 0.6.5).
+   * Every day-count name the baseline is required to measure: the 21 standard conventions and the
+   * business-day convention `Bus/252 BRBD`, whose calendar comes from the built-in set.
    */
   val RequiredDayCounts: Vector[String] =
     Vector(
@@ -1085,10 +875,10 @@ private[parity] object DayCountParitySpec {
       "Bus/252 BRBD"
     )
 
-  /** The least number of rows whose year fraction the Java implementation refused to produce. */
+  /** The least number of rows whose year fraction the baseline records as refused. */
   val MinimumYearFractionRefusals: Int = 1050
 
-  /** The least number of rows whose day count the Java implementation refused to produce. */
+  /** The least number of rows whose day count the baseline records as refused. */
   val MinimumDaysRefusals: Int = 22
 
   /** The least number of rows carrying the captured relative year fractions, in both directions. */
@@ -1101,44 +891,19 @@ private[parity] object DayCountParitySpec {
   val MinimumSimpleRows: Int = 11561
 
   //-------------------------------------------------------------------------
-  // The row model. Field for field the schema of section 6 of `tools/parity-capture/README.md`,
-  // which records that every row of this fixture carries the identical twelve keys in the same
-  // order, that `scheduleInfo` is always an object, and that a key whose evaluation was not
-  // performed is present with the value `null`. `Option` is therefore exactly where that schema
-  // writes `null`, and no field is dropped: `source`, the two relative year fractions and
-  // `daysError` are captured baseline like any other expectation, and a model that omitted them
-  // would measure less than was captured.
-  //
-  // Each shape is declared as a [[KeySchema]] beside the model it describes, and every object of
-  // the document is checked against its schema before it is decoded - the row by `loadStrict`,
-  // the nested `scheduleInfo` by its own decoder, which is the only place that object's keys are
-  // ever visible. Without that, derived decoding would read the fields the models declare and
-  // ignore every other key, so a key the capture started emitting - a new expectation, a new
-  // operand, a renamed field - would be dropped in silence while the report still read
-  // `failed == 0`. Declaring the keys also makes `Option` mean what the schema says it means: the
-  // key must be present, and `null` is then the one way it says "not performed", which a merely
-  // optional field cannot distinguish from a key that has gone missing.
+  // The row model. Field for field the shape of the document: every row carries the identical
+  // twelve keys in the same order, `scheduleInfo` is always an object, and a key whose evaluation
+  // was not performed is present with the value `null`, which is where `Option` sits. Each shape
+  // is declared as a `KeySchema` beside the model it describes, and every object is checked
+  // against its schema before it is decoded. Without that, a derived decoder would ignore every
+  // key its model does not declare, so a key that had been added, lost or renamed would decode in
+  // silence and leave its expectation unmeasured while the report still read zero failures.
   //-------------------------------------------------------------------------
 
   /**
-   * The schedule information one evaluation was given.
-   *
-   * Every subfield is optional because `null` inside this object means '''absent''' - `None` on
-   * this side and the raising default of the interface being ported on the other - with the one
-   * documented exception of `eom`, where absent means the interface default of `true`; see
-   * [[endOfMonth]].
-   *
-   * `periodEnd` and `periodEnds` are the two encodings of the period end date, and a row carries
-   * exactly one of them as a key: `periodEnd` is the fixed date of the Java test stub, `periodEnds`
-   * the ordered boundary list of a real schedule. Either may be `null`, which is the ordinary case
-   * for the rows evaluated with no schedule information at all.
-   *
-   * @param start  the adjusted start date of the schedule
-   * @param end  the adjusted end date of the schedule, which is its maturity
-   * @param frequency  the name of the periodic frequency, such as `P3M` or `Term`
-   * @param eom  the end-of-month convention flag, absent where the interface default applies
-   * @param periodEnd  the one period end date the Java stub answers for every date
-   * @param periodEnds  the ordered end dates of every period of a real schedule
+   * The schedule information one evaluation was given. Every subfield is optional because `null`
+   * here means absent, the one exception being `eom`; see [[endOfMonth]]. A row carries exactly one
+   * of `periodEnd` and `periodEnds` as a key.
    */
   final case class ScheduleInfoRow(
       start: Option[LocalDate],
@@ -1148,58 +913,39 @@ private[parity] object DayCountParitySpec {
       periodEnd: Option[LocalDate],
       periodEnds: Option[Vector[LocalDate]]) {
 
-    /**
-     * Whether this carries no schedule fact at all.
-     *
-     * These are the rows the capture evaluated through the Java two-argument overload against
-     * `DayCounts.SIMPLE_SCHEDULE_INFO`, and they are measured against the port's own
-     * `DayCount.ScheduleInfo.simple` rather than against an adapter that would merely answer the
-     * same way.
-     */
+    /** Whether this carries no schedule fact at all, and so is measured against `simple`. */
     def isAbsent: Boolean =
       start.isEmpty && end.isEmpty && frequency.isEmpty && eom.isEmpty &&
         periodEnd.isEmpty && periodEnds.isEmpty
 
     /**
-     * The end-of-month convention in force, resolving an absent flag to the interface default.
-     *
-     * The default is `true`, on both sides of the port. Resolving it to `false` would silently
-     * re-point every `30U/360` row at the other of that convention's two day-of-month rules.
+     * The end-of-month convention in force, resolving an absent flag to the interface default of
+     * `true` rather than to `false`.
      */
     def endOfMonth: Boolean = eom.getOrElse(EndOfMonthDefault)
 
     /**
-     * Whether this carries the schedule span and frequency that a boundary list needs beside it.
-     *
-     * A boundary list is read only inside the schedule's own span, so a list without that span is
-     * an encoding this spec cannot evaluate; the frequency belongs with it because the two
-     * conventions that read a period end date also read the frequency.
+     * Whether this carries the schedule span and frequency a boundary list needs beside it: a list
+     * is read only inside the span, and the conventions that read a period end date read the
+     * frequency.
      */
     def spansSchedule: Boolean = start.isDefined && end.isDefined && frequency.isDefined
   }
 
-  /** The key of the adjusted start date of the schedule, inside `scheduleInfo`. */
   val ScheduleStartKey: String = "start"
 
-  /** The key of the adjusted end date of the schedule, inside `scheduleInfo`. */
   val ScheduleEndKey: String = "end"
 
-  /** The key of the periodic frequency name, inside `scheduleInfo`. */
   val FrequencyKey: String = "frequency"
 
-  /** The key of the end-of-month convention flag, inside `scheduleInfo`. */
   val EndOfMonthKey: String = "eom"
 
-  /** The key of the one fixed period end date of the Java test stub. */
   val FixedPeriodEndKey: String = "periodEnd"
 
-  /** The key of the ordered period boundary list of a real schedule. */
   val BoundaryListKey: String = "periodEnds"
 
-  /** The name of the `scheduleInfo` variant that carries [[FixedPeriodEndKey]]. */
   val FixedPeriodEndVariant: String = "the fixed period end date encoding"
 
-  /** The name of the `scheduleInfo` variant that carries [[BoundaryListKey]]. */
   val BoundaryListVariant: String = "the period boundary list encoding"
 
   /** The four keys every `scheduleInfo` object carries, whichever period-end encoding it uses. */
@@ -1207,21 +953,12 @@ private[parity] object DayCountParitySpec {
     Set(ScheduleStartKey, ScheduleEndKey, FrequencyKey, EndOfMonthKey)
 
   /**
-   * The documented shape of the `scheduleInfo` object of a row, which has two variants.
-   *
-   * This is the schema '''of''' [[ScheduleInfoRow]], and its authority is the committed document
-   * together with section 6 of `tools/parity-capture/README.md`: the object carries `start`,
-   * `end`, `frequency` and `eom` plus '''exactly one of''' `periodEnd` and `periodEnds` - never
-   * both, never neither - which over the committed 18,356 rows is 11,910 objects of the first
-   * variant and 6,446 of the second.
-   *
-   * Two variants rather than six optional keys is what makes that statement enforceable. Each
-   * variant is an exact key set, so a key must be '''present''' even where its value is `null`:
-   * that is what keeps `null` meaning "this evaluation was not performed" instead of being
-   * indistinguishable from a schema-required key the capture has stopped emitting. An object
-   * carrying both encodings, or neither, satisfies no variant and is refused with the keys it
-   * carries named, rather than decoded into a reading of `periodEndDate` that the capture never
-   * used.
+   * The documented shape of the `scheduleInfo` object of a row, which has two variants: `start`,
+   * `end`, `frequency` and `eom` plus '''exactly one of''' `periodEnd` and `periodEnds` - 11,910
+   * objects of the first variant and 6,446 of the second. Each variant is an exact key set, so a
+   * key must be '''present''' even where its value is `null`, which is what keeps `null` meaning
+   * "not performed" rather than indistinguishable from a required key that has gone missing; an
+   * object carrying both encodings, or neither, is refused with the keys it names.
    */
   val ScheduleInfoSchema: KeySchema =
     KeySchema.variants(
@@ -1230,25 +967,10 @@ private[parity] object DayCountParitySpec {
       BoundaryListVariant -> (ScheduleInfoCommonKeys + BoundaryListKey))
 
   /**
-   * One evaluated row of the captured baseline.
-   *
-   * A value and its error are never both set. Both absent means the capture did not perform that
-   * evaluation, which is the ordinary case for the two relative forms - they were captured only
-   * where they carry information - and which for the year fraction and the day count is a fixture
-   * that has stopped agreeing with this spec, because the capture performs both for every row.
-   *
-   * @param id  the identity of the row, unique across the document and what the report names
-   * @param source  the Java test method, or the generated population, the row came from
-   * @param dayCount  the canonical name of the convention, `Bus/252 BRBD` included
-   * @param start  the first date of the pair, as supplied
-   * @param end  the second date of the pair, as supplied, which may be before the first
-   * @param scheduleInfo  the schedule information the evaluation was given
-   * @param yearFraction  `yearFraction(start, end, scheduleInfo)`, where it produced a value
-   * @param relativeYearFraction  `relativeYearFraction(start, end, scheduleInfo)`, where captured
-   * @param relativeYearFractionReversed  the same with the dates swapped, where captured
-   * @param days  `days(start, end)`, where it produced a value
-   * @param error  the Java failure of the year-fraction evaluation, where it refused
-   * @param daysError  the Java failure of the day-count evaluation, where it refused
+   * One evaluated row of the baseline, whose `end` may be before its `start`. A value and its error
+   * are never both set, and both absent means that evaluation was not performed: the ordinary case
+   * for the two relative forms, and for the other two a fixture that no longer agrees with this
+   * spec.
    */
   final case class DayCountRow(
       id: String,
@@ -1265,23 +987,13 @@ private[parity] object DayCountParitySpec {
       daysError: Option[String])
       extends ParityRow
 
-  /** The key of the schedule information object of a row, the one object nested in a row. */
   val ScheduleInfoKey: String = "scheduleInfo"
 
   /**
-   * The documented shape of one row of `daycount-baseline.json`.
-   *
-   * This is the schema '''of''' [[DayCountRow]] - the twelve keys of the committed document,
-   * which are exactly the twelve fields that model declares, asserted against each other by
-   * `the declared row and scheduleInfo key sets are the ones the row models read`. Its authority
-   * is the committed document, which carries these twelve keys on every one of its 18,356 rows,
-   * together with section 6 of `tools/parity-capture/README.md`, which records that shape as
-   * uniform and states that a key whose evaluation was not performed is '''present''' with the
-   * value `null`.
-   *
-   * One documented key set, so satisfying it is equality of key sets: a row that has gained a key
-   * is refused with that key named, and a row that has lost one is refused with the loss named,
-   * rather than decoded into a model that quietly has nothing to say about either.
+   * The documented shape of one row: the twelve keys the document carries on every one of its
+   * 18,356 rows, and exactly the twelve fields [[DayCountRow]] declares, asserted against each
+   * other by `the declared row and scheduleInfo key sets are the ones the row models read`.
+   * Satisfying it is equality of key sets, so a gained key and a lost key are each refused by name.
    */
   val RowSchema: KeySchema =
     KeySchema.uniform(
@@ -1302,20 +1014,9 @@ private[parity] object DayCountParitySpec {
 
   /**
    * Reads one `scheduleInfo` object, given the variant its keys were validated against.
-   *
-   * The variant is handed over by [[ParityHarness.strictVariant]], which decided it while
-   * checking the keys, so this decoder reads '''only''' the period-end key the matched variant
-   * names: for a boundary-list object `periodEnd` is provably not a key of the document, and for
-   * a fixed-period-end object `periodEnds` is not, so neither is looked up. Deciding it a second
-   * time here - by asking which key happens to be present - is the step that could disagree with
-   * the check that validated the object, and it is the step this form removes.
-   *
-   * The four common keys are read as `Option`, which is what the schema's `null` means: absent on
-   * this side, and the raising default of the interface being ported on the other. Their
-   * '''presence''' is not this decoder's business, because the schema has already required it.
-   *
-   * @param variant  the name of the variant the object's keys satisfied
-   * @return the decoder for an object of that variant
+   * [[ParityHarness.strictVariant]] decided the variant while checking the keys, so this decoder
+   * reads '''only''' the period-end key that variant names and never asks which key happens to be
+   * present - the step that could disagree with the check that validated the object.
    */
   private def scheduleInfoDecoder(variant: String): Decoder[ScheduleInfoRow] =
     Decoder.instance { cursor =>
@@ -1342,35 +1043,23 @@ private[parity] object DayCountParitySpec {
     ParityHarness.strictVariant(ScheduleInfoSchema)(scheduleInfoDecoder)
 
   /**
-   * The row's own fields, read once the keys are known to be the documented ones.
-   *
-   * Deliberately not implicit: nothing may summon a decoder for a row of this document that is
-   * not the strict one below, so the only reference to this value is the composition that makes
-   * it strict.
+   * The row's own fields, read once the keys are known. Not implicit: the only reference to it is
+   * the composition below that makes it strict about keys.
    */
   private val dayCountRowFields: Decoder[DayCountRow] = deriveDecoder[DayCountRow]
 
   /**
-   * The decoder the fixture is read through, which is the row's fields behind the key check.
-   *
-   * This is the implicit a loader summons, so every path that reads a row of this document -
-   * `ParityHarness.loadStrict`, which composes this with the same check again while reading, and
-   * the strictness tests of this suite, which decode hand-built objects through it - is strict
-   * about keys by construction rather than by remembering to be.
+   * The decoder the fixture is read through: the row's fields behind the key check. Being the
+   * implicit a loader summons is what makes every path that reads a row strict about keys.
    */
   implicit val StrictRowDecoder: Decoder[DayCountRow] =
     ParityHarness.strictObject(RowSchema)(dayCountRowFields)
 
   //-------------------------------------------------------------------------
-  // The documented shapes as documents, and the three ways a document departs from one.
-  //
-  // A schema that is only exercised by the fixture it already agrees with proves nothing about
-  // what it would refuse, so the strictness tests of this suite decode these documents: the
-  // documented shapes, which must be accepted and must decode to the models below, and then the
-  // same documents with one key added, one key removed and one key renamed, each of which must be
-  // refused with the offending key named. The accepted documents are the two committed shapes,
-  // key for key: the first row of `daycount-baseline.json` and the `scheduleInfo` object of its
-  // first `sched` row, with the boundary list shortened to the two dates a decode needs.
+  // The documented shapes as documents, and the three ways a document departs from one. A schema
+  // exercised only by the fixture it already agrees with proves nothing about what it would refuse,
+  // so the strictness cases decode these shapes and then the same documents with one key added,
+  // one removed and one renamed.
   //-------------------------------------------------------------------------
 
   /** The `scheduleInfo` object of the first variant, as the committed document writes it. */
@@ -1407,7 +1096,6 @@ private[parity] object DayCountParitySpec {
       "error" -> Json.Null,
       "daysError" -> Json.Null)
 
-  /** What [[DocumentedRow]] is required to decode to, field for field. */
   val DocumentedRowModel: DayCountRow =
     DayCountRow(
       id = "yf-1-1-2011-12-28-2012-02-28",
@@ -1423,7 +1111,6 @@ private[parity] object DayCountParitySpec {
       error = None,
       daysError = None)
 
-  /** What [[DocumentedListedScheduleInfo]] is required to decode to, field for field. */
   val DocumentedListedScheduleInfoModel: ScheduleInfoRow =
     ScheduleInfoRow(
       start = Some(LocalDate.of(2015, 1, 15)),
@@ -1433,70 +1120,34 @@ private[parity] object DayCountParitySpec {
       periodEnd = None,
       periodEnds = Some(Vector(LocalDate.of(2015, 2, 15), LocalDate.of(2015, 3, 15))))
 
-  /**
-   * The documented row carrying the given schedule information, which is its one nested object.
-   *
-   * @param info  the `scheduleInfo` object to put on the row
-   * @return the row document
-   */
   def rowWithScheduleInfo(info: Json): Json = withKey(DocumentedRow, ScheduleInfoKey, info)
 
   /**
-   * The `scheduleInfo` variant a document satisfies, as [[ScheduleInfoSchema]] decides it.
-   *
-   * This is the same decision [[ParityHarness.strictVariant]] hands to [[scheduleInfoDecoder]],
-   * made through the same method, so a test can state which variant a shape is without
-   * duplicating the rule that answers it.
-   *
-   * @param info  the `scheduleInfo` object to classify
-   * @return the name of the variant it satisfies, or nothing where it satisfies none
+   * The `scheduleInfo` variant a document satisfies, through the same [[ScheduleInfoSchema]] method
+   * [[ParityHarness.strictVariant]] uses, so a case can state the variant without repeating the
+   * rule.
    */
   def variantOf(info: Json): Option[String] =
     info.asObject.flatMap(fields => ScheduleInfoSchema.matching(fields.keys.toSet))
 
-  /**
-   * The same object with one key added, which is the shape a newly captured field arrives in.
-   *
-   * @param document  the object to change
-   * @param key  the key to add, or to replace where the object already carries it
-   * @param value  the value of that key
-   * @return the changed object
-   */
+  /** The same object with one key added, which is the shape a newly added field arrives in. */
   def withKey(document: Json, key: String, value: Json): Json =
     document.mapObject(fields => fields.add(key, value))
 
-  /**
-   * The same object with one key removed, which is the shape a retired field leaves behind.
-   *
-   * @param document  the object to change
-   * @param key  the key to remove
-   * @return the changed object
-   */
+  /** The same object with one key removed, which is the shape a retired field leaves behind. */
   def withoutKey(document: Json, key: String): Json =
     document.mapObject(fields => fields.remove(key))
 
   /**
    * The same object with one key renamed, keeping its value - a rename is a loss and a gain at
-   * once, and a schema has to report both halves for the message to say what happened.
-   *
-   * @param document  the object to change
-   * @param from  the key as the schema declares it
-   * @param to  the key the document is to carry instead
-   * @return the changed object
+   * once, and a schema has to report both halves.
    */
   def withRenamedKey(document: Json, from: String, to: String): Json =
     document.mapObject(fields => fields.remove(from).add(to, fields(from).getOrElse(Json.Null)))
 
   /**
-   * The message a decoder refuses a document with.
-   *
-   * A decoder that '''accepts''' the document answers with a description of what it accepted, so
-   * that the assertion on the refusal's wording fails naming the value that got through rather
-   * than failing on an empty string that says nothing.
-   *
-   * @param decoder  the decoder under test
-   * @param document  the document to offer it
-   * @return the refusal message, or what was accepted instead
+   * The message a decoder refuses a document with. A decoder that '''accepts''' it answers with a
+   * description of what it accepted, so an assertion on the wording fails naming what got through.
    */
   def refusalOf[A](decoder: Decoder[A], document: Json): String =
     decoder.decodeJson(document) match {
@@ -1505,27 +1156,15 @@ private[parity] object DayCountParitySpec {
     }
 
   /**
-   * The least a row model can be: the identity of a fixture row and the case it came from.
-   *
-   * The cases of this suite that measure the shared harness rather than the port need no
-   * expectation fields at all; two keys are enough, and reading only those is what lets any real
-   * committed baseline stand in for a fixture of their own - including the day-count document this
-   * suite measures. It is declared here, beside the row models above, because a case class
-   * declared inside the suite class would carry an outer reference its synthesized type test
-   * cannot check at run time.
-   *
-   * @param id  the name a discrepancy of the row would be reported under
-   * @param source  the Java test method, or the generated population, the row came from
+   * The least a row model can be: the identity of a fixture row and the case it came from, which is
+   * what lets any committed baseline stand in for a fixture of its own.
    */
   final case class HarnessProbeRow(id: String, source: String) extends ParityRow
 
   /**
-   * The decoder of [[HarnessProbeRow]], written out rather than derived because the fallback from
-   * `id` to `source` is the identity rule of the captured documents rather than a shape circe can
-   * infer: a row carries an `id` exactly where its `source` cannot identify it alone, so an absent
-   * `id` means the `source` is the identity, and `schedule-baseline.json` is the one committed
-   * document of that shape. Every other key of the row is ignored, and no `Double` is read, so the
-   * tagged-double policy of the captured documents is not needed here.
+   * The decoder of [[HarnessProbeRow]], written out because the fallback from `id` to `source` is
+   * an identity rule of these documents rather than a shape circe can infer: a row carries an `id`
+   * exactly where its `source` cannot identify it alone.
    */
   implicit val harnessProbeRowDecoder: Decoder[HarnessProbeRow] = Decoder.instance { cursor =>
     for {
@@ -1535,28 +1174,13 @@ private[parity] object DayCountParitySpec {
   }
 
   //-------------------------------------------------------------------------
-  // The two schedule-information adapters.
-  //
-  // Both are immutable, hold no effect and read nothing outside their own fields, so a row's
-  // evaluation is a pure function of the row. Neither carries a `var` or a mutable collection.
+  // The two schedule-information adapters, both immutable and reading nothing outside their own
+  // fields, so a row's evaluation is a pure function of the row.
   //-------------------------------------------------------------------------
 
   /**
-   * The schedule information of the Java test stub: one fixed period end date, and no rule.
-   *
-   * `periodEndDate` '''ignores the date it is given''' and answers the single value the row
-   * carries. That is the stub's behaviour, verbatim: its field is one `periodEnd` and its
-   * `getPeriodEndDate(LocalDate date)` returns it whatever the argument
-   * (`modules/basics/src/test/java/com/opengamma/strata/basics/date/DayCountTest.java:1373-1416`).
-   * Every expectation captured through that stub was produced with that behaviour, so reproducing
-   * it is what makes those expectations measurable; "improving" it to consult the date would
-   * change the inputs and therefore the answers.
-   *
-   * @param startDate  the schedule start date the stub carries, if any
-   * @param endDate  the schedule end date the stub carries, if any
-   * @param frequency  the frequency the stub carries, if any
-   * @param isEndOfMonthConvention  the end-of-month flag, always explicit here
-   * @param fixedPeriodEnd  the one period end date answered for every date
+   * The fixed-period-end adapter: `periodEndDate` answers `fixedPeriodEnd` for every date it is
+   * given, which is the behaviour every expectation recorded against it was produced with.
    */
   final case class StubScheduleInfo(
       override val startDate: Option[LocalDate],
@@ -1570,27 +1194,11 @@ private[parity] object DayCountParitySpec {
   }
 
   /**
-   * The schedule information of a real schedule, encoded as its ordered period boundaries.
-   *
-   * `periodEndDate(d)` is the first boundary '''strictly''' after `d`, and only while `d` lies in
-   * the schedule's own span, `scheduleStart <= d < scheduleEnd`; anywhere else it is `None`. That
-   * is the encoding section 6 of the capture README defines, and the capture demonstrated it
-   * lossless by re-evaluating every such row through an implementation that sees only this list.
-   * `None` outside every period is the port's documented reading of a date the schedule does not
-   * contain, where the interface being ported raised
-   * (`modules/basics/src/main/java/com/opengamma/strata/basics/schedule/Schedule.java:332-338`);
-   * the convention that reads it refuses on its own behalf if it cannot proceed.
-   *
-   * The lookup is a linear scan of an immutable vector, which is what the rule says and is
-   * bounded by the sixty-one boundaries of the longest schedule in the fixture. No interpolation,
-   * no clamping and no nearest-boundary fallback: each of those would answer where the rule says
-   * nothing is answered.
-   *
-   * @param scheduleStart  the adjusted start date of the schedule
-   * @param scheduleEnd  the adjusted end date of the schedule
-   * @param frequency  the periodic frequency of the schedule
-   * @param isEndOfMonthConvention  the end-of-month flag of the schedule
-   * @param boundaries  the ordered, non-empty adjusted end dates of every period
+   * The boundary-list adapter: `periodEndDate(d)` is the first boundary strictly after `d` while
+   * `scheduleStart <= d < scheduleEnd`, and `None` anywhere else - this library's reading of a date
+   * the schedule does not contain, which the convention that reads it answers for itself. The
+   * lookup is a linear scan of an immutable vector, bounded by the sixty-one boundaries of the
+   * longest schedule in the fixture.
    */
   final case class ListedScheduleInfo(
       scheduleStart: LocalDate,
@@ -1612,43 +1220,18 @@ private[parity] object DayCountParitySpec {
       }
   }
 
-  //-------------------------------------------------------------------------
-  // Reading a row: its family, its schedule information and its subject.
-  //-------------------------------------------------------------------------
-
   /**
-   * The population a row belongs to, which is the part of its identity before the first `'-'`.
-   *
-   * The identities are kebab-case and begin with a family name - `grid`, `sched`, `yf`, `order`
-   * and so on - so this is a property of the document rather than a guess about it;
-   * [[MinimumRowsByFamily]] is the closed set of families the baseline is required to carry.
-   *
-   * @param row  the row to classify
-   * @return the family name of the row
+   * The population a row belongs to, the part of its identity before the first `'-'`;
+   * [[MinimumRowsByFamily]] is the closed set of families the baseline must carry.
    */
   def familyOf(row: DayCountRow): String = row.id.takeWhile(character => character != '-')
 
   /**
-   * Builds the schedule information a row was evaluated with, or names why it cannot be built.
-   *
-   * The three shapes of the schema map onto the three outcomes here, and nothing is inferred
-   * beyond them. A row carrying no schedule fact is measured against the port's own
-   * `ScheduleInfo.simple`; a row carrying a fixed period end date - or none, alongside some other
-   * fact - becomes [[StubScheduleInfo]]; a row carrying a boundary list becomes
-   * [[ListedScheduleInfo]], which needs the schedule span that bounds the list.
-   *
-   * A row that carries both period-end encodings, or a boundary list without its span, has no
-   * single reading that both encodings agree on. Guessing one would measure the port against an
-   * input the capture never used, and raising would end the row without saying why, so it is
-   * reported as a fixture disagreement and the row contributes that message instead of a
-   * measurement.
-   *
-   * The frequency is a name the port parses. A frequency the port cannot parse is a defect in the
-   * port or in the fixture rather than an expectation of any kind, so it is lifted into a failed
-   * effect through [[ParityHarness.raise]], which the driver records against the row.
-   *
-   * @param row  the row whose schedule information is wanted
-   * @return the schedule information, or the disagreement that prevents it being built
+   * Builds the schedule information a row was evaluated with, or names why it cannot be built. The
+   * three shapes map onto the three outcomes and nothing is inferred beyond them: no schedule fact
+   * becomes `ScheduleInfo.simple`, a fixed period end date becomes [[StubScheduleInfo]], a boundary
+   * list becomes [[ListedScheduleInfo]]. A row carrying both encodings, or a list without its span,
+   * is reported as a fixture disagreement instead of measured against a guess.
    */
   def scheduleInfoFor(row: DayCountRow): IO[Either[List[String], DayCount.ScheduleInfo]] = {
     val captured = row.scheduleInfo
@@ -1696,33 +1279,15 @@ private[parity] object DayCountParitySpec {
     }
   }
 
-  /**
-   * Parses the frequency a row names, where it names one.
-   *
-   * @param name  the captured frequency name, such as `P3M` or `Term`
-   * @return the frequency, or nothing where the row carries none; the effect fails when a name
-   *         cannot be parsed, which is a defect rather than an expectation
-   */
+  /** Parses the frequency a row names, failing the effect for a name that cannot be parsed. */
   private def frequencyOf(name: Option[String]): IO[Option[Frequency]] =
     name.traverse(text => ParityHarness.raise(Frequency.parse(text)))
 
   /**
-   * Resolves the convention a row names, reusing the one already resolved for that name.
-   *
-   * The subject is resolved '''by name''' rather than by referring to a constant of the port, so
-   * the lookup the fixture depends on is part of what is measured: the canonical names are the
-   * identities the captured document, the JSON codecs and every caller share. `Bus/252 BRBD`
-   * resolves through the same call, against the calendars built into the library - constant data
-   * rather than ambient reference data (AAP section 0.6.5) - which is why no reference data is
-   * needed here at all.
-   *
-   * A name the port cannot resolve is a defect in the port or in the fixture rather than a parity
-   * result, so it is lifted into a failed effect through [[ParityHarness.raiseNec]] and recorded
-   * against the row by the driver.
-   *
-   * @param conventions  the conventions resolved so far in this run, keyed by captured name
-   * @param name  the canonical name of the convention
-   * @return the convention that name resolves to
+   * Resolves the convention a row names, reusing the one already resolved for that name. The
+   * subject is resolved '''by name''' rather than through a constant, so the lookup the fixture
+   * depends on is part of what is measured; a name that cannot be resolved is a defect rather than
+   * a parity result, so [[ParityHarness.raiseNec]] fails the effect.
    */
   def dayCountFor(conventions: Ref[IO, Map[String, DayCount]], name: String): IO[DayCount] =
     conventions.get.flatMap { resolved =>
@@ -1735,19 +1300,9 @@ private[parity] object DayCountParitySpec {
       }
     }
 
-  //-------------------------------------------------------------------------
-  // Measuring one row.
-  //-------------------------------------------------------------------------
-
   /**
-   * Measures one row of the fixture, answering with everything that differed.
-   *
-   * Every operation of the row is measured, and the messages are concatenated, so a row that
-   * differs in its year fraction '''and''' its day count names both instead of only the first.
-   *
-   * @param conventions  the conventions resolved so far in this run
-   * @param row  the row to measure
-   * @return every discrepancy found in the row, empty where it matched in every respect
+   * Measures one row, answering with everything that differed: every operation is measured and the
+   * messages concatenated, so a row differing in two of them names both.
    */
   def checkRow(conventions: Ref[IO, Map[String, DayCount]], row: DayCountRow): IO[List[String]] =
     scheduleInfoFor(row).flatMap {
@@ -1757,16 +1312,9 @@ private[parity] object DayCountParitySpec {
     }
 
   /**
-   * Applies the four measurements of a row to the convention it names.
-   *
-   * The name of the resolved convention is itself an expectation: a lenient lookup that resolved
-   * to the wrong member, or a `Bus/252` name that lost its calendar, would otherwise be measured
-   * as the arithmetic of whatever it resolved to.
-   *
-   * @param dayCount  the convention the row names
-   * @param info  the schedule information the row was evaluated with
-   * @param row  the row to measure
-   * @return every discrepancy found in the row
+   * Applies the measurements of a row to the convention it names. That convention's name is itself
+   * an expectation: a lenient lookup that resolved to the wrong member, or a `Bus/252` name that
+   * lost its calendar, would otherwise be measured as the arithmetic of whatever it resolved to.
    */
   private def measureRow(
       dayCount: DayCount,
@@ -1782,19 +1330,8 @@ private[parity] object DayCountParitySpec {
   }
 
   /**
-   * Measures the year fraction, or the refusal the capture recorded in its place.
-   *
-   * A refusal is asserted by '''type''' alone through [[ParityHarness.attemptArgCheck]]. The
-   * captured text is the message of the implementation being replaced - an
-   * `UnsupportedOperationException` from an accessor of `SIMPLE_SCHEDULE_INFO`, or the order check
-   * of `ArgChecker` - and the port answers both with its own `ArgCheck` message, so message parity
-   * is deliberately not claimed (AAP section 0.8.3 records the divergence). The captured text is
-   * quoted in the diagnostic, where it helps, and compared nowhere.
-   *
-   * @param dayCount  the convention the row names
-   * @param info  the schedule information the row was evaluated with
-   * @param row  the row to measure
-   * @return the discrepancy, or nothing when the port answered as Java did
+   * Measures the year fraction, or the refusal recorded in its place, whose '''type''' alone is
+   * asserted through [[ParityHarness.attemptArgCheck]].
    */
   private def checkYearFraction(
       dayCount: DayCount,
@@ -1823,15 +1360,8 @@ private[parity] object DayCountParitySpec {
     }
 
   /**
-   * Measures the day count, or the refusal the capture recorded in its place.
-   *
-   * The comparison is exact and the value stays an `Int`: a day count is a count, a tolerance
-   * applied to one would admit an answer that is simply wrong, and widening it to a `Double` to
-   * borrow the numeric comparator would be a conversion this measurement has no use for.
-   *
-   * @param dayCount  the convention the row names
-   * @param row  the row to measure
-   * @return the discrepancy, or nothing when the port answered as Java did
+   * Measures the day count, or the refusal recorded in its place. The comparison is exact and the
+   * value stays an `Int`: a tolerance applied to a count would admit an answer that is wrong.
    */
   private def checkDays(dayCount: DayCount, row: DayCountRow): IO[List[String]] =
     (row.days, row.daysError) match {
@@ -1855,20 +1385,9 @@ private[parity] object DayCountParitySpec {
     }
 
   /**
-   * Measures the relative year fraction in both directions.
-   *
-   * The relative form is '''total''': it has no order check, and for a reversed pair it swaps the
-   * dates and negates the result, which is why it answers where the year fraction refuses. It is
-   * therefore never asserted to refuse - not even on the out-of-order rows, where the other two
-   * operations are.
-   *
-   * Both directions are evaluated wherever an expectation exists for them, and
-   * [[expectedForward]] and [[expectedReversed]] are where that expectation comes from.
-   *
-   * @param dayCount  the convention the row names
-   * @param info  the schedule information the row was evaluated with
-   * @param row  the row to measure
-   * @return every discrepancy found in the two relative directions
+   * Measures the relative year fraction in both directions, from the expectations
+   * [[expectedForward]] and [[expectedReversed]] supply; having no order check, it is never
+   * asserted to refuse, not even on the out-of-order rows.
    */
   private def checkRelative(
       dayCount: DayCount,
@@ -1888,74 +1407,32 @@ private[parity] object DayCountParitySpec {
         )(actual => ParityHarness.assertParity(ReversedLabel, actual, expected)))
     ).sequence.map(_.flatten)
 
-  /** The name the forward relative year fraction is reported under. */
   private val ForwardLabel: String = "relativeYearFraction"
 
-  /** The name the reversed relative year fraction is reported under. */
   private val ReversedLabel: String = "relativeYearFraction with the dates reversed"
 
   /**
-   * The expectation for the relative year fraction over the row's dates as supplied.
-   *
-   * The captured value is the expectation wherever the fixture carries one - the 201
-   * `data_yearFraction` rows and the 20 out-of-order rows. Everywhere else the dates are in order,
-   * so the relative form is the year fraction itself, which is the reading the contract of the
-   * ported type states and the reading `DayCountTest.test_relativeYearFraction` asserts. Using the
-   * row's own year fraction there measures that identity on every row of the fixture instead of on
-   * the 201 rows that happen to carry the value twice.
-   *
-   * Where the row carries neither - the rows whose year fraction Java refused - there is no
-   * expectation and nothing is measured: the refusal is measured by [[checkYearFraction]], and
-   * inventing a relative expectation for a row the capture recorded none for would be deriving by
-   * hand the very value a captured baseline exists to supply.
-   *
-   * @param row  the row to read
-   * @return the expectation, or nothing where the row states none
+   * The expectation for the relative year fraction as the dates were supplied: the recorded value
+   * where the fixture carries one, otherwise the row's own year fraction, the dates being in order.
+   * Where the row carries neither, its year fraction was refused and nothing is measured.
    */
   def expectedForward(row: DayCountRow): Option[Double] =
     row.relativeYearFraction.orElse(row.yearFraction)
 
   /**
-   * The expectation for the relative year fraction over the row's dates reversed.
-   *
-   * The captured value is again the expectation wherever the fixture carries one, and the Java
-   * consumer of those rows - `DayCountTest.test_relativeYearFraction_reverse` - asserts exactly
-   * `-expected`, which is the contract of the ported type: the result "will be negative if the
-   * first date is after the second date".
-   *
-   * Where the row carries no captured reversed value, that identity supplies the expectation from
-   * the row's own year fraction, '''but only for a span of non-zero length'''. For a zero-length
-   * span the second date is not before the first, so the relative form answers `+yearFraction`
-   * rather than its negation - and `1/1`, which answers `1` for any pair including a zero-length
-   * one, makes that a difference of `2` rather than a question of signed zero. The guard is
-   * therefore a statement of where the identity holds, not a way around a case that failed.
-   *
-   * @param row  the row to read
-   * @return the expectation, or nothing where the row states none and none follows
+   * The expectation for the relative year fraction over the row's dates reversed: the recorded
+   * value where the fixture carries one, and otherwise `-yearFraction`, '''but only for a span of
+   * non-zero length'''. For a zero-length span the second date is not before the first, so the
+   * answer is `+yearFraction` rather than its negation, which `1/1` makes a difference of `2`.
    */
   def expectedReversed(row: DayCountRow): Option[Double] =
     row.relativeYearFractionReversed.orElse(
       if (row.start.isBefore(row.end)) row.yearFraction.map(expected => -expected) else None)
 
-  //-------------------------------------------------------------------------
-  // Internals: observing a call that must answer, and naming a fixture disagreement.
-  //-------------------------------------------------------------------------
-
   /**
-   * Compares what a call produced, reporting a refusal as the discrepancy it is.
-   *
-   * The call is made inside an effect and its outcome turned back into a value, for the same
-   * reason [[ParityHarness.attemptArgCheck]] does it for the opposite expectation: a port that
-   * refuses where Java answered is a discrepancy of one operation of one row, and it must not take
-   * the rest of the row - or the rest of the fixture - with it. The driver would record an escaping
-   * error as a single message for the whole row; this names the operation instead, and lets the
-   * row's other operations be measured.
-   *
-   * @param label  the name of the operation, which is what makes a report readable
-   * @param thunk  the call that must answer
-   * @param compare  the comparison to apply to what it answered
-   * @tparam A  the type of the answer
-   * @return the discrepancy, or nothing when the call answered and the comparison passed
+   * Compares what a call produced, reporting a refusal as the discrepancy it is: the call is made
+   * inside an effect and its outcome turned back into a value, so a refusal where the baseline
+   * holds a value does not take the rest of the row, or of the fixture, with it.
    */
   private def measured[A](label: String, thunk: => A)(compare: A => List[String]): IO[List[String]] =
     IO.delay[A](thunk).attempt.map {
@@ -1965,15 +1442,10 @@ private[parity] object DayCountParitySpec {
     }
 
   /**
-   * Names a way in which the fixture has stopped agreeing with this spec.
-   *
-   * This is not a parity result and is deliberately worded so that it cannot be read as one: the
-   * port may be perfectly correct and the row still unmeasurable. It is reported through the same
-   * channel as a discrepancy so that it reaches the published report and fails the gate, because a
-   * row that measures nothing is the one outcome a `failed == 0` gate cannot otherwise detect.
-   *
-   * @param explanation  what about the row cannot be measured, and why
-   * @return the message to report against the row
+   * Names a way in which the fixture has stopped agreeing with this spec: not a parity result, and
+   * worded so that it cannot be read as one. It is reported through the same channel as a
+   * discrepancy so that it reaches the published report, because a row that measures nothing is the
+   * one outcome a `failed == 0` check cannot see.
    */
   private def fixtureDefect(explanation: String): String = s"fixture disagreement: $explanation"
 

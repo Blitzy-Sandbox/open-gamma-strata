@@ -17,6 +17,7 @@ import cats.Show
 
 import io.circe.Codec
 
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
 
@@ -33,11 +34,10 @@ import com.opengamma.strata.collect.result.Failure
  *
  * A pair of two currencies is always meaningful, including a pair of one currency with itself -
  * the identity pair `AAA/AAA`, whose rate is one. There is therefore nothing for a factory to
- * reject, and this is a plain `case class` with the public `apply` and `copy` the compiler
- * synthesises. That sets it apart from most types of this package, whose factories validate
- * their input and answer with a failure; resist the reflex to add a validating factory here,
- * because there is no invalid input to catch. [[CurrencyPair.of]] exists alongside the
- * constructor purely so that a call site reads as the Java original read.
+ * reject, and this is a plain `case class` whose `apply` and `copy` are public and answer a pair
+ * for any two currencies. Most types of this package validate their input and answer with a
+ * failure instead; a pair has no invalid input to catch. [[CurrencyPair.of]] is the same
+ * construction reached under a factory name.
  *
  * ===Market convention===
  *
@@ -52,8 +52,8 @@ import com.opengamma.strata.collect.result.Failure
  *
  * A pair is rendered as its two codes separated by a slash, `EUR/USD`, by [[toString]], by the
  * `Show` instance and by the JSON codec, and [[CurrencyPair.parse]] reads that same form back.
- * This text is the identity of the pair: it is what appears in documents, messages and test
- * expectations, so it is reproduced exactly as the implementation being ported produced it.
+ * This text is the identity of the pair: it is what appears in documents and messages, and the
+ * three routes that write it all write these same seven characters.
  *
  * ===Thread safety===
  *
@@ -68,9 +68,8 @@ import com.opengamma.strata.collect.result.Failure
  * @see [[CurrencyPairData]] for the conventional pairs and their rate digits
  * @see [[CurrencyData]] for the market convention priority ordering
  */
-final case class CurrencyPair(base: Currency, counter: Currency) {
+final case class CurrencyPair(base: Currency, counter: Currency) extends NoJavaSerialization {
 
-  //-------------------------------------------------------------------------
   /**
    * Gets the inverse currency pair.
    *
@@ -96,8 +95,7 @@ final case class CurrencyPair(base: Currency, counter: Currency) {
    * Given the pair `AAA/BBB`, `AAA` yields `BBB` and `BBB` yields `AAA`. A currency that this
    * pair does not hold is reported as a failure, because which currency a caller asks about is
    * data rather than a coding error - it typically arrives from the same document or market data
-   * as the pair itself. The implementation being ported threw for this case; the failure carries
-   * the same wording so that a message a user reads does not change.
+   * as the pair itself. The failure names that currency and this pair.
    *
    * For an identity pair the answer is that same currency, which is what asking for "the other
    * one" means when both are the same.
@@ -109,7 +107,8 @@ final case class CurrencyPair(base: Currency, counter: Currency) {
    * }}}
    *
    * @param currency  the currency whose counterpart in this pair is wanted
-   * @return the other currency of the pair, or the failure describing why this pair has none
+   * @return the other currency of the pair, or the failure naming a currency that is neither the
+   *   base nor the counter of this pair
    */
   def other(currency: Currency): Either[Failure, Currency] =
     if (currency == base) {
@@ -156,11 +155,11 @@ final case class CurrencyPair(base: Currency, counter: Currency) {
    *  - `AAA/BBB` crossed with `AAA/BBB` gives nothing, as only two currencies are named.
    *  - `AAA/AAA` crossed with `AAA/AAA` gives nothing, for both of the previous reasons.
    *
-   * The four cases below are tested in exactly the order the implementation being ported tested
-   * them, and that order is part of the contract rather than an implementation detail: a caller
-   * computing a cross rate reads the base and counter of the returned pair to decide which of
-   * its two rates to apply in which direction, so a pair that shares both a base and a counter
-   * with the other pair has to resolve the same way it always did.
+   * The four cases below are tested in a fixed order, and that order is part of the contract
+   * rather than an implementation detail: a caller computing a cross rate reads the base and
+   * counter of the returned pair to decide which of its two rates to apply in which direction,
+   * so a pair sharing both a base and a counter with the other pair resolves one determinate
+   * way.
    *
    * @param other  the pair to cross this one with
    * @return the cross pair in market convention order, or no pair when no cross exists
@@ -184,7 +183,6 @@ final case class CurrencyPair(base: Currency, counter: Currency) {
       None
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Checks whether this pair is the market convention pair for its two currencies.
    *
@@ -255,11 +253,11 @@ final case class CurrencyPair(base: Currency, counter: Currency) {
   /**
    * Returns the set of currencies this pair holds, iterating in market convention order.
    *
-   * The iteration order is part of what this method offers, as it was for the implementation
-   * being ported: a caller listing the currencies of a pair gets the conventional base first and
-   * the conventional counter second, whichever way round this pair happens to be written. The
-   * set is therefore an insertion-ordered `ListSet` rather than a hashed set, so the order is a
-   * property of the returned value and not an accident of how few elements it holds.
+   * The iteration order is part of what this method offers: a caller listing the currencies of a
+   * pair gets the conventional base first and the conventional counter second, whichever way
+   * round this pair happens to be written. The set is therefore an insertion-ordered `ListSet`
+   * rather than a hashed set, so the order is a property of the returned value and not an
+   * accident of how few elements it holds.
    *
    * An identity pair yields a set of one currency.
    *
@@ -276,8 +274,8 @@ final case class CurrencyPair(base: Currency, counter: Currency) {
    *  1. the digits the reference data holds for this pair;
    *  1. the digits it holds for the [[inverse]] pair, since a configured pair is held in its
    *     conventional direction only and a quote carries the same precision either way round;
-   *  1. the sum of the minor unit digits of the two currencies, which is the estimate the
-   *     implementation being ported used for a pair it knew nothing about.
+   *  1. the sum of the minor unit digits of the two currencies, which is the estimate used for a
+   *     pair the reference data holds in neither direction.
    *
    * {{{
    * CurrencyPair(Currency.GBP, Currency.USD).getRateDigits   // 4 - configured
@@ -293,13 +291,11 @@ final case class CurrencyPair(base: Currency, counter: Currency) {
       .orElse(CurrencyPair.configuredRateDigits(counter, base))
       .getOrElse(base.minorUnitDigits + counter.minorUnitDigits)
 
-  //-------------------------------------------------------------------------
   /**
    * Returns the text form of this pair, which is the two codes separated by a slash.
    *
    * This is the form [[CurrencyPair.parse]] reads, the form the `Show` instance renders and the
-   * form the JSON codec writes, and it is identical to the text the implementation being ported
-   * produced.
+   * form the JSON codec writes.
    *
    * @return the pair as text, such as `EUR/USD`
    */
@@ -308,25 +304,39 @@ final case class CurrencyPair(base: Currency, counter: Currency) {
 
 /**
  * Holds the configured pairs, the routes from text and the typeclass instances of currency pairs.
- *
- * The members here are the published contract of this companion and are kept stable, since a
- * call site of the implementation being ported reads the same names. Note that the accessors of
- * a pair are `base` and `counter`, the property names of the original, so a reader looking for
- * its `getBase` and `getCounter` finds the same two values under the names the original gave its
- * properties.
  */
 object CurrencyPair {
 
   /**
    * The text form of a pair: three upper case letters, a slash, and three more.
    *
-   * This is the expression the implementation being ported matched, and it is applied to the
-   * whole of the text rather than to part of it, so trailing or leading characters are a
-   * rejection rather than something to ignore.
+   * The expression is applied to the whole of the text rather than to part of it, so trailing or
+   * leading characters are a rejection rather than something to ignore.
    */
   private val PairFormat: Regex = """([A-Z]{3})/([A-Z]{3})""".r
 
-  //-------------------------------------------------------------------------
+  /**
+   * The length of the text form of a pair, which the expression above fixes at seven.
+   *
+   * Three letters, a slash and three letters is seven characters and can be nothing else, so
+   * this is the one thing about a candidate text that can be known before any work is done on
+   * it. [[CurrencyPair.parse]] tests it first for that reason: text '''longer''' than this
+   * cannot match however its case is folded, because folding a character never produces fewer
+   * characters than it was given, so folding such a text would produce a value only to discard
+   * it.
+   *
+   * The test is an upper bound rather than an equality for exactly that reason. Folding can
+   * make a text '''longer''' - the German sharp s folds to two letters - so a text of six
+   * characters can still fold to a pair of seven, and it is folded and matched as it always
+   * was. Only the direction that cannot happen is ruled out in advance.
+   *
+   * The fold is what makes the test worth writing. A text of a million characters folds to a
+   * text of a million characters, allocated and then thrown away by the very next comparison
+   * (CWE-400/CWE-770); testing the length costs one field read and rejects the same text with
+   * the same message.
+   */
+  private val PairTextLength: Int = 7
+
   /**
    * The rate digits the reference data holds for a pair of currencies, if it holds any.
    *
@@ -350,9 +360,8 @@ object CurrencyPair {
    * The market convention priority of a currency, where a lower number means a higher priority.
    *
    * A currency the ordering does not list ranks behind every currency it does, which is what the
-   * largest possible value expresses; the implementation being ported defaulted to the same
-   * value for the same reason. Only the relative order of two priorities is ever observed, so
-   * the base the ordering counts from is immaterial.
+   * largest possible value expresses. Only the relative order of two priorities is ever
+   * observed, so the base the ordering counts from is immaterial.
    *
    * @param currency  the currency whose priority is wanted
    * @return the position of the currency in the ordering, or the largest value when unlisted
@@ -360,7 +369,6 @@ object CurrencyPair {
   private def marketConventionPriorityOf(currency: Currency): Int =
     CurrencyData.marketConventionPriorityIndex.getOrElse(currency.code, Int.MaxValue)
 
-  //-------------------------------------------------------------------------
   /**
    * The set of configured currency pairs.
    *
@@ -371,10 +379,8 @@ object CurrencyPair {
    * are then derived by the rules documented on `CurrencyPair.isConventional` and
    * `CurrencyPair.getRateDigits`.
    *
-   * Unlike the equivalent of the implementation being ported, whose contents were whatever a
-   * classpath resource happened to yield at class initialisation time - an empty set if loading
-   * failed, silently turning every pair into an unconfigured one - this set is computed from
-   * compiled data and cannot be empty.
+   * The set is computed from the compiled data of [[CurrencyPairData]] while this companion
+   * initialises, so it holds those 92 pairs in every program and cannot be empty.
    *
    * What this set offers is membership, answered in constant time, which is what asking whether
    * a pair is configured needs. It offers no iteration order: the order of the reference data is
@@ -389,13 +395,12 @@ object CurrencyPair {
       case (rowBase, rowCounter, _) => CurrencyPair(rowBase, rowCounter)
     }.toSet
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains a pair from a base and a counter currency.
    *
    * The two currencies may be the same, giving the identity pair. This is total - there is
-   * nothing about two currencies to reject - and is exactly what the constructor does; it exists
-   * so that a call site written against the implementation being ported reads unchanged.
+   * nothing about two currencies to reject - and is exactly what the constructor does, offered
+   * under a factory name.
    *
    * @param base     the base currency
    * @param counter  the counter currency
@@ -410,8 +415,8 @@ object CurrencyPair {
    * insensitive to the case of the input. The English locale is named explicitly so that the
    * fold is the same in every locale a program might run in. Both codes then have to name a
    * currency, and the failure of the first that does not is the failure returned - which is
-   * where text naming a currency outside the closed set of this port is rejected, rather than a
-   * currency being invented for it.
+   * where a code outside the closed set of [[Currency]] is rejected, rather than a currency
+   * being invented for it.
    *
    * {{{
    * CurrencyPair.parse("EUR/USD")         // Right(EUR/USD)
@@ -422,43 +427,67 @@ object CurrencyPair {
    * CurrencyPair.parse("EUR/ZZZ")         // Left - no currency is named ZZZ
    * }}}
    *
-   * The wording of the rejection is that of the implementation being ported, and it names the
-   * text as it was supplied rather than as it was folded, so a user sees back what they wrote.
+   * The rejection names the whole of the text as it was supplied rather than as it was folded,
+   * so a user sees back what they wrote.
    *
-   * It names the whole of that text. The text came from outside the library, so bounding it and
-   * escaping what it may hold belong to the writing of a failure, which
-   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure perform
-   * for every part they write - a message reaching a log is therefore a bounded single line
-   * whatever spelling arrived here.
+   * ===The length is tested before the text is folded===
+   *
+   * The expression fixes the length of a pair at [[PairTextLength]], and folding a text never
+   * makes it shorter, so text longer than that cannot match whatever its case and is rejected
+   * before it is folded rather than after. Nothing observable changes: the text that could not
+   * have matched is refused with the message it was always refused with, and every text that
+   * could still match - including a shorter one that folds into a pair, as the German sharp s
+   * does - is folded and matched exactly as before. What changes is the work a rejection costs:
+   * text arriving from outside this library is no longer copied in full before its shape is
+   * looked at (CWE-400/CWE-770).
    *
    * @param pairStr  the pair as text, in the form `AAA/BBB`, in any case
-   * @return the pair the text names, or the failure describing why it names none
+   * @return the pair the text names, or the failure naming text that is not two three-letter
+   *   codes separated by a slash, or that holds a code no currency of the closed [[Currency]]
+   *   set has
    */
   def parse(pairStr: String): Either[Failure, CurrencyPair] =
-    pairStr.toUpperCase(Locale.ENGLISH) match {
-      case PairFormat(baseCode, counterCode) =>
-        for {
-          parsedBase <- Currency.parse(baseCode)
-          parsedCounter <- Currency.parse(counterCode)
-        } yield CurrencyPair(parsedBase, parsedCounter)
-      case _ =>
-        // the text is rendered rather than interpolated as it stands, which bounds the message
-        // and keeps it to one line while leaving an in-bound spelling quoted as it was given
-        Left(Failure.Parsing(s"Invalid currency pair: $pairStr"))
+    if (pairStr.length > PairTextLength) {
+      Left(invalidPair(pairStr))
+    } else {
+      pairStr.toUpperCase(Locale.ENGLISH) match {
+        case PairFormat(baseCode, counterCode) =>
+          for {
+            parsedBase <- Currency.parse(baseCode)
+            parsedCounter <- Currency.parse(counterCode)
+          } yield CurrencyPair(parsedBase, parsedCounter)
+        case _ =>
+          Left(invalidPair(pairStr))
+      }
     }
 
-  //-------------------------------------------------------------------------
+  /**
+   * The failure reported for text that does not have the shape of a pair.
+   *
+   * The two routes to it - a length the expression cannot match, and a length it could match but
+   * a spelling it does not - are the same rejection to a caller and report the same message, so
+   * the message is built here rather than at either of them. The text is quoted as it stands;
+   * bounding it and escaping what it may hold belong to the writing of a failure, which
+   * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure perform
+   * for every part they write, so a message reaching a log is a bounded single line whatever
+   * spelling arrived here.
+   *
+   * @param pairStr  the text that named no pair
+   * @return the failure naming it
+   */
+  private def invalidPair(pairStr: String): Failure =
+    Failure.Parsing(s"Invalid currency pair: $pairStr")
+
   /**
    * The ordering of currency pairs, which is also their equality and hashing.
    *
-   * Pairs are ordered by base currency and then by counter currency, each by its code. The
-   * implementation being ported did not order pairs at all; an order is provided here because a
-   * deterministic sequence of pairs is what makes output - a matrix of rates, a set of
-   * conventions, a failure message listing what was missing - reproducible.
+   * Pairs are ordered by base currency and then by counter currency, each by its code. An order
+   * is provided because a deterministic sequence of pairs is what makes output - a matrix of
+   * rates, a set of conventions, a failure message listing what was missing - reproducible.
    *
    * Comparing equal is the same thing as being equal, since the comparison reads both fields and
    * they are the only fields there are. Equality and hashing are those of the case class,
-   * comparing the two currencies, which is the comparison the original performed.
+   * comparing the two currencies.
    *
    * This is the only equality-bearing instance this companion declares: `Order` and `Hash` both
    * extend `Eq`, so a separate `Eq` would be a second answer to the same question.
@@ -490,15 +519,14 @@ object CurrencyPair {
    */
   implicit val show: Show[CurrencyPair] = Show.show(pair => pair.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The JSON representation of currency pairs, which is their text form.
    *
    * A pair is the JSON string `"EUR/USD"` rather than an object of two codes: the text is the
-   * identity of a pair, it is what the implementation being ported wrote, and it is short enough
-   * to read in a document. Decoding applies [[parse]], so a pair that is not well formed, or
-   * that names a currency this port does not hold, is a decoding failure carrying the reason
-   * rather than a silently accepted value.
+   * identity of a pair and it is short enough to read in a document. Decoding applies [[parse]],
+   * so a pair that is not well formed, or that holds a code outside the closed set of
+   * [[Currency]], is a decoding failure carrying the reason rather than a silently accepted
+   * value.
    *
    * The codec is assembled at compile time from the parsing and rendering functions above and
    * performs no reflection.

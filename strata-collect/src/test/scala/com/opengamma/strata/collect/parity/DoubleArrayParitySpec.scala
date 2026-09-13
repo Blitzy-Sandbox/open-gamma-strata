@@ -277,8 +277,8 @@ class DoubleArrayParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers
         field[String](reshaped.failures.head, "check") shouldBe Some("shape")
       }
 
-      // A matrix whose dimensions differ behaves the same way, which is the case `matrixTranspose`
-      // would hit if the port transposed the wrong axis.
+      // A matrix whose dimensions differ behaves the same way: one shape check, no element check,
+      // and the failure names both dimensions - a 3 x 2 expectation against a 2 x 3 value.
       val reshapedMatrix =
         evaluate(
           Vector(
@@ -294,7 +294,8 @@ class DoubleArrayParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers
         field[String](reshapedMatrix.failures.head, "actual") shouldBe Some("2 x 3")
       }
 
-      // And an error raised by the port is one failing check that does not escape, because an
+      // And an error raised while an operation is evaluated is one failing check that does not
+      // escape: the check records the error's type and message as the actual value, because an
       // escaping error is exactly what would cost the run its report.
       val thrown =
         evaluate(
@@ -376,7 +377,9 @@ class DoubleArrayParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers
       withClue("the report of a refusal: ") {
         contractViolations(refusalReport(Refusal(0, "NoSuchFileException: absent"))) shouldBe empty
         contractViolations(
-          refusalReport(Refusal(43, "ArrayIndexOutOfBoundsException: ragged"))) shouldBe empty
+          refusalReport(
+            Refusal(43, "IllegalArgumentException: rows that cannot describe one rectangle"))) shouldBe
+          empty
       }
       succeed
     }
@@ -408,11 +411,11 @@ class DoubleArrayParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers
 
   test("rows that cannot be measured are still reported, and the report says how many there were") {
     // The other refusal: the document was read and decoded, so the report names the rows it held.
-    // The rows are the committed ones with a matrix made ragged by [[ragged]]. The port raising
-    // inside one of the operations is a discrepancy rather than an escape - `matrixPlus` on such a
-    // row is one - but a matrix that misstates its shape is also read by the comparison, and the
-    // raise from there is a genuine escape: it is what would end the run with no artifact written
-    // at all, which is the one outcome a failing parity run must not have.
+    // The rows are the committed ones with the last row of one matrix shortened by [[ragged]],
+    // which the matrix factory refuses - so building the operands of that row raises, and it
+    // raises where the operands are built rather than inside a deferred operation. That is a
+    // genuine escape: it is what would end the run with no artifact written at all, which is the
+    // one outcome a failing parity run must not have.
     for {
       attempted <- attemptMeasurementOf(loadFixture.map(rows => rows.map(ragged)))
       report = attempted.fold(refusalReport, measured => measured.measurement.report)
@@ -618,8 +621,10 @@ class DoubleArrayParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers
           case Right(decoded) => fail(s"a row with a lost key decoded as ${decoded.size} rows")
         }
 
-        // A renamed key is both at once, and is the case a derived decoder would have reported as
-        // a missing field alone, saying nothing about the name the capture now writes.
+        // A renamed key is both at once: the documented key `sorted` is the one the capture
+        // writes and the decoder requires, so a row spelling it otherwise is refused for the
+        // unknown name as well as the missing one - where a derived decoder would report the
+        // missing field alone and say nothing about the name the row actually carries.
         val renamed = withKey(withoutKey(encoded, "sorted"), "sortedAscending", Json.arr())
         decodeRows(Vector(renamed)) match {
           case Left(message) =>
@@ -742,14 +747,19 @@ class DoubleArrayParitySpec extends AsyncFunSuite with AsyncIOSpec with Matchers
   /**
    * The same row with the last row of `matrixA` one element short.
    *
-   * `DoubleMatrix.copyOf` is total, exactly as the Java factory it is a port of: it takes the
-   * column count from the first row and clones the rest as they stand, so a ragged array is
-   * accepted and the matrix built from it misstates its own shape. Preparing such a row therefore
-   * succeeds, and it is the measurement that cannot be carried out - reading the position the
-   * short row does not hold raises from the comparison itself, which is outside the deferred call
-   * [[observe]] guards. That is how a row that cannot be measured is obtained from the committed
-   * fixture rather than hand-written: it drives the real refusal path of [[attemptMeasurementOf]]
-   * over real rows, rather than a simulated one.
+   * `DoubleMatrix.copyOf` refuses an array whose rows differ in length, because a matrix of this
+   * port states a shape its rows agree with, so preparing such a row raises where the Java
+   * factory would have built a matrix that misstated its own shape. The raise happens inside
+   * [[measure]], which is where the operands of a row are built, and that is outside the deferred
+   * call [[observe]] guards - so it is an escape of exactly the kind [[attemptMeasurementOf]]
+   * exists to turn into a published refusal, and the report it produces names the rows the
+   * document held, all of them unmeasured.
+   *
+   * That is how a row that cannot be measured is obtained from the committed fixture rather than
+   * hand-written: it drives the real refusal path over real rows rather than a simulated one.
+   * What changed with the refusal is where the raise comes from - the factory rather than a
+   * comparison reading past the end of a short row - and not what the run publishes, which is
+   * what the test asserts.
    */
   private def ragged(row: Row): Row =
     if (row.matrixA.isEmpty) {
@@ -1349,8 +1359,8 @@ private[parity] object DoubleArrayParitySpec {
    *
    * A failing check is one '''discrepancy''', so `checksFailed` is the row's discrepancy count.
    * `failures` retains the first [[FailureReportLimit]] of the row's descriptions, which bounds
-   * what a systematically broken port can accumulate, while `checksFailed` remains the true
-   * total.
+   * the size of the published report when every check of a row fails, while `checksFailed`
+   * remains the true total.
    */
   final case class Tally(checksPassed: Int, checksFailed: Int, failures: Vector[Json]) {
 
@@ -1679,10 +1689,10 @@ private[parity] object DoubleArrayParitySpec {
    *     the transpose of the input's - counted correctly.
    *
    * It is the count of a run in which every shape matched, which is the only kind of run that can
-   * report `failed == 0`: a shape discrepancy is one check that replaces the element checks it
-   * would have introduced, and an error raised by the port is one check in place of all of them.
-   * The suite therefore asserts this figure of a run it has already established to be clean, and a
-   * run that is not clean fails on its discrepancies first.
+   * report `failed == 0`: a shape discrepancy is one check standing in for the element checks it
+   * would have introduced, and an error raised while an operation is evaluated is one check in
+   * place of all of them. The suite therefore asserts this figure of a run it has already
+   * established to be clean, and a run that is not clean fails on its discrepancies first.
    *
    * @param rows  the decoded fixture
    * @return the number of checks measuring it must execute

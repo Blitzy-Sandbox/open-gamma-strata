@@ -45,73 +45,21 @@ import com.opengamma.strata.collect.testkit.ResultMatchers._
 import com.opengamma.strata.collect.testkit.TestHelper.date
 
 /**
- * Test [[RollConvention]], ported from the Java `RollConventionTest`.
+ * Test [[RollConvention]] - the rule each convention applies to a date, and the names it answers
+ * to.
  *
- * This is a one-to-one port: each of the Java class's thirty-nine test methods has a test of the
- * same name here, in the same order, and no test has been added or split off. Eleven of those
- * methods were parameterised over seven data providers; each provider is transcribed row for row
- * into one table, and the row loop lives inside the single test that the Java method became, so
- * the method-level traceability recorded in `manifest/java-test-mapping.csv` stays exact:
+ * Two things hold spec-wide. Lookup and construction report rejection rather than raising:
+ * [[RollConvention.valueOf]] is the exact lookup over the canonical and upper-case keys and
+ * answers an `Option`, [[RollConvention.parse]] applies the ordered lenient rewrites and answers
+ * `EitherNec[Failure, _]`, and `RollConvention.ofDayOfMonth` answers a `FailureOr`; a test that
+ * needs the convention itself opens such a result through `rc`, and a rejection is asserted as a
+ * value carrying its `FailureReason` and its message text. And the family is closed, so
+ * `RollConvention.values` is the published inventory of 45 members: the tables below state that
+ * inventory, the identifiers of [[RollConventions]] that name it, the 44 external FpML spellings
+ * and the 11 ordered lenient rewrites, because each of those is code here and a lost row would
+ * otherwise be invisible.
  *
- *   - `data_types` - the 8 rule-based conventions, driving `test_null`;
- *   - `data_adjust` - '''51''' rows, driving `test_adjust`;
- *   - `data_matches` - '''17''' rows;
- *   - `data_next` - '''62''' rows;
- *   - `data_previous` - '''57''' rows;
- *   - `data_name` - 8 rows, driving `test_name`, `test_toString`, `test_of_lookup`,
- *     `test_lenientLookup_standardNames` and `test_extendedEnum`;
- *   - `data_lenient` - '''11''' rows.
- *
- * Because the roster of tests is closed, what a reader might expect to be a test of its own is
- * folded into the test whose subject it belongs to. The agreement of the three calendar-bearing
- * conventions with the calendars they hold is part of `test_adjust`, which is where their dates
- * are asserted; the 44 external FpML spellings and the 11 ordered lenient rewrites that the
- * configuration resource used to declare are asserted in `test_extendedEnum`, which is the test
- * that read that registry in Java.
- *
- * ===How the shape of the port changes the assertions===
- *
- *   - The throwing `RollConvention.of(name)` became two members:
- *     [[RollConvention.valueOf]], the exact lookup over the canonical and upper-case keys,
- *     returning an `Option`, and [[RollConvention.parse]], the lenient lookup, returning
- *     `EitherNec[Failure, _]`. Both are asserted wherever Java asserted `of`, so the two entry
- *     points cannot drift apart. `RollConvention.ofDayOfMonth` likewise reports rejection as a
- *     `Left` carrying `Failure.Invalid` instead of raising.
- *   - `extendedEnum()` - the registry the Java type assembled by reflecting over an enum, merging
- *     a second lookup class and reading a configuration resource off the class path - became the
- *     `NamedEnum[RollConvention]` instance the companion publishes. `test_extendedEnum` asserts
- *     the canonical map the Java method read (`lookupAll`) and then the transcribed external and
- *     lenient tables, because in this port those rows are code and a lost row would otherwise be
- *     invisible.
- *   - `test_null` asserted that each convention rejected an absent date. The guard behind that
- *     rejection has no target here, because the argument it guarded against cannot be expressed:
- *     a date and a frequency are required parameters of required types. The case is asserted as a
- *     compile-time proof that both arguments are required, and then as the totality the Java
- *     guards were protecting - every convention answers for a valid date, and `next` and
- *     `previous` always move strictly forward and strictly back. No `null` is written anywhere in
- *     this file.
- *   - `test_lenientLookup_constants` reflected over the public constants of `RollConventions` with
- *     `java.lang.reflect`. This port performs no reflection, so the reflective sweep has no
- *     target: the 45 identifiers are written out as an explicit table, which states exactly what
- *     the sweep would have discovered and additionally fails if the holder ever loses one.
- *   - `coverage` called `coverPrivateConstructor` and `coverEnum`, which existed only to satisfy a
- *     coverage tool by reflectively touching a private constructor and the values of a Java enum.
- *     A Scala `object` has no constructor to reach and there is no second enum, so what those
- *     calls stood for is asserted directly: the family is closed at 45 distinct members, every
- *     one of them round-trips through its name, and each of the 45 constants is the very member.
- *   - `test_serialization` round-tripped a convention through Java serialization and through the
- *     binary and JSON encodings of the bean library the Java type belonged to, all three of which
- *     read the class back reflectively. None is a dependency of this port and neither Java
- *     serialization nor compatibility with that library's JSON is in its scope, so the round trip
- *     is asserted through the circe codec that replaced them.
- *   - `test_jodaConvert` asserted a round trip through the reflective string-conversion library
- *     the Java type was annotated for. That library is not a dependency either, and its two
- *     annotations became `Show` and `parse`, so the guarantee is asserted over those and over
- *     `toString`, which agrees with them.
- *
- * Numerical parity against the Java implementation is not this spec's subject: the roll
- * conventions as used inside schedule generation are pinned to the captured Java baseline by
- * `parity.ScheduleParitySpec`. The assertions here are behavioural and compare dates exactly.
+ * Dates are compared exactly; no tolerance takes part.
  *
  * @see [[FrequencySpec]] for the periodic frequencies these conventions are applied with
  */
@@ -150,7 +98,10 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
     RollConvention.valueOf(name).getOrElse(fail(s"no convention is named $name"))
 
   //-------------------------------------------------------------------------
-  /** The Java `data_name` provider: each convention with the name it renders as. */
+  /**
+   * Eight conventions with the name each renders as: six of the rule-based members, one
+   * day-of-month member and one day-of-week member.
+   */
   private val dataName: TableFor2[RollConvention, String] = Table(
     ("convention", "name"),
     (RollConventions.NONE, "None"),
@@ -164,13 +115,13 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   )
 
   /**
-   * The Java `data_lenient` provider, all 11 rows, in the order the provider listed them.
+   * Eleven spellings that resolve leniently, each with the convention it resolves to.
    *
    * Every row is a spelling that the ordered chain of lenient rewrites turns into a canonical
    * name. The rows are what makes the order of that chain observable: the three spellings of the
-   * 31st reach `EOM` only because the row for 31 is declared before the row that captures a one-
-   * or two-digit day, and a reordering of the transcribed patterns - which would change what
-   * resolves and to what - is caught here.
+   * 31st reach `EOM` only because the pattern for 31 is applied before the pattern that captures
+   * a one- or two-digit day, and a reordering of the patterns - which would change what resolves
+   * and to what - is caught here.
    */
   private val dataLenient: TableFor2[String, RollConvention] = Table(
     ("name", "convention"),
@@ -190,12 +141,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   /**
    * The identifiers of the 45 constants of [[RollConventions]], each with the member it names.
    *
-   * This table is the port of the reflective sweep of the Java `test_lenientLookup_constants`,
-   * which read the public static fields of the constants holder and checked that each field name
-   * resolved leniently to the value the field held. Reflection is not available to this port, so
-   * the identifiers are written out. That is a stronger statement than the sweep was, not a
-   * weaker one: the sweep asserted a property of whatever fields it happened to find, while this
-   * table also fixes which 45 identifiers the holder publishes.
+   * The table fixes both halves of the holder: which 45 identifiers [[RollConventions]] publishes,
+   * and which member each of them names.
    */
   private val dataConstantIdentifiers: TableFor2[String, RollConvention] = Table(
     ("identifier", "convention"),
@@ -249,11 +196,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   /**
    * The seven days of the week with the canonical name of the convention that selects each.
    *
-   * The Java test derived these names by asking a string-case utility of the collection library
-   * it depended on to turn `MONDAY` into `Monday` and then taking the first three letters. That
-   * utility has no target in this port, and deriving a name is in any case a weaker statement
-   * than naming it, so the seven names are written out - which is also how the production file
-   * declares them.
+   * The names are written out rather than derived from each day's own name, so that the table
+   * states the expected names instead of recomputing them.
    */
   private val dataDayOfWeekNames: TableFor2[DayOfWeek, String] = Table(
     ("dayOfWeek", "name"),
@@ -268,23 +212,20 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
 
   //-------------------------------------------------------------------------
   test("test_null") {
-    // Reinterpretation. The Java method passed the absent reference to `adjust`, `matches`,
-    // `next` and `previous` on each of the eight rule-based conventions and asserted that all
-    // six calls raised. The guards behind those six throws have no target here, because what
-    // they guarded against cannot be expressed: a date and a frequency are required parameters
-    // of required types, so omitting either, or offering something that is not one, is rejected
-    // when this spec is compiled rather than when it runs. That is asserted first, as the
-    // strongest form the Java case can take, and no `null` is written anywhere in this file.
+    // What each of the four operations requires of its arguments. `adjust` and `matches` decide
+    // on a date, `next` and `previous` on a date and a frequency, and every one of those
+    // parameters is required and typed: a call that omits one, or supplies the two in the wrong
+    // order, does not compile.
     assertDoesNotCompile("RollConventions.EOM.adjust()")
     assertDoesNotCompile("RollConventions.EOM.matches()")
     assertDoesNotCompile("RollConventions.EOM.next(date(2014, JULY, 1))")
     assertDoesNotCompile("RollConventions.EOM.previous(date(2014, JULY, 1))")
     assertDoesNotCompile("RollConventions.EOM.next(Frequency.P3M, date(2014, JULY, 1))")
 
-    // What the six guards were protecting is the totality of the four operations, so the rest of
-    // the case asserts that: every one of the eight conventions answers for a valid date, and
-    // the two sequence operations honour the contract that makes them usable in a schedule -
-    // `next` always moves strictly forward and `previous` always strictly back, whatever the
+    // What they then decide. Each of the eight rule-based conventions answers for a date rather
+    // than raising, `matches` agrees with `adjust` on whether the date already satisfies the
+    // rule, and the two sequence operations honour the contract that makes them usable in a
+    // schedule - `next` moves strictly forward and `previous` strictly back, whatever the
     // relationship between the frequency and the convention's own cycle.
     val input: LocalDate = date(2014, JULY, 1)
     dataTypes should have size 8
@@ -312,26 +253,20 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
 
   //-------------------------------------------------------------------------
   test("test_adjust") {
-    // All 51 rows of the Java `data_adjust` provider, including the rows that only the three
-    // calendar-bearing conventions produce: the IMMCAD dates in August and September 2014, the
-    // Sydney-adjusted IMMAUD dates, and the two TBILL rows whose Java comment reads "Tuesday due
-    // to holiday" - 2018-08-31 and 2018-09-01 both rolling to Tuesday 2018-09-04 because the
-    // Monday between them is Labor Day in New York.
+    // All 51 adjustment rows, including the rows only the three calendar-bearing conventions
+    // produce: the IMMCAD dates in August and September 2014, the Sydney-adjusted IMMAUD dates,
+    // and the two TBILL rows - 2018-08-31 and 2018-09-01 - that both roll to Tuesday 2018-09-04
+    // because the Monday between them is Labor Day in New York.
     dataAdjust should have size 51
     forAll(dataAdjust) { (convention: RollConvention, input: LocalDate, expected: LocalDate) =>
       withClue(s"${convention.name} on $input: ")(convention.adjust(input) shouldBe expected)
     }
 
-    // The divergence this table discharges (AAP 0.3.3 and 0.6.5, recorded in
-    // SCALA_MIGRATION.md): the Java `IMMCAD`, `IMMAUD` and `TBILL` captured their holiday
-    // calendars from standard reference data while their enum class initialised, falling back to
-    // a Saturday/Sunday calendar if that lookup missed. The members of this port hold the
-    // built-in calendar values of `StandardHolidayCalendars` directly - as data, with no lookup
-    // and so no fallback - while `adjust(date)` keeps the Java signature: a date in, a date out,
-    // with no reference data parameter and no error channel. The assertions below state that
-    // equivalence as the three rules themselves, over a five-year grid of probe dates rather
-    // than only the dates the Java provider listed, so a member bound to the wrong calendar
-    // cannot pass.
+    // `IMMCAD`, `IMMAUD` and `TBILL` hold their holiday calendars as data - the built-in values
+    // of `StandardHolidayCalendars`, with no lookup and so no fallback - and `adjust(date)` takes
+    // a date and answers a date, with no reference data parameter and no error channel. The
+    // assertions below restate the three rules over a five-year grid of probe dates rather than
+    // only the rows above, so a member bound to the wrong calendar fails here.
     val london: HolidayCalendar = StandardHolidayCalendars.GBLO
     val canada: HolidayCalendar =
       StandardHolidayCalendars.CATO.combinedWith(StandardHolidayCalendars.CAMO)
@@ -351,15 +286,13 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
         // combined Toronto and Montreal calendars.
         RollConventions.IMMCAD.adjust(input) shouldBe
           canada.previousOrSame(london.shift(thirdWednesday, -2))
-        // One Sydney business day before the second Friday.
         RollConventions.IMMAUD.adjust(input) shouldBe sydney.previous(secondFriday)
-        // The next Monday, moved on to a New York business day.
         RollConventions.TBILL.adjust(input) shouldBe newYork.nextOrSame(nextOrSameMonday)
 
-        // And the three conventions that consult no calendar are pure date arithmetic. Their
-        // results are asserted against the arithmetic itself and then, more sharply, by the day
-        // of the week they always land on: a rule that moved off a holiday could not guarantee
-        // that, so these three equalities are what states that no calendar takes part.
+        // The three conventions that consult no calendar are pure date arithmetic. Their results
+        // are asserted against the arithmetic itself and then by the day of the week they always
+        // land on: a rule that moved off a holiday could not guarantee that, so the three
+        // day-of-week equalities are what states that no calendar takes part.
         RollConventions.IMM.adjust(input) shouldBe thirdWednesday
         RollConventions.IMM.adjust(input).getDayOfWeek shouldBe DayOfWeek.WEDNESDAY
         RollConventions.SFE.adjust(input) shouldBe secondFriday
@@ -369,9 +302,7 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
         RollConventions.IMMNZD.adjust(input).getDayOfWeek shouldBe DayOfWeek.WEDNESDAY
 
         // Every rule keeps the year and month of the date it was given, apart from TBILL, which
-        // rolls forward and may cross into the following month - the asymmetry the Java
-        // implementation had, and the reason the TBILL rows of the provider are the only ones
-        // whose expected date leaves the input month.
+        // rolls forward and may cross into the following month.
         List(
           RollConventions.IMM,
           RollConventions.IMMCAD,
@@ -387,9 +318,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
       }
     }
 
-    // The concrete evidence that the New York calendar really is consulted, which the two
-    // holiday rows of the provider assert and which a weekend-only fallback would fail: the
-    // Monday of that week is a holiday, so the result is the Tuesday after it.
+    // The New York calendar is consulted rather than a weekend-only rule: the Monday of that
+    // week is a holiday, so TBILL answers the Tuesday after it.
     RollConventions.TBILL.adjust(date(2018, AUGUST, 31)) shouldBe date(2018, SEPTEMBER, 4)
     RollConventions.TBILL.adjust(date(2018, AUGUST, 31)).getDayOfWeek shouldBe DayOfWeek.TUESDAY
     newYork.isHoliday(date(2018, SEPTEMBER, 3)) shouldBe true
@@ -428,9 +358,9 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   //-------------------------------------------------------------------------
   test("test_dayOfMonth_constants") {
     // The thirty day-of-month constants, each adjusting the 30th of July 2014 to its own day.
-    // Written out one constant at a time, as the Java method was, because the point of the test
-    // is that each identifier names the convention its name claims: a loop over `values` would
-    // assert the members and say nothing about the identifiers.
+    // Written out one constant at a time because the point of the test is that each identifier
+    // names the convention its name claims: a loop over `values` would assert the members and
+    // say nothing about the identifiers.
     val input: LocalDate = date(2014, JULY, 30)
     RollConventions.DAY_1.adjust(input) shouldBe date(2014, JULY, 1)
     RollConventions.DAY_2.adjust(input) shouldBe date(2014, JULY, 2)
@@ -466,8 +396,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
 
   //-------------------------------------------------------------------------
   test("test_ofDayOfMonth") {
-    // The Java loop ran from 1 to 29 inclusive - `i < 30` - and is kept at that bound, the 30th
-    // being covered by `test_dayOfMonth_constants` and by the February cases below.
+    // Days 1 to 29; the 30th is covered by `test_dayOfMonth_constants` and by the February cases
+    // below.
     (1 until 30).foreach { day =>
       val result: FailureOr[RollConvention] = RollConvention.ofDayOfMonth(day)
       val test: RollConvention = rc(result)
@@ -478,10 +408,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
         test.toString shouldBe s"Day$day"
         test.dayOfMonth shouldBe day
 
-        // The Java assertions were `isSameAs`, because the thirty conventions are built once and
-        // cached: a name resolving to an equal but distinct value would have failed there and
-        // fails here too. Both the exact lookup and the lenient one are asserted, in the
-        // canonical spelling and in the upper-case spelling the Java method used.
+        // Every route to this member answers the same instance: the exact lookup and the lenient
+        // one, each in the canonical spelling and in the upper-case one, and the factory itself.
         resolvedByName(test.name) should be theSameInstanceAs test
         resolvedByName(s"DAY$day") should be theSameInstanceAs test
         rc(RollConvention.parse(test.name)) should be theSameInstanceAs test
@@ -492,16 +420,16 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   }
 
   test("test_ofDayOfMonth_31") {
-    // The 31st is `EOM` rather than a convention of its own, because the conventions for 29, 30
-    // and 31 all have to roll to the end of February and so would differ in no month.
+    // A 31st day-of-month does not exist in every month, so the family publishes `EOM` in place
+    // of a `Day31` member: `ofDayOfMonth(31)` answers `EOM`, and the name `Day31` resolves to
+    // nothing, which `test_extendedEnum` asserts.
     RollConvention.ofDayOfMonth(31) should haveValue(RollConventions.EOM)
     rc(RollConvention.ofDayOfMonth(31)) should be theSameInstanceAs RollConventions.EOM
   }
 
   test("test_ofDayOfMonth_invalid") {
-    // Where the Java factory raised for a day-of-month outside 1 to 31, this one reports it as a
-    // value carrying the reason and the message of the ported factory. Nothing is raised, which
-    // is asserted alongside the failure itself.
+    // A day-of-month outside 1 to 31 is reported as a value carrying the reason and the message
+    // that name it. Nothing is raised, which is asserted alongside the failure itself.
     RollConvention.ofDayOfMonth(0) should beFailureWith(FailureReason.INVALID)
     RollConvention.ofDayOfMonth(0) should haveFailureMessageMatching("Invalid day-of-month: 0")
     RollConvention.ofDayOfMonth(32) should beFailureWith(FailureReason.INVALID)
@@ -616,8 +544,7 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   //-------------------------------------------------------------------------
   test("test_ofDayOfWeek") {
     // `ofDayOfWeek` is total - every one of the seven days has a convention - so there is no
-    // result to open, which is the one place this port's factory is simpler than the day-of-month
-    // one rather than more explicit than the Java original.
+    // result to open here, unlike the day-of-month factory.
     forAll(dataDayOfWeekNames) { (dayOfWeek: DayOfWeek, name: String) =>
       val test: RollConvention = RollConvention.ofDayOfWeek(dayOfWeek)
       withClue(s"$dayOfWeek: ") {
@@ -625,9 +552,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
         test.toString shouldBe name
         test.dayOfMonth shouldBe 0
 
-        // The Java assertions were `isSameAs` here too, for the same reason: the seven
-        // conventions are built once. The second lookup is the upper-case spelling the Java
-        // method built from the first three letters of the day's own name.
+        // Resolution answers the same instance here too. The second lookup is the upper-case
+        // spelling built from the first three letters of the day's own name.
         resolvedByName(test.name) should be theSameInstanceAs test
         resolvedByName(s"DAY${dayOfWeek.toString.substring(0, 3)}") should be theSameInstanceAs test
         rc(RollConvention.parse(test.name)) should be theSameInstanceAs test
@@ -712,8 +638,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   }
 
   test("test_of_lookup") {
-    // The Java `RollConvention.of(name)` became two members, and both are asserted here so that
-    // the exact lookup and the lenient one cannot drift apart on a canonical name.
+    // A canonical name is answered by both lookups - the exact one and the lenient one - and
+    // resolves to the member itself rather than to an equal copy.
     forAll(dataName) { (convention: RollConvention, name: String) =>
       withClue(s"$name: ") {
         RollConvention.valueOf(name) shouldBe Some(convention)
@@ -724,10 +650,9 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   }
 
   test("test_lenientLookup_standardNames") {
-    // The Java method asked the registry for the lower-case spelling of each canonical name,
-    // through `findLenient`. That is `parse` here, and the lower-case spelling is deliberately
-    // asserted to be outside the exact key space: it resolves because of the leniency and not
-    // because the family registered a third key for each member.
+    // The lower-case spelling of a canonical name is deliberately asserted to be outside the
+    // exact key space: `parse` resolves it because of the leniency, while `valueOf` answers
+    // nothing, so the family registers no third key for each member.
     forAll(dataName) { (convention: RollConvention, name: String) =>
       val lowerCase: String = name.toLowerCase(Locale.ENGLISH)
       withClue(s"$lowerCase: ") {
@@ -738,10 +663,9 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   }
 
   test("test_extendedEnum") {
-    // The Java method read `extendedEnum().lookupAll()` and looked each canonical name up in it.
-    // The counterpart of that map here is `byCanonicalName`, which is the Java
-    // `lookupAllNormalized` - the 45 canonical keys - while the Java `lookupAll` was the union of
-    // those with the upper-case spellings each provider also registered. Both are asserted.
+    // The two key views the family publishes: `byCanonicalName`, the 45 canonical keys, and
+    // `byUpperName`, the upper-case spelling of each. Both are asserted, as is the inventory
+    // `values` answers.
     val lookup = RollConvention.namedEnum
 
     forAll(dataName) { (convention: RollConvention, name: String) =>
@@ -760,24 +684,23 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
     lookup.byUpperName.keySet shouldBe
       declarationOrder.map(_.name.toUpperCase(Locale.ENGLISH)).toSet
 
-    // Two of the 45 names are already upper case throughout - `EOM` and `IMM` are, as are the
-    // other five rule-based names bar `None` - so the union of the two key views is smaller than
-    // twice 45. Stating it as the union rather than as a count keeps the relationship to the Java
-    // `lookupAll` map exact.
+    // Seven of the 45 canonical names equal their own upper-case fold - `EOM`, `IMM`, `IMMCAD`,
+    // `IMMAUD`, `IMMNZD`, `SFE` and `TBILL`; `None` and the `Day1`..`Day30` and
+    // `DayMon`..`DaySun` names do not - so the union of the two key views is smaller than twice
+    // 45. The assertion states that union itself rather than its size.
     val lookupAll: Set[String] = lookup.byCanonicalName.keySet ++ lookup.byUpperName.keySet
     lookupAll shouldBe
       (declarationOrder.map(_.name) ++ declarationOrder.map(_.name.toUpperCase(Locale.ENGLISH))).toSet
     lookupAll should contain allOf ("None", "NONE", "Day15", "DAY15", "DayMon", "DAYMON")
 
-    // This family declares no alternate spelling, because the configuration resource being
-    // transcribed declared none for it: everything beyond the two key views arrives through the
-    // ordered lenient chain or through the one external group.
+    // This family declares no alternate spelling: everything beyond the two key views arrives
+    // through the ordered lenient chain or through the one external group.
     lookup.alternateNames shouldBe Map.empty[String, String]
 
-    // The FpML group of external spellings, all 44 rows of the resource, asserted row for row.
-    // They take part in no lookup - `MON` and `31` resolve through the lenient chain, which
-    // happens to accept them - so a lost row would otherwise be invisible. `IMMCAD` and `TBILL`
-    // are deliberately absent: FpML defines neither, and the resource declared neither.
+    // The FpML group of external spellings, all 44 rows, asserted row for row. They take part in
+    // no lookup - `MON` and `31` resolve through the lenient chain, which happens to accept them
+    // - so a lost row would otherwise be invisible. `IMMCAD` and `TBILL` are deliberately
+    // absent, FpML defining neither.
     lookup.externalNameGroups shouldBe Set("FpML")
     lookup.externalNames("FpML") shouldBe Some(expectedFpMLNames)
     lookup.externalNames("FpML").map(_.size) shouldBe Some(44)
@@ -793,11 +716,11 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
     lookup.externalNames("SWIFT") shouldBe None
     lookup.externalNamesRaw("Rubbish") shouldBe None
 
-    // The ordered lenient table, whose 11 rows are the rows of the resource in its order. The
-    // order is part of the data - a later pattern sees what an earlier one produced - and it is
-    // load-bearing here rather than incidental: the row for 31 precedes the row for 30 and both
-    // precede the row that captures a one- or two-digit day, which is why text naming the 31st
-    // reaches `EOM` and is never rewritten to a `Day31` that no member carries.
+    // The ordered lenient table, all 11 rows. The order is part of the data - a later pattern
+    // sees what an earlier one produced - and it is load-bearing here rather than incidental: the
+    // row for 31 precedes the row for 30 and both precede the row that captures a one- or
+    // two-digit day, which is why text naming the 31st reaches `EOM` and is never rewritten to a
+    // `Day31` that no member carries.
     lookup.lenientPatterns should have size 11
     lookup.lenientPatterns.map { case (expression, _) => expression.pattern.pattern() } shouldBe
       List(
@@ -826,18 +749,17 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
         "DaySat",
         "DaySun")
 
-    // And the consequence of that order, which is the sharpest statement the table supports: the
-    // 31st is the end of the month and the 30th is its own convention.
+    // The consequence of that order: text naming the 31st resolves to the end of the month,
+    // while the 30th keeps its own convention and `Day31` names nothing.
     RollConvention.parse("31") should haveValue(RollConventions.EOM)
     RollConvention.parse("30") should haveValue(RollConventions.DAY_30)
     RollConvention.valueOf("Day31") shouldBe None
   }
 
   test("test_of_lookup_notFound") {
-    // Where the Java factory raised an error for text naming no member, the port reports it as a
-    // value. The reason is compared as a member of the closed family of reasons and the message
-    // is asserted once, because it names the family and the text - the two things a caller has to
-    // be told.
+    // Text naming no member is reported as a value rather than raised. The reason is compared as
+    // a member of the closed family of reasons, and the message is asserted because it names the
+    // family and the text - the two things a caller has to be told.
     RollConvention.valueOf("Rubbish") shouldBe None
     RollConvention.parse("Rubbish") should beFailureWith(FailureReason.PARSING)
     RollConvention.parse("Rubbish") should
@@ -846,20 +768,16 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   }
 
   test("test_of_lookup_null") {
-    // Reinterpretation. The Java method passed the absent reference to the factory and asserted
-    // that it raised. The `notNull` guard behind that throw has no target here, because the
-    // absent argument it guarded against is not something a Scala caller can express: the name is
-    // a required parameter of a required type, so omitting it, or offering something that is not
-    // text, is rejected when this spec is compiled rather than when it runs. That is asserted as
-    // a compile-time proof, and no `null` is written.
+    // What the two lookups require of their argument: the name is a required parameter of type
+    // `String`, so a call that omits it, or offers a number in its place, does not compile.
     assertDoesNotCompile("RollConvention.parse()")
     assertDoesNotCompile("RollConvention.valueOf()")
     assertDoesNotCompile("RollConvention.parse(31)")
 
-    // What a caller can actually supply is text that names nothing, so the rest of the case is
-    // every spelling of "no usable name" - empty, blank, and several near-misses, including the
-    // two that the lenient chain rewrites successfully into a name no member carries. Each
-    // resolves to nothing and raises nothing.
+    // What text can decide is whether it names a member, so the rest of the case is every
+    // spelling of "no usable name" - empty, blank, and several near-misses, including the two
+    // that the lenient chain rewrites successfully into a name no member carries. Each resolves
+    // to nothing and raises nothing.
     val hostile: List[String] =
       List(
         "",
@@ -887,10 +805,9 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
 
   //-------------------------------------------------------------------------
   test("test_lenientLookup_specialNames") {
-    // The Java method drove every row of `data_lenient` through `findLenient` after folding it to
-    // lower case. `parse` is that method here, and each row is asserted in three spellings - as
-    // written, folded down and folded up - because the patterns are matched insensitively to case
-    // and the input is folded to upper case before they are applied.
+    // Each lenient row is asserted in three spellings - as written, folded down and folded up -
+    // because the patterns are matched insensitively to case and the input is folded to upper
+    // case before they are applied.
     dataLenient should have size 11
     forAll(dataLenient) { (name: String, convention: RollConvention) =>
       withClue(s"$name: ") {
@@ -902,12 +819,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
   }
 
   test("test_lenientLookup_constants") {
-    // The port of the reflective sweep over the constants holder. The Java method read the public
-    // static fields of `RollConventions` through `java.lang.reflect` and asserted that each field
-    // name resolved leniently to the value the field held; reflection is forbidden in this port,
-    // so the reflective sweep has no target and the 45 identifiers are written out as a table
-    // instead. Each is asserted in its own spelling and folded to lower case, exactly as the Java
-    // method asserted for the names it discovered.
+    // Every identifier of the constants holder resolves leniently to the member it names, in its
+    // own spelling and folded to lower case, and resolves to that member itself.
     forAll(dataConstantIdentifiers) { (identifier: String, convention: RollConvention) =>
       withClue(s"$identifier: ") {
         RollConvention.parse(identifier) should haveValue(convention)
@@ -916,8 +829,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
       }
     }
 
-    // The table is the holder in full: 45 identifiers naming 45 distinct members, which is the
-    // half of the reflective sweep that a hand-written table can state and reflection could not.
+    // The table is the holder in full: 45 identifiers naming 45 distinct members, in the
+    // declaration order of the family.
     dataConstantIdentifiers should have size 45
     dataConstantIdentifiers.map { case (_, convention) => convention }.distinct should have size 45
     dataConstantIdentifiers.map { case (_, convention) => convention }.toList shouldBe
@@ -945,8 +858,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
     a.hashCode shouldBe a.hashCode
 
     // The companion publishes one equality-bearing instance - an ordering that is also a hashing
-    // - so the equality, the hashing and the ordering can never disagree with each other or with
-    // `==`, and `Show` agrees with `toString`. The three members above are asked all of it.
+    // - so the equality, the hashing and the ordering agree with each other and with `==`, and
+    // `Show` agrees with `name`. The three members above are asked all of it.
     List(a, b, c).foreach { left =>
       List(a, b, c).foreach { right =>
         val sameValue: Boolean = left == right
@@ -978,16 +891,11 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
 
   //-------------------------------------------------------------------------
   test("coverage") {
-    // The Java method was `coverPrivateConstructor(RollConventions.class)` and
-    // `coverEnum(StandardRollConventions.class)`: the first reflectively invoked the private
-    // constructor of a static holder, the second read the values of a package-private enum, both
-    // so that a coverage tool would not report them as unexercised. A Scala `object` has no
-    // constructor to reach and there is no second enum - the members are declared in the
-    // companion - so what those two calls stood for is asserted directly, as the closedness of
-    // the family. This is the assertion that carries Rule 4 for the roll conventions.
+    // The family is closed, so its inventory is itself a subject: the members, the identifiers
+    // that name them, and the round trip through the name.
 
-    // Exactly 45 members, distinct as values and distinct by name, in the declaration order of
-    // the two Java providers rather than the alphabetical order the `Order` instance imposes.
+    // Exactly 45 members, distinct as values and distinct by name, in declaration order rather
+    // than the alphabetical order the `Order` instance imposes.
     RollConvention.values.toList should have size 45
     RollConvention.values.toList.distinct should have size 45
     RollConvention.values.toList.map(_.name).distinct should have size 45
@@ -1003,9 +911,8 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
       }
     }
 
-    // Each of the 45 constants of the holder is the very member of the family, not a copy and not
-    // a registry indirection, so a call site reading the constant and one reading the member are
-    // indistinguishable - by `eq`, by `==` and in a pattern match.
+    // Each of the 45 constants of the holder is the very member of the family, not a copy, so a
+    // call site reading the constant and one reading the member are indistinguishable.
     declarationOrder.zip(RollConvention.values.toList).foreach {
       case (constant, member) =>
         withClue(s"${constant.name}: ")(constant should be theSameInstanceAs member)
@@ -1029,7 +936,7 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
     RollConvention.valueOf("None") shouldBe Some(RollConventions.NONE)
 
     // The day-of-month accessor over the whole family: its own day for a day-of-month member, 31
-    // for `EOM` - the two agree in every month - and zero for everything else.
+    // for `EOM`, and zero for every member whose rule is not a day of the month.
     RollConventions.EOM.dayOfMonth shouldBe 31
     (1 to 30).foreach { day =>
       withClue(s"Day$day: ")(rc(RollConvention.ofDayOfMonth(day)).dayOfMonth shouldBe day)
@@ -1050,18 +957,9 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
 
   //-------------------------------------------------------------------------
   test("test_serialization") {
-    // The Java method was `assertSerialization(EOM)`, `assertSerialization(DAY_2)` and
-    // `assertSerialization(DAY_THU)`: a round trip through Java serialization and through the
-    // binary and JSON encodings of the bean library the Java type belonged to, all three of which
-    // read the class back reflectively. None of the three is a dependency of this port, and
-    // neither Java serialization nor wire compatibility with that library's JSON is in its scope
-    // (AAP 0.2.2). What replaces them is the circe codec the companion publishes, so the round
-    // trip is asserted through that - over the three conventions the Java method named, and then
-    // over all 45, since the codec is one instance shared by the family.
-    //
-    // The document is the bare canonical name and never an object: that is the single-string form
-    // the annotated string conversion of the Java type wrote, so a document from either side
-    // names the same convention.
+    // The codec the companion publishes is the one in implicit scope, and a document is the bare
+    // canonical name rather than an object. Three conventions are asserted individually and then
+    // all 45, the codec being one instance shared by the family.
     val codec: Codec[RollConvention] = implicitly[Codec[RollConvention]]
     codec should be theSameInstanceAs RollConvention.codec
 
@@ -1090,21 +988,17 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
     Json.fromInt(31).as[RollConvention].isLeft shouldBe true
     Json.obj("name" -> Json.fromString("EOM")).as[RollConvention].isLeft shouldBe true
 
-    // The reader is as lenient as `parse`, which is what lets a document written by hand, or
-    // through the FpML vocabulary the resource published, still be read.
+    // The reader is as lenient as `parse`, so a document written by hand, or in the FpML
+    // vocabulary, still reads.
     Json.fromString("Day_31").as[RollConvention] shouldBe Right(RollConventions.EOM)
     Json.fromString("15").as[RollConvention] shouldBe Right(RollConventions.DAY_15)
     Json.fromString("thu").as[RollConvention] shouldBe Right(RollConventions.DAY_THU)
   }
 
   test("test_jodaConvert") {
-    // The Java method was `assertJodaConvert(RollConvention.class, NONE)` and the same for `EOM`:
-    // a round trip through the reflective string-conversion library the Java type was annotated
-    // for. That library is not a dependency of this port, and the two annotations it read -
-    // rendering a convention as its name and recovering it from that name - became `Show`,
-    // `toString` and `parse`. The guarantee is therefore asserted over those three, for the two
-    // conventions the Java method named and then for the whole family, which is a stronger
-    // statement than the reflective round trip was.
+    // Rendering and recovery agree: a convention renders as its name through `Show` and
+    // `toString`, and `parse` recovers the same member from either rendering. Two conventions are
+    // asserted individually and then the whole family.
     List(RollConventions.NONE, RollConventions.EOM).foreach { convention =>
       withClue(s"${convention.name}: ") {
         Show[RollConvention].show(convention) shouldBe convention.name
@@ -1126,17 +1020,16 @@ final class RollConventionSpec extends AnyFunSuite with Matchers with TableDrive
 }
 
 /**
- * The transcribed data providers of the Java `RollConventionTest`, together with the derived
- * tables this spec asserts the closed family against.
+ * The tables the tests above are driven by, together with the inventories the closed family is
+ * asserted against.
  *
- * They live in a companion rather than in the class so that the tests above read as the Java
- * methods did, and the object extends the table support because building a `Table` needs it.
+ * They live in a companion rather than in the class so that each test reads as the property it
+ * asserts, and the object extends the table support because building a `Table` needs it.
  *
- * The eight conventions and the three frequencies are bound to short names here for the same
- * reason the Java class imported them statically: the four large tables are transcriptions, and a
- * transcription is only checkable against its original if it reads like it. Each name is the
- * constant of [[RollConventions]] or [[Frequency]] that the Java class imported, so the
- * identifiers the ported library published remain the ones this file names.
+ * The eight conventions and the three frequencies are bound to short names here so that the four
+ * large tables read as tables - a row of dates is checkable by eye, a row of qualified paths is
+ * not. Each name stands for the constant of [[RollConventions]] or [[Frequency]] it is assigned
+ * from, and for nothing else.
  */
 private[schedule] object RollConventionSpec extends TableDrivenPropertyChecks {
 
@@ -1155,11 +1048,10 @@ private[schedule] object RollConventionSpec extends TableDrivenPropertyChecks {
 
   //-------------------------------------------------------------------------
   /**
-   * The Java `data_types` provider: the values of the rule-based enum, in its declaration order.
+   * The eight rule-based conventions, in declaration order.
    *
-   * The Java provider read `StandardRollConventions.values()`, the eight members that enum
-   * declared. The day-based members came from a second provider and were never part of this
-   * table, so it holds those eight and not the whole family.
+   * The day-of-month and day-of-week members are not part of this table; the cases naming them
+   * drive them from the two factories instead.
    */
   val dataTypes: TableFor1[RollConvention] = Table(
     "convention",
@@ -1175,10 +1067,10 @@ private[schedule] object RollConventionSpec extends TableDrivenPropertyChecks {
 
   //-------------------------------------------------------------------------
   /**
-   * The Java `data_adjust` provider, all 51 rows, in the order the provider listed them.
+   * The 51 adjustment rows: a convention, a date, and the date the convention adjusts it to.
    *
-   * The two comments the Java provider carried are kept where it carried them, on the two TBILL
-   * rows whose result is a Tuesday because the Monday of that week is a New York holiday.
+   * The two TBILL rows marked below land on a Tuesday because the Monday of that week is a New
+   * York holiday.
    */
   val dataAdjust: TableFor3[RollConvention, LocalDate, LocalDate] = Table(
     ("convention", "input", "expected"),
@@ -1238,7 +1130,7 @@ private[schedule] object RollConventionSpec extends TableDrivenPropertyChecks {
   )
 
   //-------------------------------------------------------------------------
-  /** The Java `data_matches` provider, all 17 rows, in the order the provider listed them. */
+  /** The 17 match rows: a convention, a date, and whether the date already satisfies the rule. */
   val dataMatches: TableFor3[RollConvention, LocalDate, Boolean] = Table(
     ("convention", "input", "expected"),
     (EOM, date(2014, AUGUST, 1), false),
@@ -1262,7 +1154,7 @@ private[schedule] object RollConventionSpec extends TableDrivenPropertyChecks {
 
   //-------------------------------------------------------------------------
   /**
-   * The Java `data_next` provider, all 62 rows, in the order the provider listed them.
+   * The 62 `next` rows: a convention, a date, a frequency, and the date `next` answers.
    *
    * The one-day rows are the ones that exercise the correction the month-based default applies:
    * a frequency shorter than the convention's own cycle lands on or before the date supplied, so
@@ -1335,7 +1227,7 @@ private[schedule] object RollConventionSpec extends TableDrivenPropertyChecks {
   )
 
   //-------------------------------------------------------------------------
-  /** The Java `data_previous` provider, all 57 rows, in the order the provider listed them. */
+  /** The 57 `previous` rows: a convention, a date, a frequency, and the date `previous` answers. */
   val dataPrevious: TableFor4[RollConvention, LocalDate, Frequency, LocalDate] = Table(
     ("convention", "input", "frequency", "expected"),
     (EOM, date(2014, OCTOBER, 1), P1M, date(2014, SEPTEMBER, 30)),
@@ -1399,7 +1291,7 @@ private[schedule] object RollConventionSpec extends TableDrivenPropertyChecks {
 
   //-------------------------------------------------------------------------
   /**
-   * The 45 members of the family, in the declaration order the two Java providers gave them.
+   * The 45 members of the family, in declaration order.
    *
    * Named through the constants of [[RollConventions]] rather than through the members of the
    * companion, so that the list is simultaneously the roster of the family and the roster of the
@@ -1456,12 +1348,12 @@ private[schedule] object RollConventionSpec extends TableDrivenPropertyChecks {
 
   //-------------------------------------------------------------------------
   /**
-   * The FpML group of external names, all 44 rows of the configuration resource being ported.
+   * The FpML group of external names, all 44 rows.
    *
-   * Transcribed from the resource independently of the production file - which holds the same
-   * rows as text - so that a mistranscription in either is a disagreement between the two rather
-   * than a self-consistent error. The row `31` maps to `EOM`, because FpML has no end-of-month
-   * spelling of its own, and `IMMCAD` and `TBILL` appear nowhere, because FpML defines neither.
+   * Written out here independently of the production file - which holds the same rows - so that a
+   * mistake in either is a disagreement between the two rather than a self-consistent error. The
+   * row `31` maps to `EOM`, because FpML has no end-of-month spelling of its own, and `IMMCAD`
+   * and `TBILL` appear nowhere, because FpML defines neither.
    */
   val expectedFpMLNames: Map[String, RollConvention] =
     Map(
@@ -1514,10 +1406,10 @@ private[schedule] object RollConventionSpec extends TableDrivenPropertyChecks {
   /**
    * The dates the three calendar-bearing conventions are checked against their own rules on.
    *
-   * Five years of five days each, covering the start, the middle and the end of every month, so
-   * that the third Wednesday, the second Friday and the next Monday are each approached from
-   * before, on and after. The four dates appended are the ones the Java provider singled out,
-   * including the two New York holiday cases of September 2018.
+   * Five days of every month - the 1st, 8th, 15th, 20th and 28th - across five years, so that
+   * the third Wednesday, the second Friday and the next Monday are each approached from before,
+   * on and after their own day. The four dates appended are the ones the adjustment rows single
+   * out, including the two New York holiday cases of September 2018.
    */
   val calendarProbes: List[LocalDate] =
     (2014 to 2018).toList.flatMap { year =>

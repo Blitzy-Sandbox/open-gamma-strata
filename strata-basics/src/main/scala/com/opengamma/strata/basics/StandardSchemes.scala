@@ -25,17 +25,10 @@ import com.opengamma.strata.collect.result.Failure
  * StandardId.of(StandardSchemes.ISIN_SCHEME, "GB0031348658")
  * }}}
  *
- * ===What this object is===
- *
  * Every member is either a scheme string or a helper over one of them, so there is no data
- * type here and nothing to serialize. The type being ported was a final class with a private
- * constructor holding only static members, which is what an `object` is, so the restriction
- * on instantiating it needs no expression of its own.
- *
- * The names and the values of the constants are exactly those of the class being ported, down
- * to the two members that do not carry the `_SCHEME` suffix ([[OG_COUNTERPARTY]] and
- * [[OG_PORTFOLIO]]), because both the identifiers and the strings they hold reach stored
- * documents, other modules and tests.
+ * type here and nothing to serialize. Two of the constants carry no `_SCHEME` suffix -
+ * [[OG_COUNTERPARTY]] and [[OG_PORTFOLIO]] - and the names are kept as they are because both
+ * the identifiers and the strings they hold reach stored documents and other modules.
  *
  * ===How failures are reported===
  *
@@ -54,14 +47,13 @@ import com.opengamma.strata.collect.result.Failure
  */
 object StandardSchemes {
 
-  //-------------------------------------------------------------------------
   /**
-   * The OpenGamma scheme used to identify values in market data.
+   * The OpenGamma scheme that identifies values in market data.
    */
   val OG_TICKER_SCHEME: String = "OG-Ticker"
 
   /**
-   * The OpenGamma scheme used to identify ETDs in market data.
+   * The OpenGamma scheme that identifies ETDs in market data.
    */
   val OG_ETD_SCHEME: String = "OG-ETD"
 
@@ -88,20 +80,17 @@ object StandardSchemes {
   /**
    * The OpenGamma scheme used for counterparties.
    *
-   * This is one of the two members whose name carries no `_SCHEME` suffix, which is the name
-   * the class being ported gave it.
+   * This is one of the two members whose name carries no `_SCHEME` suffix.
    */
   val OG_COUNTERPARTY: String = "OG-Counterparty"
 
   /**
    * The OpenGamma scheme used for portfolios.
    *
-   * This is one of the two members whose name carries no `_SCHEME` suffix, which is the name
-   * the class being ported gave it.
+   * This is one of the two members whose name carries no `_SCHEME` suffix.
    */
   val OG_PORTFOLIO: String = "OG-Portfolio"
 
-  //-------------------------------------------------------------------------
   /**
    * The scheme for exchange Tickers.
    *
@@ -164,7 +153,6 @@ object StandardSchemes {
    */
   val VALOR_SCHEME: String = "VALOR"
 
-  //-------------------------------------------------------------------------
   /**
    * The scheme for RICs, the Reuters Instrument Code.
    *
@@ -240,8 +228,6 @@ object StandardSchemes {
    */
   val OCC_SCHEME: String = "OCC"
 
-  //-------------------------------------------------------------------------
-  /** The number of characters a Market Identifier Code is made of. */
   private val MicLength: Int = 4
 
   /**
@@ -280,10 +266,10 @@ object StandardSchemes {
    * StandardSchemes.createTicMic("ULVR", "LSE")  // Left(one failure: the MIC is not four characters)
    * }}}
    *
-   * The failure over the market identifier code names the code it refused as that code stands,
-   * which is the wording the method being ported produced. A code reaches this method from
-   * outside the library and nothing bounds it, so bounding it and escaping what it may hold
-   * belong to the writing of the failure and not to the building of one:
+   * The failure over the market identifier code names the code it refused as that code
+   * stands. A code reaches this method from outside the library and nothing bounds it, so
+   * bounding it and escaping what it may hold belong to the writing of the failure and not to
+   * the building of one:
    * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure do
    * that for every part they write, here as in [[splitTicMic]]. The message is built only on
    * the failing path, `Validate.isTrue` taking it by name, so a code of the right length is
@@ -314,23 +300,22 @@ object StandardSchemes {
    *
    * The value has to hold at least one Ticker character, then the separator, then exactly the
    * four characters of the market identifier code. The three conditions tested below say that
-   * between them, and are the ones the method being ported tested: a separator has to be
-   * present, the value has to be at least six characters long, and the separator has to sit
-   * five characters from the end. An identifier that does not satisfy them is reported as a
-   * failure rather than interrupting the caller, since the shape of an identifier is data:
+   * between them: a separator has to be present, the value has to be at least six characters
+   * long, and the separator has to sit five characters from the end. An identifier that does
+   * not satisfy them is reported as a failure rather than interrupting the caller, since the
+   * shape of an identifier is data:
    *
    * {{{
    * StandardId.of("TICMIC", "ABC@BOB").flatMap(StandardSchemes.splitTicMic)
    * // Left(a parsing failure: the MIC is three characters, not four)
    * }}}
    *
-   * The scheme of the identifier is deliberately not examined, which is the behaviour of the
-   * method being ported: a value of the right shape is split whatever scheme it was filed
-   * under.
+   * The scheme of the identifier is deliberately not examined: a value of the right shape is
+   * split whatever scheme it was filed under.
    *
-   * The failure quotes the identifier back exactly as [[StandardId.toString]] writes it, which
-   * is the wording the method being ported produced. The value part of an identifier is text a
-   * caller supplied and nothing bounds it, so writing the failure out is where it is bounded:
+   * The failure quotes the identifier back exactly as [[StandardId.toString]] writes it. The
+   * value part of an identifier is text a caller supplied and nothing bounds it, so writing
+   * the failure out is where it is bounded:
    * [[com.opengamma.strata.collect.result.Failure.show]] and the text form of a failure bound
    * every part they write and escape anything a line-oriented reader could act on.
    *
@@ -344,8 +329,8 @@ object StandardSchemes {
     if (splitPos < 0 ||
       value.length < MinimumTicMicLength ||
       splitPos != value.length - (MicLength + 1)) {
-      // the identifier is quoted as it stands, which is the wording being ported; bounding it
-      // for a reader is the business of writing the failure out, as the note above sets out
+      // the identifier is quoted as it stands; bounding it for a reader is the business of
+      // writing the failure out, as the note above sets out
       Left(Failure.Parsing(s"Invalid TICMIC identifier: $ticMic"))
     } else {
       Right((value.substring(0, splitPos), value.substring(splitPos + 1)))

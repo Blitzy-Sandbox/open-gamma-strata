@@ -16,21 +16,16 @@ import cats.data.NonEmptyList
 import com.opengamma.strata.collect.result.Failure
 
 /**
- * The handful of collection helpers this port keeps, and the record of the many it does not.
+ * The collection helpers of this library that the standard library and `cats` do not supply.
  *
- * Two static helper classes are being ported here: one a set of stream collectors and small
- * collection utilities, the other a view over the entries of a map. Between them they run to
- * some two and a half thousand lines, and almost none of it has a counterpart in this file.
- * That is the point of this file rather than an omission from it. Those classes existed to
- * give a language without an immutable collection library, without a sum type and without an
- * accumulating applicative the operations it lacked; the language this port targets has all
- * three, so what those classes supplied by hand is now either in the standard library, in
- * `cats`, or expressible at the call site in one expression. Only the helpers that are
- * genuinely still missing are ported, and the list of what is deliberately absent is part of
- * the contract - it is what tells a later port that reaching for one of those members is a
- * sign the call site should be rewritten, not that this file is incomplete.
+ * This object is deliberately small. An immutable collection library, a sum type and an
+ * accumulating applicative between them cover almost everything a call site needs, so a
+ * member earns a place here only when the operation it performs is unavailable from them or
+ * when the shape of its result - an ordering, a failure channel or a non-empty type - is part
+ * of a contract this library states. Anything a call site can express in one expression over
+ * `scala.collection.immutable` or `cats` is written there rather than wrapped here.
  *
- * What remains is four groups:
+ * The members fall into four groups:
  *
  *   - `ensureOnlyOne`, for reading the single element that a collection is required to hold;
  *   - `toSortedMap`, for building a sorted map by extracting a key, and optionally a value,
@@ -46,23 +41,22 @@ import com.opengamma.strata.collect.result.Failure
  * caller supplied rather than on the caller having broken a contract. Under the convention of
  * this library that makes them data-dependent failures, so they are returned as a
  * [[com.opengamma.strata.collect.result.Failure Failure]] on the left of an `Either` and the
- * caller decides what to do about them. The originals threw `IllegalArgumentException` from
- * inside a collector, which left the caller of a stream pipeline with nothing to inspect and
- * no way to accumulate the problem alongside others; the message text is reproduced word for
- * word so that logs and expectations carry over, but the shape is not.
+ * caller decides what to do about them: the failure is a value, so it can be inspected,
+ * accumulated alongside others and reported. Its message text is stable, because it reaches
+ * logs and test expectations.
  *
  * The helpers that cannot fail - grouping, and the chain helpers - return their result
- * directly, and the merging form of `toSortedMap` is total in the same way as the merging
- * collector it replaces.
+ * directly, and the merging form of `toSortedMap` is total, because combining the values of
+ * two elements with the same key is exactly what the caller asked for.
  *
  * ===Ordering===
  *
  * Every member that produces a sorted map takes a `cats.Order` for the key type and derives
  * the standard library ordering from it, rather than taking the ordering itself. That follows
- * the convention of this port: a type that has an order declares a single `Order` instance in
- * its companion, and the Java comparison interface that the original relied on is not part of
- * this API. A key type that has only a standard library ordering reaches these members
- * through `cats.Order.fromOrdering`.
+ * the convention of this library: a type that has an order declares a single `Order` instance
+ * in its companion, and that instance is what every member asking for an order receives. A
+ * key type that has only a standard library ordering reaches these members through
+ * `cats.Order.fromOrdering`.
  *
  * ===How a map-shaped result is assembled===
  *
@@ -78,29 +72,6 @@ import com.opengamma.strata.collect.result.Failure
  * accumulator is an implementation detail in the strictest sense: it appears in no signature,
  * no field and no returned value, so no caller can observe that it existed. Each member says
  * below which mutable map it uses and what that map contributes beyond a cheaper assembly.
- *
- * ===What has no counterpart here===
- *
- * The members of the two classes that the dependent module uses, and what each becomes:
- *
- *   - the whole entry-view type, whose every use is `of(map)` followed by key or value
- *     filtering, mapping, iteration or collection back into a map - all of them operations
- *     that `scala.collection.immutable.Map` already has, so there is nothing to port;
- *   - `toImmutableList`, `toImmutableSet` and `toImmutableSortedSet`, which become `toList`,
- *     `toSet` and `to(SortedSet)` on any collection or iterator;
- *   - `stream` and `list`, which become `iterator` and `toList`;
- *   - `inOptional` and `filteringOptional`, which become `map` over an `Option` and `flatten`
- *     over a collection of them;
- *   - `tryCatchToOptional`, which becomes `scala.util.Try(...).toOption`;
- *   - the multimap collectors, whose one use in the dependent module is the ordered grouping
- *     that `groupByPreservingOrder` performs;
- *   - `only` and `toOnly`, which returned an empty optional both for an empty input and for
- *     an input with several elements. `ensureOnlyOne` distinguishes the two, which is what
- *     every call site of them in this port needs.
- *
- * Everything else in either class is not used by the module being ported and has no member
- * here. A later port that needs one adds it to this file, rather than reaching back into the
- * original.
  *
  * ===Thread safety===
  *
@@ -425,15 +396,15 @@ object Collections {
    *
    * That determinism is why this member exists at all. Grouping with the standard library
    * produces a map whose iteration order is unspecified, which is enough to make a rendered
-   * or serialized form of the result differ between runs on the same input; this port treats
-   * the serialized form of a value as something that can be compared byte for byte, so an
+   * or serialized form of the result differ between runs on the same input; the serialized
+   * form of a value in this library is something that can be compared byte for byte, so an
    * unspecified order cannot be allowed into it. The result type says so: `VectorMap` is an
    * immutable map that iterates in insertion order, and the insertion order here is the order
    * of first encounter.
    *
    * Each group is a `NonEmptyList`, because a group only exists once an element has been put
-   * in it. The invariant is therefore carried by the type and a caller never has to consider
-   * an empty group, which is what the multimap of the original made it do.
+   * in it. The invariant is therefore carried by the type, and a caller never has to consider
+   * an empty group.
    *
    * The grouping itself is a single pass with constant-time lookup per element, and the result
    * is assembled once from the keys in encounter order, so the member is linear in the number

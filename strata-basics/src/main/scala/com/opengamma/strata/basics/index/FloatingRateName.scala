@@ -20,6 +20,8 @@ import com.opengamma.strata.basics.date.BusinessDayConventions
 import com.opengamma.strata.basics.date.DaysAdjustment
 import com.opengamma.strata.basics.date.Tenor
 import com.opengamma.strata.collect.ArgCheck
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.named.NamedEnum
 import com.opengamma.strata.collect.result.Failure
@@ -53,53 +55,38 @@ import com.opengamma.strata.collect.result.Failure
  *
  * The members are reference data published by this library, not an extension point. The type is
  * `sealed`, every member is created in its companion from the published name table, and the
- * lookup is built from those members alone, so nothing outside this file can add a member and
- * nothing at run time can replace one. The implementation being ported assembled the family at
- * class-initialization time by reading a configuration resource from the classpath through a
- * registry that could be extended, overridden and, on a load failure, silently left empty; none
- * of that machinery survives here.
+ * lookup is built from those members alone, so nothing outside this file can add a member and no
+ * member can be exchanged for another at run time.
  *
- * ===What a caller must know about the shape of this port===
+ * ===Where a failure is reported===
  *
- * Three groups of members differ in shape from the interface being ported, and every one of the
- * differences is the same substitution: an operation that raised an error now reports a
- * [[com.opengamma.strata.collect.result.Failure]] as a value. The messages are those of the
- * errors they replace.
+ * Every member that resolves a name onto something else answers with an `Either`, because the
+ * resolution can miss:
  *
- *  - '''The conversions report failure.''' [[toIborIndex]], [[toOvernightIndex]],
- *    [[toPriceIndex]], both forms of [[toFloatingRateIndex]] and [[toIborIndexFixingOffset]]
- *    answer with an `Either`. Two things can go wrong in them: the name is of the wrong kind for
- *    the conversion asked for, which is [[Failure.Invalid]], and the index the name resolves to
- *    is not published, which is [[Failure.Parsing]].
- *  - '''Two accessors report failure.''' [[currency]] is derived by converting to an index, so it
- *    inherits that conversion's failure, and [[normalized]] looks up the canonical name of the
- *    family, which is a lookup that can miss. The interface being ported raised an error from
- *    both.
- *  - '''[[defaultTenor]] reports failure''', which is the one place a caller may be surprised.
- *    The implementation being ported took the first element of the tenor set when neither `3M`
- *    nor `13W` was available, and raised `NoSuchElementException` where that set was empty. The
- *    published data contains exactly such a name: every one of the thirteen euroyen TIBOR Ibor
- *    indices is marked inactive, so `JPY-TIBOR-EUROYEN` has no active tenor at all. This port
- *    reports that as [[Failure.MissingData]] rather than raising.
- *
- * One further difference is in the name of a member rather than its shape: the accessor the
- * interface being ported called `getType` is [[rateType]] here, because `type` is a keyword of
- * this language. The value it answers with is unchanged.
+ *  - '''The conversions.''' [[toIborIndex]], [[toOvernightIndex]], [[toPriceIndex]], both forms
+ *    of [[toFloatingRateIndex]] and [[toIborIndexFixingOffset]] fail where the name is of the
+ *    wrong kind for the conversion asked for, and where the index the name resolves to is not
+ *    published.
+ *  - '''Two accessors.''' [[currency]] is derived by converting to an index, so it inherits that
+ *    conversion's failure, and [[normalized]] looks up the canonical name of the family, which is
+ *    a lookup that can miss.
+ *  - '''[[defaultTenor]].''' An Ibor name offers a tenor only while an index of its family is
+ *    still published, and the published data holds a name that offers none: every one of the
+ *    thirteen euroyen TIBOR Ibor indices is marked inactive, so `JPY-TIBOR-EUROYEN` has no active
+ *    tenor at all.
  *
  * ===Names, equality and JSON===
  *
  * [[name]] is the external name, which is the identity of the value: two names are equal exactly
  * when their external names are equal, hashing is that of the external name, and [[toString]]
- * and the `Show` instance both render it. That is the equality of the implementation being
- * ported, and it means a member is compared and stored by the spelling it arrived as, not by the
- * index it resolves to - `EUR-EURIBOR` and `EUR-EURIBOR-Reuters` are different values.
+ * and the `Show` instance both render it. A member is therefore compared and stored by the
+ * spelling it arrived as, not by the index it resolves to - `EUR-EURIBOR` and
+ * `EUR-EURIBOR-Reuters` are different values.
  *
- * The JSON form is the bare external name string, as the string conversion of the implementation
- * being ported was. Reading goes through the family's own name lookup and therefore accepts an
- * external name in whatever case it arrives, and nothing else: text naming a concrete index,
- * `GBP-LIBOR-3M`, is '''not''' accepted by the codec, exactly as it was not accepted by the
- * `of` factory the string conversion was bound to. [[FloatingRateName.parse]] is the wider
- * resolution that does accept it.
+ * The JSON form is the bare external name string. Reading goes through the family's own name
+ * lookup and therefore accepts an external name in whatever case it arrives, and nothing else:
+ * text naming a concrete index, `GBP-LIBOR-3M`, is '''not''' accepted by the codec.
+ * [[FloatingRateName.parse]] is the wider resolution that does accept it.
  *
  * ===Implementation notes===
  *
@@ -109,17 +96,16 @@ import com.opengamma.strata.collect.result.Failure
  * program touched first could observe the other half-built. The conversions resolve an index when
  * they are called, and [[tenors]] answers from a table of active tenors that the companion builds
  * lazily, on the first call that needs it, so the one derivation that would otherwise read an
- * index family eagerly is deferred as well. The implementation being ported avoided the cycle the
- * same way.
+ * index family eagerly is deferred as well.
  *
  * @param externalName  the external name, typically from FpML, such as `GBP-LIBOR-BBA`
  * @param indexName  the name of the index family this name resolves to, such as `GBP-LIBOR-`,
  *   which for an Ibor family carries the trailing `-` that a tenor completes
  * @param rateType  the kind of rate this name describes, which decides the kind of index it
- *   converts to; the accessor called `getType` in the implementation being ported
+ *   converts to
  * @param fixingDateOffsetDays  the number of days of the non-standard fixing date offset this
  *   name implies, or nothing where the offset of the index applies; used only for Ibor names,
- *   and today only by the Danish CIBOR names
+ *   and in the published name data only by the Danish CIBOR names
  * @see [[FloatingRateNames]] for the named constants of the commonly used members
  * @see [[FloatingRateType]] for the kinds of rate a name may describe
  */
@@ -127,7 +113,27 @@ sealed abstract class FloatingRateName private[index] (
     val externalName: String,
     val indexName: String,
     val rateType: FloatingRateType,
-    val fixingDateOffsetDays: Option[Int]) extends FloatingRate {
+    val fixingDateOffsetDays: Option[Int]) extends FloatingRate with NoJavaSerialization {
+
+  // The closure of this family, run for every member as it is constructed: `sealed` and a
+  // constructor private to this package are enforced against Scala and leave nothing in the class
+  // file, so a subtype compiled by other means - which would be a floating rate name outside the
+  // published table, resolving to whichever index family it declared - is refused here instead.
+  // The members of the family are the instances of the companion's hidden `Impl`.
+  JvmClosure.requireDeclaredMember(this, classOf[FloatingRateName])
+
+  // The invariant of this family, which is what the check above cannot see. `Impl` is emitted with
+  // a public constructor whatever the source asked for - only its `InnerClasses` entry records the
+  // request, which a Java compiler honours and a hand-written class file does not - so a caller
+  // that names that class directly produces an instance of exactly the class admitted above,
+  // holding whatever it passed: a published external name pointed at an index family of its own,
+  // describing a different kind of rate, or carrying a fixing offset the table does not declare.
+  // Every field is therefore compared against the row the published name table declares for this
+  // member's own external name, which is the identity a lookup resolves and the text the codec
+  // writes.
+  JvmClosure.requireInvariant(
+    "its fields are the ones the published floating rate name table declares for its external name",
+    FloatingRateName.holdsPublishedFields(this))
 
   /**
    * Gets the name that uniquely identifies this floating rate, such as `GBP-LIBOR`.
@@ -149,7 +155,6 @@ sealed abstract class FloatingRateName private[index] (
    */
   final def floatingRateName: FloatingRateName = this
 
-  //-------------------------------------------------------------------------
   /**
    * Gets the active tenors that are applicable for this floating rate.
    *
@@ -168,9 +173,8 @@ sealed abstract class FloatingRateName private[index] (
    * this family was created would make the two mutually dependent. The derivation is held in a
    * lazily built table of the active tenors of each Ibor family, forced by the first call that
    * needs it, so the Ibor indices are scanned once for the whole of this family and a call is a
-   * lookup in that table; the implementation being ported scanned them on every call. Deferring
-   * the table until it is used is what keeps the two families from depending on each other at
-   * creation time.
+   * lookup in that table. Deferring the table until it is used is what keeps the two families
+   * from depending on each other at creation time.
    *
    * @return the available tenors, shortest first, empty where this name has none
    */
@@ -192,9 +196,8 @@ sealed abstract class FloatingRateName private[index] (
    * name with `1Y`.
    *
    * An Ibor name whose every index has been retired has no tenor to answer with, and that is
-   * reported as [[Failure.MissingData]] naming the rate. The implementation being ported raised
-   * `NoSuchElementException` in that case, which the published data reaches through
-   * `JPY-TIBOR-EUROYEN`.
+   * reported as [[Failure.MissingData]] naming the rate. The published data reaches that case
+   * through `JPY-TIBOR-EUROYEN`, whose thirteen indices are all marked inactive.
    *
    * @return the default tenor, or a failure where this name has no tenor available
    */
@@ -226,9 +229,8 @@ sealed abstract class FloatingRateName private[index] (
    * name; for every other kind the index name is the normalized name as it stands.
    *
    * Every published family has a canonical name among the published names, so a failure here
-   * would mean the two published tables disagree. It is reported rather than raised because the
-   * accessor being ported reported it - as an error - and because the resolution is a lookup
-   * whose miss a caller can act on.
+   * would mean the two published tables disagree. It is reported as a value rather than raised
+   * because the resolution is a lookup, and a caller can act on a lookup that misses.
    *
    * @return the normalized name, or a failure where the canonical name of the family is not
    *   published
@@ -239,14 +241,13 @@ sealed abstract class FloatingRateName private[index] (
     FloatingRateName.valueOf(canonical).toRight(FloatingRateName.notFound(canonical))
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this name to an [[IborIndex]] of the specified tenor, reporting a failure where it
    * is not an Ibor name or the index is not published.
    *
    * The index name is this name's index name followed by the canonical text of the normalized
    * tenor, so `GBP-LIBOR-` and `3M` name `GBP-LIBOR-3M`, and `1Y` normalizes to `12M` so that it
-   * names `GBP-LIBOR-12M` as it did in the implementation being ported.
+   * names `GBP-LIBOR-12M`.
    *
    * @param tenor  the tenor of the index
    * @return the index, [[Failure.Invalid]] where this is not an Ibor name, or
@@ -266,7 +267,7 @@ sealed abstract class FloatingRateName private[index] (
    *
    * The offset is that of the index of this name's shortest available tenor, or of its
    * three-month index where it has no tenor available, except where the name itself implies a
-   * non-standard offset, in which case the implied offset replaces it:
+   * non-standard offset, in which case the implied offset is the one that applies:
    *
    *  - an implied offset of zero days becomes an adjustment that adds no days and moves the
    *    result back to the preceding business day of the index's own calendar;
@@ -340,16 +341,13 @@ sealed abstract class FloatingRateName private[index] (
         .toRight(FloatingRateName.indexNotFound("PriceIndex", indexName))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Converts this name to a concrete [[FloatingRateIndex]], using the
    * [[defaultTenor default tenor]] where this is an Ibor name.
    *
    * Ibor, Overnight and Price names convert; a name of any other kind reports
-   * [[Failure.Invalid]], carrying the message of the error the implementation being ported
-   * raised. The default tenor is resolved only for an Ibor name, which is the one kind that
-   * needs it - the implementation being ported duplicated its conversion code for exactly that
-   * reason, and the shape here keeps the property without the duplication.
+   * [[Failure.Invalid]]. The default tenor is resolved only for an Ibor name, which is the one
+   * kind that needs one, so a name of another kind cannot fail for want of a tenor.
    *
    * @return the index, or the failure of the conversion
    */
@@ -369,8 +367,8 @@ sealed abstract class FloatingRateName private[index] (
    * Converts this name to a concrete [[FloatingRateIndex]], using the specified tenor where this
    * is an Ibor name.
    *
-   * The tenor is used only where this is an Ibor name; an Overnight or Price name ignores it, as
-   * the implementation being ported did, because neither has a tenor to choose.
+   * The tenor is used only where this is an Ibor name; an Overnight or Price name ignores it,
+   * because neither has a tenor to choose.
    *
    * @param iborTenor  the tenor to use where this is an Ibor name
    * @return the index, or the failure of the conversion
@@ -400,14 +398,12 @@ sealed abstract class FloatingRateName private[index] (
    */
   def currency: Either[Failure, Currency] = toFloatingRateIndex.map(index => index.currency)
 
-  //-------------------------------------------------------------------------
   /**
    * Checks whether this floating rate name equals another value.
    *
-   * Equality is that of the external name alone, which is the equality of the implementation
-   * being ported. Two names that resolve onto the same index are therefore not equal unless they
-   * are the same name; [[normalized]] is how a caller asks for the canonical name before
-   * comparing.
+   * Equality is that of the external name alone. Two names that resolve onto the same index are
+   * therefore not equal unless they are the same name; [[normalized]] is how a caller asks for
+   * the canonical name before comparing.
    *
    * @param obj  the other value
    * @return true where the other value is a floating rate name with the same external name
@@ -451,14 +447,12 @@ sealed abstract class FloatingRateName private[index] (
  * ===The name space is the published names, and nothing else===
  *
  * Of the three tables a named family may declare - alternate spellings, lenient rewrites and
- * groups of names published for an external protocol - this family declares none, and that is a
- * property of the data rather than a simplification: the configuration of the implementation
- * being ported declared an empty alternate-name section for this family and no lenient or
- * external section at all. The 351 published names '''are''' the name space. The many spellings
- * of one rate are separate members that share an index name, not aliases of one member, which is
- * why they are rows of the name table and not rows of an alias table. The name lookup adds the
- * upper-case spelling of every name, as it does for every family, so `gbp-libor` does not
- * resolve but `GBP-LIBOR-BBA` in upper case does.
+ * groups of names published for an external protocol - this family declares none. The 351
+ * published names '''are''' the name space. The many spellings of one rate are separate members
+ * that share an index name, not aliases of one member, which is why they are rows of the name
+ * table and not rows of an alias table. The name lookup adds the upper-case spelling of every
+ * name, as it does for every family, so `gbp-libor` does not resolve but `GBP-LIBOR-BBA` in
+ * upper case does.
  *
  * ===Initialization order===
  *
@@ -478,8 +472,8 @@ object FloatingRateName {
   /**
    * The name of this family as it appears when the family rejects text.
    *
-   * This is the simple name of the type, which is what the registry of the implementation being
-   * ported used in the message of the error it raised, so a rejected name reads as it did before.
+   * This is the simple name of the type, and it is what every failure reporting an unresolved
+   * name quotes, so a rejection from the lookup and one from a conversion read alike.
    */
   private val FamilyName: String = "FloatingRateName"
 
@@ -496,8 +490,7 @@ object FloatingRateName {
    *
    * This is the `Order` the tenor type publishes, which ranks tenors by length and is a total
    * order - its comparison returns zero exactly when two tenors are equal - so a sorted set built
-   * with it holds every distinct tenor handed to it and loses none. The comparison by length is
-   * the comparison the implementation being ported sorted its tenor sets with.
+   * with it holds every distinct tenor handed to it and loses none.
    */
   private val TenorOrdering: Ordering[Tenor] = Order[Tenor].toOrdering
 
@@ -509,7 +502,6 @@ object FloatingRateName {
    */
   private val NoTenors: SortedSet[Tenor] = SortedSet.empty[Tenor](TenorOrdering)
 
-  //-------------------------------------------------------------------------
   /**
    * Builds the member of the family described by a row of the published name table.
    *
@@ -522,7 +514,61 @@ object FloatingRateName {
    * @return the floating rate name of that row
    */
   private def instanceOf(row: FloatingRateNameRow): FloatingRateName =
-    new FloatingRateName(row.externalName, row.indexName, row.rateType, row.fixingDateOffsetDays) {}
+    new Impl(row.externalName, row.indexName, row.rateType, row.fixingDateOffsetDays)
+
+  /**
+   * Whether a member holds exactly the fields the published name table declares for its external
+   * name.
+   *
+   * This is the invariant [[FloatingRateName]] states in its constructor, and it is stated over
+   * the fields of the value rather than over the row [[instanceOf]] read, because a value of this
+   * family can come into existence by a route no factory took: the hidden implementation class is
+   * emitted with a public constructor, so a class file that names it directly builds an instance
+   * of the one admitted class holding whatever fields it chose. What such a value would carry is
+   * exactly what this family exists to fix - which index family a name resolves to - so the row
+   * that declares the external name is what the other three fields have to agree with, and an
+   * external name the table does not declare is not a member of this family at all.
+   *
+   * Nothing is derived here: [[instanceOf]] carries every column across as it stands, so each
+   * field is compared with its column directly.
+   *
+   * @param name  the member being constructed
+   * @return true when every field of the member is the one the published table declares
+   */
+  private def holdsPublishedFields(name: FloatingRateName): Boolean =
+    FloatingRateNameData.byExternalName
+      .get(name.externalName)
+      .exists(row =>
+        name.indexName == row.indexName &&
+          name.rateType == row.rateType &&
+          name.fixingDateOffsetDays == row.fixingDateOffsetDays)
+
+  /**
+   * The one implementation of a floating rate name, and the only class the family admits.
+   *
+   * A `sealed abstract class` needs a concrete subclass to be instantiated at all, and this is it.
+   * It is declared here rather than written as an anonymous subclass at the instantiation site for
+   * two reasons, both about what the class file says: a private member class is one a compiler in
+   * another language refuses to name, where an anonymous class is public and can be instantiated
+   * directly by such a caller; and a class declared inside this companion is a class only these
+   * sources can declare, which is what lets [[FloatingRateName]] refuse, in its own constructor,
+   * to be a member this family does not publish.
+   *
+   * Every parameter is passed straight to the family, which declares them as its fields; see the
+   * documentation of [[FloatingRateName]] for what each of them means.
+   *
+   * @param externalName  the external name, such as `GBP-LIBOR-BBA`
+   * @param indexName  the name of the index family this name resolves to
+   * @param rateType  the kind of rate this name describes
+   * @param fixingDateOffsetDays  the non-standard fixing date offset this name implies, where the
+   *   published table declares one
+   */
+  private final class Impl(
+      externalName: String,
+      indexName: String,
+      rateType: FloatingRateType,
+      fixingDateOffsetDays: Option[Int])
+      extends FloatingRateName(externalName, indexName, rateType, fixingDateOffsetDays)
 
   /**
    * The 351 published floating rate names, one per row of the published name table, in the order
@@ -586,8 +632,8 @@ object FloatingRateName {
    * The name lookup for this family.
    *
    * It is built from [[values]] and from no table at all: this family declares no alternate
-   * spelling, no lenient rewrite and no external group, for the reason given on this object. The
-   * lookup therefore accepts each published external name and its upper-case spelling.
+   * spelling, no lenient rewrite and no external group. The lookup therefore accepts each
+   * published external name and its upper-case spelling.
    *
    * @return the name lookup for the 351 published names
    */
@@ -613,9 +659,8 @@ object FloatingRateName {
    * the text, and nothing here holds a table beside it. The precedence is the one that lookup
    * applies to every family - a member claims its own published name ''unconditionally'', and the
    * upper-case spelling of that name is claimed afterwards ''only where the name space still has
-   * room for it''. That is the order in which the loader being ported registered a family read
-   * from configuration, this family among them, and it is what makes the published name of a
-   * member the text that reaches that member, whatever the other members are called.
+   * room for it''. That order is what makes the published name of a member the text that reaches
+   * that member, whatever the other members are called.
    *
    * The order is observable in this family and in no other, because the published data declares
    * four rates twice, differing in the case of one word: `DKK-DESTR-OIS Compound` beside
@@ -628,12 +673,12 @@ object FloatingRateName {
    * one would have been a member of the family that no text resolves to. The two members of a pair
    * resolve onto the same index and differ in nothing but their spelling, so the distinction is
    * one of identity rather than of behaviour; it matters because a name is the value's identity
-   * here, and because a member that cannot be resolved by its own name cannot survive a
-   * serialization round trip.
+   * here, and because a member that cannot be resolved by its own name cannot survive a JSON
+   * round trip.
    *
    * The family declares no alternate spellings, so no substitution precedes the lookup. Were such
-   * a table ever added, the family's lookup would apply it ahead of both keys, as the lookup being
-   * ported applied it, without anything changing here.
+   * a table ever added, the family's lookup would apply it ahead of both keys, without anything
+   * changing here.
    *
    * @param name  the external name, such as `GBP-LIBOR-BBA`
    * @return the floating rate name of that name, or nothing where the family has no such member
@@ -650,11 +695,10 @@ object FloatingRateName {
    * lost''': `GBP-LIBOR-3M` answers with the `GBP-LIBOR` family, which says nothing about three
    * months.
    *
-   * The order matters and is the order of the implementation being ported. It is the opposite of
-   * the order of the search over both kinds of floating rate, which probes the three index
-   * families first and the published names last. The two exist for different callers - this one
-   * wants a family and accepts an index name as a way of naming one, that one wants whichever kind
-   * the text named - and both are ported; they are deliberately not unified.
+   * The order matters. It is the opposite of the order of the search over both kinds of floating
+   * rate, which probes the three index families first and the published names last. The two exist
+   * for different callers - this one wants a family and accepts an index name as a way of naming
+   * one, that one wants whichever kind the text named - and are deliberately not unified.
    *
    * {{{
    * tryParse("GBP-LIBOR")     // Some(GBP-LIBOR), a published name
@@ -673,12 +717,11 @@ object FloatingRateName {
    * Parses text naming a floating rate, with extended handling of index names, reporting a
    * failure where it names none.
    *
-   * This is [[tryParse]] with the absent case reported as [[Failure.Parsing]], carrying the
-   * message the implementation being ported used for the error it raised in the same situation.
-   * The text is quoted as it stands, so the message reads exactly as the ported one did and
-   * names the whole of what was rejected. Bounding it and escaping what it may hold belong to
-   * the writing of a failure, which the text form of one and [[Failure.show]] perform for every
-   * part they write, so a name from outside cannot forge a line of a log carrying it.
+   * This is [[tryParse]] with the absent case reported as [[Failure.Parsing]]. The text is quoted
+   * as it stands, so the message names the whole of what was rejected. Bounding it and escaping
+   * what it may hold belong to the writing of a failure, which the text form of one and
+   * [[Failure.show]] perform for every part they write, so a name from outside cannot forge a
+   * line of a log carrying it.
    *
    * @param str  the text to parse, such as `GBP-LIBOR-BBA` or `GBP-LIBOR-3M`
    * @return the floating rate name the text names, or a failure describing the text that named
@@ -688,13 +731,11 @@ object FloatingRateName {
     tryParse(str).toRight(
       Failure.Parsing(s"Floating rate name not known: $str"))
 
-  //-------------------------------------------------------------------------
   /**
    * The failure reported where text names no member of this family.
    *
-   * The wording is that of the name lookup of every family in this library, and of the registry
-   * of the implementation being ported, so a miss reported from here reads like a miss reported
-   * from the lookup itself.
+   * The wording is that of the name lookup of every family in this library, so a miss reported
+   * from here reads like a miss reported from the lookup itself.
    *
    * @param name  the name that resolved to no member
    * @return the failure naming this family and the rendering of the name
@@ -718,9 +759,8 @@ object FloatingRateName {
    * The names reached through this method are the 41 named constants of [[FloatingRateNames]] and
    * the values of the two currency default tables, all of which are published by this library
    * rather than supplied by a caller. A miss is therefore not a rejected argument but a
-   * disagreement between two tables this module transcribes, which has to surface at once and
-   * loudly - as it did in the implementation being ported, whose loader raised while assembling
-   * the family.
+   * disagreement between two tables of this module, which has to surface at once and loudly: it
+   * fails the load of the object holding the name rather than the first call that reads it.
    *
    * The failure is raised through this module's single sanctioned fail-fast channel,
    * [[com.opengamma.strata.collect.ArgCheck]], so that every invariant breach in the library
@@ -742,9 +782,8 @@ object FloatingRateName {
    *
    * The published table names its defaults by external name, and they are resolved here, once,
    * while this object initializes - so a value naming no published name fails the load of this
-   * module rather than the first call that asks for that currency, which is where the loader of
-   * the implementation being ported detected the same breach. The resolved table is a plain map,
-   * because a lookup by currency is all any caller does with it.
+   * module rather than the first call that asks for that currency. The resolved table is a plain
+   * map, because a lookup by currency is all any caller does with it.
    */
   private val defaultIborNames: Map[Currency, FloatingRateName] =
     FloatingRateNameData.currencyDefaultIbor.iterator.map {
@@ -768,8 +807,7 @@ object FloatingRateName {
    * A default is a convenience for code that has a currency and needs a rate of that currency
    * without asking which one; it is not a market convention. Only 23 currencies publish one -
    * `BRL`, whose market has no term rate, is one of the currencies that does not - and the
-   * absence is reported as [[Failure.MissingData]] carrying the message of the error the
-   * implementation being ported raised.
+   * absence is reported as [[Failure.MissingData]] naming the currency.
    *
    * @param currency  the currency to find the default Ibor rate of
    * @return the default Ibor rate of that currency, or a failure where none is published
@@ -794,15 +832,13 @@ object FloatingRateName {
       .get(currency)
       .toRight(Failure.MissingData(s"No default Overnight index for currency ${currency.code}"))
 
-  //-------------------------------------------------------------------------
   /**
    * The ordering, hashing and equality of floating rate names, all by external name.
    *
    * `Order` and `Hash` both extend `Eq`, so publishing this single value as the family's
    * equality-bearing instance makes two disagreeing notions of equality impossible; `Eq` is
-   * obtained from it by subtyping and is never declared separately. Equality by name is the
-   * equality of the implementation being ported, and ordering by name is this port's choice of a
-   * total order - the type being ported was not comparable - which agrees with that equality.
+   * obtained from it by subtyping and is never declared separately. Ordering by name is a total
+   * order, and it agrees with the equality by name that the same value carries.
    *
    * @return the ordering of floating rate names by name, which is also their hashing and equality
    */
@@ -822,11 +858,9 @@ object FloatingRateName {
   /**
    * The JSON codec for floating rate names.
    *
-   * This is the codec of a closed named family, [[Codecs.namedEnumCodec]] over [[namedEnum]],
-   * which is the form every named family of this port uses. A name is written as the bare string
-   * of its external name, which is what the string conversion of the implementation being ported
-   * wrote, so a document written before this port reads back as the same member. Reading goes
-   * through the family's own name lookup, [[NamedEnum.parse]].
+   * This is the codec of a closed named family, [[Codecs.namedEnumCodec]] over [[namedEnum]]. A
+   * name is written as the bare string of its external name, and reading goes through the
+   * family's own name lookup, [[NamedEnum.parse]].
    *
    * ===Every member survives the round trip===
    *
@@ -870,30 +904,24 @@ object FloatingRateName {
  * alternative spellings, historical spellings and rates this library models by name without
  * shipping the data to price them.
  *
- * The constants carry the names they have in the library being ported - `GBP_LIBOR`, `USD_SOFR`,
- * `GB_RPI` - so that code and documentation written against that library names the same values
- * here.
- *
  * ===How a constant is resolved===
  *
  * Every constant selects the published member of that external name through
  * `FloatingRateName.builtIn`, rather than constructing one, so a constant is the same object as
  * the member the lookup answers with and reference identity agrees with equality. A constant
  * naming no published name is a disagreement between two tables of this module and fails the load
- * of this object, which is the behaviour the loader of the implementation being ported had while
- * it assembled the family. Two of the names below look like alternative spellings and are
- * genuinely published rows - `EUR-ESTER`, the former name of the euro short-term rate, and
+ * of this object. Two of the names below read like alternative spellings and are genuinely
+ * published rows - `EUR-ESTER`, an earlier name of the euro short-term rate, and
  * `USD-FED-FUND-AVG`, the averaging form of US Fed Fund - so that check is what confirms them.
  *
- * ===Two rates are no longer current===
+ * ===Two constants name rates that are not published under that name===
  *
- * `CHF-TOIS` has not been published since 2017-12-29, and `EUR-ESTER` was renamed to `EUR-ESTR`;
- * the library being ported marks both deprecated. They are kept, with their published data
- * unchanged, because a trade booked while they were current still names them. They are '''not'''
- * annotated as deprecated here: this build compiles with warnings as errors and forbids
- * suppressing a warning anywhere, so annotating them would make every test and report that
- * enumerates the 41 constants fail to compile. The state of the two rates is documented here
- * instead, and is recorded among the divergences of the migration note.
+ * `CHF-TOIS` has not been published since 2017-12-29, and the euro short-term rate that
+ * `EUR-ESTER` names is published under the name `EUR-ESTR`. Both constants are kept, with their
+ * published data unchanged, because trades booked while those names were in use, and the
+ * documents stored with them, still name them. Neither carries a deprecation annotation:
+ * whether the rate a name resolves to is still published is carried by the `active` flag of the
+ * index it resolves to, which a caller can read and branch on.
  *
  * @see [[FloatingRateName]] for what a floating rate name is and how it converts to an index
  */
@@ -953,7 +981,6 @@ object FloatingRateNames {
   /** Constant for ZAR-JIBAR. */
   val ZAR_JIBAR: FloatingRateName = FloatingRateName.builtIn("ZAR-JIBAR")
 
-  //-------------------------------------------------------------------------
   /** Constant for GBP-SONIA Overnight index. */
   val GBP_SONIA: FloatingRateName = FloatingRateName.builtIn("GBP-SONIA")
 
@@ -969,8 +996,8 @@ object FloatingRateNames {
   /**
    * Constant for CHF-TOIS Overnight index.
    *
-   * The rate has not been published since 2017-12-29; the library being ported marks this
-   * constant deprecated. See the note on this object for why no annotation is applied here.
+   * The rate has not been published since 2017-12-29, and the `CHF-TOIS` Overnight index this
+   * name resolves to is marked inactive in the published index data.
    */
   val CHF_TOIS: FloatingRateName = FloatingRateName.builtIn("CHF-TOIS")
 
@@ -983,9 +1010,8 @@ object FloatingRateNames {
   /**
    * Constant for EUR-ESTER Overnight index.
    *
-   * The rate was renamed, and [[EUR_ESTR]] is the current name of it; the library being ported
-   * marks this constant deprecated. See the note on this object for why no annotation is applied
-   * here.
+   * This is an earlier name of the euro short-term rate, which is published under the name
+   * `EUR-ESTR`. It resolves to the same `EUR-ESTR` Overnight index that [[EUR_ESTR]] does.
    */
   val EUR_ESTER: FloatingRateName = FloatingRateName.builtIn("EUR-ESTER")
 
@@ -1019,11 +1045,9 @@ object FloatingRateNames {
   /** Constant for THB-THOR Overnight index. */
   val THB_THOR: FloatingRateName = FloatingRateName.builtIn("THB-THOR")
 
-  //-------------------------------------------------------------------------
   /** Constant for USD-FED-FUND Overnight index using averaging. */
   val USD_FED_FUND_AVG: FloatingRateName = FloatingRateName.builtIn("USD-FED-FUND-AVG")
 
-  //-------------------------------------------------------------------------
   /** Constant for GB-RPI Price index. */
   val GB_RPI: FloatingRateName = FloatingRateName.builtIn("GB-RPI")
 

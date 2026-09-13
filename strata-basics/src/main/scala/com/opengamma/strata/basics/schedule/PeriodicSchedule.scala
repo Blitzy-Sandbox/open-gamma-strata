@@ -31,6 +31,8 @@ import com.opengamma.strata.basics.RefDataReader
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.date.AdjustableDate
 import com.opengamma.strata.basics.date.BusinessDayAdjustment
+import com.opengamma.strata.collect.JvmClosure
+import com.opengamma.strata.collect.NoJavaSerialization
 import com.opengamma.strata.collect.Validate
 import com.opengamma.strata.collect.json.Codecs
 import com.opengamma.strata.collect.result.Failure
@@ -111,51 +113,30 @@ import com.opengamma.strata.collect.result.ValidatedFailures
  * including non-business days. When the unadjusted schedule has been determined, the appropriate
  * business day adjustment is applied to create a parallel schedule of "adjusted" dates.
  *
- * ===Divergences from the bean being ported===
+ * ===Failures and bounds===
  *
- *  - The `ScheduleException` of the library being ported has '''no counterpart type'''. Every
- *    rejection this type reports is a
- *    [[com.opengamma.strata.collect.result.Failure.Invalid]] whose message is the ported one,
- *    verbatim, and whose `definition` attribute holds the rendered definition - which is what the
- *    exception carried as a field. `replaceStartDate`, which threw a plain
- *    `IllegalArgumentException`, reports the same shape.
- *  - The seven properties the bean left unset by a missing reference are `Option` fields, so the
- *    absence of a stub date or a convention is carried by the type rather than by a convention
- *    about a missing reference.
- *  - The builder is replaced by the `with*` copies of this type, each of which re-validates, and by
- *    the four factories of the companion.
- *  - `createSchedule`, `createUnadjustedDates`, `createAdjustedDates` and `replaceStartDate`
- *    gain an error channel: they answer with `Either` rather than throwing.
- *  - [[toReader]] is this port's addition: the schedule creation awaiting its reference data, so a
- *    caller composes it with other reference-data operations and supplies the data once.
- *  - The `BackwardsList` of the ported implementation - a hand-rolled `AbstractList` over a mutable
- *    index and an array - and the `estimateNumberPeriods` helper that sized it are '''dropped'''.
- *    Prepending onto a `List` costs the same and mutates nothing.
- *  - '''Date generation is bounded.''' The ported walks materialised as many boundaries as the
- *    dates and frequency implied, with no ceiling, so a caller-chosen daily frequency over a span
- *    of centuries could exhaust time and heap. Here the limit is `MaximumPeriodCount` periods, and
- *    a definition asking for more is reported as a failure naming it, through three checks: a span
- *    whose width makes the limit unreachable is refused in constant time before either walk
- *    begins, and only where it is '''provably''' unreachable, so nothing a generation would have
- *    completed is refused; each walk then stops at the ceiling's worth of boundaries, so nothing
- *    beyond it is ever materialised; and the assembled date list - the schedule's two ends, any
- *    dated stub and the rolled boundaries together, one period fewer than there are dates - is
- *    checked against the limit exactly.
- *  - '''The business day adjustment of the interior dates is resolved once.''' The ported loop
- *    called `businessDayAdjustment.adjust(date, refData)` for every date between the two ends,
- *    which resolves the holiday calendar - and recombines a composite one - on every iteration.
- *    This port binds the calendar once per generation through
- *    [[com.opengamma.strata.basics.date.BusinessDayAdjustment.resolve]] and applies the resulting
- *    adjuster to each date, and it does so only where there is an interior date, so the schedules
- *    that resolved nothing through that adjustment still resolve nothing.
- *  - '''Date arithmetic at the edges of the calendar is reported, not raised.''' A roll that steps
- *    outside the range `java.time` can represent raised `DateTimeException` or
- *    `ArithmeticException` out of the ported generation, and out of this port's `Either`-returning
- *    members with it. Those two exceptions - and no others - are caught around the stepping and
- *    reported as `Failure.Invalid`, because a failure that depends on the data of a definition
- *    belongs in the same channel as every other such failure (AAP 0.3.3).
- *  - There is no Joda bean and no Java serialization. The JSON codec below is the one text form
- *    of a definition besides [[toString]].
+ * A definition that cannot be built, and a definition that cannot create its schedule, are both
+ * reported as a failure value rather than as a raised exception. Every such rejection carries the
+ * message stating what was rejected and, under its `definition` attribute, the rendered definition
+ * that was rejected.
+ *
+ *  - The seven optional properties are `Option` fields, so the absence of a stub date or a
+ *    convention is carried by the type, and the `with*` copies of this type each re-validate.
+ *  - '''Date generation is bounded.''' The ceiling is `MaximumPeriodCount` periods, and a
+ *    definition asking for more is reported as a failure naming it, through three checks: a span
+ *    whose width makes the ceiling '''provably''' unreachable is refused in constant time before
+ *    either walk begins, so nothing a generation would have completed is refused; each walk stops
+ *    at the ceiling's worth of boundaries, so nothing beyond it is materialised; and the assembled
+ *    date list - the schedule's two ends, any dated stub and the rolled boundaries together, one
+ *    period fewer than there are dates - is checked against the ceiling exactly.
+ *  - '''The business day adjustment of the interior dates is resolved once per generation''',
+ *    through [[com.opengamma.strata.basics.date.BusinessDayAdjustment.resolve]], which binds the
+ *    holiday calendar a single time rather than once per date, and only where there is an interior
+ *    date to adjust.
+ *  - '''Date arithmetic at the edges of the representable calendar is reported rather than
+ *    raised.''' A roll that steps outside the range `java.time` can represent raises
+ *    `DateTimeException` or `ArithmeticException`; those two exceptions, and no others, are caught
+ *    around the stepping and reported as an invalid definition.
  *
  * @param startDate  the start date, which is the start of the first schedule period; this is
  *   unadjusted and as such might be a weekend or holiday, and any applicable business day
@@ -195,17 +176,70 @@ sealed abstract case class PeriodicSchedule private (
     rollConvention: Option[RollConvention],
     firstRegularStartDate: Option[LocalDate],
     lastRegularEndDate: Option[LocalDate],
-    overrideStartDate: Option[AdjustableDate]) {
+    overrideStartDate: Option[AdjustableDate])
+    extends NoJavaSerialization {
+
+  // The construction closure of this type, run for every instance of every subclass of it: the
+  // `private` constructor and the `sealed` modifier are enforced against Scala, and neither
+  // survives into the class file, so the only place a subtype compiled by other means - which
+  // could hold a definition none of the seven checks of `of` had passed - can be stopped is here.
+  // The single implementation is the companion's hidden `Impl`.
+  JvmClosure.requireSoleImplementation(this, classOf[PeriodicSchedule.Impl])
+
+  // The invariant of this type, stated over the fields the instance actually holds rather than
+  // over the arguments a factory was given, because the class file of the implementation carries a
+  // public constructor whatever the source asked for: a caller compiled outside this library can
+  // name that constructor directly, and the identity check above would admit a definition none of
+  // the seven checks of [[PeriodicSchedule.of]] had passed. Those seven are restated here, in the
+  // same order and over the same five date-bearing properties, so a definition reaching this
+  // constructor by any other route describes a span that schedule creation can roll out rather
+  // than one whose stubs run backwards. The frequency and the three adjustments carry their own
+  // invariants and place no constraint on each other, so they take no part, and nothing about
+  // whether the frequency divides the term is stated - that is decided by creating the schedule,
+  // exactly as it is for a definition a factory built.
+  //
+  // The effective start - the unadjusted override start date where there is one, the start date
+  // otherwise - is the one derived quantity the checks need, and it is written out at each of the
+  // two places that read it rather than held in a field, so this adds no state to the type.
+  JvmClosure.requireInvariant(
+    "its start date falls strictly before its end date",
+    startDate.isBefore(endDate))
+  JvmClosure.requireInvariant(
+    "its override start date, where present, falls strictly before its end date",
+    overrideStartDate.forall(override_ => override_.unadjusted.isBefore(endDate)))
+  JvmClosure.requireInvariant(
+    "its first regular start date, where present, falls on or before its end date",
+    firstRegularStartDate.forall(firstRegular => !firstRegular.isAfter(endDate)))
+  JvmClosure.requireInvariant(
+    "its first regular start date and last regular end date, where both are present, are in " +
+      "that order or equal",
+    firstRegularStartDate
+      .zip(lastRegularEndDate)
+      .forall { case (firstRegular, lastRegular) => !firstRegular.isAfter(lastRegular) })
+  JvmClosure.requireInvariant(
+    "its effective start falls on or before a first regular start date that is present",
+    firstRegularStartDate.forall(firstRegular =>
+      !overrideStartDate.fold(startDate)(override_ => override_.unadjusted).isAfter(firstRegular)))
+  JvmClosure.requireInvariant(
+    "its effective start falls on or before a last regular end date that is present",
+    lastRegularEndDate.forall(lastRegular =>
+      !overrideStartDate.fold(startDate)(override_ => override_.unadjusted).isAfter(lastRegular)))
+  JvmClosure.requireInvariant(
+    "its last regular end date, where present, falls on or before its end date",
+    lastRegularEndDate.forall(lastRegular => !lastRegular.isAfter(endDate)))
 
   import PeriodicSchedule._
 
-  //-------------------------------------------------------------------------
   /**
    * Creates the schedule from this definition, as the two-argument `createSchedule` does with
    * `combinePeriodsIfNecessary` set to false.
    *
    * @param refData  the reference data, used to find the holiday calendars
-   * @return the schedule, or the failure describing why this definition creates none
+   * @return the schedule, or the failure naming what this definition breaks: a holiday calendar
+   *   the reference data does not supply, a date the roll convention does not match, a remainder
+   *   the stub convention disallows, a dated stub on a 'Term' frequency, two dates that collide
+   *   once adjusted, a generation of more periods than the ceiling allows, or date arithmetic
+   *   outside the range of representable dates
    */
   def createSchedule(refData: ReferenceData): Either[Failure, Schedule] =
     createSchedule(refData, false)
@@ -248,7 +282,11 @@ sealed abstract case class PeriodicSchedule private (
    *
    * @param refData  the reference data, used to find the holiday calendars
    * @param combinePeriodsIfNecessary  determines whether periods should be combined if necessary
-   * @return the schedule, or the failure describing why this definition creates none
+   * @return the schedule, or the failure naming what this definition breaks: a holiday calendar
+   *   the reference data does not supply, a date the roll convention does not match, a remainder
+   *   the stub convention disallows, a dated stub on a 'Term' frequency, two dates that collide
+   *   once adjusted and are not being combined, a generation of more periods than the ceiling
+   *   allows, or date arithmetic outside the range of representable dates
    */
   def createSchedule(
       refData: ReferenceData,
@@ -262,7 +300,7 @@ sealed abstract case class PeriodicSchedule private (
   /**
    * Returns the creation of this schedule as an operation awaiting reference data.
    *
-   * This is the single-argument `createSchedule` with its argument not yet supplied, so a caller
+   * This is the single-argument `createSchedule` with its argument left unsupplied, so a caller
    * composes it with the other reference-data operations of this module - the adjustment of a date,
    * the resolution of a calendar - and supplies the data once, at the point where the answer is
    * wanted. The reader fails with the single failure of whichever step could not be completed.
@@ -272,7 +310,6 @@ sealed abstract case class PeriodicSchedule private (
   def toReader: RefDataReader[Schedule] =
     Kleisli[FailureOr, ReferenceData, Schedule](refData => createSchedule(refData))
 
-  //-------------------------------------------------------------------------
   /**
    * Creates the list of unadjusted dates in the schedule.
    *
@@ -290,7 +327,11 @@ sealed abstract case class PeriodicSchedule private (
    * `createUnadjustedDates` is '''not''' applied here, because that handling needs the holiday
    * calendars and this form is the one for a caller that has none.
    *
-   * @return the schedule of unadjusted dates, or the failure describing why there is none
+   * @return the schedule of unadjusted dates, or the failure naming the broken constraint: the
+   *   date the walk starts from must match the roll convention, a dated stub must not be combined
+   *   with a 'Term' frequency, a remainder the walk leaves must be a stub the convention allows,
+   *   the dates generated must hold no duplicate, the periods they describe must stay within the
+   *   ceiling, and each roll must stay inside the range of representable dates
    */
   def createUnadjustedDates(): Either[Failure, List[LocalDate]] = {
     val regularStart = calculatedFirstRegularStartDate
@@ -309,7 +350,9 @@ sealed abstract case class PeriodicSchedule private (
    * `createSchedule`.
    *
    * @param refData  the reference data, used to find the holiday calendars
-   * @return the schedule of unadjusted dates, or the failure describing why there is none
+   * @return the schedule of unadjusted dates, or the failure naming the broken constraint: the
+   *   constraints of the no-argument form above, and a holiday calendar that the reference data
+   *   must supply for each adjustment applied while recovering a pre-adjusted date
    */
   def createUnadjustedDates(refData: ReferenceData): Either[Failure, List[LocalDate]] =
     unadjustedDates(refData).flatMap(deduplicatedUnadjusted)
@@ -324,8 +367,11 @@ sealed abstract case class PeriodicSchedule private (
    * `businessDayAdjustment`.
    *
    * @param refData  the reference data, used to find the holiday calendars
-   * @return the schedule of dates adjusted to valid business days, or the failure describing why
-   *   there is none
+   * @return the schedule of dates adjusted to valid business days, or the failure naming the
+   *   broken constraint: the constraints of `createUnadjustedDates`, a holiday calendar that the
+   *   reference data must supply for each adjustment applied, and adjusted dates that must hold no
+   *   duplicate - two unadjusted dates mapping onto one business day describe a period of no
+   *   length
    */
   def createAdjustedDates(refData: ReferenceData): Either[Failure, List[LocalDate]] =
     for {
@@ -334,7 +380,6 @@ sealed abstract case class PeriodicSchedule private (
       deduplicated <- deduplicatedAdjusted(unadj, adj)
     } yield deduplicated
 
-  //-------------------------------------------------------------------------
   /**
    * Generates the unadjusted dates and the roll convention they were generated with.
    *
@@ -345,8 +390,10 @@ sealed abstract case class PeriodicSchedule private (
    * holds as a property.
    *
    * @param refData  the reference data, used to find the holiday calendars
-   * @return the unadjusted dates and the roll convention used, or the failure describing why there
-   *   are none
+   * @return the unadjusted dates and the roll convention used, or the failure naming the broken
+   *   constraint: a holiday calendar the reference data must supply for each adjustment applied
+   *   while recovering a pre-adjusted date, and the generation constraints of
+   *   `createUnadjustedDates`
    */
   private def unadjustedSchedule(
       refData: ReferenceData): Either[Failure, (List[LocalDate], RollConvention)] =
@@ -370,21 +417,18 @@ sealed abstract case class PeriodicSchedule private (
    * periods. [[SchedulePeriod.of]] rejects a pair that is degenerate or out of order, and it is the
    * only thing that can go wrong here.
    *
-   * Where it does go wrong, the failure reported is the failure the ported implementation reported,
-   * obtained the way it obtained it: its recovery block re-ran `createUnadjustedDates()` - the
-   * '''no-argument''' form, which generates from the declared start and end dates and recovers no
-   * pre-adjusted date from reference data - then `createAdjustedDates(refData)`, and only if both
-   * of those returned normally did it report that the calculation produced an invalid period
-   * [modules/basics/src/main/java/com/opengamma/strata/basics/schedule/
-   * PeriodicSchedule.java:466-473].
-   * Those two members are replayed here in that order, through the public members themselves, so
-   * that a caller sees whichever failure the ported code would have raised. That matters beyond the
-   * duplicate-date messages this branch is usually reached by: the no-argument generation works
-   * from different dates than the generation that produced the lists passed here, so it can report
-   * a roll convention that the declared start date does not match, a stub the convention disallows
-   * or the 'Term' explicit-stubs message, and a definition whose dates are pre-adjusted is exactly
-   * the definition on which the two generations differ. Checking the two lists directly would
-   * report a different branch, and a different message, for those definitions.
+   * Where a pair is rejected, the failure reported is not that rejection. The generation is
+   * replayed instead, in this order and through the public members themselves: first the
+   * '''no-argument''' `createUnadjustedDates`, which generates from the declared start and end
+   * dates and recovers no pre-adjusted date from reference data, then
+   * `createAdjustedDates(refData)`; the invalid-period message is reported only where both of
+   * those return normally. That matters beyond the duplicate-date messages this branch is usually
+   * reached by: the no-argument generation works from different dates than the generation that
+   * produced the lists passed here, so it can report a roll convention that the declared start
+   * date does not match, a stub the convention disallows or the 'Term' explicit-stubs message, and
+   * a definition whose dates are pre-adjusted is exactly the definition on which the two
+   * generations differ. Checking the two lists directly would report a different branch, and a
+   * different message, for those definitions.
    *
    * A schedule with no periods at all is possible only when combining merged every boundary into
    * one, which requires the adjusted dates to have held duplicates, so it reports through the same
@@ -395,7 +439,11 @@ sealed abstract case class PeriodicSchedule private (
    * @param rollConv  the roll convention the dates were generated with
    * @param combinePeriodsIfNecessary  whether runs of coincident adjusted dates merge into one
    * @param refData  the reference data, used to replay the adjusted-date generation
-   * @return the schedule, or the failure describing why the dates describe none
+   * @return the schedule, or the failure naming the broken constraint: each date must fall
+   *   strictly before the one after it in both the unadjusted and the adjusted list, and the
+   *   periods they build must run from earliest to latest; where a pair does not, the failure is
+   *   whichever one the replayed generation reports, and the invalid-period message where it
+   *   reports none
    */
   private def assembled(
       unadj: List[LocalDate],
@@ -427,7 +475,6 @@ sealed abstract case class PeriodicSchedule private (
     }
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Generates the unadjusted dates of the schedule.
    *
@@ -449,7 +496,12 @@ sealed abstract case class PeriodicSchedule private (
    * @param regEnd  the calculated unadjusted end date of the regular part
    * @param end  the calculated unadjusted end date of the schedule
    * @param rollConv  the roll convention to roll the regular part with
-   * @return the unadjusted dates, in order, or the failure describing why there are none
+   * @return the unadjusted dates, in order, or the failure naming the broken constraint: a dated
+   *   stub must not be combined with a 'Term' frequency, the dated stubs must be consistent with a
+   *   declared stub convention, the date the walk starts from must match the roll convention, a
+   *   remainder the walk leaves must be a stub the convention allows, the periods the dates
+   *   describe must stay within the ceiling, and each roll must stay inside the range of
+   *   representable dates
    */
   private def generateUnadjustedDates(
       start: LocalDate,
@@ -558,12 +610,11 @@ sealed abstract case class PeriodicSchedule private (
    * the remainder is a stub, and a convention that wants a long stub absorbs it by deleting the
    * earliest boundary the walk produced.
    *
-   * The ported implementation walked into a hand-rolled list that prepended in place. Here the walk
-   * is an iterator taken while it stays after the start date, which yields the boundaries in
-   * descending order, and the list is assembled by reversing that and prepending the start. The
-   * value the ported loop exited on - the first boundary that is not after the start date - is
-   * recovered by stepping once more from the earliest boundary kept, or from the end date where the
-   * walk kept none; the two are the same date.
+   * The walk is an iterator taken while it stays after the start date, which yields the boundaries
+   * in descending order, and the list is assembled by reversing that and prepending the start. The
+   * date the walk stopped on - the first boundary that is not after the start date, which decides
+   * whether a remainder is left - is recovered by stepping once more from the earliest boundary
+   * kept, or from the end date where the walk kept none; the two are the same date.
    *
    * Both the walk and that extra boundary step go through [[rolledDates]] and [[guardedStep]], so
    * a definition whose dates and frequency would roll outside the range `java.time` represents, or
@@ -573,7 +624,7 @@ sealed abstract case class PeriodicSchedule private (
    * [[PeriodicSchedule.provablyExceedsPeriodCount]], so a span that cannot possibly be walked
    * within the ceiling is refused without stepping at all. It is placed after the roll-convention
    * check above deliberately: the order in which a definition's failures are reported is part of
-   * what a caller reads, and a mismatched roll convention is still reported first.
+   * what a caller reads, and a mismatched roll convention is reported first.
    *
    * @param start  the unadjusted start date of the regular part, where the walk stops
    * @param end  the unadjusted end date of the regular part, where the walk starts
@@ -584,7 +635,10 @@ sealed abstract case class PeriodicSchedule private (
    * @param explicitFinalStub  whether a final stub has been defined by dates
    * @param explicitEndDate  the last date of the schedule, used only when there is a dated final
    *   stub
-   * @return the unadjusted dates, in order, or the failure describing why there are none
+   * @return the unadjusted dates, in order, or the failure naming the broken constraint: the
+   *   regular end date must match the roll convention, the span must not provably need more
+   *   periods than the ceiling allows, the walk must roll no more boundaries than the ceiling
+   *   allows, and each roll must stay inside the range of representable dates
    */
   private def generateBackwards(
       start: LocalDate,
@@ -625,16 +679,15 @@ sealed abstract case class PeriodicSchedule private (
    * remainder is a stub, and a convention that wants a long stub absorbs it by deleting the latest
    * boundary the walk produced.
    *
-   * Note the asymmetry with the backwards walk, which is the shape of the ported implementation and
-   * is preserved: the regular end date is appended '''inside''' the branch that rolls, so a regular
-   * part whose two ends coincide contributes no end date at all, while the date of a dated final
-   * stub is appended outside it either way.
+   * Note the asymmetry with the backwards walk: the regular end date is appended '''inside''' the
+   * branch that rolls, so a regular part whose two ends coincide contributes no end date at all,
+   * while the date of a dated final stub is appended outside it either way.
    *
-   * The walk and its extra boundary step are guarded and bounded exactly as the backwards walk's
-   * are, by [[PeriodicSchedule.provablyExceedsPeriodCount]] before the walk and by
-   * [[rolledDates]] and [[guardedStep]] within it, and the order in which failures are reported is
-   * unchanged: the roll mismatch first, then a span provably beyond the period ceiling, then a step
-   * outside the date range or beyond that ceiling, then a remainder the stub convention disallows.
+   * The walk and its extra boundary step are guarded and bounded as the backwards walk's are, by
+   * [[PeriodicSchedule.provablyExceedsPeriodCount]] before the walk and by [[rolledDates]] and
+   * [[guardedStep]] within it, and failures are reported in this order: the roll mismatch first,
+   * then a span provably beyond the period ceiling, then a step outside the date range or beyond
+   * that ceiling, then a remainder the stub convention disallows.
    *
    * @param start  the unadjusted start date of the regular part, where the walk starts
    * @param end  the unadjusted end date of the regular part, where the walk stops
@@ -647,7 +700,11 @@ sealed abstract case class PeriodicSchedule private (
    * @param explicitFinalStub  whether a final stub has been defined by dates
    * @param explicitEndDate  the last date of the schedule, used only when there is a dated final
    *   stub
-   * @return the unadjusted dates, in order, or the failure describing why there are none
+   * @return the unadjusted dates, in order, or the failure naming the broken constraint: the
+   *   regular start date must match the roll convention, the span must not provably need more
+   *   periods than the ceiling allows, the walk must roll no more boundaries than the ceiling
+   *   allows, each roll must stay inside the range of representable dates, and a remainder the
+   *   walk leaves must be a stub the convention allows
    */
   private def generateForwards(
       start: LocalDate,
@@ -691,9 +748,8 @@ sealed abstract case class PeriodicSchedule private (
   /**
    * Rolls the boundary dates of one walk, refusing an overflow and refusing an oversized schedule.
    *
-   * This is the stepping both walks perform, written once. The walk is the `Iterator.iterate` the
-   * Agent Action Plan requires of this generation - no loop, no mutable cursor - with two
-   * containments the ported implementation did not have:
+   * This is the stepping both walks perform, written once. The walk is an `Iterator.iterate` over
+   * the step, with two containments:
    *
    *  - '''the date arithmetic is guarded.''' A step that leaves the range `java.time` represents
    *    raises `DateTimeException`, and one whose epoch-day arithmetic overflows raises
@@ -725,7 +781,8 @@ sealed abstract case class PeriodicSchedule private (
    * @param step  the rolling step, which is one application of the roll convention and frequency
    * @param keep  the test each rolled boundary must satisfy to be part of the walk
    * @return the boundaries the walk produced, in the order the walk produced them, or the failure
-   *   describing why the walk produced none
+   *   naming the broken constraint: the walk must roll no more boundaries than the ceiling allows,
+   *   and each step must stay inside the range of representable dates
    */
   private def rolledDates(
       from: LocalDate,
@@ -793,11 +850,11 @@ sealed abstract case class PeriodicSchedule private (
    * Decides the stub convention that a forwards walk leaving a remainder is allowed to apply.
    *
    * A convention other than 'None' answers for itself. 'None' declares that there is no stub, so a
-   * remainder contradicts it and is rejected - except for one edge case, which the library being
-   * ported accepted and this port accepts with it: a month-based schedule rolling on the end of the
-   * month whose end date shares the day-of-month of a start date that is itself a month end. There
-   * the end date simply does not follow the end-of-month rule of the month it falls in, and the
-   * schedule is completed with the smart rules rather than refused.
+   * remainder contradicts it and is rejected - except for one accepted edge case: a month-based
+   * schedule rolling on the end of the month whose end date shares the day-of-month of a start
+   * date that is itself a month end. There the end date simply does not follow the end-of-month
+   * rule of the month it falls in, and the schedule is completed with the smart rules rather than
+   * refused.
    *
    * @param stubConv  the stub convention derived for the regular part
    * @param rollConv  the roll convention being rolled with
@@ -827,7 +884,6 @@ sealed abstract case class PeriodicSchedule private (
             s"with frequency '${frequency.name}'"))
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Applies the appropriate business day adjustment to each unadjusted date.
    *
@@ -840,17 +896,15 @@ sealed abstract case class PeriodicSchedule private (
    *
    * The interior adjustment is '''resolved once''' per generation, through
    * [[BusinessDayAdjustment.resolve]], and the resulting
-   * [[com.opengamma.strata.basics.date.DateAdjuster]] is applied to every interior date.
-   * Adjusting date by date instead - which is what the ported loop did, having the reference data
-   * to hand on every iteration - looks the calendar up again for each date, and for a composite
-   * identifier recombines its components each time, so a long schedule paid for its calendar once
-   * per boundary.
+   * [[com.opengamma.strata.basics.date.DateAdjuster]] is applied to every interior date. Adjusting
+   * date by date instead looks the calendar up again for each date, and for a composite identifier
+   * recombines its components each time, so a long schedule would pay for its calendar once per
+   * boundary.
    *
    * The resolution is also '''lazy''': it happens only where there is an interior date to adjust.
-   * A schedule of two dates puts nothing through `businessDayAdjustment` - the ported loop, which
-   * ran from the second date to the second-to-last, had no iterations for such a schedule - so a
-   * definition whose plain adjustment names a calendar the reference data does not supply still
-   * produces its schedule as long as the two ends can be adjusted, exactly as before.
+   * A schedule of two dates puts nothing through `businessDayAdjustment`, so a definition whose
+   * plain adjustment names a calendar the reference data does not supply produces its schedule as
+   * long as the two ends can be adjusted.
    *
    * The order in which failures are reported is the order of the three positions: the start date's
    * adjustment first, then the interior one, then the end date's.
@@ -878,7 +932,6 @@ sealed abstract case class PeriodicSchedule private (
     } yield (first :: interior) :+ last
   }
 
-  //-------------------------------------------------------------------------
   /**
    * Gets the applicable roll convention defining how to roll dates.
    *
@@ -945,12 +998,12 @@ sealed abstract case class PeriodicSchedule private (
    *
    * The recovery is attempted only where a roll convention is declared '''and''' either the start
    * date carries the explicit adjustment [[BusinessDayAdjustment.NONE]] or the convention is 'EOM'.
-   * A start date with no adjustment of its own does not qualify, which is the behaviour of the
-   * equality test being ported - it compared against a field that might hold no reference at all
-   * and answered false for that case.
+   * A start date that declares no adjustment of its own does not qualify: the condition is on the
+   * adjustment being present and being that constant, not on the schedule's plain adjustment.
    *
    * @param refData  the reference data, used to find the holiday calendars
-   * @return the calculated unadjusted start date, or the failure of the adjustment used to test it
+   * @return the calculated unadjusted start date, or the failure that the adjustment testing the
+   *   candidate date names a holiday calendar the reference data does not supply
    */
   private def calculatedUnadjustedStartDate(refData: ReferenceData): Either[Failure, LocalDate] =
     rollConvention match {
@@ -964,13 +1017,14 @@ sealed abstract case class PeriodicSchedule private (
   /**
    * Calculates the applicable unadjusted end date.
    *
-   * This is the same recovery as for the start date, with two differences that the ported
-   * implementation makes and this port keeps: it is attempted whenever a roll convention is
-   * declared, without the adjustment condition, and the adjustment used to test the recovered date
-   * is the end date's own - [[calculatedEndDateBusinessDayAdjustment]] - rather than the plain one.
+   * This is the same recovery as for the start date, with two differences: it is attempted
+   * whenever a roll convention is declared, without the adjustment condition, and the adjustment
+   * testing the recovered date is the end date's own - [[calculatedEndDateBusinessDayAdjustment]] -
+   * rather than the plain one.
    *
    * @param refData  the reference data, used to find the holiday calendars
-   * @return the calculated unadjusted end date, or the failure of the adjustment used to test it
+   * @return the calculated unadjusted end date, or the failure that the adjustment testing the
+   *   candidate date names a holiday calendar the reference data does not supply
    */
   private def calculatedUnadjustedEndDate(refData: ReferenceData): Either[Failure, LocalDate] =
     rollConvention match {
@@ -1001,8 +1055,9 @@ sealed abstract case class PeriodicSchedule private (
    *
    * @param unadjStart  the calculated unadjusted start date of the schedule
    * @param refData  the reference data, used to find the holiday calendars
-   * @return the calculated start date of the first regular period, or the failure of the adjustment
-   *   used to test it
+   * @return the calculated start date of the first regular period, or the failure that the
+   *   adjustment testing the candidate date names a holiday calendar the reference data does not
+   *   supply
    */
   private def calculatedFirstRegularStartDate(
       unadjStart: LocalDate,
@@ -1028,14 +1083,13 @@ sealed abstract case class PeriodicSchedule private (
    *
    * Where no last regular end date is declared, the calculated unadjusted end date of the whole
    * schedule stands in for it, so the regular part ends where the schedule does and there is no
-   * final stub. Note that the adjustment used to test a recovered date here is the plain
-   * `businessDayAdjustment`, not the end date's own - the ported implementation reserves that for
-   * the end date itself.
+   * final stub. The adjustment testing a recovered date here is the plain `businessDayAdjustment`;
+   * the end date's own adjustment is reserved for the end date itself.
    *
    * @param unadjEnd  the calculated unadjusted end date of the schedule
    * @param refData  the reference data, used to find the holiday calendars
-   * @return the calculated end date of the last regular period, or the failure of the adjustment
-   *   used to test it
+   * @return the calculated end date of the last regular period, or the failure that the adjustment
+   *   testing the candidate date names a holiday calendar the reference data does not supply
    */
   private def calculatedLastRegularEndDate(
       unadjEnd: LocalDate,
@@ -1089,7 +1143,6 @@ sealed abstract case class PeriodicSchedule private (
   def calculatedEndDate: AdjustableDate =
     AdjustableDate.of(endDate, calculatedEndDateBusinessDayAdjustment)
 
-  //-------------------------------------------------------------------------
   /**
    * Returns an instance based on this schedule with the start date replaced.
    *
@@ -1104,7 +1157,9 @@ sealed abstract case class PeriodicSchedule private (
    * both fields are left untouched.
    *
    * @param adjustedStartDate  the proposed start date, which is considered to be adjusted
-   * @return a schedule with the proposed start date, or the failures describing why there is none
+   * @return a schedule with the proposed start date, or the failures naming the broken constraint:
+   *   the proposed date must not fall after the end date, it must fall strictly before it, and it
+   *   must fall on or before a last regular end date that survives the replacement
    */
   def replaceStartDate(adjustedStartDate: LocalDate): EitherNec[Failure, PeriodicSchedule] =
     if (adjustedStartDate.isAfter(endDate)) {
@@ -1123,12 +1178,12 @@ sealed abstract case class PeriodicSchedule private (
   /**
    * Decides the stub convention and last regular end date a replaced start date implies.
    *
-   * The three cases are those of the ported algorithm. An absent convention, 'Both' or 'None'
-   * cannot survive the move of the start date, so 'SmartInitial' replaces them. A "Final"
-   * convention is turned into 'SmartInitial' too, but only once the boundary between the regular
-   * part and the final stub is pinned down: either it is already declared, or it is taken from the
-   * penultimate date this definition generates. Any other convention - the initial and smart ones -
-   * is retained, because moving the start date is exactly what it already describes.
+   * There are three cases. An absent convention, 'Both' or 'None' cannot survive the move of the
+   * start date, so 'SmartInitial' replaces them. A "Final" convention is turned into 'SmartInitial'
+   * too, but only once the boundary between the regular part and the final stub is pinned down:
+   * either it is already declared, or it is taken from the penultimate date this definition
+   * generates. Any other convention - the initial and smart ones - is retained, because moving the
+   * start date is exactly what it already describes.
    *
    * @return the stub convention and last regular end date of the replacement
    */
@@ -1154,17 +1209,17 @@ sealed abstract case class PeriodicSchedule private (
       (stubConvention, lastRegularEndDate)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a copy of this definition with the start date replaced.
    *
    * The copy is re-validated, so the answer carries the failures of any invariant the new value
-   * breaks. This and the eight members below it are what replaces the builder of the bean being
-   * ported: each one changes a single property and funnels through the validating factory, so no
-   * sequence of them can reach a definition the factory would have refused.
+   * breaks. Each `with*` member changes a single property and funnels through the validating
+   * factory, so no sequence of them can reach a definition the factory would have refused.
    *
    * @param startDate  the unadjusted start date of the schedule
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint: the start date must fall
+   *   strictly before the end date and, where no override start date is declared, on or before a
+   *   declared first regular start date and last regular end date
    */
   def withStartDate(startDate: LocalDate): EitherNec[Failure, PeriodicSchedule] =
     copyWith(startDate = startDate)
@@ -1173,7 +1228,9 @@ sealed abstract case class PeriodicSchedule private (
    * Returns a copy of this definition with the end date replaced.
    *
    * @param endDate  the unadjusted end date of the schedule
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint: the end date must fall strictly
+   *   after the start date and after the unadjusted date of a declared override start date, and on
+   *   or after a declared first regular start date and last regular end date
    */
   def withEndDate(endDate: LocalDate): EitherNec[Failure, PeriodicSchedule] =
     copyWith(endDate = endDate)
@@ -1182,7 +1239,9 @@ sealed abstract case class PeriodicSchedule private (
    * Returns a copy of this definition with the business day adjustment replaced.
    *
    * @param businessDayAdjustment  the adjustment applied to each date of the calculated schedule
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint; an adjustment takes part in
+   *   none of the date orderings the factory checks, so a definition that held them holds them
+   *   still, and whether the adjustment finds its calendar is decided by schedule creation
    */
   def withBusinessDayAdjustment(
       businessDayAdjustment: BusinessDayAdjustment): EitherNec[Failure, PeriodicSchedule] =
@@ -1193,7 +1252,9 @@ sealed abstract case class PeriodicSchedule private (
    *
    * @param startDateBusinessDayAdjustment  the adjustment of the start date, or `None` to fall back
    *   on the schedule's own adjustment
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint; an adjustment takes part in
+   *   none of the date orderings the factory checks, so a definition that held them holds them
+   *   still
    */
   def withStartDateBusinessDayAdjustment(
       startDateBusinessDayAdjustment: Option[BusinessDayAdjustment])
@@ -1205,7 +1266,9 @@ sealed abstract case class PeriodicSchedule private (
    *
    * @param endDateBusinessDayAdjustment  the adjustment of the end date, or `None` to fall back on
    *   the schedule's own adjustment
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint; an adjustment takes part in
+   *   none of the date orderings the factory checks, so a definition that held them holds them
+   *   still
    */
   def withEndDateBusinessDayAdjustment(
       endDateBusinessDayAdjustment: Option[BusinessDayAdjustment])
@@ -1217,7 +1280,9 @@ sealed abstract case class PeriodicSchedule private (
    *
    * @param stubConvention  the convention defining how to handle stubs, or `None` to leave it to be
    *   implied from the dates and the roll convention
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint; a convention takes part in none
+   *   of the date orderings the factory checks, and whether it agrees with the dates and the dated
+   *   stubs is decided by schedule creation
    */
   def withStubConvention(
       stubConvention: Option[StubConvention]): EitherNec[Failure, PeriodicSchedule] =
@@ -1228,7 +1293,9 @@ sealed abstract case class PeriodicSchedule private (
    *
    * @param rollConvention  the convention defining how to roll dates, or `None` to leave it to be
    *   implied from the first date of the calculation
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint; a convention takes part in none
+   *   of the date orderings the factory checks, and whether the calculated dates match it is
+   *   decided by schedule creation
    */
   def withRollConvention(
       rollConvention: Option[RollConvention]): EitherNec[Failure, PeriodicSchedule] =
@@ -1239,7 +1306,10 @@ sealed abstract case class PeriodicSchedule private (
    *
    * @param firstRegularStartDate  the unadjusted start date of the first regular period, or `None`
    *   for a schedule with no dated initial stub
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint: a first regular start date must
+   *   fall on or after the effective start - the unadjusted date of a declared override start date,
+   *   the start date otherwise - and on or before both the end date and a declared last regular end
+   *   date
    */
   def withFirstRegularStartDate(
       firstRegularStartDate: Option[LocalDate]): EitherNec[Failure, PeriodicSchedule] =
@@ -1250,7 +1320,10 @@ sealed abstract case class PeriodicSchedule private (
    *
    * @param lastRegularEndDate  the unadjusted end date of the last regular period, or `None` for a
    *   schedule with no dated final stub
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint: a last regular end date must
+   *   fall on or after the effective start - the unadjusted date of a declared override start date,
+   *   the start date otherwise - and on or after a declared first regular start date, and on or
+   *   before the end date
    */
   def withLastRegularEndDate(
       lastRegularEndDate: Option[LocalDate]): EitherNec[Failure, PeriodicSchedule] =
@@ -1261,7 +1334,10 @@ sealed abstract case class PeriodicSchedule private (
    *
    * @param overrideStartDate  the start date of the first schedule period, overriding normal
    *   schedule generation, or `None` to generate it normally
-   * @return the copy, or the failures describing why the new value describes no definition
+   * @return the copy, or the failures naming the broken constraint: the unadjusted date of an
+   *   override start date must fall strictly before the end date and on or before a declared first
+   *   regular start date and last regular end date, and it is the effective start that those two
+   *   comparisons are made against
    */
   def withOverrideStartDate(
       overrideStartDate: Option[AdjustableDate]): EitherNec[Failure, PeriodicSchedule] =
@@ -1275,7 +1351,8 @@ sealed abstract case class PeriodicSchedule private (
    * to derive a definition that the factory would have refused: there is no other route from one
    * definition to another.
    *
-   * @return the copy, or the failures describing why the new values describe no definition
+   * @return the copy, or the failures naming every one of the seven date orderings of [[of]] that
+   *   the new values break
    */
   private def copyWith(
       startDate: LocalDate = this.startDate,
@@ -1305,42 +1382,30 @@ sealed abstract case class PeriodicSchedule private (
       lastRegularEndDate,
       overrideStartDate)
 
-  //-------------------------------------------------------------------------
   /**
    * Builds the failure this definition reports, attaching itself under the `definition` attribute.
    *
-   * The exception of the library being ported carried the definition that was rejected as a field,
-   * so that a report could name it without the message having to embed it. The attribute is that
-   * field, and every rejection of this type carries it.
+   * Every rejection this type reports carries the definition that was rejected under that
+   * attribute, so a report can name the definition without the message having to embed it.
    *
    * ===Why the definition is attached exactly as it renders===
    *
    * The attribute holds the text of [[toString]] as it stands, with nothing dropped, shortened or
-   * escaped, and the message is the text of the ported exception with the values it quotes
-   * interpolated the same way. That is what the attribute is for: it replaces a field a caller
-   * could read, so a report has to be able to name the definition that was rejected and a test has
-   * to be able to compare it with the definition it supplied. Either of those reads a summary
-   * rather than the definition if this method alters the text, which is why it does not.
+   * escaped. That is what the attribute is for: a report has to be able to name the definition that
+   * was rejected, and a caller has to be able to compare it with the definition it supplied. Either
+   * of those reads a summary rather than the definition if this method alters the text, which is
+   * why it does not.
    *
    * Part of that text is nevertheless outside this library's control. A definition embeds a
    * [[BusinessDayAdjustment]], which names a
    * [[com.opengamma.strata.basics.date.HolidayCalendarId]], and that identifier is total in its
    * name: `HolidayCalendarId.of` accepts any text at all, so a calendar name arriving from a
-   * document, a configuration file or a caller may hold a line feed, a control character, or
-   * several thousand characters of anything.
+   * document or a caller may hold a line feed, a control character, or several thousand characters
+   * of anything. Making such text safe to write out therefore belongs to the writing of a failure
+   * rather than to the reporting of one, and this method neither bounds nor escapes the text it
+   * attaches.
    *
-   * Making such text safe to write out therefore belongs to the writing of a failure rather than
-   * to the reporting of one, and that is where this port performs it. The
-   * [[com.opengamma.strata.collect.result.Failure.show]] instance, which is also the text form of
-   * every failure, bounds each part it writes - the message and the key and the value of every
-   * attribute - and escapes every character that a line-oriented reader could act on. A definition
-   * carried here consequently cannot forge a line of a log or a report that holds the failure
-   * (CWE-117), and cannot make that line as large as the calendar name it embeds, however the
-   * failure came to be built. The JSON encoding of a failure carries the text whole, escaped as
-   * the JSON grammar requires, because a document is read by a parser rather than by a reader of
-   * lines.
-   *
-   * @param message  the message of the ported exception, verbatim
+   * @param message  the message stating what was rejected
    * @return the failure
    */
   private def failure(message: String): Failure =
@@ -1357,17 +1422,15 @@ sealed abstract case class PeriodicSchedule private (
   }
 
   /**
-   * Renders a list of dates as the message formatter being ported rendered one.
+   * Renders a list of dates as the messages of this type name one.
    *
-   * The messages of the ported exceptions were assembled by substituting each argument's text form
-   * into a template, and the text form of a Java list is its elements between square brackets and
-   * separated by a comma and a space - `[2014-01-01, 2014-02-01]`. Interpolating a Scala `List`
-   * instead produces `List(2014-01-01, 2014-02-01)`, which is not the text a caller reading a
-   * rejected schedule has always seen, so the two messages that name a date list render it through
-   * this member. `Schedule.merge` renders the dates of its own messages the same way.
+   * The two messages that name a date list render it through this member: the dates between square
+   * brackets, separated by a comma and a space - `[2014-01-01, 2014-02-01]`. Interpolating a `List`
+   * directly would produce `List(2014-01-01, 2014-02-01)` instead, which is not the form these
+   * messages carry.
    *
    * @param dates  the dates to render, in the order they are to appear
-   * @return the dates as the ported message rendered them
+   * @return the dates as a message renders them
    */
   private def dateList(dates: List[LocalDate]): String = dates.mkString("[", ", ", "]")
 
@@ -1417,14 +1480,11 @@ sealed abstract case class PeriodicSchedule private (
       case None => Right(adj)
     }
 
-  //-------------------------------------------------------------------------
   /**
    * Returns a string describing this definition.
    *
-   * This is the port's own form: the four properties every definition has, followed by those of the
-   * seven optional properties that are present, each under the name the codec writes it under. The
-   * bean being ported rendered the property-by-property text of a Joda bean, which has no
-   * counterpart here.
+   * The form is the four properties every definition has, followed by those of the seven optional
+   * properties that are present, each under the name the codec writes it under.
    *
    * The rendering is deterministic - the properties appear in their declaration order and an absent
    * property contributes nothing - because this is the text that every failure of this type carries
@@ -1460,11 +1520,11 @@ sealed abstract case class PeriodicSchedule private (
  * Provides the four ways of obtaining a periodic schedule definition, the invariants every one of
  * them checks, and the instances for the type.
  *
- * The bean being ported was reached through a builder and two static factories. There is no builder
- * here: the factories below cover the shapes the two static ones covered, plus the minimal shape of
- * the four required properties and the full shape of all eleven, and the `with*` members of the
- * type itself derive one definition from another. Every one of them funnels through [[of]], so the
- * invariants are checked once, in one place, however a definition is arrived at.
+ * The factories below cover the minimal shape of the four required properties, a shape stated by a
+ * stub convention and an end-of-month preference, a shape stated by the stub and roll conventions,
+ * and the full shape of all eleven properties; the `with*` members of the type itself derive one
+ * definition from another. Every one of them funnels through [[of]], so the invariants are checked
+ * once, in one place, however a definition is arrived at.
  *
  * None of the factories declares a default argument, deliberately: Scala permits defaults on at
  * most one alternative of an overloaded name, and giving them to one of four would make the other
@@ -1472,27 +1532,23 @@ sealed abstract case class PeriodicSchedule private (
  */
 object PeriodicSchedule {
 
-  /** The property name the start date is reported under. */
   private val StartDateName: String = "startDate"
 
-  /** The property name the end date is reported under. */
   private val EndDateName: String = "endDate"
 
   /**
    * The name the start date is reported under when it is checked against a regular date.
    *
-   * The library being ported used the name `unadjusted` in exactly these two checks, rather than
-   * `startDate`, and the name is part of the message a caller reads, so it is reproduced verbatim.
+   * The two checks that compare the start date with a first regular start date or a last regular
+   * end date report it as `unadjusted` rather than as `startDate`, and that name is part of the
+   * message a caller reads.
    */
   private val UnadjustedName: String = "unadjusted"
 
-  /** The property name the override start date is reported under. */
   private val OverrideStartDateName: String = "overrideStartDate"
 
-  /** The property name the first regular start date is reported under. */
   private val FirstRegularStartDateName: String = "firstRegularStartDate"
 
-  /** The property name the last regular end date is reported under. */
   private val LastRegularEndDateName: String = "lastRegularEndDate"
 
   /** The attribute the rejected definition is attached to every failure under. */
@@ -1502,20 +1558,25 @@ object PeriodicSchedule {
   private val TermExplicitStubsMessage: String =
     "Explicit stubs must not be specified when using 'Term' frequency"
 
-  /** The message reporting dates that describe no valid period, for no more specific reason. */
+  /**
+   * The message reporting an adjacent pair of generated dates that is not strictly in order.
+   *
+   * It is reported only where regenerating the dates from the declared start and end dates, and
+   * adjusting them again, reports nothing more specific.
+   */
   private val InvalidPeriodMessage: String = "Schedule calculation resulted in invalid period"
 
   /**
    * The greatest number of periods a single schedule generation will produce.
    *
    * Every property of a definition is chosen by its caller, including the frequency and the two
-   * dates, so the number of periods a generation is asked for is caller-controlled and was
-   * unbounded in the library being ported: a one-day frequency over a span of centuries would walk
-   * and materialise every boundary in it, spending time and heap in proportion to a number the
-   * caller supplied. One hundred thousand periods is roughly two hundred and seventy-four years
-   * of daily periods - far beyond the longest schedule this library is ever asked to build, and
-   * further still beyond anything expressible at the monthly and quarterly frequencies that
-   * dominate its use - while bounding the list a generation can materialise to a few megabytes.
+   * dates, so the number of periods a generation is asked for is caller-controlled: without a
+   * ceiling, a one-day frequency over a span of centuries would walk and materialise every
+   * boundary in it, spending time and heap in proportion to a number the caller supplied. One
+   * hundred thousand periods is roughly two hundred and seventy-four years of daily periods - far
+   * beyond the longest schedule this library is ever asked to build, and further still beyond
+   * anything expressible at the monthly and quarterly frequencies that dominate its use - while
+   * bounding the list a generation can materialise to a few megabytes.
    *
    * The ceiling is enforced in three places, which together answer "refused before the work is
    * done", "no more than this is ever materialised" and "the number the message names is the
@@ -1545,10 +1606,10 @@ object PeriodicSchedule {
    * One generated step is `date.plus(period)` followed by the adjustment of the roll convention,
    * and that adjustment can only move the stepped date '''within its own month''' - the numeric
    * day-of-month conventions, `EOM`, and the IMM-family conventions all answer with a date in the
-   * month of the date they were given - or at most six days forward, which is what the
-   * day-of-week conventions do [schedule/RollConvention.scala:495,514]. Thirty-one days is
-   * therefore an upper bound on the adjustment in either direction, and adding it to the length of
-   * the frequency's period gives an upper bound on the distance one step covers.
+   * month of the date they were given - or at most six days forward, which is what the day-of-week
+   * conventions do. Thirty-one days is therefore an upper bound on the adjustment in either
+   * direction, and adding it to the length of the frequency's period gives an upper bound on the
+   * distance one step covers.
    */
   private val MaxRollAdjustmentDays: Long = 31L
 
@@ -1557,10 +1618,10 @@ object PeriodicSchedule {
    *
    * Where adding the frequency and adjusting the result lands on or before the date stepped from -
    * which happens when the frequency is shorter than the granularity of the convention, such as a
-   * daily frequency rolling on the third Wednesday - the convention steps by one month instead
-   * [schedule/RollConvention.scala:159-162,175-178]. That substituted step spans at most
-   * thirty-one days, so the date being adjusted is at most the greater of this and the period's own
-   * length away from the date stepped from, and the bound below takes that greater value.
+   * daily frequency rolling on the third Wednesday - the convention steps by one month instead.
+   * That substituted step spans at most thirty-one days, so the date being adjusted is at most the
+   * greater of this and the period's own length away from the date stepped from, and the bound
+   * below takes that greater value.
    */
   private val MaxFallbackStepDays: Long = 31L
 
@@ -1588,9 +1649,9 @@ object PeriodicSchedule {
    * A span whose end is not after its start yields a quotient that is zero or negative, so it is
    * never refused by this: an inverted or empty span is a matter for the checks that own it.
    *
-   * It is `private[schedule]` rather than private so that the specs of this package can assert the
-   * predicate itself, in both directions. A refusal from here and a refusal from the walk carry the
-   * same message, so nothing else distinguishes them from outside.
+   * It is package-visible rather than private so that the rest of this package can apply the
+   * predicate on its own. A refusal from here and a refusal from the walk carry the same message,
+   * so nothing else distinguishes them from outside.
    *
    * @param walkStart  the earlier end of the span the walk traverses
    * @param walkEnd  the later end of the span the walk traverses
@@ -1627,8 +1688,8 @@ object PeriodicSchedule {
   /**
    * The ordering of dates the order checks below are performed with.
    *
-   * The checking helpers of this port are generic in the type being compared and take its cats
-   * ordering, and cats publishes no instance for `java.time.LocalDate` - the class implements
+   * The checking helpers are generic in the type being compared and take its cats ordering, and
+   * cats publishes no instance for `java.time.LocalDate` - the class implements
    * `Comparable[ChronoLocalDate]` rather than `Comparable[LocalDate]`, so the ordering derived from
    * a comparable type does not apply to it either. The instance is therefore stated here, as the
    * natural time-line order the class itself defines, and kept private: it exists to serve the
@@ -1638,7 +1699,6 @@ object PeriodicSchedule {
   private implicit val dateOrder: Order[LocalDate] =
     Order.from((first, second) => first.compareTo(second))
 
-  //-------------------------------------------------------------------------
   /**
    * Obtains an instance from the four properties every definition has.
    *
@@ -1646,14 +1706,15 @@ object PeriodicSchedule {
    * so the stub convention is implied to be 'None' and the roll convention is implied from the
    * first date of the calculation - which means the schedule must divide evenly by the frequency.
    *
-   * This is the minimal shape the builder of the bean being ported could be used in. The `with*`
-   * members of the result add the optional properties one at a time.
+   * This is the minimal shape of a definition; the `with*` members of the result add the optional
+   * properties one at a time.
    *
    * @param unadjustedStartDate  the start date, which is the start of the first schedule period
    * @param unadjustedEndDate  the end date, which is the end of the last schedule period
    * @param frequency  the regular periodic frequency
    * @param businessDayAdjustment  the business day adjustment to apply
-   * @return the definition, or the failures describing why the arguments describe none
+   * @return the definition, or the failure naming the broken constraint: the start date must fall
+   *   strictly before the end date, which is the only ordering these four arguments can break
    */
   def of(
       unadjustedStartDate: LocalDate,
@@ -1686,7 +1747,9 @@ object PeriodicSchedule {
    * @param businessDayAdjustment  the business day adjustment to apply
    * @param stubConvention  the convention defining how to handle stubs
    * @param preferEndOfMonth  whether to prefer the end-of-month when rolling
-   * @return the definition, or the failures describing why the arguments describe none
+   * @return the definition, or the failure naming the broken constraint: the start date must fall
+   *   strictly before the end date; whether the stub convention agrees with the dates is decided by
+   *   schedule creation rather than here
    */
   def of(
       unadjustedStartDate: LocalDate,
@@ -1720,7 +1783,9 @@ object PeriodicSchedule {
    * @param businessDayAdjustment  the business day adjustment to apply
    * @param stubConvention  the convention defining how to handle stubs
    * @param rollConvention  the convention defining how to roll dates
-   * @return the definition, or the failures describing why the arguments describe none
+   * @return the definition, or the failure naming the broken constraint: the start date must fall
+   *   strictly before the end date; whether the two conventions agree with the dates is decided by
+   *   schedule creation rather than here
    */
   def of(
       unadjustedStartDate: LocalDate,
@@ -1745,9 +1810,8 @@ object PeriodicSchedule {
   /**
    * Obtains an instance from all eleven properties.
    *
-   * This is the factory the builder of the bean being ported is replaced by, and the funnel every
-   * other route into the type passes through - the three factories above, the `with*` members of
-   * the type, [[PeriodicSchedule.replaceStartDate]] and the decoder below.
+   * This is the funnel every other route into the type passes through - the three factories above,
+   * the `with*` members of the type, [[PeriodicSchedule.replaceStartDate]] and the decoder below.
    *
    * The seven optional properties have to be named, `None` included. There is no default for them,
    * for the reason given on this object, and the four-argument factory above is the shape a caller
@@ -1757,7 +1821,7 @@ object PeriodicSchedule {
    *
    * Seven invariants, '''accumulated rather than sequenced''', so that a caller supplying several
    * badly ordered dates is told about all of them at once instead of correcting one and being sent
-   * back for the next. The validator of the bean being ported threw at the first one it found.
+   * back for the next.
    *
    *  1. the start date falls strictly before the end date;
    *  1. an override start date, where present, falls strictly before the end date;
@@ -1770,8 +1834,7 @@ object PeriodicSchedule {
    *  1. a last regular end date, where present, falls on or before the end date.
    *
    * The two checks against the effective start report it under the name of whichever property
-   * supplied it, which for the start date is the name `unadjusted` that the library being ported
-   * used there.
+   * supplied it, which for the start date is the name `unadjusted`.
    *
    * Note what is '''not''' checked: nothing about whether the frequency divides the term, whether
    * the conventions agree with the dates, or whether a stub is allowed. Those depend on rolling the
@@ -1788,7 +1851,8 @@ object PeriodicSchedule {
    * @param firstRegularStartDate  the start date of the first regular period, if any
    * @param lastRegularEndDate  the end date of the last regular period, if any
    * @param overrideStartDate  the overriding start date of the first period, if any
-   * @return the definition, or the failures describing why the arguments describe none
+   * @return the definition, or the failures naming every one of the seven orderings above that the
+   *   arguments break
    */
   def of(
       startDate: LocalDate,
@@ -1885,10 +1949,9 @@ object PeriodicSchedule {
    *
    * This is the only instantiation of the type and it is private, so [[of]] is the only way into it
    * from outside this file. The constructor of a `sealed abstract case class` is reachable only
-   * from inside the file that declares it, and `new PeriodicSchedule(...) {}` - an anonymous
-   * subclass of the abstract case class - is how it is reached; that is what leaves the type
-   * without a public `apply` or `copy` while keeping the `equals`, `hashCode` and `unapply` a case
-   * class provides.
+   * from inside the file that declares it, and [[Impl]] - a subclass of the abstract case class,
+   * declared and hidden here - is how it is reached; that is what leaves the type without a public
+   * `apply` or `copy` while keeping the `equals`, `hashCode` and `unapply` a case class provides.
    *
    * The method performs no check of its own, because its one caller has already run all seven.
    */
@@ -1904,7 +1967,7 @@ object PeriodicSchedule {
       firstRegularStartDate: Option[LocalDate],
       lastRegularEndDate: Option[LocalDate],
       overrideStartDate: Option[AdjustableDate]): PeriodicSchedule =
-    new PeriodicSchedule(
+    new Impl(
       startDate,
       endDate,
       frequency,
@@ -1915,9 +1978,55 @@ object PeriodicSchedule {
       rollConvention,
       firstRegularStartDate,
       lastRegularEndDate,
-      overrideStartDate) {}
+      overrideStartDate)
 
-  //-------------------------------------------------------------------------
+  /**
+   * The one implementation of a periodic schedule.
+   *
+   * A `sealed abstract case class` needs a concrete subclass to be instantiated at all, and this
+   * is it. It is declared rather than written as an anonymous subclass at the instantiation site
+   * for two reasons, both about what the class file says: a private member class is one a Java
+   * compiler refuses to name, where an anonymous class is public and can be instantiated directly
+   * by a caller in another language, and a named class can be compared against, which is what
+   * lets [[PeriodicSchedule]] refuse in its own constructor to be any other implementation.
+   *
+   * @param startDate  the start date, as [[create]] received it
+   * @param endDate  the end date, as [[create]] received it
+   * @param frequency  the frequency, as [[create]] received it
+   * @param businessDayAdjustment  the business day adjustment, as [[create]] received it
+   * @param startDateBusinessDayAdjustment  the optional start date adjustment
+   * @param endDateBusinessDayAdjustment  the optional end date adjustment
+   * @param stubConvention  the optional stub convention
+   * @param rollConvention  the optional roll convention
+   * @param firstRegularStartDate  the optional first regular start date
+   * @param lastRegularEndDate  the optional last regular end date
+   * @param overrideStartDate  the optional override start date
+   */
+  private final class Impl(
+      startDate: LocalDate,
+      endDate: LocalDate,
+      frequency: Frequency,
+      businessDayAdjustment: BusinessDayAdjustment,
+      startDateBusinessDayAdjustment: Option[BusinessDayAdjustment],
+      endDateBusinessDayAdjustment: Option[BusinessDayAdjustment],
+      stubConvention: Option[StubConvention],
+      rollConvention: Option[RollConvention],
+      firstRegularStartDate: Option[LocalDate],
+      lastRegularEndDate: Option[LocalDate],
+      overrideStartDate: Option[AdjustableDate])
+      extends PeriodicSchedule(
+        startDate,
+        endDate,
+        frequency,
+        businessDayAdjustment,
+        startDateBusinessDayAdjustment,
+        endDateBusinessDayAdjustment,
+        stubConvention,
+        rollConvention,
+        firstRegularStartDate,
+        lastRegularEndDate,
+        overrideStartDate)
+
   /**
    * Merges runs of dates whose adjusted values coincide, keeping one boundary per run.
    *
@@ -1925,20 +2034,19 @@ object PeriodicSchedule {
    * describe a period of no length, which no schedule can hold. This collapses such a run to a
    * single boundary, discarding the unadjusted date at each position dropped.
    *
-   * The boundary kept is the '''last''' of each run, which is what the ported implementation kept:
-   * it removed the element at the current index for as long as that element's adjusted date
-   * equalled the next one's, so the survivor of a run of three was the third of its unadjusted
+   * The boundary kept is the '''last''' of each run: a date is dropped for as long as its adjusted
+   * date equals the next one's, so the survivor of a run of three is the third of its unadjusted
    * dates rather than the first. The adjusted dates of a run are equal by definition, so the choice
-   * is visible only in the unadjusted schedule - and it is visible there, which is why it is
-   * reproduced rather than simplified.
+   * is visible only in the unadjusted schedule - and it is visible there, which is why the run is
+   * collapsed from its end rather than from its start.
    *
    * The recursion is tail recursive and threads both results as parameters, so no list is mutated
    * and no accumulator is reassigned; the two results come back in order because each is reversed
    * at the end.
    *
    * @param remaining  the unadjusted dates paired with their adjusted dates, in order
-   * @param unadjAcc  the unadjusted dates kept so far, in reverse order
-   * @param adjAcc  the adjusted dates kept so far, in reverse order
+   * @param unadjAcc  the unadjusted dates kept up to this point, in reverse order
+   * @param adjAcc  the adjusted dates kept up to this point, in reverse order
    * @return the unadjusted and adjusted dates that survive, both in order
    */
   @tailrec
@@ -1968,20 +2076,21 @@ object PeriodicSchedule {
    * which is the evidence that the base date is an adjusted one; otherwise the base date is
    * returned as it stands.
    *
-   * Two caveats of the ported implementation carry over. Where the roll day is computed relative to
-   * the month, the recovery assumes the adjusted date did not cross a month boundary, which is safe
-   * because such roll days are not close to the end of a month and no reasonable adjustment moves
-   * that far. Where it is computed relative to the week, the convention rolls '''forward''' from
-   * the date given, so the recovery does not work for a base date that was itself adjusted forwards
-   * - the candidate is then a later date than the original and the equality test simply fails,
-   * leaving the base date unchanged.
+   * Two caveats apply. Where the roll day is computed relative to the month, the recovery takes
+   * the adjusted date not to have crossed a month boundary, which is safe because such roll days
+   * are not close to the end of a month and no reasonable adjustment moves that far. Where it is
+   * computed relative to the week, the convention rolls '''forward''' from the date given, so the
+   * recovery does not work for a base date that was itself adjusted forwards - the candidate is
+   * then a later date than the base date and the equality test simply fails, leaving the base date
+   * unchanged.
    *
    * @param baseDate  the date to recover an unadjusted date from
    * @param rollConvention  the roll convention that implies the candidate
    * @param businessDayAdjustment  the adjustment the candidate is tested with
    * @param refData  the reference data, used to find the holiday calendars
    * @return the recovered unadjusted date, or the base date where none is recovered, or the failure
-   *   of the adjustment used to test it
+   *   that the adjustment testing the candidate names a holiday calendar the reference data does
+   *   not supply
    */
   private def calculatedUnadjustedDateFromAdjusted(
       baseDate: LocalDate,
@@ -2021,18 +2130,15 @@ object PeriodicSchedule {
       .adjust(rollImpliedDate, refData)
       .map(adjusted => if (adjusted == baseDate) rollImpliedDate else baseDate)
 
-  //-------------------------------------------------------------------------
   /**
    * The hashing and equality of schedule definitions.
    *
-   * Equality and hashing are those of the case class, which compare all eleven properties, and they
-   * are the equality of the bean being ported, which compared the same eleven. No property holds a
-   * `Double`, so there is no bit-pattern comparison to arrange; each has an equality of its own
-   * that this one is built from.
+   * Equality and hashing are those of the case class, which compare all eleven properties. No
+   * property holds a `Double`, so there is no bit-pattern comparison to arrange; each has an
+   * equality of its own that this one is built from.
    *
-   * There is deliberately '''no''' `Order`: the bean being ported was not `Comparable`, and no
-   * ordering of definitions is meaningful - two definitions differing in their conventions are not
-   * ranked by anything.
+   * There is deliberately '''no''' `Order`: no ordering of definitions is meaningful - two
+   * definitions differing in their conventions are not ranked by anything.
    *
    * @return the hashing and equality of schedule definitions
    */
@@ -2048,7 +2154,6 @@ object PeriodicSchedule {
    */
   implicit val show: Show[PeriodicSchedule] = Show.show(_.toString)
 
-  //-------------------------------------------------------------------------
   /**
    * The field shape the codecs are derived over.
    *
@@ -2060,6 +2165,10 @@ object PeriodicSchedule {
    * Each field is decided by the codec of its own type: a date is an ISO date string, a frequency,
    * a stub convention and a roll convention are their names, and an adjustment and an adjustable
    * date are the objects their own codecs write.
+   *
+   * The shape is `java.io.Serializable`, because the compiler makes every `case class` so, and it
+   * therefore mixes in [[NoJavaSerialization]] as every product of this port does: these fields
+   * reach the library as JSON through the codecs below and in no other form.
    *
    * @param startDate  the start date, carried as its ISO date string
    * @param endDate  the end date, carried as its ISO date string
@@ -2086,11 +2195,10 @@ object PeriodicSchedule {
       firstRegularStartDate: Option[LocalDate],
       lastRegularEndDate: Option[LocalDate],
       overrideStartDate: Option[AdjustableDate])
+      extends NoJavaSerialization
 
-  /** The derived decoder of the raw field shape, used by the validating decoder below. */
   private val rawDecoder: Decoder[Raw] = deriveDecoder[Raw]
 
-  /** The derived encoder of the raw field shape, used by the encoder below. */
   private val rawEncoder: Encoder[Raw] = deriveEncoder[Raw]
 
   /**
@@ -2109,9 +2217,8 @@ object PeriodicSchedule {
    * }}}
    *
    * A property holding no value is '''omitted''' from the object rather than written out with an
-   * empty value, which is the policy every product of this port follows and which matters here more
-   * than anywhere: seven of the eleven properties are optional and a definition typically declares
-   * none of them.
+   * empty value, which matters here more than anywhere: seven of the eleven properties are optional
+   * and a definition typically declares none of them.
    *
    * Both halves of the codec are assembled by the same compile-time derivation over the same raw
    * shape, which is what keeps them from drifting apart, and no part of the encoding inspects a
