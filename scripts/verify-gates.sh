@@ -4,11 +4,13 @@
 #
 # PROVENANCE
 #   Every row this script runs, and every row's pass condition, comes from the
-#   validation table of the technical specification (AAP section 0.10.1). The
-#   twenty automated rows are executed in that table's order - the closure row
-#   beside the Rule 4 row whose source-level claim it completes - followed by
-#   the one row that is reported rather than measured (Gate 7's manual approval,
-#   which is an out-of-band pull-request review and never blocks this script).
+#   validation table of the technical specification (AAP section 0.10.1), with
+#   one addition named below. Twenty-one automated rows are executed in that
+#   table's order - the closure row beside the Rule 4 row whose source-level
+#   claim it completes, and Row 1a beside Gate 1, whose failure path it
+#   measures - followed by the one row that is reported rather than measured
+#   (Gate 7's manual approval, which is an out-of-band pull-request review and
+#   never blocks this script).
 #   No row may be relaxed, skipped or short-circuited, and nothing absent is
 #   read as agreement: a row whose input artifact is missing, whose marker is
 #   not there, or whose command failed, FAILS. Nothing else in the
@@ -86,9 +88,11 @@
 #                                  one it names
 #   target/parity-report/*.json    the six parity reports the specs write
 #   target/test-reports/TEST-*.xml the per-suite JUnit XML written by the one
-#                                  ScalaTest `-u` reporter `build.sbt`
-#                                  configures - the only test report this
-#                                  build produces at the repository root
+#                                  listener `build.sbt` configures - sbt's own,
+#                                  fed by its fork protocol rather than by
+#                                  ScalaTest's serializing socket - and the
+#                                  only test report this build produces at the
+#                                  repository root
 #   target/audit/                  per-row evidence, sbt logs, class-load logs,
 #                                  run-identity.txt, the scan summaries and the
 #                                  snapshots the late rows read
@@ -1042,11 +1046,12 @@ STALE_GRACE_SECONDS = 2
 # set deliberately - no process writing a file honestly produces one - and an
 # artifact carrying it is withheld rather than published.
 FUTURE_SKEW_SECONDS = 2
-# The JUnit XML `<properties>` element, which ScalaTest's `-u` reporter fills
-# from `System.getProperties()` - every JVM property of the build machine,
+# The JUnit XML `<properties>` element, which the report writer fills from
+# `System.getProperties()` - every JVM property of the build machine,
 # `user.dir`, `user.home`, `java.io.tmpdir` and the JDK's own library path
-# among them. The reporter has no option to suppress it, so the published
-# copy has it removed instead. Non-greedy, so two suites in one file each
+# among them. Neither sbt's listener, which writes these reports, nor
+# ScalaTest's own reporter has an option to suppress it, so the published copy
+# has it removed instead. Non-greedy, so two suites in one file each
 # lose their own block.
 PROPERTIES_ELEMENT = re.compile(r"[ \t]*<properties>.*?</properties>[ \t]*\n?", re.S)
 # The suite's `hostname` attribute: the build machine's name, in a document
@@ -2602,10 +2607,17 @@ REPORT_WRITTEN="no"
 # and the report had to be reassembled without its appendices. Read by the
 # assembly itself, which says so where the appendices would have been.
 REPORT_SANITIZED="no"
-# The number of automated rows AAP section 0.10.1 defines, so that a report
-# written by the EXIT trap after an interruption can say how much of the run
-# it covers instead of presenting a partial result as an acceptance result.
-GATE_EXPECTED_AUTOMATED=20
+# The number of automated rows this script measures, so that a report written
+# by the EXIT trap after an interruption can say how much of the run it covers
+# instead of presenting a partial result as an acceptance result.
+#
+# Twenty of them are the rows AAP section 0.10.1 defines. The twenty-first is
+# Row 1a, which measures the failure path of Gate 1's own evidence: that a run
+# in which a table- or property-check fails over a domain value still ends,
+# still ends non-zero, and still leaves one complete report behind. The
+# specification assumes that of Gate 1 without measuring it, and it was untrue
+# until the build stopped reporting through ScalaTest's slave-to-master socket.
+GATE_EXPECTED_AUTOMATED=21
 RUN_COMPLETED="no"
 
 GATE_DETAIL_OUT=""
@@ -2682,8 +2694,8 @@ gate_counts() {
         ;;
       *)
         # The preflight row, and anything else recorded outside the table: it
-        # is blocking, but it is not one of the nineteen measured rows and is
-        # never counted as one.
+        # is blocking, but it is not one of the validation table's measured
+        # rows and is never counted as one.
         if [[ "${GATE_STATUS[$index]:-}" != "PASS" ]]; then
           GATE_COUNT_PREFLIGHT_FAILED=$((GATE_COUNT_PREFLIGHT_FAILED + 1))
         fi
@@ -3186,6 +3198,50 @@ run_sbt() {
   return "$rc"
 }
 
+# run_sbt_bounded <seconds> <name> <args...> - `run_sbt` under a wall-clock
+# bound, returning 124 when the bound is reached.
+#
+# One row needs it, and needs it for a reason no other row has: the
+# test-report recovery row deliberately provokes the failure that once hung
+# sbt's test task forever, so "wait for sbt to finish" is not available to it -
+# a regression there IS a run that never finishes. `timeout` turns that into a
+# measurable 124, and `--kill-after` guarantees the process group goes away
+# even if the TERM is swallowed, so neither this script nor CI is left holding
+# a stuck jvm.
+run_sbt_bounded() {
+  local seconds="$1"
+  local name="$2"
+  shift 2
+  local log="$LOG_DIR/$name.log"
+  local rc=0
+
+  printf '+ timeout --kill-after=20s %ss sbt -batch -Dsbt.log.noformat=true' "$seconds" >&2
+  printf ' %q' "$@" >&2
+  printf '\n' >&2
+
+  if ! safe_truncate "$log"; then
+    framework_error "the sbt log $name.log could not be started; sbt was not run"
+    SBT_LOG="$log"
+    return 1
+  fi
+
+  # PIPESTATUS must be read by the first statement inside the branch, exactly
+  # as in `run_sbt`: every command that runs afterwards, an assignment
+  # included, replaces it.
+  local -a pipe_status=()
+  if timeout --kill-after=20s "${seconds}s" \
+    sbt -batch -Dsbt.log.noformat=true "$@" 2>&1 | tee "$log"; then
+    pipe_status=("${PIPESTATUS[@]}")
+  else
+    pipe_status=("${PIPESTATUS[@]}")
+  fi
+  rc="${pipe_status[0]:-1}"
+
+  SBT_LOG="$log"
+  printf '+ sbt exit %s (log: %s)\n' "$rc" "${log#"$ROOT"/}" >&2
+  return "$rc"
+}
+
 # Strips sbt's `[info] ` / `[warn] ` / `[error] ` line prefixes, so that a line
 # printed by a forked JVM (which arrives unprefixed) and the same line relayed
 # through sbt's logger (which arrives prefixed) are read identically.
@@ -3212,7 +3268,7 @@ preflight() {
   local required=(
     git sbt java javap javac python3
     awk sed grep find sort comm tr cut wc diff cmp uniq
-    cat head tail basename date
+    cat head tail basename date timeout
     cp rm mkdir mv tee
   )
   local missing=()
@@ -3583,7 +3639,7 @@ row_01_build_and_test() {
     printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n\n' "${SBT_LOG#"$ROOT"/}"
     printf '# run summary lines from the sbt log\n'
-    awk '/Total number of tests run|Suites: completed|Tests: succeeded|All tests passed|TESTS FAILED|^\[error\]/ {
+    awk '/(Passed|Failed): Total [0-9]+|recorded by sbt; reports in|^\[error\]/ {
            if (++shown <= 60) print
          }
          END { if (shown == 0) print "(no summary lines found)" }' "$SBT_LOG"
@@ -3618,10 +3674,21 @@ row_01_build_and_test() {
 
   # Vacuity: a build that compiled nothing and discovered no suite would
   # otherwise exit 0 and pass this row.
+  #
+  # The line read here is sbt's OWN result line - "Passed: Total n, Failed n,
+  # Errors n, Passed n", printed per test task by `TestResultLogger.Default`
+  # from sbt's own test events - and not ScalaTest's framework summary. The
+  # framework summary is not printed for a forked run of this build and must
+  # not be: it reaches the sbt jvm only over ScalaTest's slave-to-master
+  # socket, which carries Java-serialized events and therefore cannot carry
+  # this port's failures at all (see build.sbt's `withoutRemoteReporting`).
+  # sbt's line is the better source in any case: it counts the events sbt
+  # itself received, which is the same account the build audits every report
+  # against, and the socket cannot lose it.
   local runs
-  runs="$(awk '/Total number of tests run/ { n++ } END { print n + 0 }' "$SBT_LOG")"
+  runs="$(awk 'match($0, /(Passed|Failed): Total [0-9]+/) { n++ } END { print n + 0 }' "$SBT_LOG")"
   if [[ "${runs:-0}" -lt 1 ]]; then
-    detail "the sbt log reports no test run at all"
+    detail "the sbt log carries no test-result line at all, so it is not evidence that a test task ran"
     failed=1
   fi
   if [[ "${SNAPSHOT_JUNIT_COUNT:-0}" -lt 1 ]]; then
@@ -3629,13 +3696,28 @@ row_01_build_and_test() {
     failed=1
   fi
 
+  # The build's own audit of the report set, which fails the test task when a
+  # suite that ran has no usable report. Its line is required here for the
+  # same reason the row counts suites at all: a run whose reports were never
+  # audited is a run whose report set nothing has checked.
+  local audit_lines
+  audit_lines="$(grep -c "recorded by sbt; reports in" "$SBT_LOG" || true)"
+  if [[ "${audit_lines:-0}" -lt 1 ]]; then
+    detail "no report-audit line appears in the sbt log, so the build did not audit this run's report set"
+    failed=1
+  fi
+
   local total_tests
-  total_tests="$(awk 'match($0, /Total number of tests run: [0-9]+/) {
+  total_tests="$(awk 'match($0, /(Passed|Failed): Total [0-9]+/) {
       line = substr($0, RSTART, RLENGTH)
-      sub(/.*: /, "", line)
+      sub(/.*Total /, "", line)
       total += line
     }
     END { print total + 0 }' "$SBT_LOG")"
+  if [[ "${total_tests:-0}" -lt 1 ]]; then
+    detail "the sbt log reports 0 tests run across every test task"
+    failed=1
+  fi
 
   # The XML's own account of the same run: the `tests` attribute of the
   # `testsuite` element of each snapshotted report, summed. The documents are
@@ -3659,26 +3741,34 @@ print(total)' "$SNAPSHOT_DIR/test-reports" 2>>"$EV")" || xml_tests_rc=$?
     xml_tests=0
   fi
 
-  # Two independent accounts of one run, and the DIRECTION of a disagreement is
-  # the diagnosis.
+  # Two accounts of one run - the events sbt received, and the reports written
+  # from them - and the DIRECTION of a disagreement is the diagnosis.
   #
   # Fewer tests in the XML than in the log means reports were lost between the
   # run and the artifact this gate and the test-scope row count from, which is
   # exactly the failure this row exists to refuse: an incomplete report set
   # whose suites all say `failures="0"` reads like a passing run. The build
-  # itself now refuses such a run (`reportAuditingTestResultLogger` in
-  # build.sbt), so reaching this check means that refusal was bypassed or
-  # defeated, and the row fails rather than reporting a number it cannot trust.
+  # itself refuses such a run (`reportAuditingTestResultLogger` in build.sbt),
+  # so reaching this check means that refusal was bypassed or defeated, and the
+  # row fails rather than reporting a number it cannot trust.
   #
   # More tests in the XML than in the log is the opposite case and not a
-  # failure: ScalaTest's framework summary is printed from the events that
-  # reached its reporter, so a reporter that broke mid-run understates the log
-  # while the XML - completed by the build from sbt's own test events - remains
-  # whole. It is recorded, with the breakage count, so the difference is never
-  # silent.
-  local reporter_breakages promotions
-  reporter_breakages="$(grep -c "Reporter completed abruptly" "$SBT_LOG" || true)"
-  promotions="$(grep -c "were reported incompletely by ScalaTest" "$SBT_LOG" || true)"
+  # failure: sbt's own `Total` counts failures, errors, skips and passes, while
+  # a `<testcase>` is written for an ignored, canceled or pending test too, so
+  # a suite carrying any of those makes the XML the larger of the two. It is
+  # recorded so the difference is never silent.
+  #
+  # The socket count is a regression guard rather than an accounting line. Any
+  # of those three messages means ScalaTest's slave-to-master socket is back in
+  # the reporting path, which is the defect the build's framework wrapper
+  # exists to prevent: with it in place a domain-valued failure hangs the test
+  # task and its report is never completed.
+  local socket_failures
+  socket_failures="$(grep -cE "Reporter completed abruptly|Unable to read from client|Java serialization is not supported by this library" "$SBT_LOG" || true)"
+  if [[ "${socket_failures:-0}" -gt 0 ]]; then
+    detail "the sbt log carries ${socket_failures} line(s) of ScalaTest's slave-to-master reporter failing, so test events were being Java-serialized again and this run's report set cannot be trusted"
+    failed=1
+  fi
   if [[ "$xml_tests_rc" -eq 0 && "${xml_tests:-0}" -lt "${total_tests:-0}" ]]; then
     detail "the JUnit XML accounts for ${xml_tests:-0} test(s) while the sbt log reports ${total_tests:-0}, so reports were lost and the artifact this gate counts is incomplete"
     failed=1
@@ -3691,18 +3781,236 @@ print(total)' "$SNAPSHOT_DIR/test-reports" 2>>"$EV")" || xml_tests_rc=$?
     printf '# files snapshotted from target/parity-report: %s\n' "${SNAPSHOT_PARITY_FILES:-0}"
     printf '# tests reported by sbt: %s\n' "$total_tests"
     printf '# tests accounted for by the snapshotted JUnit XML: %s\n' "${xml_tests:-0}"
-    printf '# ScalaTest reporter breakages in the sbt log: %s\n' "${reporter_breakages:-0}"
-    printf '# runs whose reports the build completed from sbt test events: %s\n' "${promotions:-0}"
+    printf '# test-result lines in the sbt log: %s\n' "${runs:-0}"
+    printf '# report-audit lines in the sbt log: %s\n' "${audit_lines:-0}"
+    printf '# ScalaTest socket-reporter failures in the sbt log: %s (0 required)\n' \
+      "${socket_failures:-0}"
     if [[ "${xml_tests:-0}" -gt "${total_tests:-0}" ]]; then
       printf '# NOTE: the XML accounts for %s more test(s) than the sbt log.\n' \
         "$((${xml_tests:-0} - ${total_tests:-0}))"
-      printf '#       The XML is the complete account of the two: the framework summary in the\n'
-      printf '#       log is printed from the events that reached the ScalaTest reporter.\n'
+      printf '#       That direction is expected where a suite has ignored, canceled or pending\n'
+      printf '#       tests: each is a <testcase> in the XML, and none is in sbt total.\n'
     fi
   } >>"$EV"
 
   if [[ "$failed" -eq 0 ]]; then
     detail "both modules compiled and every spec passed (${xml_tests:-0} tests in ${SNAPSHOT_JUNIT_COUNT} suite reports, ${total_tests} reported by sbt)"
+  fi
+  return "$failed"
+}
+
+#=============================================================================
+# Row 1a - the failure path of the test report itself.
+#
+# Row 1 proves the report set is complete for a run in which everything
+# passes. That is the easy half: the half that broke was a run in which
+# something FAILS, and fails in the one way this port makes ordinary. A table-
+# or property-check failure carries the row that falsified it - a domain value
+# - and no type in this port takes part in Java serialization. Sent through
+# ScalaTest's slave-to-master socket, which serializes every event, such a
+# failure killed the reporter mid-object, left the sbt side reading a corrupt
+# stream, and hung the test task forever on the unbounded `Thread.join()` at
+# the end of `ScalaTestRunner.done()`: no verdict, no failed-test list, and no
+# report for the suite that failed. A green run could not detect any of it.
+#
+# So this row runs exactly that failure on purpose, and requires of it what
+# any failing run must give: it has to END, it has to end non-zero, and it has
+# to leave one complete report behind. The probe is a three-test suite whose
+# middle test fails from inside `TableDrivenPropertyChecks.forAll` over
+# `DayCounts.ACT_360`; it is compiled from a source this row writes into the
+# audit tree and adds to the test sources for one invocation, so it is never
+# part of the suite Row 1 runs and never reaches the committed tree.
+#
+# The bound is wall-clock, because a regression here does not fail - it waits.
+# `timeout`'s 124 is therefore one of the two ways this row fails, and the
+# other is a report that does not say 3 cases and 1 failure.
+#
+# What the row leaves behind is nothing: the probe's report is removed from the
+# report directory and its classes from the test output, because both belong
+# to a suite that is not part of this build and neither may reach the
+# published evidence or a later run's discovery.
+#=============================================================================
+
+row_01a_report_recovery() {
+  new_evidence gate01a-report-recovery.txt
+  local failed=0
+  local suite="qa.ReportRecoveryProbeSpec"
+  local probe_source="$AUDIT_DIR/gate01a-report-recovery-probe.scala"
+  local report="$ROOT/target/test-reports/TEST-$suite.xml"
+
+  if ! cat <<'PROBE' | guarded_write "$probe_source"
+package qa
+
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers
+import org.scalatest.prop.TableDrivenPropertyChecks
+
+import com.opengamma.strata.basics.date.DayCounts
+
+/**
+ * The failure the test-report plumbing has to survive: a table-driven check
+ * whose row holds a domain value, failing.
+ *
+ * Written and compiled by the report-recovery row of scripts/verify-gates.sh
+ * for one sbt invocation, and never part of either module's test sources.
+ */
+class ReportRecoveryProbeSpec extends AnyFunSuite with Matchers with TableDrivenPropertyChecks {
+
+  test("first test passes") {
+    1 + 1 shouldBe 2
+  }
+
+  test("middle test fails from a table whose rows hold a domain value") {
+    val table = Table("dayCount", DayCounts.ACT_360)
+    forAll(table) { dayCount =>
+      dayCount.name shouldBe "a name this day count does not have"
+    }
+  }
+
+  test("last test passes") {
+    2 + 2 shouldBe 4
+  }
+}
+PROBE
+  then
+    detail "the probe source $probe_source could not be written, so the report-recovery failure path was not exercised"
+    return 1
+  fi
+
+  rm -f "$report"
+
+  # The probe is added to the current project's test sources, which is
+  # strata-basics: sbt starts in the root project and the root project IS
+  # strata-basics. That form is used rather than a project axis because the
+  # axis would have to name the Scala value `strata-basics` in backticks
+  # inside a shell string.
+  local set_command
+  set_command="$(printf 'set Test / unmanagedSources += file("%s")' "$probe_source")"
+
+  local rc=0
+  run_sbt_bounded 300 gate01a-report-recovery \
+    "$set_command" \
+    "strata-basics/testOnly $suite" || rc=$?
+
+  local counts="absent"
+  local counts_rc=0
+  if [[ -f "$report" ]]; then
+    counts="$(python3 -c 'import sys, xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+print("tests={} failures={} errors={}".format(
+    root.get("tests"), root.get("failures") or "0", root.get("errors") or "0"))' \
+      "$report" 2>>"$EV")" || counts_rc=$?
+  fi
+
+  # One report for the probe and nowhere else below the build root: a second
+  # copy is a second writer, which is what the single-writer arrangement in
+  # build.sbt exists to rule out, and would be counted twice by the test-scope
+  # row if it ever landed in the report directory.
+  local copies
+  copies="$(find "$ROOT" -name "TEST-$suite.xml" -not -path "$ROOT/modules/*" 2>/dev/null | wc -l)"
+
+  # Checked explicitly rather than as an `&&` list: every command in a gate
+  # function states its own outcome, and a grep that finds nothing here is an
+  # answer this row reports rather than an error.
+  local failed_suite_named=0
+  if grep -q "$suite" "$SBT_LOG"; then
+    failed_suite_named=1
+  fi
+  # The falsifying row, rendered. This is the payload the defect destroyed:
+  # the table row is a `DayCount`, ScalaTest puts it in the clue of the
+  # failure it reports, and sending that clue through a serializing reporter is
+  # what threw. Its appearance on the console is therefore the direct evidence
+  # that a domain value now crosses the fork boundary as rendered text - not
+  # merely that the run ended. `Act/360` is `DayCounts.ACT_360.name`, so the
+  # string is the port's own, and a change to that name fails this row until
+  # the probe and this expectation are changed together.
+  local row_rendered=0
+  if grep -q "dayCount = Act/360" "$SBT_LOG"; then
+    row_rendered=1
+  fi
+  local socket_failures
+  socket_failures="$(grep -cE "Reporter completed abruptly|Unable to read from client|Java serialization is not supported by this library" "$SBT_LOG" || true)"
+
+  {
+    printf '## Row 1a - a domain-valued table failure still ends, fails and reports\n'
+    command_line "timeout 300s sbt -batch '$set_command' \"strata-basics/testOnly $suite\""
+    printf '# probe source: %s\n' "${probe_source#"$ROOT"/}"
+    printf '# sbt exit status: %s (0 and 124 both fail this row)\n' "$rc"
+    printf '# log: %s\n' "${SBT_LOG#"$ROOT"/}"
+    printf '# report: %s\n' "${report#"$ROOT"/}"
+    printf '# report counts: %s (tests=3 failures=1 errors=0 required)\n' "$counts"
+    printf '# report copies below the build root: %s (1 required)\n' "${copies:-0}"
+    printf '# the failed suite is named in the log: %s\n' "$failed_suite_named"
+    printf '# the falsifying row was rendered to the console: %s (1 required)\n' "$row_rendered"
+    printf '# ScalaTest socket-reporter failures: %s (0 required)\n' "${socket_failures:-0}"
+    printf '\n# the run, as the console saw it\n'
+    # The suite's own block is printed in full - every per-test line and the
+    # rendered failure detail beneath the one that failed - because that detail
+    # IS what the defect destroyed, and evidence of its return belongs in the
+    # evidence file rather than only in the log it points at. `inSuite` opens at
+    # the suite header and closes at the first non-info line or result line, so
+    # the block is the suite's and nothing else's.
+    awk '/ReportRecoveryProbeSpec:/ { inSuite = 1 }
+         inSuite && (/^\[(error|warn|success)\]/ || /: Total [0-9]+/) { inSuite = 0 }
+         (inSuite && /^\[info\]/) ||
+         /ReportRecoveryProbeSpec|(Passed|Failed): Total [0-9]+|recorded by sbt; reports in|^\[error\]/ {
+           if (++shown <= 60) print
+         }
+         END { if (shown == 0) print "(no lines about the probe run found)" }' "$SBT_LOG"
+  } >>"$EV"
+
+  if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
+    detail "the probe run did not finish within 300s (exit $rc), so a domain-valued table failure still hangs the test task"
+    failed=1
+  elif [[ "$rc" -eq 0 ]]; then
+    detail "the probe run exited 0, so a suite with a failing test was reported as a success"
+    failed=1
+  fi
+  if [[ "$counts_rc" -ne 0 ]]; then
+    detail "the probe's report could not be parsed (the parser exited $counts_rc)"
+    failed=1
+  fi
+  if [[ "$counts" != "tests=3 failures=1 errors=0" ]]; then
+    detail "the probe's authoritative report reads '$counts', expected 'tests=3 failures=1 errors=0'"
+    failed=1
+  fi
+  if [[ "${copies:-0}" -ne 1 ]]; then
+    detail "${copies:-0} copies of the probe's report exist below the build root, expected exactly 1"
+    failed=1
+  fi
+  if [[ "$failed_suite_named" -ne 1 ]]; then
+    detail "the sbt log never names $suite, so the console did not report the suite that failed"
+    failed=1
+  fi
+  if [[ "$row_rendered" -ne 1 ]]; then
+    detail "the sbt log never renders the falsifying table row ('dayCount = Act/360'), so the domain value that failed the check did not reach the console"
+    failed=1
+  fi
+  if [[ "${socket_failures:-0}" -gt 0 ]]; then
+    detail "ScalaTest's slave-to-master reporter failed ${socket_failures} time(s) during the probe run, so test events are being Java-serialized again"
+    failed=1
+  fi
+
+  # Cleanup, and then the check that it worked. The probe is not part of this
+  # build: its report would be published as though it were, and its class
+  # files would be discovered by the next `test` that runs without the source.
+  rm -f "$report"
+  rm -rf "$ROOT/strata-basics/target/scala-2.13/test-classes/qa"
+  local leftovers
+  leftovers="$(find "$ROOT" -name "TEST-$suite.xml" -not -path "$ROOT/modules/*" 2>/dev/null | wc -l)"
+  local leftover_classes
+  leftover_classes="$(find "$ROOT/strata-basics/target" -path '*/test-classes/qa/*' 2>/dev/null | wc -l)"
+  {
+    printf '# probe reports left behind after cleanup: %s (0 required)\n' "${leftovers:-0}"
+    printf '# probe class files left behind after cleanup: %s (0 required)\n' "${leftover_classes:-0}"
+  } >>"$EV"
+  if [[ "${leftovers:-0}" -ne 0 || "${leftover_classes:-0}" -ne 0 ]]; then
+    detail "the probe left ${leftovers:-0} report(s) and ${leftover_classes:-0} class file(s) behind, which a later run would read as part of this build"
+    failed=1
+  fi
+
+  if [[ "$failed" -eq 0 ]]; then
+    detail "a table failure over a domain value ended in ${rc} (non-zero), named its suite, rendered the falsifying row 'dayCount = Act/360' to the console, and left exactly one complete report (tests=3 failures=1 errors=0), which was then removed"
   fi
   return "$failed"
 }
@@ -6237,7 +6545,7 @@ CONTROL
     command_line 'sbt -batch "testOnly *SmartConstructorSpec *FailableSurfaceSpec *ApiSurfaceSpec *FailureSpec"'
     printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n' "${SBT_LOG#"$ROOT"/}"
-    awk '/Total number of tests run|Tests: succeeded|All tests passed/ { print }' "$SBT_LOG"
+    awk '/(Passed|Failed): Total [0-9]+|recorded by sbt; reports in/ { print }' "$SBT_LOG"
   } >>"$EV"
   if [[ "$rc" -ne 0 ]]; then
     detail "the failable-surface specs exited $rc"
@@ -6343,7 +6651,7 @@ row_10_typeclass_instances() {
     printf '# log: %s\n' "${SBT_LOG#"$ROOT"/}"
     printf '# instance lines: %s\n' "$lines"
     printf '# summary: %s\n\n' "${summary:-absent}"
-    awk '/Total number of tests run|Tests: succeeded|All tests passed/ { print }' "$SBT_LOG"
+    awk '/(Passed|Failed): Total [0-9]+|recorded by sbt; reports in/ { print }' "$SBT_LOG"
   } >>"$EV"
 
   if [[ "$rc" -ne 0 ]]; then
@@ -6439,7 +6747,7 @@ row_11_closed_enums() {
     command_line 'sbt -batch "testOnly *NamedEnumClosedSpec *ReferenceDataManifestSpec"'
     printf '# sbt exit status: %s\n' "$rc"
     printf '# log: %s\n' "${SBT_LOG#"$ROOT"/}"
-    awk '/Total number of tests run|Tests: succeeded|All tests passed/ { print }' "$SBT_LOG"
+    awk '/(Passed|Failed): Total [0-9]+|recorded by sbt; reports in/ { print }' "$SBT_LOG"
     printf '\n'
   } >>"$EV"
   if [[ "$rc" -ne 0 ]]; then
@@ -9838,13 +10146,13 @@ def problem(text):
 
 
 # -- the JUnit XML snapshot --------------------------------------------------
-# ScalaTest's `-u` reporter writes one file per suite, named TEST-<suite>.xml,
-# whose `tests` attribute counts the <testcase> elements it contains. This row
-# depends on that identity, so it verifies it instead of assuming it: every
-# suite occurrence and every test case is recorded together with the file it
-# came from, a suite reported twice - in two files, or twice in one file, at
-# the root or nested inside another suite - is a duplicate report rather than
-# twice as many tests, a repeated (classname, name) pair is an integrity
+# The build's report listener writes one file per suite, named
+# TEST-<suite>.xml, whose `tests` attribute counts the <testcase> elements it
+# contains. This row depends on that identity, so it verifies it instead of
+# assuming it: every suite occurrence and every test case is recorded together
+# with the file it came from, a suite reported twice - in two files, or twice
+# in one file, at the root or nested inside another suite - is a duplicate
+# report rather than twice as many tests, a repeated (classname, name) pair is an integrity
 # failure rather than one silent set entry, and a `tests` attribute that
 # disagrees with the suite's own <testcase> elements is rejected. Both module
 # counts are then summed over that validated inventory, so duplicated evidence
@@ -12369,8 +12677,8 @@ row_20_repository_boundary() {
 # Every count in it is tallied from the recorded verdicts by `gate_counts`,
 # and none is derived by subtracting one running total from another. Counting
 # the entries of the verdict arrays is what keeps the figures consistent with
-# each other: a blocking row that is not one of the nineteen measured ones -
-# a preflight failure - is recorded with its own kind and counted under that
+# each other: a blocking row that is not one of the measured ones - a
+# preflight failure - is recorded with its own kind and counted under that
 # kind, rather than shifting a total it was never part of.
 #-----------------------------------------------------------------------------
 
@@ -12533,7 +12841,7 @@ assemble_report() {
     printf -- '- `target/gate-report.md` - this report\n'
     printf -- '- `target/parity-report/` - the six parity reports the specs write\n'
     printf -- '- `target/test-reports/` - the per-suite JUnit XML (`TEST-*.xml`) written\n'
-    printf '  by the single ScalaTest `-u` reporter the build configures\n'
+    printf "  by the single listener the build configures, sbt's own\n"
     printf -- '- `target/audit/` - per-row evidence, sbt logs, class-load logs and the\n'
     printf '  snapshots the late rows read\n'
     printf -- "- \`target/publish/\` - the ONLY tree CI uploads: a sanitized, scanned\n"
@@ -12834,6 +13142,7 @@ main() {
 
 
   run_gate "Gate 1 - builds and runs" row_01_build_and_test
+  run_gate "Gate 1a - test-report recovery on a domain-valued failure" row_01a_report_recovery
   run_gate "Gate 2 / Rule 1 - dependency purity" row_02_dependency_purity
   run_gate "Gate 2a / Rule 1a - exactly two Scala-only modules" row_03_two_scala_modules
   run_gate "Gate 3 / Rule 2 - numerical parity" row_04_numerical_parity

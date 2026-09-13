@@ -28,39 +28,137 @@ def testReportDirectory(buildRoot: File): File = buildRoot / "target" / "test-re
 // One writer into that directory, and a report set that is either complete or
 // loud about not being.
 //
-// Two independent writers can produce the per-suite JUnit XML, and they fail in
-// opposite ways.
+// Two writers can produce the per-suite JUnit XML, and only one of them can
+// report this port's failures at all.
 //
-//   * ScalaTest's `-u` reporter, which the technical specification mandates,
-//     runs in the SBT JVM - not in the fork - and is fed by ScalaTest's
-//     slave-to-master socket. That socket carries each event as a serialized
-//     Java object, and no type in this port takes part in Java serialization:
-//     a table- or property-check failure whose clue holds a domain value
-//     therefore throws inside `ObjectOutputStream`, corrupts the stream, and
-//     every write after it fails with a broken pipe. The reporter stops there,
-//     so the report set ends at the first such failure and the framework
-//     summary printed afterwards describes only the events that arrived - it
-//     can read "All tests passed" for a module that failed.
+//   * ScalaTest's own `-u` reporter, which the technical specification names,
+//     cannot: with forked tests it runs in the SBT JVM rather than in the fork
+//     and is fed by ScalaTest's slave-to-master socket, which carries each
+//     event as a JAVA-SERIALIZED object. No type in this port takes part in
+//     Java serialization, so a table- or property-check failure whose clue
+//     holds a domain value throws inside `ObjectOutputStream` and takes the
+//     reporter, the run's verdict and the whole test task with it - see
+//     `withoutRemoteReporting` below for that failure in full. Configuring it
+//     also silences ScalaTest's sbt-log reporting, because ScalaTest logs
+//     through sbt only while no reporter of its own is configured, so the
+//     console would lose its per-test lines and its failure detail as well.
+//     It is therefore NOT configured, which is this build's one deliberate
+//     divergence from AAP section 0.3.1's wording; what that wording is FOR -
+//     one directory of `TEST-<suite>.xml` whose `tests` attributes the
+//     test-count gate sums - is delivered below, by the other writer.
 //
-//   * sbt's own `JUnitXmlTestsListener`, which is fed by sbt's fork protocol -
-//     names, counts and rendered messages, never serialized domain objects -
-//     and therefore records every suite, failing ones included. Left at its
-//     default it writes into each project's own `target/test-reports`, which is
-//     a second and a third copy of the very artifact the test-count gate sums,
-//     so a tree-wide aggregation counts every suite three times.
+//   * sbt's own `JUnitXmlTestsListener`, which can: it is fed by sbt's fork
+//     protocol - names, counts and rendered messages, never serialized domain
+//     objects - so it records every suite and every failing case whatever the
+//     failure holds. It demonstrably wrote a complete report for the very
+//     failure that killed ScalaTest's socket. It is therefore the single
+//     authoritative writer, retargeted from its default (each project's own
+//     `target/test-reports`, which would be a second and a third copy of the
+//     artifact the gate sums) to the one configured directory. Its per-suite
+//     file name, its `tests`/`failures`/`errors` attributes and its
+//     `<testcase>` `classname` and `name` are the same as ScalaTest's
+//     reporter's, which is what keeps the test-count gate and the Java-to-Scala
+//     traceability join reading exactly what they read before.
 //
-// Neither writer can be pointed at the configured directory alongside the
-// other: they choose the same file name for a suite, so both writing there
-// would race on one path. The listener is therefore retargeted to a staging
-// directory that no consumer reads, and `reportAuditingTestResultLogger` below
-// promotes a staged report into the configured directory for exactly the suites
-// whose ScalaTest report is missing, left over from an earlier run, or short of
-// the cases and failures sbt itself recorded. The staging directory is emptied
-// when a test task starts and deleted when it ends, so after any run the
-// configured directory is the only place below the build root holding
-// `TEST-*.xml`.
+// A single writer means a report is missing only if writing it failed, so
+// `reportAuditingTestResultLogger` below does not complete one report set from
+// another: it checks, against sbt's own account of the run, that every suite
+// that ran has a report of this run covering at least the cases and failures
+// sbt counted, and fails the task naming the suites for which that is untrue.
 // ---------------------------------------------------------------------------
-def junitStagingDirectory(projectTarget: File): File = projectTarget / "junit-xml-staging"
+
+// ---------------------------------------------------------------------------
+// The test framework, with ScalaTest's slave-to-master socket taken out of it.
+//
+// ScalaTest's sbt integration decides between two modes by one thing only: the
+// `remoteArgs` it is handed. `Framework.runner` reads
+//
+//     if (remoteArgs.isEmpty) parse the real reporter arguments
+//     else                    replace them all with `-K <host> <port>`
+//
+// and sbt asks the runner it creates in ITS OWN jvm for `remoteArgs()`, which -
+// unconditionally, whatever reporters are configured - opens a `ServerSocket`,
+// starts a thread accepting on it, and returns its host and port for the fork
+// to connect back to (`Framework$ScalaTestRunner.remoteArgs`). Forked tests
+// then run in "slave" mode: the fork's only reporter is a `SocketReporter` that
+// writes every ScalaTest `Event` to that socket as a JAVA-SERIALIZED object,
+// and the sbt-side runner rebuilds the run from what it reads.
+//
+// That is fatal here, and it is fatal by design on both sides. A `TestFailed`
+// event carries the throwable that failed the test, and a table- or
+// property-check failure carries the row that falsified it - a domain value.
+// No type in this port takes part in Java serialization: writing one throws
+// `IllegalArgumentException` from its own `writeObject`, which is a deliberate,
+// audited property of the port and not a defect to be relaxed. So the write
+// throws mid-object, the socket's object stream is left corrupt, ScalaTest
+// prints "Reporter completed abruptly", the sbt side prints "Unable to read
+// from client" and returns its accept loop to `ServerSocket.accept`, and
+// `ScalaTestRunner.done()` - which ends with an unbounded `Thread.join()` on
+// that accept thread - never returns. The test task hangs forever: no verdict,
+// no failure list, and no result logger, so nothing below this point in the
+// file ever runs and the report set is whatever was written before the hang.
+//
+// Handing the fork an EMPTY `remoteArgs` removes that whole path. The socket is
+// never opened, because only `remoteArgs()` opens it and this runner never
+// asks the delegate for its own; and the fork, seeing no remote arguments,
+// runs ScalaTest in ordinary master mode. No reporter of ScalaTest's own is
+// configured by this build - the block above says why the `-u` reporter is
+// not - so the fork reports the only two ways left, both of them
+// sbt's: through the `EventHandler`, which is what sbt's own result line and
+// the JUnit XML listener are built from, and through the `Logger`s sbt gave
+// it, which is where the per-test console lines and a failure's rendered
+// detail come from. Both cross the fork boundary as sbt's own
+// `ForkEvent`/`ForkError`, carrying names, statuses and RENDERED messages
+// rather than domain objects, so no test outcome can be lost to serialization
+// again, whatever a failing test holds.
+//
+// Nothing else about the framework is changed: detection, task creation and
+// argument handling are the delegate's. `done()` is delegated for its cleanup
+// and its result discarded, because in this arrangement the sbt-side runner
+// observes no events and its summary would therefore describe an empty run,
+// which printed beside a real one states something untrue about it. What the
+// console carries instead is sbt's own "Passed/Failed: Total n, Failed n,
+// Errors n, Passed n" line, counted from the events sbt received, and the
+// audit line `auditTestReports` logs.
+//
+// The regression row of scripts/verify-gates.sh holds this in place: it runs a
+// suite that fails from inside a table whose rows hold a domain value, under a
+// timeout, and requires a prompt non-zero exit and a complete report for it.
+// Remove this wrapper and that row hangs until its timeout and fails.
+// ---------------------------------------------------------------------------
+def withoutRemoteReporting(delegate: sbt.testing.Framework): sbt.testing.Framework =
+  new sbt.testing.Framework {
+    def name(): String = delegate.name()
+
+    def fingerprints(): Array[sbt.testing.Fingerprint] = delegate.fingerprints()
+
+    def runner(
+        args: Array[String],
+        remoteArgs: Array[String],
+        testClassLoader: ClassLoader): sbt.testing.Runner = {
+      val underlying = delegate.runner(args, remoteArgs, testClassLoader)
+      new sbt.testing.Runner {
+        def tasks(taskDefs: Array[sbt.testing.TaskDef]): Array[sbt.testing.Task] =
+          underlying.tasks(taskDefs)
+
+        def args(): Array[String] = underlying.args()
+
+        // Never delegated. Asking the delegate for its remote arguments is
+        // precisely what opens the socket, so the one way not to have one is
+        // not to ask - and an empty answer is what tells the fork to report
+        // through sbt's own protocol instead.
+        def remoteArgs(): Array[String] = Array.empty[String]
+
+        def done(): String = {
+          // The delegate's own end-of-run work still happens; only its
+          // summary string is dropped, and deliberately: this runner saw no
+          // events, so that string describes an empty run.
+          val _ = underlying.done()
+          ""
+        }
+      }
+    }
+  }
 
 // The epoch millisecond at which a project's test task began, keyed by project
 // id. The two projects write into one report directory and their test tasks can
@@ -77,19 +175,18 @@ lazy val testTaskStartedAt: java.util.concurrent.ConcurrentHashMap[String, java.
 lazy val reportFreshnessSlackMillis: Long = 2000L
 
 /**
- * Makes the JUnit report directory and this project's staging directory usable
- * before a single test runs, and records when the test task started.
+ * Makes the JUnit report directory usable before a single test runs, and
+ * records when the test task started.
  *
- * ScalaTest's reporter discovers an unusable report path one file at a time,
- * fails each write on its own, and leaves the run reporting success with no
+ * A report writer discovers an unusable report path one file at a time, fails
+ * each write on its own, and leaves the run reporting success with no
  * machine-readable evidence at all. Deciding it here, once, converts that into
  * a task failure before any test has run.
  *
  * @param project  the project id, under which this task's start time is recorded
  * @param reportDirectory  the one directory the JUnit XML is written to
- * @param staging  this project's staging directory for sbt's own listener
  */
-def prepareTestReports(project: String, reportDirectory: File, staging: File): Unit = {
+def prepareTestReports(project: String, reportDirectory: File): Unit = {
   if (reportDirectory.exists && !reportDirectory.isDirectory) {
     throw new sbt.internal.util.MessageOnlyException(
       s"the JUnit report directory $reportDirectory is not a directory, so not one test report " +
@@ -109,8 +206,6 @@ def prepareTestReports(project: String, reportDirectory: File, staging: File): U
   } finally {
     IO.delete(probe)
   }
-  IO.delete(staging)
-  IO.createDirectory(staging)
   testTaskStartedAt.put(project, java.lang.Long.valueOf(System.currentTimeMillis()))
 }
 
@@ -147,35 +242,33 @@ def junitSuiteCounts(report: File): Option[(Int, Int, Int)] =
   }
 
 /**
- * Completes this run's JUnit XML from sbt's own test events and says what is
- * still missing.
+ * Audits this run's JUnit XML against sbt's own account of the run, and says
+ * what is missing from it.
  *
  * For every suite sbt saw, the configured report is compared with what sbt
- * itself recorded for that suite. A report that is absent, older than this
+ * itself recorded for that suite: a report that is absent, older than this
  * task, covering fewer cases, or recording fewer failures than sbt counted is
- * replaced by the staged report sbt's own listener wrote - the two writers
- * agree on the suite name, the case count and every case's name, and differ
- * only in that the staged one still holds the failures the socket lost. What
- * cannot be completed is returned, one line per suite, for the caller to fail
- * the task with.
+ * a report that cannot be read as evidence of this run, and is returned - one
+ * line per suite, naming what is wrong with it - for the caller to fail the
+ * task with. The comparison is what makes a lost or half-written report a
+ * failure rather than a run that looks like it passed: an incomplete set of
+ * reports all saying `failures="0"` is indistinguishable from a green run.
  *
- * @param log  the task logger; every promotion is reported through it
+ * @param log  the task logger; the run's own counts are reported through it
  * @param output  sbt's own result for the run
  * @param project  the project id whose start time gates freshness
  * @param reportDirectory  the one directory the JUnit XML is written to
- * @param staging  the staging directory holding sbt's own reports
  * @param emptyRunIsFailure  true when executing no suite at all is itself a
  *   failure, which is the case for a whole-project `test` and not for a
  *   filtered `testOnly` that may legitimately match nothing in a project
  * @param taskName  the task being audited, for the messages
- * @return the problems that remain, empty when the report set is complete
+ * @return the problems found, empty when the report set is complete
  */
 def auditTestReports(
     log: Logger,
     output: Tests.Output,
     project: String,
     reportDirectory: File,
-    staging: File,
     emptyRunIsFailure: Boolean,
     taskName: String): Seq[String] = {
   val recordedStart = Option(testTaskStartedAt.get(project)).map(started => started.longValue)
@@ -204,55 +297,40 @@ def auditTestReports(
     }
   } else {
     val problems = Seq.newBuilder[String]
-    val promotions = Seq.newBuilder[String]
-    suites.foreach {
+    val counted = suites.map {
       case (suite, result) =>
         val cases = result.passedCount + result.failureCount + result.errorCount +
           result.skippedCount + result.ignoredCount + result.canceledCount + result.pendingCount
         val failures = result.failureCount + result.errorCount
         val report = reportDirectory / s"TEST-$suite.xml"
-        val staged = staging / s"TEST-$suite.xml"
-        def shortcoming: Option[String] =
-          junitSuiteCounts(report) match {
-            case None =>
-              Some("no report was written for it")
-            case Some(_) if freshnessFloor.exists(floor => report.lastModified < floor) =>
-              Some("its report is one an earlier run left behind")
-            case Some((declared, _, _)) if declared < cases =>
-              Some(s"its report covers $declared of the $cases case(s) that ran")
-            case Some((_, reportedFailures, reportedErrors))
-                if reportedFailures + reportedErrors < failures =>
-              Some(
-                s"its report records ${reportedFailures + reportedErrors} of the $failures " +
-                  "failure(s) it had")
-            case Some(_) =>
-              None
-          }
-        shortcoming.foreach { reason =>
-          if (staged.isFile) {
-            IO.copyFile(staged, report)
-            shortcoming match {
-              case Some(remaining) =>
-                problems += s"$suite: $remaining, and sbt's own report for it could not replace that"
-              case None =>
-                promotions += s"$suite ($reason)"
-            }
-          } else {
-            problems += s"$suite: $reason, and sbt's own test events left none to complete it from"
-          }
+        junitSuiteCounts(report) match {
+          case None =>
+            problems += s"$suite: no report was written for it"
+          case Some(_) if freshnessFloor.exists(floor => report.lastModified < floor) =>
+            problems += s"$suite: its report is one an earlier run left behind"
+          case Some((declared, _, _)) if declared < cases =>
+            problems += s"$suite: its report covers $declared of the $cases case(s) that ran"
+          case Some((_, reportedFailures, reportedErrors))
+              if reportedFailures + reportedErrors < failures =>
+            problems +=
+              s"$suite: its report records ${reportedFailures + reportedErrors} of the $failures " +
+                "failure(s) it had"
+          case Some(_) =>
+            ()
         }
+        (cases, failures)
     }
-    val promoted = promotions.result()
-    if (promoted.nonEmpty) {
-      log.warn(
-        s"$taskName: ${promoted.size} of the ${suites.size} suite(s) that ran were reported " +
-          "incompletely by ScalaTest's own reporter, so any framework summary above understates " +
-          s"this run. Their reports in $reportDirectory were completed from sbt's own test events:")
-      promoted.take(12).foreach(promotion => log.warn(s"  $promotion"))
-      if (promoted.size > 12) {
-        log.warn(s"  and ${promoted.size - 12} more")
-      }
-    }
+    // This task's own account of the run, from sbt's test events rather than
+    // from any report file: the number of suites and cases whose reports were
+    // just checked, and the failures among them. It is the line a reader and
+    // the acceptance gate take the run's size from, and it is stated even when
+    // every report is in order, because "the reports are complete" means
+    // nothing without saying what they are complete with respect to.
+    val totalCases = counted.map { case (cases, _) => cases }.sum
+    val totalFailures = counted.map { case (_, failures) => failures }.sum
+    log.info(
+      s"$taskName: ${suites.size} suite(s), $totalCases test case(s) and $totalFailures " +
+        s"failure(s) recorded by sbt; reports in $reportDirectory audited against that.")
     problems.result()
   }
 }
@@ -260,21 +338,21 @@ def auditTestReports(
 /**
  * The result logger for one test task: sbt's own reporting, then the audit.
  *
- * The default logger runs first, so the console still carries the standard
- * summary and the list of failed tests. Its verdict is held rather than thrown
- * until the audit has run, so a run that both failed tests and lost reports
- * reports both rather than only the first.
+ * The default logger runs first, so the console still carries sbt's own
+ * "Passed/Failed: Total n, Failed n, Errors n, Passed n" line and the list of
+ * failed tests. Its verdict is held rather than thrown until the audit has run,
+ * so a run that both failed tests and lost reports reports both rather than
+ * only the first - and so the audit runs on every outcome, a failing run
+ * included, rather than only on the way out of a green one.
  *
  * @param project  the project id
  * @param reportDirectory  the one directory the JUnit XML is written to
- * @param staging  this project's staging directory
  * @param emptyRunIsFailure  true for a whole-project `test`
  * @return the logger to install for that task
  */
 def reportAuditingTestResultLogger(
     project: String,
     reportDirectory: File,
-    staging: File,
     emptyRunIsFailure: Boolean): TestResultLogger =
   TestResultLogger { (log, output, taskName) =>
     val standardOutcome = scala.util.Try(TestResultLogger.Default.run(log, output, taskName))
@@ -284,10 +362,8 @@ def reportAuditingTestResultLogger(
         output,
         project,
         reportDirectory,
-        staging,
         emptyRunIsFailure,
         taskName)
-    IO.delete(staging)
     if (problems.isEmpty) {
       standardOutcome.get
     } else {
@@ -369,6 +445,13 @@ lazy val commonSettings = Seq(
   Compile / unmanagedSources / includeFilter := "*.scala",
   Test / unmanagedSources / includeFilter := "*.scala",
   Test / fork := true,
+  // Forked tests report through sbt's own fork protocol rather than through
+  // ScalaTest's slave-to-master socket; see `withoutRemoteReporting` above for
+  // why that socket cannot carry this port's test failures. It is applied to
+  // every framework this build loads, because the decision belongs to the
+  // build - the fork's reporting path - and not to one framework's arguments.
+  Test / loadedTestFrameworks ~= (frameworks =>
+    frameworks.map { case (id, framework) => id -> withoutRemoteReporting(framework) }),
   // Two absolute paths handed to the forked test JVMs. The first is where the parity specs
   // write their reports. The second is the build root itself, which the two audit specs that
   // derive their subject matter from the module *sources* - `FailableSurfaceSpec` and
@@ -389,31 +472,29 @@ lazy val commonSettings = Seq(
     // `ApiSurfaceSpec.BuildRootProperty` and `FailableSurfaceSpec.BuildRootProperty`.
     s"-Dstrata.build.root=${(ThisBuild / baseDirectory).value.getAbsolutePath}"
   ),
-  // The one test-report setting: ScalaTest's `-u` reporter writes one JUnit XML
-  // file per suite, which is the machine-readable artifact whose `tests`
-  // attributes the test-count gate sums. The path is absolute and anchored at
-  // the build root because tests are forked and the gate reads a single
-  // directory for both projects. The reporter creates that directory itself, so
-  // this setting performs no filesystem work while it is evaluated.
-  Test / testOptions += Tests.Argument(
-    TestFrameworks.ScalaTest,
-    "-u",
-    testReportDirectory((ThisBuild / baseDirectory).value).getAbsolutePath
-  ),
-  // sbt's own JUnit XML listener, retargeted from this project's
-  // target/test-reports - a second copy of the artifact the gate counts - to a
-  // staging directory the audit promotes from. Replacing the list rather than
-  // filtering it is what makes the configured directory the only place a report
-  // is written; the console logger and the test-status reporter are added to
-  // this list per task by sbt itself and are unaffected.
+  // The one test-report setting: sbt's own JUnit XML listener, writing one
+  // `TEST-<suite>.xml` per suite into the single configured directory. That is
+  // the machine-readable artifact whose `tests` attributes the test-count gate
+  // sums, and this listener is the only writer of it - see the commentary above
+  // `prepareTestReports` for why ScalaTest's own `-u` reporter cannot be, and
+  // what that costs in relation to AAP section 0.3.1's wording.
+  //
+  // The path is absolute and anchored at the build root because tests are
+  // forked and the gate reads a single directory for both projects; the
+  // listener's default would be each project's own target/test-reports, a
+  // second and a third copy of the artifact being counted. Replacing the list
+  // rather than adding to it is what removes that default; the console logger
+  // and the test-status reporter are added to this list per task by sbt itself
+  // and are unaffected.
+  //
   // The File overload is the one that takes the directory it writes into; the
   // String overload appends "test-reports" to what it is given, which is how
   // the default lands in <project>/target/test-reports. The second argument is
-  // that default's own: false names each report TEST-<suite>.xml, the name
-  // ScalaTest's reporter and the test-count gate both use.
+  // that default's own: false names each report TEST-<suite>.xml, the name the
+  // test-count gate and the Java-to-Scala traceability join both read.
   Test / testListeners := Seq(
     new JUnitXmlTestsListener(
-      junitStagingDirectory(target.value),
+      testReportDirectory((ThisBuild / baseDirectory).value),
       false,
       streams.value.log
     )
@@ -423,8 +504,7 @@ lazy val commonSettings = Seq(
   Test / testOptions += Tests.Setup(() =>
     prepareTestReports(
       name.value,
-      testReportDirectory((ThisBuild / baseDirectory).value),
-      junitStagingDirectory(target.value)
+      testReportDirectory((ThisBuild / baseDirectory).value)
     )
   ),
   // `testResultLogger` is defined per task, so each task that runs tests gets
@@ -434,19 +514,16 @@ lazy val commonSettings = Seq(
   Test / test / testResultLogger := reportAuditingTestResultLogger(
     name.value,
     testReportDirectory((ThisBuild / baseDirectory).value),
-    junitStagingDirectory(target.value),
     emptyRunIsFailure = true
   ),
   Test / testOnly / testResultLogger := reportAuditingTestResultLogger(
     name.value,
     testReportDirectory((ThisBuild / baseDirectory).value),
-    junitStagingDirectory(target.value),
     emptyRunIsFailure = false
   ),
   Test / testQuick / testResultLogger := reportAuditingTestResultLogger(
     name.value,
     testReportDirectory((ThisBuild / baseDirectory).value),
-    junitStagingDirectory(target.value),
     emptyRunIsFailure = false
   )
 )
