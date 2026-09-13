@@ -28,6 +28,7 @@ import com.opengamma.strata.basics.ImmutableReferenceData
 import com.opengamma.strata.basics.ReferenceData
 import com.opengamma.strata.basics.currency.Currency
 import com.opengamma.strata.basics.currency.CurrencyPair
+import com.opengamma.strata.collect.result.Failure
 import com.opengamma.strata.collect.result.FailureReason
 import com.opengamma.strata.collect.testkit.ResultMatchers._
 
@@ -190,18 +191,20 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     // The factory is total: a name is taken as it stands and reads back through `of`.
     HolidayCalendarId.of(test.name) shouldBe test
 
-    // That totality is the reason the two text forms of an identifier differ from its name for
-    // a name no application would file a calendar under. `of` accepts any text, a decoder reads
-    // an identifier straight out of a document, and the text form is what a log, a report or a
-    // line of a console receives - so the text form is bounded and single-line while the name,
-    // which is the identity of the identifier and the text it travels as, is answered with
-    // unchanged. Both statements are made on one identifier here, because it is their holding
-    // together that makes the port safe to write out and still faithful to what it was given.
+    // That totality is the reason every text form of an identifier has to be its name and
+    // nothing else. `of` accepts any text and a decoder reads an identifier straight out of a
+    // document, so a name may hold a line break, another control character or any length of
+    // text; the name is nevertheless the identity of the identifier and the text it travels as,
+    // so the text form and the rendering answer with the whole of it, unaltered, and a caller
+    // that compares, re-parses or re-serializes what it rendered gets its own text back. Making
+    // such text safe for a line-oriented reader belongs to the places that write a diagnostic,
+    // which the case below this one states on a failure quoting this very identifier.
     val forgedName: String = "GBLO\nWARN  the calendar resolved\u2028and again\r"
     val forged: HolidayCalendarId = HolidayCalendarId.of(forgedName)
 
-    // The name, the identity and the document are the text exactly, so nothing an application
-    // built on these identifiers can observe is altered by the rendering below.
+    // The name, the identity, the document, the object key and both text forms are the same
+    // text, exactly: this is the identifier the library being ported rendered from `getName()`
+    // and `toString()`, and no route to it alters what a caller supplied.
     forged.name shouldBe forgedName
     HolidayCalendarId.of(forgedName) shouldBe forged
     forged.asJson shouldBe Json.fromString(forgedName)
@@ -209,42 +212,28 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     decode[HolidayCalendarId](forged.asJson.noSpaces) shouldBe Right(forged)
     decode[HolidayCalendarId](forged.asJson.noSpaces).map(id => id.name) shouldBe Right(forgedName)
     KeyEncoder[HolidayCalendarId].apply(forged) shouldBe forgedName
+    forged.toString shouldBe forgedName
+    Show[HolidayCalendarId].show(forged) shouldBe forgedName
 
-    // The two text forms, which agree with each other because the rendering is taken from the
-    // string conversion: the line feed, the carriage return and the Unicode line separator are
-    // escaped, so what a reader receives is one line that cannot claim anything this library did
-    // not report.
-    val rendered: String = "GBLO\\nWARN  the calendar resolved\\u2028and again\\r"
-    forged.toString shouldBe rendered
-    Show[HolidayCalendarId].show(forged) shouldBe rendered
-    forged.toString.linesIterator.size shouldBe 1
-    forged.toString should not include "\n"
-    forged.toString should not include "\u2028"
-
-    // And the bound, on a name of several thousand characters: the text form holds neither the
-    // whole name nor anything beyond the bound, carries the marker standing for what was left
-    // out and is shorter than the name, while `name` is still the whole of it.
+    // And on a name of several thousand characters: the text form is that name too, so nothing
+    // is shortened and no marker stands for anything left out, there being nothing left out.
     val longName: String = "Z" * 4096
     val longId: HolidayCalendarId = HolidayCalendarId.of(longName)
     longId.name shouldBe longName
     longId.name.length shouldBe 4096
-    longId.toString should not include longName
-    longId.toString should include("Z" * 256)
-    longId.toString should include("...")
-    longId.toString.length should be < longName.length
-    Show[HolidayCalendarId].show(longId) shouldBe longId.toString
+    longId.toString shouldBe longName
+    Show[HolidayCalendarId].show(longId) shouldBe longName
+    longId.toString should not include "..."
 
-    // The identifier's text form is what the composite renderings that name a calendar hand a
-    // reader, so a forged identifier cannot forge a line through one of them either - while the
-    // rendering of an ordinary adjustment is the text it always was, character for character.
+    // The identifier's text form is what the composite renderings that name a calendar hand on,
+    // so they carry the name as it stands as well - while the rendering of an ordinary
+    // adjustment is the text it always was, character for character.
     val forgedAdjustment: BusinessDayAdjustment =
       BusinessDayAdjustment.of(BusinessDayConventions.FOLLOWING, forged)
-    forgedAdjustment.toString shouldBe s"Following using calendar $rendered"
-    forgedAdjustment.toString.linesIterator.size shouldBe 1
+    forgedAdjustment.toString shouldBe s"Following using calendar $forgedName"
     Show[BusinessDayAdjustment].show(forgedAdjustment) shouldBe forgedAdjustment.toString
     val forgedDays: DaysAdjustment = DaysAdjustment.ofBusinessDays(3, forged)
-    forgedDays.toString shouldBe s"3 business days using calendar $rendered"
-    forgedDays.toString.linesIterator.size shouldBe 1
+    forgedDays.toString shouldBe s"3 business days using calendar $forgedName"
     Show[DaysAdjustment].show(forgedDays) shouldBe forgedDays.toString
 
     BusinessDayAdjustment
@@ -252,6 +241,52 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
       .toString shouldBe "ModifiedFollowing using calendar GBLO+USNY"
     DaysAdjustment.ofBusinessDays(3, HolidayCalendarIds.SAT_SUN).toString shouldBe
       "3 business days using calendar Sat/Sun"
+  }
+
+  //-------------------------------------------------------------------------
+  // Without a counterpart in the test class being ported: the sink at which a hostile calendar
+  // name is neutralised.
+  //
+  // A name is the identity of an identifier, so every text form of one is that name as it
+  // stands, which `test_of_single` states. The property that a name reaching this library from
+  // outside can neither fabricate a line of a log that holds a diagnostic about it (CWE-117) nor
+  // grow that line to its own size (CWE-400) is therefore a property of the places that write a
+  // diagnostic, and this is where it is asserted. The name is driven in through the ordinary
+  // resolution API rather than composed into a message here, so the text asserted is the text a
+  // caller that parsed such a name would actually have reached.
+  test("a failure quoting a hostile calendar name keeps it whole and renders it as one line") {
+    // The faithful half: the failure names the identifier it could not find in the message and
+    // under the `id` attribute, both holding the whole of the name, because the question a
+    // caller has to answer is which item of reference data to supply and a shortened or
+    // rewritten name does not answer it.
+    val forgedName: String = "GBLO\nWARN  the calendar resolved\u2028and again\r"
+    val forgedFailure: Failure = unresolvable(HolidayCalendarId.of(forgedName))
+    forgedFailure.reason shouldBe FailureReason.MISSING_DATA
+    forgedFailure.message should include(forgedName)
+    forgedFailure.attributes("id") shouldBe forgedName
+
+    // The neutralised half, on the same failure: its text is one line holding no control
+    // character, the line feed and the Unicode line separator appearing in it as the characters
+    // of their escapes, so nothing the name says can be read as a line this library reported.
+    val forgedRendering: String = Show[Failure].show(forgedFailure)
+    forgedRendering should include("GBLO\\n")
+    forgedRendering should include("\\u2028")
+    forgedRendering.linesIterator.size shouldBe 1
+    forgedRendering.exists(character => character.isControl) shouldBe false
+    forgedFailure.toString shouldBe forgedRendering
+
+    // And the bound, on a name of several thousand characters: the failure keeps every character
+    // of it while its text carries the marker standing for what was left out and stays shorter
+    // than the name, so no name a caller supplies can dominate a line that quotes it.
+    val longName: String = "Z" * 4096
+    val longFailure: Failure = unresolvable(HolidayCalendarId.of(longName))
+    longFailure.message should include(longName)
+    longFailure.attributes("id") shouldBe longName
+
+    val longRendering: String = Show[Failure].show(longFailure)
+    longRendering should not include longName
+    longRendering should include("...")
+    longRendering.length should be < longName.length
   }
 
   test("test_of_combined") {
@@ -964,5 +999,23 @@ class HolidayCalendarIdSpec extends AnyFunSuite with Matchers with TableDrivenPr
     ImmutableReferenceData.of(entries: _*) match {
       case Right(data) => data
       case Left(failure) => fail(s"Fixture reference data could not be built: ${failure.message}")
+    }
+
+  /**
+   * Answers with the failure an identifier resolves to against reference data holding nothing.
+   *
+   * This is the shortest route from an identifier to a failure that quotes it, and it is an
+   * ordinary one: resolution against a store that does not hold the calendar is what an
+   * application reaches whenever it has not supplied the entry, so the text driven into the
+   * failure is the identifier's own rather than a string composed by this spec.
+   *
+   * @param calendarId  the identifier to resolve against reference data holding nothing
+   * @return the failure reporting that the calendar is absent
+   */
+  private def unresolvable(calendarId: HolidayCalendarId): Failure =
+    calendarId.resolve(ReferenceData.empty) match {
+      case Left(failure) => failure
+      case Right(calendar) =>
+        fail(s"Reference data holding nothing resolved a calendar: $calendar")
     }
 }

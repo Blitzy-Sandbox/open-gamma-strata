@@ -110,6 +110,23 @@ import com.opengamma.strata.collect.DoubleArrayMath
  * bulk moves - copying, filling, sorting, comparing and rendering - go straight to the primitive
  * array operations of the platform. No element is boxed on any of those paths.
  *
+ * Wrapping that completed run copies it once more. Every operation of this class wraps through
+ * `copyOf`, which reaches the sole constructor, and that constructor is where the copy is made:
+ * a produced value therefore costs one further allocation and one bulk copy beyond the buffer the
+ * operation filled, which is the cost `copyOf` records along with the property it buys.
+ *
+ * No internal path skips that copy, and none can, for the reason ''The stored array never
+ * escapes'' above gives. The constructor is emitted public because the companion every factory
+ * lives in has to reach it; a companion-private helper reached from this class is emitted as a
+ * public method as well, under a mangled name, which is why the build's check on the members of
+ * these two numeric types has to name the matrix's deep copy explicitly. A member that adopted a
+ * run of values instead of copying it would therefore be callable by anything compiled against
+ * this class, outside the access the language grants its own callers, and would be the aliasing
+ * entry point that `ofUnsafe` and `toArrayUnsafe` were and this type deliberately has none of.
+ * One copy per produced value is what buys the property `copyOf` states: that no array anywhere -
+ * inside this class or outside it - is reachable both by a caller and by an instance, whatever
+ * language or compiler produced that caller.
+ *
  * ===Thread safety===
  *
  * An instance is immutable, so it is safe to share between any number of threads without

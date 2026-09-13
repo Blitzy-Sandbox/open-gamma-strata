@@ -437,19 +437,16 @@ final class TypedStringSpec
     // the three text forms a typed string has, which have to carry the same text for the value
     // to survive being written out and read back.
     //
-    // Two of the three carry it exactly: the name a value answers with, and the JSON string it
-    // encodes to, are the text the value was built from, whatever that text holds. The third -
-    // the rendering - is read rather than acted on, so it is the '''rendered''' text: the name
-    // written through the bounded, single-line renderer every diagnostic of this module uses.
-    // For text of the shape a typed string actually carries the two are the same characters,
-    // which the renderer is asked directly here so that the identity is asserted rather than
-    // assumed.
+    // All three carry it exactly: the name a value answers with, the text it renders as and the
+    // JSON string it encodes to are the text the value was built from, whatever that text
+    // holds. A rendering adds nothing and takes nothing away, because the name is the identity
+    // of the value - a caller that compares, re-parses or re-serializes what it rendered has to
+    // receive its own text back - and making text safe for a line-oriented reader belongs to
+    // the places that write a diagnostic, which a case further down states.
     val value = sample("A")
     val text = value.name
-    Failure.renderDiagnostic(text) shouldBe text
     value.toString shouldBe text
-    Show[SampleType].show(value) shouldBe Failure.renderDiagnostic(text)
-    value.show shouldBe Failure.renderDiagnostic(text)
+    Show[SampleType].show(value) shouldBe text
     value.show shouldBe text
     value.asJson shouldBe Json.fromString(text)
     decode[SampleType](Json.fromString(text).noSpaces) shouldBe Right(value)
@@ -457,7 +454,6 @@ final class TypedStringSpec
     // And for the validated fixture, whose text the factory additionally constrains.
     val validatedValue = validated("ABC")
     validatedValue.toString shouldBe validatedValue.name
-    validatedValue.show shouldBe Failure.renderDiagnostic(validatedValue.name)
     validatedValue.show shouldBe validatedValue.name
     validatedValue.asJson shouldBe Json.fromString(validatedValue.name)
   }
@@ -640,12 +636,10 @@ final class TypedStringSpec
   test("Show renders a value as its name even where its toString is the platform default") {
     // The fixture written to the minimal documented pattern adds no rendering of its own, so
     // its toString is the one the platform gives a wrapper. Its name, its Show and its JSON
-    // are its text regardless, which is the property every typed string of this port has - the
-    // rendering being the text put through the bounded, single-line renderer, which leaves text
-    // of this shape as it stands.
+    // are its text regardless, which is the property every typed string of this port has: the
+    // rendering is the name, character for character, whatever the name holds.
     val value = characters("ABC")
     value.name shouldBe "ABC"
-    value.show shouldBe Failure.renderDiagnostic("ABC")
     value.show shouldBe "ABC"
     Show[SampleCharacterType].show(value) shouldBe "ABC"
     value.asJson shouldBe Json.fromString("ABC")
@@ -659,47 +653,75 @@ final class TypedStringSpec
     validated("ABC").toString shouldBe "ABC"
   }
 
-  test("the rendering of a value is bounded and single-line, while its name and its JSON are not") {
+  test("the rendering of a value is its name, whatever the text holds and however long it is") {
     // The text of a typed string is a caller's, checked only for the shape the concrete type's
     // own validation states - and the plain form states no more than that the text is present,
     // so a line feed, a carriage return, a Unicode line separator and any length of text are
-    // all accepted names. A rendering is read in a log, a report or a line of a console, where
-    // such text would otherwise add a line of its own or fill one, so the rendering is the name
-    // written through the bounded, single-line renderer these modules apply to every diagnostic,
-    // while the name and the JSON form - and therefore the round trip - keep the text exactly.
+    // all accepted names. Every text form of the value is that name as it stands: the name is
+    // the identity of the value, so a caller comparing, re-parsing or re-serializing what it
+    // rendered receives its own text back, and the name, the rendering and the JSON form - and
+    // therefore the round trip - cannot come apart. Making such text safe for a line-oriented
+    // reader is the business of the places that write a diagnostic, which the case below states.
     val forged = "OG\nWARN  the value was accepted\u2028and again\r"
     val value = sample(forged)
 
-    // What a reader is handed: the escapes of the renderer, and one line.
-    value.show shouldBe Failure.renderDiagnostic(forged)
-    value.show shouldBe "OG\\nWARN  the value was accepted\\u2028and again\\r"
-    value.show.linesIterator.size shouldBe 1
-    value.show should not include "\n"
-    value.show should not include "\u2028"
-    Show[SampleType].show(value) shouldBe value.show
+    // What a reader is handed: the name, character for character.
+    value.show shouldBe forged
+    Show[SampleType].show(value) shouldBe forged
+    value.show shouldBe value.name
 
-    // What the value carries and what it travels as: the text, exactly, so neither the identity
-    // of the value nor its document is touched by the rendering above.
+    // What the value carries and what it travels as: the same text again.
     value.name shouldBe forged
     value.asJson shouldBe Json.fromString(forged)
     value.asJson.asString shouldBe Some(forged)
     decode[SampleType](value.asJson.noSpaces) shouldBe Right(value)
     decode[SampleType](value.asJson.noSpaces).map(decoded => decoded.name) shouldBe Right(forged)
 
-    // The bound, on text no reader could take in: the rendering holds neither the whole name nor
-    // a readable part of it beyond the bound, carries the marker standing for what was left out,
-    // and is shorter than the name - while the name is still the whole of the text and still
-    // round-trips.
+    // And on text of several thousand characters, which is past the bound one part of a
+    // diagnostic is written under: the rendering is still the whole name, so nothing is
+    // shortened and no marker stands for anything left out.
     val long = "Z" * 4096
     val longValue = sample(long)
-    longValue.show should not be long
-    longValue.show should not include long
-    longValue.show should include("Z" * 256)
-    longValue.show should include("...")
-    longValue.show.length should be < long.length
+    longValue.show shouldBe long
+    Show[SampleType].show(longValue) shouldBe long
+    longValue.show should not include "..."
+    longValue.show.length shouldBe 4096
     longValue.name shouldBe long
     longValue.name.length shouldBe 4096
     decode[SampleType](longValue.asJson.noSpaces) shouldBe Right(longValue)
+  }
+
+  test("a failure quoting a caller's text is what bounds it and keeps it to one line") {
+    // The counterpart of the case above, and the reason it is safe: text a caller supplied is
+    // neutralised where a diagnostic is written rather than where a value renders. The same two
+    // texts are put through the rendering of a failure that quotes them - the form every
+    // rejection of these modules reaches a log, a report or a console line in - and there the
+    // line feed, the carriage return and the Unicode line separator appear as the characters of
+    // their escapes and the text is bounded, while the failure itself keeps the whole of what it
+    // was built with for the code that acts on it rather than reads it.
+    val forged = "OG\nWARN  the value was accepted\u2028and again\r"
+    val forgedFailure = Failure.Parsing(forged)
+    forgedFailure.message shouldBe forged
+
+    val forgedRendering = Show[Failure].show(forgedFailure)
+    forgedRendering shouldBe "PARSING: OG\\nWARN  the value was accepted\\u2028and again\\r"
+    forgedRendering.linesIterator.size shouldBe 1
+    forgedRendering should not include "\n"
+    forgedRendering should not include "\u2028"
+    forgedFailure.toString shouldBe forgedRendering
+
+    // The bound, on text no reader could take in: the rendering holds neither the whole text nor
+    // a readable part of it beyond the bound, carries the marker standing for what was left out,
+    // and is shorter than the text - while the failure still holds every character of it.
+    val long = "Z" * 4096
+    val longFailure = Failure.Parsing(long)
+    longFailure.message shouldBe long
+
+    val longRendering = Show[Failure].show(longFailure)
+    longRendering should not include long
+    longRendering should include("Z" * 256)
+    longRendering should include("...")
+    longRendering.length should be < long.length
   }
 
   test("a typed string is a named value, and is used wherever one is required") {
@@ -805,20 +827,17 @@ final class TypedStringSpec
 
   test("the three text forms of any accepted text are that text, on every fixture") {
     // This is the property the dropped text-form conversion existed to provide, stated over
-    // generated text rather than over the fixed table: the name and the JSON of a value are the
-    // text it was built from, so a value survives being written out and read back whatever text
-    // it carries, and its rendering is that text rendered for a reader - bounded and on one
-    // line, which is the same characters for every text this generator produces except the
-    // whitespace branch that holds a tab, where the rendering escapes it. Asserting the
-    // rendering against the renderer states both halves at once: the rendering is exactly what
-    // the renderer makes of the name, and nothing else about the text is changed.
+    // generated text rather than over the fixed table: the name, the rendering and the JSON of a
+    // value are all the text it was built from, so a value survives being written out and read
+    // back whatever text it carries. The rendering is included in that statement rather than
+    // held to a weaker one because a name is the identity of the value, and the neutralising a
+    // reader needs is applied where a diagnostic is written instead.
     forAll(genNonEmptyText) { (text: String) =>
       val value = sample(text)
       value.name shouldBe text
       value.toString shouldBe text
-      value.show shouldBe Failure.renderDiagnostic(text)
-      Show[SampleType].show(value) shouldBe Failure.renderDiagnostic(text)
-      value.show.linesIterator.size shouldBe 1
+      value.show shouldBe text
+      Show[SampleType].show(value) shouldBe text
       value.asJson shouldBe Json.fromString(text)
       value.asJson.asString shouldBe Some(text)
     }
@@ -829,21 +848,14 @@ final class TypedStringSpec
     // and its JSON are the text regardless - which is the divergence the fixed cases pin, held
     // here over every text the fixture accepts.
     forAll(genUpperLetterText) { (text: String) =>
-      // Text of upper-case letters is within the bound of the renderer and holds nothing it
-      // escapes, so here the rendering is the text itself - asserted both ways round, so that
-      // the case says the rendering is the renderer's answer and that the answer is the text.
-      Failure.renderDiagnostic(text) shouldBe text
-
       val validatedValue = validated(text)
       validatedValue.name shouldBe text
       validatedValue.toString shouldBe text
-      validatedValue.show shouldBe Failure.renderDiagnostic(text)
       validatedValue.show shouldBe text
       validatedValue.asJson shouldBe Json.fromString(text)
 
       val characterValue = characters(text)
       characterValue.name shouldBe text
-      characterValue.show shouldBe Failure.renderDiagnostic(text)
       characterValue.show shouldBe text
       Show[SampleCharacterType].show(characterValue) shouldBe text
       characterValue.asJson shouldBe Json.fromString(text)

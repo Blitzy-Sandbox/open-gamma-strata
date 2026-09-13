@@ -311,35 +311,32 @@ sealed abstract case class HolidayCalendarId private (name: String)
     }
 
   /**
-   * Returns the text form of this identifier, which is its name written for a reader.
+   * Returns the text form of this identifier, which is its name, exactly.
    *
-   * [[name]] is the identity of an identifier, the text a composite is composed from and the
-   * text it travels as: equality, hashing, composition and the JSON form all read the name and
-   * answer with it unchanged, whatever it holds. This method is the other side of that
-   * arrangement. What it returns is read - it reaches a log, a report or a line of a console,
-   * either directly or through one of the composite renderings that name a calendar - and a
-   * reader of that kind is line-oriented and of finite size, while
-   * [[HolidayCalendarId.of]] is total and accepts any text, so a name that reached this
-   * library from outside may hold a line break, another control character or any length of
-   * text at all. The text form is therefore rendered through
-   * [[com.opengamma.strata.collect.result.Failure.renderDiagnostic]], the one renderer these
-   * two modules apply to text on its way to such a reader: it is bounded in length and it is a
-   * single line, so an identifier can neither forge a line of a log that renders one (CWE-117)
-   * nor make that line as large as itself (CWE-400).
+   * [[name]] is the identity of an identifier and it is the whole of its content, so the text
+   * form is the name and nothing else: the same text the identifier being ported answered with
+   * from `getName()` and from `toString()`, the text [[HolidayCalendarId.of]] reads back into
+   * this identifier, the text the JSON form and the key form carry, and the text every
+   * composite rendering that names a calendar - a business day adjustment, a days adjustment,
+   * a schedule definition - hands on. The structural rendering a case class would otherwise
+   * give is replaced by it for exactly that reason, and every constant of
+   * [[HolidayCalendarIds]] and every composite this library builds from them therefore reads
+   * as it always did, `GBLO`, `Sat/Sun`, `GBLO+USNY`.
    *
-   * For every identifier of a realistic shape the two are the same text, character for
-   * character - every constant of [[HolidayCalendarIds]], every composite this library builds
-   * from them, and any name of ordinary length carrying no control character - so this is the
-   * rendering the identifier being ported produced, and the structural rendering a case class
-   * would otherwise give is replaced by it as it was there. A name that is not of that shape
-   * renders with the escapes and the bound described on the renderer, and [[name]] still
-   * answers with the whole of it, which is what code acting on an identifier rather than
-   * displaying it reads: the text [[HolidayCalendarId.of]] reads back into the same identifier
-   * is the name, and so is the text the JSON form and the failure messages of this file carry.
+   * [[HolidayCalendarId.of]] is total: which names an application files its calendars under is
+   * not this library's to judge, so a name may hold a line break, another control character or
+   * any length of text, and this method answers with the whole of it regardless. Neutralising
+   * such text - bounding it and escaping what a line-oriented reader could act on - is the
+   * business of the places that write a diagnostic, namely
+   * [[com.opengamma.strata.collect.result.Failure.show]] and therefore the text form of every
+   * failure, and the decoder bridge in [[com.opengamma.strata.collect.json.Codecs]]. It is not
+   * the business of a value's own text form, which is the identity of the value: a name that
+   * arrived from outside is still the name of the calendar an application asked for, and code
+   * that reads, compares, re-parses or re-serializes an identifier has to receive it whole.
    *
-   * @return the name of this identifier, bounded and on a single line
+   * @return the name of this identifier
    */
-  override def toString: String = Failure.renderDiagnostic(name)
+  override def toString: String = name
 
   /**
    * Returns a suitable hash code for the identifier, which is the hash of its name.
@@ -1112,14 +1109,13 @@ object HolidayCalendarId {
     }
 
   /**
-   * The text rendering of a holiday calendar identifier, which is its text form.
+   * The text rendering of a holiday calendar identifier, which is its name.
    *
-   * Taken from [[HolidayCalendarId.toString]] rather than written again here, so that the two
-   * cannot drift apart: an identifier reaches a reader the same way whether it is rendered
-   * through this instance or interpolated into a string, and the bound and the escaping
-   * described on that method therefore hold of both. For every identifier of a realistic shape
-   * the rendering is the identifier's name, character for character, and it is the text [[of]]
-   * reads back.
+   * The rendering is the identifier's name, character for character, for every identifier -
+   * the text the identifier being ported rendered, and the text [[of]] reads back into the
+   * same identifier. It is taken from [[HolidayCalendarId.toString]] rather than written again
+   * here, so that the two cannot drift apart: an identifier reaches a reader the same way
+   * whether it is rendered through this instance or interpolated into a string.
    *
    * @return the rendering of holiday calendar identifiers
    */

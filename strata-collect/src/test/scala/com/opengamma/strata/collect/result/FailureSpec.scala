@@ -1393,14 +1393,16 @@ final class FailureSpec
   // Failure.renderDiagnostic - the renderer as a contract of its own
   //
   // The rendering above is not only reached through a failure: text on its way
-  // to a line-oriented sink reaches it from the JSON decoder bridge, from the
-  // resource reader naming a source it could not read, and from the text form
-  // of an identifier a caller supplied. Those callers are outside this file, so
-  // the renderer is a published member and these cases pin it as one: what it
-  // does to ordinary text, to each character that could forge a line, to a
-  // character held as a surrogate pair, and at the bound. The last case ties it
-  // to `Show[Failure]`, so the rendering a failure receives and the rendering
-  // every other caller receives cannot come apart.
+  // to a line-oriented sink reaches it from the JSON decoder bridge and from the
+  // resource reader naming a source it could not read. Those callers are outside
+  // this file but inside these two modules - the member is visible to
+  // `com.opengamma.strata` and no further, and is deliberately not offered as a
+  // way of rewriting arbitrary text, a value's own name least of all - so these
+  // cases pin it as the shared internal renderer it is: what it does to ordinary
+  // text, to each character that could forge a line, to a character held as a
+  // surrogate pair, and at the bound. The last case ties it to `Show[Failure]`,
+  // so the rendering a failure receives and the rendering every other caller
+  // receives cannot come apart.
   // ===========================================================================
 
   test("Failure.renderDiagnostic writes ordinary text as itself, character for character") {
@@ -1692,8 +1694,11 @@ final class FailureSpec
 // library being ported echoed the text they were handed and were written out as
 // they stood, and this port writes every part of a failure bounded and on a
 // single line while the failure itself keeps the whole of that text. The four that
-// name the renderer directly pin it as the published member the JSON decoder
-// bridge, the resource reader and the text form of an identifier all reach for.
+// name the renderer directly pin it as the renderer the JSON decoder bridge and
+// the resource reader reach for as well - a member internal to these two modules
+// rather than published API, because the one kind of text it is correct to apply
+// it to is text on its way to a reader of lines, and a value's own name is not of
+// that kind.
 //
 //   "parse also resolves a mixed-case reason name the original would have rejected"
 //   "each of the ten failures is built from a message alone and reports its matching reason"

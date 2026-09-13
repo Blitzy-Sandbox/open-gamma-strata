@@ -152,6 +152,23 @@ import com.opengamma.strata.collect.ArgCheck
  * platform. Every element-wise operation funnels through the one row-major fill in the companion,
  * so the traversal order that the parity duty above depends on is defined in a single place.
  *
+ * Wrapping those completed rows copies them once more. Every one of those operations reaches the
+ * sole constructor, whose single line deep-copies the array of rows and every row within it - the
+ * comment on that line records why it is a copy rather than the argument - so a produced matrix
+ * costs one further allocation and one bulk copy per row beyond the rectangle the operation
+ * filled. That is the one copy of a freshly built rectangle per operation named above, and what
+ * it buys is named there too: no array anywhere is reachable both by a caller and by a matrix.
+ *
+ * No internal path skips that copy, and none can, for the reason ''The stored rows never escape''
+ * above gives. The constructor is emitted public because the companion every factory lives in has
+ * to reach it, and a companion-private helper reached from this class is emitted as a public
+ * method as well, under a mangled name - the deep copy this class reaches is emitted exactly that
+ * way, which is why the build's check on the members of the two numeric types has to name it. A
+ * member that adopted internally built rows instead of copying them would therefore be callable
+ * by anything compiled against this class, outside the access the language grants its own
+ * callers, and would be the aliasing entry point that `ofUnsafe` and `toArrayUnsafe` were and
+ * this type deliberately has none of.
+ *
  * No element and no index is boxed on any path of this type. Where a member takes a one- or
  * two-argument function - `map`, `multipliedBy`, `combine`, `reduce`, `tabulate` and `diagonal` -
  * the standard library specialises that function type over primitives and nothing has to be

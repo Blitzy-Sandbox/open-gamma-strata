@@ -83,7 +83,7 @@ import com.opengamma.strata.collect.result.Failure
  * Neither reader ever substitutes a sentinel or empty text for content.
  *
  * Every one of those messages names its source in a '''bounded, single-line''' form, produced
- * by [[Failure.renderDiagnostic]] - the one renderer these two modules hold for text on its
+ * by `Failure.renderDiagnostic` - the one renderer these two modules hold for text on its
  * way to a line-oriented reader. A caller chooses the name a read is given, and that name may
  * itself have reached the caller from outside the process, so a message that interpolated it as
  * it stands would let the choice of name write a line of its own into whatever records the

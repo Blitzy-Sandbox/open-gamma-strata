@@ -39,7 +39,7 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * properties of what comes back: a rejection reached from a definition names that definition,
  * while one reached from a schedule has no definition to name and so names nothing.
  *
- * ===Faithful attribute, neutralised text===
+ * ===Faithful value, neutralised text===
  *
  * The definition a failure carries embeds a business day adjustment, which names a
  * [[com.opengamma.strata.basics.date.HolidayCalendarId]] whose name is accepted as given:
@@ -48,14 +48,19 @@ import com.opengamma.strata.collect.testkit.TestHelper.date
  * quoted by the duplicate-adjusted message - a failure message. Two properties have to hold at
  * once for that to be both useful and safe, and the third test states both:
  *
- *   - the structured value stays '''faithful''': the attribute is the definition's own rendering,
- *     character for character, control characters included, because a caller compares what the
- *     failure names with what it supplied, and a report naming the rejected definition would
- *     otherwise read a summary of it;
- *   - the '''text''' of the failure is neutralised: the two routes to it agree, it holds no
+ *   - the structured value stays '''faithful''': an identifier answers with the whole of the name
+ *     it was built from, from its name and from its text form alike, because a name is the
+ *     identity of the value (AAP §0.1.1). A definition renders its calendar by interpolating that
+ *     text form, so the definition's rendering carries the name as it stands - control characters
+ *     and every one of its thousands of characters included - and the attribute is that rendering,
+ *     character for character, because a caller compares what the failure names with what it
+ *     supplied and a report naming the rejected definition would otherwise read a summary of it;
+ *   - the '''text of the failure''' is neutralised: the two routes to it agree, it holds no
  *     control character, it is one line and it is bounded, so a forged calendar name cannot
  *     fabricate a line of a log or a report that holds the failure, and an oversized one cannot
- *     dominate the rendering.
+ *     dominate the rendering. Neutralising is the act of writing a diagnostic out rather than the
+ *     act of building the value it is about, so this is where it happens and the only place it
+ *     happens.
  *
  * The rendering of the definition is not invented here: [[PeriodicSchedule]] attaches its own
  * rendering, so that is what is asserted.
@@ -136,12 +141,14 @@ class ScheduleFailureSpec extends AnyFunSuite with Matchers with ResultMatchers 
   private val ForgedCalendarName: String = "GBLO\nINVALID: forged"
 
   /**
-   * The same name as a reader receives it, with its line feed written as the two characters of an
-   * escape.
+   * The same name as a reader of a diagnostic receives it, with its line feed written as the two
+   * characters of an escape.
    *
-   * This is what the text form of an identifier produces for that name, and therefore what every
-   * rendering carrying the identifier holds: the rendering of the definition, the attribute taken
-   * from it, the message that quotes the adjustment, and the text of the failure itself.
+   * This is what the text form of the '''failure''' produces for that name, and therefore what the
+   * text of a failure quoting it holds, whether that text is reached through `Show` or through the
+   * failure's own text form. It is not what the identifier, the definition's rendering, the
+   * attribute taken from that rendering or the failure's message hold: each of those carries the
+   * name as it stands, because each of them is the value rather than a diagnostic written out.
    */
   private val NeutralisedForgedName: String = """GBLO\nINVALID: forged"""
 
@@ -156,9 +163,9 @@ class ScheduleFailureSpec extends AnyFunSuite with Matchers with ResultMatchers 
    * can be read - without pinning the rendering down character by character. A failure of this
    * kind renders as its reason, one message part and one attribute whose key is the ten-character
    * `definition`, and the writing of a failure bounds each part it writes, so no rendering of one
-   * can reach this ceiling; the oversized name below is more than three times it, and the
-   * definition's own rendering bounds it before the failure is even built, because the text form
-   * of an identifier is bounded.
+   * can reach this ceiling however large the definition handed to it. The oversized name below is
+   * more than three times this ceiling and the definition carries the whole of it, so the bound
+   * the failure applies as it writes is the only thing keeping the text of that failure readable.
    */
   private val RenderingCeiling: Int = 1200
 
@@ -272,63 +279,69 @@ class ScheduleFailureSpec extends AnyFunSuite with Matchers with ResultMatchers 
   //-------------------------------------------------------------------------
   test("test_definitionAttributeSurvivesHostileCalendarNames") {
     // The first half: the attribute is the definition as it renders, and a definition renders its
-    // calendar by asking the identifier for its text form. That form is where a name a caller
-    // supplied is made safe to write out, so the forged name reaches the rendering - and from
-    // there the attribute - with its line feed escaped, while the identifier itself still answers
-    // with the whole of the text it was built from, which is what a caller correcting its input
-    // reads back.
+    // calendar by asking the identifier for its text form. That form is the whole of the name the
+    // identifier was built from, because a name is the identity of the value (AAP §0.1.1), so the
+    // forged name reaches the rendering - and from there the attribute - as it stands, line feed
+    // and all, which is what a caller correcting its input compares against what it supplied.
     val rejection: FailureOr[List[LocalDate]] = forgedBadStubDefinition.createUnadjustedDates()
     rejection should beFailureWith(FailureReason.INVALID)
     val reported: Failure = failureOf(rejection)
     forgedAdjustment.calendar.name shouldBe ForgedCalendarName
-    forgedBadStubDefinition.toString should include(NeutralisedForgedName)
-    forgedBadStubDefinition.toString should not include ForgedCalendarName
-    forgedBadStubDefinition.toString.linesIterator.size shouldBe 1
+    forgedBadStubDefinition.toString should include(ForgedCalendarName)
     reported.attributes.get(DefinitionAttribute) shouldBe Some(forgedBadStubDefinition.toString)
-    reported.attributes(DefinitionAttribute) should include(NeutralisedForgedName)
-    reported.attributes(DefinitionAttribute) should not include "\n"
+    reported.attributes(DefinitionAttribute) should include(ForgedCalendarName)
 
-    // The second half: the text of that same failure is one bounded line. The line feed appears in
-    // it as the two characters of its escape, which is what makes the text of the failure unable
-    // to state a line the library never reported.
+    // The second half: the text of that same failure is one bounded line, which is where the name
+    // is made safe to write out. The line feed appears in it as the two characters of its escape
+    // and nowhere as itself, so the text of the failure cannot state a line the library never
+    // reported (CWE-117), and it stays under the ceiling however large the definition it quotes
+    // (CWE-400).
     val rendered: String = neutralisedRendering(reported)
     rendered should include(NeutralisedForgedName)
     rendered should include(reported.reason.name)
+    rendered should not include "\n"
+    rendered.linesIterator.size shouldBe 1
+    rendered.length should be <= RenderingCeiling
 
     // The message-carrying case. The duplicate-adjusted rejection quotes the adjustment inside its
-    // own message, so the neutralised name is in the message as well as in the attribute, and the
-    // text of the failure remains a single bounded line. Only the presence of the name is asserted
-    // of the message, not the wording around it, which is the Java wording and is asserted where
-    // that contract is tested.
+    // own message, so the name as the caller supplied it is in the message as well as in the
+    // attribute - a message is built with the value it rejected interpolated as it stands - while
+    // the text of the failure that carries that message remains a single bounded line holding the
+    // escape. Only the presence of the name is asserted of the message, not the wording around it,
+    // which is the Java wording and is asserted where that contract is tested.
     val duplicated: FailureOr[List[LocalDate]] =
       forgedDailyDefinition.createAdjustedDates(forgedReferenceData)
     duplicated should beFailureWith(FailureReason.INVALID)
     val duplicateFailure: Failure = failureOf(duplicated)
     duplicateFailure.message should include("duplicate adjusted dates")
-    duplicateFailure.message should include(NeutralisedForgedName)
-    duplicateFailure.message should not include ForgedCalendarName
+    duplicateFailure.message should include(ForgedCalendarName)
     duplicateFailure.attributes.get(DefinitionAttribute) shouldBe
       Some(forgedDailyDefinition.toString)
     val duplicateRendering: String = neutralisedRendering(duplicateFailure)
     duplicateRendering should include(NeutralisedForgedName)
+    duplicateRendering should not include "\n"
+    duplicateRendering.linesIterator.size shouldBe 1
+    duplicateRendering.length should be <= RenderingCeiling
 
-    // The oversized case. A name of a few thousand characters is bounded by the identifier's text
-    // form, so the definition's rendering - and the attribute taken from it - carries the marker
-    // standing for what was left out rather than the whole name, while the identifier keeps every
-    // character of it; the text of the failure then stays under the same ceiling as every other
-    // rendering.
+    // The oversized case. The identifier keeps every character of a name of a few thousand
+    // characters, so the definition's rendering - and the attribute taken from it - carries the
+    // whole name and is therefore longer than the name itself, while the text of the failure
+    // bounds what it writes as it writes it: that text carries the marker standing for what was
+    // left out and stays under the same ceiling as every other rendering.
     val oversized: FailureOr[List[LocalDate]] = oversizedDefinition.createUnadjustedDates()
     oversized should beFailureWith(FailureReason.INVALID)
     val oversizedFailure: Failure = failureOf(oversized)
     val carried: String = oversizedFailure.attributes(DefinitionAttribute)
     carried shouldBe oversizedDefinition.toString
-    carried should not include OversizedCalendarName
-    carried should include("...")
-    carried.length should be < OversizedCalendarName.length
+    carried should include(OversizedCalendarName)
+    carried.length should be > OversizedCalendarName.length
     oversizedDefinition.businessDayAdjustment.calendar.name shouldBe OversizedCalendarName
     OversizedCalendarName.length should be > RenderingCeiling
     val oversizedRendering: String = neutralisedRendering(oversizedFailure)
     oversizedRendering should include("...")
+    oversizedRendering should not include "\n"
+    oversizedRendering.linesIterator.size shouldBe 1
+    oversizedRendering.length should be <= RenderingCeiling
   }
 
   //-------------------------------------------------------------------------

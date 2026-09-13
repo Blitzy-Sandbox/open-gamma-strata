@@ -512,9 +512,19 @@ object Failure {
    * than for a rendering of its own, so the two properties above hold of every diagnostic the
    * port produces and no two of them can drift apart. Its consumers are [[Failure.show]] and
    * therefore the text form of every member; the bridge in `Codecs` that turns accumulated
-   * failures into a decoding failure of the JSON layer; the source names the resource reader
-   * quotes when it cannot read something; and the text form of a holiday calendar identifier
-   * and of a typed string, both of which carry a name a caller supplied.
+   * failures into a decoding failure of the JSON layer; and the source names the resource
+   * reader quotes when it cannot read something.
+   *
+   * All three sit inside these two modules, and the member is theirs rather than published
+   * API - it is visible to `com.opengamma.strata` and no further. What a caller of this library
+   * needs is the guarantee, which the members it does call already carry: a failure renders
+   * bounded and on one line however it was built. The renderer itself is deliberately not
+   * offered as a way of rewriting arbitrary text, because there is exactly one kind of text it
+   * is correct to apply it to - text on its way to a reader of lines. A value's own name is not
+   * of that kind: it is the identity of the value, and the types that carry a name a caller
+   * supplied, such as a holiday calendar identifier or a typed string, answer with the whole of
+   * it from their name, their text form, their rendering and their JSON, so that a caller
+   * comparing, re-parsing or re-serializing one receives its own text back.
    *
    * Rendering stays an act of writing text out and is not performed when a failure is built:
    * a message is built with the value it rejected interpolated as it stands, exactly as in the
@@ -525,7 +535,7 @@ object Failure {
    * @param text  the part to render, as the failure carries it
    * @return the bounded, single-line rendering of that part
    */
-  def renderDiagnostic(text: String): String = {
+  private[strata] def renderDiagnostic(text: String): String = {
     // The rendering is assembled a unit at a time - a surrogate pair counting as one - and
     // stops as soon as the next unit would carry it past the bound, which is what keeps a
     // pair whole and an escape entire. Threading the text rendered so far through a
@@ -618,7 +628,7 @@ object Failure {
    *
    * This is the boundary at which a failure becomes text, and it is where the library
    * neutralises what it is about to write: the message and the key and the value of every
-   * attribute each go through [[renderDiagnostic]], so each is at most `MaxRenderedPart + 3`
+   * attribute each go through `renderDiagnostic`, so each is at most `MaxRenderedPart + 3`
    * characters long and holds no character a line-oriented reader could act on. A failure
    * quoting a currency code, an identifier, a name or a definition that a caller supplied -
    * text nothing bounds and nothing constrains - therefore cannot forge a line of a log that

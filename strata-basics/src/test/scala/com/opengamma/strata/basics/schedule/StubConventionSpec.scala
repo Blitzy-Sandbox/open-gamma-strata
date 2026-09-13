@@ -946,19 +946,21 @@ final class StubConventionSpec
    * - without pinning the rendering down character by character. A rejection of this family
    * renders as its reason, one message part and one attribute whose key is the ten-character
    * `definition`, each part bounded where it is written, so no rejection can reach this ceiling
-   * however large the definition handed to it; the oversized name below is more than three times
-   * it, and a definition's own rendering bounds it before a rejection is even reached, because the
-   * text form of an identifier is bounded.
+   * however large the definition handed to it. The oversized name below is more than three times
+   * this ceiling and the definition carries the whole of it, so the bound a rejection applies as
+   * it writes its text is the only thing keeping that text readable.
    */
   private val RenderingCeiling: Int = 1200
 
   /**
-   * The forged name as a reader receives it, with its line feed written as the two characters of
-   * an escape.
+   * The forged name as a reader of a diagnostic receives it, with its line feed written as the two
+   * characters of an escape.
    *
-   * This is what the text form of an identifier produces for that name, so it is what a
-   * definition's rendering carries, and therefore what the attribute taken from that rendering and
-   * the text of the rejection carry in turn.
+   * This is what the text form of the '''rejection''' produces for that name, so it is what the
+   * text of the rejection carries, whether that text is reached through `Show` or through the
+   * failure's own text form. It is not what the identifier, the definition's rendering or the
+   * attribute taken from that rendering carries: each of those is the value rather than a
+   * diagnostic written out, so each carries the name as it stands.
    */
   private val NeutralisedForgedName: String = """GBLO\nINVALID: forged"""
 
@@ -972,13 +974,11 @@ final class StubConventionSpec
   test("test_rejectedDefinitionSurvivesHostileCalendarNames") {
     // The definition really does carry the name, so the text this case drives into the rejection
     // paths is the text a caller that parsed such a name would have arrived at - and it carries it
-    // as a reader may receive it, because a definition renders its calendar by asking the
-    // identifier for its text form, which is where such a name is made safe to write out. The
-    // identifier itself still answers with the whole of the text it was built from.
+    // as the caller supplied it, because a definition renders its calendar by asking the
+    // identifier for its text form, which is the whole of the name the identifier was built from
+    // (AAP §0.1.1). The identifier's name and its text form are one text.
     forgedDefinition.businessDayAdjustment.calendar.name shouldBe ForgedCalendarName
-    forgedDefinition.toString should include(NeutralisedForgedName)
-    forgedDefinition.toString should not include ForgedCalendarName
-    forgedDefinition.toString.linesIterator.size shouldBe 1
+    forgedDefinition.toString should include(ForgedCalendarName)
 
     // The first half, on the path that rejects an explicit stub the convention forbids: the
     // attribute is the rendering of the definition, character for character.
@@ -987,36 +987,48 @@ final class StubConventionSpec
     reported.reason shouldBe FailureReason.INVALID
     reported.message shouldBe "Dates specify an explicit stub, but stub convention is 'None'"
     reported.attributes.get("definition") shouldBe Some(forgedDefinition.toString)
-    reported.attributes("definition") should include(NeutralisedForgedName)
-    reported.attributes("definition") should not include "\n"
+    reported.attributes("definition") should include(ForgedCalendarName)
 
     // The second half: the text of that same failure is one bounded line, the line feed appearing
-    // in it as the two characters of its escape, so the failure cannot be read as two lines.
+    // in it as the two characters of its escape and nowhere as itself, so the failure cannot be
+    // read as two lines (CWE-117) and cannot be made large by the definition it quotes (CWE-400).
+    // This is where a name a caller supplied is made safe to write out.
     val rendered: String = neutralisedRendering(reported)
     rendered should include(NeutralisedForgedName)
     rendered should include(reported.message)
+    rendered should not include "\n"
+    rendered.linesIterator.size shouldBe 1
+    rendered.length should be <= RenderingCeiling
 
     // The same two halves on a second rejection path, reported by a different member with a
     // different message, since each member attaches the definition the same way.
     val alsoReported: Failure =
       failureOf(StubConvention.SHORT_INITIAL.toImplicit(forgedDefinition.toString, false, true))
     alsoReported.attributes.get("definition") shouldBe Some(forgedDefinition.toString)
-    neutralisedRendering(alsoReported) should include(NeutralisedForgedName)
+    alsoReported.attributes("definition") should include(ForgedCalendarName)
+    val alsoRendered: String = neutralisedRendering(alsoReported)
+    alsoRendered should include(NeutralisedForgedName)
+    alsoRendered should not include "\n"
+    alsoRendered.linesIterator.size shouldBe 1
+    alsoRendered.length should be <= RenderingCeiling
 
-    // The oversized case. A name of a few thousand characters is bounded by the identifier's text
-    // form, so the definition's rendering - and the attribute taken from it - carries the marker
-    // standing for what was left out rather than the whole name, while the identifier keeps every
-    // character of it and the text of the failure stays under the same ceiling as every other
-    // rendering.
+    // The oversized case. The identifier keeps every character of a name of a few thousand
+    // characters, so the definition's rendering - and the attribute taken from it - carries the
+    // whole name and is therefore longer than the name itself, while the text of the failure
+    // bounds what it writes as it writes it: that text carries the marker standing for what was
+    // left out and stays under the same ceiling as every other rendering.
     val oversized: Failure =
       failureOf(StubConvention.BOTH.toImplicit(oversizedDefinition.toString, false, false))
     oversized.attributes.get("definition") shouldBe Some(oversizedDefinition.toString)
-    oversized.attributes("definition") should not include OversizedCalendarName
-    oversized.attributes("definition") should include("...")
-    oversized.attributes("definition").length should be < OversizedCalendarName.length
+    oversized.attributes("definition") should include(OversizedCalendarName)
+    oversized.attributes("definition").length should be > OversizedCalendarName.length
     oversizedDefinition.businessDayAdjustment.calendar.name shouldBe OversizedCalendarName
     OversizedCalendarName.length should be > RenderingCeiling
-    neutralisedRendering(oversized) should include("...")
+    val oversizedRendered: String = neutralisedRendering(oversized)
+    oversizedRendered should include("...")
+    oversizedRendered should not include "\n"
+    oversizedRendered.linesIterator.size shouldBe 1
+    oversizedRendered.length should be <= RenderingCeiling
   }
 
   //-------------------------------------------------------------------------
