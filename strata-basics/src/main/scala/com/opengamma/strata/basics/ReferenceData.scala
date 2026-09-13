@@ -1,0 +1,1043 @@
+/*
+ * Copyright (C) 2015 - present by OpenGamma Inc. and the OpenGamma group of companies
+ *
+ * Please see distribution for license.
+ */
+package com.opengamma.strata.basics
+
+import cats.{Hash, Show}
+
+import com.opengamma.strata.basics.date.StandardHolidayCalendars
+import com.opengamma.strata.collect.NoJavaSerialization
+import com.opengamma.strata.collect.result.Failure
+
+/**
+ * Provides access to reference data, such as holiday calendars and securities.
+ *
+ * Reference data is the data a calculation needs but does not compute: which days are
+ * holidays in London, what a security identifier refers to, and so on. It is looked up using
+ * implementations of [[ReferenceDataId]], each parameterized with the type of the data it
+ * refers to, so a lookup yields the type the identifier promises without anything having to
+ * be asked what it holds. The standard implementation of this trait is
+ * [[ImmutableReferenceData]].
+ *
+ * Reference data is threaded explicitly through the calls that need it - `adjust(date,
+ * refData)`, `resolve(refData)`, `createSchedule(refData)` - rather than read from ambient
+ * state, which is what makes a calculation reproducible from its arguments alone. A caller
+ * that has to compose several lookups before it knows which data it will run them against
+ * can express each as a `ReferenceDataId.toReader` and combine the readers instead.
+ *
+ * ===The contract an implementation must honour===
+ *
+ * An implementation must be immutable and thread-safe: one instance is shared freely across
+ * threads and calculations, and a lookup must give the same answer every time it is asked.
+ *
+ * Only [[findValue]] has to be implemented. The other three members are defined in terms of
+ * it and are correct for any implementation, so a source of reference data is written by
+ * answering one question: what value, if any, is held for this identifier.
+ *
+ * An implementation must answer with a value of the type the identifier refers to, and an
+ * implementation that holds values of several types at once has to establish that, a store
+ * keyed by identifier being keyed by an erased one. The tool for it is the identifier's own
+ * witness, `ReferenceDataId.valueType`: narrowing the value found with it - which is what
+ * [[ImmutableReferenceData]] does - turns a value of another type into an absence instead of
+ * a mistyped answer. An implementation that produces its answer from a pattern on the
+ * identifier, as `HolidaySafeReferenceData` does, has established it already.
+ *
+ * The trait is deliberately open rather than sealed. Reference data is an extension point of
+ * this library: `HolidaySafeReferenceData` in the `date` package supplies a weekend-only
+ * calendar for an identifier the underlying data does not know, and a host application backs
+ * its reference data with a database or a service. Neither lives in this file, and both
+ * override at least one of the members below, so neither sealing the trait nor making a
+ * member `final` would be correct. Notably, the three defaults are written so that overriding
+ * `findValue` alone keeps them consistent, while an implementation whose membership test is
+ * cheaper than a lookup - or whose answer is "yes" for every identifier of a family, as
+ * `HolidaySafeReferenceData`'s is - overrides `containsValue` as well.
+ *
+ * ===A missing item of reference data is a value, not an interruption===
+ *
+ * [[findValue]] is the primitive of the trait and answers with an `Option`, and [[getValue]]
+ * answers with an `Either` carrying a [[com.opengamma.strata.collect.result.Failure]] that
+ * names the identifier it could not find. A missing item of reference data is data about the
+ * request rather than a defect in the program, so the caller - which has the context to
+ * decide whether a missing calendar is fatal - is the one that decides what to do about it.
+ * This is also what makes `ReferenceDataId.toReader` composition possible at all.
+ *
+ * @see [[ReferenceDataId]] for the identifiers a lookup is made with
+ * @see [[ImmutableReferenceData]] for the standard implementation
+ * @see [[CombinedReferenceData]] for the implementation [[combinedWith]] returns
+ */
+trait ReferenceData {
+
+  /**
+   * Finds the reference data value associated with the specified identifier.
+   *
+   * This is the single abstract member of the trait and the primitive the other three are
+   * defined in terms of. It answers with the value held for the identifier, or `None` where
+   * this source of reference data holds nothing for it; an implementation never signals
+   * absence in any other way.
+   *
+   * The identifier's type parameter is the type of the value returned, so no cast and no
+   * runtime type check is needed at the call site:
+   *
+   * {{{
+   * val calendar: Option[HolidayCalendar] = refData.findValue(HolidayCalendarIds.GBLO)
+   * }}}
+   *
+   * @tparam T  the type of the reference data value
+   * @param id  the identifier to find
+   * @return the reference data value, empty if this reference data holds none for the identifier
+   */
+  def findValue[T](id: ReferenceDataId[T]): Option[T]
+
+  /**
+   * Checks if this reference data contains a value for the specified identifier.
+   *
+   * The default implementation asks [[findValue]], so it agrees with it by construction. An
+   * implementation that can answer the question without producing the value - because
+   * membership is cheaper to establish than the value is to build, or because it holds a
+   * value for every identifier of a family - overrides this method; such an override must
+   * still agree with what `findValue` does for the same identifier.
+   *
+   * The identifier is accepted with its type parameter unconstrained: membership does not
+   * depend on the type of the value, so requiring the caller to know it would be noise.
+   *
+   * @param id  the identifier to find
+   * @return true if this reference data contains a value for the identifier
+   */
+  def containsValue(id: ReferenceDataId[_]): Boolean = findValue(id).isDefined
+
+  /**
+   * Gets the reference data value associated with the specified identifier.
+   *
+   * Where [[findValue]] reports absence as `None`, this method reports it as a failure
+   * explaining which identifier could not be found, which is what a caller that needs the
+   * value in order to continue wants to propagate:
+   *
+   * {{{
+   * for {
+   *   calendar <- refData.getValue(HolidayCalendarIds.GBLO)
+   *   adjusted <- adjustment.adjust(date, refData)
+   * } yield adjusted
+   * }}}
+   *
+   * The failure names the identifier in its message and carries it under the `id` attribute,
+   * so a caller can act on the identifier without parsing the message. Nothing about the
+   * runtime class of the identifier is reported, because reading the class of a value is
+   * reflection and no path that reads or writes reference data reflects. The identifier's own
+   * `toString` is what identifies it, and every identifier family of this module renders
+   * itself as the name a user would recognise.
+   *
+   * The failure is built only when the lookup comes back empty, which matters because this
+   * method sits on the resolution path of every adjustment and schedule in the library.
+   *
+   * @tparam T  the type of the reference data value
+   * @param id  the identifier to find
+   * @return the reference data value, or the failure describing why it could not be found
+   */
+  def getValue[T](id: ReferenceDataId[T]): Either[Failure, T] =
+    findValue(id) match {
+      case Some(value) => Right(value)
+      case None => Left(ReferenceData.notFound(id))
+    }
+
+  /**
+   * Combines this reference data with another.
+   *
+   * The result answers from both sources, consulting this one first: a value held here is
+   * the value returned, and the other source is asked only for identifiers this one does
+   * not hold. Combining is therefore how an application layers its own data over a
+   * general-purpose set without editing either - `myData.combinedWith(ReferenceData.standard)`
+   * keeps `myData`'s entries and falls back to the built-in calendars - and it is not
+   * symmetric: swapping the operands reverses which side wins a clash.
+   *
+   * The default implementation wraps both sources in a [[CombinedReferenceData]], which
+   * consults them lazily and so never builds a merged store.
+   * [[ImmutableReferenceData.combinedWith]] overrides it for the case where both sides are
+   * already materialised stores, returning a single merged store instead of a chain of
+   * wrappers.
+   *
+   * @param other  the other reference data
+   * @return the combined reference data, preferring the values of this one
+   */
+  def combinedWith(other: ReferenceData): ReferenceData = CombinedReferenceData(this, other)
+}
+
+/**
+ * Provides the ways of obtaining reference data, and the entry type a caller supplies it with.
+ *
+ * There are four: [[of]] builds a store from a caller's own entries laid over the minimal
+ * calendars, [[standard]] holds every built-in holiday calendar, [[minimal]] holds the four
+ * weekend and no-holiday calendars, and [[empty]] holds nothing. Only [[of]] can fail, and
+ * only because two entries name one identifier. Construction is type-safe because reference
+ * data is supplied as [[Entry]] values, which cannot pair an identifier with a value of the
+ * wrong type in the first place.
+ */
+object ReferenceData {
+
+  /**
+   * A single item of reference data, paired with the identifier it is held under.
+   *
+   * This type is what makes the reference data store type-safe. The identifier fixes the
+   * type of the value, so an entry pairing `HolidayCalendarIds.GBLO` with anything other
+   * than a holiday calendar does not compile:
+   *
+   * {{{
+   * ReferenceData.Entry(HolidayCalendarIds.GBLO, calendar)   // compiles
+   * ReferenceData.Entry(HolidayCalendarIds.GBLO, "GBLO")     // does not compile
+   * }}}
+   *
+   * An entry is therefore the whole of what makes a lookup sound: a value of the wrong type
+   * and a value that is absent are both unrepresentable, so a store built from entries needs
+   * no reflection, and no run-time check, to answer at the type its identifier promises.
+   *
+   * Construction cannot fail and both fields are already immutable values, so the
+   * constructor, `apply` and `copy` are all public.
+   *
+   * This type deliberately has no JSON codec. An entry is half of a heterogeneous store
+   * whose value type is only known through its identifier, so no encoder could be written
+   * for an arbitrary entry; reference data carries no JSON form for the same reason, and the
+   * one kind of reference data that does have one - a holiday calendar - carries its own
+   * codec.
+   *
+   * @tparam T  the type of the reference data value
+   * @param id  the identifier the value is held under
+   * @param value  the reference data value
+   */
+  final case class Entry[T](id: ReferenceDataId[T], value: T) extends NoJavaSerialization
+
+  /**
+   * Provides the instances for [[Entry]].
+   *
+   * Both instances are given for every value type rather than built from instances for it.
+   * That is deliberate: entries of differing value types are held together in one store, so
+   * an instance that demanded a `Hash[T]` or a `Show[T]` would be unavailable for exactly
+   * the entries this type exists to carry. Universal hashing is the correct implementation
+   * regardless, because the synthesised `equals` and `hashCode` of the case class delegate
+   * to those of the identifier and the value, and an identifier is required by
+   * [[ReferenceDataId]] to hash by value.
+   *
+   * There is no `Order` instance: entries of a heterogeneous store have no meaningful
+   * ordering, and the store itself is a map keyed by identifier.
+   */
+  object Entry {
+
+    /**
+     * Returns the hash and equality instance for an entry of any value type.
+     *
+     * @tparam T  the type of the reference data value
+     * @return the instance, hashing and comparing the identifier and the value
+     */
+    implicit def hash[T]: Hash[Entry[T]] = Hash.fromUniversalHashCode
+
+    /**
+     * Returns the string rendering instance for an entry of any value type.
+     *
+     * @tparam T  the type of the reference data value
+     * @return the instance, rendering the entry as the case class does
+     */
+    implicit def show[T]: Show[Entry[T]] = Show.fromToString
+  }
+
+  /**
+   * Obtains an instance from a set of reference data entries.
+   *
+   * Each entry is one item of reference data together with the identifier it is held under.
+   * The result additionally includes the [[minimal]] set of reference data - the four
+   * weekend and no-holiday calendars that are needed by this library and are not open to
+   * disagreement - so that a caller supplying its own securities or calendars does not have
+   * to remember to supply those as well. An entry whose identifier is one of the minimal
+   * four '''overrides''' the built-in value, which is what allows a caller to substitute its
+   * own definition of, say, the Saturday/Sunday calendar. To obtain a store holding nothing
+   * but the entries given, use [[ImmutableReferenceData.of]].
+   *
+   * Construction fails if two entries are supplied for the same identifier, because the
+   * caller's intent is then unknowable: silently keeping one of the two values would decide
+   * something the caller did not. The failure names every duplicated identifier, ordered by
+   * its rendering rather than by the order they were supplied in, so the message is the same
+   * for the same set of entries however they were arranged.
+   *
+   * Layering the caller's entries over the minimal set is precisely what
+   * [[ReferenceData.combinedWith]] means - the side asked first wins a clash - so that is how
+   * it is expressed below, with the caller's store on the preferred side. The merge of two
+   * materialised stores is therefore written once, in
+   * [[ImmutableReferenceData.combinedWith]], and this method cannot disagree with it about
+   * which side wins.
+   *
+   * @param entries  the reference data entries
+   * @return the reference data holding the entries over the minimal set, or the failure
+   *   describing the duplicated identifiers
+   */
+  def of(entries: Entry[_]*): Either[Failure, ReferenceData] =
+    ImmutableReferenceData
+      .of(entries: _*)
+      .map(caller => caller.combinedWith(minimal))
+
+  /**
+   * Obtains an instance containing no reference data.
+   *
+   * Every lookup against the result is empty, including those for the [[minimal]]
+   * calendars. It behaves as the identity of [[ReferenceData.combinedWith]] - combining it
+   * with a set of reference data on either side answers exactly as that set does - and it
+   * is the starting point for code that means to observe how a caller behaves when the data
+   * it asks for is absent.
+   *
+   * @return empty reference data
+   */
+  def empty: ReferenceData = ImmutableReferenceData.empty
+
+  /**
+   * Obtains an instance of standard reference data.
+   *
+   * Standard reference data is built into the library: it holds every built-in holiday
+   * calendar - the rule-generated national calendars, the published Thai calendar, and the
+   * four weekend and no-holiday calendars - keyed by its own identifier, and nothing else.
+   * It is what makes a date adjustment or a schedule runnable without a source of market
+   * data, and production use of this library will generally supply its own calendars
+   * instead, or layer them over this set with `myData.combinedWith(ReferenceData.standard)`.
+   *
+   * The store is computed once, on first use, and each calendar '''in''' it is generated by the
+   * first lookup that asks for it rather than when the store is built. That is what
+   * [[ImmutableReferenceData.ofDeferredMap]] is for, and what the built-in set is handed over
+   * through: a way of obtaining each calendar rather than the calendars themselves. So
+   * resolving `GBLO` against this store costs London alone, a program that never names the
+   * other twenty-nine never generates them, and `myData.combinedWith(ReferenceData.standard)`
+   * stays as cheap as the entries the caller supplied. The four members that have to see every
+   * entry at once - `values`, `equals`, `hashCode` and `toString` - do materialise the whole
+   * set, deliberately and as [[ImmutableReferenceData]] records.
+   *
+   * Deferring is not merely an optimisation, and neither is deferring the store itself: the
+   * calendars are generated from rules, and this package and the `date` package are
+   * mutually dependent by design - a holiday calendar identifier is a [[ReferenceDataId]]
+   * defined there, while the built-in calendars are read from there here. Computing this
+   * eagerly would make the order in which the two packages happen to be initialised
+   * load-bearing.
+   *
+   * @return standard reference data, answering for every built-in holiday calendar
+   */
+  lazy val standard: ImmutableReferenceData =
+    ImmutableReferenceData.ofDeferredMap(StandardHolidayCalendars.deferredByIdentifier)
+
+  /**
+   * Obtains the minimal set of reference data.
+   *
+   * Where [[standard]] holds every built-in calendar, the minimal set holds only those
+   * identifiers this library itself needs and that no reasonable user would define
+   * differently: the no-holidays calendar and the Saturday/Sunday, Friday/Saturday and
+   * Thursday/Friday weekend calendars. Those four are what [[of]] adds underneath a
+   * caller's own entries.
+   *
+   * The value is computed once, on first use, for the reason given on [[standard]].
+   *
+   * @return minimal reference data, holding the four weekend and no-holiday calendars
+   */
+  lazy val minimal: ImmutableReferenceData =
+    ImmutableReferenceData.ofMap(StandardHolidayCalendars.minimal)
+
+  /**
+   * Returns the failure reported when an identifier is not found.
+   *
+   * Extracted from [[ReferenceData.getValue]] so that the message and the attribute are
+   * written once.
+   *
+   * ===The failure names the identifier as the identifier renders itself===
+   *
+   * The message quotes the identifier exactly as its own rendering gives it, and the `id`
+   * attribute carries that rendering whole; neither is shortened, escaped or rewritten on
+   * the way in. That is what a caller acting on a missing-data failure needs, since the
+   * question it has to answer is which item of reference data to supply, and an identifier
+   * altered in the message does not answer it.
+   *
+   * [[ReferenceDataId]] is an open contract, and nothing in it constrains `toString`: the
+   * rendering of an identifier defined by a host application is text this library neither
+   * produced nor can bound. Making such text safe to write out is therefore the business of
+   * writing a failure rather than of reporting one, and that is where it is performed. The
+   * `Show[Failure]` instance, and the text form of every failure, which is defined as that
+   * instance, render the message and the key and the value of every attribute one bounded
+   * part at a time, escaping every character a line-oriented reader could act on. So no
+   * rendering of this failure spans more than one line or grows with the size of the
+   * identifier, whatever a host's `toString` returns (CWE-117), while the failure itself
+   * keeps the whole of what it was built with for the code that means to act on it.
+   *
+   * @param id  the identifier that could not be found
+   * @return the failure describing the missing reference data
+   */
+  private def notFound(id: ReferenceDataId[_]): Failure =
+    Failure
+      .MissingData(s"Reference data not found for identifier '$id'")
+      .withAttribute("id", id.toString)
+}
+
+/**
+ * One item of a reference data store, whose entry may not have been produced yet.
+ *
+ * This is what [[ImmutableReferenceData]] files under an identifier, and it exists so that a
+ * store can hold an item of reference data that is '''expensive to produce''' without producing
+ * it: the identifier is held strictly, so every question about the shape of a store - which
+ * identifiers it holds, what type each of them refers to, how two stores merge - is answered
+ * without building anything, while the entry itself is held behind a `lazy val` and produced by
+ * the first lookup that needs its value. `ReferenceData.standard` is the case this was written
+ * for: thirty rule-generated holiday calendars, of which a program typically resolves one.
+ *
+ * ===Why a carrier rather than a map of thunks===
+ *
+ * The store could have held a way of obtaining each value instead, but then every value would be
+ * produced afresh on every lookup, and a caller that resolves one calendar twice would generate
+ * it twice. The `lazy val` here is what makes the store behave as
+ * [[ImmutableReferenceData]]'s contract requires - the same answer, and the same instance, every
+ * time it is asked - at most once however many threads reach it together, that being what a
+ * `lazy val` guarantees. The thunk is kept rather than cleared after it has run: clearing it
+ * would take a mutable field, which this codebase does not have, and what it retains is a
+ * closure over a member of an object rather than a graph of data.
+ *
+ * ===Type soundness===
+ *
+ * Nothing here casts, and the reason is that neither factory can pair an identifier with a value
+ * of another type. The strict factory, `of(entry)`, is handed an entry - which
+ * [[ReferenceData.Entry]] already guarantees is such a pair - and holds the identifier that
+ * entry carries. The deferred one, `of(id, value)`, is handed an identifier of `T` and a way of
+ * obtaining a `T`, and builds `ReferenceData.Entry(id, value())`, which is an `Entry[T]` by
+ * construction. So a store built from carriers is closed on the way in exactly as one built from
+ * entries is, and the narrowing `ImmutableReferenceData.findValue` performs on the way out is
+ * unchanged.
+ *
+ * It is visible within this package because it is how the store is built, not something a caller
+ * supplies: the factories of [[ImmutableReferenceData]] and `ReferenceData` take entries and
+ * maps, and turn them into carriers here.
+ *
+ * @param id  the identifier the value is held under, available without producing the value
+ * @param build  the way of obtaining the entry, run at most once by [[entry]]
+ */
+private[basics] final class DeferredEntry private (
+    val id: ReferenceDataId[_],
+    build: () => ReferenceData.Entry[_]) {
+
+  /**
+   * The entry, produced on first use and at most once.
+   *
+   * Reading this is what charges a caller for the item of reference data it asked for. Every
+   * later read - and a read from another thread - is given what the first one produced, so the
+   * store answers with one instance however often it is asked.
+   *
+   * @return the entry, pairing the identifier above with the value it refers to
+   */
+  lazy val entry: ReferenceData.Entry[_] = build()
+}
+
+/**
+ * Provides the two ways of building a deferred entry, one strict and one deferred.
+ *
+ * There are two because a store is built from two kinds of source: entries a caller already
+ * holds, whose values exist before the store does, and a table of ways of obtaining a value,
+ * which is what the built-in holiday calendars are. Both are type-sound by construction, as
+ * [[DeferredEntry]] records, and neither performs any cast.
+ */
+private[basics] object DeferredEntry {
+
+  /**
+   * Obtains a carrier for an entry that has already been produced.
+   *
+   * Nothing is deferred: the entry exists, so [[DeferredEntry.entry]] answers with it and the
+   * store behaves exactly as one built from entries alone. This is the route every caller-facing
+   * factory takes.
+   *
+   * @param entry  the entry, pairing an identifier with a value of the type it refers to
+   * @return the carrier holding that entry under the identifier it carries
+   */
+  def of(entry: ReferenceData.Entry[_]): DeferredEntry =
+    new DeferredEntry(entry.id, () => entry)
+
+  /**
+   * Obtains a carrier for a value that has not been produced yet.
+   *
+   * The entry is built from the identifier and the value the first time it is needed, which is
+   * what makes the entry an `Entry[T]` without a cast: the identifier refers to `T` and the way
+   * of obtaining the value answers with a `T`, so the only entry this can build is the sound
+   * one.
+   *
+   * @tparam T  the type of the reference data value
+   * @param id  the identifier the value is held under
+   * @param value  the way of obtaining the value, run at most once
+   * @return the carrier holding that value, unproduced, under the identifier
+   */
+  def of[T](id: ReferenceDataId[T], value: () => T): DeferredEntry =
+    new DeferredEntry(id, () => ReferenceData.Entry(id, value()))
+}
+
+/**
+ * An immutable set of reference data, held as a map of values by identifier.
+ *
+ * This is the standard implementation of [[ReferenceData]]: every value it can answer with is
+ * one the store was built with, so a lookup is one map lookup and nothing is fetched, parsed or
+ * resolved from outside. `ReferenceData.standard`, `ReferenceData.minimal` and the reference
+ * data assembled by an application from its own securities and calendars are all values of this
+ * type.
+ *
+ * ===What a lookup may produce, and what it never does===
+ *
+ * A store holds [[DeferredEntry]] values, each of which may hold its entry already or hold a way
+ * of obtaining it - so a lookup either reads a value that exists or produces '''that one'''
+ * value, and never more than the identifier asked for. That is what lets
+ * `ReferenceData.standard` present thirty rule-generated holiday calendars while charging a
+ * caller for the ones it resolves, and it is invisible from outside: an entry is produced at most
+ * once, so a store answers with the same instance every time it is asked, which is the property
+ * the contract of [[ReferenceData]] states.
+ *
+ * Four members are the exception, and deliberately: [[values]], [[equals]], [[hashCode]] and
+ * [[toString]] are the enumeration and comparison paths, and none of them can answer without
+ * every entry, so each reads a materialised map derived once. A caller that wants to inspect or
+ * compare a whole store is asking for all of it; a caller that wants one item asks [[findValue]].
+ *
+ * ===What makes a lookup sound: closure in, and a checked narrowing out===
+ *
+ * [[findValue]] answers with a value of the type its identifier promises, and it does so
+ * without a cast. Two properties together are what make that true, and neither would be
+ * enough alone: the store is closed on the way in, and a value is narrowed by the asking
+ * identifier's own witness on the way out.
+ *
+ * '''The way in.''' The map is not handed in. Reference data is supplied as
+ * [[ReferenceData.Entry]] values - which pair an identifier only with a value of its own
+ * type - or through [[ImmutableReferenceData.ofMap]] and
+ * [[ImmutableReferenceData.ofDeferredMap]] as a map whose key type is required to be an
+ * identifier '''of''' its value type, and the store is then derived here, each item being filed
+ * under the identifier its own [[DeferredEntry]] carries. Nothing accepts a map of erased
+ * identifiers to values: not the constructor, which is private and takes carriers, and not
+ * any factory, in this package or another. Deferral does not weaken this, because a carrier is
+ * built only by the two type-sound factories [[DeferredEntry]] documents. So a value cannot be
+ * filed under an identifier of another type by any route.
+ *
+ * '''The way out.''' Closure is not by itself enough, because the store is keyed by an
+ * identifier whose type argument is erased, a map lookup compares keys with ordinary
+ * `equals`, and [[ReferenceDataId]] is deliberately open. A family parameterized in its
+ * value type - which the trait permits, and which a host writes once it has two kinds of
+ * data to name - therefore has two instantiations that are one key: `GenericId[String]("x")`
+ * and `GenericId[Int]("x")` are equal, one case class over one field with the type argument
+ * erased. Filing is still correct in that situation, since each entry pairs its own types;
+ * retrieval is what needs the second half. So the value found is narrowed by
+ * `ReferenceDataId.valueType`, the witness the asking identifier carries, and a value of
+ * another type is reported as absent rather than returned mistyped. That narrowing is one
+ * type test and involves no reflection, a witness being a pattern rather than a class token.
+ *
+ * The store is published as an immutable view, [[values]], and reading it takes nothing away
+ * from either half: a caller that reads erased values cannot file one, and a caller that
+ * retrieves through an identifier is checked by that identifier's witness regardless of what
+ * it has read.
+ *
+ * Combining two stores is the one operation that needs the items of a store other than
+ * itself, and it stays inside the type for that reason: [[combinedWith]] merges the two maps
+ * and feeds the merged '''carriers''' back through the same constructor, so even the internal
+ * path builds a store the way a caller does - and a merge of two deferred stores is itself
+ * deferred, which is what keeps `myData.combinedWith(ReferenceData.standard)` cheap.
+ *
+ * Equality, hashing and rendering are written out rather than synthesised, this being a
+ * final class rather than a case class. Two stores are equal when they hold equal entries - the
+ * same identifiers paired with the same values, whatever order they were built in - equal stores
+ * hash alike, and the rendering lists the entries ordered by identifier, so the same store reads
+ * the same way however it was assembled. All three read the materialised map, for the reason
+ * given above.
+ *
+ * This type has no JSON codec, because its store is heterogeneous: the value type of an
+ * entry is known only through its identifier, so no encoder for an arbitrary store can
+ * exist. The one kind of reference data that does have a JSON form - a holiday calendar -
+ * carries its own codec, so a store can be rebuilt from serialized calendars by a caller
+ * that knows which identifiers it expects.
+ *
+ * No typeclass instances are declared for this type. It is a container of reference data
+ * rather than a value of the domain, and the `equals` below is what compares two stores.
+ *
+ * @param entries  the items of reference data, each filed under the identifier its carrier holds
+ */
+final class ImmutableReferenceData private (entries: Iterable[DeferredEntry])
+    extends ReferenceData {
+
+  /**
+   * The items of this store, keyed by the identifier each carrier holds.
+   *
+   * Derived here rather than supplied, which is what makes the key of every mapping the
+   * identifier of the value filed under it: the constructor is given carriers and reads each
+   * one's own identifier, so a key that disagrees with its value is not something a caller
+   * could pass, correctly or otherwise. The carrier is kept rather than its value alone
+   * so that combining two stores can hand the merged carriers back to the constructor, which
+   * is why no operation of this type needs a map of erased identifiers to values.
+   *
+   * Building this map produces no value. A carrier holds its identifier strictly and its entry
+   * behind a `lazy val`, so filing thirty rule-generated holiday calendars costs thirty map
+   * entries and generates no calendar; the first lookup for one of them generates that one.
+   *
+   * The field is private and the class is final, so the carriers themselves do not leave this
+   * type: what a caller reads is [[values]], the projection of the materialised entries onto
+   * their values, which is a view and not a route in - construction remains the entry-based path
+   * above.
+   */
+  private val store: Map[ReferenceDataId[_], DeferredEntry] =
+    entries.iterator.map(entry => (entry.id: ReferenceDataId[_]) -> entry).toMap
+
+  /**
+   * The entries of this store, every one of them produced, derived once on first use.
+   *
+   * This is the '''deliberate''' full-materialisation path of the type, and the only one: it is
+   * read by [[values]], [[equals]], [[hashCode]] and [[toString]], which are the enumeration and
+   * comparison members and cannot answer without every entry - an enumeration that omitted the
+   * items not yet produced would report a different store to each caller depending on what it
+   * had looked up, and two equal stores could then compare unequal. Producing everything there
+   * is therefore the correct behaviour rather than a cost to be avoided, and confining it to one
+   * `lazy val` is what keeps it off [[findValue]], which is the member the resolution path of
+   * every adjustment and schedule in the library uses.
+   *
+   * Derived once rather than per call, for the reason [[values]] gives: a store is immutable and
+   * an entry is produced at most once, so the map cannot go stale, and a caller that compares or
+   * renders a store in a loop pays for it once.
+   */
+  private lazy val materialised: Map[ReferenceDataId[_], ReferenceData.Entry[_]] =
+    store.iterator.map { case (id, carrier) => (id, carrier.entry) }.toMap
+
+  /**
+   * The reference data this store holds, as an immutable map of value by identifier.
+   *
+   * This is how a store is '''inspected''' rather than interrogated: [[findValue]] answers one
+   * question about one identifier, while a caller that has to enumerate what it was given - to
+   * report it, to re-file a subset of it, or to assert over it - needs the mapping itself.
+   *
+   * The values are typed as `Any`, which is all a heterogeneous store can say about them: an
+   * entry's value type is known only through its identifier, and the type argument of an
+   * erased key is not recoverable from the key. A caller that knows which identifier it wants
+   * reads the value at its proper type through [[findValue]], which is also what turns this
+   * view back into typed data:
+   *
+   * {{{
+   * val calendars: Iterable[HolidayCalendar] =
+   *   data.values.keys.collect { case id: HolidayCalendarId => id }.flatMap(data.findValue)
+   * }}}
+   *
+   * Publishing it takes nothing away from what makes a lookup sound, for the reason given on
+   * this class: it is a read-only projection, so no route into the store is opened and the
+   * entry-based construction path is untouched, and retrieval is checked by the asking
+   * identifier's witness in any case. The map is a `scala.collection.immutable.Map`, so a
+   * caller cannot alter what it reads, and the keys are the identifiers the entries carry, so
+   * `values(id)` and `findValue(id)` name the same datum.
+   *
+   * It is derived from the private map once, on first use, rather than rebuilt per call: a
+   * store is immutable, so the projection cannot go stale, and a caller that reads it in a
+   * loop pays for it once.
+   *
+   * Enumerating a store '''produces''' every item it holds that has not been produced yet, which
+   * for `ReferenceData.standard` means generating all thirty built-in calendars. That is what
+   * enumeration means and is documented on the materialised map this reads; a caller that wants
+   * one item asks [[findValue]] instead and is charged for one.
+   *
+   * @return the reference data values, keyed by the identifier each is held under
+   */
+  lazy val values: Map[ReferenceDataId[_], Any] =
+    materialised.iterator.map { case (id, entry) => (id, entry.value: Any) }.toMap
+
+  /**
+   * Finds the reference data value associated with the specified identifier.
+   *
+   * At most one item of reference data is produced: the carrier the identifier finds, and only
+   * where it finds one. An identifier this store does not hold produces nothing at all, and an
+   * identifier it holds is produced once however often it is asked for.
+   *
+   * @tparam T  the type of the reference data value
+   * @param id  the identifier to find
+   * @return the reference data value, empty if this store holds none for the identifier
+   */
+  override def findValue[T](id: ReferenceDataId[T]): Option[T] =
+    // There is no cast here, and there is nothing left for one to do. Two facts make the
+    // value returned a `T`. Every value in the store arrived inside a
+    // `ReferenceData.Entry[T]` - from the entry-based factories, from `of(id, value)`, from
+    // `ofMap` or `ofDeferredMap`, whose key type is bounded by `ReferenceDataId` of its value
+    // type, or from a merge of two stores built that way - so it was filed under an identifier
+    // of its own type, whether the entry existed when it was filed or was produced by the
+    // carrier afterwards. And the identifier that asks narrows what it finds with its own
+    // witness, so a value filed by an identifier that merely compares equal to this one - which
+    // two instantiations of a generic identifier family do, the type argument being erased - is
+    // reported as absent rather than handed back at the wrong type. The narrowing is one
+    // type test, the witness being a pattern rather than a class token, so this performs no
+    // reflection; see `ReferenceDataType`.
+    store.get(id).flatMap(carrier => id.valueType.narrow(carrier.entry.value))
+
+  /**
+   * Combines this reference data with another.
+   *
+   * Where the other set of reference data is a store of this type as well, and merging the two
+   * maps would answer exactly as chaining them does, the two maps are merged into a single
+   * store rather than chained, so a lookup against the result stays one map lookup however
+   * many times reference data has been combined. The merge moves carriers rather than values, so
+   * a store merged out of deferred ones is itself deferred and the merge produces nothing.
+   *
+   * The entries of this store win a clash, which is the same preference the general
+   * implementation on [[ReferenceData]] expresses by consulting this side first; the merge is
+   * written in that direction - the other side's entries first, then this side's over them - for
+   * exactly that reason.
+   *
+   * Any other implementation is combined the general way, by wrapping both in a
+   * [[CombinedReferenceData]], because there is no map to merge: the other side computes its
+   * answers, and the whole point of an implementation such as `HolidaySafeReferenceData` is
+   * that it answers for identifiers no finite map could enumerate.
+   *
+   * ===Why the merge is conditional===
+   *
+   * A merge is keyed by the identifier, and an identifier's type argument is erased, so two
+   * identifiers that refer to data of '''different''' types can be one key: a host's
+   * `GenericId[String]("shared")` and `GenericId[Int]("shared")` compare equal. Where each is
+   * held by a different store, merging discards one of the two values, and the lookup that
+   * asks for the discarded one finds the surviving value, rejects it with its own witness -
+   * correctly, it being of the other type - and reports nothing, although the value it asked
+   * for was supplied. Chaining loses nothing: each store is consulted in turn and narrows what
+   * it holds with the identifier that asked, so the store that holds the value of the right
+   * type answers.
+   *
+   * So the merge is taken only when [[narrowsAlike]] holds, which is the condition under which
+   * the two are '''indistinguishable''': no key both stores hold refers to data of a different
+   * type on the two sides. Under it, every lookup answers identically either way - for a key
+   * only this store holds, or held by both, the merged store answers with this store's value
+   * and so does the chain, this side being consulted first and narrowing successfully; for a
+   * key only the other store holds, the merged store carries that entry unchanged and the
+   * chain reaches it on the second consultation. The optimisation therefore never decides
+   * anything, which is what an optimisation is allowed to do.
+   *
+   * @param other  the other reference data
+   * @return the combined reference data, preferring the values of this one
+   */
+  override def combinedWith(other: ReferenceData): ReferenceData =
+    other match {
+      case lower: ImmutableReferenceData if narrowsAlike(lower) => layeredOver(lower)
+      case _ => super.combinedWith(other)
+    }
+
+  /**
+   * Checks whether merging another store into this one would answer as chaining them does.
+   *
+   * It holds when no identifier the two stores share refers to data of a different type on the
+   * two sides, which is the condition [[combinedWith]] merges under and the reasoning behind it
+   * is recorded there. Only shared keys are examined: an entry no key of this store collides
+   * with survives any merge, whichever side it came from.
+   *
+   * It produces no item of reference data. The witness of an identifier is a property of the
+   * identifier, and a carrier holds its identifier strictly, so deciding whether two stores may
+   * be merged reads only what filing them already established - which is what lets
+   * `myData.combinedWith(ReferenceData.standard)` merge thirty built-in calendars without
+   * generating one.
+   *
+   * Witnesses are compared by '''identity''' rather than by equality, which is the
+   * conservative direction: two witnesses that are the same object narrow the same way by
+   * construction, while two that merely compare equal - the equality being by name - could in
+   * principle recognise different types and would then make the merge lose a value. A family
+   * whose `valueType` answers with a fresh witness each time is simply never merged, and
+   * chaining is the behaviour every implementation of [[ReferenceData]] has anyway.
+   *
+   * @param lower  the store that would be merged underneath this one
+   * @return true if merging the two would answer exactly as chaining them
+   */
+  private def narrowsAlike(lower: ImmutableReferenceData): Boolean =
+    lower.store.forall {
+      case (id, _) => store.get(id).forall(mine => mine.id.valueType eq id.valueType)
+    }
+
+  /**
+   * Returns a single store holding this store's items over another's.
+   *
+   * The other store's items are written first and this store's over them, so an identifier
+   * both hold answers with the value held here. The merged '''carriers''' are then handed to
+   * the constructor, which files each under its own identifier exactly as it does for a
+   * caller's entries - so this operation needs no privileged way of building a store, and the
+   * type keeps its property that nothing anywhere accepts a map of erased identifiers to
+   * values.
+   *
+   * Carriers are moved rather than opened, so merging produces no item of reference data and the
+   * merged store defers exactly what its two sides deferred. That is what makes layering a
+   * caller's own entries over `ReferenceData.standard` cost the caller's entries alone.
+   *
+   * It reads the other store's map directly, which is why it is a method of this class: the
+   * map is private to the type, and no caller could perform this merge even if it wanted to.
+   *
+   * It is reached only where [[narrowsAlike]] holds, so the value a merge drops on a shared key
+   * is one the surviving entry answers for identically. Calling it without that condition would
+   * lose data, which is why the condition sits on the one call site rather than here.
+   *
+   * @param lower  the store whose items this store's items are laid over
+   * @return the merged store
+   */
+  private def layeredOver(lower: ImmutableReferenceData): ImmutableReferenceData =
+    new ImmutableReferenceData((lower.store ++ store).values)
+
+  /**
+   * Checks if this store holds the same reference data as another object.
+   *
+   * Two stores are equal when they hold equal entries, which is the structural equality
+   * `CombinedReferenceData` and every other container of reference data inherits by holding
+   * stores as fields. The order entries were supplied in is not part of the value, a `Map`
+   * being unordered, so two stores built from the same entries in different orders are one
+   * value. It follows that a store's own comparison reads its entries and not the carriers that
+   * hold them: how a store came to hold a value - already produced, or produced on demand - is
+   * not part of what it holds, so `ReferenceData.standard` equals a store built eagerly from the
+   * same calendars. Comparing therefore produces every entry of both sides, as the materialised
+   * map it reads records.
+   *
+   * @param obj  the other object
+   * @return true if the other object is a store holding equal entries
+   */
+  override def equals(obj: Any): Boolean =
+    obj match {
+      case other: ImmutableReferenceData => materialised == other.materialised
+      case _ => false
+    }
+
+  /**
+   * Returns a hash code consistent with [[equals]].
+   *
+   * It is the hash of the entries - the same map [[equals]] compares - so equal stores hash
+   * alike and a store can be used as a key or held in a set, and hashing a store produces every
+   * entry it holds for the reason given there.
+   *
+   * @return the hash code
+   */
+  override def hashCode: Int = materialised.hashCode
+
+  /**
+   * Renders this store as its entries, ordered by identifier.
+   *
+   * The entries are rendered and then sorted, so the text is determined by what the store
+   * holds and not by the iteration order of the underlying map: the same store reads the same
+   * way however it was assembled, which is what makes this usable in a failure message and in
+   * the rendering of anything that holds a store. The shape names the property and lists the
+   * entries under it.
+   *
+   * Rendering a store names every value in it, so it produces every entry, as the materialised
+   * map it reads records. Nothing on the resolution path renders a store: a missing-data failure
+   * names the identifier that was not found, not the data that was searched.
+   *
+   * @return the rendering, such as `ImmutableReferenceData{values={GBLO=HolidayCalendar[GBLO]}}`
+   */
+  override def toString: String =
+    materialised.valuesIterator
+      .map(entry => s"${entry.id}=${entry.value}")
+      .toList
+      .sorted
+      .mkString("ImmutableReferenceData{values={", ", ", "}}")
+}
+
+/**
+ * Provides the ways of building an immutable set of reference data.
+ *
+ * None of these factories adds the `ReferenceData.minimal` calendars, which is what
+ * distinguishes them from `ReferenceData.of`: the store holds exactly what it was given.
+ * That makes this the right way to build a store whose lookups are meant to be empty for
+ * everything it was not handed, and the wrong one for assembling the reference data of a
+ * running application.
+ */
+object ImmutableReferenceData {
+
+  /** The empty store, holding no reference data at all, shared by every caller that asks. */
+  val empty: ImmutableReferenceData = new ImmutableReferenceData(Nil)
+
+  /**
+   * Obtains an instance from a set of reference data entries.
+   *
+   * The store holds exactly the entries supplied, and nothing else; use `ReferenceData.of`
+   * to obtain a store that also includes the minimal set of built-in calendars.
+   *
+   * Construction fails if two entries are supplied for the same identifier, naming every
+   * duplicated identifier ordered by its rendering, so that the failure is determined by the
+   * set of entries and not by the order they arrived in. Supplying no entries is not a
+   * failure and yields a store equal to [[empty]].
+   *
+   * ===Why naming every duplicated identifier costs nothing===
+   *
+   * The message and the `duplicateIds` attribute hold the rendering of each duplicated
+   * identifier in full, so the size of the failure is linear in the ambiguous part of the
+   * caller's own entry list. Nothing is amplified by that. The caller already holds every
+   * identifier it passed; the failure is a value handed back to it rather than something
+   * this library writes anywhere; and the one point at which any of that text becomes a line
+   * of a log or a report - the `Show[Failure]` instance, which is also the text form of a
+   * failure - renders each part bounded in length and with every character a line-oriented
+   * reader could act on escaped, as `ReferenceData.notFound` describes. Reporting fewer of
+   * the duplicates would leave the caller to rediscover the rest one construction at a time
+   * and would buy no safety that the rendering does not already provide.
+   *
+   * The sort belongs to the contract rather than to presentation: it is what makes the
+   * failure a function of the set of entries, so the same ambiguity is reported as the same
+   * value however the caller assembled its list.
+   *
+   * @param entries  the reference data entries
+   * @return the reference data holding exactly the entries, or the failure describing the
+   *   duplicated identifiers
+   */
+  def of(entries: ReferenceData.Entry[_]*): Either[Failure, ImmutableReferenceData] = {
+    val duplicates: List[String] = entries
+      .groupBy(entry => entry.id: ReferenceDataId[_])
+      .collect { case (id, group) if group.sizeIs > 1 => id.toString }
+      .toList
+      .sorted
+    if (duplicates.isEmpty) {
+      Right(new ImmutableReferenceData(entries.map(entry => DeferredEntry.of(entry))))
+    } else {
+      val rendered = duplicates.mkString(", ")
+      Left(
+        Failure
+          .Invalid(s"Duplicate reference data identifiers: $rendered")
+          .withAttribute("duplicateIds", rendered))
+    }
+  }
+
+  /**
+   * Obtains an instance from a single reference data entry.
+   *
+   * This cannot fail - one entry cannot duplicate an identifier, and the identifier fixes
+   * the type of the value - so it returns the store directly. It is the shortest way to
+   * assemble a store where one item of reference data is all a caller has to supply:
+   *
+   * {{{
+   * val refData = ImmutableReferenceData.of(HolidayCalendarIds.GBLO, calendar)
+   * }}}
+   *
+   * As with the varargs factory, the store holds nothing but this entry.
+   *
+   * @tparam T  the type of the reference data value
+   * @param id  the identifier the value is held under
+   * @param value  the reference data value
+   * @return the reference data holding exactly this entry
+   */
+  def of[T](id: ReferenceDataId[T], value: T): ImmutableReferenceData =
+    new ImmutableReferenceData(List(DeferredEntry.of(ReferenceData.Entry(id, value))))
+
+  /**
+   * Obtains an instance from a map of values whose identifiers refer to that type of value.
+   *
+   * This is the factory for a homogeneous table of reference data - every entry of one type,
+   * keyed by an identifier of that type - which is what the built-in holiday calendar sets
+   * are, and it is how `ReferenceData.minimal` is built, its four calendars being values that
+   * already exist. Where the values of such a table are expensive to produce, as the thirty
+   * built-in calendars behind `ReferenceData.standard` are, [[ofDeferredMap]] takes the same
+   * table as ways of obtaining them and builds the same store without producing any. The
+   * two type parameters are the whole point of it: the key type is required to be a
+   * `ReferenceDataId` '''of the value type''', so a map that pairs an identifier with a value
+   * of some other type is not a legal argument and no call can file an entry this store could
+   * not answer correctly. Each mapping becomes an entry, so this is the entry-based
+   * construction above expressed for data that is already a map, and turning it into entries
+   * at the call site would be noise.
+   *
+   * A `Map[HolidayCalendarId, HolidayCalendar]` is passed straight in: `HolidayCalendarId` is
+   * a `ReferenceDataId[HolidayCalendar]`, so the bound is satisfied and the two parameters are
+   * inferred without a cast at the call site. A map cannot repeat a key, so there is no
+   * duplicate identifier to report and this cannot fail.
+   *
+   * It is visible within this package rather than published, because `ReferenceData.standard`
+   * and `ReferenceData.minimal` are the intended way to obtain the built-in sets and a caller
+   * assembling its own reference data has the entry-based factories, which report the one
+   * failure mode a caller can cause.
+   *
+   * @tparam I  the type of the identifiers, which must refer to the type of the values
+   * @tparam V  the type of the values
+   * @param values  the reference data values, keyed by the identifier each is held under
+   * @return the reference data holding the values
+   */
+  private[basics] def ofMap[I <: ReferenceDataId[V], V](values: Map[I, V]): ImmutableReferenceData =
+    new ImmutableReferenceData(
+      values.iterator
+        .map { case (id, value) => DeferredEntry.of(ReferenceData.Entry(id, value)) }
+        .toList)
+
+  /**
+   * Obtains an instance from a map of ways of obtaining values whose identifiers refer to that
+   * type of value.
+   *
+   * This is [[ofMap]] for a table whose values are '''expensive to produce''': each mapping is a
+   * way of obtaining one value rather than the value itself, so building the store produces
+   * nothing, and a value is produced by the first lookup that asks for its identifier - at most
+   * once, so the store keeps answering with the same instance. Everything else about the result
+   * is the store [[ofMap]] would have built from the same values: the same identifiers, the same
+   * membership, the same equality, the same rendering. Only when each value is produced differs.
+   *
+   * `ReferenceData.standard` is what this exists for. The built-in holiday calendars are
+   * generated from rules across a hundred and fifty years each, and a program typically resolves
+   * one or two of the thirty, so handing the set over as a table of ways of obtaining a calendar
+   * charges a caller for the calendars it actually resolves - which is the start-up behaviour
+   * this library is held to. A caller that does want every value asks the result for [[values]],
+   * or compares or renders it, and those four members produce all of them deliberately.
+   *
+   * The two type parameters carry the same guarantee they do on [[ofMap]]: the key type is
+   * required to be a `ReferenceDataId` '''of the value type''', so an entry this store could not
+   * answer correctly is not something a call can file, and the entry each mapping becomes is
+   * built by [[DeferredEntry]] from an identifier of `V` and a way of obtaining a `V`. No cast
+   * appears on this path, and a `Map[HolidayCalendarId, () => HolidayCalendar]` is passed
+   * straight in.
+   *
+   * It is visible within this package because `ReferenceData.standard` is the intended way to
+   * obtain the built-in set, for the reason given on [[ofMap]]. A caller assembling its own
+   * reference data has the entry-based factories, whose values it already holds.
+   *
+   * @tparam I  the type of the identifiers, which must refer to the type of the values
+   * @tparam V  the type of the values
+   * @param values  the ways of obtaining the reference data values, keyed by the identifier each
+   *   value is held under
+   * @return the reference data answering for those values, none of them produced yet
+   */
+  private[basics] def ofDeferredMap[I <: ReferenceDataId[V], V](
+      values: Map[I, () => V]): ImmutableReferenceData =
+
+    new ImmutableReferenceData(
+      values.iterator.map { case (id, value) => DeferredEntry.of(id, value) }.toList)
+}
+
+/**
+ * A set of reference data which combines the data from two other [[ReferenceData]] instances.
+ *
+ * When an item of data is requested the two underlying sets are consulted in order: if the
+ * first holds a value for the identifier it is returned, and only otherwise is the second
+ * asked. Neither set is copied and no merged store is built, so combining is cheap however
+ * large the two sides are, and a value added to a mutable source behind either side - a
+ * database-backed implementation, say - is visible through the combination.
+ *
+ * The intended way to obtain an instance is `ReferenceData.combinedWith`, which is where the
+ * preference for the left-hand side is documented as part of that method's contract:
+ *
+ * {{{
+ * val refData = myData.combinedWith(ReferenceData.standard)
+ * }}}
+ *
+ * Constructing one directly is equivalent, and the type is public so that a caller may do
+ * so: it has no invariant to protect, both fields being immutable reference data, and a case
+ * class synthesises a public `apply` from a private constructor regardless, so hiding it
+ * would take a hand-written companion for no benefit.
+ *
+ * Equality is the structural equality of the case class, comparing the two underlying sets
+ * in order, so combining the same two sets the other way round gives an unequal - and
+ * behaviourally different - value. As with the other reference data implementations, this
+ * type has no JSON codec: it holds two heterogeneous stores.
+ *
+ * @param refData1  the first set of reference data, whose values are preferred
+ * @param refData2  the second set of reference data, consulted for identifiers the first
+ *   does not hold
+ */
+final case class CombinedReferenceData(refData1: ReferenceData, refData2: ReferenceData)
+    extends ReferenceData
+    with NoJavaSerialization {
+
+  /**
+   * Checks if either underlying set of reference data contains a value for the identifier.
+   *
+   * The second set is asked only when the first does not hold the identifier, so a source
+   * whose membership test is expensive is not consulted needlessly.
+   *
+   * @param id  the identifier to find
+   * @return true if either underlying set contains a value for the identifier
+   */
+  override def containsValue(id: ReferenceDataId[_]): Boolean =
+    refData1.containsValue(id) || refData2.containsValue(id)
+
+  /**
+   * Finds the reference data value, preferring the first underlying set.
+   *
+   * The lookup against the second set is evaluated only if the first comes back empty,
+   * `orElse` taking its argument by name, so the second source is not consulted for an
+   * identifier the first holds.
+   *
+   * @tparam T  the type of the reference data value
+   * @param id  the identifier to find
+   * @return the reference data value, empty if neither underlying set holds one for the
+   *   identifier
+   */
+  override def findValue[T](id: ReferenceDataId[T]): Option[T] =
+    refData1.findValue(id).orElse(refData2.findValue(id))
+}

@@ -1,0 +1,1046 @@
+/*
+ * Copyright (C) 2016 - present by OpenGamma Inc. and the OpenGamma group of companies
+ *
+ * Please see distribution for license.
+ */
+package com.opengamma.strata.collect.result
+
+import scala.collection.immutable.List
+import scala.collection.immutable.Map
+import scala.collection.immutable.Set
+
+import cats.data.Ior
+import cats.data.NonEmptyChain
+import cats.syntax.all._
+
+import org.scalacheck.Gen
+import org.scalacheck.rng.Seed
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers
+import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
+
+import com.opengamma.strata.collect.Arbitraries._
+import com.opengamma.strata.collect.testkit.ResultMatchers._
+
+/**
+ * Tests partial success: the `ValueWithFailures` alias and the nested term object of the
+ * same name, both declared in the package object of this package.
+ *
+ * ===What is under test===
+ *
+ * The type being ported was a class holding a value together with a - possibly empty -
+ * list of failures. It does not survive as a class. In its place the package object
+ * declares two things that share one name:
+ *
+ * {{{
+ * type ValueWithFailures[A] = Ior[NonEmptyChain[Failure], A]   // the type
+ * object ValueWithFailures { ... }                             // the term
+ * }}}
+ *
+ * A name in a type position is the alias and the same name in an expression is the object,
+ * exactly as it is for the collection types of the standard library, so
+ * `ValueWithFailures[A]` and `ValueWithFailures.of(...)` refer to different things without
+ * ambiguity. Both are members of the package this spec is declared in, so neither needs an
+ * import.
+ *
+ * The mandate of this spec is the whole surface of that object - `of` in its two forms,
+ * `hasFailures`, the three forms of `withValue`, `combineValuesAsList`,
+ * `combineValuesAsSet` and `combiningValues` - together with `withAdditionalFailures`,
+ * which sits beside the object in the package rather than inside it.
+ *
+ * ===Where the instance methods went===
+ *
+ * The class being ported carried its own `map`, `mapFailures`, `flatMap` and
+ * `combinedWith`. None of them is redeclared, because the alias is an `Ior` and every one
+ * of those operations is already defined on it: `map` and `leftMap` from its functor and
+ * bifunctor, `flatMap` from its monad-shaped chaining, and combination from its applicative
+ * (`mapN`) or from `combine`. This spec therefore reaches all four through the syntax
+ * imported above rather than through a member of a wrapper, and the specific instance that
+ * makes the accumulating cases work is the `Semigroup` of `NonEmptyChain`: it is what
+ * appends two chains of failures, left to right, so that the failures already reported
+ * always precede the ones a later step adds. That ordering is asserted case by case below,
+ * because it is the observable contract and the reason the failure side is an ordered chain
+ * rather than a set.
+ *
+ * ===The third shape===
+ *
+ * An `Ior` has a case the type being ported could not express. Its value was mandatory, so
+ * it could say "a value and no failures" and "a value and some failures" but never
+ * "failures and no value at all"; the nearest it came was a convention, usually an empty
+ * collection standing in for the missing value. `Ior.Left` says it in the type, and the
+ * widening is deliberate. It is asserted here rather than ignored: the three shapes are
+ * distinguished, `hasFailures` is shown to be true for `Ior.Left` as well as for
+ * `Ior.Both`, and the accessor that reads the value is shown to return nothing for it -
+ * which is why reading a value is an `Option` here where the original had a total getter.
+ *
+ * ===How outcomes are asserted===
+ *
+ * Two vocabularies appear below and they answer different questions. The matchers imported
+ * above read an outcome the way the assertion helper being ported did, where an outcome is
+ * a success exactly when it reports no failures; a value accompanied by failures is
+ * therefore a failure to them, and `beSuccess` and `haveValue` do not hold for it. That is
+ * the right reading of an outcome as a whole, and it is used wherever this spec asserts
+ * which side of that line an outcome falls on. It cannot express "this value, and also
+ * these failures", which is precisely what a partial success is, so the two halves of such
+ * an outcome are asserted separately through the local accessors below, and the failure
+ * matchers are used alongside them to pin the reason.
+ *
+ * ===What is deliberately not asserted===
+ *
+ * There is no serialized-form assertion here. The four alias types of this package are
+ * generic containers and are excluded from the closed inventory of types whose serialized
+ * form is covered: an instance for one of them follows from the element type and the
+ * failure type each having one, so covering the container would add nothing to that
+ * inventory and the inventory is compared against a fixed list. The serialized form of a
+ * failure itself is covered by the spec of `Failure`. What replaces the removed
+ * serialization case here is the structural round trip that does belong to this file -
+ * taking an outcome apart into its failures and its value and rebuilding it from those
+ * parts through `of`.
+ *
+ * Nor is there a reflective sweep over the members of a bean. The type is no longer a bean,
+ * so there is nothing to sweep; the behaviour such a sweep was there to check - equality,
+ * hashing and rendering - is asserted directly instead.
+ *
+ * ===Fixed outcomes and generated outcomes===
+ *
+ * The members of this type are asserted against chosen outcomes, because a member applied to
+ * a chosen input is what a case about a member is. The structure of an outcome - what equality
+ * and hashing make of it, and what a decomposition and a rebuild do to it - is asserted
+ * instead over outcomes drawn from
+ * [[com.opengamma.strata.collect.Arbitraries.genValueWithFailures]], which reaches all three
+ * shapes of the underlying `Ior` at equal frequency and puts one to four failures on the
+ * failure side of the two that have one. Three fixed outcomes cannot state what those cases
+ * state: the value is arbitrary rather than the one string this file writes, the chain is of
+ * an arbitrary length rather than of two, its failures carry arbitrary reasons, messages and
+ * attributes, and the shape is drawn rather than chosen. The last of the cases below asserts
+ * the distribution itself, so a later change to that generator which stopped producing one of
+ * the three shapes is caught here rather than quietly weakening every case above it.
+ *
+ * @see [[Failure]] for the failure an outcome reports
+ * @see [[FailureReason]] for the reasons a failure can carry
+ * @see [[com.opengamma.strata.collect.testkit.ResultMatchers]] for the matchers used here
+ */
+final class ValueWithFailuresSpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {
+
+  /**
+   * The number of outcomes each generated property of the structural section is checked against.
+   *
+   * The default of the framework is a handful, and a handful is too few for a generator that
+   * spreads its draws over three shapes and then over the length of a failure chain within two
+   * of them: the combination that matters most here - a value together with several failures -
+   * would be seen a couple of times a run. A hundred draws reaches each shape some thirty
+   * times while keeping this file inside the second it runs in.
+   */
+  implicit override val generatorDrivenConfig: PropertyCheckConfiguration =
+    PropertyCheckConfiguration(minSuccessful = 100)
+
+  // ---------------------------------------------------------------------------
+  // Fixtures.
+  //
+  // The two failures are the pair the class being ported used, with the same
+  // reasons and the same messages, so that a case here reads against the case it
+  // came from.
+  // ---------------------------------------------------------------------------
+
+  /** The first fixture failure, reported as invalid input. */
+  private val FAILURE1: Failure = Failure.Invalid("invalid")
+
+  /** The second fixture failure, reported as missing data. */
+  private val FAILURE2: Failure = Failure.MissingData("data")
+
+  /** The failure list of an outcome that reports nothing. */
+  private val NoFailures: List[Failure] = List.empty[Failure]
+
+  /**
+   * The three values the aggregation cases calculate over.
+   *
+   * Each is written with a decimal point rather than as a whole number, and that is not
+   * cosmetic: the messages asserted below render the value, so a whole-number literal would
+   * both change the rendered text and be an implicit widening, which this build rejects.
+   */
+  private val FirstInput: Double = 5.0
+  private val SecondInput: Double = 6.0
+  private val ThirdInput: Double = 7.0
+
+  /** The product of the three inputs, which the reducing case arrives at from `1.0`. */
+  private val ExpectedProduct: Double = 210.0
+
+  /**
+   * The messages the three calculations report, written out rather than interpolated.
+   *
+   * `mockCalc` builds its message by interpolation, so asserting against literals is what
+   * pins the rendering of a value into that message. Five cases of the class being ported
+   * asserted these three strings, and every aggregation case below asserts them again.
+   */
+  private val ExpectedCalculationMessages: List[String] = List(
+    "Error calculating result for input value 5.0",
+    "Error calculating result for input value 6.0",
+    "Error calculating result for input value 7.0")
+
+  /**
+   * Three calculations, each producing its value and reporting one failure about it.
+   *
+   * This is the fixture of the aggregation cases of the class being ported, under the name
+   * it had there. Every element is a partial success - it has a value and reports a failure
+   * - which is what makes the aggregations below interesting: each one has both halves of
+   * three outcomes to fold together.
+   */
+  private val Calculations: List[ValueWithFailures[Double]] =
+    List(mockCalc(FirstInput), mockCalc(SecondInput), mockCalc(ThirdInput))
+
+  /**
+   * Returns a calculation that produced a value but reported a failure about it.
+   *
+   * @param value  the input the calculation ran on, which its message names
+   * @return the value together with the one failure reported about it
+   */
+  private def mockCalc(value: Double): ValueWithFailures[Double] =
+    ValueWithFailures.of(
+      value,
+      List(Failure.CalculationFailed(s"Error calculating result for input value $value")))
+
+  // ---------------------------------------------------------------------------
+  // Local accessors.
+  //
+  // The type has no members of its own, so the two halves of an outcome are read
+  // through the accessors of an `Ior`. These three name what is being read at
+  // each call site and keep the ordering of the failure chain visible, which is
+  // what most of the assertions below are about.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the value an outcome carries, if it carries one.
+   *
+   * This is where the widening of the type shows up in the assertions: the getter of the
+   * class being ported was total, and this is not, because `Ior.Left` has no value.
+   */
+  private def valueOf[A](outcome: ValueWithFailures[A]): Option[A] = outcome.right
+
+  /** Returns the failures an outcome reports, in the order it reports them. */
+  private def failuresOf[A](outcome: ValueWithFailures[A]): List[Failure] =
+    outcome.left.fold(NoFailures)(chain => chain.toChain.toList)
+
+  /** Returns the messages of the failures an outcome reports, in order. */
+  private def messagesOf[A](outcome: ValueWithFailures[A]): List[String] =
+    failuresOf(outcome).map(failure => failure.message)
+
+  /** Returns the reasons of the failures an outcome reports, in order. */
+  private def reasonsOf[A](outcome: ValueWithFailures[A]): List[FailureReason] =
+    failuresOf(outcome).map(failure => failure.reason)
+
+  /**
+   * Parses every element it is given, reporting one failure for each that is not a number.
+   *
+   * This is the function the chaining case applies. It reports what it could not parse
+   * rather than raising, so the elements that did parse are still returned - which is the
+   * whole point of a partial success, and the reason the outcome of chaining carries the
+   * failure this reports alongside the failure the outcome it was applied to already had.
+   *
+   * @param items  the text to parse
+   * @return the numbers parsed, with one failure for each element that was not a number
+   */
+  private def parseAll(items: List[String]): ValueWithFailures[List[Int]] = {
+    val (parsed, reported) =
+      items.foldLeft((List.empty[Int], NoFailures)) {
+        case ((values, failures), item) =>
+          item.toIntOption.fold((values, failures :+ Failure.Invalid(s"Not a number: $item")))(
+            number => (values :+ number, failures))
+      }
+    ValueWithFailures.of(parsed, reported)
+  }
+
+  /**
+   * Takes an outcome apart into its failures and its value and rebuilds it from those parts.
+   *
+   * `of` is the factory used wherever there is a value to rebuild from, which is the two
+   * shapes the class being ported could express. The third shape has no value, so `of`
+   * cannot express it and the chain is rebuilt on its own; that asymmetry is the widening
+   * of the type, stated in code. An outcome with neither a value nor a failure does not
+   * exist - an `Ior` is always at least one of the two - so the remaining branch is
+   * unreachable and returns what it was given rather than inventing a value.
+   *
+   * @param outcome  the outcome to take apart and rebuild
+   * @return the outcome rebuilt from its parts
+   */
+  private def rebuild[A](outcome: ValueWithFailures[A]): ValueWithFailures[A] = {
+    val failures = failuresOf(outcome)
+    valueOf(outcome).fold(
+      NonEmptyChain
+        .fromSeq(failures)
+        .fold(outcome)(chain => Ior.left[NonEmptyChain[Failure], A](chain)))(
+      value => ValueWithFailures.of(value, failures))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Construction: `of` and `hasFailures`.
+  // ---------------------------------------------------------------------------
+
+  test("of with a value alone is a plain success that reports no failures") {
+    val outcome: ValueWithFailures[String] = ValueWithFailures.of("success")
+
+    ValueWithFailures.hasFailures(outcome) shouldBe false
+    outcome shouldBe Ior.right("success")
+    valueOf(outcome) shouldBe Some("success")
+    failuresOf(outcome) shouldBe NoFailures
+    outcome should beSuccess
+    outcome should haveValue("success")
+  }
+
+  test("of with failures is a partial success holding the value and the failures in order") {
+    // The class being ported offered this both as a variadic factory and as one taking a
+    // collection. Only the collection form survives - a single method serves both call
+    // shapes here - so this case and the one below exercise the same member.
+    val outcome: ValueWithFailures[String] = ValueWithFailures.of("success", List(FAILURE1, FAILURE2))
+
+    ValueWithFailures.hasFailures(outcome) shouldBe true
+    outcome shouldBe Ior.both(NonEmptyChain.of(FAILURE1, FAILURE2), "success")
+    valueOf(outcome) shouldBe Some("success")
+    failuresOf(outcome) shouldBe List(FAILURE1, FAILURE2)
+    outcome should beFailure
+    outcome should beFailureWith(FailureReason.INVALID)
+    outcome should beFailureWith(FailureReason.MISSING_DATA)
+  }
+
+  test("of takes its failures from an ordered list and reports them in that order") {
+    val outcome: ValueWithFailures[String] = ValueWithFailures.of("success", List(FAILURE1, FAILURE2))
+    val reversed: ValueWithFailures[String] = ValueWithFailures.of("success", List(FAILURE2, FAILURE1))
+
+    failuresOf(outcome) shouldBe List(FAILURE1, FAILURE2)
+    failuresOf(reversed) shouldBe List(FAILURE2, FAILURE1)
+    // The order is part of the value, so the two differ even though they report the same
+    // pair of failures about the same value.
+    (reversed == outcome) shouldBe false
+
+    // Nothing to report gives a plain success, so a caller can pass whatever it
+    // accumulated without first asking whether anything went wrong.
+    val nothingReported: ValueWithFailures[String] = ValueWithFailures.of("success", NoFailures)
+    nothingReported shouldBe Ior.right("success")
+    ValueWithFailures.hasFailures(nothingReported) shouldBe false
+  }
+
+  test("of takes its failures from a set and reports every one of them") {
+    val outcome: ValueWithFailures[String] = ValueWithFailures.of("success", Set(FAILURE1, FAILURE2))
+
+    ValueWithFailures.hasFailures(outcome) shouldBe true
+    valueOf(outcome) shouldBe Some("success")
+    // A set has no order of its own, so this asserts membership rather than order, as the
+    // case being ported did. The chain preserves whatever order iterating the set gave.
+    failuresOf(outcome) should have size 2
+    failuresOf(outcome) should contain theSameElementsAs List(FAILURE1, FAILURE2)
+    outcome should beFailureWith(FailureReason.INVALID)
+    outcome should beFailureWith(FailureReason.MISSING_DATA)
+  }
+
+  test("a computation written to report its own failures gives a value and reports none") {
+    // Nothing in this module raises in order to report a failure: a computation that can
+    // fail returns its failures, which is what `parseAll` above does, and it ends at `of`.
+    // This run has nothing to report, so the outcome is the plain success `of` builds from
+    // a value alone and the fallback the caller was holding is never needed.
+    val fallback: List[Int] = List.empty[Int]
+    val outcome: ValueWithFailures[List[Int]] = parseAll(List("1", "2"))
+
+    ValueWithFailures.hasFailures(outcome) shouldBe false
+    valueOf(outcome) shouldBe Some(List(1, 2))
+    valueOf(outcome) should not be Some(fallback)
+    failuresOf(outcome) shouldBe NoFailures
+    outcome should beSuccess
+    outcome should haveValue(List(1, 2))
+    outcome shouldBe ValueWithFailures.of(List(1, 2))
+  }
+
+  test("a computation that cannot produce a value keeps the fallback it was given and reports one ERROR failure") {
+    // Where the computation cannot produce a value it reports that and hands back the
+    // fallback with it - the failure is returned rather than raised, which makes `of` the
+    // whole of the machinery involved.
+    val fallback: String = ""
+    val outcome: ValueWithFailures[String] =
+      ValueWithFailures.of(fallback, List(Failure.Error("boom")))
+
+    ValueWithFailures.hasFailures(outcome) shouldBe true
+    // Keeping the fallback is the point of the factory being ported: the caller is left
+    // with something usable as well as with the report of what went wrong.
+    valueOf(outcome) shouldBe Some("")
+    failuresOf(outcome) should have size 1
+    reasonsOf(outcome) shouldBe List(FailureReason.ERROR)
+    messagesOf(outcome) shouldBe List("boom")
+    outcome should beFailureWith(FailureReason.ERROR)
+    outcome should haveFailureMessageMatching("boom")
+
+    // The same shape arrives from a computation that reports its own failures: what it
+    // could not use is reported and what it could is kept, with its own reason.
+    val reported: ValueWithFailures[List[Int]] = parseAll(List("a"))
+    ValueWithFailures.hasFailures(reported) shouldBe true
+    valueOf(reported) shouldBe Some(List.empty[Int])
+    messagesOf(reported) shouldBe List("Not a number: a")
+  }
+
+  test("an outcome can report failures and carry no value at all") {
+    // The widening of the type. The class being ported always had a value, so it could not
+    // express this shape; the nearest it came was a convention, such as an empty collection
+    // standing in for the value it had to supply.
+    val outcome: ValueWithFailures[String] = Ior.left(NonEmptyChain.of(FAILURE1, FAILURE2))
+
+    ValueWithFailures.hasFailures(outcome) shouldBe true
+    valueOf(outcome) shouldBe None
+    failuresOf(outcome) shouldBe List(FAILURE1, FAILURE2)
+    outcome should beFailure
+    outcome should beFailureWith(FailureReason.INVALID)
+
+    // `of` cannot build it: it pairs a value with failures, so it reaches the other two
+    // shapes and only those.
+    valueOf(ValueWithFailures.of("success", List(FAILURE1, FAILURE2))) shouldBe Some("success")
+    valueOf(ValueWithFailures.of("success", NoFailures)) shouldBe Some("success")
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Transformation: the value, the failures, and chaining.
+  //
+  // None of these is a member of the object under test. They are the operations
+  // an `Ior` already has, reached through the syntax imported at the head of this
+  // file, which is why the class being ported needed to declare them and this
+  // port does not.
+  // ---------------------------------------------------------------------------
+
+  test("map transforms the value and preserves the failures") {
+    val base: ValueWithFailures[List[String]] = ValueWithFailures.of(List("1", "2"), List(FAILURE1))
+    val mapped: ValueWithFailures[List[Int]] = base.map(items => items.map(item => item.toInt))
+
+    valueOf(mapped) shouldBe Some(List(1, 2))
+    failuresOf(mapped) shouldBe List(FAILURE1)
+    // The shape is preserved too: a partial success stays partial, and a plain success
+    // stays plain, because mapping touches only the value.
+    mapped shouldBe Ior.both(NonEmptyChain.one(FAILURE1), List(1, 2))
+    ValueWithFailures.of(List("3")).map(items => items.map(item => item.toInt)) shouldBe
+      Ior.right(List(3))
+  }
+
+  test("leftMap rewrites the failures and preserves the value") {
+    val base: ValueWithFailures[List[String]] = ValueWithFailures.of(List("1", "2"), List(FAILURE1))
+    val relabelled: ValueWithFailures[List[String]] =
+      base.leftMap(chain => chain.map(_ => FAILURE2))
+
+    valueOf(relabelled) shouldBe valueOf(base)
+    failuresOf(relabelled) shouldBe List(FAILURE2)
+  }
+
+  test("leftMap on an outcome that reports nothing leaves it equal to the outcome it was given") {
+    val base: ValueWithFailures[List[String]] = ValueWithFailures.of(List("1", "2"), NoFailures)
+    val relabelled: ValueWithFailures[List[String]] =
+      base.leftMap(chain => chain.map(_ => FAILURE2))
+
+    // There is no failure for the function to see, so it never runs and the outcome is
+    // unchanged - the assertion the case being ported made.
+    relabelled shouldBe base
+    failuresOf(relabelled) shouldBe NoFailures
+    relabelled should beSuccess
+  }
+
+  test("flatMap reports the failures already present before those the function adds") {
+    val base: ValueWithFailures[List[String]] =
+      ValueWithFailures.of(List("1", "a", "2"), List(FAILURE1))
+    val chained: ValueWithFailures[List[Int]] = base.flatMap(parseAll)
+
+    valueOf(chained) shouldBe Some(List(1, 2))
+
+    // The ordering here is the clearest observable consequence of the failure side being a
+    // chain combined left to right: what was already reported comes first and what the
+    // function reported follows. Both the size and the exact positions are asserted,
+    // because every accumulating case below depends on the same rule.
+    val failures = failuresOf(chained)
+    failures should have size 2
+    failures.head shouldBe FAILURE1
+    failures(1).reason shouldBe FailureReason.INVALID
+    failures(1).message shouldBe "Not a number: a"
+    reasonsOf(chained) shouldBe List(FailureReason.INVALID, FailureReason.INVALID)
+
+    // Chaining from an outcome that reports nothing leaves only what the function reported.
+    val fromClean: ValueWithFailures[List[Int]] =
+      ValueWithFailures.of(List("1", "a", "2")).flatMap(parseAll)
+    failuresOf(fromClean) should have size 1
+    valueOf(fromClean) shouldBe Some(List(1, 2))
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Combination: two outcomes at a time.
+  // ---------------------------------------------------------------------------
+
+  test("two outcomes combine their values and accumulate their failures in order") {
+    val base: ValueWithFailures[List[String]] = ValueWithFailures.of(List("a"), List(FAILURE1))
+    val other: ValueWithFailures[List[String]] =
+      ValueWithFailures.of(List("b", "c"), List(FAILURE2))
+
+    // The method the class being ported declared for this has no counterpart: combining two
+    // outcomes is what the applicative of an `Ior` does, and `mapN` is how it is written.
+    val combined: ValueWithFailures[List[String]] = (base, other).mapN(_ ++ _)
+
+    valueOf(combined) shouldBe Some(List("a", "b", "c"))
+    failuresOf(combined) shouldBe List(FAILURE1, FAILURE2)
+  }
+
+  test("outcomes of different value types combine into one value carrying both failures") {
+    val flag: ValueWithFailures[Boolean] = ValueWithFailures.of(true, List(FAILURE1))
+    val count: ValueWithFailures[Int] = ValueWithFailures.of(1, List(FAILURE2))
+
+    val joined: ValueWithFailures[String] =
+      (flag, count).mapN((left, right) => left.toString + right.toString)
+
+    valueOf(joined) shouldBe Some("true1")
+    failuresOf(joined) shouldBe List(FAILURE1, FAILURE2)
+  }
+
+  test("combiningValues is the binary operator that reduces many outcomes into one") {
+    val base: ValueWithFailures[List[String]] = ValueWithFailures.of(List("a"), List(FAILURE1))
+    val other: ValueWithFailures[List[String]] =
+      ValueWithFailures.of(List("b", "c"), List(FAILURE2))
+
+    // The member returns the operator rather than performing the combination, so it is
+    // handed to a reduction, which is what the case being ported did with the stream it
+    // reduced.
+    val reduced: ValueWithFailures[List[String]] =
+      List(base, other).reduceLeft(ValueWithFailures.combiningValues[List[String]](_ ++ _))
+
+    valueOf(reduced) shouldBe Some(List("a", "b", "c"))
+    failuresOf(reduced) shouldBe List(FAILURE1, FAILURE2)
+
+    // The combining function is applied only where both sides carry a value. Where one
+    // side carries none, its failures are kept and the other side's value survives - the
+    // three-case behaviour the value type of the original could not express.
+    val withoutValue: ValueWithFailures[List[String]] = Ior.left(NonEmptyChain.one(FAILURE2))
+    val kept: ValueWithFailures[List[String]] =
+      ValueWithFailures.combiningValues[List[String]](_ ++ _)(base, withoutValue)
+
+    valueOf(kept) shouldBe Some(List("a"))
+    failuresOf(kept) shouldBe List(FAILURE1, FAILURE2)
+    kept.isBoth shouldBe true
+
+    // The remaining combinations of the three shapes, each asserted for the shape it
+    // produces as well as for its value and the order of its failures.
+    def combining(
+        first: ValueWithFailures[List[String]],
+        second: ValueWithFailures[List[String]]): ValueWithFailures[List[String]] =
+      ValueWithFailures.combiningValues[List[String]](_ ++ _)(first, second)
+
+    // Neither side carries a value: there is nothing for the combining function to be
+    // applied to, so the outcome is the two chains in the order they were reported and it
+    // holds no value at all.
+    val alsoWithoutValue: ValueWithFailures[List[String]] = Ior.left(NonEmptyChain.one(FAILURE1))
+    val neither: ValueWithFailures[List[String]] = combining(withoutValue, alsoWithoutValue)
+
+    neither.isLeft shouldBe true
+    neither.isRight shouldBe false
+    neither.isBoth shouldBe false
+    valueOf(neither) shouldBe None
+    failuresOf(neither) shouldBe List(FAILURE2, FAILURE1)
+
+    // A side with no value on the left of a side that reports nothing: the value survives
+    // and the failures of the first side are all that is reported.
+    val plainValue: ValueWithFailures[List[String]] = ValueWithFailures.of(List("b"))
+    val noValueThenValue: ValueWithFailures[List[String]] = combining(withoutValue, plainValue)
+
+    noValueThenValue.isBoth shouldBe true
+    noValueThenValue.isLeft shouldBe false
+    noValueThenValue.isRight shouldBe false
+    valueOf(noValueThenValue) shouldBe Some(List("b"))
+    failuresOf(noValueThenValue) shouldBe List(FAILURE2)
+
+    // The same pair the other way round: the value that is present still survives, and the
+    // failures are still those of the side that reported them.
+    val valueThenNoValue: ValueWithFailures[List[String]] = combining(plainValue, withoutValue)
+
+    valueThenNoValue.isBoth shouldBe true
+    valueThenNoValue.isLeft shouldBe false
+    valueThenNoValue.isRight shouldBe false
+    valueOf(valueThenNoValue) shouldBe Some(List("b"))
+    failuresOf(valueThenNoValue) shouldBe List(FAILURE2)
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Replacing the value, and adding failures.
+  //
+  // The three forms of `withValue` differ in what they do with failures, so each
+  // case below asserts the order of the failure list as well as the value. That
+  // order is the observable contract and the reason the failure side is a chain
+  // rather than a set.
+  // ---------------------------------------------------------------------------
+
+  test("withValue replaces the value and keeps the failures already reported") {
+    val base: ValueWithFailures[List[String]] = ValueWithFailures.of(List("a"), List(FAILURE1))
+
+    val replaced: ValueWithFailures[String] = ValueWithFailures.withValue(base, "combined")
+
+    valueOf(replaced) shouldBe Some("combined")
+    failuresOf(replaced) shouldBe List(FAILURE1)
+
+    // Where there was no value there now is one, so a failures-only outcome becomes a
+    // partial success and its failures are untouched.
+    val gained: ValueWithFailures[String] =
+      ValueWithFailures.withValue(Ior.left[NonEmptyChain[Failure], Int](NonEmptyChain.one(FAILURE2)), "combined")
+    valueOf(gained) shouldBe Some("combined")
+    failuresOf(gained) shouldBe List(FAILURE2)
+  }
+
+  test("withValue with further failures reports the existing ones before the supplied ones") {
+    val base: ValueWithFailures[List[String]] = ValueWithFailures.of(List("a"), List(FAILURE1))
+
+    val replaced: ValueWithFailures[String] =
+      ValueWithFailures.withValue(base, "combined", List(FAILURE2))
+
+    valueOf(replaced) shouldBe Some("combined")
+    failuresOf(replaced) shouldBe List(FAILURE1, FAILURE2)
+  }
+
+  test("withValue with another outcome takes its value and adds its failures last") {
+    val base: ValueWithFailures[List[String]] = ValueWithFailures.of(List("a"), List(FAILURE1))
+    val other: ValueWithFailures[String] = ValueWithFailures.of("combined", List(FAILURE2))
+
+    val replaced: ValueWithFailures[String] = ValueWithFailures.withValue(base, other)
+
+    valueOf(replaced) shouldBe Some("combined")
+    failuresOf(replaced) shouldBe List(FAILURE1, FAILURE2)
+
+    // Where the outcome supplying the failures reports none, the other outcome is what the
+    // result is - there is nothing to prepend to it.
+    val fromClean: ValueWithFailures[String] =
+      ValueWithFailures.withValue(ValueWithFailures.of(List("a")), other)
+    fromClean shouldBe other
+    failuresOf(fromClean) shouldBe List(FAILURE2)
+
+    // The other outcome may carry no value, in which case there is no value to take and
+    // the outcome is the two sets of failures - the first's before the second's - with no
+    // value at all. The shape is asserted as well as the order.
+    val otherWithoutValue: ValueWithFailures[String] = Ior.left(NonEmptyChain.one(FAILURE2))
+    val noValueTaken: ValueWithFailures[String] =
+      ValueWithFailures.withValue(base, otherWithoutValue)
+
+    noValueTaken.isLeft shouldBe true
+    noValueTaken.isRight shouldBe false
+    noValueTaken.isBoth shouldBe false
+    valueOf(noValueTaken) shouldBe None
+    failuresOf(noValueTaken) shouldBe List(FAILURE1, FAILURE2)
+
+    // Or it may report nothing, in which case its value is taken and the failures already
+    // reported are all there are, so a plain success becomes a partial one.
+    val otherReportingNothing: ValueWithFailures[String] = ValueWithFailures.of("combined")
+    val nothingAdded: ValueWithFailures[String] =
+      ValueWithFailures.withValue(base, otherReportingNothing)
+
+    nothingAdded.isBoth shouldBe true
+    nothingAdded.isLeft shouldBe false
+    nothingAdded.isRight shouldBe false
+    valueOf(nothingAdded) shouldBe Some("combined")
+    failuresOf(nothingAdded) shouldBe List(FAILURE1)
+  }
+
+  test("withAdditionalFailures appends the supplied failures after the existing ones") {
+    val base: ValueWithFailures[String] = ValueWithFailures.of("combined", List(FAILURE1))
+
+    val extended: ValueWithFailures[String] = withAdditionalFailures(base, List(FAILURE2))
+
+    valueOf(extended) shouldBe Some("combined")
+    failuresOf(extended) shouldBe List(FAILURE1, FAILURE2)
+
+    // A plain success gains a failure side and keeps its value; a failures-only outcome
+    // accumulates and stays as it is, because there is no value to keep.
+    val fromClean: ValueWithFailures[String] =
+      withAdditionalFailures(ValueWithFailures.of("combined"), List(FAILURE2))
+    fromClean shouldBe Ior.both(NonEmptyChain.one(FAILURE2), "combined")
+
+    val fromFailuresOnly: ValueWithFailures[String] =
+      withAdditionalFailures(Ior.left(NonEmptyChain.one(FAILURE1)), List(FAILURE2))
+    valueOf(fromFailuresOnly) shouldBe None
+    failuresOf(fromFailuresOnly) shouldBe List(FAILURE1, FAILURE2)
+  }
+
+  test("withAdditionalFailures with nothing to add returns the outcome it was given") {
+    val base: ValueWithFailures[String] = ValueWithFailures.of("combined", List(FAILURE1))
+
+    // Documented as unchanged and identical, so identity is what is asserted rather than
+    // equality alone: adding nothing allocates nothing.
+    (withAdditionalFailures(base, NoFailures) eq base) shouldBe true
+    (withAdditionalFailures(base, Set.empty[Failure]) eq base) shouldBe true
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Aggregation: many outcomes at a time.
+  //
+  // The class being ported offered five of these as collector objects handed to a
+  // stream. A collector belongs to a collection library this port does not use,
+  // so each of them is reached here as a fold or as one of the two `combineValues`
+  // members, which perform the same accumulation purely. Every case over the three
+  // calculations expects the same three messages, in the order the calculations
+  // were given in.
+  // ---------------------------------------------------------------------------
+
+  test("reducing outcomes with combiningValues multiplies the values and reports every failure") {
+    // The collector being replaced took an identity and a binary operator, which is exactly
+    // what a fold takes: the identity becomes the starting outcome and the operator is the
+    // one `combiningValues` builds.
+    val product: ValueWithFailures[Double] =
+      Calculations.foldLeft(ValueWithFailures.of(1.0))(
+        ValueWithFailures.combiningValues[Double](_ * _))
+
+    valueOf(product) shouldBe Some(ExpectedProduct)
+    failuresOf(product) should have size 3
+    reasonsOf(product) shouldBe List(
+      FailureReason.CALCULATION_FAILED,
+      FailureReason.CALCULATION_FAILED,
+      FailureReason.CALCULATION_FAILED)
+    messagesOf(product) shouldBe ExpectedCalculationMessages
+    product should beFailureWith(FailureReason.CALCULATION_FAILED)
+    // The message matcher holds when any one reported message matches in full, so it reads
+    // the middle calculation of the three out of the accumulated chain.
+    product should haveFailureMessageMatching("Error calculating result for input value 6\\.0")
+  }
+
+  test("combineValuesAsList holds the values as a list and reports every failure") {
+    val combined: ValueWithFailures[List[Double]] =
+      ValueWithFailures.combineValuesAsList(Calculations)
+
+    valueOf(combined) shouldBe Some(List(FirstInput, SecondInput, ThirdInput))
+    failuresOf(combined) should have size 3
+    messagesOf(combined) shouldBe ExpectedCalculationMessages
+    reasonsOf(combined).distinct shouldBe List(FailureReason.CALCULATION_FAILED)
+  }
+
+  test("combining outcomes as a list replaces the collector the original streamed into") {
+    // The collector consumed a stream, so the member that replaces it is checked against a
+    // source that is produced lazily and can be traversed only once - which is what its
+    // parameter type admits - and against the same input held as a list.
+    val streamed: ValueWithFailures[List[Double]] =
+      ValueWithFailures.combineValuesAsList(
+        Iterator(FirstInput, SecondInput, ThirdInput).map(input => mockCalc(input)))
+
+    valueOf(streamed) shouldBe Some(List(FirstInput, SecondInput, ThirdInput))
+    messagesOf(streamed) shouldBe ExpectedCalculationMessages
+    streamed shouldBe ValueWithFailures.combineValuesAsList(Calculations)
+
+    // Nothing to aggregate is a plain success holding nothing, as it is for every fold.
+    ValueWithFailures.combineValuesAsList(List.empty[ValueWithFailures[Double]]) shouldBe
+      Ior.right(List.empty[Double])
+  }
+
+  test("combineValuesAsSet holds the values as a set and reports every failure") {
+    val combined: ValueWithFailures[Set[Double]] =
+      ValueWithFailures.combineValuesAsSet(Calculations)
+
+    valueOf(combined) shouldBe Some(Set(FirstInput, SecondInput, ThirdInput))
+    failuresOf(combined) should have size 3
+    messagesOf(combined) shouldBe ExpectedCalculationMessages
+    reasonsOf(combined).distinct shouldBe List(FailureReason.CALCULATION_FAILED)
+  }
+
+  test("combining outcomes as a set replaces the collector the original streamed into") {
+    val streamed: ValueWithFailures[Set[Double]] =
+      ValueWithFailures.combineValuesAsSet(
+        Iterator(FirstInput, SecondInput, ThirdInput).map(input => mockCalc(input)))
+
+    valueOf(streamed) shouldBe Some(Set(FirstInput, SecondInput, ThirdInput))
+    messagesOf(streamed) shouldBe ExpectedCalculationMessages
+    streamed shouldBe ValueWithFailures.combineValuesAsSet(Calculations)
+
+    // The set collapses repeated values where the list keeps them, which is the whole
+    // difference between the two members.
+    val repeated: List[ValueWithFailures[Double]] = List(mockCalc(FirstInput), mockCalc(FirstInput))
+    valueOf(ValueWithFailures.combineValuesAsSet(repeated)) shouldBe Some(Set(FirstInput))
+    valueOf(ValueWithFailures.combineValuesAsList(repeated)) shouldBe
+      Some(List(FirstInput, FirstInput))
+    failuresOf(ValueWithFailures.combineValuesAsSet(repeated)) should have size 2
+  }
+
+  test("results bridge into outcomes so that only the values that succeeded survive") {
+    val results: List[FailureOr[String]] =
+      List(Right("Hello"), Left(Failure.Error("Uh oh")), Right("World"))
+
+    // This is the bridge from a result, which has a value or a failure, to an outcome,
+    // which can have both. A success becomes an outcome carrying its value and reporting
+    // nothing; a failure becomes an outcome reporting its failure and carrying no value.
+    // Aggregating those is what leaves three inputs contributing two values.
+    val bridged: ValueWithFailures[List[String]] =
+      ValueWithFailures.combineValuesAsList(results.map { result =>
+        result.fold[ValueWithFailures[String]](
+          failure => Ior.left(NonEmptyChain.one(failure)),
+          value => Ior.right(value))
+      })
+
+    valueOf(bridged) shouldBe Some(List("Hello", "World"))
+    failuresOf(bridged) should have size 1
+    reasonsOf(bridged) shouldBe List(FailureReason.ERROR)
+    messagesOf(bridged) shouldBe List("Uh oh")
+  }
+
+  test("a map of results keeps the entries that succeeded and reports the one that did not") {
+    val results: Map[String, FailureOr[String]] = Map(
+      "key 1" -> Right("success 1"),
+      "key 2" -> Left(FAILURE1),
+      "key 3" -> Right("success 2"))
+
+    // The helper the original streamed a map's entries through has no counterpart, so the
+    // map is folded directly. The keys are visited in sorted order so that the order of
+    // the reported failures is fixed by this spec rather than by how the map happens to
+    // iterate.
+    val (values, reported) =
+      results.toList.sortBy { case (key, _) => key }.foldLeft((Map.empty[String, String], NoFailures)) {
+        case ((accumulated, failures), (key, result)) =>
+          result.fold(
+            failure => (accumulated, failures :+ failure),
+            value => (accumulated.updated(key, value), failures))
+      }
+    val combined: ValueWithFailures[Map[String, String]] = ValueWithFailures.of(values, reported)
+
+    valueOf(combined) shouldBe Some(Map("key 1" -> "success 1", "key 3" -> "success 2"))
+    failuresOf(combined) shouldBe List(FAILURE1)
+  }
+
+  test("a map of outcomes keeps every entry and reports the failures of each") {
+    val outcomes: Map[String, ValueWithFailures[String]] = Map(
+      "key 1" -> ValueWithFailures.of("success 1", List(FAILURE1)),
+      "key 2" -> ValueWithFailures.of("success 2", List(FAILURE2)),
+      "key 3" -> ValueWithFailures.of("success 3"))
+
+    // Every entry here has a value, so every key survives - which is what separates this
+    // case from the one above, where an entry that failed had no value to contribute. The
+    // keys are visited in sorted order so the reported failures have a fixed order.
+    val combined: ValueWithFailures[Map[String, String]] =
+      outcomes.toList
+        .sortBy { case (key, _) => key }
+        .map { case (key, outcome) => outcome.map(value => Map(key -> value)) }
+        .foldLeft(ValueWithFailures.of(Map.empty[String, String]))(
+          ValueWithFailures.combiningValues[Map[String, String]](_ ++ _))
+
+    valueOf(combined) shouldBe
+      Some(Map("key 1" -> "success 1", "key 2" -> "success 2", "key 3" -> "success 3"))
+    failuresOf(combined) shouldBe List(FAILURE1, FAILURE2)
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Structure: equality, hashing, rendering and the round trip.
+  //
+  // Two cases of the class being ported tested machinery this port does not have:
+  // a reflective sweep over the properties of a bean, and Java serialization.
+  // Neither has a counterpart, so what replaces them is an assertion of the
+  // behaviour each existed to check.
+  // ---------------------------------------------------------------------------
+
+  test("equality, hashing and rendering distinguish the three shapes an outcome can take") {
+    val reported: ValueWithFailures[String] = ValueWithFailures.of("success", List(FAILURE1, FAILURE2))
+    val sameReported: ValueWithFailures[String] =
+      ValueWithFailures.of("success", List(FAILURE1, FAILURE2))
+    val plain: ValueWithFailures[String] = ValueWithFailures.of("success")
+    val onlyFailures: ValueWithFailures[String] = Ior.left(NonEmptyChain.of(FAILURE1, FAILURE2))
+
+    // Two outcomes built the same way are equal and hash alike, which is what the sweep
+    // being replaced checked reflectively.
+    reported shouldBe sameReported
+    reported.hashCode shouldBe sameReported.hashCode
+    (reported === sameReported) shouldBe true
+
+    // The same value with and without failures are different outcomes, and so is the pair
+    // of failures with no value at all. Holding all three in a set is the compact way to
+    // assert that equality and hashing agree that they are three distinct values.
+    (reported == plain) shouldBe false
+    (reported === plain) shouldBe false
+    (reported == onlyFailures) shouldBe false
+    Set(plain, reported, onlyFailures) should have size 3
+
+    // Rendering is a function of the value, so it separates the shapes too, and the
+    // rendering of an outcome includes the rendering of each failure it reports.
+    reported.show should not be plain.show
+    reported.show should not be onlyFailures.show
+    reported.show should include(FAILURE1.show)
+    reported.show should include(FAILURE2.show)
+    plain.show should include("success")
+  }
+
+  test("decomposing an outcome and rebuilding it from its parts yields an equal outcome") {
+    // This replaces the serialization case. It is deliberately a structural round trip and
+    // not a serialized-form one: the four alias types of this package are generic
+    // containers and are excluded from the closed inventory of types whose serialized form
+    // is covered, because an instance for a container follows from its element type and
+    // the failure type each having one. That inventory is compared against a fixed list, so
+    // nothing here claims to add to it; the serialized form of a failure itself belongs to
+    // the spec of `Failure`.
+    val plain: ValueWithFailures[String] = ValueWithFailures.of("success")
+    val reported: ValueWithFailures[String] = ValueWithFailures.of("success", List(FAILURE1, FAILURE2))
+    val onlyFailures: ValueWithFailures[String] = Ior.left(NonEmptyChain.of(FAILURE1, FAILURE2))
+
+    rebuild(plain) shouldBe plain
+    rebuild(reported) shouldBe reported
+    rebuild(onlyFailures) shouldBe onlyFailures
+
+    // The parts themselves survive the trip, in order, which is what makes the equality
+    // above meaningful rather than accidental.
+    valueOf(rebuild(reported)) shouldBe Some("success")
+    failuresOf(rebuild(reported)) shouldBe List(FAILURE1, FAILURE2)
+    valueOf(rebuild(onlyFailures)) shouldBe None
+    failuresOf(rebuild(onlyFailures)) shouldBe List(FAILURE1, FAILURE2)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Structure, over generated outcomes.
+  //
+  // The two cases above fix three outcomes - one of each shape, one value, one
+  // pair of failures - and that is what the two Java methods they replace did
+  // with the bean they built. What those methods were reaching for, though, is a
+  // property of the type rather than of the three values: an outcome built from
+  // the parts of another is equal to it, equal outcomes hash alike, and the
+  // failures an outcome reports are part of its value, in the order it reports
+  // them. Each of those holds of every outcome or of none, so the cases below
+  // draw theirs from the generator of this module: an arbitrary value, a chain
+  // of arbitrary length whose failures carry arbitrary reasons, messages and
+  // attributes, and a shape drawn from all three rather than chosen here.
+  //
+  // The failure values are asserted whole rather than counted. A rebuild that
+  // kept the number of failures and the order of their messages while dropping
+  // their attributes would satisfy a count and lose data the reporting side of
+  // this library depends on, so every assertion below compares the failures
+  // themselves and then their three parts one by one.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Chains of two to four failures that are distinct from one another by construction.
+   *
+   * Order-sensitivity can only be asserted of a chain whose reversal is a different sequence,
+   * and a chain drawn straight from the generator may hold one failure or hold the same
+   * failure twice, in which case reversing it changes nothing. Tagging each drawn failure with
+   * its position makes the failures pairwise distinct - they disagree on an attribute, whatever
+   * else they agree on - so the reversal of every chain this generates is a different sequence
+   * of failures, and no draw has to be discarded to get one.
+   */
+  private val genDistinctFailureChain: Gen[NonEmptyChain[Failure]] =
+    for {
+      head <- genFailure
+      count <- Gen.choose(1, 3)
+      tail <- Gen.listOfN(count, genFailure)
+    } yield {
+      val tagged: List[Failure] = (head :: tail).zipWithIndex.map {
+        case (failure, index) => failure.withAttribute("position", index.toString)
+      }
+      NonEmptyChain.of(tagged.head, tagged.tail: _*)
+    }
+
+  test("rebuilding an arbitrary outcome from its parts returns the outcome it was given") {
+    forAll(genValueWithFailures(genNonEmptyText)) { (outcome: ValueWithFailures[String]) =>
+      // The helper takes the outcome apart into its failures and its value and builds a new
+      // outcome from them, through `of` where there is a value and through the chain alone
+      // where there is not. That it is the identity is the property the removed serialization
+      // case was reaching for, and it holds for the third shape as well as for the two the
+      // class being ported could express.
+      rebuild(outcome) shouldBe outcome
+      (rebuild(outcome) === outcome) shouldBe true
+      ValueWithFailures.hasFailures(rebuild(outcome)) shouldBe ValueWithFailures.hasFailures(outcome)
+    }
+  }
+
+  test("the value and the whole of every failure survive a rebuild in the order they were reported") {
+    forAll(genValueWithFailures(genNonEmptyText)) { (outcome: ValueWithFailures[String]) =>
+      val rebuilt: ValueWithFailures[String] = rebuild(outcome)
+
+      // The value survives exactly - the same string, or the absence of one for the shape
+      // that carries no value - and so does each failure, with its reason, its message and
+      // its attributes, in the position the outcome reported it in.
+      valueOf(rebuilt) shouldBe valueOf(outcome)
+      failuresOf(rebuilt) shouldBe failuresOf(outcome)
+      reasonsOf(rebuilt) shouldBe reasonsOf(outcome)
+      messagesOf(rebuilt) shouldBe messagesOf(outcome)
+      failuresOf(rebuilt).map(failure => failure.attributes) shouldBe
+        failuresOf(outcome).map(failure => failure.attributes)
+    }
+  }
+
+  test("equal outcomes hash alike, and the three shapes over one value are three distinct outcomes") {
+    forAll(genNonEmptyText, genFailures) { (value: String, failures: NonEmptyChain[Failure]) =>
+      val reported: ValueWithFailures[String] =
+        ValueWithFailures.of(value, failures.toNonEmptyList.toList)
+      val sameReported: ValueWithFailures[String] =
+        ValueWithFailures.of(value, failures.toNonEmptyList.toList)
+      val plain: ValueWithFailures[String] = ValueWithFailures.of(value)
+      val onlyFailures: ValueWithFailures[String] = Ior.left(failures)
+
+      // Two outcomes built the same way from the same parts are equal and hash alike, which
+      // is what makes one usable as a key and what the reflective sweep being replaced
+      // checked for the one bean it built.
+      reported shouldBe sameReported
+      reported.hashCode shouldBe sameReported.hashCode
+      (reported === sameReported) shouldBe true
+
+      // The three shapes over one value and one chain are three different outcomes: reporting
+      // failures is not the same as not reporting them, and carrying a value is not the same
+      // as carrying none. Holding all three in a set is the compact statement that equality
+      // and hashing agree about that.
+      (reported == plain) shouldBe false
+      (reported == onlyFailures) shouldBe false
+      (plain == onlyFailures) shouldBe false
+      Set(plain, reported, onlyFailures) should have size 3
+    }
+  }
+
+  test("the order of the failures an outcome reports is part of the outcome") {
+    forAll(genNonEmptyText, genDistinctFailureChain) { (value: String, failures: NonEmptyChain[Failure]) =>
+      val ordered: List[Failure] = failures.toNonEmptyList.toList
+      val forward: ValueWithFailures[String] = ValueWithFailures.of(value, ordered)
+      val reversed: ValueWithFailures[String] = ValueWithFailures.of(value, ordered.reverse)
+
+      failuresOf(forward) shouldBe ordered
+      failuresOf(reversed) shouldBe ordered.reverse
+      failuresOf(reversed) should contain theSameElementsAs failuresOf(forward)
+      valueOf(reversed) shouldBe valueOf(forward)
+
+      // The two report the same failures about the same value and differ only in the order
+      // they report them in, so this is exactly the difference the ordered chain records and
+      // an equality that treated the failures as a bag would lose. The comparison is written
+      // against the sequence rather than against the length of the chain, so it stays a true
+      // statement about any chain at all: were this property ever to fail, the minimised
+      // chain the framework reports back - which it derives without knowing the generator
+      // above keeps its failures distinct - is still a chain this assertion holds of.
+      if (ordered == ordered.reverse) {
+        reversed shouldBe forward
+      } else {
+        (reversed == forward) shouldBe false
+        (reversed === forward) shouldBe false
+      }
+
+      // The shape that carries no value orders its failures the same way, the ordering having
+      // nothing to do with the value: the chain alone, and the chain alone reversed, are two
+      // different outcomes of that shape.
+      val failuresOnly: ValueWithFailures[String] = Ior.left(failures)
+      val reversedFailuresOnly: ValueWithFailures[String] = Ior.left(failures.reverse)
+      failuresOf(failuresOnly) shouldBe ordered
+      failuresOf(reversedFailuresOnly) shouldBe ordered.reverse
+      (reversedFailuresOnly == failuresOnly) shouldBe (ordered == ordered.reverse)
+    }
+  }
+
+  test("every one of the three shapes arises from the generator of partial successes") {
+    // The cases above are only as strong as the spread of the generator they draw from: were
+    // it to stop producing the shape that carries failures and no value, or the shape that
+    // carries both, every one of them would still pass while asserting less than it reads as
+    // asserting. This case pins the spread itself. The sample is drawn from a fixed seed, so
+    // the case is a function of the generator and of nothing else, and it fails if a shape
+    // goes missing rather than failing once in a while.
+    val samples: List[ValueWithFailures[String]] =
+      Gen
+        .listOfN(256, genValueWithFailures(genNonEmptyText))
+        .pureApply(Gen.Parameters.default, Seed(20160517L))
+
+    samples should have size 256
+    samples.count(outcome => outcome.isLeft) should be > 0
+    samples.count(outcome => outcome.isRight) should be > 0
+    samples.count(outcome => outcome.isBoth) should be > 0
+    // The three counts account for the whole sample, an `Ior` having no fourth case, and
+    // every drawn outcome is well formed: it reports failures exactly when it is not a plain
+    // success, and it carries a value exactly when it is not the failures-only shape.
+    samples.count(outcome => outcome.isLeft) + samples.count(outcome => outcome.isRight) +
+      samples.count(outcome => outcome.isBoth) shouldBe 256
+    samples.foreach { outcome =>
+      ValueWithFailures.hasFailures(outcome) shouldBe !outcome.isRight
+      valueOf(outcome).isDefined shouldBe !outcome.isLeft
+      failuresOf(outcome).isEmpty shouldBe outcome.isRight
+    }
+  }
+
+}

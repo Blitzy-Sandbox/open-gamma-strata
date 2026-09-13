@@ -41,6 +41,21 @@ executors:
       JAVA_TOOL_OPTIONS: -XX:MaxRAM=3572m
       MAVEN_OPTS: -Xmx1g
 
+  #----------------------------------------------------------------------------
+  # Same environment as jdk21 above, with the image pinned by digest rather
+  # than by the floating `21.0` tag: the JDK and OS layer this port is built
+  # and gated on cannot change without a change to this file. The digest is
+  # what both `cimg/openjdk:21.0` and `cimg/openjdk:21.0.12` resolve to, and
+  # the image declares JAVA_VERSION=21.0.12, which the job asserts in full.
+  # The four executors above keep their tags: they belong to the Maven jobs,
+  # which this port does not modify. No MAVEN_OPTS - this job runs no Maven.
+  jdk21_pinned:
+    docker:
+      - image: cimg/openjdk@sha256:a94c24460ede1270ab32fbad52fd8afaf8a46113667fe6e7e3d4ce92442960e2
+    working_directory: ~/repo
+    environment:
+      JAVA_TOOL_OPTIONS: -XX:MaxRAM=3572m
+
 #############################################################################
 # reusable commands
 commands:
@@ -182,7 +197,8 @@ commands:
           working_directory: ~/repo/.circleci
           command: |
             gpg --version
-            echo $SIGNING_PASSWORD | gpg --batch --passphrase-fd 0 -o codesigning.asc -d codesigning.asc.gpg
+            gpg --batch --passphrase-fd 3 -o codesigning.asc -d codesigning.asc.gpg \
+              3< <(printf '%s' "$SIGNING_PASSWORD")
             gpg --batch --import codesigning.asc
             shred --remove codesigning.asc
             echo 'use-agent' >> ~/.gnupg/gpg.conf
@@ -281,6 +297,235 @@ jobs:
             - maven_test
 
 #----------------------------------------------------------------------------
+# verify-gates.sh is the single owner of acceptance checks
+  scala_build21:
+    executor: jdk21_pinned
+    steps:
+      - checkout
+      - run:
+          name: Checking Java version
+          command: |
+            # The executor pins the image by digest, so this asserts the patch
+            # level that pin carries rather than only the major version: a
+            # digest that moves the JDK fails here until this expectation
+            # moves with it.
+            EXPECTED_JDK=21.0.12
+            REPORTED=$(java -version 2>&1)
+            printf '%s\n' "$REPORTED"
+            if [ "${JAVA_VERSION:-unset}" != "$EXPECTED_JDK" ]; then
+              printf 'Pinned image declares JAVA_VERSION=%s, expected %s.\n' "${JAVA_VERSION:-unset}" "$EXPECTED_JDK" >&2
+              exit 1
+            fi
+            case $REPORTED in
+              *"version \"$EXPECTED_JDK"*) ;;
+              *) printf 'Running JDK is not %s.\n' "$EXPECTED_JDK" >&2; exit 1 ;;
+            esac
+      - run:
+          name: Installing sbt 1.13.0
+          command: |
+            curl -fsSL -o sbt.tgz https://github.com/sbt/sbt/releases/download/v1.13.0/sbt-1.13.0.tgz
+            echo "06806805ffd26232727326216766ed4793b549f8c1e6ffeef2e610db7245b698  sbt.tgz" | sha256sum -c -
+            mkdir -p "$HOME/tools"
+            tar -xzf sbt.tgz -C "$HOME/tools"
+            rm -f sbt.tgz
+            echo 'export PATH="$HOME/tools/sbt/bin:$PATH"' >> "$BASH_ENV"
+      - run:
+          name: Checking sbt version
+          command: sbt --script-version | grep -qx 1.13.0
+      # Two fully qualified keys, each naming the architecture, one branch, the
+      # job and all three build-definition checksums - never a truncated
+      # prefix that any newer cache of this project would match. The second is
+      # how a branch build reaches the trunk's cache, since only the trunk
+      # pipeline saves one (below). Neither key is a trust boundary: CircleCI
+      # caches are one project-wide namespace and `restore_cache` searches it
+      # by prefix, so a pipeline that edits this file can write a key this
+      # build matches. What restores is therefore treated as untrusted and
+      # verified in the two steps that follow, before sbt is started.
+      - restore_cache:
+          name: "Restoring sbt cache"
+          keys:
+            - sbt-deps-v{{ .Environment.CACHE_VERSION }}-{{ arch }}-{{ .Branch }}-{{ .Environment.CIRCLE_JOB }}-{{ checksum "build.sbt" }}-{{ checksum "project/build.properties" }}-{{ checksum "project/plugins.sbt" }}
+            - sbt-deps-v{{ .Environment.CACHE_VERSION }}-{{ arch }}-main-{{ .Environment.CIRCLE_JOB }}-{{ checksum "build.sbt" }}-{{ checksum "project/build.properties" }}-{{ checksum "project/plugins.sbt" }}
+      - run:
+          name: Validating restored sbt home
+          command: |
+            # sbt evaluates ~/.sbt/1.0/plugins/*.sbt and the global *.sbt
+            # settings as code at startup, so restored content would execute
+            # before the gate step below runs. This job caches nothing under
+            # ~/.sbt, so build configuration there came from somewhere else,
+            # and the build stops rather than starting sbt on it. Credentials
+            # are refused for the same reason: nothing here writes or reads
+            # one.
+            sbt_home="$HOME/.sbt"
+            if [ ! -d "$sbt_home" ]; then
+              echo "No ${sbt_home} restored; nothing to validate."
+              exit 0
+            fi
+            # Fail closed: an uninspectable sbt home is treated as a rejected
+            # one. `if !` keeps the -e shell alive long enough to say why.
+            if ! offenders="$(find "$sbt_home" -mindepth 1 -path "$sbt_home/boot" -prune \
+                -o -name '*.sbt' -print \
+                -o -name '*.scala' -print \
+                -o -iname '*credential*' -print \
+                -o -name 'plugins' -print)"; then
+              echo "Could not inspect ${sbt_home}; refusing the restored cache." >&2
+              exit 1
+            fi
+            if [ -n "$offenders" ]; then
+              echo "Refusing restored cache: executable or credential-bearing content outside ${sbt_home}/boot:" >&2
+              echo "$offenders" >&2
+              exit 1
+            fi
+            echo "Restored ${sbt_home} carries no executable or credential-bearing content outside boot."
+      - run:
+          name: Verifying restored dependency artifacts
+          command: |
+            # Every jar the restored cache holds is executed by the build, so
+            # each one is re-checked against the checksum the repository it
+            # came from publishes - the authority outside the cache - and
+            # deleted when it does not match, so Coursier downloads it again
+            # instead of the build running it. Deleting rather than failing is
+            # deliberate: a rejected artifact costs one download, while a
+            # rejected build would turn any cache eviction into a red run.
+            cache="$HOME/.cache/coursier/v1"
+            if [ ! -d "$cache" ]; then
+              echo "No restored Coursier cache; nothing to verify."
+              exit 0
+            fi
+            central="repo1.maven.org"
+            root="$cache/https/$central/maven2"
+            # This build resolves from Maven Central alone, so anything cached
+            # under another host is not ours to verify and goes without asking.
+            find "$cache" -mindepth 1 -maxdepth 1 ! -name https -exec rm -rf {} +
+            find "$cache/https" -mindepth 1 -maxdepth 1 ! -name "$central" -exec rm -rf {} + 2>/dev/null || true
+            if [ ! -d "$root" ]; then
+              echo "No Maven Central artifacts in the restored cache; nothing to verify."
+              exit 0
+            fi
+            verified=0
+            discarded=0
+            while IFS= read -r artifact; do
+              [ -n "$artifact" ] || continue
+              relative="${artifact#"$root"/}"
+              expected="$(curl -fsSL --retry 3 --max-time 30 \
+                "https://$central/maven2/${relative}.sha1" 2>/dev/null \
+                | tr -d '[:space:]' | cut -c1-40 || true)"
+              actual="$(sha1sum "$artifact" | cut -d' ' -f1)"
+              if [ -n "$expected" ] && [ "$expected" = "$actual" ]; then
+                verified=$((verified + 1))
+              else
+                discarded=$((discarded + 1))
+                echo "discarding unverified artifact: $relative (published ${expected:-<unavailable>}, restored $actual)"
+                rm -f "$artifact"
+                # Coursier's sidecars for the artifact are hidden siblings; the
+                # artifact is re-downloaded with them, so they go too.
+                rm -f "$(dirname "$artifact")/.$(basename "$artifact")"*
+              fi
+            done < <(find "$root" -type f \( -name '*.jar' -o -name '*.pom' \) | sort)
+            echo "Restored dependency artifacts verified against $central: ${verified} kept, ${discarded} discarded."
+      - run:
+          name: Verifying acceptance gates
+          command: scripts/verify-gates.sh
+      # Only the trunk pipeline writes the shared namespace, and only when the
+      # gates above passed: the condition holds for `main` alone and the step
+      # carries no `when` of its own, so CircleCI's `on_success` default keeps
+      # a failed run from saving. The one cached path is the Coursier download
+      # cache, whose every artifact the step above can check against the
+      # repository that published it. Nothing under ~/.sbt is cached: its boot
+      # jars have no such published checksum to check them against, and the
+      # rest of it is the global plugins and settings sbt executes and the
+      # credential files it reads.
+      - when:
+          condition:
+            equal: [ main, << pipeline.git.branch >> ]
+          steps:
+            - save_cache:
+                name: "Storing sbt cache"
+                key: sbt-deps-v{{ .Environment.CACHE_VERSION }}-{{ arch }}-{{ .Branch }}-{{ .Environment.CIRCLE_JOB }}-{{ checksum "build.sbt" }}-{{ checksum "project/build.properties" }}-{{ checksum "project/plugins.sbt" }}
+                paths:
+                  - ~/.cache/coursier
+      # Everything below uploads from target/publish and from nowhere else.
+      # target/publish is the scan-approved tree scripts/verify-gates.sh
+      # builds: a sanitized copy of the gate report, the parity reports, the
+      # JUnit XML and the audit logs, each copy checked to belong to this run
+      # and scanned for credential signatures before it was kept, with the
+      # JUnit <properties> block and the runner's hostname, account, home,
+      # checkout, temporary and toolchain paths removed. Uploading the raw
+      # paths instead published the runner's internals, and - because these
+      # steps run `when: always`, which is exactly when the scan has failed -
+      # published artifacts the scan had just objected to.
+      #
+      # So this job's published artifact contract is one tree, and this is
+      # where to read it. A gate run produces four evidence paths -
+      # target/gate-report.md, target/parity-report, target/test-reports and
+      # target/audit - and every one of them is uploaded, but as a sanitized
+      # copy inside the single `gate-evidence` destination below:
+      # gate-evidence/gate-report.md, gate-evidence/parity-report/,
+      # gate-evidence/test-reports/ and gate-evidence/audit/, beside the
+      # MANIFEST.txt and PUBLICATION-STATUS.txt that record which copy was
+      # approved and what was withheld. None of those four paths is uploaded
+      # under its own name, deliberately: their bytes are the originals the
+      # scan works from. SCALA_MIGRATION.md records this as a divergence from
+      # the four artifact paths the specification lists, with the reason.
+      #
+      # This step ENFORCES the approval rather than printing it. Printing it
+      # was not enough: the upload below runs `when: always`, so a tree the
+      # gate run marked NOT APPROVED - or one changed after it was scanned, or
+      # one left behind by an earlier build - was uploaded regardless of what
+      # the marker said. `--verify-publication` re-checks the marker, the
+      # sha256 of every published copy recorded in MANIFEST.txt, and that
+      # nothing is in the tree which the manifest does not name; anything else
+      # is REPLACED by a notice here, so what is uploaded is either the
+      # approved tree or nothing from it. The step itself never fails the job:
+      # the gate run's own exit status is the verdict on the gates, and this
+      # one only decides what may leave the machine.
+      - run:
+          name: "Verifying and preparing the scan-approved publication tree"
+          command: |
+            set +e
+            mkdir -p target/publish/test-reports
+            # The check's own output is captured through a pipe into a shell
+            # variable, not into a file under a shared temporary directory. A
+            # fixed path there is predictable, so a symbolic link already
+            # sitting at it is followed and whatever it points at is
+            # overwritten (CWE-377); two runs of this step on one host write
+            # the same path, which is how the lines quoted below could come
+            # from the other run; and the file outlives the step. A variable
+            # has none of those properties and leaves nothing to clean up, so
+            # this step still writes nowhere outside target/.
+            report="$(scripts/verify-gates.sh --verify-publication 2>&1)"
+            verified=$?
+            printf '%s\n' "$report"
+            if [ "$verified" -ne 0 ]; then
+              echo "The publication tree was NOT approved for upload; replacing it with a notice."
+              rm -rf target/publish
+              mkdir -p target/publish/test-reports
+              {
+                printf 'PUBLICATION: NOT APPROVED - the publication tree did not pass the uploader check\n'
+                printf '#\n'
+                printf '# Nothing this run produced is uploaded. The tree either was never staged,\n'
+                printf '# was marked NOT APPROVED by the gate run, or no longer matches the digests\n'
+                printf '# recorded when it was scanned. The evidence itself stays on the runner\n'
+                printf '# under target/audit, target/parity-report and target/test-reports.\n'
+                printf '#\n'
+                printf '# what the uploader check reported:\n'
+                printf '%s\n' "$report" | sed -n '1,40{s/^/# /;p;}'
+              } > target/publish/PUBLICATION-STATUS.txt
+            fi
+            cat target/publish/PUBLICATION-STATUS.txt
+            exit 0
+          when: always
+      - store_test_results:
+          name: "Uploading Scala test results"
+          path: target/publish/test-reports
+          when: always
+      - store_artifacts:
+          name: "Storing the scan-approved gate evidence"
+          path: target/publish
+          destination: gate-evidence
+          when: always
+
+#----------------------------------------------------------------------------
   release:
     executor: jdk8
     steps:
@@ -336,6 +581,8 @@ workflows:
       - build17:
           context: OG-OSS
       - build21:
+          context: OG-OSS
+      - scala_build21:
           context: OG-OSS
 
 #----------------------------------------------------------------------------

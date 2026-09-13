@@ -49,6 +49,12 @@ Simply run this command to compile and install the source code locally:
   mvn install
 ```
 
+That command publishes the built artifacts into your local Maven repository (`~/.m2/repository`
+by default) under the mutable `2.12.74-SNAPSHOT` coordinates, so on a machine whose repository is
+shared with other builds it replaces an input of theirs. If you only need the jars, `mvn package`
+leaves them in each module's git-ignored `target/` and publishes nothing; if you want the `install`
+lifecycle without the shared publication, add `-Dmaven.repo.local=<a directory of your own>`.
+
 Strata is based on Java SE 8.
 Our continuous integration regularly builds on both Java 8 and Java 11.
 When using Java 8, version 8u40 or later is required due to bugs in earlier versions.
@@ -63,6 +69,64 @@ We recommend builds of OpenJDK from providers other than Oracle, notably
 
 For more information about developing code on Strata
 see the [documentation](https://strata.opengamma.io).
+
+
+Scala port
+----------
+
+Alongside the Maven build, this repository contains a Scala 2.13 port of two Strata modules:
+`strata-collect`, ported in the subset that `strata-basics` uses, and `strata-basics` itself.
+The port is a separate, additional build, driven by [sbt](https://www.scala-sbt.org/) from the
+repository root.
+The Java modules under `modules/` are unchanged and are still built with Maven as described above.
+
+To build the Scala port, JDK 21 and sbt 1.13.0 are required.
+Scala 2.13.18 is resolved by the build itself, so it does not need to be installed separately.
+
+Run this command to compile both Scala modules and run their test suites:
+
+```
+  sbt test
+```
+
+`strata-basics` is the root project of the sbt build and aggregates `strata-collect`,
+so this single command covers both modules.
+
+Run this command for the end-to-end demo:
+
+```
+  sbt "strata-basics/run"
+```
+
+The demo builds a `PeriodicSchedule`, adjusts its dates against a built-in `HolidayCalendar`
+through an explicitly supplied `ReferenceData`, converts a `MultiCurrencyAmount` to another
+currency through an `FxMatrix`, then serializes the results to JSON and prints them.
+
+Run this script to check the port against its acceptance gates:
+
+```
+  scripts/verify-gates.sh
+```
+
+It is the single authoritative gate runner, intended to be run from a clean checkout on JDK 21.
+Beyond the JDK and sbt it needs git, python3 and the POSIX text utilities.
+It writes `target/gate-report.md` and exits non-zero if any automated gate fails.
+The one gate that is a manual approval rather than a measurement is recorded as reported.
+
+The [Scala migration note](SCALA_MIGRATION.md) records every ported `strata-collect` symbol with
+its Scala replacement, and every deliberate divergence from the Java behaviour.
+Each ported module also has its own README:
+[Strata-Basics (Scala)](strata-basics/README.md) and
+[Strata-Collect (Scala)](strata-collect/README.md).
+
+The sbt build brings its own dependency surface, and the repository's automated dependency updates
+cover the Maven modules only - `.github/dependabot.yml` declares the `maven` ecosystem and does not
+see `build.sbt` or `project/`. Section (h) of the
+[Scala migration note](SCALA_MIGRATION.md) is the dependency review that covers it instead: what is
+under review, when to review it, the commands a review runs, what the last one found, and the
+automated monitoring an owner would add on top. The acceptance gates prove the classpath carries
+nothing it should not; they do not tell you whether a version is current, which is why that review
+is written down and manual.
 
 
 Status
@@ -89,3 +153,8 @@ Strata is formed from a number of modules:
 * [Data](modules/data/README.md)
 * [Basics](modules/basics/README.md)
 * [Collect](modules/collect/README.md)
+
+The Scala port adds two modules, built with sbt rather than Maven:
+
+* [Strata-Basics (Scala)](strata-basics/README.md)
+* [Strata-Collect (Scala)](strata-collect/README.md)

@@ -1,0 +1,5416 @@
+[
+  {
+    "id": "currency-amount",
+    "source": "CurrencyAmountTest",
+    "amounts": [
+      {
+        "currency": "GBP",
+        "amount": 100.0
+      },
+      {
+        "currency": "GBP",
+        "amount": 25.5
+      },
+      {
+        "currency": "USD",
+        "amount": 50.0
+      },
+      {
+        "currency": "GBP",
+        "amount": 0.0
+      }
+    ],
+    "scalars": [3.5, -1.0],
+    "arrays": [],
+    "multiArrays": [],
+    "money": [],
+    "bigMoney": [],
+    "rates": [],
+    "currencyAmountResults": [
+      {
+        "op": "plus",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "right": {
+          "currency": "GBP",
+          "amount": 25.5
+        },
+        "result": {
+          "currency": "GBP",
+          "amount": 125.5
+        }
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "right": {
+          "currency": "GBP",
+          "amount": 25.5
+        },
+        "result": {
+          "currency": "GBP",
+          "amount": 74.5
+        }
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "right": {
+          "currency": "USD",
+          "amount": 50.0
+        },
+        "error": "IllegalArgumentException: Unable to add amounts in different currencies"
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "right": {
+          "currency": "USD",
+          "amount": 50.0
+        },
+        "error": "IllegalArgumentException: Unable to subtract amounts in different currencies"
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "scalar": 3.5,
+        "result": {
+          "currency": "GBP",
+          "amount": 350.0
+        }
+      },
+      {
+        "op": "negated",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "result": {
+          "currency": "GBP",
+          "amount": -100.0
+        }
+      },
+      {
+        "op": "positive",
+        "left": {
+          "currency": "GBP",
+          "amount": -100.0
+        },
+        "result": {
+          "currency": "GBP",
+          "amount": 100.0
+        }
+      },
+      {
+        "op": "negative",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "result": {
+          "currency": "GBP",
+          "amount": -100.0
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "target": "USD",
+        "rate": 1.25,
+        "result": {
+          "currency": "USD",
+          "amount": 125.0
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "target": "GBP",
+        "rate": 1.25,
+        "error": "IllegalArgumentException: FX rate must be 1 when no conversion required"
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "target": "GBP",
+        "rate": 1.0,
+        "result": {
+          "currency": "GBP",
+          "amount": 100.0
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "GBP",
+          "amount": 100.0
+        },
+        "target": "GBP",
+        "rate": 1.5,
+        "error": "IllegalArgumentException: FX rate must be 1 when no conversion required"
+      },
+      {
+        "op": "of",
+        "input": {
+          "currency": "GBP",
+          "amount": -0.0
+        },
+        "result": {
+          "currency": "GBP",
+          "amount": 0.0
+        },
+        "doubleToLongBits": 0
+      },
+      {
+        "op": "of",
+        "input": {
+          "currency": "GBP",
+          "amount": "NaN"
+        },
+        "error": "IllegalArgumentException: Argument 'amount' must not be NaN"
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "GBP",
+          "amount": 0.0
+        },
+        "scalar": -1.0,
+        "result": {
+          "currency": "GBP",
+          "amount": 0.0
+        },
+        "doubleToLongBits": 0
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "GBP",
+          "amount": "Infinity"
+        },
+        "right": {
+          "currency": "GBP",
+          "amount": "-Infinity"
+        },
+        "error": "IllegalArgumentException: Argument 'amount' must not be NaN"
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "AED",
+          "amount": -1.66731446E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "AED",
+          "amount": -2.50097169E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "ARS",
+          "amount": -3.803693742E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "ARS",
+          "amount": -5.705540613E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "AUD",
+          "amount": 2.313403853E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "AUD",
+          "amount": 3.4701057795E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "BGN",
+          "amount": -6.179000671E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "BGN",
+          "amount": -9.2685010065E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "BHD",
+          "amount": -9.179969585E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "BHD",
+          "amount": -1.3769954377499998E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "BRL",
+          "amount": -5.316019991E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "BRL",
+          "amount": -7.9740299865E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "CAD",
+          "amount": 1.285902301E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "CAD",
+          "amount": 1.9288534515E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "CHF",
+          "amount": -7.307242242E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "CHF",
+          "amount": -1.0960863363E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "CLP",
+          "amount": -3.365512503E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "CLP",
+          "amount": -5.0482687545E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "CNH",
+          "amount": 3.945035189E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "CNH",
+          "amount": 5.9175527835E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "CNY",
+          "amount": -5.266035127E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "CNY",
+          "amount": -7.8990526905E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "COP",
+          "amount": 4.714707617E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "COP",
+          "amount": 7.0720614255E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "CZK",
+          "amount": 1.052864985E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "CZK",
+          "amount": 1.5792974774999999E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "DKK",
+          "amount": -5.376538313E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "DKK",
+          "amount": -8.064807469500001E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "EGP",
+          "amount": -9.695825113E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "EGP",
+          "amount": -1.45437376695E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "EUR",
+          "amount": -1.539710555E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "EUR",
+          "amount": -2.3095658325000003E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "GBP",
+          "amount": 4.159047328E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "GBP",
+          "amount": 6.238570992E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "HKD",
+          "amount": 7.865522491E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "HKD",
+          "amount": 1.17982837365E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "HRK",
+          "amount": -2.711980342E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "HRK",
+          "amount": -4.067970513E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "HUF",
+          "amount": 1962335.22
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "HUF",
+          "amount": 2943502.83
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "IDR",
+          "amount": -8.88612449E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "IDR",
+          "amount": -1.3329186735000001E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "ILS",
+          "amount": 3.308681667E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "ILS",
+          "amount": 4.9630225005E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "INR",
+          "amount": 5.864906022E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "INR",
+          "amount": 8.797359033E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "ISK",
+          "amount": -4.733918099E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "ISK",
+          "amount": -7.1008771485E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "JPY",
+          "amount": 7.991687281E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "JPY",
+          "amount": 1.19875309215E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "KRW",
+          "amount": 2.203990751E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "KRW",
+          "amount": 3.3059861265E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "KZT",
+          "amount": -2.991431317E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "KZT",
+          "amount": -4.4871469755E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "MAD",
+          "amount": 7.421192015E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "MAD",
+          "amount": 1.1131788022500001E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "MXN",
+          "amount": 7.659213116E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "MXN",
+          "amount": 1.1488819674E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "MYR",
+          "amount": -6.566229751E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "MYR",
+          "amount": -9.8493446265E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "NOK",
+          "amount": 8.362660823E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "NOK",
+          "amount": 1.25439912345E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "NZD",
+          "amount": -3.980727914E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "NZD",
+          "amount": -5.971091871E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "OMR",
+          "amount": -7.386042755E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "OMR",
+          "amount": -1.1079064132499999E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "PEN",
+          "amount": -3.465910648E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "PEN",
+          "amount": -5.198865972E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "PHP",
+          "amount": -2.104782538E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "PHP",
+          "amount": -3.157173807E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "PKR",
+          "amount": -6.079363212E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "PKR",
+          "amount": -9.119044817999999E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "PLN",
+          "amount": -2.734433017E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "PLN",
+          "amount": -4.1016495255E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "QAR",
+          "amount": 3041912.77
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "QAR",
+          "amount": 4562869.155
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "RON",
+          "amount": 6.770592885E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "RON",
+          "amount": 1.0155889327499999E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "RUB",
+          "amount": -524460.41
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "RUB",
+          "amount": -786690.615
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "SAR",
+          "amount": 8351308.16
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "SAR",
+          "amount": 1.252696224E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "SEK",
+          "amount": -1.817320921E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "SEK",
+          "amount": -2.7259813815E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "SGD",
+          "amount": 5.631371856E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "SGD",
+          "amount": 8.447057784E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "THB",
+          "amount": -1.067819218E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "THB",
+          "amount": -1.601728827E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "TRY",
+          "amount": 3.863732634E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "TRY",
+          "amount": 5.7955989510000005E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "TWD",
+          "amount": 2.292922193E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "TWD",
+          "amount": 3.4393832894999996E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "UAH",
+          "amount": -5.638327384E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "UAH",
+          "amount": -8.457491076E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "USD",
+          "amount": 9.663770694E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "USD",
+          "amount": 1.4495656041E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "VND",
+          "amount": -3.736999416E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "VND",
+          "amount": -5.6054991239999995E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "ZAR",
+          "amount": -3.092186075E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "ZAR",
+          "amount": -4.6382791125E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "XXX",
+          "amount": -5.592849067E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "XXX",
+          "amount": -8.3892736005E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "XAG",
+          "amount": -3.544032196E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "XAG",
+          "amount": -5.316048294E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "XAU",
+          "amount": -7.093201994E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "XAU",
+          "amount": -1.0639802991E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "XPD",
+          "amount": 9.056645858E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "XPD",
+          "amount": 1.3584968787E8
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "XPT",
+          "amount": 4.855938145E7
+        },
+        "scalar": 1.5,
+        "result": {
+          "currency": "XPT",
+          "amount": 7.283907217500001E7
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "ATS",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "ATS",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "BEF",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "BEF",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "CYP",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CYP",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "DEM",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "DEM",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "EEK",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "EEK",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "ESP",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "ESP",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "FIM",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "FIM",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "FRF",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "FRF",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "GRD",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "GRD",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "IEP",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "IEP",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "ITL",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "ITL",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "LTL",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "LTL",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "LUF",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "LUF",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "LVL",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "LVL",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "MTL",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "MTL",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "NLG",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "NLG",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "PTE",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "PTE",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "SIT",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SIT",
+          "amount": 1851.851835
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "SKK",
+          "amount": 1234.56789
+        },
+        "scalar": 1.5,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SKK",
+          "amount": 1851.851835
+        }
+      }
+    ],
+    "moneyResults": [],
+    "bigMoneyResults": [],
+    "currencyAmountArrayResults": [],
+    "multiCurrencyAmountResults": [],
+    "multiCurrencyAmountArrayResults": []
+  },
+  {
+    "id": "money",
+    "source": "MoneyTest",
+    "amounts": [],
+    "scalars": [],
+    "arrays": [],
+    "multiArrays": [],
+    "money": [
+      {
+        "currency": "AUD",
+        "amount": "100.12",
+        "toString": "AUD 100.12"
+      },
+      {
+        "currency": "AUD",
+        "amount": "100.13",
+        "toString": "AUD 100.13"
+      },
+      {
+        "currency": "RON",
+        "amount": "200.23",
+        "toString": "RON 200.23"
+      },
+      {
+        "currency": "RON",
+        "amount": "1.01",
+        "toString": "RON 1.01"
+      },
+      {
+        "currency": "BHD",
+        "amount": "100.120",
+        "toString": "BHD 100.120"
+      },
+      {
+        "currency": "BHD",
+        "amount": "100.125",
+        "toString": "BHD 100.125"
+      },
+      {
+        "currency": "BHD",
+        "amount": "1.235",
+        "toString": "BHD 1.235"
+      },
+      {
+        "currency": "JPY",
+        "amount": "123",
+        "toString": "JPY 123"
+      },
+      {
+        "currency": "JPY",
+        "amount": "1",
+        "toString": "JPY 1"
+      },
+      {
+        "currency": "RON",
+        "amount": "100.12",
+        "toString": "RON 100.12"
+      }
+    ],
+    "bigMoney": [],
+    "rates": [
+      {
+        "pair": "AUD/RON",
+        "rate": 2.5
+      }
+    ],
+    "currencyAmountResults": [],
+    "moneyResults": [
+      {
+        "op": "of",
+        "currency": "AUD",
+        "amount": 100.12,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "AUD",
+          "amount": "100.12",
+          "toString": "AUD 100.12"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "AUD",
+        "amount": 100.13,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "AUD",
+          "amount": "100.13",
+          "toString": "AUD 100.13"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "AUD",
+        "amount": 100.1249,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "AUD",
+          "amount": "100.12",
+          "toString": "AUD 100.12"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "AUD",
+        "amount": 100.125,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "AUD",
+          "amount": "100.13",
+          "toString": "AUD 100.13"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "RON",
+        "amount": 200.23,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "RON",
+        "amount": 200.2345,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "RON",
+        "amount": 1.005,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "RON",
+          "amount": "1.01",
+          "toString": "RON 1.01"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BHD",
+        "amount": 100.12,
+        "minorUnitDigits": 3,
+        "captureOnly": false,
+        "result": {
+          "currency": "BHD",
+          "amount": "100.120",
+          "toString": "BHD 100.120"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BHD",
+        "amount": 100.1249,
+        "minorUnitDigits": 3,
+        "captureOnly": false,
+        "result": {
+          "currency": "BHD",
+          "amount": "100.125",
+          "toString": "BHD 100.125"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BHD",
+        "amount": 100.125,
+        "minorUnitDigits": 3,
+        "captureOnly": false,
+        "result": {
+          "currency": "BHD",
+          "amount": "100.125",
+          "toString": "BHD 100.125"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BHD",
+        "amount": 1.23456,
+        "minorUnitDigits": 3,
+        "captureOnly": false,
+        "result": {
+          "currency": "BHD",
+          "amount": "1.235",
+          "toString": "BHD 1.235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "JPY",
+        "amount": 123.456,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "JPY",
+          "amount": "123",
+          "toString": "JPY 123"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "JPY",
+        "amount": 0.5,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "JPY",
+          "amount": "1",
+          "toString": "JPY 1"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "JPY",
+        "amount": 123.4567890123456,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "JPY",
+          "amount": "123",
+          "toString": "JPY 123"
+        }
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        },
+        "right": {
+          "currency": "RON",
+          "amount": "100.12",
+          "toString": "RON 100.12"
+        },
+        "result": {
+          "currency": "RON",
+          "amount": "300.35",
+          "toString": "RON 300.35"
+        }
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        },
+        "right": {
+          "currency": "RON",
+          "amount": "100.12",
+          "toString": "RON 100.12"
+        },
+        "result": {
+          "currency": "RON",
+          "amount": "100.11",
+          "toString": "RON 100.11"
+        }
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        },
+        "right": {
+          "currency": "AUD",
+          "amount": "100.12",
+          "toString": "AUD 100.12"
+        },
+        "error": "IllegalArgumentException: Unable to add amounts in different currencies"
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        },
+        "right": {
+          "currency": "AUD",
+          "amount": "100.12",
+          "toString": "AUD 100.12"
+        },
+        "error": "IllegalArgumentException: Unable to subtract amounts in different currencies"
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        },
+        "scalar": 3,
+        "result": {
+          "currency": "RON",
+          "amount": "600.69",
+          "toString": "RON 600.69"
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "AUD",
+          "amount": "100.12",
+          "toString": "AUD 100.12"
+        },
+        "target": "USD",
+        "rate": 0.65,
+        "result": {
+          "currency": "USD",
+          "amount": "65.08",
+          "toString": "USD 65.08"
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "AUD",
+          "amount": "100.12",
+          "toString": "AUD 100.12"
+        },
+        "target": "AUD",
+        "rate": 1.25,
+        "error": "IllegalArgumentException: FX rate must be 1 when no conversion required"
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        },
+        "target": "RON",
+        "rate": 1.1,
+        "error": "IllegalArgumentException: FX rate must be 1 when no conversion required"
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        },
+        "target": "RON",
+        "rate": 1.0,
+        "result": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "AUD",
+          "amount": "100.12",
+          "toString": "AUD 100.12"
+        },
+        "target": "RON",
+        "rate": 2.6,
+        "result": {
+          "currency": "RON",
+          "amount": "260.31",
+          "toString": "RON 260.31"
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "AUD",
+          "amount": "100.12",
+          "toString": "AUD 100.12"
+        },
+        "target": "RON",
+        "rates": [
+          {
+            "pair": "AUD/RON",
+            "rate": 2.5
+          }
+        ],
+        "result": {
+          "currency": "RON",
+          "amount": "250.30",
+          "toString": "RON 250.30"
+        }
+      },
+      {
+        "op": "toBigMoney",
+        "left": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        },
+        "result": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "AED",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "AED",
+          "amount": "1234.57",
+          "toString": "AED 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "ARS",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "ARS",
+          "amount": "1234.57",
+          "toString": "ARS 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "AUD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "AUD",
+          "amount": "1234.57",
+          "toString": "AUD 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BGN",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "BGN",
+          "amount": "1234.57",
+          "toString": "BGN 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BHD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 3,
+        "captureOnly": true,
+        "result": {
+          "currency": "BHD",
+          "amount": "1234.568",
+          "toString": "BHD 1234.568"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BRL",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "BRL",
+          "amount": "1234.57",
+          "toString": "BRL 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "CAD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CAD",
+          "amount": "1234.57",
+          "toString": "CAD 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "CHF",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CHF",
+          "amount": "1234.57",
+          "toString": "CHF 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "CLP",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "CLP",
+          "amount": "1235",
+          "toString": "CLP 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "CNH",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CNH",
+          "amount": "1234.57",
+          "toString": "CNH 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "CNY",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CNY",
+          "amount": "1234.57",
+          "toString": "CNY 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "COP",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "COP",
+          "amount": "1234.57",
+          "toString": "COP 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "CZK",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CZK",
+          "amount": "1234.57",
+          "toString": "CZK 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "DKK",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "DKK",
+          "amount": "1234.57",
+          "toString": "DKK 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "EGP",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "EGP",
+          "amount": "1234.57",
+          "toString": "EGP 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "EUR",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "EUR",
+          "amount": "1234.57",
+          "toString": "EUR 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "GBP",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "GBP",
+          "amount": "1234.57",
+          "toString": "GBP 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "HKD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "HKD",
+          "amount": "1234.57",
+          "toString": "HKD 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "HRK",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "HRK",
+          "amount": "1234.57",
+          "toString": "HRK 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "HUF",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "HUF",
+          "amount": "1234.57",
+          "toString": "HUF 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "IDR",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "IDR",
+          "amount": "1234.57",
+          "toString": "IDR 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "ILS",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "ILS",
+          "amount": "1234.57",
+          "toString": "ILS 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "INR",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "INR",
+          "amount": "1234.57",
+          "toString": "INR 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "ISK",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "ISK",
+          "amount": "1235",
+          "toString": "ISK 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "JPY",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "JPY",
+          "amount": "1235",
+          "toString": "JPY 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "KRW",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "KRW",
+          "amount": "1235",
+          "toString": "KRW 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "KZT",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "KZT",
+          "amount": "1234.57",
+          "toString": "KZT 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "MAD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "MAD",
+          "amount": "1234.57",
+          "toString": "MAD 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "MXN",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "MXN",
+          "amount": "1234.57",
+          "toString": "MXN 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "MYR",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "MYR",
+          "amount": "1234.57",
+          "toString": "MYR 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "NOK",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "NOK",
+          "amount": "1234.57",
+          "toString": "NOK 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "NZD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "NZD",
+          "amount": "1234.57",
+          "toString": "NZD 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "OMR",
+        "amount": 1234.56789,
+        "minorUnitDigits": 3,
+        "captureOnly": true,
+        "result": {
+          "currency": "OMR",
+          "amount": "1234.568",
+          "toString": "OMR 1234.568"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "PEN",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "PEN",
+          "amount": "1234.57",
+          "toString": "PEN 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "PHP",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "PHP",
+          "amount": "1234.57",
+          "toString": "PHP 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "PKR",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "PKR",
+          "amount": "1234.57",
+          "toString": "PKR 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "PLN",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "PLN",
+          "amount": "1234.57",
+          "toString": "PLN 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "QAR",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "QAR",
+          "amount": "1234.57",
+          "toString": "QAR 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "RON",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "RON",
+          "amount": "1234.57",
+          "toString": "RON 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "RUB",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "RUB",
+          "amount": "1234.57",
+          "toString": "RUB 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "SAR",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SAR",
+          "amount": "1234.57",
+          "toString": "SAR 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "SEK",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SEK",
+          "amount": "1234.57",
+          "toString": "SEK 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "SGD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SGD",
+          "amount": "1234.57",
+          "toString": "SGD 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "THB",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "THB",
+          "amount": "1234.57",
+          "toString": "THB 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "TRY",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "TRY",
+          "amount": "1234.57",
+          "toString": "TRY 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "TWD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "TWD",
+          "amount": "1234.57",
+          "toString": "TWD 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "UAH",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "UAH",
+          "amount": "1234.57",
+          "toString": "UAH 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "USD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "USD",
+          "amount": "1234.57",
+          "toString": "USD 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "VND",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "VND",
+          "amount": "1235",
+          "toString": "VND 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "ZAR",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "ZAR",
+          "amount": "1234.57",
+          "toString": "ZAR 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "XXX",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "XXX",
+          "amount": "1235",
+          "toString": "XXX 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "XAG",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "XAG",
+          "amount": "1234.57",
+          "toString": "XAG 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "XAU",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "XAU",
+          "amount": "1235",
+          "toString": "XAU 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "XPD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "XPD",
+          "amount": "1235",
+          "toString": "XPD 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "XPT",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "XPT",
+          "amount": "1235",
+          "toString": "XPT 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "ATS",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "ATS",
+          "amount": "1234.57",
+          "toString": "ATS 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BEF",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "BEF",
+          "amount": "1234.57",
+          "toString": "BEF 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "CYP",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CYP",
+          "amount": "1234.57",
+          "toString": "CYP 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "DEM",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "DEM",
+          "amount": "1234.57",
+          "toString": "DEM 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "EEK",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "EEK",
+          "amount": "1234.57",
+          "toString": "EEK 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "ESP",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "ESP",
+          "amount": "1235",
+          "toString": "ESP 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "FIM",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "FIM",
+          "amount": "1234.57",
+          "toString": "FIM 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "FRF",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "FRF",
+          "amount": "1234.57",
+          "toString": "FRF 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "GRD",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "GRD",
+          "amount": "1234.57",
+          "toString": "GRD 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "IEP",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "IEP",
+          "amount": "1234.57",
+          "toString": "IEP 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "ITL",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "ITL",
+          "amount": "1235",
+          "toString": "ITL 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "LTL",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "LTL",
+          "amount": "1234.57",
+          "toString": "LTL 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "LUF",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "LUF",
+          "amount": "1234.57",
+          "toString": "LUF 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "LVL",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "LVL",
+          "amount": "1234.57",
+          "toString": "LVL 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "MTL",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "MTL",
+          "amount": "1234.57",
+          "toString": "MTL 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "NLG",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "NLG",
+          "amount": "1234.57",
+          "toString": "NLG 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "PTE",
+        "amount": 1234.56789,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "PTE",
+          "amount": "1235",
+          "toString": "PTE 1235"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "SIT",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SIT",
+          "amount": "1234.57",
+          "toString": "SIT 1234.57"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "SKK",
+        "amount": 1234.56789,
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SKK",
+          "amount": "1234.57",
+          "toString": "SKK 1234.57"
+        }
+      }
+    ],
+    "bigMoneyResults": [],
+    "currencyAmountArrayResults": [],
+    "multiCurrencyAmountResults": [],
+    "multiCurrencyAmountArrayResults": []
+  },
+  {
+    "id": "big-money",
+    "source": "BigMoneyTest",
+    "amounts": [],
+    "scalars": [],
+    "arrays": [],
+    "multiArrays": [],
+    "money": [],
+    "bigMoney": [
+      {
+        "currency": "AUD",
+        "amount": "100.12",
+        "toString": "AUD 100.12"
+      },
+      {
+        "currency": "AUD",
+        "amount": "100.13",
+        "toString": "AUD 100.13"
+      },
+      {
+        "currency": "AUD",
+        "amount": "100.1249",
+        "toString": "AUD 100.1249"
+      },
+      {
+        "currency": "AUD",
+        "amount": "100.125",
+        "toString": "AUD 100.125"
+      },
+      {
+        "currency": "RON",
+        "amount": "200.23",
+        "toString": "RON 200.23"
+      },
+      {
+        "currency": "RON",
+        "amount": "200.2345",
+        "toString": "RON 200.2345"
+      },
+      {
+        "currency": "RON",
+        "amount": "1.005",
+        "toString": "RON 1.005"
+      },
+      {
+        "currency": "BHD",
+        "amount": "100.12",
+        "toString": "BHD 100.120"
+      },
+      {
+        "currency": "BHD",
+        "amount": "100.1249",
+        "toString": "BHD 100.1249"
+      },
+      {
+        "currency": "BHD",
+        "amount": "100.125",
+        "toString": "BHD 100.125"
+      },
+      {
+        "currency": "BHD",
+        "amount": "1.23456",
+        "toString": "BHD 1.23456"
+      },
+      {
+        "currency": "JPY",
+        "amount": "123.456",
+        "toString": "JPY 123.456"
+      },
+      {
+        "currency": "JPY",
+        "amount": "0.5",
+        "toString": "JPY 0.5"
+      },
+      {
+        "currency": "JPY",
+        "amount": "123.456789012346",
+        "toString": "JPY 123.456789012346"
+      },
+      {
+        "currency": "RON",
+        "amount": "100.1249",
+        "toString": "RON 100.1249"
+      },
+      {
+        "currency": "AUD",
+        "amount": "100",
+        "toString": "AUD 100.00"
+      },
+      {
+        "currency": "GBP",
+        "amount": "1.000009",
+        "toString": "GBP 1.000009"
+      },
+      {
+        "currency": "GBP",
+        "amount": "9.99999999",
+        "toString": "GBP 9.99999999"
+      },
+      {
+        "currency": "GBP",
+        "amount": "1.441",
+        "toString": "GBP 1.441"
+      },
+      {
+        "currency": "GBP",
+        "amount": "1.123456789012",
+        "toString": "GBP 1.123456789012"
+      },
+      {
+        "currency": "AUD",
+        "amount": "1.123456789012",
+        "toString": "AUD 1.123456789012"
+      },
+      {
+        "currency": "GBP",
+        "amount": "1.446",
+        "toString": "GBP 1.446"
+      },
+      {
+        "currency": "GBP",
+        "amount": "1.449",
+        "toString": "GBP 1.449"
+      },
+      {
+        "currency": "GBP",
+        "amount": "1.444",
+        "toString": "GBP 1.444"
+      },
+      {
+        "currency": "GBP",
+        "amount": "780001",
+        "toString": "GBP 780001.00"
+      },
+      {
+        "currency": "GBP",
+        "amount": "780005",
+        "toString": "GBP 780005.00"
+      },
+      {
+        "currency": "GBP",
+        "amount": "780999",
+        "toString": "GBP 780999.00"
+      },
+      {
+        "currency": "GBP",
+        "amount": "780699",
+        "toString": "GBP 780699.00"
+      },
+      {
+        "currency": "GBP",
+        "amount": "780234",
+        "toString": "GBP 780234.00"
+      }
+    ],
+    "rates": [],
+    "currencyAmountResults": [],
+    "moneyResults": [],
+    "bigMoneyResults": [
+      {
+        "op": "of",
+        "currency": "AUD",
+        "amount": 100.12,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "AUD",
+          "amount": "100.12",
+          "toString": "AUD 100.12"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "AUD",
+        "amount": 100.13,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "AUD",
+          "amount": "100.13",
+          "toString": "AUD 100.13"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "AUD",
+        "amount": 100.1249,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "AUD",
+          "amount": "100.1249",
+          "toString": "AUD 100.1249"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "AUD",
+        "amount": 100.125,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "AUD",
+          "amount": "100.125",
+          "toString": "AUD 100.125"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "RON",
+        "amount": 200.23,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "RON",
+        "amount": 200.2345,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "RON",
+          "amount": "200.2345",
+          "toString": "RON 200.2345"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "RON",
+        "amount": 1.005,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "RON",
+          "amount": "1.005",
+          "toString": "RON 1.005"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BHD",
+        "amount": 100.12,
+        "minorUnitDigits": 3,
+        "captureOnly": false,
+        "result": {
+          "currency": "BHD",
+          "amount": "100.12",
+          "toString": "BHD 100.120"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BHD",
+        "amount": 100.1249,
+        "minorUnitDigits": 3,
+        "captureOnly": false,
+        "result": {
+          "currency": "BHD",
+          "amount": "100.1249",
+          "toString": "BHD 100.1249"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BHD",
+        "amount": 100.125,
+        "minorUnitDigits": 3,
+        "captureOnly": false,
+        "result": {
+          "currency": "BHD",
+          "amount": "100.125",
+          "toString": "BHD 100.125"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "BHD",
+        "amount": 1.23456,
+        "minorUnitDigits": 3,
+        "captureOnly": false,
+        "result": {
+          "currency": "BHD",
+          "amount": "1.23456",
+          "toString": "BHD 1.23456"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "JPY",
+        "amount": 123.456,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "JPY",
+          "amount": "123.456",
+          "toString": "JPY 123.456"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "JPY",
+        "amount": 0.5,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "JPY",
+          "amount": "0.5",
+          "toString": "JPY 0.5"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "JPY",
+        "amount": 123.4567890123456,
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "JPY",
+          "amount": "123.456789012346",
+          "toString": "JPY 123.456789012346"
+        }
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "RON",
+          "amount": "200.2345",
+          "toString": "RON 200.2345"
+        },
+        "right": {
+          "currency": "RON",
+          "amount": "100.1249",
+          "toString": "RON 100.1249"
+        },
+        "result": {
+          "currency": "RON",
+          "amount": "300.3594",
+          "toString": "RON 300.3594"
+        }
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "RON",
+          "amount": "200.2345",
+          "toString": "RON 200.2345"
+        },
+        "right": {
+          "currency": "RON",
+          "amount": "100.1249",
+          "toString": "RON 100.1249"
+        },
+        "result": {
+          "currency": "RON",
+          "amount": "100.1096",
+          "toString": "RON 100.1096"
+        }
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "RON",
+          "amount": "200.2345",
+          "toString": "RON 200.2345"
+        },
+        "right": {
+          "currency": "AUD",
+          "amount": "100",
+          "toString": "AUD 100.00"
+        },
+        "error": "IllegalArgumentException: Unable to add amounts in different currencies"
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "RON",
+          "amount": "200.2345",
+          "toString": "RON 200.2345"
+        },
+        "right": {
+          "currency": "AUD",
+          "amount": "100",
+          "toString": "AUD 100.00"
+        },
+        "error": "IllegalArgumentException: Unable to subtract amounts in different currencies"
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "RON",
+          "amount": "200.2345",
+          "toString": "RON 200.2345"
+        },
+        "scalar": 3,
+        "result": {
+          "currency": "RON",
+          "amount": "600.7035",
+          "toString": "RON 600.7035"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "RON",
+          "amount": "200.2345",
+          "toString": "RON 200.2345"
+        },
+        "result": {
+          "currency": "RON",
+          "amount": "200.23",
+          "toString": "RON 200.23"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "JPY",
+          "amount": "123.456789012346",
+          "toString": "JPY 123.456789012346"
+        },
+        "result": {
+          "currency": "JPY",
+          "amount": "123",
+          "toString": "JPY 123"
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "AUD",
+          "amount": "100",
+          "toString": "AUD 100.00"
+        },
+        "target": "USD",
+        "rate": 0.65,
+        "result": {
+          "currency": "USD",
+          "amount": "65",
+          "toString": "USD 65.00"
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "AUD",
+          "amount": "100",
+          "toString": "AUD 100.00"
+        },
+        "target": "AUD",
+        "rate": 1.25,
+        "error": "IllegalArgumentException: FX rate must be 1 when no conversion required"
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "RON",
+          "amount": "200.2345",
+          "toString": "RON 200.2345"
+        },
+        "target": "RON",
+        "rate": 1.0,
+        "result": {
+          "currency": "RON",
+          "amount": "200.2345",
+          "toString": "RON 200.2345"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "GBP",
+        "amount": 1.000009,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "GBP",
+          "amount": "1.000009",
+          "toString": "GBP 1.000009"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "GBP",
+        "amount": 9.99999999,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "GBP",
+          "amount": "9.99999999",
+          "toString": "GBP 9.99999999"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "GBP",
+        "amount": 1.441,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "GBP",
+          "amount": "1.441",
+          "toString": "GBP 1.441"
+        }
+      },
+      {
+        "op": "of",
+        "currency": "GBP",
+        "amount": 1.123456789012345,
+        "minorUnitDigits": 2,
+        "captureOnly": false,
+        "result": {
+          "currency": "GBP",
+          "amount": "1.123456789012",
+          "toString": "GBP 1.123456789012"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "AUD",
+          "amount": "1.123456789012",
+          "toString": "AUD 1.123456789012"
+        },
+        "result": {
+          "currency": "AUD",
+          "amount": "1.12",
+          "toString": "AUD 1.12"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "1.441",
+          "toString": "GBP 1.441"
+        },
+        "scale": 2,
+        "roundingMode": "CEILING",
+        "result": {
+          "currency": "GBP",
+          "amount": "1.45",
+          "toString": "GBP 1.45"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "1.441",
+          "toString": "GBP 1.441"
+        },
+        "scale": 2,
+        "roundingMode": "UP",
+        "result": {
+          "currency": "GBP",
+          "amount": "1.45",
+          "toString": "GBP 1.45"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "1.446",
+          "toString": "GBP 1.446"
+        },
+        "scale": 2,
+        "roundingMode": "HALF_UP",
+        "result": {
+          "currency": "GBP",
+          "amount": "1.45",
+          "toString": "GBP 1.45"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "1.449",
+          "toString": "GBP 1.449"
+        },
+        "scale": 2,
+        "roundingMode": "FLOOR",
+        "result": {
+          "currency": "GBP",
+          "amount": "1.44",
+          "toString": "GBP 1.44"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "1.449",
+          "toString": "GBP 1.449"
+        },
+        "scale": 2,
+        "roundingMode": "DOWN",
+        "result": {
+          "currency": "GBP",
+          "amount": "1.44",
+          "toString": "GBP 1.44"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "1.444",
+          "toString": "GBP 1.444"
+        },
+        "scale": 2,
+        "roundingMode": "HALF_DOWN",
+        "result": {
+          "currency": "GBP",
+          "amount": "1.44",
+          "toString": "GBP 1.44"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "780001",
+          "toString": "GBP 780001.00"
+        },
+        "scale": -3,
+        "roundingMode": "CEILING",
+        "result": {
+          "currency": "GBP",
+          "amount": "781000",
+          "toString": "GBP 781000.00"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "780001",
+          "toString": "GBP 780001.00"
+        },
+        "scale": -2,
+        "roundingMode": "UP",
+        "result": {
+          "currency": "GBP",
+          "amount": "780100",
+          "toString": "GBP 780100.00"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "780005",
+          "toString": "GBP 780005.00"
+        },
+        "scale": -1,
+        "roundingMode": "HALF_UP",
+        "result": {
+          "currency": "GBP",
+          "amount": "780010",
+          "toString": "GBP 780010.00"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "780999",
+          "toString": "GBP 780999.00"
+        },
+        "scale": -3,
+        "roundingMode": "FLOOR",
+        "result": {
+          "currency": "GBP",
+          "amount": "780000",
+          "toString": "GBP 780000.00"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "780699",
+          "toString": "GBP 780699.00"
+        },
+        "scale": -2,
+        "roundingMode": "DOWN",
+        "result": {
+          "currency": "GBP",
+          "amount": "780600",
+          "toString": "GBP 780600.00"
+        }
+      },
+      {
+        "op": "roundToScale",
+        "left": {
+          "currency": "GBP",
+          "amount": "780234",
+          "toString": "GBP 780234.00"
+        },
+        "scale": -1,
+        "roundingMode": "HALF_DOWN",
+        "result": {
+          "currency": "GBP",
+          "amount": "780230",
+          "toString": "GBP 780230.00"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "AED",
+          "amount": "1234.567890123457",
+          "toString": "AED 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "AED",
+          "amount": "1234.57",
+          "toString": "AED 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "ARS",
+          "amount": "1234.567890123457",
+          "toString": "ARS 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "ARS",
+          "amount": "1234.57",
+          "toString": "ARS 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "AUD",
+          "amount": "1234.567890123457",
+          "toString": "AUD 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "AUD",
+          "amount": "1234.57",
+          "toString": "AUD 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "BGN",
+          "amount": "1234.567890123457",
+          "toString": "BGN 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "BGN",
+          "amount": "1234.57",
+          "toString": "BGN 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "BHD",
+          "amount": "1234.567890123457",
+          "toString": "BHD 1234.567890123457"
+        },
+        "minorUnitDigits": 3,
+        "captureOnly": true,
+        "result": {
+          "currency": "BHD",
+          "amount": "1234.568",
+          "toString": "BHD 1234.568"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "BRL",
+          "amount": "1234.567890123457",
+          "toString": "BRL 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "BRL",
+          "amount": "1234.57",
+          "toString": "BRL 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "CAD",
+          "amount": "1234.567890123457",
+          "toString": "CAD 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CAD",
+          "amount": "1234.57",
+          "toString": "CAD 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "CHF",
+          "amount": "1234.567890123457",
+          "toString": "CHF 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CHF",
+          "amount": "1234.57",
+          "toString": "CHF 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "CLP",
+          "amount": "1234.567890123457",
+          "toString": "CLP 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "CLP",
+          "amount": "1235",
+          "toString": "CLP 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "CNH",
+          "amount": "1234.567890123457",
+          "toString": "CNH 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CNH",
+          "amount": "1234.57",
+          "toString": "CNH 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "CNY",
+          "amount": "1234.567890123457",
+          "toString": "CNY 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CNY",
+          "amount": "1234.57",
+          "toString": "CNY 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "COP",
+          "amount": "1234.567890123457",
+          "toString": "COP 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "COP",
+          "amount": "1234.57",
+          "toString": "COP 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "CZK",
+          "amount": "1234.567890123457",
+          "toString": "CZK 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CZK",
+          "amount": "1234.57",
+          "toString": "CZK 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "DKK",
+          "amount": "1234.567890123457",
+          "toString": "DKK 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "DKK",
+          "amount": "1234.57",
+          "toString": "DKK 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "EGP",
+          "amount": "1234.567890123457",
+          "toString": "EGP 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "EGP",
+          "amount": "1234.57",
+          "toString": "EGP 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "EUR",
+          "amount": "1234.567890123457",
+          "toString": "EUR 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "EUR",
+          "amount": "1234.57",
+          "toString": "EUR 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "GBP",
+          "amount": "1234.567890123457",
+          "toString": "GBP 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "GBP",
+          "amount": "1234.57",
+          "toString": "GBP 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "HKD",
+          "amount": "1234.567890123457",
+          "toString": "HKD 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "HKD",
+          "amount": "1234.57",
+          "toString": "HKD 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "HRK",
+          "amount": "1234.567890123457",
+          "toString": "HRK 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "HRK",
+          "amount": "1234.57",
+          "toString": "HRK 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "HUF",
+          "amount": "1234.567890123457",
+          "toString": "HUF 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "HUF",
+          "amount": "1234.57",
+          "toString": "HUF 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "IDR",
+          "amount": "1234.567890123457",
+          "toString": "IDR 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "IDR",
+          "amount": "1234.57",
+          "toString": "IDR 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "ILS",
+          "amount": "1234.567890123457",
+          "toString": "ILS 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "ILS",
+          "amount": "1234.57",
+          "toString": "ILS 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "INR",
+          "amount": "1234.567890123457",
+          "toString": "INR 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "INR",
+          "amount": "1234.57",
+          "toString": "INR 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "ISK",
+          "amount": "1234.567890123457",
+          "toString": "ISK 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "ISK",
+          "amount": "1235",
+          "toString": "ISK 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "JPY",
+          "amount": "1234.567890123457",
+          "toString": "JPY 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "JPY",
+          "amount": "1235",
+          "toString": "JPY 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "KRW",
+          "amount": "1234.567890123457",
+          "toString": "KRW 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "KRW",
+          "amount": "1235",
+          "toString": "KRW 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "KZT",
+          "amount": "1234.567890123457",
+          "toString": "KZT 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "KZT",
+          "amount": "1234.57",
+          "toString": "KZT 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "MAD",
+          "amount": "1234.567890123457",
+          "toString": "MAD 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "MAD",
+          "amount": "1234.57",
+          "toString": "MAD 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "MXN",
+          "amount": "1234.567890123457",
+          "toString": "MXN 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "MXN",
+          "amount": "1234.57",
+          "toString": "MXN 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "MYR",
+          "amount": "1234.567890123457",
+          "toString": "MYR 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "MYR",
+          "amount": "1234.57",
+          "toString": "MYR 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "NOK",
+          "amount": "1234.567890123457",
+          "toString": "NOK 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "NOK",
+          "amount": "1234.57",
+          "toString": "NOK 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "NZD",
+          "amount": "1234.567890123457",
+          "toString": "NZD 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "NZD",
+          "amount": "1234.57",
+          "toString": "NZD 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "OMR",
+          "amount": "1234.567890123457",
+          "toString": "OMR 1234.567890123457"
+        },
+        "minorUnitDigits": 3,
+        "captureOnly": true,
+        "result": {
+          "currency": "OMR",
+          "amount": "1234.568",
+          "toString": "OMR 1234.568"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "PEN",
+          "amount": "1234.567890123457",
+          "toString": "PEN 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "PEN",
+          "amount": "1234.57",
+          "toString": "PEN 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "PHP",
+          "amount": "1234.567890123457",
+          "toString": "PHP 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "PHP",
+          "amount": "1234.57",
+          "toString": "PHP 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "PKR",
+          "amount": "1234.567890123457",
+          "toString": "PKR 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "PKR",
+          "amount": "1234.57",
+          "toString": "PKR 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "PLN",
+          "amount": "1234.567890123457",
+          "toString": "PLN 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "PLN",
+          "amount": "1234.57",
+          "toString": "PLN 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "QAR",
+          "amount": "1234.567890123457",
+          "toString": "QAR 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "QAR",
+          "amount": "1234.57",
+          "toString": "QAR 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "RON",
+          "amount": "1234.567890123457",
+          "toString": "RON 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "RON",
+          "amount": "1234.57",
+          "toString": "RON 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "RUB",
+          "amount": "1234.567890123457",
+          "toString": "RUB 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "RUB",
+          "amount": "1234.57",
+          "toString": "RUB 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "SAR",
+          "amount": "1234.567890123457",
+          "toString": "SAR 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SAR",
+          "amount": "1234.57",
+          "toString": "SAR 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "SEK",
+          "amount": "1234.567890123457",
+          "toString": "SEK 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SEK",
+          "amount": "1234.57",
+          "toString": "SEK 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "SGD",
+          "amount": "1234.567890123457",
+          "toString": "SGD 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SGD",
+          "amount": "1234.57",
+          "toString": "SGD 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "THB",
+          "amount": "1234.567890123457",
+          "toString": "THB 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "THB",
+          "amount": "1234.57",
+          "toString": "THB 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "TRY",
+          "amount": "1234.567890123457",
+          "toString": "TRY 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "TRY",
+          "amount": "1234.57",
+          "toString": "TRY 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "TWD",
+          "amount": "1234.567890123457",
+          "toString": "TWD 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "TWD",
+          "amount": "1234.57",
+          "toString": "TWD 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "UAH",
+          "amount": "1234.567890123457",
+          "toString": "UAH 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "UAH",
+          "amount": "1234.57",
+          "toString": "UAH 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "USD",
+          "amount": "1234.567890123457",
+          "toString": "USD 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "USD",
+          "amount": "1234.57",
+          "toString": "USD 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "VND",
+          "amount": "1234.567890123457",
+          "toString": "VND 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "VND",
+          "amount": "1235",
+          "toString": "VND 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "ZAR",
+          "amount": "1234.567890123457",
+          "toString": "ZAR 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "ZAR",
+          "amount": "1234.57",
+          "toString": "ZAR 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "XXX",
+          "amount": "1234.567890123457",
+          "toString": "XXX 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "XXX",
+          "amount": "1235",
+          "toString": "XXX 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "XAG",
+          "amount": "1234.567890123457",
+          "toString": "XAG 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "XAG",
+          "amount": "1234.57",
+          "toString": "XAG 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "XAU",
+          "amount": "1234.567890123457",
+          "toString": "XAU 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "XAU",
+          "amount": "1235",
+          "toString": "XAU 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "XPD",
+          "amount": "1234.567890123457",
+          "toString": "XPD 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "XPD",
+          "amount": "1235",
+          "toString": "XPD 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "XPT",
+          "amount": "1234.567890123457",
+          "toString": "XPT 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "XPT",
+          "amount": "1235",
+          "toString": "XPT 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "ATS",
+          "amount": "1234.567890123457",
+          "toString": "ATS 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "ATS",
+          "amount": "1234.57",
+          "toString": "ATS 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "BEF",
+          "amount": "1234.567890123457",
+          "toString": "BEF 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "BEF",
+          "amount": "1234.57",
+          "toString": "BEF 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "CYP",
+          "amount": "1234.567890123457",
+          "toString": "CYP 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "CYP",
+          "amount": "1234.57",
+          "toString": "CYP 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "DEM",
+          "amount": "1234.567890123457",
+          "toString": "DEM 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "DEM",
+          "amount": "1234.57",
+          "toString": "DEM 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "EEK",
+          "amount": "1234.567890123457",
+          "toString": "EEK 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "EEK",
+          "amount": "1234.57",
+          "toString": "EEK 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "ESP",
+          "amount": "1234.567890123457",
+          "toString": "ESP 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "ESP",
+          "amount": "1235",
+          "toString": "ESP 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "FIM",
+          "amount": "1234.567890123457",
+          "toString": "FIM 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "FIM",
+          "amount": "1234.57",
+          "toString": "FIM 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "FRF",
+          "amount": "1234.567890123457",
+          "toString": "FRF 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "FRF",
+          "amount": "1234.57",
+          "toString": "FRF 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "GRD",
+          "amount": "1234.567890123457",
+          "toString": "GRD 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "GRD",
+          "amount": "1234.57",
+          "toString": "GRD 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "IEP",
+          "amount": "1234.567890123457",
+          "toString": "IEP 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "IEP",
+          "amount": "1234.57",
+          "toString": "IEP 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "ITL",
+          "amount": "1234.567890123457",
+          "toString": "ITL 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "ITL",
+          "amount": "1235",
+          "toString": "ITL 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "LTL",
+          "amount": "1234.567890123457",
+          "toString": "LTL 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "LTL",
+          "amount": "1234.57",
+          "toString": "LTL 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "LUF",
+          "amount": "1234.567890123457",
+          "toString": "LUF 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "LUF",
+          "amount": "1234.57",
+          "toString": "LUF 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "LVL",
+          "amount": "1234.567890123457",
+          "toString": "LVL 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "LVL",
+          "amount": "1234.57",
+          "toString": "LVL 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "MTL",
+          "amount": "1234.567890123457",
+          "toString": "MTL 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "MTL",
+          "amount": "1234.57",
+          "toString": "MTL 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "NLG",
+          "amount": "1234.567890123457",
+          "toString": "NLG 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "NLG",
+          "amount": "1234.57",
+          "toString": "NLG 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "PTE",
+          "amount": "1234.567890123457",
+          "toString": "PTE 1234.567890123457"
+        },
+        "minorUnitDigits": 0,
+        "captureOnly": true,
+        "result": {
+          "currency": "PTE",
+          "amount": "1235",
+          "toString": "PTE 1235"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "SIT",
+          "amount": "1234.567890123457",
+          "toString": "SIT 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SIT",
+          "amount": "1234.57",
+          "toString": "SIT 1234.57"
+        }
+      },
+      {
+        "op": "toMoney",
+        "left": {
+          "currency": "SKK",
+          "amount": "1234.567890123457",
+          "toString": "SKK 1234.567890123457"
+        },
+        "minorUnitDigits": 2,
+        "captureOnly": true,
+        "result": {
+          "currency": "SKK",
+          "amount": "1234.57",
+          "toString": "SKK 1234.57"
+        }
+      }
+    ],
+    "currencyAmountArrayResults": [],
+    "multiCurrencyAmountResults": [],
+    "multiCurrencyAmountArrayResults": []
+  },
+  {
+    "id": "currency-amount-array",
+    "source": "CurrencyAmountArrayTest",
+    "amounts": [
+      {
+        "currency": "GBP",
+        "amount": 10.0
+      },
+      {
+        "currency": "USD",
+        "amount": 10.0
+      },
+      {
+        "currency": "GBP",
+        "amount": 0.5
+      },
+      {
+        "currency": "USD",
+        "amount": 0.5
+      }
+    ],
+    "scalars": [2.5, -1.0],
+    "arrays": [
+      {
+        "currency": "GBP",
+        "values": [1.0, 2.0, 3.0]
+      },
+      {
+        "currency": "GBP",
+        "values": [0.5, 1.5, 2.5]
+      },
+      {
+        "currency": "USD",
+        "values": [1.0, 2.0, 3.0]
+      },
+      {
+        "currency": "GBP",
+        "values": [1.0, 2.0]
+      },
+      {
+        "currency": "GBP",
+        "values": [-0.0, 0.0, 1.0]
+      }
+    ],
+    "multiArrays": [],
+    "money": [],
+    "bigMoney": [],
+    "rates": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      },
+      {
+        "pair": "EUR/USD",
+        "rate": 1.61
+      }
+    ],
+    "currencyAmountResults": [],
+    "moneyResults": [],
+    "bigMoneyResults": [],
+    "currencyAmountArrayResults": [
+      {
+        "op": "plus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "GBP",
+          "values": [0.5, 1.5, 2.5]
+        },
+        "result": {
+          "currency": "GBP",
+          "values": [1.5, 3.5, 5.5]
+        }
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "GBP",
+          "values": [0.5, 1.5, 2.5]
+        },
+        "result": {
+          "currency": "GBP",
+          "values": [0.5, 0.5, 0.5]
+        }
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "GBP",
+          "amount": 10.0
+        },
+        "result": {
+          "currency": "GBP",
+          "values": [11.0, 12.0, 13.0]
+        }
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "USD",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "error": "IllegalArgumentException: Currencies must be equal, this currency is GBP, other currency is USD"
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "GBP",
+          "values": [1.0, 2.0]
+        },
+        "error": "IllegalArgumentException: Sizes must be equal, this size is 3, other size is 2"
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "USD",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "error": "IllegalArgumentException: Currencies must be equal, this currency is GBP, other currency is USD"
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "GBP",
+          "values": [1.0, 2.0]
+        },
+        "error": "IllegalArgumentException: Sizes must be equal, this size is 3, other size is 2"
+      },
+      {
+        "op": "plus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "USD",
+          "amount": 10.0
+        },
+        "error": "IllegalArgumentException: Currencies must be equal, this currency is GBP, other currency is USD"
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "GBP",
+          "amount": 0.5
+        },
+        "result": {
+          "currency": "GBP",
+          "values": [0.5, 1.5, 2.5]
+        }
+      },
+      {
+        "op": "minus",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "right": {
+          "currency": "USD",
+          "amount": 0.5
+        },
+        "error": "IllegalArgumentException: Currencies must be equal, this currency is GBP, other currency is USD"
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "target": "USD",
+        "rate": 1.6,
+        "result": {
+          "currency": "USD",
+          "values": [1.6, 3.2, 4.800000000000001]
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "scalar": 2.5,
+        "composed": true,
+        "result": {
+          "currency": "GBP",
+          "values": [2.5, 5.0, 7.5]
+        }
+      },
+      {
+        "op": "mapAmounts",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "mapAmountsFn": "x -> x * x",
+        "composed": true,
+        "result": {
+          "currency": "GBP",
+          "values": [1.0, 4.0, 9.0]
+        }
+      },
+      {
+        "op": "of",
+        "input": [4.0, 5.0, 6.0],
+        "currency": "GBP",
+        "result": {
+          "currency": "GBP",
+          "values": [4.0, 5.0, 6.0]
+        }
+      },
+      {
+        "op": "of",
+        "input": "GBP 4, USD 5",
+        "error": "IllegalArgumentException: Multiple values found where only one was expected: GBP and USD"
+      },
+      {
+        "op": "of",
+        "size": 3,
+        "currency": "GBP",
+        "input": [1.0, 2.0, 3.0],
+        "result": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        }
+      },
+      {
+        "op": "of",
+        "size": 3,
+        "input": "GBP 1, USD 2, GBP 3",
+        "error": "IllegalArgumentException: Currencies differ: GBP and USD"
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "currency": "GBP",
+          "values": [1.0, 2.0, 3.0]
+        },
+        "target": "USD",
+        "rates": [
+          {
+            "pair": "EUR/USD",
+            "rate": 1.61
+          }
+        ],
+        "error": "IllegalArgumentException: No FX rate found for GBP/USD"
+      },
+      {
+        "op": "of",
+        "currency": "GBP",
+        "input": [-0.0, 0.0, 1.0],
+        "result": {
+          "currency": "GBP",
+          "values": [-0.0, 0.0, 1.0]
+        },
+        "doubleToLongBits": -9223372036854775808
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "currency": "GBP",
+          "values": [-0.0, 0.0, 1.0]
+        },
+        "scalar": -1.0,
+        "composed": true,
+        "result": {
+          "currency": "GBP",
+          "values": [0.0, -0.0, -1.0]
+        }
+      },
+      {
+        "op": "get",
+        "left": {
+          "currency": "GBP",
+          "values": [-0.0, 0.0, 1.0]
+        },
+        "index": 0,
+        "result": {
+          "currency": "GBP",
+          "amount": 0.0
+        },
+        "doubleToLongBits": 0
+      }
+    ],
+    "multiCurrencyAmountResults": [],
+    "multiCurrencyAmountArrayResults": []
+  },
+  {
+    "id": "multi-currency-amount",
+    "source": "MultiCurrencyAmountTest",
+    "amounts": [
+      {
+        "currency": "GBP",
+        "amount": 100.0
+      },
+      {
+        "currency": "USD",
+        "amount": 200.0
+      },
+      {
+        "currency": "EUR",
+        "amount": 75.0
+      },
+      {
+        "currency": "USD",
+        "amount": 50.0
+      }
+    ],
+    "scalars": [1.5],
+    "arrays": [],
+    "multiArrays": [],
+    "money": [],
+    "bigMoney": [],
+    "rates": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      }
+    ],
+    "currencyAmountResults": [],
+    "moneyResults": [],
+    "bigMoneyResults": [],
+    "currencyAmountArrayResults": [],
+    "multiCurrencyAmountResults": [
+      {
+        "op": "of",
+        "amounts": [
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 200.0
+          }
+        ],
+        "result": [
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 200.0
+          }
+        ]
+      },
+      {
+        "op": "of",
+        "input": "GBP 100, GBP 200",
+        "error": "IllegalArgumentException: Currency is duplicated: GBP"
+      },
+      {
+        "op": "of",
+        "input": "empty",
+        "result": []
+      },
+      {
+        "op": "total",
+        "input": "GBP 100, GBP 200",
+        "result": [
+          {
+            "currency": "GBP",
+            "amount": 300.0
+          }
+        ]
+      },
+      {
+        "op": "plus",
+        "left": [
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 200.0
+          }
+        ],
+        "right": [
+          {
+            "currency": "EUR",
+            "amount": 75.0
+          },
+          {
+            "currency": "USD",
+            "amount": 50.0
+          }
+        ],
+        "result": [
+          {
+            "currency": "EUR",
+            "amount": 75.0
+          },
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 250.0
+          }
+        ]
+      },
+      {
+        "op": "minus",
+        "left": [
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 200.0
+          }
+        ],
+        "right": [
+          {
+            "currency": "EUR",
+            "amount": 75.0
+          },
+          {
+            "currency": "USD",
+            "amount": 50.0
+          }
+        ],
+        "result": [
+          {
+            "currency": "EUR",
+            "amount": -75.0
+          },
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 150.0
+          }
+        ]
+      },
+      {
+        "op": "multipliedBy",
+        "left": [
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 200.0
+          }
+        ],
+        "scalar": 1.5,
+        "result": [
+          {
+            "currency": "GBP",
+            "amount": 150.0
+          },
+          {
+            "currency": "USD",
+            "amount": 300.0
+          }
+        ]
+      },
+      {
+        "op": "mapAmounts",
+        "left": [
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 200.0
+          }
+        ],
+        "mapAmountsFn": "x -> x * x",
+        "result": [
+          {
+            "currency": "GBP",
+            "amount": 10000.0
+          },
+          {
+            "currency": "USD",
+            "amount": 40000.0
+          }
+        ]
+      },
+      {
+        "op": "getAmount",
+        "left": [
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 200.0
+          }
+        ],
+        "currency": "GBP",
+        "result": {
+          "currency": "GBP",
+          "amount": 100.0
+        }
+      },
+      {
+        "op": "getAmount",
+        "left": [
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 200.0
+          }
+        ],
+        "currency": "CHF",
+        "error": "IllegalArgumentException: Unknown currency CHF"
+      },
+      {
+        "op": "convertedTo",
+        "left": [
+          {
+            "currency": "GBP",
+            "amount": 100.0
+          },
+          {
+            "currency": "USD",
+            "amount": 200.0
+          }
+        ],
+        "target": "USD",
+        "rates": [
+          {
+            "pair": "GBP/USD",
+            "rate": 1.6
+          }
+        ],
+        "result": {
+          "currency": "USD",
+          "amount": 360.0
+        }
+      }
+    ],
+    "multiCurrencyAmountArrayResults": []
+  },
+  {
+    "id": "multi-currency-amount-array",
+    "source": "MultiCurrencyAmountArrayTest",
+    "amounts": [],
+    "scalars": [],
+    "arrays": [],
+    "multiArrays": [
+      {
+        "arrays": [
+          {
+            "currency": "GBP",
+            "values": [1.0, 2.0, 3.0]
+          },
+          {
+            "currency": "USD",
+            "values": [10.0, 20.0, 30.0]
+          }
+        ]
+      },
+      {
+        "arrays": [
+          {
+            "currency": "EUR",
+            "values": [5.0, 5.0, 5.0]
+          },
+          {
+            "currency": "USD",
+            "values": [1.0, 1.0, 1.0]
+          }
+        ]
+      },
+      {
+        "arrays": [
+          {
+            "currency": "GBP",
+            "values": [1.0, 2.0]
+          }
+        ]
+      },
+      {
+        "arrays": [
+          {
+            "currency": "EUR",
+            "values": [4.0, 43.0, 44.0]
+          },
+          {
+            "currency": "GBP",
+            "values": [0.0, 21.0, 0.0]
+          },
+          {
+            "currency": "USD",
+            "values": [0.0, 32.0, 0.0]
+          }
+        ]
+      }
+    ],
+    "money": [],
+    "bigMoney": [],
+    "rates": [
+      {
+        "pair": "GBP/USD",
+        "rate": 1.6
+      }
+    ],
+    "currencyAmountResults": [],
+    "moneyResults": [],
+    "bigMoneyResults": [],
+    "currencyAmountArrayResults": [],
+    "multiCurrencyAmountResults": [],
+    "multiCurrencyAmountArrayResults": [
+      {
+        "op": "of",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        }
+      },
+      {
+        "op": "of",
+        "input": "GBP[1,2,3], USD[1,2]",
+        "error": "IllegalArgumentException: Arrays must have the same size but found sizes 3 and 2"
+      },
+      {
+        "op": "of",
+        "input": "[EUR 4], [GBP 21, USD 32, EUR 43], [EUR 44]",
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "EUR",
+              "values": [4.0, 43.0, 44.0]
+            },
+            {
+              "currency": "GBP",
+              "values": [0.0, 21.0, 0.0]
+            },
+            {
+              "currency": "USD",
+              "values": [0.0, 32.0, 0.0]
+            }
+          ]
+        }
+      },
+      {
+        "op": "of",
+        "size": 3,
+        "input": "[EUR 4], [GBP 21, USD 32, EUR 43], [EUR 44]",
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "EUR",
+              "values": [4.0, 43.0, 44.0]
+            },
+            {
+              "currency": "GBP",
+              "values": [0.0, 21.0, 0.0]
+            },
+            {
+              "currency": "USD",
+              "values": [0.0, 32.0, 0.0]
+            }
+          ]
+        }
+      },
+      {
+        "op": "getValues",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "EUR",
+              "values": [4.0, 43.0, 44.0]
+            },
+            {
+              "currency": "GBP",
+              "values": [0.0, 21.0, 0.0]
+            },
+            {
+              "currency": "USD",
+              "values": [0.0, 32.0, 0.0]
+            }
+          ]
+        },
+        "currency": "AUD",
+        "error": "IllegalArgumentException: No values available for AUD"
+      },
+      {
+        "op": "of",
+        "size": 2,
+        "input": "[], []",
+        "result": {
+          "size": 2,
+          "arrays": []
+        }
+      },
+      {
+        "op": "getValues",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "currency": "GBP",
+        "result": [1.0, 2.0, 3.0]
+      },
+      {
+        "op": "getValues",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "currency": "CHF",
+        "error": "IllegalArgumentException: No values available for CHF"
+      },
+      {
+        "op": "plus",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "right": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "EUR",
+              "values": [5.0, 5.0, 5.0]
+            },
+            {
+              "currency": "USD",
+              "values": [1.0, 1.0, 1.0]
+            }
+          ]
+        },
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "EUR",
+              "values": [5.0, 5.0, 5.0]
+            },
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [11.0, 21.0, 31.0]
+            }
+          ]
+        }
+      },
+      {
+        "op": "minus",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "right": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "EUR",
+              "values": [5.0, 5.0, 5.0]
+            },
+            {
+              "currency": "USD",
+              "values": [1.0, 1.0, 1.0]
+            }
+          ]
+        },
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "EUR",
+              "values": [-5.0, -5.0, -5.0]
+            },
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [9.0, 19.0, 29.0]
+            }
+          ]
+        }
+      },
+      {
+        "op": "plus",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "right": {
+          "size": 2,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0]
+            }
+          ]
+        },
+        "error": "IllegalArgumentException: Sizes must be equal, this size is 3, other size is 2"
+      },
+      {
+        "op": "minus",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "right": {
+          "size": 2,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0]
+            }
+          ]
+        },
+        "error": "IllegalArgumentException: Sizes must be equal, this size is 3, other size is 2"
+      },
+      {
+        "op": "minus",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "right": [
+          {
+            "currency": "CHF",
+            "amount": 2.0
+          },
+          {
+            "currency": "GBP",
+            "amount": 1.0
+          }
+        ],
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "CHF",
+              "values": [-2.0, -2.0, -2.0]
+            },
+            {
+              "currency": "GBP",
+              "values": [0.0, 1.0, 2.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        }
+      },
+      {
+        "op": "plus",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "right": [
+          {
+            "currency": "GBP",
+            "amount": 1.0
+          },
+          {
+            "currency": "USD",
+            "amount": 2.0
+          }
+        ],
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [2.0, 3.0, 4.0]
+            },
+            {
+              "currency": "USD",
+              "values": [12.0, 22.0, 32.0]
+            }
+          ]
+        }
+      },
+      {
+        "op": "total",
+        "input": "GBP[1,2,3] + USD[10,20,30]",
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        }
+      },
+      {
+        "op": "convertedTo",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "target": "USD",
+        "rates": [
+          {
+            "pair": "GBP/USD",
+            "rate": 1.6
+          }
+        ],
+        "result": {
+          "currency": "USD",
+          "values": [11.6, 23.2, 34.8]
+        }
+      },
+      {
+        "op": "multipliedBy",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "scalar": 2.5,
+        "composed": true,
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [2.5, 5.0, 7.5]
+            },
+            {
+              "currency": "USD",
+              "values": [25.0, 50.0, 75.0]
+            }
+          ]
+        }
+      },
+      {
+        "op": "mapAmounts",
+        "left": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 2.0, 3.0]
+            },
+            {
+              "currency": "USD",
+              "values": [10.0, 20.0, 30.0]
+            }
+          ]
+        },
+        "mapAmountsFn": "x -> x * x",
+        "composed": true,
+        "result": {
+          "size": 3,
+          "arrays": [
+            {
+              "currency": "GBP",
+              "values": [1.0, 4.0, 9.0]
+            },
+            {
+              "currency": "USD",
+              "values": [100.0, 400.0, 900.0]
+            }
+          ]
+        }
+      }
+    ]
+  }
+]
